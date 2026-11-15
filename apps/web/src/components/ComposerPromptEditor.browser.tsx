@@ -68,6 +68,27 @@ it("changes Markdown styling without rewriting prompt bytes or file mentions", a
     .toHaveTextContent("**Bold** and `code` with @src/main.ts");
 });
 
+it("continues and exits numbered lists with Shift+Enter and preserves undo", async () => {
+  const screen = await render(<Harness initial="1. First" />);
+  try {
+    await screen.getByRole("button", { name: "Focus end" }).click();
+    await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+    await screen.getByRole("button", { name: "Read prompt" }).click();
+    expect(screen.getByLabelText("Serialized prompt").element().textContent).toBe("1. First\n2. ");
+    await screen.getByRole("button", { name: "Focus end" }).click();
+    await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+    await screen.getByRole("button", { name: "Read prompt" }).click();
+    expect(screen.getByLabelText("Serialized prompt").element().textContent).toBe("1. First\n");
+    await screen.getByRole("button", { name: "Focus end" }).click();
+    const modifier = navigator.platform.toUpperCase().includes("MAC") ? "Meta" : "Control";
+    await userEvent.keyboard("{" + modifier + ">}z{/" + modifier + "}");
+    await screen.getByRole("button", { name: "Read prompt" }).click();
+    expect(screen.getByLabelText("Serialized prompt").element().textContent).toBe("1. First\n2. ");
+  } finally {
+    await screen.unmount();
+  }
+});
+
 it("keeps pasted and typed handles literal, including quoted paths", async () => {
   const screen = await render(<Harness initial="" />);
   const editor = screen.getByTestId("composer-editor");

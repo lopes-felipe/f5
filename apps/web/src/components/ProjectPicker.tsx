@@ -1,7 +1,7 @@
 import type { ProjectId } from "@t3tools/contracts";
 import { SCRATCH_PROJECT_TITLE } from "@t3tools/shared/scratchProject";
 import { ChevronsUpDownIcon } from "lucide-react";
-import { useState } from "react";
+import { useState, type MouseEventHandler } from "react";
 
 import { cn } from "../lib/utils";
 import type { Project } from "../types";
@@ -80,6 +80,7 @@ export function ProjectPicker(props: {
   readonly trigger: ProjectPickerTrigger;
   readonly disabled?: boolean;
   readonly className?: string;
+  readonly onContextMenu?: MouseEventHandler<HTMLElement>;
 }) {
   const [projectSearch, setProjectSearch] = useState("");
   const normalizedSearch = projectSearch.trim().toLowerCase();
@@ -143,6 +144,7 @@ export function ProjectPicker(props: {
         }
         aria-label={props.trigger === "home" ? "Project" : triggerLabel}
         data-project-picker={props.trigger}
+        onContextMenu={props.onContextMenu}
         className={cn(
           props.trigger === "home"
             ? HOME_PROJECT_TRIGGER_CLASS_NAME

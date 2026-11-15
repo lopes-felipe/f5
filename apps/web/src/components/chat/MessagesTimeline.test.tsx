@@ -283,6 +283,231 @@ function preloadThreadFileChange(input: {
 }
 
 describe("MessagesTimeline", () => {
+  it("keeps a paginated turn start unknown until its persisted timing is available", async () => {
+    const { deriveTimelineEntries } = await import("../../session-logic");
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const turnId = TurnId.makeUnsafe("partially-loaded-turn");
+    const answer = {
+      id: MessageId.makeUnsafe("partial-answer"),
+      role: "assistant" as const,
+      text: "Only the last part is loaded",
+      createdAt: "2026-11-14T12:40:31.000Z",
+      completedAt: "2026-11-14T12:40:40.000Z",
+      streaming: false,
+      turnId,
+    };
+    const input = {
+      timelineEntries: deriveTimelineEntries([answer], [], [], []),
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    };
+    expect(buildTimelineRows(input).find((row) => row.id === answer.id)).toMatchObject({
+      showCompletionDivider: false,
+      completionSummary: null,
+      durationStart: undefined,
+    });
+    expect(buildTimelineRows(input).find((row) => row.id === answer.id)).not.toHaveProperty(
+      "completionStartedAt",
+    );
+    expect(
+      buildTimelineRows({
+        ...input,
+        turnDiffSummaryByTurnId: new Map([
+          [
+            turnId,
+            {
+              turnId,
+              files: [],
+              startedAt: "2026-11-14T12:40:00.000Z",
+              completedAt: answer.completedAt,
+            },
+          ],
+        ]),
+      }).find((row) => row.id === answer.id),
+    ).toMatchObject({
+      completionStartedAt: "2026-11-14T12:40:00.000Z",
+      completionSummary: "Worked for 40s",
+      durationStart: "2026-11-14T12:40:00.000Z",
+    });
+  });
+  it("shows the latest tool-free completion and refreshes lifecycle metadata on the streaming fast path", async () => {
+    const { createTimelineEntryCache, deriveTimelineEntries } = await import("../../session-logic");
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const turnId = TurnId.makeUnsafe("latest-tool-free");
+    const startedAt = "2026-11-14T12:40:31.000Z";
+    const completedAt = "2026-11-14T12:40:31.285Z";
+    const question = {
+      id: MessageId.makeUnsafe("latest-question"),
+      role: "user" as const,
+      text: "Question",
+      createdAt: startedAt,
+      streaming: false,
+      turnId,
+    };
+    const answer = {
+      id: MessageId.makeUnsafe("latest-answer"),
+      role: "assistant" as const,
+      text: "Answer",
+      createdAt: startedAt,
+      streaming: true,
+      turnId,
+    };
+    const entriesCache = createTimelineEntryCache();
+    const plans: [] = [],
+      work: [] = [],
+      commands: [] = [];
+    const derive = (reply: typeof answer & { completedAt?: string }) =>
+      deriveTimelineEntries([question, reply], plans, work, commands, entriesCache);
+    const input = {
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    };
+    const pending = buildTimelineRows({ ...input, timelineEntries: derive(answer) });
+    expect(pending.find((row) => row.id === answer.id)).toMatchObject({
+      showCompletionDivider: false,
+    });
+    const finished = buildTimelineRows({
+      ...input,
+      timelineEntries: derive({ ...answer, streaming: false, completedAt }),
+    });
+    expect(finished.find((row) => row.id === answer.id)).toMatchObject({
+      showCompletionDivider: true,
+      completionSummary: "Worked for 285ms",
+      completionStartedAt: startedAt,
+      completionCompletedAt: completedAt,
+    });
+    const corrected = buildTimelineRows({
+      ...input,
+      timelineEntries: derive({
+        ...answer,
+        streaming: false,
+        completedAt: "2026-11-14T12:40:31.500Z",
+      }),
+    });
+    expect(corrected.find((row) => row.id === answer.id)).toMatchObject({
+      completionSummary: "Worked for 500ms",
+      completionCompletedAt: "2026-11-14T12:40:31.500Z",
+    });
+    const authoritative = buildTimelineRows({
+      ...input,
+      timelineEntries: derive({ ...answer, streaming: false, completedAt }),
+      turnDiffSummaryByTurnId: new Map([
+        [
+          turnId,
+          {
+            turnId,
+            files: [],
+            startedAt: "2026-11-14T12:40:31.100Z",
+            completedAt,
+          },
+        ],
+      ]),
+    });
+    expect(authoritative.find((row) => row.id === answer.id)).toMatchObject({
+      completionSummary: "Worked for 185ms",
+      completionStartedAt: "2026-11-14T12:40:31.100Z",
+    });
+  });
+
+  it("keeps completed turn timing after another prompt and after rebuilding history", async () => {
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const turnId = TurnId.makeUnsafe("timed-turn");
+    const startedAt = "2026-03-17T19:12:00.000Z";
+    const completedAt = "2026-03-17T19:13:15.000Z";
+    const message = (
+      id: string,
+      role: "user" | "assistant",
+      createdAt: string,
+      messageTurnId = turnId,
+      endedAt = completedAt,
+    ): TimelineEntry => ({
+      id,
+      kind: "message",
+      createdAt,
+      message: {
+        id: MessageId.makeUnsafe(id),
+        role,
+        text: id,
+        turnId: messageTurnId,
+        createdAt,
+        ...(role === "assistant" ? { completedAt: endedAt } : {}),
+        streaming: false,
+      },
+    });
+    const entries = [
+      message("question", "user", startedAt),
+      message("commentary", "assistant", "2026-03-17T19:12:10.000Z"),
+      message("answer", "assistant", "2026-03-17T19:13:00.000Z"),
+    ];
+    const cache = createTimelineRowCache();
+    const input = {
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      turnDiffSummaryByTurnId: new Map([[turnId, { turnId, completedAt, files: [] }]]),
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache,
+    };
+    const before = buildTimelineRows({ ...input, timelineEntries: entries });
+    const nextTurnId = TurnId.makeUnsafe("next-turn");
+    const nextStartedAt = "2026-03-17T19:14:00.000Z";
+    const nextEntries = [
+      ...entries,
+      message("follow-up", "user", nextStartedAt, nextTurnId),
+      // A completed commentary message does not mean the active turn has ended.
+      message(
+        "still-working",
+        "assistant",
+        "2026-03-17T19:14:01.000Z",
+        nextTurnId,
+        "2026-03-17T19:14:03.000Z",
+      ),
+    ];
+    const during = buildTimelineRows({
+      ...input,
+      timelineEntries: nextEntries,
+      isWorking: true,
+      activeTurnStartedAt: nextStartedAt,
+    });
+    const reloaded = buildTimelineRows({
+      ...input,
+      timelineEntries: nextEntries,
+      isWorking: true,
+      activeTurnStartedAt: nextStartedAt,
+      cache: createTimelineRowCache(),
+    });
+    const withoutCheckpoints = buildTimelineRows({
+      ...input,
+      timelineEntries: nextEntries,
+      isWorking: true,
+      activeTurnStartedAt: nextStartedAt,
+      turnDiffSummaryByTurnId: undefined,
+      cache: createTimelineRowCache(),
+    });
+    for (const rows of [before, during, reloaded, withoutCheckpoints]) {
+      const dividers = rows.filter((row) => row.kind === "message" && row.showCompletionDivider);
+      expect(dividers).toHaveLength(1);
+      expect(dividers[0]).toMatchObject({
+        id: "answer",
+        completionSummary: "Worked for 1m 15s",
+        completionStartedAt: startedAt,
+        completionCompletedAt: completedAt,
+      });
+    }
+  });
+
   it("keeps paused usage-limit tools grouped with the pause outside the group", async () => {
     const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
     const createdAt = "2026-03-17T19:12:28.000Z";

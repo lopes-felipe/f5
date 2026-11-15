@@ -480,6 +480,7 @@ import type {
   OrchestrationDeleteCodeReviewWorkflowInput,
   OrchestrationDeleteInvestigationWorkflowInput,
   OrchestrationDeleteWorkflowInput,
+  OrchestrationDeleteWorkflowResult,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
   OrchestrationGetStartupSnapshotInput,
@@ -1650,11 +1651,15 @@ export interface NativeApi {
     unarchiveInvestigationWorkflow: (
       input: OrchestrationUnarchiveInvestigationWorkflowInput,
     ) => Promise<void>;
-    deleteWorkflow: (input: OrchestrationDeleteWorkflowInput) => Promise<void>;
-    deleteCodeReviewWorkflow: (input: OrchestrationDeleteCodeReviewWorkflowInput) => Promise<void>;
+    deleteWorkflow: (
+      input: OrchestrationDeleteWorkflowInput,
+    ) => Promise<OrchestrationDeleteWorkflowResult>;
+    deleteCodeReviewWorkflow: (
+      input: OrchestrationDeleteCodeReviewWorkflowInput,
+    ) => Promise<OrchestrationDeleteWorkflowResult>;
     deleteInvestigationWorkflow: (
       input: OrchestrationDeleteInvestigationWorkflowInput,
-    ) => Promise<void>;
+    ) => Promise<OrchestrationDeleteWorkflowResult>;
     skipDocumentReaderPass: (
       input: OrchestrationSkipDocumentReaderPassInput,
     ) => Promise<OrchestrationSkipDocumentReaderPassResult>;

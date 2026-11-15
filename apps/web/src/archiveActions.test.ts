@@ -1,7 +1,8 @@
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId, PlanningWorkflowId } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { Project, Thread } from "./types";
-import { deleteThreadsWithCleanup } from "./archiveActions";
+import { deleteThreadsWithCleanup, deleteWorkflow } from "./archiveActions";
+import { useStore } from "./store";
 import { createComposerMention } from "./composer-editor-mentions";
 import { useComposerMentionHistoryStore } from "./composerMentionHistoryStore";
 
@@ -10,10 +11,17 @@ const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),
   close: vi.fn(),
   request: vi.fn(),
+  deleteWorkflow: vi.fn(),
+  toast: vi.fn(),
 }));
 vi.mock("./nativeApi", () => ({
   readNativeApi: () => ({
-    orchestration: { dispatchCommand: mocks.dispatch },
+    orchestration: {
+      dispatchCommand: mocks.dispatch,
+      deleteWorkflow: mocks.deleteWorkflow,
+      deleteCodeReviewWorkflow: mocks.deleteWorkflow,
+      deleteInvestigationWorkflow: mocks.deleteWorkflow,
+    },
     dialogs: { confirm: mocks.confirm },
     terminal: { close: mocks.close },
   }),
@@ -21,9 +29,10 @@ vi.mock("./nativeApi", () => ({
 vi.mock("./worktreeRemovalDialogStore", () => ({
   useWorktreeRemovalDialogStore: { getState: () => ({ request: mocks.request }) },
 }));
-vi.mock("./components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
+vi.mock("./components/ui/toast", () => ({ toastManager: { add: mocks.toast } }));
 
 function harness(order: string[]) {
+  useStore.setState({ backendGeneration: (useStore.getState().backendGeneration ?? 0) + 1 });
   mocks.dispatch.mockReset();
   mocks.request.mockReset().mockResolvedValue(undefined);
   mocks.confirm.mockReset().mockResolvedValue(true);
@@ -158,4 +167,71 @@ describe("bulk deletion cleanup", () => {
       { projectId: "project", path: "/repo/second" },
     ]);
   });
+});
+
+describe("workflow deletion cleanup", () => {
+  function setup() {
+    const input = harness(["a", "b"]);
+    useStore.setState({ threads: input.threads, projects: input.projects });
+    mocks.deleteWorkflow.mockReset();
+    mocks.toast.mockReset();
+    return input;
+  }
+  it.each(["planning", "codeReview", "investigation"] as const)(
+    "cleans only committed %s children and offers one shared-worktree prompt",
+    async (workflowType) => {
+      setup();
+      mocks.deleteWorkflow.mockImplementation(async () => {
+        // Events can arrive before the delete response; metadata must survive them.
+        useStore.setState({ threads: [] });
+        return { deletedThreadIds: ["a", "b", "a"] };
+      });
+      await deleteWorkflow({
+        workflowId: PlanningWorkflowId.makeUnsafe("workflow"),
+        workflowTitle: "Workflow",
+        workflowType,
+      });
+      expect(mocks.deleteWorkflow).toHaveBeenCalledWith({
+        workflowId: "workflow",
+        deleteThreads: true,
+      });
+      expect(mocks.close).toHaveBeenCalledTimes(2);
+      expect(mocks.request).toHaveBeenCalledExactlyOnceWith([
+        { projectId: "project", path: "/repo/worktree" },
+      ]);
+    },
+  );
+  it("preserves a worktree used by a current surviving thread", async () => {
+    setup();
+    mocks.deleteWorkflow.mockResolvedValue({ deletedThreadIds: ["a"] });
+    await deleteWorkflow({
+      workflowId: PlanningWorkflowId.makeUnsafe("workflow"),
+      workflowTitle: "Workflow",
+      workflowType: "planning",
+    });
+    expect(mocks.close).toHaveBeenCalledExactlyOnceWith({ threadId: "a", deleteHistory: true });
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
+  it.each(["cancel", "reject", "older server"] as const)(
+    "does not guess children or prompt after %s",
+    async (outcome) => {
+      setup();
+      if (outcome === "cancel") mocks.confirm.mockResolvedValue(false);
+      else if (outcome === "reject")
+        mocks.deleteWorkflow.mockRejectedValue(new Error("Shared owner"));
+      else mocks.deleteWorkflow.mockResolvedValue(undefined);
+      await deleteWorkflow({
+        workflowId: PlanningWorkflowId.makeUnsafe("workflow"),
+        workflowTitle: "Workflow",
+        workflowType: "planning",
+      });
+      expect(mocks.close).not.toHaveBeenCalled();
+      expect(mocks.request).not.toHaveBeenCalled();
+      if (outcome === "cancel") expect(mocks.deleteWorkflow).not.toHaveBeenCalled();
+      if (outcome === "reject")
+        expect(mocks.toast).toHaveBeenCalledWith(
+          expect.objectContaining({ title: "Failed to delete workflow" }),
+        );
+    },
+  );
 });

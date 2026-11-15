@@ -1853,32 +1853,42 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       Effect.mapError((error) => new Error(error instanceof Error ? error.message : String(error))),
     );
 
-  const deleteWorkflow: CodeReviewWorkflowServiceShape["deleteWorkflow"] = (workflowId) =>
-    Effect.gen(function* () {
-      const workflow = yield* readCodeReviewWorkflow(orchestrationEngine, workflowId).pipe(
-        Effect.mapError(
-          (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
-        ),
-      );
-      if (!workflow) {
-        return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
-      }
-      yield* orchestrationEngine.dispatch({
-        type: "project.code-review-workflow.delete",
-        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-        workflowId,
-        projectId: workflow.projectId,
-        createdAt: new Date().toISOString(),
-      });
-    });
+  const deleteWorkflow: CodeReviewWorkflowServiceShape["deleteWorkflow"] = (
+    workflowId,
+    deleteThreads = false,
+  ) =>
+    changeWorkflowArchive.delete(
+      workflowId,
+      Effect.gen(function* () {
+        const workflow = yield* readCodeReviewWorkflow(orchestrationEngine, workflowId).pipe(
+          Effect.mapError(
+            (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
+          ),
+        );
+        if (!workflow) {
+          return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
+        }
+        const result = yield* orchestrationEngine.dispatch({
+          type: "project.code-review-workflow.delete",
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+          workflowId,
+          deleteThreads,
+          projectId: workflow.projectId,
+          createdAt: new Date().toISOString(),
+        });
+        return deleteThreads
+          ? { deletedThreadIds: [...(result.deletedThreadIds ?? [])] }
+          : undefined;
+      }),
+    );
 
   const changeWorkflowArchive = makeWorkflowArchiveLifecycle(orchestrationEngine, "codeReview");
 
   const archiveWorkflow: CodeReviewWorkflowServiceShape["archiveWorkflow"] = (workflowId) =>
-    changeWorkflowArchive(workflowId, true);
+    changeWorkflowArchive.archive(workflowId);
 
   const unarchiveWorkflow: CodeReviewWorkflowServiceShape["unarchiveWorkflow"] = (workflowId) =>
-    changeWorkflowArchive(workflowId, false, (snapshot) =>
+    changeWorkflowArchive.unarchive(workflowId, (snapshot) =>
       Effect.gen(function* () {
         const workflow = snapshot.codeReviewWorkflows.find((entry) => entry.id === workflowId);
         if (workflow) yield* withWorkflowWriteLock(reconcileStuckWorkflow(workflow, snapshot));

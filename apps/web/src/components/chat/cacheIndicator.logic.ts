@@ -232,6 +232,8 @@ export function mergeThreadTurn(history: UsageThreadTurns, fact: UsageTurnFact):
     outputTokens: fact.outputTokens,
     cacheReadTokens: fact.cacheReadTokens,
     cacheWriteTokens: fact.cacheWriteTokens,
+    totalTokens: fact.totalTokens,
+    tokenProvenance: fact.tokenProvenance,
     completedAt: fact.completedAt,
   };
   const merged = [...turns.filter((turn) => turn.turnId !== fact.turnId), next].toSorted(

@@ -12,6 +12,7 @@ import {
   type AssistantQuote,
 } from "./chat/composer/ComposerAssistantQuoteNode";
 import { ComposerMarkdownStylePlugin } from "./chat/composer/ComposerMarkdownStylePlugin";
+import { markdownContinuation } from "./chat/composer/markdownContinuation";
 import { LexicalComposer, type InitialConfigType } from "@lexical/react/LexicalComposer";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
@@ -21,6 +22,8 @@ import { OnChangePlugin } from "@lexical/react/LexicalOnChangePlugin";
 import { PlainTextPlugin } from "@lexical/react/LexicalPlainTextPlugin";
 import {
   $applyNodeReplacement,
+  $addUpdateTag,
+  HISTORY_PUSH_TAG,
   $createRangeSelection,
   $getSelection,
   $setSelection,
@@ -786,7 +789,40 @@ function ComposerCommandKeyPlugin(props: {
     );
     const unregisterEnter = editor.registerCommand(
       KEY_ENTER_COMMAND,
-      (event) => handleCommand("Enter", event),
+      (event) => {
+        if (handleCommand("Enter", event)) return true;
+        if (
+          !event ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.altKey ||
+          isKeyboardEventComposing(event, isComposingRef.current) ||
+          editor.isComposing()
+        )
+          return false;
+        const selection = $getSelection();
+        if (!$isRangeSelection(selection) || !selection.isCollapsed()) return false;
+        const edit = markdownContinuation(
+          $getRoot().getTextContent(),
+          $readExpandedSelectionOffsetFromEditorState(0),
+        );
+        if (!edit) return false;
+        event.preventDefault();
+        $addUpdateTag(HISTORY_PUSH_TAG);
+        if (edit.removeBefore > 0) {
+          const end = {
+            key: selection.anchor.key,
+            offset: selection.anchor.offset,
+            type: selection.anchor.type,
+          };
+          $setSelectionAtComposerOffset($readSelectionOffsetFromEditorState(0) - edit.removeBefore);
+          const range = $getSelection();
+          if (!$isRangeSelection(range)) return false;
+          range.focus.set(end.key, end.offset, end.type);
+          range.insertRawText(edit.text);
+        } else selection.insertRawText(edit.text);
+        return true;
+      },
       COMMAND_PRIORITY_HIGH,
     );
     const unregisterEscape = editor.registerCommand(

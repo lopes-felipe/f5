@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import {
   onlineManager,
+  focusManager,
   useMutation,
   useMutationState,
   useQuery,
@@ -33,6 +34,7 @@ import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/rela
 import {
   accountJobsPending,
   forceRefreshUsageAccounts,
+  refreshUsageAccounts,
   refreshUsageSummaries,
   USAGE_ACCOUNTS_FORCE_MUTATION_KEY,
   usageAccountsQueryOptions,
@@ -806,18 +808,52 @@ type SummaryState = ReturnType<typeof useUsageSummary>;
 /** The Limits tab's forced refresh; the header button drives it. */
 function useLimitsRefresh() {
   const client = useQueryClient();
-  const accountsQuery = useQuery(usageAccountsQueryOptions());
+  const [snapshotsReady, setSnapshotsReady] = useState(
+    () => client.getQueryData(usageQueryKeys.accounts) !== undefined,
+  );
+  const accountsQuery = useQuery({
+    ...usageAccountsQueryOptions(),
+    enabled: snapshotsReady,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const retry = () => refreshUsageAccounts(client).then(() => setSnapshotsReady(true));
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "hidden" || !onlineManager.isOnline()) return;
+      const accounts = client.getQueryData<UsageAccounts>(usageQueryKeys.accounts);
+      if (!accountJobsPending(accounts))
+        void refreshUsageAccounts(client)
+          .then(() => setSnapshotsReady(true))
+          .catch(() => {});
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 300_000);
+    const unsubscribeFocus = focusManager.subscribe((focused) => {
+      if (focused) refresh();
+    });
+    const unsubscribe = onlineManager.subscribe((online) => {
+      if (online) refresh();
+    });
+    return () => {
+      window.clearInterval(timer);
+      unsubscribeFocus();
+      unsubscribe();
+    };
+  }, [client]);
   const jobsPending = accountJobsPending(accountsQuery.data);
   const [notice, setNotice] = useState<string | null>(null);
   const force = useMutation({
     mutationKey: USAGE_ACCOUNTS_FORCE_MUTATION_KEY,
     mutationFn: () => forceRefreshUsageAccounts(client),
-    onSuccess: (accounts) =>
+    onSuccess: (accounts) => {
+      setSnapshotsReady(true);
       setNotice(
         accountJobsPending(accounts)
           ? "Refresh queued."
           : "No new refresh job started. A recent refresh cooldown or disabled accounts may apply.",
-      ),
+      );
+    },
     onError: () => setNotice(null),
   });
   const forcePending =
@@ -826,6 +862,7 @@ function useLimitsRefresh() {
     }).length > 0;
   return {
     accountsQuery,
+    retry,
     jobsPending,
     force,
     busy: forcePending || jobsPending,
@@ -1040,7 +1077,7 @@ function LimitsPanel(props: {
               onClick={() => {
                 setDismissedErrorAt(Date.now());
                 // Join an in-flight (possibly forced) read instead of cancelling it.
-                void accountsQuery.refetch({ cancelRefetch: false });
+                void props.limits.retry().catch(() => {});
               }}
             >
               Retry

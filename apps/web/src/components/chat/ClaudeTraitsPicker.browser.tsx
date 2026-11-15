@@ -1,6 +1,6 @@
 import "../../index.css";
 
-import { ThreadId, type ServerProviderModel } from "@t3tools/contracts";
+import { ProviderDriverKind, ThreadId, type ServerProviderModel } from "@t3tools/contracts";
 import { createClaudeModelCapabilities, createModelCapabilities } from "@t3tools/shared/model";
 import { page } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ import { ClaudeTraitsPicker } from "./ClaudeTraitsPicker";
 import { useComposerDraftStore, useComposerThreadDraft } from "../../composerDraftStore";
 import { useModelPreferencesStore } from "../../modelPreferencesStore";
 import { providerModelOptionsToSelections } from "../../providerModelOptions";
+import { getComposerProviderState } from "./composerProviderState";
 
 const CLAUDE_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
@@ -213,6 +214,33 @@ async function mountPicker(props?: {
 }
 
 describe("ClaudeTraitsPicker", () => {
+  it("starts Opus 5.5 at High and keeps an explicit Medium choice for dispatch", async () => {
+    const mounted = await mountPicker({ model: "claude-opus-5-5" });
+    try {
+      await expect.element(page.getByRole("button")).toHaveAttribute("data-effort-level", "high");
+      await page.getByRole("button").click();
+      await expect
+        .element(page.getByRole("menuitemradio", { name: "High", exact: true }))
+        .toHaveAttribute("aria-checked", "true");
+      await page.getByRole("menuitemradio", { name: /^Medium/ }).click();
+      await expect.element(page.getByRole("button")).toHaveAttribute("data-effort-level", "medium");
+      const options = providerModelOptionsToSelections(
+        "claudeAgent",
+        useComposerDraftStore.getState().draftsByThreadId[mounted.threadId]?.modelOptions,
+      );
+      expect(
+        getComposerProviderState({
+          provider: ProviderDriverKind.make("claudeAgent"),
+          model: "claude-opus-5-5",
+          models: CLAUDE_MODELS,
+          modelOptions: options,
+        }).modelOptionsForDispatch,
+      ).toContainEqual({ id: "effort", value: "medium" });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   beforeEach(() => {
     localStorage.clear();
     useModelPreferencesStore.setState({
@@ -237,7 +265,7 @@ describe("ClaudeTraitsPicker", () => {
 
     try {
       await vi.waitFor(() => {
-        expect(page.getByRole("button").element().textContent).toContain("Medium");
+        expect(page.getByRole("button").element().textContent).toContain("High");
         expect(document.querySelector('[aria-label="Fast mode enabled"]')).toBeNull();
       });
       await page.getByRole("button").click();
@@ -330,7 +358,7 @@ describe("ClaudeTraitsPicker", () => {
 
     try {
       await vi.waitFor(() => {
-        expect(document.body.textContent ?? "").toContain("Max · 200k");
+        expect(document.body.textContent ?? "").toContain("High · 200k");
       });
       await page.getByRole("button").click();
 
@@ -365,11 +393,11 @@ describe("ClaudeTraitsPicker", () => {
         const draft = useComposerDraftStore.getState().draftsByThreadId[mounted.threadId];
         expect(draft?.modelOptions).toEqual({
           claudeAgent: {
-            effort: "max",
+            effort: "high",
             contextWindow: "1m",
           },
         });
-        expect(document.body.textContent ?? "").toContain("Max · 1M");
+        expect(document.body.textContent ?? "").toContain("High · 1M");
       });
     } finally {
       await mounted.cleanup();

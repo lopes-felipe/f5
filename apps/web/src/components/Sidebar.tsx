@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, FolderPlusIcon, KeyboardIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { FolderPlusIcon, KeyboardIcon, PlusIcon, SettingsIcon } from "lucide-react";
 import { useShortcutsDialogStore } from "../shortcutsDialogStore";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -25,13 +25,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import {
-  useCanGoBack,
-  useLocation,
-  useNavigate,
-  useParams,
-  useRouter,
-} from "@tanstack/react-router";
+import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { selectProjectDraftThread, useComposerDraftStore } from "../composerDraftStore";
 import { useStartupReady } from "../lib/startupReady";
@@ -66,6 +60,8 @@ import { useTestRenderCountProps } from "../lib/testRenderCount";
 import { useLiveActivityHours, useThreadSummaries } from "../threadSelectors";
 import { type Project, type ThreadListItem } from "../types";
 import { Button } from "./ui/button";
+import { ProfileSwitcher } from "./ProfileSwitcher";
+import { SidebarUsageLimits } from "./usage/SidebarUsageLimits";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -81,7 +77,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarMenu,
-  SidebarMenuButton,
   SidebarMenuItem,
   SidebarSeparator,
 } from "./ui/sidebar";
@@ -108,7 +103,7 @@ import { SidebarThreadSearchResults } from "./SidebarThreadSearch";
 import { SidebarAddProjectForm, useAddProject } from "./sidebar/SidebarAddProjectForm";
 import { SidebarArm64Warning, SidebarBrandHeader } from "./sidebar/SidebarBrandHeader";
 import { SidebarAttentionSection } from "./sidebar/SidebarAttentionSection";
-import { SIDEBAR_NAV_ROW_CLASS_NAME, SIDEBAR_VIEWS, SidebarNav } from "./sidebar/SidebarNav";
+import { SIDEBAR_VIEWS, SidebarNav } from "./sidebar/SidebarNav";
 import { useNotificationInboxPopover } from "../notificationCenter/inboxStore";
 import { SidebarPrimaryActions } from "./sidebar/SidebarPrimaryActions";
 import { SidebarProjectItem, type SidebarProjectActions } from "./sidebar/SidebarProjectItem";
@@ -201,9 +196,6 @@ export default function Sidebar() {
   const navigate = useNavigate();
   // Read at click time: an object selector here re-rendered the sidebar on every router update.
   const router = useRouter();
-  const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
-  const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
-  const canGoBack = useCanGoBack();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const appSettings = useAppSettingsSelector(selectSidebarSettings);
   const threadPreviewLimit = appSettings.sidebarThreadPreviewCount;
@@ -1433,33 +1425,12 @@ export default function Sidebar() {
         </AlertDialog>
         <div className="pb-safe-add">
           <SidebarFooter className="p-2">
+            <SidebarUsageLimits threadId={routeThreadId} />
             <SidebarMenu>
               <SidebarMenuItem className="flex items-center gap-1">
-                {isOnSettings || isOnUsage ? (
-                  <SidebarMenuButton
-                    className={SIDEBAR_NAV_ROW_CLASS_NAME}
-                    onClick={() => {
-                      if (canGoBack) window.history.back();
-                      else void navigate({ to: "/" });
-                    }}
-                  >
-                    <ArrowLeftIcon className="size-4" />
-                    <span>Back</span>
-                  </SidebarMenuButton>
-                ) : (
-                  <SidebarMenuButton
-                    className={SIDEBAR_NAV_ROW_CLASS_NAME}
-                    onClick={() =>
-                      void navigate({
-                        to: "/settings",
-                        search: resolveSettingsNavigationSearch(router.state.location),
-                      })
-                    }
-                  >
-                    <SettingsIcon className="size-4" />
-                    <span>Settings</span>
-                  </SidebarMenuButton>
-                )}
+                <div className="min-w-0 flex-1">
+                  <ProfileSwitcher />
+                </div>
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -1480,6 +1451,28 @@ export default function Sidebar() {
                     ) : null}
                   </TooltipPopup>
                 </Tooltip>
+                <div className="shrink-0">
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label="Settings"
+                          onClick={() =>
+                            void navigate({
+                              to: "/settings",
+                              search: resolveSettingsNavigationSearch(router.state.location),
+                            })
+                          }
+                        />
+                      }
+                    >
+                      <SettingsIcon aria-hidden="true" className="size-4" />
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">Settings</TooltipPopup>
+                  </Tooltip>
+                </div>
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarFooter>

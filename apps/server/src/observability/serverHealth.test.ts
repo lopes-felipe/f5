@@ -136,8 +136,8 @@ describe("readServerHealth", () => {
     try {
       // Starting twice keeps the one histogram.
       startEventLoopDelayMonitor()();
-      const blockedUntil = Date.now() + 120;
       await new Promise((resolve) => setTimeout(resolve, 30));
+      const blockedUntil = Date.now() + 120;
       while (Date.now() < blockedUntil) {
         // Hold the event loop so the next sample is late.
       }

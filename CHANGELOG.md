@@ -6,6 +6,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Conversation usage limits above the sidebar profile, with pinning and account-scoped refresh.
+- Separate prompt and response navigation rails, optional follow controls, and visible earlier-history loading.
+- Markdown continuation in the composer, supported High effort defaults, and compact per-turn token footers.
+- Workflow archive, restore and explicit deletion actions, with shared-thread protection and atomic child deletion.
+- VS Code and file-manager actions for local paths and project breadcrumbs.
 - Start, queue messages to, list and read threads from a terminal with `f5 thread` (or `t3 thread`). Use `--wait` to print the reply and distinguish failed runs from threads or paused queues waiting for you. Local commands use your project defaults, fall back to a ready provider when needed, and can access all projects without enabling the external Agent Bridge. Lists load only the newest 100 threads; transcript reads fetch bounded pages while preserving full text.
 - The Claude card on the Usage page lists your plan's limit resets (such as **Full reset** and **Fable reset**) with their expiry, and each has a button that uses it after you confirm, as on claude.ai. A reset that can't be used yet says why, such as "Usable once you hit a limit". When your tightest Claude limit is used up, the reset Claude suggests next appears beside it, and threads paused on that limit resume once it is cleared. F5 reads the sign-in Claude Code already stores, so macOS may ask once to let F5 read it from the Keychain.
 - Desktop users can enable **Keep running threads synced** in Conversation settings to keep all active threads ready to open, including threads outside the recent-thread cache.
@@ -15,17 +20,22 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Workflow file-tree drops retain their mentions when editor focus arrives before a queued React render.
+- Workflow deletion retries failed provider shutdowns and offers one cleanup prompt for orphaned worktrees. Reconnects clean retained deleted-thread state without replaying every historical deletion.
+
 - Forgejo PR watches pass once required checks finish without failure, even if optional checks fail. Skipped jobs and warnings no longer keep watches pending. PR Hub refreshes Forgejo check status during polling and handles server-capped status pages and same-second check updates.
 - Agent Bridge tool calls whose text contains Unicode line or paragraph separators no longer fail with a parse error.
 - Codex turns now record prompt-cache usage across all model requests, restoring cache history and cache-miss indicators while keeping context occupancy separate. Previously unreported historical usage remains unavailable.
-- Pull requests and Usage are back in the sidebar's top navigation, next to Home and Scheduled, with the Pull requests "needs you" badge. In 0.1.9 they moved to the sidebar footer, where they took up no space and could not be seen or clicked. The Pull requests page now shows Settings in the footer again, as it did before 0.1.9; Settings and Usage keep their Back action.
+- Pull requests is back in the sidebar's primary navigation with its "needs you" badge, alongside Usage. Usage limits sit above the profile footer and link to the full Usage page. The Pull requests page shows Settings in the footer; Settings and Usage retain their Back action.
 - Proactive panels preserve manual choices across thread visits, keep dismissed PR panels closed, and open turn diffs without stale file previews or extra browser history entries. Rejected background message loads release their event-buffer retainers so stopped threads can leave the cache.
 - Project image choices wait for **Save image** before changing the saved icon. Linux downloads offer AppImage alongside Debian packages.
 - Background thread sync batches updates and backs off failed loads. Its desktop-only switch is disabled when using F5 in a browser.
-
 - Large worktree submodule clones can run past five minutes while reporting progress. Updates with no output for five minutes stop with a warning instead of leaving worktree preparation stuck.
 
 ### Changed
+
+- Updated F5 icons, sidebar/header controls, model ordering, Find closing and composer readiness.
+- Usage limits use a shared snapshot cache and serialized account refreshes.
 
 - Home is now a triage queue. Threads are grouped into **Needs a decision**, **Ready for review** (failed turns and finished work you have not opened), **Running** (with one row per active workflow) and **Pinned**, and the pane beside the queue shows the selected thread's request, error or last reply without opening it. From that pane you can approve or decline a request, answer a question, implement or revise a plan, resume a paused queue, reply to finished or failed work and queue a message behind a running turn; messages use the thread's own model and modes. `J`/`K` move, `O` opens, `E` settles, `H` snoozes, `P` pins and `R` starts a reply; `Enter` approves once or implements the plan (and opens other threads), `D` declines; `mod+shift+H` opens Home from anywhere. A line above the queue counts pull requests and upstream topics waiting on you and shows the next scheduled run, a usage limit above 50% and low disk space. The greeting, the resume banner, the Recent list and the `mod+1`–`9` project shortcut are gone from Home; recent threads are in the sidebar's Recent view.
 - The box at the top of Home starts the thread itself. Pick the project, model, effort, **Agent** or **Plan**, access and **Local** or **New worktree**, then press `Enter`: the thread starts in the background and Home stays open, and `mod+Enter` also opens it. The box follows the **Send shortcut** setting: if it asks for `mod+Enter`, `Enter` adds a line and `mod+Enter` sends and stays. A send that fails keeps your text, and sending the same text again with the same project and settings after a lost connection starts one thread, not two. The confirmation's **Open** button waits for the new thread to arrive before it opens it. Text that begins with a `/` command or a skill, and anything that needs attachments or mentions, goes to the full composer, which the expand button opens with your text and settings.

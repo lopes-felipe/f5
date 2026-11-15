@@ -54,6 +54,8 @@ export async function preserveTimelineAnchorDuringHistoryLoad(input: {
   getList: () => LegendListRef | null;
   getRowIndex: (id: string) => number | undefined;
   signal: AbortSignal;
+  /** A deliberate jump takes ownership away from a pending history restoration. */
+  canRestore?: () => boolean;
   load: () => Promise<void>;
 }) {
   const list = input.getList();
@@ -94,6 +96,7 @@ export async function preserveTimelineAnchorDuringHistoryLoad(input: {
     });
   const current = () =>
     !lifetime.signal.aborted &&
+    (input.canRestore?.() ?? true) &&
     node.isConnected &&
     input.getList() === list &&
     node.scrollHeight - node.scrollTop - node.clientHeight > Math.max(2, node.clientHeight * 0.1);

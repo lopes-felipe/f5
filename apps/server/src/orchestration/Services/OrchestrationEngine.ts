@@ -86,7 +86,11 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
-  ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
+  ) => Effect.Effect<
+    { sequence: number; deletedThreadIds?: ReadonlyArray<ThreadId> },
+    OrchestrationDispatchError,
+    never
+  >;
 
   /**
    * Acquire an exclusive process-local maintenance lock.

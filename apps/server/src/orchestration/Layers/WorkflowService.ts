@@ -5720,33 +5720,43 @@ export const makeWorkflowService = Effect.gen(function* () {
       yield* resumeImplementationStart(pendingImplementationWorkflow, latestSnapshot, now);
     });
 
-  const deleteWorkflow: WorkflowServiceShape["deleteWorkflow"] = (workflowId) =>
-    Effect.gen(function* () {
-      const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
-        Effect.mapError(
-          (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
-        ),
-      );
-      if (!workflow) {
-        return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
-      }
+  const deleteWorkflow: WorkflowServiceShape["deleteWorkflow"] = (
+    workflowId,
+    deleteThreads = false,
+  ) =>
+    changeWorkflowArchive.delete(
+      workflowId,
+      Effect.gen(function* () {
+        const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
+          Effect.mapError(
+            (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
+          ),
+        );
+        if (!workflow) {
+          return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
+        }
 
-      yield* orchestrationEngine.dispatch({
-        type: "project.workflow.delete",
-        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-        workflowId,
-        projectId: workflow.projectId,
-        createdAt: new Date().toISOString(),
-      });
-    });
+        const result = yield* orchestrationEngine.dispatch({
+          type: "project.workflow.delete",
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+          workflowId,
+          deleteThreads,
+          projectId: workflow.projectId,
+          createdAt: new Date().toISOString(),
+        });
+        return deleteThreads
+          ? { deletedThreadIds: [...(result.deletedThreadIds ?? [])] }
+          : undefined;
+      }),
+    );
 
   const changeWorkflowArchive = makeWorkflowArchiveLifecycle(orchestrationEngine, "planning");
 
   const archiveWorkflow: WorkflowServiceShape["archiveWorkflow"] = (workflowId) =>
-    changeWorkflowArchive(workflowId, true);
+    changeWorkflowArchive.archive(workflowId);
 
   const unarchiveWorkflow: WorkflowServiceShape["unarchiveWorkflow"] = (workflowId) =>
-    changeWorkflowArchive(workflowId, false, (snapshot) =>
+    changeWorkflowArchive.unarchive(workflowId, (snapshot) =>
       Effect.gen(function* () {
         const workflow = snapshot.planningWorkflows.find((entry) => entry.id === workflowId);
         if (workflow) yield* reconcileStuckWorkflow(workflow, snapshot);

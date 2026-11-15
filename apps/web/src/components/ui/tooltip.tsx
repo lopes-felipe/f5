@@ -28,7 +28,9 @@ const TOOLTIP_COLLISION_PADDING = {
 
 const TooltipCreateHandle = TooltipPrimitive.createHandle;
 
-const TooltipProvider = TooltipPrimitive.Provider;
+function TooltipProvider({ delay = 200, ...props }: TooltipPrimitive.Provider.Props) {
+  return <TooltipPrimitive.Provider delay={delay} {...props} />;
+}
 
 type TooltipActionsRef = RefObject<TooltipPrimitive.Root.Actions | null>;
 type HoveredTooltip = { trigger: HTMLElement; actionsRef: TooltipActionsRef };

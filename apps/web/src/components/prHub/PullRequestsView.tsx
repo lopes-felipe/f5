@@ -643,8 +643,7 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
             </EmptyHeader>
           </Empty>
         ) : (
-          // Tooltip provider for any base-ui tooltips rendered by the views;
-          // there is no global TooltipProvider in the app.
+          // Open tooltips immediately while scanning the pull-request views.
           <TooltipProvider delay={0}>
             {viewMode === "inbox" ? (
               <PrInboxView

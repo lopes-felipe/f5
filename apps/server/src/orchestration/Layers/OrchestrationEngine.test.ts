@@ -420,7 +420,7 @@ describe("OrchestrationEngine", () => {
   });
 
   it.each(["planning", "codeReview", "investigation"] as const)(
-    "persists and replays an atomic %s workflow archive and restore",
+    "persists and replays atomic %s workflow archive, restore and deletion",
     async (kind) => {
       const fixture = workflowArchiveFixture(kind);
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-workflow-archive-"));
@@ -517,6 +517,57 @@ describe("OrchestrationEngine", () => {
           { paused: 1 },
           { paused: 1 },
         ]);
+        const deleteBase = {
+          commandId: CommandId.makeUnsafe("delete-workflow"),
+          projectId: project.id,
+          createdAt: "2026-10-20T10:00:00.000Z",
+          deleteThreads: true,
+        };
+        const deletion =
+          entry.kind === "planning"
+            ? {
+                ...deleteBase,
+                type: "project.workflow.delete" as const,
+                workflowId: entry.workflow.id,
+              }
+            : entry.kind === "codeReview"
+              ? {
+                  ...deleteBase,
+                  type: "project.code-review-workflow.delete" as const,
+                  workflowId: entry.workflow.id,
+                }
+              : {
+                  ...deleteBase,
+                  type: "project.investigation-workflow.delete" as const,
+                  workflowId: entry.workflow.id,
+                };
+        const deleted = await system.run(system.engine.dispatch(deletion));
+        expect(deleted.deletedThreadIds?.toSorted()).toEqual([fixture.a, fixture.b]);
+        expect(await system.run(system.engine.dispatch(deletion))).toEqual(deleted);
+        const committed = (await system.run(Stream.runCollect(system.engine.readEvents(0)))).filter(
+          (event) => event.commandId === deleteBase.commandId,
+        );
+        expect(committed.map((event) => event.type)).toEqual([
+          entry.kind === "planning"
+            ? "project.workflow-deleted"
+            : entry.kind === "codeReview"
+              ? "project.code-review-workflow-deleted"
+              : "project.investigation-workflow-deleted",
+          "thread.deleted",
+          "thread.deleted",
+        ]);
+        expect(
+          committed.flatMap((event) =>
+            event.type === "thread.deleted" ? [event.payload.threadId] : [],
+          ),
+        ).toEqual(deleted.deletedThreadIds);
+        await system.dispose();
+        system = await createPersistentOrchestrationSystem({ dbPath });
+        const replayed = await system.run(system.engine.getReadModel());
+        expect(replayed.threads.every((thread) => thread.deletedAt === deleteBase.createdAt)).toBe(
+          true,
+        );
+        expect(workflowEntries(replayed)[0]!.workflow.deletedAt).toBe(deleteBase.createdAt);
       } finally {
         await system.dispose();
         fs.rmSync(directory, { recursive: true, force: true });
@@ -581,6 +632,31 @@ describe("OrchestrationEngine", () => {
         ),
       );
       expect(rows.every((row) => row.archivedAt === null)).toBe(true);
+      const beforeDelete = await system.run(system.engine.getReadModel());
+      await system.run(
+        system.sql.unsafe(
+          "CREATE TRIGGER refuse_delete BEFORE UPDATE OF deleted_at ON projection_threads " +
+            "WHEN NEW.thread_id = 'archive-b' AND NEW.deleted_at IS NOT NULL " +
+            "BEGIN SELECT RAISE(ABORT, 'injected deletion failure'); END",
+        ),
+      );
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            type: "project.workflow.delete",
+            commandId: CommandId.makeUnsafe("rollback-workflow-delete"),
+            projectId: project.id,
+            workflowId: fixture.model.planningWorkflows[0]!.id,
+            deleteThreads: true,
+            createdAt: "2026-10-20T10:00:00.000Z",
+          }),
+        ),
+      ).rejects.toThrow();
+      expect(await system.run(system.engine.getReadModel())).toEqual(beforeDelete);
+      expect(await system.run(system.sql`SELECT deleted_at FROM projection_threads`)).toEqual([
+        { deleted_at: null },
+        { deleted_at: null },
+      ]);
     } finally {
       await system.dispose();
     }

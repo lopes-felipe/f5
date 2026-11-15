@@ -297,8 +297,11 @@ export function resolveAppModelSelectionForInstance(
   );
   if (!entry) return null;
   const options = getAppModelOptionsForInstance(settings, entry);
+  const visible = new Set(options.map((option) => option.slug));
   return (
     resolveSelectableModel(entry.driverKind, selectedModel, options) ??
+    // Display ordering must not silently change the provider's default selection.
+    pickPreferredModel(entry.models.filter((model) => visible.has(model.slug)))?.slug ??
     pickPreferredModel(options)?.slug ??
     pickPreferredModel(entry.models)?.slug ??
     null

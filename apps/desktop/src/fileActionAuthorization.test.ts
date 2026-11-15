@@ -2,6 +2,21 @@ import { expect, it, vi, afterEach } from "vitest";
 import { FileActionAuthorizations } from "./fileActionAuthorization";
 afterEach(() => vi.useRealTimers());
 
+it("scopes menu grants to the selected action and clears canceled or replaced menus", () => {
+  const auth = new FileActionAuthorizations();
+  auth.nativeMenuSelected(1, "/tmp/report.json", "reveal");
+  expect(() => auth.prepare(1, "/tmp/report.json", false)).toThrow();
+  expect(() => auth.consume(1, "/tmp/report.json", false)).toThrow();
+  expect(() => auth.consume(1, "/tmp/report.json", false, undefined, "reveal")).not.toThrow();
+  expect(() => auth.consume(1, "/tmp/report.json", false, undefined, "reveal")).toThrow();
+  auth.nativeMenuSelected(1, "/tmp/report.json");
+  auth.clearNativeMenu(1);
+  expect(() => auth.prepare(1, "/tmp/report.json", false)).toThrow();
+  const token = auth.prepare(1, "/tmp/report.json", true);
+  expect(() => auth.consume(1, "/tmp/report.json", false, token, "reveal")).toThrow();
+  expect(() => auth.consume(1, "/tmp/report.json", false, token)).not.toThrow();
+});
+
 it("retains one authorization across slow async work and rejects reuse", () => {
   vi.useFakeTimers();
   const auth = new FileActionAuthorizations();

@@ -3,6 +3,7 @@ import type {
   CodeReviewWorkflow,
   CodeReviewWorkflowId,
   OrchestrationCreateCodeReviewWorkflowInput,
+  OrchestrationDeleteWorkflowResult,
   OrchestrationPostCodeReviewWorkflowInput,
   OrchestrationPostCodeReviewWorkflowResult,
   OrchestrationRetryCodeReviewWorkflowInput,
@@ -22,7 +23,10 @@ export interface CodeReviewWorkflowServiceShape {
   ) => Effect.Effect<CodeReviewWorkflowId, Error>;
   readonly archiveWorkflow: (workflowId: CodeReviewWorkflowId) => Effect.Effect<void, Error>;
   readonly unarchiveWorkflow: (workflowId: CodeReviewWorkflowId) => Effect.Effect<void, Error>;
-  readonly deleteWorkflow: (workflowId: CodeReviewWorkflowId) => Effect.Effect<void, Error>;
+  readonly deleteWorkflow: (
+    workflowId: CodeReviewWorkflowId,
+    deleteThreads?: boolean,
+  ) => Effect.Effect<OrchestrationDeleteWorkflowResult, Error>;
   readonly retryWorkflow: (
     input: OrchestrationRetryCodeReviewWorkflowInput,
   ) => Effect.Effect<OrchestrationRetryWorkflowResult, Error>;

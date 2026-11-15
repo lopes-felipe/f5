@@ -1,7 +1,7 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Cause, Effect, Layer } from "effect";
+import { Cause, Effect, Fiber, Layer } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it, vi } from "vitest";
 import { AcpSessionRuntime } from "./AcpSessionRuntime";
@@ -157,12 +157,22 @@ it.each(["authentication", "new-session", "configuration", "interrupted"] as con
             }),
           ).pipe(Effect.provideService(Scope.Scope, scope));
           const runtime = yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(context));
-          const result = yield* Effect.gen(function* () {
-            yield* failure === "interrupted"
-              ? runtime.start().pipe(Effect.timeout("1 second"))
-              : runtime.start();
-            if (failure === "configuration") yield* runtime.setConfigOption("mode", "bad");
-          }).pipe(Effect.exit);
+          const result =
+            failure === "interrupted"
+              ? yield* Effect.gen(function* () {
+                  const starting = yield* Effect.forkScoped(Effect.asVoid(runtime.start()));
+                  // Interrupt only after the credential has actually been offered.
+                  // A wall-clock startup timeout can fire before initialization under load.
+                  yield* Effect.promise(() =>
+                    vi.waitFor(() => expect(offered).toHaveBeenCalledOnce(), { timeout: 10_000 }),
+                  );
+                  yield* Fiber.interrupt(starting);
+                  return yield* Fiber.await(starting);
+                })
+              : yield* Effect.gen(function* () {
+                  yield* runtime.start();
+                  if (failure === "configuration") yield* runtime.setConfigOption("mode", "bad");
+                }).pipe(Effect.exit);
           expect(Exit.isFailure(result)).toBe(true);
           if (failure === "authentication") yield* runtime.start().pipe(Effect.exit);
           expect(offered).toHaveBeenCalledOnce();

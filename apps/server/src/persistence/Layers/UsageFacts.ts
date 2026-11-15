@@ -402,6 +402,8 @@ const make = Effect.gen(function* () {
             output_tokens AS "outputTokens",
             cache_read_tokens AS "cacheReadTokens",
             cache_write_tokens AS "cacheWriteTokens",
+            total_tokens AS "totalTokens",
+            token_provenance AS "tokenProvenance",
             completed_at AS "completedAt"
           FROM projection_turn_usage_facts
           WHERE ${conversationTurn}

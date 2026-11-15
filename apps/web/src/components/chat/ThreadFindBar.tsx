@@ -70,7 +70,7 @@ export function ThreadFindBar({
     <div
       role="search"
       aria-label="Find in thread"
-      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-background px-3 py-1.5"
+      className="no-drag flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-background px-3 py-1.5"
       data-thread-find-ignore
       onKeyDown={(event) => {
         if (event.key === "Escape") {
@@ -78,7 +78,7 @@ export function ThreadFindBar({
           event.stopPropagation();
           onClose();
         }
-        if (event.key === "Enter") {
+        if (event.key === "Enter" && event.target === input.current) {
           event.preventDefault();
           event.stopPropagation();
           move(event.shiftKey ? -1 : 1);
@@ -139,7 +139,11 @@ export function ThreadFindBar({
           variant="ghost"
           aria-label="Close find"
           title="Close (Escape)"
-          onClick={onClose}
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onClose();
+          }}
         >
           <XIcon aria-hidden="true" />
         </Button>

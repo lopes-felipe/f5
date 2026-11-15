@@ -13,6 +13,7 @@ export function settleListScroll(
     let frames = 0;
     let stable = 0;
     let interrupted = false;
+    let finished = false;
     const viewport = list.getScrollableNode();
     const interrupt = () => {
       interrupted = true;
@@ -20,10 +21,13 @@ export function settleListScroll(
     const events = ["wheel", "touchmove", "pointerdown", "keydown"] as const;
     for (const event of events) viewport?.addEventListener?.(event, interrupt, { passive: true });
     const finish = () => {
+      if (finished) return;
+      finished = true;
       for (const event of events) viewport?.removeEventListener?.(event, interrupt);
       resolve();
     };
     const reconcile = () => {
+      if (finished) return;
       if (interrupted || cancelled() || frames++ >= 60) return finish();
       const element = list.getScrollableNode();
       if (!element || element !== viewport) return finish();
@@ -33,9 +37,14 @@ export function settleListScroll(
         requestAnimationFrame(reconcile);
       } else {
         stable = 0;
-        void list
-          .scrollToOffset({ offset, animated: false })
-          .then(() => requestAnimationFrame(reconcile), finish);
+        // Virtual lists can leave imperative scroll promises pending while
+        // estimates settle. Keep correcting measurements independently.
+        try {
+          void Promise.resolve(list.scrollToOffset({ offset, animated: false })).catch(finish);
+        } catch {
+          return finish();
+        }
+        requestAnimationFrame(reconcile);
       }
     };
     requestAnimationFrame(reconcile);

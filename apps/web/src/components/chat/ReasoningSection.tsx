@@ -13,6 +13,7 @@ interface ReasoningSectionProps {
   textRevision?: TextRevision | undefined;
   reasoningTokens?: number | undefined;
   reasoningTokensEstimated?: boolean | undefined;
+  hideTokens?: boolean;
   defaultExpanded: boolean;
   isStreaming: boolean;
   cwd: string | undefined;
@@ -47,6 +48,7 @@ export function ReasoningSection({
   textRevision,
   reasoningTokens,
   reasoningTokensEstimated,
+  hideTokens = false,
   defaultExpanded,
   isStreaming,
   cwd,
@@ -73,12 +75,13 @@ export function ReasoningSection({
   const label = (
     <ReasoningLabel
       isStreaming={isStreaming}
-      reasoningTokens={reasoningTokens}
+      reasoningTokens={hideTokens ? undefined : reasoningTokens}
       reasoningTokensEstimated={reasoningTokensEstimated}
     />
   );
 
   if (reasoningText.length === 0) {
+    if (hideTokens) return null;
     // A count without visible reasoning has nothing to expand.
     return (
       <div

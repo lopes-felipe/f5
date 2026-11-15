@@ -5122,7 +5122,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case ORCHESTRATION_WS_METHODS.deleteWorkflow: {
         const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
-        yield* workflowService.deleteWorkflow(body.workflowId).pipe(
+        return yield* workflowService.deleteWorkflow(body.workflowId, body.deleteThreads).pipe(
           Effect.mapError(
             (cause) =>
               new RouteRequestError({
@@ -5130,35 +5130,36 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }),
           ),
         );
-        return undefined;
       }
 
       case ORCHESTRATION_WS_METHODS.deleteCodeReviewWorkflow: {
         const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
-        yield* codeReviewWorkflowService.deleteWorkflow(body.workflowId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to delete code review workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
+        return yield* codeReviewWorkflowService
+          .deleteWorkflow(body.workflowId, body.deleteThreads)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new RouteRequestError({
+                  message: `Failed to delete code review workflow: ${String(cause)}`,
+                }),
+            ),
+          );
       }
 
       case ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow: {
         const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
-        yield* investigationWorkflowService.deleteWorkflow(body.workflowId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to delete investigation workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
+        return yield* investigationWorkflowService
+          .deleteWorkflow(body.workflowId, body.deleteThreads)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new RouteRequestError({
+                  message: `Failed to delete investigation workflow: ${String(cause)}`,
+                }),
+            ),
+          );
       }
 
       case ORCHESTRATION_WS_METHODS.skipDocumentReaderPass: {

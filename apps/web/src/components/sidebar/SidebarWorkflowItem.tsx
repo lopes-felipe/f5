@@ -10,8 +10,10 @@ import {
   GitPullRequestIcon,
   LoaderIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import type { HTMLAttributes, ReactNode } from "react";
 
+import { deleteWorkflow } from "../../archiveActions";
+import { readNativeApi } from "../../nativeApi";
 import { formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { cn } from "../../lib/utils";
 import {
@@ -61,6 +63,62 @@ import {
   newestActivityThread,
 } from "./sidebarWorkflowGroups";
 import { WorkflowStepGlyph } from "./WorkflowStepGlyph";
+import { toastManager } from "../ui/toast";
+
+/** The same workflow actions for live and archived rows, by mouse or keyboard. */
+function workflowContextMenuProps(input: {
+  workflow: Pick<SidebarWorkflowEntry["workflow"], "id" | "title">;
+  type: SidebarWorkflowType;
+  archived: boolean;
+  onToggleArchive: () => void;
+}): Pick<HTMLAttributes<HTMLElement>, "onContextMenu" | "onKeyDownCapture"> {
+  const open = async (position: { x: number; y: number }) => {
+    const api = readNativeApi();
+    if (!api) return;
+    try {
+      const action = await api.contextMenu.show(
+        [
+          { id: "archive", label: input.archived ? "Unarchive workflow" : "Archive workflow" },
+          { id: "delete", label: "Delete workflow", destructive: true },
+        ],
+        position,
+      );
+      if (action === "archive") input.onToggleArchive();
+      if (action === "delete") {
+        await deleteWorkflow({
+          workflowId: input.workflow.id,
+          workflowType: input.type,
+          workflowTitle: input.workflow.title,
+        });
+      }
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Workflow action failed",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      });
+    }
+  };
+  return {
+    onContextMenu: (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void open({ x: event.clientX, y: event.clientY });
+    },
+    onKeyDownCapture: (event) => {
+      if (
+        event.target !== event.currentTarget ||
+        !(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = event.currentTarget.getBoundingClientRect();
+      void open({ x: rect.left, y: rect.bottom });
+    },
+  };
+}
 
 export interface SidebarThreadRowIndicators {
   threadStatus: ThreadStatusPill | null;
@@ -593,6 +651,12 @@ export function SidebarWorkflowItem(props: {
           !isWorkflowActive && "text-foreground",
         )}
         onClick={openWorkflow}
+        {...workflowContextMenuProps({
+          workflow,
+          type,
+          archived: false,
+          onToggleArchive: () => props.onArchive(workflow.id, workflow.title, type),
+        })}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget) return;
           if (event.key !== "Enter" && event.key !== " ") return;
@@ -771,6 +835,12 @@ export function SidebarArchivedWorkflowRow(props: {
         )}
         data-row-done
         onClick={openWorkflow}
+        {...workflowContextMenuProps({
+          workflow,
+          type,
+          archived: true,
+          onToggleArchive: () => props.onUnarchive(workflow.id, type),
+        })}
         onKeyDown={(event) => {
           if (event.key !== "Enter" && event.key !== " ") {
             return;

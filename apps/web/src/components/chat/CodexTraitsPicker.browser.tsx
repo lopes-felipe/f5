@@ -1,6 +1,6 @@
 import "../../index.css";
 
-import { ThreadId, type ServerProviderModel } from "@t3tools/contracts";
+import { ProviderDriverKind, ThreadId, type ServerProviderModel } from "@t3tools/contracts";
 import { createReportedCodexModelCapabilities } from "@t3tools/shared/model";
 import { page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,8 @@ import { render } from "vitest-browser-react";
 import { CodexTraitsPicker } from "./CodexTraitsPicker";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useModelPreferencesStore } from "../../modelPreferencesStore";
+import { getComposerProviderState } from "./composerProviderState";
+import { providerModelOptionsToSelections } from "../../providerModelOptions";
 
 /** Effort levels whose battery segment is currently filled, top row first. */
 function filledLevels() {
@@ -76,6 +78,44 @@ async function mountPicker(props?: {
 }
 
 describe("CodexTraitsPicker", () => {
+  it("starts at High and retains a selected provider default explicitly for dispatch", async () => {
+    const models: ReadonlyArray<ServerProviderModel> = [
+      {
+        slug: "gpt-6-luna",
+        name: "GPT-6 Luna",
+        isCustom: false,
+        capabilities: createReportedCodexModelCapabilities({
+          model: "gpt-6-luna",
+          supportedReasoningEfforts: [
+            { reasoningEffort: "low" },
+            { reasoningEffort: "medium" },
+            { reasoningEffort: "high" },
+          ],
+          defaultReasoningEffort: "medium",
+        }),
+      },
+    ];
+    const mounted = await mountPicker({ model: "gpt-6-luna", models });
+    try {
+      await expect.element(page.getByRole("button")).toHaveAttribute("data-effort-level", "high");
+      await page.getByRole("button").click();
+      await page.getByRole("menuitemradio", { name: /^Medium/ }).click();
+      await expect.element(page.getByRole("button")).toHaveAttribute("data-effort-level", "medium");
+      const draftOptions =
+        useComposerDraftStore.getState().draftsByThreadId[mounted.threadId]?.modelOptions;
+      expect(draftOptions?.codex?.reasoningEffort).toBe("medium");
+      expect(
+        getComposerProviderState({
+          provider: ProviderDriverKind.make("codex"),
+          model: "gpt-6-luna",
+          models,
+          modelOptions: providerModelOptionsToSelections("codex", draftOptions),
+        }).modelOptionsForDispatch,
+      ).toContainEqual({ id: "reasoningEffort", value: "medium" });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
   beforeEach(() => {
     localStorage.clear();
     useModelPreferencesStore.setState({

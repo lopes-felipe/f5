@@ -122,6 +122,7 @@ import {
   computeMessageDurationStart,
   deriveCodexCollaborationResponseRows,
   deriveTimelineTurnRailItems,
+  deriveTimelineAssistantRailItems,
   describeDynamicToolEntry,
   type DynamicToolIconKind,
   findNearestMinimapMarkerIndex,
@@ -192,6 +193,7 @@ import {
   parseUserMessageMarkup,
 } from "../../lib/userMessageMarkup";
 import { ReasoningSection } from "./ReasoningSection";
+import { MessageTokenUsage } from "./MessageTokenUsage";
 import { COMPOSER_INLINE_CHIP_CLASS_NAME } from "../composerInlineChip";
 import { DiffSurfaceBoundary } from "../DiffSurfaceBoundary";
 import { SurfaceErrorBoundary, type SurfaceErrorFallbackProps } from "../ui/SurfaceErrorBoundary";
@@ -320,6 +322,8 @@ interface MessagesTimelineProps {
    * bump it.
    */
   followNextTailNonce?: number;
+  autoFollow?: boolean;
+  onAutoFollowChange?: ((enabled: boolean) => void) | undefined;
   hasOlderHistory?: boolean;
   isLoadingOlderHistory?: boolean;
   hasHistoryLoadError?: boolean;
@@ -490,6 +494,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   entryRowIndexMapRef,
   onIsAtEndChange,
   followNextTailNonce = 0,
+  autoFollow = false,
+  onAutoFollowChange,
   hasOlderHistory = false,
   isLoadingOlderHistory = false,
   hasHistoryLoadError = false,
@@ -576,8 +582,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     Readonly<Record<string, ChangedFilesPresentation>>
   >({});
   const isAtEndRef = useRef(restoredAnchor?.atEnd ?? true);
-  const [liveFollowEnabled, setLiveFollowEnabled] = useState(restoredAnchor?.atEnd ?? true);
-  const liveFollowEnabledRef = useRef(restoredAnchor?.atEnd ?? true);
+  // Physical position drives the rail; following intent can stay enabled during layout changes.
+  const [railIsAtEnd, setRailIsAtEnd] = useState(false);
+  const liveFollowEnabled = autoFollow;
+  const liveFollowEnabledRef = useRef(autoFollow);
+  useLayoutEffect(() => {
+    liveFollowEnabledRef.current = autoFollow;
+  }, [autoFollow]);
   const [atEndThreshold, setAtEndThreshold] = useState(0);
   const manualScrollGenerationRef = useRef(0);
   const newestTurnDiffId = useMemo(
@@ -597,6 +608,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         timelineEntries,
         completionDividerBeforeEntryId,
         completionSummary,
+        turnDiffSummaryByTurnId,
         isWorking,
         activeTurnStartedAt,
         liveActivity,
@@ -612,6 +624,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       rowCache,
       settings.expandMcpToolCalls,
       timelineEntries,
+      turnDiffSummaryByTurnId,
     ],
   );
 
@@ -660,12 +673,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     if (!initialScrollAtEndEnabled) return;
     let cancelled = false;
+    const scrollGeneration = manualScrollGenerationRef.current;
     const frame = window.requestAnimationFrame(() => {
       const list = listRef.current;
       if (!list) return;
       void settleListScroll(
         list,
-        () => cancelled || !liveFollowEnabledRef.current || listRef.current !== list,
+        () =>
+          cancelled ||
+          manualScrollGenerationRef.current !== scrollGeneration ||
+          listRef.current !== list,
       ).then(() => {
         if (!cancelled) setInitialScrollAtEndEnabled(false);
       });
@@ -702,7 +719,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
   }, [entryRowIndexMap, resolvedEntryRowIndexMapRef]);
   const [activeMinimapRowIndex, setActiveMinimapRowIndex] = useState(0);
+  const [lastViewableRowIndex, setLastViewableRowIndex] = useState(-1);
+  const [selectedNavigationRowId, setSelectedNavigationRowId] = useState<string | null>(null);
   const pendingViewableRowIndexRef = useRef(0);
+  const pendingLastViewableRowIndexRef = useRef(-1);
   const viewabilityFrameRef = useRef(0);
   const historyLoadControllerRef = useRef<AbortController | null>(null);
   const requestOlderHistory = useCallback(() => {
@@ -750,16 +770,27 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         Number.POSITIVE_INFINITY,
       );
       if (!Number.isFinite(firstVisibleIndex)) return;
+      const lastVisibleIndex = viewableItems.reduce(
+        (maximum, item) => (item.isViewable ? Math.max(maximum, item.index) : maximum),
+        -1,
+      );
       if (firstVisibleIndex <= 3) requestOlderHistory();
       pendingViewableRowIndexRef.current = firstVisibleIndex;
+      pendingLastViewableRowIndexRef.current = lastVisibleIndex;
       if (viewabilityFrameRef.current !== 0) return;
       viewabilityFrameRef.current = window.requestAnimationFrame(() => {
         viewabilityFrameRef.current = 0;
         setActiveMinimapRowIndex(pendingViewableRowIndexRef.current);
+        setLastViewableRowIndex(pendingLastViewableRowIndexRef.current);
       });
     },
     [requestOlderHistory],
   );
+  // Finishing initial placement or an older-history request may leave the same rows
+  // visible, so the virtual list need not emit another viewability or scroll event.
+  useEffect(() => {
+    if (pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
+  }, [requestOlderHistory]);
   useEffect(
     () => () => {
       if (viewabilityFrameRef.current !== 0) {
@@ -782,16 +813,39 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [activeMinimapRowIndex, entryRowIndexMap, rowCount, rows],
   );
   const turnRailItems = useMemo(() => deriveTimelineTurnRailItems(rows), [rows]);
+  const assistantRailItems = useMemo(() => deriveTimelineAssistantRailItems(rows), [rows]);
+  const selectedNavigationRowIndex =
+    selectedNavigationRowId !== null ? entryRowIndexMap.get(selectedNavigationRowId) : undefined;
+  // A jump can leave the preceding row visible above the destination, especially
+  // near the end where scrolling is clamped. Highlight the selected destination
+  // while it is visible, rather than treating the first visible row as the choice.
+  const activeRailRowIndex = railIsAtEnd
+    ? Math.max(0, rowCount - 1)
+    : selectedNavigationRowIndex !== undefined &&
+        selectedNavigationRowIndex >= activeMinimapRowIndex &&
+        selectedNavigationRowIndex <= lastViewableRowIndex
+      ? selectedNavigationRowIndex
+      : activeMinimapRowIndex;
+  const assistantRailRowIndices = useMemo(
+    () => assistantRailItems.map((item) => item.rowIndex),
+    [assistantRailItems],
+  );
+  const assistantRailActiveTickIndex = resolveActiveTurnRailIndex(
+    assistantRailRowIndices,
+    activeRailRowIndex,
+  );
   const turnRailRowIndices = useMemo(
     () => turnRailItems.map((item) => item.rowIndex),
     [turnRailItems],
   );
   const turnRailActiveTickIndex = resolveActiveTurnRailIndex(
     turnRailRowIndices,
-    activeMinimapRowIndex,
+    activeRailRowIndex,
   );
   const [turnRailHasPersistentGutter, setTurnRailHasPersistentGutter] = useState(false);
   const [turnRailHitStripWidth, setTurnRailHitStripWidth] = useState(0);
+  const [userRailHasPersistentGutter, setUserRailHasPersistentGutter] = useState(false);
+  const [userRailHitStripWidth, setUserRailHitStripWidth] = useState(0);
 
   // Follow later tail advances while the user is at the end. A newly mounted
   // list keeps LegendList's measured initial end target.
@@ -838,8 +892,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         return;
       }
       isAtEndRef.current = true;
-      liveFollowEnabledRef.current = true;
-      setLiveFollowEnabled(true);
       // The first nonempty render mounts LegendList. Its initialScrollAtEnd
       // uses measured heights; scrollToEnd would replace it with an estimate.
       // Explicit sends jump directly to the tail even across a long history.
@@ -864,30 +916,27 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   useLayoutEffect(() => {
     if (followNextTailNonceRef.current === followNextTailNonce) return;
     followNextTailNonceRef.current = followNextTailNonce;
+    setSelectedNavigationRowId(null);
     isAtEndRef.current = true;
-    liveFollowEnabledRef.current = true;
-    setLiveFollowEnabled(true);
   }, [followNextTailNonce]);
 
-  const syncIsAtEndFromListState = useCallback(
-    (allowRearm = false) => {
-      const state = listRef.current?.getState?.();
-      if (state) {
-        // LegendList's public `isAtEnd` flag can lag behind passive layout
-        // changes, but its exposed scroll metrics stay current.
-        const isAtEnd = state.contentLength < state.scrollLength || timelineIsAtEnd(state);
-        if (allowRearm || state.contentLength <= state.scrollLength) {
-          liveFollowEnabledRef.current = isAtEnd;
-          setLiveFollowEnabled(isAtEnd);
-        }
-        // Content growth can briefly outrun LegendList's layout correction.
-        // Only scrolling changes the reader's intent to follow.
-        isAtEndRef.current = isAtEnd || liveFollowEnabledRef.current;
-        onIsAtEndChange(isAtEndRef.current);
-      }
-    },
-    [listRef, onIsAtEndChange],
-  );
+  const syncIsAtEndFromListState = useCallback(() => {
+    const state = listRef.current?.getState?.();
+    if (state) {
+      // LegendList's public `isAtEnd` flag can lag behind passive layout
+      // changes, but its exposed scroll metrics stay current.
+      const node = listRef.current?.getScrollableNode?.();
+      const isAtEnd =
+        node instanceof HTMLElement && node.clientHeight > 0
+          ? node.scrollHeight - node.scrollTop - node.clientHeight < TIMELINE_AT_END_PX
+          : state.contentLength < state.scrollLength || timelineIsAtEnd(state);
+      setRailIsAtEnd(isAtEnd);
+      // Content growth can briefly outrun LegendList's layout correction.
+      // Reaching the bottom never enables following: only the explicit switch does.
+      isAtEndRef.current = isAtEnd || liveFollowEnabledRef.current;
+      onIsAtEndChange(isAtEndRef.current);
+    }
+  }, [listRef, onIsAtEndChange]);
 
   const measureTurnRailGutter = useCallback(() => {
     const node = listRef.current?.getScrollableNode?.();
@@ -898,12 +947,27 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     const column = node.querySelector<HTMLElement>('[data-timeline-root="true"]');
     if (!column) return;
     const gutterPx = column.getBoundingClientRect().left - node.getBoundingClientRect().left;
+    // Keep the existing scroll minimap's 20px strip clear on the far right.
+    const rightGutterPx =
+      node.getBoundingClientRect().left +
+      node.clientLeft +
+      node.clientWidth -
+      column.getBoundingClientRect().right -
+      20;
     setTurnRailHasPersistentGutter((current) => {
       const next = resolveTimelineTurnRailHasPersistentGutter(gutterPx);
       return current === next ? current : next;
     });
     setTurnRailHitStripWidth((current) => {
       const next = resolveTimelineTurnRailHitStripWidth(gutterPx);
+      return current === next ? current : next;
+    });
+    setUserRailHasPersistentGutter((current) => {
+      const next = resolveTimelineTurnRailHasPersistentGutter(rightGutterPx);
+      return current === next ? current : next;
+    });
+    setUserRailHitStripWidth((current) => {
+      const next = resolveTimelineTurnRailHitStripWidth(rightGutterPx);
       return current === next ? current : next;
     });
   }, [listRef]);
@@ -913,17 +977,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // A jump or scroll away from the end: stop following the tail now, and drop
   // any follow scroll or disclosure pin already queued for a later frame.
   const leaveEnd = useCallback(() => {
+    setSelectedNavigationRowId(null);
     onLeaveEnd?.();
     manualScrollGenerationRef.current++;
     isAtEndRef.current = false;
+    setRailIsAtEnd(false);
     liveFollowEnabledRef.current = false;
-    setLiveFollowEnabled(false);
+    onAutoFollowChange?.(false);
     disclosurePinsEndRef.current = false;
     if (disclosureSettleFrameRef.current !== null) {
       window.cancelAnimationFrame(disclosureSettleFrameRef.current);
       disclosureSettleFrameRef.current = null;
     }
-  }, [onLeaveEnd]);
+  }, [onAutoFollowChange, onLeaveEnd]);
 
   useEffect(() => {
     if (!hasMessages && !isWorking) {
@@ -973,26 +1039,52 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           leaveEnd();
         };
         const wheel = (event: WheelEvent) => {
-          if (event.deltaY < 0) cancelFollow();
+          if (event.deltaY !== 0) setSelectedNavigationRowId(null);
+          if (event.deltaY < 0) {
+            cancelFollow();
+            if (pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
+          }
         };
         const keydown = (event: KeyboardEvent) => {
-          if (["PageUp", "Home", "ArrowUp"].includes(event.key)) cancelFollow();
+          if (
+            ["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key)
+          ) {
+            setSelectedNavigationRowId(null);
+          }
+          if (
+            ["PageUp", "Home", "ArrowUp"].includes(event.key) ||
+            (event.key === " " && event.shiftKey)
+          ) {
+            cancelFollow();
+            if (pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
+          }
         };
         const pointerdown = (event: PointerEvent) => {
           if (event.target === scrollableNode) cancelFollow();
         };
-        const touchmove = () => {
+        let lastTouchY: number | null = null;
+        const touchstart = (event: TouchEvent) => {
+          lastTouchY = event.touches[0]?.clientY ?? null;
+        };
+        const touchmove = (event: TouchEvent) => {
+          setSelectedNavigationRowId(null);
+          const y = event.touches[0]?.clientY ?? null;
+          const movingUp = y !== null && lastTouchY !== null && y > lastTouchY;
+          lastTouchY = y;
           const state = list.getState?.();
-          if (state && !timelineIsAtEnd(state)) cancelFollow();
+          if (movingUp || (state && !timelineIsAtEnd(state))) cancelFollow();
+          if (movingUp && pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
         };
         scrollableNode.addEventListener("wheel", wheel, { passive: true });
         scrollableNode.addEventListener("keydown", keydown);
         scrollableNode.addEventListener("pointerdown", pointerdown, { passive: true });
+        scrollableNode.addEventListener("touchstart", touchstart, { passive: true });
         scrollableNode.addEventListener("touchmove", touchmove, { passive: true });
         cleanups.push(() => {
           scrollableNode.removeEventListener("wheel", wheel);
           scrollableNode.removeEventListener("keydown", keydown);
           scrollableNode.removeEventListener("pointerdown", pointerdown);
+          scrollableNode.removeEventListener("touchstart", touchstart);
           scrollableNode.removeEventListener("touchmove", touchmove);
         });
       }
@@ -1017,7 +1109,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         cleanup();
       }
     };
-  }, [hasMessages, isWorking, leaveEnd, listRef, measureTurnRailGutter, syncIsAtEndFromListState]);
+  }, [
+    hasMessages,
+    isWorking,
+    leaveEnd,
+    listRef,
+    measureTurnRailGutter,
+    requestOlderHistory,
+    syncIsAtEndFromListState,
+  ]);
 
   useLayoutEffect(() => {
     if (!threadId || !hasMessages) return;
@@ -1042,7 +1142,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [threadId, hasMessages, listRef]);
 
   const handleScroll = useCallback(() => {
-    syncIsAtEndFromListState(true);
+    syncIsAtEndFromListState();
     if (!isAtEndRef.current && pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
   }, [requestOlderHistory, syncIsAtEndFromListState]);
 
@@ -1147,6 +1247,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     (item: TimelineTurnRailItem) => {
       if (onNavigateToEntry) onNavigateToEntry(item.id, 0.1);
       else navigateToRow(item.rowIndex, 0.1);
+      setSelectedNavigationRowId(item.id);
     },
     [navigateToRow, onNavigateToEntry],
   );
@@ -1166,6 +1267,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const forwardOverlayWheel = useCallback(
     (event: WheelEvent) => {
+      if (event.deltaY !== 0) setSelectedNavigationRowId(null);
       const node = listRef.current?.getScrollableNode?.();
       if (node instanceof HTMLElement) forwardWheelToTimeline(event, node);
     },
@@ -1521,7 +1623,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     // through `listHeaderContent` would silently drop it on empty threads.
     return (
       <div
-        className="flex h-full flex-col overflow-y-auto overscroll-y-contain px-3 pb-(--composer-dock-height) sm:px-5"
+        className="flex h-full flex-col overflow-y-auto overscroll-y-contain pl-3 pr-10 pb-(--composer-dock-height) sm:pl-5"
         data-slot="messages-scroll-container"
       >
         {listHeaderContent ? <div className="pt-3 sm:pt-4">{listHeaderContent}</div> : null}
@@ -1589,7 +1691,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             // queries — the LegendList's overflow container has inline styles that
             // make class-based selectors fragile.
             data-slot="messages-scroll-container"
-            className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
+            className="h-full overflow-x-hidden overscroll-y-contain pl-3 pr-10 sm:pl-5"
             ListHeaderComponent={
               <>
                 <div className="h-3 sm:h-4" />
@@ -1624,9 +1726,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           {turnRailItems.length >= TIMELINE_TURN_RAIL_MIN_ITEMS ? (
             <TimelineTurnRail
               items={turnRailItems}
+              side="right"
+              target="user"
+              hasPersistentGutter={userRailHasPersistentGutter}
+              hitStripWidth={userRailHitStripWidth}
+              activeTickIndex={turnRailActiveTickIndex}
+              onSelect={selectNavigationTurn}
+              onWheel={forwardOverlayWheel}
+            />
+          ) : null}
+          {assistantRailItems.length >= TIMELINE_TURN_RAIL_MIN_ITEMS ? (
+            <TimelineTurnRail
+              items={assistantRailItems}
+              side="left"
+              target="assistant"
               hasPersistentGutter={turnRailHasPersistentGutter}
               hitStripWidth={turnRailHitStripWidth}
-              activeTickIndex={turnRailActiveTickIndex}
+              activeTickIndex={assistantRailActiveTickIndex}
               onSelect={selectNavigationTurn}
               onWheel={forwardOverlayWheel}
             />
@@ -1961,9 +2077,11 @@ type TimelineRow =
       message: TimelineMessage;
       /** A message-mode answer renders as its question's Q&A card. */
       userInput?: TimelineMessageUserInput;
-      durationStart: string;
+      durationStart: string | undefined;
       showCompletionDivider: boolean;
       completionSummary: string | null;
+      completionStartedAt?: string;
+      completionCompletedAt?: string;
     }
   | {
       kind: "proposed-plan";
@@ -2070,30 +2188,18 @@ function resolveWorkGroupRenderState(
   };
 }
 
-function formatMessageMeta(
-  createdAt: string,
-  duration: string | null,
-  timestampFormat: TimestampFormat,
-): string {
-  if (!duration) return formatTimestamp(createdAt, timestampFormat);
-  return `${formatTimestamp(createdAt, timestampFormat)} • ${duration}`;
-}
-
 // Live clocks are leaves on the shared 1 Hz ticker so a tick re-renders only
 // the text that shows elapsed time, never the timeline or its rows.
 function LiveMessageMeta(props: {
-  createdAt: string;
-  durationStart: string;
+  durationStart: string | undefined;
   completedAt: string | undefined;
   streaming: boolean;
-  timestampFormat: TimestampFormat;
 }) {
   const nowIso = useNowIso(props.streaming);
-  return formatMessageMeta(
-    props.createdAt,
-    formatElapsed(props.durationStart, props.streaming ? nowIso : props.completedAt),
-    props.timestampFormat,
-  );
+  const duration = props.durationStart
+    ? formatElapsed(props.durationStart, props.streaming ? nowIso : props.completedAt)
+    : null;
+  return duration ? `${duration} • ` : null;
 }
 
 function LiveWorkingLabel(props: { startedAt: string | null }) {
@@ -4838,12 +4944,28 @@ function AssistantMessageRowContent(props: {
   return (
     <>
       {row.showCompletionDivider && (
-        <div className="my-3 flex items-center gap-3" role="separator">
+        <div className="my-3 flex flex-wrap items-center gap-3" role="separator">
+          {row.completionStartedAt ? (
+            <time
+              dateTime={row.completionStartedAt}
+              className="text-2xs text-muted-foreground tabular-nums"
+            >
+              Started {formatTimestamp(row.completionStartedAt, timestampFormat)}
+            </time>
+          ) : null}
           <span className="h-px flex-1 bg-border" />
           <SectionLabel as="span" className="min-h-0">
             {row.completionSummary ?? "Response"}
           </SectionLabel>
           <span className="h-px flex-1 bg-border" />
+          {row.completionCompletedAt ? (
+            <time
+              dateTime={row.completionCompletedAt}
+              className="text-2xs text-muted-foreground tabular-nums"
+            >
+              Finished {formatTimestamp(row.completionCompletedAt, timestampFormat)}
+            </time>
+          ) : null}
         </div>
       )}
       <div className="group/assistant-message min-w-0 px-1 py-0.5">
@@ -4853,6 +4975,7 @@ function AssistantMessageRowContent(props: {
             textRevision={reasoning.revision}
             reasoningTokens={reasoningTokens}
             reasoningTokensEstimated={row.message.reasoningTokensEstimated}
+            hideTokens
             defaultExpanded={showReasoningExpanded}
             isStreaming={isStreamingReasoning}
             cwd={markdownCwd}
@@ -4881,14 +5004,29 @@ function AssistantMessageRowContent(props: {
           data-assistant-quote-exclude
           className="mt-1.5 flex min-h-7 items-center justify-between gap-2"
         >
-          <div className="flex min-w-0 items-center">
-            <p className="text-2xs text-muted-foreground tabular-nums">
+          <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
+            <p
+              data-slot="assistant-message-meta"
+              className="whitespace-nowrap text-2xs text-muted-foreground tabular-nums"
+            >
               <LiveMessageMeta
-                createdAt={row.message.createdAt}
-                durationStart={row.durationStart}
-                completedAt={row.message.completedAt}
+                durationStart={
+                  row.showCompletionDivider
+                    ? (row.completionStartedAt ?? row.durationStart)
+                    : row.durationStart
+                }
+                completedAt={
+                  row.showCompletionDivider
+                    ? (row.completionCompletedAt ?? row.message.completedAt)
+                    : row.message.completedAt
+                }
                 streaming={row.message.streaming}
-                timestampFormat={timestampFormat}
+              />
+              <MessageTokenUsage
+                turnId={row.message.turnId}
+                reasoningTokens={row.message.reasoningTokens}
+                reasoningEstimated={row.message.reasoningTokensEstimated}
+                streaming={row.message.streaming}
               />
             </p>
             {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
@@ -5171,6 +5309,7 @@ export function buildTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   completionDividerBeforeEntryId: string | null;
   completionSummary: string | null;
+  turnDiffSummaryByTurnId?: ReadonlyMap<TurnId, TurnDiffSummary> | undefined;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
   liveActivity: LiveWorkActivity | null;
@@ -5182,6 +5321,7 @@ export function buildTimelineRows(input: {
   const parameters = [
     input.completionDividerBeforeEntryId,
     input.completionSummary,
+    input.turnDiffSummaryByTurnId,
     input.isWorking,
     input.activeTurnStartedAt,
     input.liveActivity,
@@ -5192,7 +5332,20 @@ export function buildTimelineRows(input: {
     cache.structure === structure &&
     cache.result &&
     cache.parameters &&
-    sameRowInputs(cache.parameters, parameters)
+    sameRowInputs(cache.parameters, parameters) &&
+    // Text deltas can reuse row geometry. Lifecycle updates must recalculate
+    // completion metadata even when the entry list has the same structure.
+    timelineEntries.every((entry) => {
+      if (entry.kind !== "message") return true;
+      const previous = cache.rows.get(entry.id)?.row;
+      return (
+        previous?.kind === "message" &&
+        previous.message.streaming === entry.message.streaming &&
+        previous.message.completedAt === entry.message.completedAt &&
+        previous.message.turnId === entry.message.turnId &&
+        previous.message.createdAt === entry.message.createdAt
+      );
+    })
   ) {
     const messages = new Map(
       timelineEntries.flatMap((entry) =>
@@ -5237,6 +5390,23 @@ export function buildTimelineRows(input: {
   const durationStartByMessageId = computeMessageDurationStart(
     timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
+  // Rebuild from persisted history, rather than remembering the last completion
+  // in component state: this also survives reloads and loading older turns.
+  const lastAssistantByTurn = new Map<TurnId, string>();
+  const startByTurn = new Map<TurnId, string>();
+  const promptStartByMessageId = new Map<string, string>();
+  let lastUserAt: string | undefined;
+  for (const entry of timelineEntries) {
+    if (entry.kind !== "message") continue;
+    const message = entry.message;
+    if (message.role === "user") lastUserAt = message.createdAt;
+    if (lastUserAt) promptStartByMessageId.set(message.id, lastUserAt);
+    if (!message.turnId) continue;
+    if (!startByTurn.has(message.turnId) && lastUserAt) {
+      startByTurn.set(message.turnId, lastUserAt);
+    }
+    if (message.role === "assistant") lastAssistantByTurn.set(message.turnId, entry.id);
+  }
   // Work groups above the newest user message belong to finished turns.
   let lastUserMessageEntryIndex = -1;
   for (let index = timelineEntries.length - 1; index >= 0; index -= 1) {
@@ -5363,12 +5533,41 @@ export function buildTimelineRows(input: {
       continue;
     }
 
-    const showCompletionDivider =
+    const isLatestCompletion =
       timelineEntry.message.role === "assistant" &&
       input.completionDividerBeforeEntryId === timelineEntry.id;
-    const completionSummary = showCompletionDivider ? input.completionSummary : null;
+    const message = timelineEntry.message;
+    const turnId = message.turnId;
+    const turnSummary = turnId ? input.turnDiffSummaryByTurnId?.get(turnId) : undefined;
+    const completionStartedAt =
+      turnSummary?.startedAt ??
+      (turnId ? startByTurn.get(turnId) : undefined) ??
+      promptStartByMessageId.get(message.id);
+    const completionCompletedAt = turnSummary?.completedAt ?? message.completedAt;
+    const isHistoricalCompletion =
+      message.role === "assistant" &&
+      !message.streaming &&
+      turnId != null &&
+      lastAssistantByTurn.get(turnId) === timelineEntry.id &&
+      (turnSummary != null ||
+        (!input.isWorking && message.completedAt != null) ||
+        (lastUserAt != null && message.createdAt < lastUserAt));
+    const elapsed =
+      completionStartedAt && completionCompletedAt
+        ? formatElapsed(completionStartedAt, completionCompletedAt)
+        : null;
+    const showCompletionDivider = isLatestCompletion || (isHistoricalCompletion && elapsed != null);
+    const completionSummary = showCompletionDivider
+      ? elapsed != null
+        ? `Worked for ${elapsed}`
+        : input.completionSummary
+      : null;
     const durationStart =
-      durationStartByMessageId.get(timelineEntry.message.id) ?? timelineEntry.message.createdAt;
+      isHistoricalCompletion || isLatestCompletion
+        ? completionStartedAt
+        : promptStartByMessageId.has(message.id)
+          ? durationStartByMessageId.get(message.id)
+          : undefined;
     nextRows.push(
       reuse(
         timelineEntry.id,
@@ -5379,6 +5578,8 @@ export function buildTimelineRows(input: {
           durationStart,
           showCompletionDivider,
           completionSummary,
+          completionStartedAt,
+          completionCompletedAt,
         ],
         () => ({
           kind: "message",
@@ -5389,6 +5590,8 @@ export function buildTimelineRows(input: {
           durationStart,
           showCompletionDivider,
           completionSummary,
+          ...(elapsed != null && completionStartedAt ? { completionStartedAt } : {}),
+          ...(elapsed != null && completionCompletedAt ? { completionCompletedAt } : {}),
         }),
       ),
     );

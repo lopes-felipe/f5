@@ -3,6 +3,7 @@ import type {
   InvestigationWorkflow,
   InvestigationWorkflowId,
   OrchestrationCreateInvestigationWorkflowInput,
+  OrchestrationDeleteWorkflowResult,
   OrchestrationRetryInvestigationWorkflowInput,
   ThreadId,
 } from "@t3tools/contracts";
@@ -17,7 +18,10 @@ export interface InvestigationWorkflowServiceShape {
   ) => Effect.Effect<InvestigationWorkflowId, Error>;
   readonly archiveWorkflow: (workflowId: InvestigationWorkflowId) => Effect.Effect<void, Error>;
   readonly unarchiveWorkflow: (workflowId: InvestigationWorkflowId) => Effect.Effect<void, Error>;
-  readonly deleteWorkflow: (workflowId: InvestigationWorkflowId) => Effect.Effect<void, Error>;
+  readonly deleteWorkflow: (
+    workflowId: InvestigationWorkflowId,
+    deleteThreads?: boolean,
+  ) => Effect.Effect<OrchestrationDeleteWorkflowResult, Error>;
   readonly retryWorkflow: (
     input: OrchestrationRetryInvestigationWorkflowInput,
   ) => Effect.Effect<void, Error>;

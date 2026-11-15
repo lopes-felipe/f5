@@ -19,6 +19,54 @@ const preferences = {
 };
 
 describe("shared new-thread and scheduled-task defaults", () => {
+  it.each(["codex", undefined] as const)(
+    "preserves non-effort options for every remembered provider (last provider %s)",
+    (lastProvider) => {
+      const result = resolveNewThreadPreferences(undefined, DEFAULT_SERVER_SETTINGS, {
+        lastProvider: lastProvider ?? null,
+        lastModelByProvider: {},
+        lastModelOptions: {
+          codex: { reasoningEffort: "medium", fastMode: true },
+          claudeAgent: { effort: "low", thinking: false, fastMode: true, contextWindow: "1m" },
+          cursor: { reasoning: "medium", thinking: false, contextWindow: "200k" },
+          opencode: { variant: "high", agent: "build" },
+          pi: { thinking: "minimal" },
+        },
+      });
+      expect(result.options).toEqual({
+        codex: { fastMode: true },
+        claudeAgent: { thinking: false, fastMode: true, contextWindow: "1m" },
+        cursor: { thinking: false, contextWindow: "200k" },
+        opencode: { agent: "build" },
+      });
+    },
+  );
+  it("identifies remembered provider choices even without remembered options", () => {
+    expect(
+      resolveNewThreadPreferences(undefined, DEFAULT_SERVER_SETTINGS, {
+        lastProvider: "codex",
+        lastModelByProvider: { codex: "gpt-5" },
+        lastModelOptions: null,
+      }).source,
+    ).toBe("remembered");
+  });
+  it("preserves explicit project Medium while dropping remembered effort only", () => {
+    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      providers: { codex: { enabled: true } },
+    });
+    const result = resolveNewThreadPreferences(
+      {
+        id: projectId,
+        defaultModelSelection: createModelSelection(codex, "gpt-5", [
+          { id: "reasoningEffort", value: "medium" },
+        ]),
+      },
+      settings,
+      preferences,
+    );
+    expect(result.source).toBe("project");
+    expect(result.options?.codex?.reasoningEffort).toBe("medium");
+  });
   it("honors project instance disablement before remembered provider choices", () => {
     const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       providers: { claudeAgent: { enabled: true }, codex: { enabled: true } },
@@ -31,6 +79,7 @@ describe("shared new-thread and scheduled-task defaults", () => {
       instanceId: codex,
       model: DEFAULT_MODEL_BY_PROVIDER.codex,
       options: null,
+      source: "fallback",
     });
   });
 
@@ -50,7 +99,8 @@ describe("shared new-thread and scheduled-task defaults", () => {
     ).toEqual({
       provider: "claudeAgent",
       model: "claude-opus-5-5",
-      options: preferences.lastModelOptions,
+      options: null,
+      source: "remembered",
     });
   });
 
@@ -72,6 +122,7 @@ describe("shared new-thread and scheduled-task defaults", () => {
       instanceId: codex,
       model: "gpt-5",
       options: null,
+      source: "project",
     });
   });
 });

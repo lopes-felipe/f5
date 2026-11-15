@@ -2639,32 +2639,42 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       Effect.mapError((error) => new Error(error instanceof Error ? error.message : String(error))),
     );
 
-  const deleteWorkflow: InvestigationWorkflowServiceShape["deleteWorkflow"] = (workflowId) =>
-    Effect.gen(function* () {
-      const workflow = yield* readInvestigationWorkflow(orchestrationEngine, workflowId).pipe(
-        Effect.mapError(
-          (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
-        ),
-      );
-      if (!workflow) {
-        return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
-      }
-      yield* orchestrationEngine.dispatch({
-        type: "project.investigation-workflow.delete",
-        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-        workflowId,
-        projectId: workflow.projectId,
-        createdAt: new Date().toISOString(),
-      });
-    });
+  const deleteWorkflow: InvestigationWorkflowServiceShape["deleteWorkflow"] = (
+    workflowId,
+    deleteThreads = false,
+  ) =>
+    changeWorkflowArchive.delete(
+      workflowId,
+      Effect.gen(function* () {
+        const workflow = yield* readInvestigationWorkflow(orchestrationEngine, workflowId).pipe(
+          Effect.mapError(
+            (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
+          ),
+        );
+        if (!workflow) {
+          return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
+        }
+        const result = yield* orchestrationEngine.dispatch({
+          type: "project.investigation-workflow.delete",
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+          workflowId,
+          deleteThreads,
+          projectId: workflow.projectId,
+          createdAt: new Date().toISOString(),
+        });
+        return deleteThreads
+          ? { deletedThreadIds: [...(result.deletedThreadIds ?? [])] }
+          : undefined;
+      }),
+    );
 
   const changeWorkflowArchive = makeWorkflowArchiveLifecycle(orchestrationEngine, "investigation");
 
   const archiveWorkflow: InvestigationWorkflowServiceShape["archiveWorkflow"] = (workflowId) =>
-    changeWorkflowArchive(workflowId, true);
+    changeWorkflowArchive.archive(workflowId);
 
   const unarchiveWorkflow: InvestigationWorkflowServiceShape["unarchiveWorkflow"] = (workflowId) =>
-    changeWorkflowArchive(workflowId, false, (snapshot) =>
+    changeWorkflowArchive.unarchive(workflowId, (snapshot) =>
       Effect.gen(function* () {
         const workflow = snapshot.investigationWorkflows.find((entry) => entry.id === workflowId);
         if (workflow) yield* reconcileStuckWorkflow(workflow, snapshot);

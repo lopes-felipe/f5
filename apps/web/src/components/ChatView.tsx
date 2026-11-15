@@ -1,4 +1,6 @@
 import { ThreadFindBar } from "./chat/ThreadFindBar";
+import { ThreadTokenUsageProvider } from "./chat/MessageTokenUsage";
+import { usePublishComposerSelection } from "../activeComposerSelection";
 import { useComposerTypingGuard } from "./chat/useComposerTypingGuard";
 import { settleListScroll } from "./chat/settleListScroll";
 import { ThreadFindContext } from "./chat/threadFindContext";
@@ -207,7 +209,6 @@ import {
   deriveWorkLogEntries,
   hasServerAcknowledgedLocalDispatch,
   hasActionableProposedPlan,
-  hasToolActivityForTurn,
   isLatestTurnSettled,
   formatElapsed,
   PROVIDER_OPTIONS,
@@ -278,6 +279,7 @@ import { useSwitchDraftProject } from "../hooks/useSwitchDraftProject";
 import { type ThreadActionId, useThreadActionController } from "../hooks/useThreadActionController";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import {
+  fetchAndSyncThreadDetail,
   fetchThreadFileChangesDelta,
   fullThreadFileChangesQueryOptions,
   loadThreadHistoryAroundMessage,
@@ -753,6 +755,7 @@ function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null 
 // the selection's identity and does not re-render the conversation.
 function selectChatViewSettings(settings: AppSettings) {
   return {
+    autoFollowNewMessages: settings.autoFollowNewMessages,
     alwaysExpandAgentCommandTranscripts: settings.alwaysExpandAgentCommandTranscripts,
     claudeBinaryPath: settings.claudeBinaryPath,
     claudeLaunchArgs: settings.claudeLaunchArgs,
@@ -910,6 +913,8 @@ export default memo(function ChatView({
     return node instanceof HTMLElement ? node : null;
   }, []);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [autoFollow, setAutoFollow] = useState(settings.autoFollowNewMessages);
+  const [isJumpingToLatest, setIsJumpingToLatest] = useState(false);
 
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const {
@@ -1033,25 +1038,32 @@ export default memo(function ChatView({
 
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
   const endScrollGenerationRef = useRef(0);
+  const latestJumpControllerRef = useRef<AbortController | null>(null);
   const cancelEndScroll = useCallback(() => {
     endScrollGenerationRef.current++;
+    latestJumpControllerRef.current?.abort();
   }, []);
-  const scrollToEnd = useCallback((animated = false) => {
+  const scrollToEnd = useCallback(async (animated = false) => {
     const list = legendListRef.current;
     if (!list) return;
     const generation = ++endScrollGenerationRef.current;
-    isAtEndRef.current = true;
+    const cancelled = () =>
+      !isMountedRef.current ||
+      legendListRef.current !== list ||
+      generation !== endScrollGenerationRef.current;
+    // Do not wait for an estimated virtual-list scroll to resolve before
+    // correcting it against the measured layout.
+    void Promise.resolve(list.scrollToEnd?.({ animated })).catch((error) => {
+      if (!cancelled()) console.warn("Could not start scrolling to the latest message", error);
+    });
+    await settleListScroll(list, cancelled);
+    if (cancelled()) return;
+    const node = list.getScrollableNode?.();
+    const atEnd =
+      node instanceof HTMLElement && node.scrollHeight - node.scrollTop - node.clientHeight <= 2;
+    isAtEndRef.current = atEnd;
     showScrollDebouncer.current?.cancel();
-    setShowScrollToBottom(false);
-    void Promise.resolve(list.scrollToEnd?.({ animated })).then(() =>
-      settleListScroll(
-        list,
-        () =>
-          !isMountedRef.current ||
-          legendListRef.current !== list ||
-          generation !== endScrollGenerationRef.current,
-      ),
-    );
+    setShowScrollToBottom(!atEnd);
   }, []);
   // Pin the scroll position to the bottom before a new row is appended.
   // Flipping `isAtEndRef`/`setShowScrollToBottom` optimistically is only safe
@@ -1067,6 +1079,7 @@ export default memo(function ChatView({
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      latestJumpControllerRef.current?.abort();
     };
   }, []);
   const pinToEnd = useCallback((framesLeft = 30) => {
@@ -1150,8 +1163,73 @@ export default memo(function ChatView({
   const jumpToLatest = useCallback(() => {
     cancelTimelineNavigation();
     clearFindMatch();
-    scrollToEnd(true);
-  }, [cancelTimelineNavigation, clearFindMatch, scrollToEnd]);
+    latestJumpControllerRef.current?.abort();
+    const controller = new AbortController();
+    latestJumpControllerRef.current = controller;
+    const generation = ++endScrollGenerationRef.current;
+    setIsJumpingToLatest(true);
+    const node = legendListRef.current?.getScrollableNode?.();
+    if (node instanceof HTMLElement) {
+      for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) {
+        node.addEventListener(type, cancelEndScroll, {
+          passive: true,
+          signal: controller.signal,
+        });
+      }
+    }
+    void (async () => {
+      try {
+        const history = ensureThreadHistoryState(
+          useStore.getState().threads.find((thread) => thread.id === threadId)?.history,
+        );
+        if (history.hasNewerMessages || history.hasNewerActivities) {
+          await fetchAndSyncThreadDetail(queryClient, threadId, {
+            force: true,
+            signal: controller.signal,
+          });
+          // Let the refreshed tail commit to the virtual list.
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+        if (
+          controller.signal.aborted ||
+          !isMountedRef.current ||
+          generation !== endScrollGenerationRef.current
+        )
+          return;
+        await scrollToEnd(false);
+      } catch (error) {
+        if (!controller.signal.aborted && isMountedRef.current) {
+          setAutoFollow(false);
+          toastManager.add({
+            type: "error",
+            title: "Could not jump to latest",
+            description: error instanceof Error ? error.message : "Please try again.",
+          });
+        }
+      } finally {
+        controller.abort();
+        if (latestJumpControllerRef.current === controller) {
+          latestJumpControllerRef.current = null;
+          if (isMountedRef.current) setIsJumpingToLatest(false);
+        }
+      }
+    })();
+  }, [
+    cancelEndScroll,
+    cancelTimelineNavigation,
+    clearFindMatch,
+    queryClient,
+    scrollToEnd,
+    threadId,
+  ]);
+  const handleFollowingChange = useCallback(
+    (enabled: boolean) => {
+      setAutoFollow(enabled);
+      if (enabled) jumpToLatest();
+      else cancelEndScroll();
+    },
+    [cancelEndScroll, jumpToLatest],
+  );
   const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(null);
 
   const terminalState = useTerminalStateStore((state) =>
@@ -1308,6 +1386,7 @@ export default memo(function ChatView({
   const activeThreadId = activeThread?.id ?? null;
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
+  const activeTurnPromptStartedAt = activeLatestTurn?.requestedAt ?? activeLatestTurn?.startedAt;
   const activeProject = projects.find((p) => p.id === activeThread?.projectId);
   const projectBreadcrumbActions = useProjectBreadcrumbActions({
     project: activeProject,
@@ -1562,6 +1641,12 @@ export default memo(function ChatView({
     modelCatalogSettings: unifiedSettings,
     seedsModelOptions: !workflowThreadSlot,
   });
+  usePublishComposerSelection(
+    threadId,
+    noProviderAvailable ? null : selectedProviderInstanceId,
+    selectedProvider,
+    selectedModel,
+  );
   const phase = derivePhase(activeThread?.session ?? null);
   const showAgentCommandTranscripts = settings.showAgentCommandTranscripts;
   const alwaysExpandAgentCommandTranscripts = settings.alwaysExpandAgentCommandTranscripts;
@@ -1903,10 +1988,6 @@ export default memo(function ChatView({
       workLogFilter,
       workLogMode,
     ],
-  );
-  const latestTurnHasToolActivity = useMemo(
-    () => hasToolActivityForTurn(threadActivities, activeLatestTurn?.turnId),
-    [activeLatestTurn?.turnId, threadActivities],
   );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
@@ -2485,10 +2566,12 @@ export default memo(function ChatView({
   const loadOlderTimelineHistory = useCallback(
     async (signal: AbortSignal) => {
       if (!activeThread) return;
+      const scrollGeneration = endScrollGenerationRef.current;
       await preserveTimelineAnchorDuringHistoryLoad({
         getList: () => legendListRef.current,
         getRowIndex: (id) => timelineEntryRowIndexMapRef.current?.get(id),
         signal,
+        canRestore: () => endScrollGenerationRef.current === scrollGeneration,
         load: () =>
           retryThreadHistoryBackfill(queryClient, activeThread.id, {
             signal,
@@ -2500,6 +2583,22 @@ export default memo(function ChatView({
   );
   const historyThreadId = activeThread?.id ?? null;
   const historyStage = activeThreadHistory.stage;
+  const olderHistoryControllerRef = useRef<AbortController | null>(null);
+  useEffect(() => () => olderHistoryControllerRef.current?.abort(), [historyThreadId]);
+  const retryOlderTimelineHistory = useCallback(() => {
+    olderHistoryControllerRef.current?.abort();
+    const controller = new AbortController();
+    olderHistoryControllerRef.current = controller;
+    void loadOlderTimelineHistory(controller.signal)
+      .catch((error) => {
+        if (!controller.signal.aborted)
+          console.warn("Failed to load earlier conversation history.", error);
+      })
+      .finally(() => {
+        if (olderHistoryControllerRef.current === controller)
+          olderHistoryControllerRef.current = null;
+      });
+  }, [loadOlderTimelineHistory]);
   // Memoized so a ChatView render that changes nothing in the timeline (opening an image,
   // a dialog) keeps the timeline's props equal and skips its render.
   const timelineListHeaderContent = useMemo(
@@ -2513,14 +2612,17 @@ export default memo(function ChatView({
           ) : historyStage === "error" ? (
             <div className="mx-auto mb-4 flex w-full max-w-(--chat-content-max-width) items-center justify-between gap-3 rounded-2xl border border-border/70 bg-card/70 px-4 py-3 shadow-sm backdrop-blur-sm">
               <p className="text-sm text-muted-foreground">Retry loading earlier messages.</p>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  void retryThreadHistoryBackfill(queryClient, historyThreadId);
-                }}
-              >
+              <Button size="sm" variant="outline" onClick={retryOlderTimelineHistory}>
                 Retry
+              </Button>
+            </div>
+          ) : hasOlderTimelineHistory ? (
+            <div className="mx-auto mb-4 flex w-full max-w-(--chat-content-max-width) items-center justify-between gap-3 rounded-2xl border border-border/70 bg-card/70 px-4 py-3">
+              <p className="text-sm text-muted-foreground">
+                Earlier conversation history is available.
+              </p>
+              <Button size="sm" variant="outline" onClick={retryOlderTimelineHistory}>
+                Load earlier history
               </Button>
             </div>
           ) : null}
@@ -2528,11 +2630,8 @@ export default memo(function ChatView({
           <OlderActivityHistoryControl threadId={historyThreadId} />
         </>
       ),
-    [historyStage, historyThreadId, queryClient],
+    [hasOlderTimelineHistory, historyStage, historyThreadId, retryOlderTimelineHistory],
   );
-  const retryOlderTimelineHistory = useCallback(() => {
-    if (historyThreadId !== null) void retryThreadHistoryBackfill(queryClient, historyThreadId);
-  }, [historyThreadId, queryClient]);
   const openThreadFind = threadFind.open;
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
     const byMessageId = new Map<MessageId, TurnDiffSummary>();
@@ -2547,8 +2646,19 @@ export default memo(function ChatView({
     for (const summary of turnDiffSummaries) {
       byTurnId.set(summary.turnId, summary);
     }
+    // Checkpoints can arrive after the turn settles, including turns without tools.
+    if (latestTurnSettled && activeLatestTurn?.completedAt) {
+      const turnId = activeLatestTurn.turnId;
+      byTurnId.set(turnId, {
+        ...byTurnId.get(turnId),
+        turnId,
+        ...(activeTurnPromptStartedAt ? { startedAt: activeTurnPromptStartedAt } : {}),
+        completedAt: activeLatestTurn.completedAt,
+        files: byTurnId.get(turnId)?.files ?? [],
+      });
+    }
     return byTurnId;
-  }, [turnDiffSummaries]);
+  }, [turnDiffSummaries, latestTurnSettled, activeLatestTurn, activeTurnPromptStartedAt]);
   const promptCache = useThreadPromptCache({
     threadId: isServerThread ? threadId : null,
     enabled: settings.showPromptCacheIndicator,
@@ -2568,25 +2678,19 @@ export default memo(function ChatView({
   }, [turnDiffSummaries]);
   const completionSummary = useMemo(() => {
     if (!latestTurnSettled) return null;
-    if (!activeLatestTurn?.startedAt) return null;
-    if (!activeLatestTurn.completedAt) return null;
-    if (!latestTurnHasToolActivity) return null;
+    if (!activeTurnPromptStartedAt) return null;
+    if (!activeLatestTurn?.completedAt) return null;
 
-    const elapsed = formatElapsed(activeLatestTurn.startedAt, activeLatestTurn.completedAt);
+    const elapsed = formatElapsed(activeTurnPromptStartedAt, activeLatestTurn.completedAt);
     return elapsed ? `Worked for ${elapsed}` : null;
-  }, [
-    activeLatestTurn?.completedAt,
-    activeLatestTurn?.startedAt,
-    latestTurnHasToolActivity,
-    latestTurnSettled,
-  ]);
+  }, [activeLatestTurn?.completedAt, activeTurnPromptStartedAt, latestTurnSettled]);
   const completionDividerBeforeEntryId = useMemo(() => {
     if (!latestTurnSettled) return null;
-    if (!activeLatestTurn?.startedAt) return null;
-    if (!activeLatestTurn.completedAt) return null;
+    if (!activeTurnPromptStartedAt) return null;
+    if (!activeLatestTurn?.completedAt) return null;
     if (!completionSummary) return null;
 
-    const turnStartedAt = Date.parse(activeLatestTurn.startedAt);
+    const turnStartedAt = Date.parse(activeTurnPromptStartedAt);
     const turnCompletedAt = Date.parse(activeLatestTurn.completedAt);
     if (Number.isNaN(turnStartedAt)) return null;
     if (Number.isNaN(turnCompletedAt)) return null;
@@ -2606,7 +2710,7 @@ export default memo(function ChatView({
     return inRangeMatch ?? fallbackMatch;
   }, [
     activeLatestTurn?.completedAt,
-    activeLatestTurn?.startedAt,
+    activeTurnPromptStartedAt,
     completionSummary,
     latestTurnSettled,
     timelineEntries,
@@ -2995,6 +3099,51 @@ export default memo(function ChatView({
       focusComposer();
     });
   }, [focusComposer]);
+  const previousCompletionRef = useRef({
+    threadId,
+    turnId: activeLatestTurn?.turnId,
+    settled: latestTurnSettled,
+  });
+  useEffect(() => {
+    const previous = previousCompletionRef.current;
+    previousCompletionRef.current = {
+      threadId,
+      turnId: activeLatestTurn?.turnId,
+      settled: latestTurnSettled,
+    };
+    if (
+      previous.threadId !== threadId ||
+      previous.turnId !== activeLatestTurn?.turnId ||
+      previous.settled ||
+      !latestTurnSettled ||
+      !document.hasFocus()
+    )
+      return;
+    const frame = requestAnimationFrame(() => {
+      const active = document.activeElement;
+      const popupOpen = [
+        ...document.querySelectorAll<HTMLElement>(
+          '[role="dialog"],[role="alertdialog"],[data-popup-open]',
+        ),
+      ].some(
+        (element) =>
+          element.getAttribute("aria-hidden") !== "true" &&
+          element.getAttribute("data-state") !== "closed" &&
+          element.getClientRects().length > 0 &&
+          getComputedStyle(element).visibility !== "hidden",
+      );
+      if (
+        document.hidden ||
+        popupOpen ||
+        window.getSelection()?.toString() ||
+        (active instanceof HTMLElement &&
+          (active.isContentEditable || active.matches("input,textarea,select,iframe")))
+      )
+        return;
+      focusComposer();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [threadId, activeLatestTurn?.turnId, latestTurnSettled, focusComposer]);
   // Home's quick start prefills a draft and asks this thread to take focus.
   // The request stays pending until the composer has actually mounted.
   const composerFocusRequest = useComposerFocusRequestStore((state) => state.request);
@@ -7939,7 +8088,7 @@ export default memo(function ChatView({
           onDrop={onComposerDrop}
         >
           <AssistantQuoteToolbar
-            key={activeThread.id}
+            key={`quotes:${activeThread.id}`}
             currentLength={prompt.length}
             maxLength={isConnecting ? 0 : getServerSendLimits().maxInputChars}
             onInsert={insertAssistantQuote}
@@ -7960,6 +8109,7 @@ export default memo(function ChatView({
               activeProjectKind={activeProject?.kind}
               activeProjectIcon={activeProject?.icon}
               activeProjectName={activeProject?.name}
+              activeProjectCwd={activeProject?.cwd}
               projectPicker={draftProjectPicker}
               onNewThreadInProject={projectBreadcrumbActions.createThread}
               onOpenProjectSettings={
@@ -8031,12 +8181,12 @@ export default memo(function ChatView({
 
           {threadFind.openThreadId === activeThread.id && isServerThread ? (
             <ThreadFindBar
-              key={activeThread.id}
+              key={`find:${activeThread.id}`}
               threadId={activeThread.id}
               onMatch={(match, signal) => threadFind.selectMatch(activeThread.id, match, signal)}
               onClose={() => {
                 threadFind.close();
-                focusComposer();
+                scheduleComposerFocus();
               }}
             />
           ) : null}
@@ -8072,7 +8222,7 @@ export default memo(function ChatView({
             </div>
           ) : null}
           {/* Keyed so a pending Release or error never lands on another thread's card. */}
-          <AgentComputerLiveCard key={activeThread.id} threadId={activeThread.id} />
+          <AgentComputerLiveCard key={`computer:${activeThread.id}`} threadId={activeThread.id} />
           <AgentBrowserLiveCard threadId={activeThread.id} />
           {/* Main content area with optional plan sidebar */}
           <div className="flex min-h-0 min-w-0 flex-1">
@@ -8098,87 +8248,96 @@ export default memo(function ChatView({
                   }
                 />
                 {shouldRenderTimeline ? (
-                  <ThreadFindContext value={threadFind.contextValue}>
-                    <MessagesTimeline
-                      key={activeThread.id}
-                      threadId={activeThread.id}
-                      hasMessages={timelineEntries.length > 0}
-                      isWorking={isWorking}
-                      activeTurnStartedAt={activeWorkStartedAt}
-                      liveActivity={liveActivity}
-                      listRef={legendListRef}
-                      entryRowIndexMapRef={timelineEntryRowIndexMapRef}
-                      leaveEndRef={timelineLeaveEndRef}
-                      onLeaveEnd={cancelEndScroll}
-                      onIsAtEndChange={onIsAtEndChange}
-                      followNextTailNonce={followNextTailNonce}
-                      hasOlderHistory={hasOlderTimelineHistory}
-                      isLoadingOlderHistory={activeThreadHistory.stage === "backfilling"}
-                      hasHistoryLoadError={activeThreadHistory.stage === "error"}
-                      onLoadOlderHistory={loadOlderTimelineHistory}
-                      timelineEntries={timelineEntries}
-                      completionDividerBeforeEntryId={completionDividerBeforeEntryId}
-                      completionSummary={completionSummary}
-                      turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
-                      turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
-                      cacheMissByAssistantMessageId={promptCache.missByAssistantMessageId}
-                      expandedWorkGroups={expandedWorkGroups}
-                      onToggleWorkGroup={onToggleWorkGroup}
-                      workGroupCollapseOverrides={workGroupCollapseOverrides}
-                      onSetWorkGroupExpanded={onSetWorkGroupExpanded}
-                      emptyState={timelineEmptyState}
-                      onOpenTurnDiff={onOpenTurnDiff}
-                      revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
-                      nativeSessionCapabilities={activeThread.session?.capabilities}
-                      canRestoreFiles={
-                        !rewindWorkspaceShared &&
-                        (Boolean(activeThread.worktreePath) ||
-                          (branchesQuery.data?.isRepo === false &&
-                            activeThread.session?.provider === "claudeAgent" &&
-                            activeThread.session.capabilities?.actions.some(
-                              (action) => action.action === "fileCheckpointing" && action.supported,
-                            ) === true))
-                      }
-                      onRevertUserMessage={onRevertUserMessageFromTimeline}
-                      isRevertingCheckpoint={isRevertingCheckpoint}
-                      revertDisabledReason={revertDisabledReason}
-                      revertPreferenceKey={activeThread.projectId}
-                      pendingRevert={pendingRevertDisplay}
-                      revertReopenRequest={revertReopenRequest ?? null}
-                      onRevertReopenHandled={onRevertReopenHandled}
-                      latestMessageId={activeThread.messages.at(-1)?.id ?? null}
-                      onImageExpand={onExpandTimelineImage}
-                      onImageActionMenu={onImageActionMenu}
-                      usesCustomImageContextMenu={usesCustomImageContextMenu}
-                      markdownCwd={workspaceCwd ?? undefined}
-                      resolvedTheme={resolvedTheme}
-                      timestampFormat={timestampFormat}
-                      workspaceRoot={workspaceRoot}
-                      expandedCommandExecutions={expandedCommandExecutions}
-                      onToggleCommandExecution={onToggleCommandExecution}
-                      allDirectoriesExpanded={allDirectoriesExpanded}
-                      onToggleAllDirectories={onToggleAllDirectories}
-                      chatDiffContext={chatDiffContext}
-                      onWorkingRibbonFocusLost={scheduleComposerFocus}
-                      onQuoteAssistantMessage={onQuoteAssistantMessage}
-                      listHeaderContent={timelineListHeaderContent}
-                      onNavigateToEntry={navigateToTimelineEntry}
-                      onEntryRowIndexMapCommit={timelineNavigation.handleRowMapCommit}
-                      navigationHost={navigationHost}
-                      onOpenThreadFind={isServerThread ? openThreadFind : undefined}
-                      onRetryOlderHistory={retryOlderTimelineHistory}
-                    />
-                  </ThreadFindContext>
+                  <ThreadTokenUsageProvider threadId={isServerThread ? activeThread.id : null}>
+                    <ThreadFindContext value={threadFind.contextValue}>
+                      <MessagesTimeline
+                        key={activeThread.id}
+                        threadId={activeThread.id}
+                        hasMessages={timelineEntries.length > 0}
+                        isWorking={isWorking}
+                        activeTurnStartedAt={activeWorkStartedAt}
+                        liveActivity={liveActivity}
+                        listRef={legendListRef}
+                        entryRowIndexMapRef={timelineEntryRowIndexMapRef}
+                        leaveEndRef={timelineLeaveEndRef}
+                        onLeaveEnd={cancelEndScroll}
+                        onIsAtEndChange={onIsAtEndChange}
+                        followNextTailNonce={followNextTailNonce}
+                        autoFollow={autoFollow}
+                        onAutoFollowChange={setAutoFollow}
+                        hasOlderHistory={hasOlderTimelineHistory}
+                        isLoadingOlderHistory={activeThreadHistory.stage === "backfilling"}
+                        hasHistoryLoadError={activeThreadHistory.stage === "error"}
+                        onLoadOlderHistory={loadOlderTimelineHistory}
+                        timelineEntries={timelineEntries}
+                        completionDividerBeforeEntryId={completionDividerBeforeEntryId}
+                        completionSummary={completionSummary}
+                        turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+                        turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
+                        cacheMissByAssistantMessageId={promptCache.missByAssistantMessageId}
+                        expandedWorkGroups={expandedWorkGroups}
+                        onToggleWorkGroup={onToggleWorkGroup}
+                        workGroupCollapseOverrides={workGroupCollapseOverrides}
+                        onSetWorkGroupExpanded={onSetWorkGroupExpanded}
+                        emptyState={timelineEmptyState}
+                        onOpenTurnDiff={onOpenTurnDiff}
+                        revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
+                        nativeSessionCapabilities={activeThread.session?.capabilities}
+                        canRestoreFiles={
+                          !rewindWorkspaceShared &&
+                          (Boolean(activeThread.worktreePath) ||
+                            (branchesQuery.data?.isRepo === false &&
+                              activeThread.session?.provider === "claudeAgent" &&
+                              activeThread.session.capabilities?.actions.some(
+                                (action) =>
+                                  action.action === "fileCheckpointing" && action.supported,
+                              ) === true))
+                        }
+                        onRevertUserMessage={onRevertUserMessageFromTimeline}
+                        isRevertingCheckpoint={isRevertingCheckpoint}
+                        revertDisabledReason={revertDisabledReason}
+                        revertPreferenceKey={activeThread.projectId}
+                        pendingRevert={pendingRevertDisplay}
+                        revertReopenRequest={revertReopenRequest ?? null}
+                        onRevertReopenHandled={onRevertReopenHandled}
+                        latestMessageId={activeThread.messages.at(-1)?.id ?? null}
+                        onImageExpand={onExpandTimelineImage}
+                        onImageActionMenu={onImageActionMenu}
+                        usesCustomImageContextMenu={usesCustomImageContextMenu}
+                        markdownCwd={workspaceCwd ?? undefined}
+                        resolvedTheme={resolvedTheme}
+                        timestampFormat={timestampFormat}
+                        workspaceRoot={workspaceRoot}
+                        expandedCommandExecutions={expandedCommandExecutions}
+                        onToggleCommandExecution={onToggleCommandExecution}
+                        allDirectoriesExpanded={allDirectoriesExpanded}
+                        onToggleAllDirectories={onToggleAllDirectories}
+                        chatDiffContext={chatDiffContext}
+                        onWorkingRibbonFocusLost={scheduleComposerFocus}
+                        onQuoteAssistantMessage={onQuoteAssistantMessage}
+                        listHeaderContent={timelineListHeaderContent}
+                        onNavigateToEntry={navigateToTimelineEntry}
+                        onEntryRowIndexMapCommit={timelineNavigation.handleRowMapCommit}
+                        navigationHost={navigationHost}
+                        onOpenThreadFind={isServerThread ? openThreadFind : undefined}
+                        onRetryOlderHistory={retryOlderTimelineHistory}
+                      />
+                    </ThreadFindContext>
+                  </ThreadTokenUsageProvider>
                 ) : (
                   <ThreadDetailsLoadingState testId="chat-thread-details-loading" />
                 )}
 
-                {/* scroll to bottom pill — shown when user has scrolled away from the bottom */}
-                {showScrollToBottom && (
+                {/* Keep the controls available while following is enabled. */}
+                {(showScrollToBottom || autoFollow || isJumpingToLatest) && (
                   <JumpToLatestButton
                     tail={timelineTailSnapshot(timelineEntries.at(-1))}
                     shortcutLabel={scrollToBottomShortcutLabel ?? null}
                     onJump={jumpToLatest}
+                    following={autoFollow}
+                    onFollowingChange={handleFollowingChange}
+                    isAtEnd={!showScrollToBottom}
+                    jumping={isJumpingToLatest}
                   />
                 )}
                 <TimelineNavigationStatusBanner

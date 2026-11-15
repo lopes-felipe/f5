@@ -109,6 +109,7 @@ export interface HarnessProps {
   onListRefChange?: (ref: LegendListRef | null) => void;
   headerContent?: React.ReactNode;
   initialHeight?: number;
+  initialAutoFollow?: boolean;
   initialIsWorking?: boolean;
   initialActiveTurnStartedAt?: string | null;
   initialLiveActivity?: LiveWorkActivity;
@@ -164,6 +165,7 @@ export type TimelineHarnessFind = {
 } | null;
 
 export interface TimelineHarnessApi {
+  setAutoFollow: (enabled: boolean) => void;
   setEntries: (entries: TimelineEntry[]) => void;
   setHeaderContent: (content: React.ReactNode) => void;
   setHeight: (height: number) => void;
@@ -203,6 +205,7 @@ export function TimelineHarness(
 ) {
   const [entries, setEntries] = useState<TimelineEntry[]>(props.initialEntries);
   const [height, setHeight] = useState(props.initialHeight ?? 400);
+  const [autoFollow, setAutoFollow] = useState(props.initialAutoFollow ?? false);
   const [isWorking, setIsWorking] = useState(props.initialIsWorking ?? false);
   const [activeTurnStartedAt, setActiveTurnStartedAt] = useState<string | null>(
     props.initialActiveTurnStartedAt === undefined
@@ -277,6 +280,7 @@ export function TimelineHarness(
 
   if (props.setApi) {
     props.setApi({
+      setAutoFollow,
       setEntries,
       setHeaderContent,
       setHeight,
@@ -334,6 +338,8 @@ export function TimelineHarness(
           value={find ? { ...find, onSelectedRange: navigation.handleSelectedRange } : null}
         >
           <MessagesTimeline
+            autoFollow={autoFollow}
+            onAutoFollowChange={setAutoFollow}
             {...navigationProps}
             key={threadId}
             {...(threadId ? { threadId } : {})}

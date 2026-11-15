@@ -73,7 +73,7 @@ it("offers access to notebook HTML beyond the live iframe limit", async () => {
 });
 it("previews non-UTF-8 files with a decoding notice", async () => {
   await open("legacy.csv", new Uint8Array([97, 44, 98, 10, 99, 44, 233, 10]));
-  await vi.waitFor(() => expect(document.body.textContent).toContain("not valid UTF-8"));
+  await expect.element(page.getByText(/not valid UTF-8/)).toBeVisible();
   expect(document.querySelector('[role="table"]')).not.toBeNull();
 });
 it("virtualizes large text and delimited data in real workers", async () => {

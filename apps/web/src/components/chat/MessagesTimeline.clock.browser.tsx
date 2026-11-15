@@ -16,6 +16,7 @@ import { parsePersistedAppSettings } from "../../appSettings";
 import { setNowTickerClockForTests } from "../../lib/nowTicker";
 import type { deriveTimelineEntries } from "../../session-logic";
 import { MessagesTimeline } from "./MessagesTimeline";
+import { formatTimestamp } from "../../timestampFormat";
 
 // Counts renders of finished assistant rows. The real component is memoized,
 // which would hide row re-renders; this stand-in runs whenever its row does.
@@ -108,7 +109,7 @@ function mcpCall(
   } as unknown as TimelineEntry;
 }
 
-function Harness(props: { entries: TimelineEntry[]; isWorking?: boolean }) {
+function Harness(props: { entries: TimelineEntry[]; isWorking?: boolean; completedId?: string }) {
   const listRef = useRef<LegendListRef | null>(null);
   const queryClient = useRef(
     new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } }),
@@ -125,8 +126,8 @@ function Harness(props: { entries: TimelineEntry[]; isWorking?: boolean }) {
           listRef={listRef}
           onIsAtEndChange={() => {}}
           timelineEntries={props.entries}
-          completionDividerBeforeEntryId={null}
-          completionSummary={null}
+          completionDividerBeforeEntryId={props.completedId ?? null}
+          completionSummary={props.completedId ? "Worked for 47s" : null}
           turnDiffSummaryByAssistantMessageId={new Map()}
           turnDiffSummaryByTurnId={new Map()}
           expandedWorkGroups={{}}
@@ -166,6 +167,45 @@ function Harness(props: { entries: TimelineEntry[]; isWorking?: boolean }) {
 }
 
 describe("MessagesTimeline live clock", () => {
+  it("uses the same completion time and elapsed duration in the divider and final footer", async () => {
+    const reply = message("timed-answer", "assistant", "Final response", 33);
+    if (reply.kind !== "message") throw new Error("Expected message");
+    reply.message.completedAt = at(47);
+    reply.message.turnId = TurnId.makeUnsafe("tool-free-final");
+    reply.message.reasoningTokens = 285;
+    reply.message.reasoningTokensEstimated = true;
+    const screen = await render(
+      <Harness
+        entries={[message("timed-question", "user", "Question", 0), reply]}
+        isWorking={false}
+      />,
+    );
+    try {
+      await expect.element(screen.getByText("Worked for 47s")).toBeVisible();
+      await expect
+        .element(screen.getByText("Finished " + formatTimestamp(at(47), "24-hour")))
+        .toBeVisible();
+      await expect.element(screen.getByText("Tokens: Not reported")).toBeVisible();
+      expect(document.querySelector('[data-slot="reasoning-summary"]')).toBeNull();
+      const metadata = document.querySelector<HTMLElement>('[data-slot="assistant-message-meta"]');
+      expect(metadata?.closest("[data-assistant-quote-exclude]")).not.toBeNull();
+      const expected = "47s • Tokens: Not reported";
+      expect(metadata?.innerText).toBe(expected);
+      // Browser selection follows rendered layout: flex children used to insert
+      // line breaks between the duration and token count.
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(metadata!);
+      selection?.removeAllRanges();
+      await screen.getByText("Tokens: Not reported").hover();
+      await expect.element(screen.getByRole("row", { name: "Reasoning ~285" })).toBeVisible();
+      selection?.addRange(range);
+      expect(selection?.toString()).toBe(expected);
+      selection?.removeAllRanges();
+    } finally {
+      await screen.unmount();
+    }
+  });
   afterEach(() => {
     setNowTickerClockForTests(null);
     assistantRowRenders.clear();

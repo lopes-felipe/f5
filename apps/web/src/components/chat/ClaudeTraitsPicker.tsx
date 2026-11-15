@@ -15,6 +15,7 @@ import { FastModeTriggerIcon } from "./EffortMenuSection";
 import { getEffortChipClass } from "./effortLevels";
 import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import { getProviderModelCapabilities } from "../../providerModels";
+import { withComposerModelDefaults } from "./composerModelDefaults";
 import {
   shouldRenderTraitsControls,
   TraitsMenuContent as DescriptorTraitsMenuContent,
@@ -34,7 +35,7 @@ function getClaudeOptionDescriptors(
   const caps = getProviderModelCapabilities(input.models, input.model, CLAUDE_PROVIDER);
   return getProviderOptionDescriptors({
     caps,
-    selections: input.modelOptions,
+    selections: withComposerModelDefaults(caps, input.modelOptions),
   });
 }
 
@@ -90,7 +91,10 @@ function ClaudeTraitsMenuContentImpl(props: {
       draftId={props.threadId}
       model={props.model}
       models={props.models}
-      modelOptions={props.modelOptions}
+      modelOptions={withComposerModelDefaults(
+        getProviderModelCapabilities(props.models, props.model, CLAUDE_PROVIDER),
+        props.modelOptions,
+      )}
     />
   );
 }

@@ -39,6 +39,13 @@ const CONVERSATION_CONTROL_DESCRIPTORS = (
       ["tokens", "response"],
     ],
     [
+      "auto-follow",
+      "Follow new messages by default",
+      "Choose whether conversations automatically scroll as new messages arrive.",
+      "Follow new messages by default",
+      ["scroll", "follow", "jump to latest", "automatic", "conversation"],
+    ],
+    [
       "remote-images",
       "Load remote images in chat",
       "Allow HTTPS images from external websites, and HTTPS images and scripts in HTML pages agents show. Even when off, an HTML page opened in a web browser rather than the desktop app can still navigate away, taking what it shows with it.",

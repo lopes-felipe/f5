@@ -8,6 +8,33 @@ vi.mock("../ChatMarkdown", () => ({
 import { ReasoningSection } from "./ReasoningSection";
 
 describe("ReasoningSection", () => {
+  it("moves counts to a footer summary while preserving the reasoning disclosure", () => {
+    const section = renderToStaticMarkup(
+      <ReasoningSection
+        reasoningText="Reasoning"
+        reasoningTokens={285}
+        hideTokens
+        defaultExpanded
+        isStreaming={false}
+        cwd={undefined}
+      />,
+    );
+    expect(section).toContain("Thought");
+    expect(section).toContain("Reasoning");
+    expect(section).not.toContain("tokens");
+    expect(
+      renderToStaticMarkup(
+        <ReasoningSection
+          reasoningText=""
+          reasoningTokens={285}
+          hideTokens
+          defaultExpanded={false}
+          isStreaming={false}
+          cwd={undefined}
+        />,
+      ),
+    ).toBe("");
+  });
   it("renders the reasoning label and content when expanded", () => {
     const markup = renderToStaticMarkup(
       <ReasoningSection

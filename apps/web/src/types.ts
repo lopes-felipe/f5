@@ -137,6 +137,7 @@ export interface TurnDiffFileChange {
 
 export interface TurnDiffSummary {
   turnId: TurnId;
+  startedAt?: string | undefined;
   completedAt: string;
   status?: string | undefined;
   files: TurnDiffFileChange[];

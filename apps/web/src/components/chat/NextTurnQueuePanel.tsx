@@ -441,7 +441,7 @@ export function NextTurnQueuePanel({
             aria-label={collapsed ? "Expand queue" : "Collapse queue"}
             onClick={() => setCollapsed((value) => !value)}
           >
-            {collapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}
+            {collapsed ? <ChevronUpIcon /> : <ChevronDownIcon />}
           </Button>
         </div>
       </div>

@@ -1,5 +1,5 @@
 import type { MessageId, ThreadId, TurnId, UsageThreadTurns } from "@t3tools/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef } from "react";
 
 import {
@@ -20,6 +20,13 @@ import {
   usageQueryKeys,
   usageThreadTurnsQueryOptions,
 } from "./usageReactQuery";
+
+interface ThreadUsageSubscription {
+  references: number;
+  connectedAt: string | null;
+  unsubscribe: (() => void) | undefined;
+}
+const threadUsageSubscriptions = new WeakMap<QueryClient, Map<ThreadId, ThreadUsageSubscription>>();
 
 /**
  * A thread's recorded per-turn usage, oldest first, for the prompt cache
@@ -49,28 +56,46 @@ export function useThreadCacheTurns(
 
   useEffect(() => {
     if (!active) return;
-    const queryKey = usageQueryKeys.threadTurns(threadId);
-    return ensureNativeApi().orchestration?.onDomainEvent?.((event) => {
-      const fact =
-        event.type === "thread.usage-recorded" || event.type === "thread.session-set"
-          ? event.payload.usageFact
-          : undefined;
-      if (!fact || fact.threadId !== threadId) return;
-      // An in-flight load folds the fact into its response; loaded data takes
-      // it now. Before the first load there is no data to merge into.
-      noteLiveThreadTurnFact(fact);
-      client.setQueryData<UsageThreadTurns>(queryKey, (current) =>
-        current ? mergeThreadTurn(current, fact) : current,
-      );
-    });
+    let subscriptions = threadUsageSubscriptions.get(client);
+    if (!subscriptions) {
+      subscriptions = new Map();
+      threadUsageSubscriptions.set(client, subscriptions);
+    }
+    let subscription = subscriptions.get(threadId);
+    if (!subscription) {
+      subscription = { references: 0, connectedAt: null, unsubscribe: undefined };
+      const queryKey = usageQueryKeys.threadTurns(threadId);
+      subscription.unsubscribe = ensureNativeApi().orchestration?.onDomainEvent?.((event) => {
+        const fact =
+          event.type === "thread.usage-recorded" || event.type === "thread.session-set"
+            ? event.payload.usageFact
+            : undefined;
+        if (!fact || fact.threadId !== threadId) return;
+        // An in-flight load folds the fact into its response; loaded data takes
+        // it now. Before the first load there is no data to merge into.
+        noteLiveThreadTurnFact(fact);
+        client.setQueryData<UsageThreadTurns>(queryKey, (current) =>
+          current ? mergeThreadTurn(current, fact) : current,
+        );
+      });
+      subscriptions.set(threadId, subscription);
+    }
+    subscription.references++;
+    return () => {
+      if (--subscription.references > 0) return;
+      subscription.unsubscribe?.();
+      subscriptions.delete(threadId);
+      if (subscriptions.size === 0) threadUsageSubscriptions.delete(client);
+    };
   }, [active, client, threadId]);
 
   // The first connection loads through `enabled`; later ones reload.
-  const lastConnectedAt = useRef<string | null>(null);
   useEffect(() => {
     if (!active || !connected || connection.connectedAt === null) return;
-    const previous = lastConnectedAt.current;
-    lastConnectedAt.current = connection.connectedAt;
+    const subscription = threadUsageSubscriptions.get(client)?.get(threadId);
+    if (!subscription) return;
+    const previous = subscription.connectedAt;
+    subscription.connectedAt = connection.connectedAt;
     if (previous !== null && previous !== connection.connectedAt) {
       void client.invalidateQueries({ queryKey: usageQueryKeys.threadTurns(threadId) });
     }

@@ -145,8 +145,15 @@ function renderPreview(url = "https://github.com/team/repo/pull/7") {
 it("prefetches only when the pointer rests on the link", async () => {
   await renderPreview();
   const link = page.getByRole("link", { name: "Linked PR" });
-  await link.hover();
-  await page.getByRole("button", { name: "After preview" }).hover();
+  const element = link.element();
+  element.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+  element.dispatchEvent(
+    new PointerEvent("pointerout", {
+      bubbles: true,
+      pointerType: "mouse",
+      relatedTarget: document.body,
+    }),
+  );
   await new Promise((resolve) => setTimeout(resolve, 200));
   expect(api.peek).not.toHaveBeenCalled();
   await link.hover();

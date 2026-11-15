@@ -104,7 +104,7 @@ export function resolveMarkdownFileLinkTarget(
     return null;
   }
 
-  if (!isLikelyPathCandidate(decodedPath)) return null;
+  if (!fileUrlTarget && !isLikelyPathCandidate(decodedPath)) return null;
 
   const pathWithPosition = appendLocalFileUrlPosition(decodedPath, decodedHash);
   if (!isRelativePath(pathWithPosition)) {

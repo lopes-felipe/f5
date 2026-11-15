@@ -1,8 +1,10 @@
 import { CommandId, MessageId, ThreadId, PlanningWorkflow } from "@t3tools/contracts";
+import { withEventBase } from "./eventBase";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { applyArchiveTestCommand, workflowArchiveFixture } from "./workflowArchive.testUtils.ts";
 import {
+  decideWorkflowDelete,
   reconcileWorkflowArchives,
   retainedWorkflowThreadIds,
   workflowEntries,
@@ -16,6 +18,50 @@ import {
 describe.each(["planning", "codeReview", "investigation"] as const)(
   "workflow archive (%s)",
   (kind) => {
+    it("deletes children atomically, preserves record-only compatibility and refuses shared ownership", () => {
+      const fixture = workflowArchiveFixture(kind);
+      const command = fixture.archive();
+      const event = {
+        type: "thread.deleted" as const,
+        ...withEventBase({
+          commandId: command.commandId,
+          aggregateKind: "thread",
+          aggregateId: fixture.a,
+          occurredAt: "2026-11-14T12:00:00.000Z",
+        }),
+        payload: { threadId: fixture.a, deletedAt: "2026-11-14T12:00:00.000Z" },
+      };
+      const decide = (deleteThreads: boolean, readModel = fixture.model) =>
+        Effect.runSync(
+          decideWorkflowDelete({
+            entry: fixture.entry,
+            readModel,
+            command,
+            deleteThreads,
+            event,
+          }),
+        );
+      expect(decide(false)).toMatchObject({ type: "thread.deleted" });
+      const events = decide(true);
+      expect(
+        Array.isArray(events) && events.filter((item) => item.type === "thread.deleted"),
+      ).toHaveLength(3);
+      const other = workflowArchiveFixture(kind === "planning" ? "codeReview" : "planning");
+      const shared = {
+        ...fixture.model,
+        ...(other.entry.kind === "planning"
+          ? { planningWorkflows: [other.entry.workflow] }
+          : other.entry.kind === "codeReview"
+            ? { codeReviewWorkflows: [other.entry.workflow] }
+            : {}),
+      };
+      expect(() => decide(true, shared)).toThrow("another workflow");
+      expect(
+        fixture.model.threads.every(
+          (thread) => thread.deletedAt === null && thread.archivedAt === null,
+        ),
+      ).toBe(true);
+    });
     it("does not create a new owner for a deleted thread", () => {
       const fixture = workflowArchiveFixture(kind);
       const entry = fixture.entry;

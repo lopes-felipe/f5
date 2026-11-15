@@ -9,6 +9,7 @@ import {
   type UsageTurnFact,
   type UsageRange,
   type ProviderKind,
+  type ProviderInstanceId,
 } from "@t3tools/contracts";
 import { queryOptions, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { Schema } from "effect";
@@ -243,35 +244,25 @@ export const decodeUsageAccounts = Schema.decodeUnknownSync(UsageAccounts);
 export const accountJobsPending = (data: UsageAccounts | undefined) =>
   data?.some((account) => account.refreshState !== "idle") ?? false;
 
-interface ForceIntent {
-  consumed: boolean;
-  promise: Promise<UsageAccounts> | null;
+interface RefreshRequest {
+  refresh: "force" | "if-stale";
+  providerInstanceId?: ProviderInstanceId | undefined;
+  promise: Promise<UsageAccounts>;
+  resolve: (accounts: UsageAccounts) => void;
+  reject: (error: unknown) => void;
 }
-
-const forceIntents = new WeakMap<QueryClient, ForceIntent>();
+const refreshQueues = new WeakMap<QueryClient, RefreshRequest[]>();
 
 export function usageAccountsQueryOptions() {
   return queryOptions({
     queryKey: usageQueryKeys.accounts,
-    // The signal is deliberately unused: cancelling a read discards its
-    // result without aborting the server-side refresh job.
-    queryFn: async (context) => {
-      const intent = forceIntents.get(context.client);
-      let refresh: "force" | "if-stale" | "none";
-      if (intent && !intent.consumed) {
-        intent.consumed = true;
-        refresh = "force";
-      } else {
-        const cached = context.client.getQueryData<UsageAccounts>(usageQueryKeys.accounts);
-        refresh = accountJobsPending(cached) ? "none" : "if-stale";
-      }
-      return decodeUsageAccounts(
+    queryFn: async (context) =>
+      decodeUsageAccounts(
         await ensureNativeApi().usage.getAccounts(
-          { refresh },
+          { refresh: "none" },
           rpcQueryContext(context, { forwardSignal: false }),
         ),
-      );
-    },
+      ),
     meta: rpcQueryMeta("refresh-background"),
     staleTime: 300_000,
     retry: false,
@@ -282,28 +273,87 @@ export function usageAccountsQueryOptions() {
   });
 }
 
-/**
- * Forces an account refresh through the ordinary accounts query. The intent
- * is registered synchronously so duplicate requests share one promise, the
- * current read is logically cancelled so a late ordinary response cannot
- * commit, and ordinary triggers join the forced fetch while it runs.
- */
-export function forceRefreshUsageAccounts(client: QueryClient): Promise<UsageAccounts> {
-  const existing = forceIntents.get(client);
-  if (existing?.promise) return existing.promise;
-  const intent: ForceIntent = { consumed: false, promise: null };
-  forceIntents.set(client, intent);
-  intent.promise = (async () => {
+/** Serialize probes independently of snapshot reads; global requests cover scoped callers. */
+export function refreshUsageAccounts(
+  client: QueryClient,
+  refresh: "force" | "if-stale" = "if-stale",
+  providerInstanceId?: ProviderInstanceId,
+): Promise<UsageAccounts> {
+  let queue = refreshQueues.get(client);
+  if (!queue) {
+    queue = [];
+    refreshQueues.set(client, queue);
+  }
+  const covered = queue.find(
+    (job) =>
+      (job.refresh === "force" || refresh === "if-stale") &&
+      (job.providerInstanceId === undefined || job.providerInstanceId === providerInstanceId),
+  );
+  if (covered) return covered.promise;
+  let resolve!: RefreshRequest["resolve"];
+  let reject!: RefreshRequest["reject"];
+  const promise = new Promise<UsageAccounts>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  const job: RefreshRequest = { refresh, providerInstanceId, promise, resolve, reject };
+  queue.push(job);
+  if (queue.length === 1) void drainAccountRefreshes(client, queue);
+  return promise;
+}
+
+async function drainAccountRefreshes(client: QueryClient, queue: RefreshRequest[]) {
+  while (queue.length) {
+    const job = queue[0]!;
     try {
-      await client.cancelQueries({ queryKey: usageQueryKeys.accounts });
-      // If an ordinary trigger started a fetch meanwhile, it consumed the
-      // intent as the forced read and this call joins it.
-      return await client.fetchQuery({ ...usageAccountsQueryOptions(), staleTime: 0 });
+      await client.cancelQueries({ queryKey: usageQueryKeys.accounts, exact: true });
+      const accounts = await client.fetchQuery({
+        ...usageAccountsQueryOptions(),
+        staleTime: 0,
+        queryFn: async () =>
+          decodeUsageAccounts(
+            await ensureNativeApi().usage.getAccounts(
+              {
+                refresh: job.refresh,
+                ...(job.providerInstanceId ? { providerInstanceId: job.providerInstanceId } : {}),
+              },
+              { priority: "interactive" },
+            ),
+          ),
+      });
+      job.resolve(accounts);
+    } catch (error) {
+      job.reject(error);
     } finally {
-      if (forceIntents.get(client) === intent) forceIntents.delete(client);
+      queue.shift();
     }
-  })();
-  return intent.promise;
+  }
+  refreshQueues.delete(client);
+}
+
+export function forceRefreshUsageAccounts(
+  client: QueryClient,
+  providerInstanceId?: ProviderInstanceId,
+): Promise<UsageAccounts> {
+  return refreshUsageAccounts(client, "force", providerInstanceId);
+}
+
+/** Reads the background sampler's snapshots without starting any provider probes. */
+export function usageCachedAccountsQueryOptions(enabled: boolean) {
+  return queryOptions({
+    queryKey: usageQueryKeys.accounts,
+    queryFn: async (context) =>
+      decodeUsageAccounts(
+        await ensureNativeApi().usage.getAccounts({ refresh: "none" }, rpcQueryContext(context)),
+      ),
+    meta: rpcQueryMeta("refresh-background"),
+    staleTime: 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchIntervalInBackground: false,
+    refetchInterval: (query) => (accountJobsPending(query.state.data) ? 1_000 : 60_000),
+    enabled,
+  });
 }
 
 /** Invalidates accounts without cancelling an in-flight (possibly forced) read. */

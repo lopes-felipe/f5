@@ -79,6 +79,7 @@ import {
   isLatestTurnSettled,
 } from "../session-logic";
 import { useStore } from "../store";
+import { survivingThreadAfterDeletion } from "../lib/threadOrdering";
 import { useThread } from "../threadSelectors";
 import { resolveThreadRouteRenderState } from "../threadRoutes";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
@@ -368,6 +369,10 @@ function ChatThreadRouteView() {
   const search = Route.useSearch();
   const settings = useAppSettingsSelector(selectThreadRouteSettings);
   const thread = useThread(threadId);
+  const lastKnownThreadId = useRef<ThreadId | null>(null);
+  useEffect(() => {
+    if (thread) lastKnownThreadId.current = thread.id;
+  }, [thread]);
   const threadExists = thread !== undefined;
   const draftThread = useComposerDraftStore(
     (store) => store.draftThreadsByThreadId[threadId] ?? null,
@@ -532,6 +537,13 @@ function ChatThreadRouteView() {
       // The old route must not cancel that navigation with a stale redirect.
       if (router.state.isLoading || router.state.location.pathname !== "/" + threadId) return;
       useRightPanelStore.getState().removeThread(threadId);
+      if (lastKnownThreadId.current === threadId) {
+        const fallback = survivingThreadAfterDeletion(useStore.getState().threads);
+        if (fallback) {
+          void navigate({ to: "/$threadId", params: { threadId: fallback.id }, replace: true });
+          return;
+        }
+      }
       void navigate({ to: "/", replace: true });
       return;
     }

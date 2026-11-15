@@ -15,6 +15,7 @@ import { Effect } from "effect";
 import { withEventBase } from "./eventBase.ts";
 import {
   decideWorkflowArchive,
+  decideWorkflowDelete,
   requireAttachableWorkflowThreads,
   retainedWorkflowThreadIds,
   workflowEntries,
@@ -521,20 +522,26 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           detail: `Workflow '${command.workflowId}' does not exist.`,
         });
       }
-      return {
-        ...withEventBase({
-          aggregateKind: "project",
-          aggregateId: command.projectId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        }),
-        type: "project.workflow-deleted",
-        payload: {
-          projectId: command.projectId,
-          workflowId: command.workflowId,
-          deletedAt: command.createdAt,
+      return yield* decideWorkflowDelete({
+        entry: { kind: "planning", workflow },
+        readModel,
+        command,
+        deleteThreads: command.deleteThreads,
+        event: {
+          ...withEventBase({
+            aggregateKind: "project",
+            aggregateId: command.projectId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "project.workflow-deleted",
+          payload: {
+            projectId: command.projectId,
+            workflowId: command.workflowId,
+            deletedAt: command.createdAt,
+          },
         },
-      };
+      });
     }
 
     case "project.code-review-workflow.create": {
@@ -2765,20 +2772,26 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           detail: `Code review workflow '${command.workflowId}' does not exist.`,
         });
       }
-      return {
-        ...withEventBase({
-          aggregateKind: "project",
-          aggregateId: command.projectId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        }),
-        type: "project.code-review-workflow-deleted",
-        payload: {
-          projectId: command.projectId,
-          workflowId: command.workflowId,
-          deletedAt: command.createdAt,
+      return yield* decideWorkflowDelete({
+        entry: { kind: "codeReview", workflow },
+        readModel,
+        command,
+        deleteThreads: command.deleteThreads,
+        event: {
+          ...withEventBase({
+            aggregateKind: "project",
+            aggregateId: command.projectId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "project.code-review-workflow-deleted",
+          payload: {
+            projectId: command.projectId,
+            workflowId: command.workflowId,
+            deletedAt: command.createdAt,
+          },
         },
-      };
+      });
     }
 
     case "project.investigation-workflow.upsert":
@@ -2819,20 +2832,26 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           detail: `Investigation workflow '${command.workflowId}' does not exist.`,
         });
       }
-      return {
-        ...withEventBase({
-          aggregateKind: "project",
-          aggregateId: command.projectId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        }),
-        type: "project.investigation-workflow-deleted",
-        payload: {
-          projectId: command.projectId,
-          workflowId: command.workflowId,
-          deletedAt: command.createdAt,
+      return yield* decideWorkflowDelete({
+        entry: { kind: "investigation", workflow },
+        readModel,
+        command,
+        deleteThreads: command.deleteThreads,
+        event: {
+          ...withEventBase({
+            aggregateKind: "project",
+            aggregateId: command.projectId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "project.investigation-workflow-deleted",
+          payload: {
+            projectId: command.projectId,
+            workflowId: command.workflowId,
+            deletedAt: command.createdAt,
+          },
         },
-      };
+      });
     }
 
     default: {

@@ -3,6 +3,7 @@ import {
   type OrchestrationSkipDocumentReaderPassInput,
   type OrchestrationSkipDocumentReaderPassResult,
   type OrchestrationCreateWorkflowInput,
+  type OrchestrationDeleteWorkflowResult,
   type OrchestrationCreateDocumentWorkflowInput,
   type OrchestrationRetryWorkflowInput,
   type OrchestrationRetryWorkflowResult,
@@ -31,7 +32,10 @@ export interface WorkflowServiceShape {
   readonly createWorkflow: (input: CreateWorkflowInput) => Effect.Effect<PlanningWorkflowId, Error>;
   readonly archiveWorkflow: (workflowId: PlanningWorkflowId) => Effect.Effect<void, Error>;
   readonly unarchiveWorkflow: (workflowId: PlanningWorkflowId) => Effect.Effect<void, Error>;
-  readonly deleteWorkflow: (workflowId: PlanningWorkflowId) => Effect.Effect<void, Error>;
+  readonly deleteWorkflow: (
+    workflowId: PlanningWorkflowId,
+    deleteThreads?: boolean,
+  ) => Effect.Effect<OrchestrationDeleteWorkflowResult, Error>;
   readonly retryWorkflow: (
     input: OrchestrationRetryWorkflowInput,
   ) => Effect.Effect<OrchestrationRetryWorkflowResult, Error>;

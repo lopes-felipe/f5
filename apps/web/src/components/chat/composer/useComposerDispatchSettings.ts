@@ -507,7 +507,7 @@ export function useComposerDispatchSettings(input: ComposerDispatchSettingsInput
       // The effort stays explicit: the session may report a different default.
       const codexOptions = resolveCodexDispatchModelOptions(
         selectedModel,
-        draftModelOptions?.codex,
+        genericModelOptionsForDispatch?.codex,
         getProviderModelCapabilities(
           selectedProviderModels,
           selectedModel,
@@ -517,13 +517,7 @@ export function useComposerDispatchSettings(input: ComposerDispatchSettingsInput
       return codexOptions ? { codex: codexOptions } : undefined;
     }
     return genericModelOptionsForDispatch;
-  }, [
-    draftModelOptions?.codex,
-    genericModelOptionsForDispatch,
-    selectedModel,
-    selectedProvider,
-    selectedProviderModels,
-  ]);
+  }, [genericModelOptionsForDispatch, selectedModel, selectedProvider, selectedProviderModels]);
   const selectedModelSelectionOptionsForDispatch = useMemo(
     () =>
       selectedProvider === "codex"

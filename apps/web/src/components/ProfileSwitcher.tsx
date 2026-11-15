@@ -11,13 +11,14 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Separator } from "./ui/separator";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 export function ProfileSwitcher() {
   const { active, profiles, mismatch } = useProfileState();
 
   if (mismatch)
     return (
-      <Alert variant="warning" className="no-drag max-w-sm">
+      <Alert variant="warning" className="no-drag min-w-0 max-w-full">
         <TriangleAlertIcon />
         <AlertTitle>Profile changed</AlertTitle>
         <AlertDescription>This server is now serving a different profile.</AlertDescription>
@@ -33,16 +34,28 @@ export function ProfileSwitcher() {
 
   return (
     <Popover>
-      <PopoverTrigger
-        render={
-          <Button variant="ghost" size="xs" className="no-drag gap-1.5" aria-label="Switch profile">
-            <ProfileAvatar profile={active} size="sm" />
-            <span className="max-w-28 truncate">{active.name}</span>
-            <ChevronsUpDownIcon className="size-3 opacity-60" />
-          </Button>
-        }
-      />
-      <PopoverPopup className="w-80 p-0" align="start">
+      <Tooltip>
+        <PopoverTrigger
+          render={
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="no-drag min-w-0 max-w-full gap-1.5"
+                  aria-label="Switch profile"
+                >
+                  <ProfileAvatar profile={active} size="sm" />
+                  <span className="min-w-0 max-w-40 truncate">{active.name}</span>
+                  <ChevronsUpDownIcon className="size-3 opacity-60" />
+                </Button>
+              }
+            />
+          }
+        />
+        <TooltipPopup side="top">{active.name}</TooltipPopup>
+      </Tooltip>
+      <PopoverPopup className="w-80 p-0" side="top" align="start">
         <p className="px-3 pb-1.5 pt-3 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
           Profiles
         </p>
