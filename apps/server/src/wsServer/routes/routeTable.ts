@@ -48,12 +48,11 @@ export const answerFromTable = <Method extends RouteMethod, R>(
  * One table from two that own different methods. A method both own is a type
  * error where the tables are known statically, and throws when the server
  * builds its table otherwise: with a plain object spread the later table would
- * win and nothing would say so. Nest calls to merge more than two.
+ * win and nothing would say so. Use `routeTables` to merge more than two.
  */
 export const mergeRouteTables = <A extends RouteMethod, B extends RouteMethod, RA, RB>(
   first: RouteTable<A, RA>,
-  second: RouteTable<B, RB> &
-    ([A & B] extends [never] ? unknown : { readonly methodOwnedByBothTables: A & B }),
+  second: RouteTable<B, RB> & NoSharedMethod<A, B>,
 ): RouteTable<A | B, RA | RB> => {
   const shared = Object.keys(second).filter((method) => Object.hasOwn(first, method));
   if (shared.length > 0) {
@@ -61,6 +60,30 @@ export const mergeRouteTables = <A extends RouteMethod, B extends RouteMethod, R
   }
   return { ...first, ...second } as RouteTable<A | B, RA | RB>;
 };
+
+type NoSharedMethod<A extends RouteMethod, B extends RouteMethod> = [A & B] extends [never]
+  ? unknown
+  : { readonly methodOwnedByBothTables: A & B };
+
+/** Tables merged one after another: `table` is all of them so far, `and` adds the next. */
+export interface RouteTables<Method extends RouteMethod, R> {
+  readonly table: RouteTable<Method, R>;
+  readonly and: <Next extends RouteMethod, RNext>(
+    next: RouteTable<Next, RNext> & NoSharedMethod<Method, Next>,
+  ) => RouteTables<Method | Next, R | RNext>;
+}
+
+/**
+ * `mergeRouteTables` for any number of tables, without nesting:
+ * `routeTables(a).and(b).and(c).table`. Each `and` checks its table against
+ * every method before it, so a new domain is one more line.
+ */
+export const routeTables = <Method extends RouteMethod, R>(
+  table: RouteTable<Method, R>,
+): RouteTables<Method, R> => ({
+  table,
+  and: (next) => routeTables(mergeRouteTables(table, next)),
+});
 
 /** Runs a promise-returning operation; a rejection becomes the route's error message. */
 export const routePromise = <A>(operation: () => Promise<A>) =>
