@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from "vitest";
 import { GitCommandError, GitManagerError } from "./git/Errors.ts";
 import { type GitManagerShape } from "./git/Services/GitManager.ts";
 import { withProviderThreadAccess } from "./provider/providerThreadAccess.ts";
+import { TerminalError } from "./terminal/Services/Manager.ts";
 import { resolveWorkspaceReadPath } from "./wsServer";
 import * as scratchProject from "./project/scratchProject.ts";
 import {
@@ -274,6 +275,26 @@ describe("WebSocket Server", () => {
     h.server = null;
 
     expect(terminalManager.subscriptionCount()).toBe(0);
+  });
+
+  it("tells the client what the terminal manager refused", async () => {
+    const terminalManager = new MockTerminalManager();
+    const refusal = new TerminalError({ message: "Unknown terminal thread: thread-1" });
+    Object.assign(terminalManager, { write: () => Effect.fail(refusal) });
+    h.server = await createTestServer({ cwd: "/test", terminalManager });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.terminalWrite, {
+      threadId: "thread-1",
+      data: "ls\n",
+    });
+    // A terminal failure is not a route error, so the client reads the
+    // printed cause: the error's name and message, then where it was raised.
+    expect(Object.keys(response.error ?? {})).toEqual(["message"]);
+    expect(response.error?.message).toMatch(/^Error: Unknown terminal thread: thread-1(\n|$)/);
   });
 
   it("returns validation errors for invalid terminal open params", async () => {

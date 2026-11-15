@@ -380,6 +380,7 @@ import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
 import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
 import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
 import { scheduledTaskRoutes } from "./wsServer/routes/scheduledTaskRoutes.ts";
+import { terminalRoutes } from "./wsServer/routes/terminalRoutes.ts";
 import { upstreamPortRoutes } from "./wsServer/routes/upstreamPortRoutes.ts";
 import {
   answerFromTable,
@@ -4181,7 +4182,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }),
     )
     .and(upstreamPortRoutes(upstreamPorts))
-    .and(agentBridgeRoutes(agentBridge)).table;
+    .and(agentBridgeRoutes(agentBridge))
+    .and(
+      terminalRoutes({ terminals: terminalManager, startingShellFor: withTerminalThreadAccess }),
+    ).table;
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     const requestCwd = (request.body as { readonly cwd?: unknown }).cwd;
@@ -6225,39 +6229,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           accountGeneration:
             "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
         });
-
-      case WS_METHODS.terminalSnapshot:
-        return yield* terminalManager.snapshot(stripRequestTag(request.body));
-
-      case WS_METHODS.terminalOpen: {
-        const body = stripRequestTag(request.body);
-        return yield* withTerminalThreadAccess(body.threadId, terminalManager.open(body));
-      }
-
-      case WS_METHODS.terminalWrite: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.write(body);
-      }
-
-      case WS_METHODS.terminalResize: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.resize(body);
-      }
-
-      case WS_METHODS.terminalClear: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.clear(body);
-      }
-
-      case WS_METHODS.terminalRestart: {
-        const body = stripRequestTag(request.body);
-        return yield* withTerminalThreadAccess(body.threadId, terminalManager.restart(body));
-      }
-
-      case WS_METHODS.terminalClose: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.close(body);
-      }
 
       case WS_METHODS.previewOpen: {
         const body = stripRequestTag(request.body);
