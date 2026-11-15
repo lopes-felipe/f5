@@ -6,6 +6,7 @@
 - Run `bun run test:full` at least once before considering a task completed. It includes the fast workspace suite and the exhaustive real-Git matrix.
 - NEVER run `bun test`. Always use `bun run test` or `bun run test:full` (runs Vitest).
 - `bun run upstream-ports:check` must pass. After the one-time `scripts/migrate-upstream-ledger-v7.ts` migration, upstream tracking is written only by F5's Upstream page through its ledger PRs; never hand-edit `upstream/intervals`, `upstream/legacy` or `upstream/topics`, and never mix them with code changes. Port PRs end every commit and the PR description with the `Upstream-Topic:` lines from the port prompt.
+- Record each user-visible change as a new fragment file, `changes/<category>/<slug>.md`, holding `- ` bullets (see `changes/README.md`). Never add entries to `CHANGELOG.md` directly; release preparation folds the fragments in.
 
 ## Claude Token Usage and Sub-agents
 

@@ -49,10 +49,18 @@ If we have to guess what changed, we are much less likely to review it.
 ## Changelog entries
 
 The required `Changelog` check fails a PR that changes shipped code without adding a
-top-level bullet under `## [Unreleased]` in `CHANGELOG.md`. Describe the change the way
-a user would notice it. Releases publish these notes, so a missing entry means a
-separate notes PR at release time. Bullets added to a released section, rewording, and
-reordering existing entries do not count.
+changelog fragment: a new file `changes/<category>/<slug>.md` holding one or more `- `
+bullets, where the category is `added`, `changed`, `performance`, `deprecated`,
+`removed`, `fixed` or `security` (see [`changes/README.md`](changes/README.md)).
+Describe the change the way a user would notice it. Releases publish these notes, so a
+missing entry means a separate notes PR at release time. Editing an existing fragment
+does not count as a new entry.
+
+Each PR adds its own file, so entries never conflict between parallel PRs. Do not add
+bullets to `CHANGELOG.md`; release preparation moves the fragments into it. A new
+bullet under `## [Unreleased]` still passes for PRs opened before fragments, with a
+warning. The check fails, even with the `no-changelog` label, when a file under
+`changes/` has the wrong path or content, since it would break release preparation.
 
 The check passes without an entry when:
 

@@ -1,0 +1,1 @@
+- VS Code and file-manager actions for local paths and project breadcrumbs.

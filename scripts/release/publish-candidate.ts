@@ -31,6 +31,7 @@ import {
   type PublicationQualification,
 } from "./release-upgrade-proof.ts";
 import { releasePool } from "./release-concurrency.ts";
+import { releaseNotesFor } from "./release-notes.ts";
 import { releaseFields, releasePhase, releaseRetry } from "./release-observability.ts";
 import {
   createDraft,
@@ -263,28 +264,18 @@ export async function publishCandidate(
   git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
   if (!release) {
     const notes = join(directory, "..", "notes.md");
-    if (candidate.kind === "stable") {
-      const text = show(candidate.sourceSha, "CHANGELOG.md") ?? "";
-      const section = text.split("## [" + candidate.version + "]")[1];
-      if (!section) throw new Error("Stable changelog entry missing");
-      writeFileSync(
-        notes,
-        section
-          .split("\n## [")[0]!
-          .replace(/^\s*-\s*\d{4}-\d{2}-\d{2}\s*/, "")
-          .trim() + "\n",
-      );
-    } else
-      writeFileSync(
-        notes,
-        "Automated beta from " +
-          candidate.sourceSha +
-          ".\n\nSource and validation: https://github.com/" +
-          repository +
-          "/actions/runs/" +
-          candidate.runId +
-          "\n",
-      );
+    writeFileSync(
+      notes,
+      releaseNotesFor({
+        kind: candidate.kind,
+        version: candidate.version,
+        sourceSha: candidate.sourceSha,
+        runUrl: "https://github.com/" + repository + "/actions/runs/" + candidate.runId,
+        releases,
+        git,
+        show,
+      }),
+    );
     release = await releasePhase("draftCreation", () =>
       createDraft(tag, candidate.kind === "beta", notes),
     );

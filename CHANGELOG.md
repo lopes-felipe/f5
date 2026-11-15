@@ -2,45 +2,9 @@
 
 All notable changes to F5 are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) for the published CLI (`t3`) and the desktop app.
 
+Unreleased entries now live as one file each under [`changes/`](changes/README.md), and each stable release folds them into its section here. Run `bun run changelog:preview` to see what the next release will list.
+
 ## [Unreleased]
-
-### Added
-
-- Conversation usage limits above the sidebar profile, with pinning and account-scoped refresh.
-- Separate prompt and response navigation rails, optional follow controls, and visible earlier-history loading.
-- Markdown continuation in the composer, supported High effort defaults, and compact per-turn token footers.
-- Workflow archive, restore and explicit deletion actions, with shared-thread protection and atomic child deletion.
-- VS Code and file-manager actions for local paths and project breadcrumbs.
-- Start, queue messages to, list and read threads from a terminal with `f5 thread` (or `t3 thread`). Use `--wait` to print the reply and distinguish failed runs from threads or paused queues waiting for you. Local commands use your project defaults, fall back to a ready provider when needed, and can access all projects without enabling the external Agent Bridge. Lists load only the newest 100 threads; transcript reads fetch bounded pages while preserving full text.
-- The Claude card on the Usage page lists your plan's limit resets (such as **Full reset** and **Fable reset**) with their expiry, and each has a button that uses it after you confirm, as on claude.ai. A reset that can't be used yet says why, such as "Usable once you hit a limit". When your tightest Claude limit is used up, the reset Claude suggests next appears beside it, and threads paused on that limit resume once it is cleared. F5 reads the sign-in Claude Code already stores, so macOS may ask once to let F5 read it from the Keychain.
-- Desktop users can enable **Keep running threads synced** in Conversation settings to keep all active threads ready to open, including threads outside the recent-thread cache.
-- Choose a project image in Project settings by entering its path inside the project. Emoji, colored symbols and automatic monograms remain available.
-- Opt into **Proactive panels** in Conversation settings to open linked pull requests and completed-turn diffs. Manual panel choices take priority and dismissed turn diffs stay dismissed.
-- Linux builds include a Debian/Ubuntu package alongside the AppImage. Installed Debian packages can download and install updates from F5.
-
-### Fixed
-
-- Workflow file-tree drops retain their mentions when editor focus arrives before a queued React render.
-- Workflow deletion retries failed provider shutdowns and offers one cleanup prompt for orphaned worktrees. Reconnects clean retained deleted-thread state without replaying every historical deletion.
-
-- Forgejo PR watches pass once required checks finish without failure, even if optional checks fail. Skipped jobs and warnings no longer keep watches pending. PR Hub refreshes Forgejo check status during polling and handles server-capped status pages and same-second check updates.
-- Agent Bridge tool calls whose text contains Unicode line or paragraph separators no longer fail with a parse error.
-- Codex turns now record prompt-cache usage across all model requests, restoring cache history and cache-miss indicators while keeping context occupancy separate. Previously unreported historical usage remains unavailable.
-- Pull requests is back in the sidebar's primary navigation with its "needs you" badge, alongside Usage. Usage limits sit above the profile footer and link to the full Usage page. The Pull requests page shows Settings in the footer; Settings and Usage retain their Back action.
-- Proactive panels preserve manual choices across thread visits, keep dismissed PR panels closed, and open turn diffs without stale file previews or extra browser history entries. Rejected background message loads release their event-buffer retainers so stopped threads can leave the cache.
-- Project image choices wait for **Save image** before changing the saved icon. Linux downloads offer AppImage alongside Debian packages.
-- Background thread sync batches updates and backs off failed loads. Its desktop-only switch is disabled when using F5 in a browser.
-- Large worktree submodule clones can run past five minutes while reporting progress. Updates with no output for five minutes stop with a warning instead of leaving worktree preparation stuck.
-- PR Hub no longer shows "results may be incomplete" while GitHub's request budget only delays part of a refresh. Waiting searches and detail reads continue on the next poll and are listed under the sync details line; your own pull requests and personal review requests are read first. The **Discover PRs from GitHub notifications** setting is now saved, and saving one PR Hub setting no longer clears text you were typing in another.
-
-### Changed
-
-- Updated F5 icons, sidebar/header controls, model ordering, Find closing and composer readiness.
-- Usage limits use a shared snapshot cache and serialized account refreshes.
-
-- Home is now a triage queue. Threads are grouped into **Needs a decision**, **Ready for review** (failed turns and finished work you have not opened), **Running** (with one row per active workflow) and **Pinned**, and the pane beside the queue shows the selected thread's request, error or last reply without opening it. From that pane you can approve or decline a request, answer a question, implement or revise a plan, resume a paused queue, reply to finished or failed work and queue a message behind a running turn; messages use the thread's own model and modes. `J`/`K` move, `O` opens, `E` settles, `H` snoozes, `P` pins and `R` starts a reply; `Enter` approves once or implements the plan (and opens other threads), `D` declines; `mod+shift+H` opens Home from anywhere. A line above the queue counts pull requests and upstream topics waiting on you and shows the next scheduled run, a usage limit above 50% and low disk space. The greeting, the resume banner, the Recent list and the `mod+1`–`9` project shortcut are gone from Home; recent threads are in the sidebar's Recent view.
-- The box at the top of Home starts the thread itself. Pick the project, model, effort, **Agent** or **Plan**, access and **Local** or **New worktree**, then press `Enter`: the thread starts in the background and Home stays open, and `mod+Enter` also opens it. The box follows the **Send shortcut** setting: if it asks for `mod+Enter`, `Enter` adds a line and `mod+Enter` sends and stays. A send that fails keeps your text, and sending the same text again with the same project and settings after a lost connection starts one thread, not two. The confirmation's **Open** button waits for the new thread to arrive before it opens it. Text that begins with a `/` command or a skill, and anything that needs attachments or mentions, goes to the full composer, which the expand button opens with your text and settings.
-- PR Hub's **Needs you**, the sidebar badge and pull request notifications now cover only reviews requested from you personally, your own pull requests that need a fix, and your pull requests that are ready to merge. A review requested from one of your teams reads "Review requested from your team" and no longer counts; add a team under **Settings → Git → Teams whose review requests are mine** to count its requests as yours. Pull requests with no activity for 30 days are stale: they leave **Needs you** and sort last (**Move PRs to Stale after**, 0 turns it off). Lists show the most recently updated pull request first instead of the longest-waiting one, **Ignore** has an **Undo** button, and search accepts `repo:owner/name`.
 
 ## [0.1.9] - 2026-11-14
 

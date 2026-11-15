@@ -6,7 +6,7 @@ import { pendingStableRequests } from "./release/release-candidate.ts";
 import { parseReleaseIntent } from "./release/release-intent.ts";
 import { gh, git, repository, stableRequests } from "./release/release-github.ts";
 import { fetchReleaseSummaries } from "./lib/release-profile.ts";
-import { prepareChangelog } from "./prepare-release.ts";
+import { refoldChangelog, releaseChangelog } from "./prepare-release.ts";
 import {
   releasePackageFiles,
   updateReleasePackageVersions,
@@ -116,25 +116,22 @@ if ("action" in intent) {
 } else if (intent.supersedes) {
   if (current !== intent.version)
     throw new Error("Recovery must retain the same unpublished version");
+  // Fragments that landed after the failed preparation belong to this same version.
+  refoldChangelog(".", intent.version);
 } else {
   if (compareCliReleaseVersions(intent.version, current) <= 0)
     throw new Error("Stable version must increase");
+  // Fragments are validated before any file changes, then folded into CHANGELOG.md and deleted.
+  releaseChangelog(".", intent.version, new Date().toISOString().slice(0, 10));
   updateReleasePackageVersions(intent.version);
-  writeFileSync(
-    "CHANGELOG.md",
-    prepareChangelog(
-      readFileSync("CHANGELOG.md", "utf8"),
-      intent.version,
-      new Date().toISOString().slice(0, 10),
-    ),
-  );
   execFileSync("bun", ["install", "--lockfile-only", "--ignore-scripts"], { stdio: "inherit" });
 }
 writeFileSync("release-intent.json", JSON.stringify(intent, null, 2) + "\n");
 execFileSync("bun", ["fmt"], { stdio: "inherit" });
 git(["config", "user.name", "F5 Release Automation"]);
 git(["config", "user.email", "release-automation@users.noreply.github.com"]);
-git(["add", ...releasePackageFiles, "bun.lock", "CHANGELOG.md", "release-intent.json"]);
+// "changes" stages deleted fragments; changes/README.md keeps the pathspec matching.
+git(["add", ...releasePackageFiles, "bun.lock", "CHANGELOG.md", "changes", "release-intent.json"]);
 git(["commit", "-m", title + " (" + intent.requestId + ")"]);
 git(["push", "origin", "HEAD:refs/heads/" + branch]);
 openPreparationPr();
