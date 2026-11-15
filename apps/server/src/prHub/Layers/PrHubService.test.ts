@@ -1589,12 +1589,32 @@ it.effect("updates many pull requests in one transaction and one publication", (
     );
 
     yield* sql`UPDATE pr_hub_viewer_state SET last_seen_fingerprint = NULL, seen_baseline_json = NULL`;
+    const seenState = () =>
+      sql<{ seen: number; baseline: number }>`
+        SELECT count(*) FILTER (WHERE last_seen_fingerprint = attention_fingerprint) AS seen,
+          count(seen_baseline_json) AS baseline FROM pr_hub_viewer_state`;
+    // Marking seen covers what was on screen. A pull request whose attention changed
+    // since, or that came without a fingerprint, stays unread.
+    const onScreen = Object.fromEntries(
+      (yield* service.getSnapshot).pullRequests.map((pr) => [pr.key, pr.attentionFingerprint]),
+    );
     assert.deepStrictEqual(yield* service.bulkUpdate({ keys, action: "mark_seen" }), {
-      updated: 3,
+      updated: 0,
     });
-    const seen = yield* sql<{ seen: number; baseline: number }>`
-      SELECT count(*) FILTER (WHERE last_seen_fingerprint = attention_fingerprint) AS seen,
-        count(seen_baseline_json) AS baseline FROM pr_hub_viewer_state`;
+    assert.deepStrictEqual(
+      yield* service.bulkUpdate({
+        keys,
+        action: "mark_seen",
+        seenFingerprints: { ...onScreen, [keys[0]!]: "an-older-fingerprint" },
+      }),
+      { updated: 2 },
+    );
+    assert.deepStrictEqual(yield* seenState(), [{ seen: 2, baseline: 2 }]);
+    assert.deepStrictEqual(
+      yield* service.bulkUpdate({ keys, action: "mark_seen", seenFingerprints: onScreen }),
+      { updated: 3 },
+    );
+    const seen = yield* seenState();
     assert.deepStrictEqual(seen, [{ seen: 3, baseline: 3 }]);
     assert.isTrue(
       (yield* service.getSnapshot).pullRequests.every((pr) => pr.changesSinceSeen?.length === 0),

@@ -1,7 +1,12 @@
 import { PullRequestKey, type TrackedPullRequest } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
-import { parsePrSeenBaseline, prChangesSinceSeen, prSeenBaseline } from "./seenBaseline.ts";
+import {
+  parsePrSeenBaseline,
+  prChangesSinceSeen,
+  prSeenBaseline,
+  settlePrNeverOpened,
+} from "./seenBaseline.ts";
 
 const AT = "2026-11-14T08:00:00.000Z";
 
@@ -65,11 +70,38 @@ describe("prChangesSinceSeen", () => {
   });
 
   it("reads a pull request never opened as new only while it waits for the viewer", () => {
+    // The marker is set when the snapshot is built and settled for the section on read.
+    const settled = (section: NonNullable<TrackedPullRequest["section"]>, pr = makePr()) =>
+      settlePrNeverOpened(prChangesSinceSeen(pr, null, "me"), pr, section, "me");
     for (const section of ["review", "action", "ready"] as const)
-      expect(prChangesSinceSeen(makePr({ section }), null, "me")).toEqual([{ kind: "new" }]);
+      expect(settled(section)).toEqual([{ kind: "new" }]);
     for (const section of ["waiting", "drafts", "team", "other", "stale"] as const)
-      expect(prChangesSinceSeen(makePr({ section }), null, "me")).toEqual([]);
+      expect(settled(section)).toEqual([]);
     expect(prChangesSinceSeen(makePr({ state: "merged" }), null, "me")).toEqual([]);
+    // The same answer is the same array, so an unchanged row is recognised as unchanged.
+    expect(settled("review")).toBe(settled("review"));
+    expect(settled("stale")).toBe(settled("team"));
+    // Changes since a real look are left as they are, in any section.
+    const real = prChangesSinceSeen(makePr({ commentsCount: 5 }), seen(), "me");
+    expect(settlePrNeverOpened(real, makePr(), "stale", "me")).toBe(real);
+    expect(settlePrNeverOpened(undefined, makePr(), "review", "me")).toBeUndefined();
+  });
+
+  it("says what the viewer's own pull request needs instead of calling it new", () => {
+    const own = (
+      overrides: Partial<TrackedPullRequest>,
+      section: "ready" | "action" = "action",
+    ) => {
+      const pr = makePr({ author: "Me", roles: ["author"], ...overrides });
+      return settlePrNeverOpened(prChangesSinceSeen(pr, null, "me"), pr, section, "me");
+    };
+    expect(own({ attentionState: "ready_to_merge" }, "ready")).toEqual([{ kind: "ready" }]);
+    expect(own({ reviewDecision: "changes_requested" })).toEqual([{ kind: "changes_requested" }]);
+    expect(own({ checkRollup: "failure" })).toEqual([{ kind: "ci_failed" }]);
+    expect(own({ mergeable: "conflicting" })).toEqual([{ kind: "conflict" }]);
+    expect(own({ commentsCount: 4 })).toEqual([{ kind: "comments", count: 4 }]);
+    expect(own({ commentsCount: 4 })).toBe(own({ commentsCount: 4 }));
+    expect(own({ commentsCount: 0 })).toEqual([{ kind: "new" }]);
   });
 
   it("counts new comments and notices new commits from someone else", () => {

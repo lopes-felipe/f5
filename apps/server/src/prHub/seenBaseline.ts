@@ -70,21 +70,64 @@ export function parsePrSeenBaseline(json: string | null | undefined): PrSeenBase
 const NEEDS_VIEWER: ReadonlySet<PrHubSection> = new Set(["review", "action", "ready"]);
 const failing = (rollup: TrackedPullRequest["checkRollup"] | undefined) =>
   rollup === "failure" || rollup === "error";
+const isOwn = (pr: TrackedPullRequest, viewerLogin: string | null) =>
+  pr.author !== null &&
+  viewerLogin !== null &&
+  pr.author.toLowerCase() === viewerLogin.toLowerCase();
+
+/** Shared, so a row read twice with nothing changed keeps the same array. */
+const NEVER_OPENED: readonly PrHubChange[] = [{ kind: "new" }];
+const NOTHING: readonly PrHubChange[] = [];
+const OWN_NEED = {
+  ready: [{ kind: "ready" }],
+  changes_requested: [{ kind: "changes_requested" }],
+  ci_failed: [{ kind: "ci_failed" }],
+  conflict: [{ kind: "conflict" }],
+} as const satisfies Record<string, readonly PrHubChange[]>;
+const ownComments = new Map<number, readonly PrHubChange[]>();
+
+/**
+ * What a pull request never opened shows, for the section it is in now. Sections follow
+ * the clock and the settings, so this is settled on every read and not when the snapshot
+ * is built: a row reads as new as soon as it waits for the viewer, and stops when it goes
+ * stale or moves to the team queue. Elsewhere it stays quiet, so a first sync does not
+ * mark a whole team queue unread.
+ *
+ * The viewer's own pull request is not news to them. It says what it needs instead.
+ */
+export function settlePrNeverOpened(
+  changes: readonly PrHubChange[] | undefined,
+  pr: TrackedPullRequest,
+  section: PrHubSection,
+  viewerLogin: string | null,
+): readonly PrHubChange[] | undefined {
+  if (changes?.length !== 1 || changes[0]?.kind !== "new") return changes;
+  if (!NEEDS_VIEWER.has(section)) return NOTHING;
+  if (!isOwn(pr, viewerLogin)) return changes;
+  if (pr.attentionState === "ready_to_merge") return OWN_NEED.ready;
+  if (pr.reviewDecision === "changes_requested") return OWN_NEED.changes_requested;
+  if (failing(pr.checkRollup)) return OWN_NEED.ci_failed;
+  if (pr.mergeable === "conflicting") return OWN_NEED.conflict;
+  if (pr.commentsCount > 0) {
+    const known = ownComments.get(pr.commentsCount);
+    if (known) return known;
+    const counted = [{ kind: "comments", count: pr.commentsCount }] as const;
+    if (ownComments.size < 256) ownComments.set(pr.commentsCount, counted);
+    return counted;
+  }
+  return changes;
+}
 
 /**
  * What changed since the viewer last looked, most important first. A pull request never
- * opened is new while it waits for the viewer; elsewhere it stays quiet, so a first sync
- * does not mark a whole team queue unread.
+ * opened carries one marker, which `settlePrNeverOpened` resolves on each read.
  */
 export function prChangesSinceSeen(
   pr: TrackedPullRequest,
   baseline: PrSeenBaseline | null,
   viewerLogin: string | null,
-): PrHubChange[] {
-  if (!baseline)
-    return pr.state === "open" && pr.section && NEEDS_VIEWER.has(pr.section)
-      ? [{ kind: "new" }]
-      : [];
+): readonly PrHubChange[] {
+  if (!baseline) return pr.state === "open" ? NEVER_OPENED : NOTHING;
   if (pr.state !== "open")
     return baseline.state !== undefined && baseline.state !== pr.state ? [{ kind: pr.state }] : [];
   if (!verified(pr)) return [];
@@ -105,10 +148,7 @@ export function prChangesSinceSeen(
     changes.push({ kind: "ci_failed" });
   if (became("mergeable", "conflicting")) changes.push({ kind: "conflict" });
   // The author pushed their own commits; reporting them back is noise.
-  const own =
-    pr.author !== null &&
-    viewerLogin !== null &&
-    pr.author.toLowerCase() === viewerLogin.toLowerCase();
+  const own = isOwn(pr, viewerLogin);
   if (!own && baseline.headRefOid && pr.headRefOid && baseline.headRefOid !== pr.headRefOid)
     changes.push({ kind: "commits" });
   if (baseline.commentsCount !== undefined && pr.commentsCount > baseline.commentsCount)

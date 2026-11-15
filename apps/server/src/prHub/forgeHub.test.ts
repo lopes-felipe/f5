@@ -1,5 +1,6 @@
 import { it, assert } from "@effect/vitest";
 import { Effect, Stream } from "effect";
+import { SqlClient } from "effect/unstable/sql";
 import {
   DEFAULT_SERVER_SETTINGS,
   PullRequestKey,
@@ -353,11 +354,34 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
           updated: 1,
         });
         assert.equal((yield* hub.getSnapshot).pullRequests[0]?.snoozedUntil, until);
+        // This hub keeps no seen state: marking seen changes and publishes nothing.
+        const revision = (yield* hub.getOverview({})).revision;
         assert.deepStrictEqual(yield* hub.bulkUpdate({ keys, action: "mark_seen" }), {
-          updated: 1,
+          updated: 0,
         });
+        assert.equal((yield* hub.getOverview({})).revision, revision);
+
+        // A write that fails leaves storage and memory as they were, and publishes nothing.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TRIGGER fail_bulk BEFORE UPDATE ON forge_pr_hub_state
+          BEGIN SELECT RAISE(ABORT, 'boom'); END`;
+        assert.equal(
+          (yield* Effect.exit(hub.bulkUpdate({ keys, action: "ignore" })))._tag,
+          "Failure",
+        );
+        assert.isNull((yield* hub.getSnapshot).pullRequests[0]?.ignoredAt ?? null);
+        assert.equal((yield* hub.getOverview({})).revision, revision);
+        const stored = yield* sql<{ data_json: string }>`SELECT data_json FROM forge_pr_hub_state`;
+        assert.isTrue(stored.every((row) => !JSON.parse(row.data_json).pr.ignoredAt));
+        yield* sql`DROP TRIGGER fail_bulk`;
+
         assert.deepStrictEqual(yield* hub.bulkUpdate({ keys, action: "ignore" }), { updated: 1 });
-        assert.isNotNull((yield* hub.getSnapshot).pullRequests[0]?.ignoredAt ?? null);
+        assert.isNotNull(
+          [
+            ...(yield* hub.getSnapshot).pullRequests,
+            ...(yield* hub.getSnapshot).recentlyResolved,
+          ].find((candidate) => candidate.key === pr.key)?.ignoredAt ?? null,
+        );
       }),
     ).pipe(Effect.provide(SqliteClient.layerMemory())),
   );

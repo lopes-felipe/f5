@@ -1,4 +1,9 @@
-import type { NativeApi, PullRequestKey, TrackedPullRequest } from "@t3tools/contracts";
+import {
+  PR_HUB_BULK_MAX_KEYS,
+  type NativeApi,
+  type PullRequestKey,
+  type TrackedPullRequest,
+} from "@t3tools/contracts";
 
 import { resolveMergeMethod, type PrMergeMethod } from "./mergeMethod";
 
@@ -59,6 +64,33 @@ export function prunePrSelection<Key>(
   const kept = [...selected].filter((key) => visible.has(key));
   return kept.length === selected.size ? selected : new Set(kept);
 }
+
+/** One bulk request takes this many pull requests. */
+export const PR_BULK_SELECTION_LIMIT = PR_HUB_BULK_MAX_KEYS;
+
+/**
+ * Adds rows to a selection up to the limit, keeping what was already ticked. `dropped`
+ * counts the rows left out.
+ */
+export function capPrSelection<Key>(
+  previous: ReadonlySet<Key>,
+  next: ReadonlySet<Key>,
+  limit = PR_BULK_SELECTION_LIMIT,
+): { readonly selected: ReadonlySet<Key>; readonly dropped: number } {
+  if (next.size <= limit) return { selected: next, dropped: 0 };
+  const kept = new Set([...next].filter((key) => previous.has(key)));
+  for (const key of next) {
+    if (kept.size >= limit) break;
+    kept.add(key);
+  }
+  return { selected: kept, dropped: next.size - kept.size };
+}
+
+/** The attention each row shows now, by key: what "mark seen" is allowed to dismiss. */
+export const prSeenFingerprints = (
+  rows: readonly Pick<TrackedPullRequest, "key" | "attentionFingerprint">[],
+): Record<string, string> =>
+  Object.fromEntries(rows.map((pr) => [pr.key, pr.attentionFingerprint]));
 
 /** Merging is the one bulk step that cannot be undone, so one confirmation covers few. */
 export const PR_BULK_MERGE_LIMIT = 10;

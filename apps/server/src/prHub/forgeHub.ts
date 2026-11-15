@@ -735,24 +735,30 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             const until = input.until;
             if (input.action === "snooze" && !(until && Date.parse(until) > Date.now()))
               return yield* error("Choose a snooze time in the future.", "generic");
+            // Nothing to store and nothing changed, so nothing is written or published.
+            if (input.action === "mark_seen") return { updated: 0 };
             const patch: Partial<TrackedPullRequest> =
               input.action === "snooze"
                 ? { snoozedUntil: until ?? null }
-                : input.action === "ignore"
-                  ? { ignoredAt: new Date().toISOString() }
-                  : {};
-            const previous = snapshot();
-            let updated = 0;
-            for (const key of new Set(input.keys)) {
+                : { ignoredAt: new Date().toISOString() };
+            const changed = [...new Set(input.keys)].flatMap((key) => {
               const stored = state.get(key);
-              if (!stored) continue;
-              const next = { ...stored, pr: { ...stored.pr, ...patch } };
-              yield* persist(next);
-              state.set(key, next);
-              updated++;
-            }
-            if (updated > 0) yield* publish(previous);
-            return { updated };
+              return stored ? [{ ...stored, pr: { ...stored.pr, ...patch } }] : [];
+            });
+            if (changed.length === 0) return { updated: 0 };
+            // All rows are stored or none is. Memory follows only once storage holds them,
+            // so a failed write leaves both as they were.
+            yield* sql
+              .withTransaction(Effect.forEach(changed, persist, { discard: true }))
+              .pipe(
+                Effect.mapError(() =>
+                  error("Could not persist the pull request snapshot.", "generic"),
+                ),
+              );
+            const previous = snapshot();
+            for (const next of changed) state.set(next.pr.key, next);
+            yield* publish(previous);
+            return { updated: changed.length };
           }),
         ),
       acknowledgeAttention: (input) =>

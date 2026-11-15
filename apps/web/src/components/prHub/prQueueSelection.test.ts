@@ -1,4 +1,5 @@
 import {
+  PR_HUB_BULK_MAX_KEYS,
   PullRequestKey,
   type PrHubComparisonIdentity,
   type TrackedPullRequest,
@@ -6,8 +7,11 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  capPrSelection,
   PR_BULK_MERGE_LIMIT,
+  PR_BULK_SELECTION_LIMIT,
   prBulkMergePlan,
+  prSeenFingerprints,
   prSelectionState,
   prunePrSelection,
   runPrBulkMerge,
@@ -56,6 +60,34 @@ describe("queue selection", () => {
     expect(sorted(prunePrSelection(selection, ["a", "b"]))).toEqual(["a"]);
     const empty = new Set<string>();
     expect(prunePrSelection(empty, [])).toBe(empty);
+  });
+
+  it("stops at what one bulk request takes, keeping what was already ticked", () => {
+    const next = new Set(rows);
+    expect(capPrSelection(new Set(["a"]), next)).toEqual({ selected: next, dropped: 0 });
+    // "d" and "e" were ticked before; the rest fills up in screen order.
+    const capped = capPrSelection(new Set(["d", "e"]), next, 3);
+    expect(sorted(capped.selected)).toEqual(["a", "d", "e"]);
+    expect(capped.dropped).toBe(2);
+    expect(PR_BULK_SELECTION_LIMIT).toBe(PR_HUB_BULK_MAX_KEYS);
+  });
+
+  it("sends each row to mark seen with the attention it shows", () => {
+    expect(
+      prSeenFingerprints([
+        {
+          key: PullRequestKey.makeUnsafe("github:github.com/octo/repo#1"),
+          attentionFingerprint: "x",
+        },
+        {
+          key: PullRequestKey.makeUnsafe("github:github.com/octo/repo#2"),
+          attentionFingerprint: "y",
+        },
+      ]),
+    ).toEqual({
+      "github:github.com/octo/repo#1": "x",
+      "github:github.com/octo/repo#2": "y",
+    });
   });
 });
 

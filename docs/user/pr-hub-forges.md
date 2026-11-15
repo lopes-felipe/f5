@@ -95,20 +95,27 @@ the forge.
 A row is bold when something happened to the pull request since you last opened it. The first
 two changes are written after its number, for example **2 new comments · Checks failed**.
 
-| Text                                  | Meaning                                                |
-| ------------------------------------- | ------------------------------------------------------ |
-| **New**                               | It needs you and you have not opened it yet            |
-| **New commits**                       | Someone else pushed (your own pushes are not reported) |
-| **1 new comment**, **3 new comments** | Comments added to the conversation                     |
-| **Checks failed**, **Checks passed**  | Checks started failing, or recovered                   |
-| **Approved**, **Changes requested**   | A review changed the decision                          |
-| **Conflicts**                         | The branch no longer merges cleanly                    |
-| **Ready to merge**                    | Reviews and checks now allow the merge                 |
-| **Merged**, **Closed**                | It was merged or closed                                |
+| Text                                  | Meaning                                                      |
+| ------------------------------------- | ------------------------------------------------------------ |
+| **New**                               | Someone else's, it needs you, and you have not opened it yet |
+| **New commits**                       | Someone else pushed (your own pushes are not reported)       |
+| **1 new comment**, **3 new comments** | Comments added to the conversation                           |
+| **Checks failed**, **Checks passed**  | Checks started failing, or recovered                         |
+| **Approved**, **Changes requested**   | A review changed the decision                                |
+| **Conflicts**                         | The branch no longer merges cleanly                          |
+| **Ready to merge**                    | Reviews and checks now allow the merge                       |
+| **Merged**, **Closed**                | It was merged or closed                                      |
 
 Opening a pull request in the peek or on its page marks it seen. The bell in the title bar
 shows how many pull requests in the queue have changes and lists the 20 most recent; select
-one to open it, or **Mark all seen** to clear the ones listed.
+one to open it, or **Mark these seen** to clear the ones listed. A pull request that changed
+again after the list was read stays unread.
+
+Your own pull request that you have not opened here says what it needs (**Ready to merge**,
+**Checks failed**, **Changes requested**, **Conflicts** or its comments) instead of **New**.
+A pull request you have never opened is marked only while it is in **Review requested**,
+**Your action** or **Ready to merge**: one that goes stale or moves to the team queue is no
+longer marked.
 
 Pull requests found by the first sync of an account start as seen. Changes are tracked for
 GitHub accounts; pull requests on other forges are never marked.
@@ -120,12 +127,14 @@ Tick the checkbox at the start of a row to select it. A bar appears at the botto
 - <kbd>X</kbd> ticks the row under the cursor.
 - Shift-click a row to tick every row from the last one you ticked to it.
 - The checkbox in a section's header ticks every row loaded in that section.
+- A selection holds at most 200 pull requests. F5 says when rows were left out; act on the
+  selection, then select the rest.
 
 | Button          | What it does                                                                |
 | --------------- | --------------------------------------------------------------------------- |
 | **Snooze**      | Hides the selection until the time you pick                                 |
 | **Ignore**      | Moves the selection to **Ignored**, where you can restore each pull request |
-| **Mark seen**   | Clears the changes on the selection                                         |
+| **Mark seen**   | Clears the changes shown on the selection                                   |
 | **Merge ready** | Merges the selected pull requests that are in **Ready to merge**            |
 | **Clear**       | Unticks everything. <kbd>Esc</kbd> does the same                            |
 

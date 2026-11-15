@@ -32,8 +32,10 @@ import { toastManager } from "../ui/toast";
 import { defaultSnoozeUntil } from "./prHubPresentation";
 import {
   prBulkMergePlan,
+  prSeenFingerprints,
   runPrBulkMerge,
   type PrBulkMergeItem,
+  type PrBulkMergePlan,
   type PrBulkMergeResult,
 } from "./prQueueSelection";
 
@@ -86,16 +88,19 @@ function MergeRow({
   );
 }
 
-/** One confirmation for every ready pull request of the selection, then one merge at a time. */
-function PrBulkMergeDialog({
-  items,
-  overLimit,
+/**
+ * One confirmation for every ready pull request of the selection, then one merge at a time.
+ * The plan is the one made when the dialog opened: a merged pull request leaves the queue
+ * and the selection, and must stay in this list with its result.
+ */
+export function PrBulkMergeDialog({
+  plan,
   onClose,
 }: {
-  items: readonly PrBulkMergeItem[];
-  overLimit: number;
+  plan: PrBulkMergePlan;
   onClose: (merged: number) => void;
 }) {
+  const { items, overLimit } = plan;
   const [results, setResults] = useState<ReadonlyMap<PullRequestKey, PrBulkMergeResult>>(
     () => new Map(),
   );
@@ -168,15 +173,17 @@ function PrBulkMergeDialog({
 export function PrQueueBulkBar({
   selected,
   onClear,
+  onMerge,
 }: {
   /** The ticked rows, in the order they are on screen. */
   selected: readonly TrackedPullRequest[];
   onClear: () => void;
+  /** Opens the merge confirmation for this plan; its owner keeps it open through the run. */
+  onMerge: (plan: PrBulkMergePlan) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [snoozing, setSnoozing] = useState(false);
   const [snoozeUntil, setSnoozeUntil] = useState(defaultSnoozeUntil);
-  const [merging, setMerging] = useState(false);
   const configured = useSettings((settings) => settings.prHubDefaultMergeMethod);
   const lastUsed = useAppSettingsSelector((settings) => settings.prHubLastMergeMethods);
   const plan = prBulkMergePlan(selected, { configured, lastUsed });
@@ -195,9 +202,15 @@ export function PrQueueBulkBar({
         action,
         accountId: getPrHubSelectedAccountId(),
         ...(until ? { until } : {}),
+        // Marking seen covers what these rows show now, not what arrives meanwhile.
+        ...(action === "mark_seen" ? { seenFingerprints: prSeenFingerprints(selected) } : {}),
       })
       .then(({ updated }) => {
-        toastManager.add({ type: "success", title: done(updated) });
+        toastManager.add(
+          updated > 0
+            ? { type: "success", title: done(updated) }
+            : { type: "info", title: "Nothing changed" },
+        );
         onClear();
       })
       .catch((error: unknown) =>
@@ -269,23 +282,13 @@ export function PrQueueBulkBar({
         <CheckCheckIcon /> Mark seen
       </Button>
       {plan.items.length > 0 ? (
-        <Button size="xs" variant="outline" disabled={busy} onClick={() => setMerging(true)}>
+        <Button size="xs" variant="outline" disabled={busy} onClick={() => onMerge(plan)}>
           <GitMergeIcon /> Merge ready ({plan.items.length})
         </Button>
       ) : null}
       <Button size="xs" variant="ghost" className="ms-auto" onClick={onClear}>
         <XIcon /> Clear
       </Button>
-      {merging ? (
-        <PrBulkMergeDialog
-          items={plan.items}
-          overLimit={plan.overLimit}
-          onClose={(merged) => {
-            setMerging(false);
-            if (merged > 0) onClear();
-          }}
-        />
-      ) : null}
     </div>
   );
 }

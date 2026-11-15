@@ -258,6 +258,10 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
           Effect.gen(function* () {
             let count = 0;
             for (const { key, parsed } of targets) {
+              // Marking seen covers what the user saw. Attention that changed after the
+              // screen was read is not theirs to dismiss yet, as with a single mark.
+              const seen = input.seenFingerprints?.[key];
+              if (input.action === "mark_seen" && !seen) continue;
               const baseline = baselineJson(snapshot, key, at);
               const rows =
                 input.action === "snooze"
@@ -278,7 +282,8 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
                           seen_baseline_json = COALESCE(${baseline}, seen_baseline_json)
                         WHERE provider_kind = ${parsed.provider} AND host = ${parsed.host}
                           AND viewer_id = ${viewerId} AND repo = ${parsed.repository}
-                          AND number = ${parsed.number} RETURNING number`;
+                          AND number = ${parsed.number}
+                          AND attention_fingerprint = ${seen ?? ""} RETURNING number`;
               count += rows.length;
             }
             return count;

@@ -37,6 +37,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { toastManager } from "../ui/toast";
 import { forgeProviderLabel } from "./forgePresentation";
 import { prChangesText, prSyncPillDetail, prSyncPillLabel } from "./prQueueModel";
+import { prSeenFingerprints } from "./prQueueSelection";
 
 const SYNC_DOT: Record<NonNullable<PrHubOverview["sync"]>["state"], string> = {
   idle: "bg-success",
@@ -165,7 +166,7 @@ export function PrSyncPill({
 
 /**
  * What changed since you last looked: the most recent unread pull requests of the active
- * queue. Opening one marks it seen; Mark all seen clears the ones listed.
+ * queue. Opening one marks it seen; Mark these seen clears the ones listed.
  */
 export function PrActivityPopover({
   overview,
@@ -190,6 +191,8 @@ export function PrActivityPopover({
         keys: rows.map((pr) => pr.key),
         action: "mark_seen",
         accountId: getPrHubSelectedAccountId(),
+        // Only what is listed here is marked: a row that changed since stays unread.
+        seenFingerprints: prSeenFingerprints(rows),
       })
       .catch((error: unknown) =>
         toastManager.add({
@@ -229,7 +232,7 @@ export function PrActivityPopover({
               disabled={marking || rows.length === 0}
               onClick={markAllSeen}
             >
-              Mark all seen
+              Mark these seen
             </Button>
           </div>
           {rows.length > 0 ? (

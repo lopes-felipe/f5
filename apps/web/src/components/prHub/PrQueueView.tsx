@@ -54,7 +54,7 @@ import {
   type PrQueueActionKind,
   type PrQueueActionRequest,
 } from "./PrQueueActions";
-import { PrQueueBulkBar } from "./PrQueueBulkBar";
+import { PrBulkMergeDialog, PrQueueBulkBar } from "./PrQueueBulkBar";
 import {
   PrAccountSwitcher,
   PrActivityPopover,
@@ -83,10 +83,13 @@ import {
   type PrQueueTab,
 } from "./prQueueSearch";
 import {
+  capPrSelection,
+  PR_BULK_SELECTION_LIMIT,
   prunePrSelection,
   selectPrRange,
   setPrSelection,
   togglePrSelection,
+  type PrBulkMergePlan,
 } from "./prQueueSelection";
 import { PrQueueSkeletonRows, PrQueueTable, useRunningPrThread } from "./PrQueueTable";
 import { PrQueueToolbar } from "./PrQueueToolbar";
@@ -332,15 +335,32 @@ export function PrQueueView({
     if (selectedKeys !== selection) setSelection(selectedKeys);
   }, [selectedKeys, selection]);
   const clearSelection = useCallback(() => setSelection(NO_SELECTION), []);
+  // One bulk request takes a limited number of rows, so the selection stops there and
+  // says so, instead of growing into a request the server would refuse.
+  const changeSelection = (next: ReadonlySet<PullRequestKey>) => {
+    const capped = capPrSelection(selectedKeys, next);
+    setSelection(capped.selected);
+    if (capped.dropped > 0)
+      toastManager.add({
+        type: "info",
+        title: `${PR_BULK_SELECTION_LIMIT} pull requests selected`,
+        description: `One action takes at most ${PR_BULK_SELECTION_LIMIT}. ${capped.dropped} more ${capped.dropped === 1 ? "was" : "were"} left out; act on these, then select the rest.`,
+      });
+  };
   const toggleSelected = (key: PullRequestKey, range: boolean) => {
     const anchor = selectionAnchor.current;
     selectionAnchor.current = key;
-    setSelection((current) =>
-      range ? selectPrRange(rowKeys, current, anchor, key) : togglePrSelection(current, key),
+    changeSelection(
+      range
+        ? selectPrRange(rowKeys, selectedKeys, anchor, key)
+        : togglePrSelection(selectedKeys, key),
     );
   };
   const selectAll = (keys: readonly PullRequestKey[], on: boolean) =>
-    setSelection((current) => setPrSelection(current, keys, on));
+    changeSelection(setPrSelection(selectedKeys, keys, on));
+  // The plan of a bulk merge is fixed when its dialog opens. Each merge refreshes the
+  // queue and takes its row out of the selection, and the report must outlive both.
+  const [bulkMerge, setBulkMerge] = useState<PrBulkMergePlan | null>(null);
   const openKey = (search.pr as PullRequestKey | undefined) ?? null;
   const showPage = openKey !== null && (search.view === "page" || !canPeek);
   const peekOpen = openKey !== null && !showPage;
@@ -770,6 +790,16 @@ export function PrQueueView({
                   <PrQueueBulkBar
                     selected={rows.filter((pr) => selectedKeys.has(pr.key))}
                     onClear={clearSelection}
+                    onMerge={setBulkMerge}
+                  />
+                ) : null}
+                {bulkMerge ? (
+                  <PrBulkMergeDialog
+                    plan={bulkMerge}
+                    onClose={(merged) => {
+                      setBulkMerge(null);
+                      if (merged > 0) clearSelection();
+                    }}
                   />
                 ) : null}
               </main>

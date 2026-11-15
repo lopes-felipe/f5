@@ -555,6 +555,12 @@ export const PrHubBulkUpdateInput = Schema.Struct({
   action: Schema.Literals(["snooze", "ignore", "mark_seen"]),
   /** Required for `snooze`. */
   until: Schema.optional(IsoDateTime),
+  /**
+   * For `mark_seen`: the attention fingerprint each pull request had on the screen where
+   * it was marked, by key. A pull request whose attention changed since then, or that has
+   * no fingerprint here, stays unread.
+   */
+  seenFingerprints: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type PrHubBulkUpdateInput = typeof PrHubBulkUpdateInput.Type;
 export const PrHubBulkUpdateResult = Schema.Struct({ updated: NonNegativeInt });

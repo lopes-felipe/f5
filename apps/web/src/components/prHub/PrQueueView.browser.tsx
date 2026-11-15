@@ -646,9 +646,11 @@ it("ticks rows with the mouse and the keyboard and updates them in one request",
 
   await bulkBar().getByRole("button", { name: "Mark seen" }).click();
   await expect.poll(() => api.bulkUpdate.mock.calls.length).toBe(1);
+  // Each row goes with the attention it showed, so one that changed meanwhile stays unread.
   expect(api.bulkUpdate.mock.calls[0]?.[0]).toMatchObject({
     keys: [keyOf(2), keyOf(3)],
     action: "mark_seen",
+    seenFingerprints: { [keyOf(2)]: "fp-2", [keyOf(3)]: "fp-3" },
   });
   await expect.element(bulkBar()).not.toBeInTheDocument();
   await expect.element(tick(2)).not.toBeChecked();
@@ -733,6 +735,67 @@ it("merges the ready pull requests of a selection after one confirmation", async
   await expect.element(bulkBar()).not.toBeInTheDocument();
 });
 
+it("keeps the merge report when the merged pull requests leave the queue", async () => {
+  const ready = (number: number, title: string) =>
+    makePr(number, title, "ready", {
+      allowedMergeMethods: ["squash"],
+      headRefOid: `head-${number}`,
+    });
+  server.prs = [
+    ...QUEUE.filter((pr) => pr.number !== 4),
+    ready(4, "Delta ready"),
+    ready(9, "India ready"),
+  ];
+  api.getFiles.mockImplementation(async ({ key }: { key: string }) => ({
+    files: [],
+    comparison: {
+      baseRepository: "octo/repo",
+      baseRef: "main",
+      baseOid: "base",
+      headRepository: "octo/repo",
+      headRef: "feature",
+      // The second pull request got a commit after it was listed.
+      headOid: key === keyOf(9) ? "head-pushed" : "head-4",
+      mergeBaseOid: "base",
+      mode: "current_pr",
+    },
+  }));
+  // As on the server: a merge refreshes the hub, and the merged row leaves the queue.
+  api.merge.mockImplementation(async ({ url }: { url: string }) => {
+    server.prs = server.prs.filter((pr) => pr.url !== url);
+    await queryClient.invalidateQueries({ queryKey: ["prHub"] });
+    return {};
+  });
+  await renderQueue();
+  await expect.element(row("India ready")).toBeVisible();
+  await tick(4).click();
+  await tick(9).click();
+  await bulkBar().getByRole("button", { name: "Merge ready (2)" }).click();
+  await page
+    .getByRole("dialog", { name: "Merge 2 pull requests" })
+    .getByRole("button", { name: "Merge 2 pull requests" })
+    .click();
+
+  // The first row is gone from the queue and from the selection. The report still lists
+  // both pull requests, each with what happened to it.
+  const report = page.getByRole("dialog", { name: "Merged 1 of 2" });
+  await expect.element(report).toBeVisible();
+  await expect.element(row("Delta ready")).not.toBeInTheDocument();
+  const listed = report.getByRole("list", { name: "Pull requests to merge" });
+  await expect.element(listed.getByRole("listitem")).toHaveLength(2);
+  await expect.element(listed).toHaveTextContent("Delta ready");
+  await expect.element(listed).toHaveTextContent("Not merged. New commits were pushed");
+  expect(api.merge).toHaveBeenCalledTimes(1);
+
+  // With every selected row merged the bar is gone, and the report stays until dismissed.
+  server.prs = server.prs.filter((pr) => pr.number !== 9);
+  await queryClient.invalidateQueries({ queryKey: ["prHub"] });
+  await expect.element(bulkBar()).not.toBeInTheDocument();
+  await expect.element(report).toBeVisible();
+  await report.getByRole("button", { name: "Done" }).click();
+  await expect.element(report).not.toBeInTheDocument();
+});
+
 it("keeps a search as a saved view tab with its count", async () => {
   await renderQueue();
   await expect.element(row("Alpha review")).toBeVisible();
@@ -811,11 +874,12 @@ it("marks unread rows and lists them under Activity", async () => {
   await expect.element(unread).toHaveTextContent("Checks failed");
   await expect.element(unread.getByRole("listitem")).toHaveLength(2);
 
-  await page.getByRole("button", { name: "Mark all seen" }).click();
+  await page.getByRole("button", { name: "Mark these seen" }).click();
   await expect.poll(() => api.bulkUpdate.mock.calls.length).toBe(1);
   expect(api.bulkUpdate.mock.calls[0]?.[0]).toMatchObject({
     keys: [keyOf(1), keyOf(3)],
     action: "mark_seen",
+    seenFingerprints: { [keyOf(1)]: "fp-1", [keyOf(3)]: "fp-3" },
   });
 
   await unread.getByRole("button", { name: /Charlie fix/ }).click();
