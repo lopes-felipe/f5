@@ -9,42 +9,110 @@ Forgejo/Gitea without leaving F5. Each repository can use its own account.
 
 ## How to
 
-1. Open **Pull requests** and click **Manage accounts**.
+1. Open **Pull requests**. The queue lists the pull requests that involve you, grouped by what
+   they need.
+2. Select a row to read it in the side panel, or press <kbd>Enter</kbd> to open the whole pull
+   request with its conversation, review threads and files.
+3. Use the button at the end of a row for its next step, such as **Review**, **Fix CI** or
+   **Merge**.
+
+To add GitLab, Bitbucket Cloud, Azure DevOps, Forgejo/Gitea or another GitHub host:
+
+1. Open the **⋯** menu in the Pull requests title bar and choose **Manage accounts**. It opens
+   **Settings → Accounts → Forge accounts**.
 2. Add a token for your forge host. F5 verifies it with the host before saving it. Azure DevOps
    also needs an organization.
 3. If several accounts match a repository, add a repository route that picks one.
-4. Open a pull request to read its diff, comment, review or merge.
 
-The existing GitHub setup stays the default as the legacy profile account.
+The profile's GitHub account stays the default. Once you add another account, a switcher
+appears in the Pull requests title bar.
 
-## Finding pull requests
+## The queue
 
-The **Inbox** and **Focus** views list tracked pull requests. Attention filters such as **Needs
-you**, **Needs my review**, **CI failing** and **Ready** narrow the list, and you can also filter by
-repository, draft status, review decision, CI or lifecycle. The search field accepts qualifiers
-such as `author:me draft:false review:approved status:success label:"needs design" -label:bug`.
+The queue has one section per kind of work, in this order:
+
+| Section               | What it holds                                                             |
+| --------------------- | ------------------------------------------------------------------------- |
+| **Review requested**  | Reviews requested from you, and new commits on pull requests you reviewed |
+| **Your action**       | Your pull requests that need a fix: failing checks, conflicts, feedback   |
+| **Ready to merge**    | Your pull requests that can merge now                                     |
+| **Waiting on others** | Nothing for you to do until someone else acts                             |
+| **Drafts**            | Your drafts                                                               |
+| **Team queue**        | Reviews requested from one of your teams, and not from you                |
+| **Other**             | Pull requests you are mentioned in or follow                              |
+| **Stale**             | No activity for 30 days                                                   |
+
+The last four start collapsed and load only when you open them. F5 remembers which sections you
+opened. Each section loads 25 rows; **Show more** loads the next 25.
+
+Each row shows the title, the repository and number, the author when it is not you, any linked
+F5 thread with its live status, the review and check state, the size and the last update. The
+button at the end is the next step for that pull request: **Review**, **Fix CI**, **Resolve
+conflicts**, **Update branch**, **Address feedback**, **Merge** or **Mark ready**. **Fix CI**,
+**Resolve conflicts** and **Address feedback** start an F5 thread on the pull request's branch;
+when a linked thread is already working, the button reads **Open thread** instead.
+
+Selecting a row opens the peek on the right: the next step, the review, checks and branch
+status, the start of the description, and linked threads. <kbd>Enter</kbd>, a double-click or
+**Open** shows the whole pull request, with **Summary**, **Timeline**, **Review threads**,
+**Files** and **Guide · Beta** tabs. In a window too narrow for the peek, selecting a row opens
+the pull request directly. The open pull request, its tab, the search and the filters are part
+of the address, so Back, Forward and copied links restore them.
+
+### Search and filters
+
+The search field accepts qualifiers such as
+`author:me draft:false review:approved status:success label:"needs design" -label:bug`, and
+suggests qualifiers and their values as you type.
 Use `repo:owner/name`, or `repo:name` alone, to keep one repository.
 Repeat `label:` qualifiers to require all of them; comma-separated names match either label.
 Prefix a supported qualifier with `-` to exclude matches. Unknown qualifiers remain search
 text; unquoted words can match in any order, and quoted phrases stay together.
-Each pull request has **Summary**, **Timeline**, **Review threads**
-**Files**, and **Guide · Beta** tabs.
 
-### What counts as "Needs you"
+- Paste a pull request link into the search field and press <kbd>Enter</kbd> to open it, even
+  if it is not in your queue. **Track a pull request by URL** in the **⋯** menu does the same.
+- **Filter** narrows the queue by repository, author, label, checks, review decision or draft
+  status. Each active filter shows as a chip you can remove.
+- **Active**, **Snoozed**, **Ignored** and **Closed** switch between the queue and the pull
+  requests you set aside or finished.
 
-**Needs you**, the sidebar badge and notifications cover three things: reviews requested from
+### Keyboard
+
+These keys work on the Pull requests page when you are not typing in a field. They are also
+listed in the keyboard shortcuts dialog.
+
+| Key                                 | Action                                       |
+| ----------------------------------- | -------------------------------------------- |
+| <kbd>J</kbd> / <kbd>K</kbd>, arrows | Next or previous pull request                |
+| <kbd>Space</kbd>                    | Open or close the peek                       |
+| <kbd>Enter</kbd>                    | Open the pull request                        |
+| <kbd>Esc</kbd>                      | Back to the queue                            |
+| <kbd>/</kbd>                        | Search                                       |
+| <kbd>A</kbd>                        | Run the row's next step                      |
+| <kbd>M</kbd>                        | Merge                                        |
+| <kbd>S</kbd>                        | Snooze or unsnooze                           |
+| <kbd>E</kbd>                        | Ignore, or restore an ignored pull request   |
+| <kbd>O</kbd>                        | Open on the forge                            |
+| <kbd>R</kbd>                        | Refresh                                      |
+| <kbd>[</kbd> / <kbd>]</kbd>         | Previous or next pull request, from its page |
+
+### What the sidebar badge counts
+
+The sidebar badge and notifications cover the first three sections: reviews requested from
 you, your own pull requests that need a fix, and your pull requests that are ready to merge.
-The list shows them in that order, most recently updated first.
+Within a section, the most recently updated pull request comes first.
 
 - A review requested from one of your teams, and not from you, reads **Review requested from
-  your team**. It stays out of **Needs you** and never notifies. To treat a team's requests as
+  your team**. It goes to **Team queue** and never notifies. To treat a team's requests as
   your own, add it under **Settings → Git → Teams whose review requests are mine**, one
   `org/team` per line.
-- A pull request with no activity for 30 days is stale. It leaves **Needs you** and sorts
-  last, and it comes back as soon as something happens on it. Change the period, or enter 0
-  to turn this off, under **Settings → Git → Move PRs to Stale after**.
+- A pull request with no activity for 30 days moves to **Stale**, and it comes back as soon as
+  something happens on it. Change the period, or enter 0 to turn this off, under **Settings →
+  Git → Move PRs to Stale after**.
+- Your pull requests that have waited on others longer than **Settings → Git → Flag my PRs as
+  stalled after** are marked **Stalled** in their row.
 - **Ignore** shows an **Undo** button for a few seconds. Ignored pull requests remain under
-  the **Ignored** filter.
+  **Ignored**, where **Restore to the queue** brings one back.
 
 ## Safe actions
 
@@ -89,8 +157,9 @@ GitHub has native stacks.
 - Tokens stay in the profile's server secret store and never reach the browser.
 - Removing an account also removes its repository routes and stored token.
 - When a refresh fails, cached data stays visible with a warning. Work that F5 finishes on its
-  own, such as searches waiting for GitHub's request budget, is not a failure: the sync
-  details line under the title bar says what is left.
+  own, such as searches waiting for GitHub's request budget, is not a failure. Click the sync
+  status in the title bar to see what is left, the next sync, rate limits and what is
+  monitored, or to refresh now.
 - PR markdown can show authenticated GitHub images and videos. Other HTML is escaped.
 
 <details>

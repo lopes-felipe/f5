@@ -1,6 +1,8 @@
 import { ProjectId, ScheduledTaskId, type DesktopNotificationTarget } from "@t3tools/contracts";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback } from "react";
+
+import { prQueueSearchOpening, type PrQueueLocation } from "../components/prHub/prQueueSearch";
 
 /** Where a notification (OS or in-app) takes the user when it is opened. */
 export type NotificationTarget = DesktopNotificationTarget;
@@ -17,7 +19,7 @@ export function focusAppWindow(): void {
 export async function openNotificationTarget(
   navigate: NotificationNavigate,
   target: NotificationTarget,
-  options: { focus?: boolean } = {},
+  options: { focus?: boolean; current?: PrQueueLocation | undefined } = {},
 ): Promise<void> {
   if (options.focus !== false) focusAppWindow();
   switch (target.kind) {
@@ -25,7 +27,10 @@ export async function openNotificationTarget(
       await navigate({ to: "/$threadId", params: { threadId: target.threadId } });
       return;
     case "prHub":
-      await navigate({ to: "/pull-requests", search: target.prKey ? { pr: target.prKey } : {} });
+      await navigate({
+        to: "/pull-requests",
+        search: prQueueSearchOpening(target.prKey, options.current),
+      });
       return;
     case "scheduled":
       await navigate({
@@ -61,8 +66,10 @@ export function useOpenNotificationTarget(): (
   options?: { focus?: boolean },
 ) => Promise<void> {
   const navigate = useNavigate();
+  const router = useRouter();
   return useCallback(
-    (target, options) => openNotificationTarget(navigate, target, options),
-    [navigate],
+    (target, options) =>
+      openNotificationTarget(navigate, target, { ...options, current: router.state.location }),
+    [navigate, router],
   );
 }

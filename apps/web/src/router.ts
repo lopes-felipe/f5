@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRouter } from "@tanstack/react-router";
 
+import { followPrHubAccountSetting } from "./lib/prHubAccountSetting";
 import { routeTree } from "./routeTree.gen";
 import { StoreProvider } from "./store";
 import { isQueryRetryable } from "./wsTransport";
@@ -19,6 +20,8 @@ export function getRouter(history: RouterHistory) {
       },
     },
   });
+  // Outside React, so the account is set before the first render and never during one.
+  followPrHubAccountSetting(() => void queryClient.invalidateQueries({ queryKey: ["prHub"] }));
 
   return createRouter({
     routeTree,

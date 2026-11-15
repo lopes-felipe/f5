@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Effect } from "effect";
 import { prSearchPredicate } from "./prSearch.ts";
 import {
   PrHubListFilter,
@@ -15,6 +16,28 @@ import {
   PR_HUB_SECTIONS,
   prHubSectionOf,
 } from "@t3tools/shared/prHub";
+
+/**
+ * Adds the linked F5 threads to a list page. Links decorate rows: when they cannot be read
+ * the page goes out without them and the failure is logged, because a row without its
+ * links offers to start an agent although one may already be running.
+ */
+export function withPrHubThreadLinks<E, R>(
+  page: PrHubListPage,
+  read: (
+    keys: ReadonlyArray<string>,
+  ) => Effect.Effect<NonNullable<PrHubListPage["threadLinks"]>, E, R>,
+): Effect.Effect<PrHubListPage, never, R> {
+  if (page.pullRequests.length === 0) return Effect.succeed(page);
+  return read(page.pullRequests.map((pr) => pr.key)).pipe(
+    Effect.map((threadLinks) => ({ ...page, threadLinks })),
+    Effect.catch((error) =>
+      Effect.logWarning("PR Hub linked threads could not be read; the list is sent without them", {
+        error: error instanceof Error ? error.message : String(error),
+      }).pipe(Effect.as(page)),
+    ),
+  );
+}
 
 export function excludePrHubRepositories(
   snapshot: PrHubSnapshot,
@@ -59,6 +82,16 @@ export function defaultPrHubCoverage(
   ];
 }
 
+/** Enough for a filter's suggestions; anything rarer is still reachable by typing it. */
+const FACET_LIMIT = 200;
+const tally = (counts: Map<string, number>, value: string) =>
+  counts.set(value, (counts.get(value) ?? 0) + 1);
+const mostCommon = (counts: ReadonlyMap<string, number>) =>
+  [...counts]
+    .sort(([a, x], [b, y]) => y - x || a.localeCompare(b))
+    .slice(0, FACET_LIMIT)
+    .map(([value]) => value);
+
 export function prHubOverview(
   snapshot: PrHubSnapshot,
   revision: string,
@@ -72,19 +105,31 @@ export function prHubOverview(
   const sectionCounts = Object.fromEntries(
     PR_HUB_SECTIONS.map((section) => [section, 0]),
   ) as Record<PrHubSection, number>;
+  const repositories = new Map<string, number>();
+  const authors = new Map<string, number>();
+  const labels = new Map<string, number>();
   for (const pr of [...pullRequests, ...recentlyResolved]) {
     for (const filter of PrHubListFilter.literals) {
       if (matchesPrHubFilter(pr, filter, stalledBefore, now)) counts[filter]++;
     }
     // Sections describe the active queue: snoozed, ignored and closed rows are elsewhere.
-    if (matchesPrHubFilter(pr, "all", undefined, now, "active"))
+    if (matchesPrHubFilter(pr, "all", undefined, now, "active")) {
       sectionCounts[prHubSectionOf(pr, now)]++;
+      tally(repositories, pr.repository.nameWithOwner);
+      if (pr.author) tally(authors, pr.author);
+      for (const label of pr.labels) tally(labels, label);
+    }
   }
   return {
     ...metadata,
     revision,
     counts,
     sectionCounts,
+    facets: {
+      repositories: mostCommon(repositories),
+      authors: mostCommon(authors),
+      labels: mostCommon(labels),
+    },
     coverage: snapshot.coverage?.length
       ? snapshot.coverage
       : defaultPrHubCoverage(snapshot.lastPolledAt, cappedBuckets),

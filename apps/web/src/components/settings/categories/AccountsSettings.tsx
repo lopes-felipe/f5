@@ -24,6 +24,7 @@ import {
 import { Skeleton } from "../../ui/skeleton";
 import { toastManager } from "../../ui/toast";
 
+import { ForgeAccountsPanel } from "../ForgeAccountsPanel";
 import { GithubAccountPanel } from "../GithubAccountPanel";
 
 export { ACCOUNTS_SETTINGS_DESCRIPTORS } from "./AccountsSettings.descriptors";
@@ -188,6 +189,7 @@ export function AccountsSettings() {
 
       {active ? <ProfileAccountsSection profile={active} /> : null}
       <GithubAccountPanel />
+      <ForgeAccountsPanel />
 
       {metadataRoot || active ? (
         <section
