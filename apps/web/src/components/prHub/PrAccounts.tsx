@@ -16,6 +16,10 @@ const accountLabel = (account: ForgeAccount) =>
   `${providerLabel(account.provider)} · ${account.host} · ${account.login}`;
 const selectClass = `${fieldSurfaceClassName} h-8 px-2 text-sm`;
 
+/**
+ * Forge accounts and repository routing, shown in Settings → Accounts. The queue only
+ * offers a switcher between the accounts saved here.
+ */
 export function PrAccounts({
   selectedAccountId,
   onSelect,
@@ -39,8 +43,12 @@ export function PrAccounts({
   useEffect(() => {
     mounted.current = true;
     let cancelled = false;
-    const api = ensureNativeApi().prHub;
-    void Promise.all([api.listAccounts(), api.listAccountRouting()]).then(
+    // Async, so a server that is not reachable yet fails this panel and not the settings page.
+    const load = async () => {
+      const api = ensureNativeApi().prHub;
+      return Promise.all([api.listAccounts(), api.listAccountRouting()]);
+    };
+    void load().then(
       ([nextAccounts, nextRouting]) => {
         if (!cancelled) {
           setAccounts(nextAccounts);
@@ -135,8 +143,7 @@ export function PrAccounts({
           ))}
         </select>
       </label>
-      <details className="rounded-md border p-2 text-xs">
-        <summary className="cursor-pointer font-medium">Manage accounts</summary>
+      <div className="text-xs">
         <div className="mt-3 space-y-4">
           {accounts.map((account) => (
             <div key={account.id} className="flex items-center justify-between gap-2">
@@ -317,7 +324,7 @@ export function PrAccounts({
             </p>
           )}
         </div>
-      </details>
+      </div>
     </div>
   );
 }

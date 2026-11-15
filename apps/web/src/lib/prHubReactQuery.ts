@@ -30,20 +30,19 @@ export function prHubPeekQueryOptions(url: string) {
 }
 
 export function prHubOverviewQueryOptions(stalledBefore?: string) {
+  const accountId = getPrHubSelectedAccountId();
   return queryOptions({
-    queryKey: [
-      ...prHubQueryKeys.overview,
-      getPrHubAccountGeneration(),
-      stalledBefore,
-      getPrHubSelectedAccountId(),
-    ],
+    queryKey: [...prHubQueryKeys.overview, getPrHubAccountGeneration(), stalledBefore, accountId],
     placeholderData: (previous, query) =>
       query?.queryKey[2] === getPrHubAccountGeneration() ? previous : undefined,
-    queryFn: async () =>
-      ensureNativeApi().prHub.getOverview({
-        stalledBefore,
-        accountId: getPrHubSelectedAccountId(),
-      }),
+    queryFn: async () => {
+      // The request goes to whichever account is selected when it is sent. A query still
+      // mounted under another account's key must not send one: the answer would be stored
+      // as that other account's overview.
+      if (accountId !== getPrHubSelectedAccountId())
+        throw new Error("Discarded a PR Hub read for a previous account.");
+      return ensureNativeApi().prHub.getOverview({ stalledBefore, accountId });
+    },
     staleTime: 30_000,
   });
 }
@@ -153,7 +152,28 @@ export function prHubAdvisoriesQueryOptions(keys: readonly PullRequestKey[] = []
   });
 }
 
-export function prHubListQueryOptions(input: PrHubListInput, revision: string | undefined) {
+/** Forge accounts are not tied to a PR Hub generation, so they live outside the "prHub" keys. */
+export function forgeAccountsQueryOptions() {
+  return queryOptions({
+    queryKey: ["forgeAccounts"] as const,
+    queryFn: () => ensureNativeApi().prHub.listAccounts(),
+    // Accounts change in Settings; re-read whenever the queue is opened.
+    staleTime: 0,
+  });
+}
+
+const sameListSlice = (a: PrHubListInput, b: PrHubListInput) =>
+  a.visibility === b.visibility && a.section === b.section && a.key === b.key;
+
+/**
+ * `keepPrevious` keeps the rows of the previous search or filter on screen while the next
+ * one loads, as long as it is the same slice of the queue (status and section).
+ */
+export function prHubListQueryOptions(
+  input: PrHubListInput,
+  revision: string | undefined,
+  options: { readonly keepPrevious?: boolean } = {},
+) {
   const accountGeneration = getPrHubAccountGeneration();
   return infiniteQueryOptions<
     PrHubListPage,
@@ -169,8 +189,10 @@ export function prHubListQueryOptions(input: PrHubListInput, revision: string | 
     placeholderData: (previous, query) =>
       query &&
       query.queryKey[2] === accountGeneration &&
-      JSON.stringify({ ...(query.queryKey[3] as PrHubListInput), anchorKey: undefined }) ===
-        JSON.stringify({ ...input, anchorKey: undefined })
+      (options.keepPrevious
+        ? sameListSlice(query.queryKey[3] as PrHubListInput, input)
+        : JSON.stringify({ ...(query.queryKey[3] as PrHubListInput), anchorKey: undefined }) ===
+          JSON.stringify({ ...input, anchorKey: undefined }))
         ? previous
         : undefined,
     queryFn: async ({ pageParam }) => {

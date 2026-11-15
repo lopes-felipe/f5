@@ -111,7 +111,7 @@ export const GIT_SETTINGS_DESCRIPTORS = [
   {
     ...SETTINGS_ITEM_ROUTES["git.pr-stalled"],
     label: "Flag my PRs as stalled after",
-    description: "Filters and sorts stalled PRs without notifications.",
+    description: "Marks stalled PRs in the queue without notifications.",
     keywords: ["waiting", "hours", "stalled"],
     targetSelector: '[aria-label="Flag my PRs as stalled after"]',
   },
