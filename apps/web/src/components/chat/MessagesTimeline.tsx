@@ -932,12 +932,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         const isAtEnd = hasNode
           ? node.scrollHeight - node.scrollTop - node.clientHeight < TIMELINE_AT_END_PX
           : state.contentLength < state.scrollLength || timelineIsAtEnd(state);
-        // Compared across scroll events only: a layout sync can land between a
-        // jump and its scroll event. Before the first scroll event, a list
-        // that is following was at the end.
-        const previousScrollTop =
-          lastScrollTopRef.current ?? (hasNode ? node.scrollHeight - node.clientHeight : null);
-        if (fromScroll) lastScrollTopRef.current = hasNode ? node.scrollTop : null;
+        // The position to compare the next scroll event against. Layout syncs
+        // record it only at the end (content that fits records 0): one can
+        // land between a jump away and that jump's scroll event. With nothing
+        // recorded yet, no move counts as upward.
+        const previousScrollTop = lastScrollTopRef.current;
+        if (hasNode && (fromScroll || isAtEnd)) lastScrollTopRef.current = node.scrollTop;
         setRailIsAtEnd(isAtEnd);
         if (isAtEnd && (fromScroll || state.contentLength <= state.scrollLength)) {
           // Reaching the end by scrolling, or content that fits without

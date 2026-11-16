@@ -1355,6 +1355,57 @@ describe("MessagesTimeline (LegendList)", () => {
     },
   );
 
+  it("keeps following when content that fit grows during the first animated follow scroll", async () => {
+    const initialEntries = [
+      makeUserEntry("fits-user", "Question", 0),
+      makeAssistantEntry("fits-reply", "Short reply", 1),
+    ];
+    const isAtEndCalls: boolean[] = [];
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={240}
+        onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    try {
+      // Not waitForScrollContainer: that waits for content to overflow.
+      let node!: HTMLElement;
+      await vi.waitFor(() => {
+        node = host.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
+        expect(node).not.toBeNull();
+        expect(host.querySelector('[data-message-id="fits-reply"]')).not.toBeNull();
+      });
+      for (let frame = 0; frame < 4; frame += 1) await nextFrame();
+      expect(node.scrollHeight).toBeLessThanOrEqual(node.clientHeight + 1);
+      isAtEndCalls.length = 0;
+      const grown = makeAssistantEntry("fits-grown", "Long reply\n\n".repeat(30), 2);
+      api!.setEntries([...initialEntries, grown]);
+      await nextFrame();
+      await nextFrame();
+      api!.setEntries([
+        ...initialEntries,
+        makeAssistantEntry(grown.id, "Longer reply\n\n".repeat(80), 2),
+      ]);
+      await vi.waitFor(
+        () => expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
+        { timeout: 3_000, interval: 16 },
+      );
+      expect(isAtEndCalls).not.toContain(false);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("resumes following after Jump to latest even when the list never left the end", async () => {
     const initialEntries = makeOverflowEntries(16);
     let api: TimelineHarnessApi | null = null;
