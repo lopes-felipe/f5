@@ -7797,7 +7797,7 @@ export default memo(function ChatView({
             void onSendRef.current?.();
           }}
         >
-          Send in project checkout
+          Send in Local
         </Button>
       ),
     });

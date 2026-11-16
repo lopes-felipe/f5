@@ -3886,35 +3886,96 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it("shows missing worktree recovery status instead of offering Git initialization", async () => {
-    const mounted = await mountChatView({
+  const mountMissingWorktree = (archived: boolean) => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-missing-worktree" as MessageId,
+      targetText: "Missing worktree",
+    });
+    const snapshot = Object.assign({}, base, {
+      threads: base.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? Object.assign({}, thread, {
+              worktreePath: "/wt/gone",
+              branch: "fix/gone",
+              archivedAt: archived ? NOW_ISO : null,
+            })
+          : thread,
+      ),
+    });
+    return mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-missing-worktree" as MessageId,
-        targetText: "Missing worktree",
-      }),
+      snapshot,
       configureFixture: (nextFixture) => {
-        nextFixture.resolveWsRequest = (body) =>
-          body._tag === WS_METHODS.gitListBranches
-            ? {
-                type: "result",
-                result: {
-                  isRepo: false,
-                  worktreeMissing: true,
-                  hasOriginRemote: false,
-                  branches: [],
-                },
-              }
-            : null;
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === WS_METHODS.gitListBranches)
+            return {
+              type: "result",
+              result: {
+                isRepo: false,
+                worktreeMissing: true,
+                hasOriginRemote: false,
+                branches: [],
+              },
+            };
+          if (body._tag === WS_METHODS.worktreesThreadState)
+            return {
+              type: "result",
+              result: {
+                recovery: "none",
+                worktreePath: "/wt/gone",
+                branch: "fix/gone",
+                directoryExists: false,
+                registration: "none",
+                branchExists: true,
+                defaultBranch: "main",
+              },
+            };
+          if (body._tag === WS_METHODS.worktreesRecover) return { type: "result", result: {} };
+          return null;
+        };
       },
     });
+  };
+
+  it("offers to recreate a missing worktree from the header instead of Git initialization", async () => {
+    const mounted = await mountMissingWorktree(false);
     try {
-      await expect
-        .element(page.getByRole("button", { name: "Worktree missing", exact: true }))
-        .toBeDisabled();
+      const recreate = page.getByRole("button", { name: "Recreate worktree", exact: true });
+      await expect.element(recreate).toBeEnabled();
       await expect
         .element(page.getByRole("button", { name: "Initialize Git" }))
         .not.toBeInTheDocument();
+      await recreate.click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.find((request) => request._tag === WS_METHODS.worktreesRecover),
+        ).toMatchObject({ threadId: THREAD_ID, action: "recreate" }),
+      );
+
+      await page.getByRole("button", { name: "More recovery options" }).click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Recreate from main" }))
+        .toBeVisible();
+      await page.getByRole("menuitem", { name: "Continue in Local" }).click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.filter((request) => request._tag === WS_METHODS.worktreesRecover).at(-1),
+        ).toMatchObject({ action: "useProjectCheckout" }),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("labels an archived thread's missing worktree as removed", async () => {
+    const mounted = await mountMissingWorktree(true);
+    try {
+      await expect
+        .element(page.getByText("Worktree removed", { exact: true }))
+        .toHaveAttribute("title", "Unarchive to recreate it");
+      expect(
+        page.getByRole("button", { name: "Recreate worktree", exact: true }).elements(),
+      ).toHaveLength(0);
     } finally {
       await mounted.cleanup();
     }

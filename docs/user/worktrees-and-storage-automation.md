@@ -52,8 +52,11 @@ path, the dialog refreshes the list and requires confirmation again. An incomple
 
 If a thread's worktree goes missing, F5 never quietly moves the thread into the project checkout.
 Use **Recreate now** (the branch still exists), **Recreate from the default branch** (it doesn't),
-or **Continue in project checkout**. A checkout found on a different branch is kept untouched and
-blocked until you restore the branch or choose a recovery action.
+or **Continue in Local** (the project folder). The thread header offers the same choices:
+**Recreate worktree**, with **Recreate from `<default branch>`** and **Continue in Local** in its
+menu. An archived thread's header shows **Worktree removed** instead; unarchive the thread to
+recreate it. A checkout found on a different branch is kept untouched and blocked until you
+restore the branch or choose a recovery action.
 
 When the thread's own worktree only switched branches (for example, the agent ran `git checkout`),
 the banner names both branches. **Use `<branch>`** points the thread at the branch the worktree is
@@ -174,7 +177,7 @@ Interrupted switches keep their checkout and block sending until resolved. Choos
 **Inspect workspace** to see the actual branch, commit, and path. **Accept inspected
 workspace** adopts that verified checkout; **Keep original workspace** works only when
 the original checkout still matches its recorded identity. Neither action restores or
-discards files. **Continue in project checkout** adopts the inspected project root and retains the old checkout,
+discards files. **Continue in Local** adopts the inspected project root and retains the old checkout,
 including when recreation failed before creating any directory. **Retry** is available only when
 no Git mutation could have occurred.
 If the checkout changes after inspection, inspect again before accepting it.
@@ -199,9 +202,9 @@ detached checkouts are inspect-only; paths can still be copied, revealed, or ope
 
 Use **New conversation here** to attach a new draft to an eligible checkout. Select an
 existing conversation and choose **Use for this conversation** to switch it through the durable
-workspace transition. Joining a different checkout used by other conversations prompts for
-confirmation because they see the same files and uncommitted changes. New local conversations
-already share the project checkout. The server rechecks eligibility when attaching or switching,
+workspace transition. Each row lists the conversations that already use the checkout; they will
+see the same files and uncommitted changes, and choosing the row acknowledges that without a
+confirmation dialog. New local conversations already share the project checkout. The server rechecks eligibility when attaching or switching,
 so a list entry never grants permission to mutate a checkout.
 
 ## The workspace picker

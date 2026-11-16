@@ -1,11 +1,8 @@
-import type { ThreadId, WorktreesRecoverInput } from "@t3tools/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ThreadId } from "@t3tools/contracts";
 import { ChevronDownIcon } from "lucide-react";
-import { useState } from "react";
-import { ensureNativeApi } from "../../nativeApi";
-import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { useWorktreeRecovery } from "./useWorktreeRecovery";
 
 const AFTER_TURN_REASON = "Available after the current turn finishes.";
 
@@ -24,35 +21,7 @@ export function WorktreeMissingBanner({
   /** Workspace transitions are refused while a turn is active or pending. */
   turnActive?: boolean;
 }) {
-  const queryClient = useQueryClient();
-  const revision = useNextTurnQueueStore((state) => state.byThreadId[threadId]?.snapshot?.revision);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const state = useQuery({
-    queryKey: ["worktrees", "threadState", threadId, worktreePath, branch, revision],
-    queryFn: () => ensureNativeApi().worktrees.threadState({ threadId }),
-    enabled: true,
-    staleTime: 30_000,
-    // Committing or stashing in a terminal changes no query input, so keep a
-    // drift banner's "Switch back" availability current while it is shown.
-    refetchInterval: (query) => (query.state.data?.branchDriftOnly ? 5_000 : false),
-  });
-  const recover = async (action: WorktreesRecoverInput["action"]) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const api = ensureNativeApi();
-      const snapshot = await api.nextTurnQueue.list({ threadId });
-      await api.worktrees.recover({ threadId, action, expectedQueueRevision: snapshot.revision });
-      await queryClient.invalidateQueries({ queryKey: ["worktrees"] });
-      await queryClient.invalidateQueries({ queryKey: ["git"] });
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "Recovery failed.");
-    } finally {
-      await queryClient.invalidateQueries({ queryKey: ["worktrees"] });
-      setBusy(false);
-    }
-  };
+  const { state, busy, error, recover } = useWorktreeRecovery(threadId, { worktreePath, branch });
   const errorLine = error && (
     <p role="alert" className="text-destructive">
       {error}
@@ -71,7 +40,7 @@ export function WorktreeMissingBanner({
           disabled={busy || turnActive || state.data?.recovery === "running"}
           onClick={() => void recover("useProjectCheckout")}
         >
-          Continue in project checkout
+          Continue in Local
         </Button>
         {turnLine}
         {error && <p className="text-destructive">{error}</p>}
@@ -154,7 +123,7 @@ export function WorktreeMissingBanner({
                 disabled={transitionDisabled}
                 onClick={() => void recover("useProjectCheckout")}
               >
-                Continue in project checkout
+                Continue in Local
               </MenuItem>
             </MenuPopup>
           </Menu>
@@ -179,7 +148,7 @@ export function WorktreeMissingBanner({
     >
       <p>
         {data.recovery === "interrupted"
-          ? "Worktree recovery was interrupted. Retry preparation or continue in the project checkout."
+          ? "Worktree recovery was interrupted. Retry preparation or continue in Local."
           : recovering
             ? "Worktree recovery is in progress."
             : data.directoryExists && data.registration === "otherBranch"
@@ -218,7 +187,7 @@ export function WorktreeMissingBanner({
           disabled={transitionDisabled}
           onClick={() => void recover("useProjectCheckout")}
         >
-          Continue in project checkout
+          Continue in Local
         </Button>
       </div>
       {!recovering && turnLine}
