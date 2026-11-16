@@ -668,7 +668,13 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
       getOverview: (input) =>
         relevantSnapshot.pipe(
           Effect.map((current) => ({
-            ...prHubOverview(current, String(revision), input.stalledBefore),
+            ...prHubOverview(
+              current,
+              String(revision),
+              input.stalledBefore,
+              undefined,
+              input.savedQueries,
+            ),
             sync: prHubSyncState(current, undefined, null),
           })),
         ),
@@ -720,6 +726,41 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
           ignoredAt: new Date().toISOString(),
         }),
       unignore: (input) => editLocal(input.key, input.accountGeneration, { ignoredAt: null }),
+      // One publication for the whole selection. This hub keeps no seen state, so marking
+      // seen has nothing to store.
+      bulkUpdate: (input) =>
+        gate.withPermits(1)(
+          Effect.gen(function* () {
+            yield* assertGeneration(input.accountGeneration);
+            const until = input.until;
+            if (input.action === "snooze" && !(until && Date.parse(until) > Date.now()))
+              return yield* error("Choose a snooze time in the future.", "generic");
+            // Nothing to store and nothing changed, so nothing is written or published.
+            if (input.action === "mark_seen") return { updated: 0 };
+            const patch: Partial<TrackedPullRequest> =
+              input.action === "snooze"
+                ? { snoozedUntil: until ?? null }
+                : { ignoredAt: new Date().toISOString() };
+            const changed = [...new Set(input.keys)].flatMap((key) => {
+              const stored = state.get(key);
+              return stored ? [{ ...stored, pr: { ...stored.pr, ...patch } }] : [];
+            });
+            if (changed.length === 0) return { updated: 0 };
+            // All rows are stored or none is. Memory follows only once storage holds them,
+            // so a failed write leaves both as they were.
+            yield* sql
+              .withTransaction(Effect.forEach(changed, persist, { discard: true }))
+              .pipe(
+                Effect.mapError(() =>
+                  error("Could not persist the pull request snapshot.", "generic"),
+                ),
+              );
+            const previous = snapshot();
+            for (const next of changed) state.set(next.pr.key, next);
+            yield* publish(previous);
+            return { updated: changed.length };
+          }),
+        ),
       acknowledgeAttention: (input) =>
         editLocal(input.key, input.accountGeneration, {
           acknowledgedAt: new Date().toISOString(),

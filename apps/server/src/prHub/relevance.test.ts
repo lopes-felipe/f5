@@ -170,6 +170,31 @@ describe("relevance projection", () => {
     });
   });
 
+  it("shows a pull request never opened as new only in the section it is in now", () => {
+    const never = { changesSinceSeen: [{ kind: "new" }] } as const;
+    const direct = makePr({ ...never, roles: ["review_requested"] });
+    expect(applyPrRelevance(direct, options).changesSinceSeen).toEqual([{ kind: "new" }]);
+    // The same row a month later is stale: it stops reading as new and counting as unread.
+    expect(
+      applyPrRelevance({ ...direct, updatedAt: daysAgo(31) }, options).changesSinceSeen,
+    ).toEqual([]);
+    // A team request is quiet until its team is promoted, and new from that read on.
+    const team = makePr({ ...never, reviewRequestReviewers: ["acme/platform"] });
+    expect(applyPrRelevance(team, options).changesSinceSeen).toEqual([]);
+    expect(
+      applyPrRelevance(team, { ...options, directReviewTeams: ["acme/platform"] }).changesSinceSeen,
+    ).toEqual([{ kind: "new" }]);
+    // What changed since a real look stays, wherever the row is.
+    const commented = makePr({
+      roles: ["review_requested"],
+      updatedAt: daysAgo(31),
+      changesSinceSeen: [{ kind: "comments", count: 2 }],
+    });
+    expect(applyPrRelevance(commented, options).changesSinceSeen).toEqual([
+      { kind: "comments", count: 2 },
+    ]);
+  });
+
   it("is idempotent and returns the same snapshot when nothing moves", () => {
     const snapshot: PrHubSnapshot = {
       status: "ok",
