@@ -553,7 +553,7 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
         <div
           key={row.key}
           role="presentation"
-          className="px-2 pt-2 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+          className="px-2 pt-2 pb-0.5 text-2xs font-medium uppercase tracking-wide text-muted-foreground"
         >
           {row.label}
         </div>
