@@ -17,7 +17,7 @@ import {
   sha256Hex,
   type UpstreamLedger,
 } from "@t3tools/shared/upstreamPorts";
-import { Deferred, Effect, Layer } from "effect";
+import { Deferred, Effect, Layer, Logger } from "effect";
 import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -478,8 +478,14 @@ layer("upstream port queue", (it) => {
     }),
   );
 
-  it.effect("re-reads a closed batch PR until it merges and retries failed reads", () =>
-    Effect.gen(function* () {
+  it.effect("re-reads a closed batch PR until it merges and retries failed reads", () => {
+    const evidenceWarnings: string[] = [];
+    const logger = Logger.make((entry) => {
+      const [name, fields] = Array.isArray(entry.message) ? entry.message : [entry.message];
+      if (name === "upstreamPorts.outcome.prEvidence.failed")
+        evidenceWarnings.push(`${entry.logLevel}: ${(fields as { detail: string }).detail}`);
+    });
+    return Effect.gen(function* () {
       const { fixture, service, ids } = yield* prepareQueue(2, 1);
       yield* service.enqueuePort({ ...queueInput(ids, "reopened-pr"), grouping: "together" });
       yield* service.testing.awaitIdle;
@@ -544,24 +550,46 @@ layer("upstream port queue", (it) => {
 
       // Reads that fail after the merge keep retrying until one succeeds.
       pr.state = "merged";
-      fixture.gh.failure = new UpstreamGitHubError({
-        operation: "pull request topic evidence",
-        detail: "GitHub requests are waiting for the retry window.",
-        transient: true,
-      });
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const before = reads();
-        yield* later();
-        assert.isAbove(reads(), before);
-      }
+      const retried = (failure: UpstreamGitHubError) =>
+        Effect.gen(function* () {
+          fixture.gh.failure = failure;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const before = reads();
+            yield* later();
+            assert.isAbove(reads(), before);
+          }
+        });
+      assert.deepEqual(evidenceWarnings, []);
+      yield* retried(
+        new UpstreamGitHubError({
+          operation: "pull request topic evidence",
+          detail: "GitHub HTTP request failed.",
+          transient: true,
+        }),
+      );
+      const warned = evidenceWarnings.length;
+      assert.isAbove(warned, 0);
+      assert.deepEqual([...new Set(evidenceWarnings)], ["Warn: GitHub HTTP request failed."]);
+
+      // A read the request scheduler held back is retried the same way, but nothing failed.
+      yield* retried(
+        new UpstreamGitHubError({
+          operation: "pull request topic evidence",
+          detail: "GitHub requests are waiting for the retry window.",
+          transient: true,
+          deferred: true,
+        }),
+      );
+      assert.equal(evidenceWarnings.length, warned);
+
       fixture.gh.failure = null;
       yield* later();
       assert.equal(yield* receipt(), "pr");
       const finalReads = reads();
       yield* later();
       assert.equal(reads(), finalReads);
-    }),
-  );
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
 
   it.effect("keeps a scoped PR out of unrelated topics after a status turn", () =>
     Effect.gen(function* () {
