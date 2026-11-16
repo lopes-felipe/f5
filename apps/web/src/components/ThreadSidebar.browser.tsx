@@ -2357,7 +2357,7 @@ describe("Thread sidebar", () => {
       const footer = document.querySelector<HTMLElement>('[data-sidebar="footer"]')!;
       expect(navigation.querySelector('button[aria-label="Usage"]')).toBeNull();
       expect(footer.querySelector('button[aria-label="Pull requests"]')).toBeNull();
-      expect(footer.querySelector('button[aria-label="Usage limits"]')).not.toBeNull();
+      expect(footer.querySelector('button[aria-label="Usage limits"]')).toBeNull();
       const settingsButton = footer.querySelector<HTMLButtonElement>(
         'button[aria-label="Settings"]',
       )!;
@@ -2401,13 +2401,9 @@ describe("Thread sidebar", () => {
       );
       await vi.waitFor(() => expect(projectsToggle.getAttribute("aria-checked")).toBe("true"));
       const homeButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Home"]')!;
-      const usageButton = footer.querySelector<HTMLButtonElement>('[aria-label="Usage limits"]')!;
-      usageButton.click();
-      const openUsage = await waitForElement(
-        () => document.querySelector<HTMLAnchorElement>('[aria-label="Open Usage"]'),
-        "The limits panel should offer the full Usage page.",
-      );
-      openUsage.click();
+      // Usage is opened from the composer now; switch routes directly to
+      // verify sidebar navigation without recreating its removed limits panel.
+      await mounted.router.navigate({ to: "/usage" });
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/usage"));
       expect(homeButton.hasAttribute("aria-current")).toBe(false);
       // Pull requests is marked in the strip, so its page keeps Settings in the footer.
