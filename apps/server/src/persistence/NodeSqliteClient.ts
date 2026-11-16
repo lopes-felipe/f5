@@ -178,6 +178,9 @@ const makeWithDatabase = (
       ? Statement.defaultTransforms(options.transformResultNames).array
       : undefined;
 
+    // One statement or transaction at a time; the checkpoint worker takes a turn too.
+    const semaphore = yield* Semaphore.make(1);
+
     const makeConnection = Effect.gen(function* () {
       const scope = yield* Effect.scope;
       const db = openDatabase();
@@ -192,7 +195,7 @@ const makeWithDatabase = (
         !options.readonly &&
         options.filename !== ":memory:" &&
         options.filename !== ""
-          ? yield* startCheckpointWorker(options.filename, db)
+          ? yield* startCheckpointWorker(options.filename, db, semaphore.withPermits(1))
           : undefined;
 
       const statementReaderCache = new WeakMap<StatementSync, boolean>();
@@ -340,7 +343,6 @@ const makeWithDatabase = (
       });
     });
 
-    const semaphore = yield* Semaphore.make(1);
     const connection = yield* makeConnection;
 
     // A standalone statement can yield while preparing or transforming a result.

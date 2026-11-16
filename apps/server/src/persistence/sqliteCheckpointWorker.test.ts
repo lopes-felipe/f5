@@ -4,11 +4,12 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { runInNewContext } from "node:vm";
 import type { Worker as NodeWorker } from "node:worker_threads";
-import { Cause, Effect, Logger, Metric } from "effect";
+import { Cause, Effect, Fiber, Logger, Metric } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { describe, expect, it, vi } from "vitest";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 import {
+  type CheckpointRequest,
   checkpointWorkerSource,
   SLOW_CHECKPOINT_LOG_MS,
   sqliteCheckpointBlocked,
@@ -20,6 +21,7 @@ const workers = vi.hoisted(() => [] as NodeWorker[]);
 const failure = vi.hoisted(() => ({ enabled: false }));
 const paused = vi.hoisted(() => ({ enabled: false }));
 const slow = vi.hoisted(() => ({ enabled: false }));
+const held = vi.hoisted(() => ({ enabled: false }));
 vi.mock("node:worker_threads", async (original) => {
   const actual = await original<typeof import("node:worker_threads")>();
   return {
@@ -34,17 +36,34 @@ vi.mock("node:worker_threads", async (original) => {
                   'require("node:worker_threads").parentPort.on("message", () => {});',
                   { eval: true },
                 ]
-              : slow.enabled
+              : held.enabled
                 ? [
-                    // Answers every request as if a checkpoint of 1,200 frames took 2.5 s.
+                    // Once armed, reports a checkpoint due, then keeps the writer waiting for
+                    // the answer until the test releases it.
                     `const { parentPort } = require("node:worker_threads");
+                     const report = (fields) => parentPort.postMessage({
+                       ack: false, done: false, due: null, walBytes: 0, blocked: false, ...fields,
+                     });
+                     let armed = false;
+                     parentPort.on("message", (request) => {
+                       if (request === "arm") armed = true;
+                       else if (request === "release") report({ done: true });
+                       else if (request === "now") report({ asked: true });
+                       else report({ ack: true, due: armed ? "now" : null });
+                     });`,
+                    { eval: true },
+                  ]
+                : slow.enabled
+                  ? [
+                      // Answers every request as if a checkpoint of 1,200 frames took 2.5 s.
+                      `const { parentPort } = require("node:worker_threads");
                      parentPort.on("message", () => parentPort.postMessage({
                        ack: true, walBytes: 4096, blocked: false,
                        checkpointed: { durationMs: 2500, frames: 1200 },
                      }));`,
-                    { eval: true },
-                  ]
-                : args) as ConstructorParameters<typeof actual.Worker>),
+                      { eval: true },
+                    ]
+                  : args) as ConstructorParameters<typeof actual.Worker>),
         );
         workers.push(this);
       }
@@ -163,7 +182,7 @@ describe("SQLite checkpoint worker", () => {
   );
 
   it("does not label an unattempted NOOP backlog as checkpoint contention", () => {
-    let receive!: () => void;
+    let receive!: (request: CheckpointRequest | null) => void;
     let idle!: () => void;
     let checkpointed = 1500;
     let noopBusy = false;
@@ -171,6 +190,8 @@ describe("SQLite checkpoint worker", () => {
     let clock = 10_000;
     const messages: Array<{
       blocked: boolean;
+      due: CheckpointRequest | null;
+      done: boolean;
       checkpointed: { durationMs: number; frames: number } | null;
     }> = [];
     const passive = vi.fn(() => {
@@ -184,7 +205,7 @@ describe("SQLite checkpoint worker", () => {
           return {
             workerData: { filename: "fixture", frames: 1000, idleMs: 100 },
             parentPort: {
-              on: (_event: string, callback: () => void) => {
+              on: (_event: string, callback: typeof receive) => {
                 receive = callback;
               },
               postMessage: (message: (typeof messages)[number]) => messages.push(message),
@@ -220,18 +241,23 @@ describe("SQLite checkpoint worker", () => {
       },
       clearTimeout: () => {},
     });
-    receive();
+    receive(null);
     expect(passive).not.toHaveBeenCalled();
     expect(messages.at(-1)?.blocked).toBe(false);
-    // No checkpoint ran, so none is reported.
+    // 500 frames are below the threshold: nothing is due and no checkpoint is reported.
+    expect(messages.at(-1)?.due).toBeNull();
     expect(messages.at(-1)?.checkpointed).toBeNull();
+    // Once writes go idle the tail is due, but the worker asks before it checkpoints.
     idle();
+    expect(passive).not.toHaveBeenCalled();
+    expect(messages.at(-1)).toMatchObject({ due: "finish", done: false, blocked: false });
+    receive("finish");
     expect(passive).toHaveBeenCalledTimes(1);
-    expect(messages.at(-1)?.blocked).toBe(true);
+    expect(messages.at(-1)).toMatchObject({ due: null, done: true, blocked: true });
     // The one that ran reports its duration and the frames it had to move.
     expect(messages.at(-1)?.checkpointed).toEqual({ durationMs: 2_500, frames: 500 });
     noopBusy = true;
-    receive();
+    receive(null);
     expect(messages.at(-1)?.blocked).toBe(true);
     expect(messages.at(-1)?.checkpointed).toBeNull();
     idle();
@@ -241,6 +267,57 @@ describe("SQLite checkpoint worker", () => {
     // The pending idle check must recover without another writer command.
     idle();
     expect(messages.at(-1)?.blocked).toBe(false);
+    expect(passive).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks before a checkpoint at the frame threshold and runs it only when told to", () => {
+    let receive!: (request: CheckpointRequest | null) => void;
+    let state = { log: 1200, checkpointed: 0, busy: 0 };
+    const messages: Array<{ ack: boolean; due: CheckpointRequest | null; done: boolean }> = [];
+    const passive = vi.fn(() => (state = { log: 1200, checkpointed: 1200, busy: 0 }));
+    runInNewContext(checkpointWorkerSource, {
+      Date,
+      require: (module: string) => {
+        if (module === "node:worker_threads")
+          return {
+            workerData: { filename: "fixture", frames: 1000, idleMs: 100 },
+            parentPort: {
+              on: (_event: string, callback: typeof receive) => {
+                receive = callback;
+              },
+              postMessage: (message: (typeof messages)[number]) => messages.push(message),
+            },
+          };
+        if (module === "node:fs")
+          return { openSync: () => 3, fstatSync: () => ({ size: 4096 }), closeSync: () => {} };
+        return {
+          DatabaseSync: class {
+            exec() {}
+            prepare(sql: string) {
+              return {
+                get: sql.includes("sqlite_version")
+                  ? () => ({ version: "3.51.2" })
+                  : sql.includes("PASSIVE")
+                    ? passive
+                    : () => state,
+              };
+            }
+          },
+        };
+      },
+      setTimeout: () => 0,
+      clearTimeout: () => {},
+    });
+    receive(null);
+    expect(passive).not.toHaveBeenCalled();
+    expect(messages.at(-1)).toMatchObject({ ack: true, due: "now", done: false });
+    receive("now");
+    expect(passive).toHaveBeenCalledTimes(1);
+    expect(messages.at(-1)).toMatchObject({ ack: false, due: null, done: true });
+    // Permission that arrives after someone else checkpointed runs nothing and still answers.
+    receive("now");
+    expect(passive).toHaveBeenCalledTimes(1);
+    expect(messages.at(-1)).toMatchObject({ ack: false, due: null, done: true });
   });
   it.skipIf(!supportsNoop)(
     "checkpoints large writes off-thread and reuses a bounded WAL",
@@ -303,6 +380,68 @@ describe("SQLite checkpoint worker", () => {
     },
     60_000,
   );
+
+  it("makes a statement wait for a checkpoint instead of running during it", async () => {
+    held.enabled = true;
+    try {
+      await withClient((sql) =>
+        Effect.gen(function* () {
+          const worker = workers.at(-1)!;
+          let asked = false;
+          worker.on("message", (message: { asked?: boolean }) => {
+            if (message.asked) asked = true;
+          });
+          worker.postMessage("arm");
+          yield* sql`INSERT INTO payload VALUES (zeroblob(1))`;
+          yield* until(() => Effect.sync(() => asked), "the checkpoint request");
+
+          // The checkpoint is running: a statement must not start, and the thread stays free.
+          const read = yield* Effect.forkChild(sql`SELECT count(*) AS rows FROM payload`);
+          let turns = 0;
+          const timer = setInterval(() => turns++, 5);
+          yield* Effect.sleep("100 millis");
+          clearInterval(timer);
+          expect(read.pollUnsafe()).toBeUndefined();
+          expect(turns).toBeGreaterThan(0);
+
+          worker.postMessage("release");
+          expect(yield* Fiber.join(read)).toEqual([{ rows: 1 }]);
+        }),
+      );
+    } finally {
+      held.enabled = false;
+    }
+  });
+
+  it.skipIf(!supportsNoop)("waits for a reserved connection before it checkpoints", async () => {
+    await withClient((sql, filename) =>
+      Effect.gen(function* () {
+        yield* sql`PRAGMA wal_checkpoint(TRUNCATE)`;
+        const backfilled = () => {
+          const observer = new DatabaseSync(filename);
+          try {
+            return observer.prepare("PRAGMA wal_checkpoint(NOOP)").get()!;
+          } finally {
+            observer.close();
+          }
+        };
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            // Maintenance reserves the connection like this while it works.
+            const connection = yield* sql.reserve;
+            for (let index = 0; index < 8; index++)
+              yield* connection.executeRaw("INSERT INTO payload VALUES (zeroblob(1048576))", []);
+            // Well past the worker's idle check: the checkpoint is due and must still wait.
+            yield* Effect.sleep("400 millis");
+            const state = backfilled();
+            expect(Number(state.log)).toBeGreaterThan(1000);
+            expect(state.checkpointed).toBe(0);
+          }),
+        );
+        yield* until(checkpointed(filename), "the checkpoint after the connection was released");
+      }),
+    );
+  });
 
   it("records each checkpoint's duration and logs a slow one", async () => {
     expect(SLOW_CHECKPOINT_LOG_MS).toBeLessThanOrEqual(2_500);
