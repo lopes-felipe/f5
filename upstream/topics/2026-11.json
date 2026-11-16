@@ -41829,6 +41829,21 @@
       ]
     },
     {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-32946",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): environment filter leaves out switched-off environments (#32946)",
+      "upstreamPrs": [
+        32946
+      ]
+    },
+    {
       "createdAt": "2026-11-09T11:09:57.237Z",
       "epoch": 1,
       "id": "pr-32947",
@@ -65960,6 +65975,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-36897",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(opencode): Zen-only Console workspaces no longer show \"No limits reported\" (#36897)",
+      "upstreamPrs": [
+        36897
+      ]
+    },
+    {
       "createdAt": "2026-11-15T11:14:38.505Z",
       "epoch": 1,
       "id": "pr-36898",
@@ -66799,6 +66836,21 @@
       ]
     },
     {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37021",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): iPhone New chat stays beside the tabs after a Settings page (#37021)",
+      "upstreamPrs": [
+        37021
+      ]
+    },
+    {
       "createdAt": "2026-11-15T11:14:38.505Z",
       "epoch": 1,
       "id": "pr-37022",
@@ -67284,6 +67336,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37083",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(mobile): first visit to an iOS tab no longer flashes black (#37083)",
+      "upstreamPrs": [
+        37083
+      ]
+    },
+    {
       "createdAt": "2026-11-15T11:16:17.825Z",
       "decidedAt": "2026-11-15T11:16:17.825Z",
       "decidedBy": "rule",
@@ -67389,6 +67463,28 @@
       "title": "fix(mobile): PR activity filter remembers bot and resolved visibility (#37096)",
       "upstreamPrs": [
         37096
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37100",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "feat",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "feat(mobile): open iOS images in a native viewer modelled on Messages (#37100)",
+      "upstreamPrs": [
+        37100
       ]
     },
     {
@@ -67582,6 +67678,21 @@
       ]
     },
     {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37131",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): switching threads no longer flashes the feed header or misplaces the composer (#37131)",
+      "upstreamPrs": [
+        37131
+      ]
+    },
+    {
       "createdAt": "2026-11-15T11:16:17.825Z",
       "epoch": 1,
       "id": "pr-37133",
@@ -67606,6 +67717,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37138",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): project search starts working once a slow content index finishes building (#37138)",
+      "upstreamPrs": [
+        37138
+      ]
+    },
+    {
       "createdAt": "2026-11-15T11:16:17.825Z",
       "epoch": 1,
       "id": "pr-37139",
@@ -67626,6 +67759,43 @@
       "title": "ACP agents wait for the session/load reply before the first prompt",
       "upstreamPrs": [
         37139
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37141",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): concealed terminal text stays hidden under the cursor (#37141)",
+      "upstreamPrs": [
+        37141
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37143",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): pasted GIFs on iOS keep their animation (#37143)",
+      "upstreamPrs": [
+        37143
       ]
     },
     {
@@ -67701,6 +67871,2218 @@
       "title": "Sharing & access can select a desktop-local WSL backend",
       "upstreamPrs": [
         37151
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37156",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "threads"
+        ],
+        "confidence": 0.75,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Clearer provider failure that can reach f5, for example with Pi gateways. Reimplement it in f5's provider failure layer, since provider-core does not exist in f5.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "makeProviderFailure recognizes an HTTP 413 status or its reason phrase. It replaces the gateway's HTML page with a clear message suggesting /clear or a new thread.",
+      "title": "Oversized provider requests show 'too large', not raw 413 HTML",
+      "upstreamPrs": [
+        37156
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37158",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): cutting text in the iOS composer can be undone (#37158)",
+      "upstreamPrs": [
+        37158
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37159",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "agents",
+          "threads"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "This is a provider reliability fix for ACP Registry agents. Without it, a reply that arrives after a background agent finishes can be lost. Port it inside f5's ACP adapter layer, since upstream's packages/provider-acp does not exist in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The Copilot ACP flavor buffers root updates that arrive after assistant.idle has settled the run and offers them as a continuation run. The core ACP adapter tracks the root's last foreground-work state, so an idle root finalizes right away.",
+      "title": "Copilot replies after a background agent wakes it open a continuation run",
+      "upstreamPrs": [
+        37159
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37161",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub",
+          "forges"
+        ],
+        "confidence": 0.75,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Improves an error message in the PR hub and forges, a surface f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Opening an Azure DevOps PR in a repository that isn't a project now fails with the new reason repository-without-project, which names the repository. Before, it showed a misleading 'host unsupported' error.",
+      "title": "Azure PR in a repository with no project names the missing project",
+      "upstreamPrs": [
+        37161
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37162",
+      "relatedTopics": [
+        "pr-32109"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "agents"
+        ],
+        "confidence": 0.65,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Grok is an f5 provider, and this fixes lost answers from delegated child tasks. Reimplement it in f5's ACP adapter.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The ACP adapter offers a post-settle continuation only when the wake buffer holds result-bearing evidence. Unpolled completions stay pending until Grok's native wake, so the child's answer isn't replaced with 'completed without an assistant result'.",
+      "title": "Grok early task completion no longer replaces the child's answer",
+      "upstreamPrs": [
+        37162
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37165",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "composer"
+        ],
+        "confidence": 0.7,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Visible fix to the Claude provider's skills picker in the composer. Reimplement it in f5's Claude adapter and provider registry.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "On a Claude process's first init, the server rescans the cwd's workspace skills, bypassing the 5-minute TTL. Skills a SessionStart hook links show up without waiting for a later session.",
+      "title": "Skills linked by a Claude SessionStart hook appear in the $ picker in the same session",
+      "upstreamPrs": [
+        37165
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37175",
+      "relatedTopics": [
+        "pr-37066"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "terminal"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Terminal input fix. It applies if f5's terminal uses the Ghostty web core; otherwise its impact is low.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Numpad events that report navigation keys (arrows, Home/End, PageUp/PageDown, Insert, Delete, Clear) map to Ghostty's keypad navigation enums. These keys now send terminal input.",
+      "title": "Terminal keypad navigation works with NumLock off",
+      "upstreamPrs": [
+        37175
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37179",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): composer suggestions stay reachable in short windows (#37179)",
+      "upstreamPrs": [
+        37179
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37180",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "server",
+          "performance"
+        ],
+        "confidence": 0.5,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Windows process reliability fix. f5 does not have SpawnWorker, so it applies only if f5 spawns processes from concurrent workers.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Every spawn worker pool shares a lock around spawn() on Windows, so CreateProcess calls don't overlap. A long-lived child no longer inherits a short child's stdout and holds it open.",
+      "title": "Windows spawn workers no longer leak a short child's output pipe to a sibling",
+      "upstreamPrs": [
+        37180
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37185",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): Claude session name follows thread renames without waiting for the next turn (#37185)",
+      "upstreamPrs": [
+        37185
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37186",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): iOS video previews keep their contain fit instead of sometimes cropping (#37186)",
+      "upstreamPrs": [
+        37186
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37193",
+      "relatedTopics": [
+        "pr-37066"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "terminal"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Terminal rendering fix. It applies if f5 uses the Ghostty web terminal core.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "When OSC 10/11 change the default foreground or background, cached rows are refreshed, and a background change triggers a full repaint including padding. Explicit cell backgrounds stay intact.",
+      "title": "Terminal repaints when programs change default colors",
+      "upstreamPrs": [
+        37193
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37198",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): Enter sends when a panel-conditioned shortcut is inactive (#37198)",
+      "upstreamPrs": [
+        37198
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37201",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): terminal file links preserve numeric filename suffixes (#37201)",
+      "upstreamPrs": [
+        37201
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37206",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "terminal"
+        ],
+        "confidence": 0.55,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Visual fix to the terminal. It applies if f5's web terminal uses the same Ghostty renderer path.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The web terminal renderer redraws underline, strikethrough and overline after the cursor fill, in the cursor text color, including across wide glyphs.",
+      "title": "Terminal underline and strikethrough stay visible under the block cursor",
+      "upstreamPrs": [
+        37206
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37208",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): switching a draft’s machine keeps its selected models (#37208)",
+      "upstreamPrs": [
+        37208
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37211",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): modified F3 reaches ncurses terminal bindings (#37211)",
+      "upstreamPrs": [
+        37211
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37214",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): delegate_task names the CLI version that hides a model (#37214)",
+      "upstreamPrs": [
+        37214
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37223",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): legacy mouse reports reach the PTY byte for byte (#37223)",
+      "upstreamPrs": [
+        37223
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37228",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "threads"
+        ],
+        "confidence": 0.75,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "A composer bug fix that applies wherever f5 has queued-message editing and side-chat commands. The web side is a small guard in the send path.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Saving an edited queued message whose text is a /side or /btw command now shows a 'Queued message not updated' warning. The draft and the queued message stay as they were, so the side question no longer lands in the main thread.",
+      "title": "Editing a queued message into /btw or /side no longer saves it to the main thread",
+      "upstreamPrs": [
+        37228
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37229",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "settings"
+        ],
+        "confidence": 0.65,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "A provider status improvement that reaches Antigravity and other local ACP agents in f5. The fix must be reimplemented in f5's layers because provider-acp-registry doesn't exist here.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The agent version reported during ACP initialization is carried through the probe and shown for local provider snapshots, such as a separately installed Antigravity CLI, instead of an unknown version.",
+      "title": "Local ACP agents show the version they report",
+      "upstreamPrs": [
+        37229
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37233",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "terminal",
+          "server"
+        ],
+        "confidence": 0.75,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "A terminal correctness bug: two writable viewers of the same PTY can corrupt input. This can happen in f5's terminal.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Generated Ghostty replies are marked on the wire, separate from typed input. The terminal manager accepts them from one attached viewer per PTY. Duplicate DECRPM replies no longer corrupt Vim input when two viewers are attached.",
+      "title": "Only one web viewer answers terminal queries for a shared PTY",
+      "upstreamPrs": [
+        37233
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37238",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "usage"
+        ],
+        "confidence": 0.7,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "An accessibility fix in the Usage surface, which f5 has. The two commits fix the same screen-reader gaps on the Usage page.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The Usage provider chart gains a visually hidden data table. Share bars expose a labelled legend list with percentages. Stat grids on the Usage page and in the model dialog use dl/dt/dd, so each figure is read with its label.",
+      "title": "Usage charts, share bars and stat figures reach screen readers",
+      "upstreamPrs": [
+        37238,
+        37241
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37240",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop"
+        ],
+        "confidence": 0.8,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "A desktop reliability fix. A blank window after repeated crashes can happen in f5's Electron shell.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "After three recoverable renderer crashes within 60 s, the main window no longer gives up and stays blank. It waits until the oldest attempt leaves the 60 s window, then reloads.",
+      "title": "A renderer that keeps crashing is reloaded with a backoff instead of left blank",
+      "upstreamPrs": [
+        37240
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37243",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "connections"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "A composer mention fix for linked environments, a feature other f5 inbox topics treat as present. The web change is small.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The composer's @ title search now also searches older thread titles on linked environments, so settled threads that dropped out of recent shell history can still be mentioned.",
+      "title": "@ picker finds older settled threads on linked machines",
+      "upstreamPrs": [
+        37243
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37244",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "threads"
+        ],
+        "confidence": 0.65,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Fixes duplicate imports and unsafe deletes of ACP-provider sessions in the server's ACP registry session handling.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Before listing, importing or deleting, the server looks up the owning thread by provider instance and native session ID. Sessions created in T3 open their existing thread, repeated imports reuse it, and an owned session can't be deleted.",
+      "title": "ACP session list recognizes sessions already owned by a T3 thread",
+      "upstreamPrs": [
+        37244
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37257",
+      "relatedTopics": [
+        "pr-31090"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "providers"
+        ],
+        "confidence": 0.7,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "A small session-import title fix, in the same area as the tracked Codex import-title fix.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Session import's deriveTitle unwraps a leading <wake …> envelope before taking the first line. Agent-started sessions get distinct titles instead of the envelope markup.",
+      "title": "Imported Claude sessions are titled after the prompt inside a wake envelope",
+      "upstreamPrs": [
+        37257
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37259",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "cli",
+          "mcp"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "maintenance",
+        "model": "claude-opus-5-5",
+        "reason": "Only help and description text changes. Nothing in the app behaves differently.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The t3 theme set CLI help and the t3_theme_set MCP description now say that only this server's web app and this machine's desktop app switch, not remote desktop apps.",
+      "title": "Theme set help names which clients apply the theme",
+      "upstreamPrs": [
+        37259
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37264",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): PowerShell process scans keep non-ASCII names on Windows (#37264)",
+      "upstreamPrs": [
+        37264
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37265",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): Duo scroll indicator sits past the vertical bar, at the screen edge (#37265)",
+      "upstreamPrs": [
+        37265
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37267",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): sending a message no longer shifts the feed before it settles (#37267)",
+      "upstreamPrs": [
+        37267
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37271",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "test(desktop): two-account callback test uses two distinct ports (#37271)",
+      "upstreamPrs": [
+        37271
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37272",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): close Usage without reloading (#37272)",
+      "upstreamPrs": [
+        37272
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37280",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(mobile): fully typed /model keeps its suggestion (#37280)",
+      "upstreamPrs": [
+        37280
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37284",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): copied code blocks drop the fence's trailing newline (#37284)",
+      "upstreamPrs": [
+        37284
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37285",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): swipe actions no longer clip in short thread rows (#37285)",
+      "upstreamPrs": [
+        37285
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37289",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): tasks in unconnected linked environments no longer show the OpenAI logo (#37289)",
+      "upstreamPrs": [
+        37289
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37292",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): Codex prompt suggestions no longer imitate delegated task notices (#37292)",
+      "upstreamPrs": [
+        37292
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37299",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): schedule_task uses the project's effective default model (#37299)",
+      "upstreamPrs": [
+        37299
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37300",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): a background OpenCode subagent's question survives its parent's turn end (#37300)",
+      "upstreamPrs": [
+        37300
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37301",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): iOS multi-item text paste folds into an attachment (#37301)",
+      "upstreamPrs": [
+        37301
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37302",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(mobile): a tab's bar buttons no longer fade in on its first visit (#37302)",
+      "upstreamPrs": [
+        37302
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37315",
+      "relatedTopics": [
+        "pr-30428"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "commands",
+          "sidebar",
+          "threads"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "The web command palette files exist in f5. This keeps the palette consistent with the sidebar for delegated tasks.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The command palette filters threads with the same shown-under-parent check as the sidebar, so tasks delegated to a linked environment no longer appear as ordinary threads.",
+      "title": "Command palette hides delegated tasks shown under their parent",
+      "upstreamPrs": [
+        37315
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37319",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): dismissing a background OpenCode subagent's question lets it carry on (#37319)",
+      "upstreamPrs": [
+        37319
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37325",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): work a dead provider process was running no longer stays Running (#37325)",
+      "upstreamPrs": [
+        37325
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37332",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "mcp",
+          "agents"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Only affects delegation to linked peer environments through upstream RemoteDelegation and orchestration-v2, which f5 does not have.",
+        "reasonKey": "multi-environment",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "task_status for a completed task on a linked machine now returns the model that actually ran, instead of null, matching t3_thread_read.",
+      "title": "Remote delegated tasks report their actual executed model",
+      "upstreamPrs": [
+        37332
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37335",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "composer",
+          "threads"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Grok is an f5 provider. Steering follow-ups into the running turn is a user-visible composer and provider improvement. Reimplement it in f5's ACP adapter.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Grok follow-ups, including images, now enter a running turn without stopping its foreground tool. An auto send from CLI or MCP steers instead of waiting, as with other providers that steer natively.",
+      "title": "Queued Grok messages steer into the running turn",
+      "upstreamPrs": [
+        37335
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37340",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): inline audio keeps playing when its row scrolls out of view (#37340)",
+      "upstreamPrs": [
+        37340
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37355",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "agents",
+          "timeline"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "f5 shows Claude subagent results. Reimplement the cleanup in f5's Claude adapter.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Claude subagent results remove the '[Subagent hand-back]' frame, the two-space indentation, and the agentId and <usage> trailers, so nested subagent summaries show only the report.",
+      "title": "Nested Claude subagent summaries drop Claude Code's hand-back frame",
+      "upstreamPrs": [
+        37355
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37361",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "panels",
+          "files"
+        ],
+        "confidence": 0.55,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "A UX improvement to file preview panels, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The file preview's code view saves its scroll offset on unmount and restores it when the tab is shown again. This survives StrictMode double mounts.",
+      "title": "File preview tabs keep their scroll position when you switch back",
+      "upstreamPrs": [
+        37361
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37364",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "persistence",
+          "sidebar",
+          "threads"
+        ],
+        "confidence": 0.55,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a stuck sidebar state in threads. Port as an f5 migration with f5's own numbering, if f5 stores the same marker.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "A migration clears a titleRegeneration marker when no pending or running title job exists for that thread and request ID. Stuck rows are no longer dimmed, and Regenerate title works again.",
+      "title": "Old subagent and fork threads stop showing 'Regenerating title' forever",
+      "upstreamPrs": [
+        37364
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37376",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "terminal"
+        ],
+        "confidence": 0.7,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Fixes garbled terminal output on Windows. The symptom reaches f5's terminal.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "PowerShell terminals start with the console OutputEncoding and $OutputEncoding set to UTF-8, so native UTF-8 output is no longer mangled under the OEM 437 code page.",
+      "title": "Windows PowerShell terminals show native UTF-8 output correctly",
+      "upstreamPrs": [
+        37376
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37377",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "timeline"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "f5 runs ACP-based providers. Tool rows stuck on running after a crash are a reliability bug users can hit.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When an ACP agent's process or pipe dies mid-turn, its open foreground tools now settle as failed instead of staying running. Tools stay open when the agent answered with an error.",
+      "title": "An ACP agent's open tool call ends when its process dies mid-turn",
+      "upstreamPrs": [
+        37377
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37390",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): Show feedback when a response fork fails (#37390)",
+      "upstreamPrs": [
+        37390
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37392",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "worktrees",
+          "threads"
+        ],
+        "confidence": 0.65,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "The ChatView logic exists in f5. The fix unblocks sending from scratch threads in worktree mode.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "planComposerTurn no longer reports a missing worktree base branch for No project threads, so they send and launch at the folder root instead of being blocked.",
+      "title": "No project threads in New worktree mode send without a base branch",
+      "upstreamPrs": [
+        37392
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37395",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): a disabled Merge back button shows why it is disabled (#37395)",
+      "upstreamPrs": [
+        37395
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37398",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): Stop stays reachable while a question card is expanded (#37398)",
+      "upstreamPrs": [
+        37398
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37399",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): a delegated child's turn end re-offers only its own parent run's wake (#37399)",
+      "upstreamPrs": [
+        37399
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37410",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): service protect and status say when the kernel has no memory controller (#37410)",
+      "upstreamPrs": [
+        37410
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37416",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): a wake stuck on one thread's parent lock no longer holds up other threads' wakes (#374…",
+      "upstreamPrs": [
+        37416
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37417",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): one busy thread's lock no longer stalls other threads' queued runs (#37417)",
+      "upstreamPrs": [
+        37417
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37426",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): thread context menu offers Mark unread (#37426)",
+      "upstreamPrs": [
+        37426
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37451",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): the first file search after a big folder lands no longer freezes the server (#37451)",
+      "upstreamPrs": [
+        37451
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37455",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): a timed-out branch totals diff is not rerun until HEAD or its base moves (#37455)",
+      "upstreamPrs": [
+        37455
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37457",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): fx and Muse refreshes drop models they no longer list (#37457)",
+      "upstreamPrs": [
+        37457
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37466",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(cli): t3 pair --tailscale names the operator fix when Tailscale denies Serve (#37466)",
+      "upstreamPrs": [
+        37466
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37470",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): a child's question no longer waits behind another coordinator's busy lock (#37470)",
+      "upstreamPrs": [
+        37470
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37471",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(pi): image reads show a preview in the work log (#37471)",
+      "upstreamPrs": [
+        37471
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37472",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(pi): resume the session file an extension switched the thread to (#37472)",
+      "upstreamPrs": [
+        37472
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37475",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): a stopped run no longer shows the green Done badge in the sidebar (#37475)",
+      "upstreamPrs": [
+        37475
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37476",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(desktop): an update download fetches the newest release, not the last check's (#37476)",
+      "upstreamPrs": [
+        37476
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37478",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): session scan keeps recent Claude sessions in a large home (#37478)",
+      "upstreamPrs": [
+        37478
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37482",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): checkpoint capture no longer rehashes unchanged untracked files (#37482)",
+      "upstreamPrs": [
+        37482
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37490",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): Update everything no longer offers a Nightly build to a Stable desktop app (#37490)",
+      "upstreamPrs": [
+        37490
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37495",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): composer drafts keep underscores in non-Latin names (#37495)",
+      "upstreamPrs": [
+        37495
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37498",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): stashed prompt previews show thread mentions by name, not as raw links (#37498)",
+      "upstreamPrs": [
+        37498
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37499",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(provider-core): generated thread titles keep the closing quote of a quoted term (#37499)",
+      "upstreamPrs": [
+        37499
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37500",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): an open delegated task selects its parent's sidebar row (#37500)",
+      "upstreamPrs": [
+        37500
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37505",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): preserve whitespace in ACP history replay (#37505)",
+      "upstreamPrs": [
+        37505
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37507",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): Cmd+Enter on an edited queued message steers it into the running turn (#37507)",
+      "upstreamPrs": [
+        37507
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37509",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): source control settings notice a CLI login made outside the app (#37509)",
+      "upstreamPrs": [
+        37509
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37512",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(pi): restore selected model after native extension switches (#37512)",
+      "upstreamPrs": [
+        37512
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37516",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(acp): keep providers available after naming custom models (#37516)",
+      "upstreamPrs": [
+        37516
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37526",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(pi): report failed manual compaction as a failed turn (#37526)",
+      "upstreamPrs": [
+        37526
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37528",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): keep Pi and ACP model selections during catalog gaps (#37528)",
+      "upstreamPrs": [
+        37528
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37530",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(mobile): a tab's first visit appears whole, without a tab bar bounce (#37530)",
+      "upstreamPrs": [
+        37530
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37537",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): end pending ACP tools when their prompt fails (#37537)",
+      "upstreamPrs": [
+        37537
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37538",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): a hung branch name no longer holds a new thread in setup for minutes (#37538)",
+      "upstreamPrs": [
+        37538
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37545",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(acp): preserve literal monitor-event text in imported history (#37545)",
+      "upstreamPrs": [
+        37545
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37549",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(acp-registry): recover configured agents without a registry cache (#37549)",
+      "upstreamPrs": [
+        37549
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37553",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "feat(mobile): move Language into General settings (#37553)",
+      "upstreamPrs": [
+        37553
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37554",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): a settled thread's gap closes right away on every thread list (#37554)",
+      "upstreamPrs": [
+        37554
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37555",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): a Kimi turn that fails after a tool call now shows as failed (#37555)",
+      "upstreamPrs": [
+        37555
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37556",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): idle ACP child output no longer leaks into root history (#37556)",
+      "upstreamPrs": [
+        37556
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37557",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): sending a new thread's first message no longer scrolls the sidebar (#37557)",
+      "upstreamPrs": [
+        37557
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37562",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): composer animates between compact and multiline (#37562)",
+      "upstreamPrs": [
+        37562
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37564",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "all",
+        "kind": "perf",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "perf(server): CLI startup no longer takes the write lock when the schema is current (#37564)",
+      "upstreamPrs": [
+        37564
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37565",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(provider-core): thread title instructions override the generic title limits (#37565)",
+      "upstreamPrs": [
+        37565
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37568",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(ci): build iOS previews on Blacksmith with one mobile comment (#37568)",
+      "upstreamPrs": [
+        37568
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37574",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "test(acp-registry): Kimi outcome test waits for each poll before advancing the clock (#37574)",
+      "upstreamPrs": [
+        37574
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "decidedAt": "2026-11-16T12:08:36.298Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-37577",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(ci): preserve mobile preview state after publication fails (#37577)",
+      "upstreamPrs": [
+        37577
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37579",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): Tab from a citation comment reaches Save, not Cancel (#37579)",
+      "upstreamPrs": [
+        37579
+      ]
+    },
+    {
+      "createdAt": "2026-11-16T12:08:36.298Z",
+      "epoch": 1,
+      "id": "pr-37593",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI request timed out.",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): switching a draft's machine uses that machine's default model (#37593)",
+      "upstreamPrs": [
+        37593
       ]
     },
     {
