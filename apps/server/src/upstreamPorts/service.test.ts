@@ -478,6 +478,130 @@ layer("upstream port queue", (it) => {
     }),
   );
 
+  /** A blocked batch thread with a projected PR #42 and a queued port waiting on its files. */
+  const blockedBatchWithPr = (prRepo = "o/f5") =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(4, 1, () => ["shared.ts"]);
+      yield* service.enqueuePort({
+        ...queueInput(ids.slice(0, 3), "merged-subset"),
+        grouping: "together",
+      });
+      yield* service.testing.awaitIdle;
+      const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+        .threadId!;
+      yield* service.enqueuePort(queueInput(ids.slice(3), "waits-on-merged-subset"));
+      yield* service.testing.awaitIdle;
+      const sql = yield* SqlClient.SqlClient;
+      const url = `https://github.com/${prRepo}/pull/42`;
+      yield* sql`INSERT INTO projection_threads
+        (thread_id,project_id,title,model,created_at,last_interaction_at,updated_at)
+        VALUES (${threadId},${PROJECT_ID},'Port','model','now','now','now')`;
+      yield* sql`INSERT INTO projection_thread_pull_requests
+        (link_id,thread_id,provider,host,repository,number,title,url,updated_at)
+        VALUES ('pr-link',${threadId},'github','github.com',${prRepo},42,'Port',${url},'now')`;
+      yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,processing_quiesced_at,checkpoint_files_json)
+        VALUES (${threadId},'blocked','completed','2026-10-22T12:00:00.000Z','2026-10-22T12:00:00.000Z','[]')`;
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('blocked-message',${threadId},'blocked','assistant','UPSTREAM-OUTCOME: blocked The CI gate is still queued.',0,'2026-10-22T12:00:00.000Z','now')`;
+      fixture.host.threads = [completedThread(threadId, "blocked", "blocked-message")];
+      const pr = {
+        repo: prRepo,
+        number: 42,
+        url,
+        state: "open" as "open" | "closed" | "merged",
+        head: "port",
+        title: "Port the first topic",
+        body: "Upstream-Topic: " + ids[0],
+      };
+      fixture.gh.prs.push(pr);
+      const links = () =>
+        sql<{ topic_id: string; state: string }>`
+          SELECT topic_id,state FROM upstream_port_links WHERE thread_id = ${threadId}`.pipe(
+          Effect.map((rows) => new Map(rows.map((row) => [row.topic_id, row.state]))),
+        );
+      const waitingOn = () =>
+        service
+          .getPortQueue({ projectId: PROJECT_ID })
+          .pipe(
+            Effect.map(
+              (queue) =>
+                queue.entries.find((entry) => entry.status === "queued")?.waitingOn ?? null,
+            ),
+          );
+      const evidenceReads = () =>
+        fixture.gh.calls.filter((call) => call === "topic evidence 42").length;
+      return { fixture, service, ids, threadId, sql, pr, links, waitingOn, evidenceReads };
+    });
+
+  it.effect("releases topics a merged PR excluded and keeps the ones it carried", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids, pr, links, waitingOn, evidenceReads } =
+        yield* blockedBatchWithPr();
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const before = yield* waitingOn();
+      assert.lengthOf(before!, 1);
+      assert.lengthOf(before![0]!.topicTitles, 3);
+      assert.equal(evidenceReads(), 1);
+
+      // An unmerged PR is not read again until the recheck window passes.
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 121_000);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(evidenceReads(), 1);
+
+      pr.state = "merged";
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 10 * 60_000);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(evidenceReads(), 2);
+      const states = yield* links();
+      assert.equal(states.get(ids[0]!), "active");
+      assert.equal(states.get(ids[1]!), "unlinked");
+      assert.equal(states.get(ids[2]!), "unlinked");
+      for (const [id, state] of [
+        [ids[0]!, "in-progress"],
+        [ids[1]!, "ready"],
+        [ids[2]!, "ready"],
+      ] as const)
+        assert.equal(
+          (yield* service.getTopic({ projectId: PROJECT_ID, topicId: id })).row.state,
+          state,
+        );
+      const after = yield* waitingOn();
+      assert.lengthOf(after!, 1);
+      assert.lengthOf(after![0]!.topicTitles, 1);
+      assert.equal(after![0]!.topicId, ids[0]);
+
+      // The merged evidence is final: later passes neither re-read it nor change links.
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 60 * 60_000);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(evidenceReads(), 2);
+      assert.equal((yield* links()).get(ids[0]!), "active");
+    }),
+  );
+
+  for (const [variant, title] of [
+    ["closed", "the batch PR is closed"],
+    ["running", "the merged thread still has queued work"],
+    ["foreign-repo", "the merged PR is outside origin"],
+  ] as const)
+    it.effect(`keeps every link when ${title}`, () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids, threadId, sql, pr, links } = yield* blockedBatchWithPr(
+          variant === "foreign-repo" ? "x/other" : "o/f5",
+        );
+        pr.state = variant === "closed" ? "closed" : "merged";
+        if (variant === "running")
+          yield* sql`INSERT INTO next_turn_queue
+            (item_id,thread_id,submission_id,command_id,message_id,position,status,command_json,created_at,updated_at)
+            VALUES ('continuation',${threadId},'continuation','continuation','continuation',0,'queued','{}','now','now')`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        const states = yield* links();
+        for (const id of ids.slice(0, 3)) assert.equal(states.get(id), "active");
+        if (variant === "foreign-repo") assert.notInclude(fixture.gh.calls, "topic evidence 42");
+      }),
+    );
+
   it.effect("re-reads a closed batch PR until it merges and retries failed reads", () => {
     const evidenceWarnings: string[] = [];
     const logger = Logger.make((entry) => {
