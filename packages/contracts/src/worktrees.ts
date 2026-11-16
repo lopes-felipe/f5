@@ -23,6 +23,14 @@ export type WorktreesRemoveInput = typeof WorktreesRemoveInput.Type;
 export const WorktreesThreadStateInput = Schema.Struct({ threadId: ThreadId });
 export type WorktreesThreadStateInput = typeof WorktreesThreadStateInput.Type;
 
+export const WorktreesSwitchAvailabilityInput = Schema.Struct({
+  projectId: ProjectId,
+  path: FilesystemPath,
+  /** The asking conversation; its own claims never block it. */
+  threadId: Schema.optional(ThreadId),
+});
+export type WorktreesSwitchAvailabilityInput = typeof WorktreesSwitchAvailabilityInput.Type;
+
 export const WorktreesRecoverInput = Schema.Struct({
   threadId: ThreadId,
   expectedQueueRevision: NonNegativeInt,

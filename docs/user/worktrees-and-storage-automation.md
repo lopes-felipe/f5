@@ -158,9 +158,14 @@ Only the current project checkout and registered, attached-branch worktrees insi
 current profile's managed root can be attached. Other profiles' managed checkouts and
 external or detached checkouts cannot be attached. Sharing a checkout with other
 conversations requires explicit confirmation because they share the same files.
-Changing a branch in place is stricter: any other surviving conversation reference,
-including archived conversations, blocks it. Terminals, sessions, queued operations, and
-other profiles' references also block an in-place change. Use a separate worktree instead.
+
+Changing a branch in place is blocked only by live use: another conversation's running or
+pending turn, queued work, worktree setup or workspace transition, an open terminal (yours
+included), or another profile's reference. In the project folder, idle and archived local
+conversations do not block it; they show whatever branch the folder is on. A managed worktree
+keeps the stricter rule, because its conversations record a branch: any other conversation using
+it, or an open agent session, also blocks the switch. A refused switch names the conversations
+and what they are doing; use a separate worktree instead.
 
 Interrupted switches keep their checkout and block sending until resolved. Choose
 **Inspect workspace** to see the actual branch, commit, and path. **Accept inspected

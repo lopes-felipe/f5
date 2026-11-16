@@ -58,6 +58,30 @@ export const WorktreesThreadStateResult = Schema.Struct({
 });
 export type WorktreesThreadStateResult = typeof WorktreesThreadStateResult.Type;
 
+export const InPlaceSwitchBlockerKind = Schema.Literals([
+  "turn",
+  "queued",
+  "setup",
+  "terminal",
+  "thread",
+  "session",
+  "otherProfile",
+  "unknown",
+]);
+export type InPlaceSwitchBlockerKind = typeof InPlaceSwitchBlockerKind.Type;
+
+/** Informational only; every in-place switch rechecks under locks. */
+export const WorktreesSwitchAvailabilityResult = Schema.Struct({
+  blockers: Schema.Array(
+    Schema.Struct({
+      kind: InPlaceSwitchBlockerKind,
+      threadId: Schema.NullOr(ThreadId),
+      title: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+export type WorktreesSwitchAvailabilityResult = typeof WorktreesSwitchAvailabilityResult.Type;
+
 export const WorktreesRecoverResult = WorktreesThreadStateResult;
 export type WorktreesRecoverResult = typeof WorktreesRecoverResult.Type;
 

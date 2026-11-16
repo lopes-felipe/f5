@@ -18,10 +18,16 @@ import { OrchestrationEngineService } from "../../orchestration/Services/Orchest
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import {
+  captureOptionalClaimServices,
   evaluateWorktreeRemoval,
+  inPlaceSwitchBlockers,
+  type InPlaceSwitchBlocker,
+  readWorktreeClaims,
   removeWorktreeSafely,
   stopDeletedWorktreeClaims,
 } from "../worktreeClaims.ts";
+import { assertExclusiveProfileCheckout } from "../../profiles/RepositorySharing.ts";
+import { WorkspaceRequiresNewWorktreeError } from "../../git/workspaceSwitch.ts";
 import { followsCheckoutBranchAtTurnEnd, readWorktreeState } from "../worktreeReadiness.ts";
 import { dispatchVerifiedWorkspace } from "../workspaceTransitionContext.ts";
 import { WorktreeManager, type WorktreeManagerShape } from "../Services/WorktreeManager.ts";
@@ -45,6 +51,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
   const transitions = yield* Effect.serviceOption(WorkspaceTransition);
   const dispatcher = yield* NextTurnQueueDispatcher;
   const fileSystem = yield* FileSystem.FileSystem;
+  const withClaimServices = yield* captureOptionalClaimServices;
   const canonical = (path: string) => Effect.tryPromise(() => canonicalWorktreePath(path));
   const projectFor = (id: WorktreesInspectInput["projectId"]) =>
     Effect.gen(function* () {
@@ -308,6 +315,49 @@ export const makeWorktreeManager = Effect.gen(function* () {
               : "none";
       return { ...state, checkoutDirty, followsCheckoutAtTurnEnd, recovery } as const;
     });
+  const switchAvailability: WorktreeManagerShape["switchAvailability"] = (input) =>
+    Effect.gen(function* () {
+      const project = yield* projectFor(input.projectId);
+      const [target, root] = yield* Effect.all([
+        canonical(input.path),
+        canonical(project.workspaceRoot),
+      ]);
+      const usage = yield* withClaimServices(
+        readWorktreeClaims(target).pipe(Effect.provideServices(services)),
+      );
+      const blockers: InPlaceSwitchBlocker[] = [
+        ...inPlaceSwitchBlockers(usage, {
+          requester: input.threadId ?? null,
+          projectCheckout: target === root,
+        }),
+      ];
+      const otherProfile = yield* Effect.tryPromise(() =>
+        assertExclusiveProfileCheckout(config, target),
+      ).pipe(
+        Effect.as(null),
+        Effect.catch((error) =>
+          Effect.succeed<InPlaceSwitchBlocker>({
+            kind:
+              error.cause instanceof WorkspaceRequiresNewWorktreeError ? "otherProfile" : "unknown",
+            threadId: null,
+          }),
+        ),
+      );
+      if (otherProfile) blockers.push(otherProfile);
+      const model = yield* engine.getReadModel();
+      return {
+        blockers: blockers.map((blocker) => {
+          const thread = blocker.threadId
+            ? model.threads.find((entry) => entry.id === blocker.threadId)
+            : undefined;
+          return {
+            kind: blocker.kind,
+            threadId: thread?.id ?? null,
+            title: thread?.title ?? null,
+          };
+        }),
+      };
+    });
   const recover: WorktreeManagerShape["recover"] = (input) =>
     Effect.gen(function* () {
       const { thread } = yield* context(input.threadId);
@@ -456,6 +506,13 @@ export const makeWorktreeManager = Effect.gen(function* () {
       .pipe(
         Effect.flatMap((model) => listWorktreeInventory(input, model, git, config, fileSystem)),
       );
-  return { list, inspect, remove, threadState, recover } satisfies WorktreeManagerShape;
+  return {
+    list,
+    inspect,
+    remove,
+    threadState,
+    switchAvailability,
+    recover,
+  } satisfies WorktreeManagerShape;
 });
 export const WorktreeManagerLive = Layer.effect(WorktreeManager, makeWorktreeManager);

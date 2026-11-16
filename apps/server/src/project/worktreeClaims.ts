@@ -11,6 +11,7 @@ import { ServerConfig } from "../config.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { WorktreeSetupGate } from "./Services/WorktreeSetupGate.ts";
 import {
+  type InPlaceSwitchBlockerKind,
   ThreadId,
   WorktreeSetupSnapshot,
   worktreeSetupGatesTurn,
@@ -74,6 +75,27 @@ const canonical = (value: string) =>
   Effect.tryPromise(() => canonicalWorktreePath(value)).pipe(
     Effect.catch(() => Effect.succeed(null)),
   );
+
+/**
+ * {@link readWorktreeClaims} reads pending turn starts, setup gates and
+ * transition rows from optional services. A layer captures them where it is
+ * built, so claims read from its worker or request fibers still see them.
+ */
+export const captureOptionalClaimServices = Effect.gen(function* () {
+  const turns = yield* Effect.serviceOption(ProjectionTurnRepository);
+  const setup = yield* Effect.serviceOption(WorktreeSetupGate);
+  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  return <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => {
+    let provided = effect;
+    if (Option.isSome(turns))
+      provided = provided.pipe(Effect.provideService(ProjectionTurnRepository, turns.value));
+    if (Option.isSome(setup))
+      provided = provided.pipe(Effect.provideService(WorktreeSetupGate, setup.value));
+    if (Option.isSome(sql))
+      provided = provided.pipe(Effect.provideService(SqlClient.SqlClient, sql.value));
+    return provided;
+  };
+});
 
 /** Reads every claim on `path`. Callers hold the worktree lifecycle lock. */
 export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (path: string) {
@@ -314,6 +336,89 @@ export const ignoredFilesBlockRemoval = (
     ),
     Effect.orElseSucceed(() => "ignored files could not be listed"),
   );
+
+export interface InPlaceSwitchBlocker {
+  readonly kind: InPlaceSwitchBlockerKind;
+  readonly threadId: string | null;
+}
+
+/**
+ * What stops switching the branch of `usage`'s checkout in place. Live use
+ * always blocks: running or pending turns, queued work, setup and transition
+ * owners, and terminals. In the project folder, idle and archived local
+ * threads and their idle provider sessions do not: they already follow the
+ * folder's live branch. A managed worktree keeps the strict rule, because its
+ * threads record a branch and would see a drift banner. `otherProfile` is
+ * added by callers that check other profiles; this function is pure.
+ */
+export function inPlaceSwitchBlockers(
+  usage: WorktreeClaims,
+  options: { readonly requester: ThreadId | null; readonly projectCheckout: boolean },
+): ReadonlyArray<InPlaceSwitchBlocker> {
+  if (usage.unknown) return [{ kind: "unknown", threadId: null }];
+  const blockers: InPlaceSwitchBlocker[] = [];
+  const seen = new Set<string>();
+  const add = (kind: InPlaceSwitchBlockerKind, threadId: string) => {
+    if (threadId === options.requester) return;
+    const key = `${kind}\u0000${threadId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    blockers.push({ kind, threadId });
+  };
+  for (const id of usage.activeThreadIds) add("turn", id);
+  for (const id of usage.queuedThreadIds) add("queued", id);
+  for (const id of usage.setupThreadIds) add("setup", id);
+  // A terminal is live use whoever owns it, including the requester.
+  for (const terminal of usage.terminals) {
+    const key = `terminal\u0000${terminal.threadId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    blockers.push({ kind: "terminal", threadId: terminal.threadId });
+  }
+  const live = new Set(blockers.map((blocker) => blocker.threadId));
+  if (!options.projectCheckout) {
+    for (const id of usage.threadIds) if (!live.has(id)) add("thread", id);
+    for (const session of usage.sessions) add("session", session.threadId);
+    return blockers;
+  }
+  // A session of an idle local thread follows the folder; one whose thread is
+  // not a known reference (deleted or from elsewhere) is not proven idle.
+  const known = new Set<string>(usage.threadIds);
+  for (const session of usage.sessions)
+    if (!known.has(session.threadId)) add("session", session.threadId);
+  return blockers;
+}
+
+const SWITCH_BLOCKER_LABELS: Record<InPlaceSwitchBlockerKind, string> = {
+  turn: "running turn",
+  queued: "queued messages",
+  setup: "workspace setup",
+  terminal: "open terminal",
+  thread: "uses this worktree",
+  session: "agent session",
+  otherProfile: "another profile",
+  unknown: "usage could not be verified",
+};
+
+export const describeInPlaceSwitchBlocker = (kind: InPlaceSwitchBlockerKind) =>
+  SWITCH_BLOCKER_LABELS[kind];
+
+/** "In use by <title> (running turn), …. Start a new worktree instead." */
+export function formatInPlaceSwitchBlockers(
+  blockers: ReadonlyArray<InPlaceSwitchBlocker>,
+  titleOf: (threadId: string) => string | null,
+): string {
+  if (blockers.some((blocker) => blocker.kind === "unknown"))
+    return "Workspace usage could not be verified. Start a new worktree instead.";
+  const names = blockers.map((blocker) =>
+    blocker.kind === "otherProfile"
+      ? "another profile"
+      : `${(blocker.threadId && titleOf(blocker.threadId)) || "another conversation"} (${SWITCH_BLOCKER_LABELS[blocker.kind]})`,
+  );
+  const shown = names.slice(0, 3).join(", ");
+  const more = names.length > 3 ? ` and ${names.length - 3} more` : "";
+  return `In use by ${shown}${more}. Start a new worktree instead.`;
+}
 
 /** Claims held by anything other than `ownThreadId` and the given owned terminals. */
 export function foreignClaims(

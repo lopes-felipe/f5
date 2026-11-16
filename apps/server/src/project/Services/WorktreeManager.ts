@@ -9,6 +9,8 @@ import type {
   WorktreesThreadStateResult,
   WorktreesRecoverInput,
   WorktreesRecoverResult,
+  WorktreesSwitchAvailabilityInput,
+  WorktreesSwitchAvailabilityResult,
 } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
@@ -19,6 +21,9 @@ export interface WorktreeManagerShape {
   readonly threadState: (
     input: WorktreesThreadStateInput,
   ) => Effect.Effect<WorktreesThreadStateResult, Error>;
+  readonly switchAvailability: (
+    input: WorktreesSwitchAvailabilityInput,
+  ) => Effect.Effect<WorktreesSwitchAvailabilityResult, Error>;
   readonly recover: (input: WorktreesRecoverInput) => Effect.Effect<WorktreesRecoverResult, Error>;
 }
 export class WorktreeManager extends ServiceMap.Service<WorktreeManager, WorktreeManagerShape>()(

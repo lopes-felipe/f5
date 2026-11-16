@@ -38,6 +38,8 @@ import type {
   WorktreesRemoveResult,
   WorktreesThreadStateInput,
   WorktreesThreadStateResult,
+  WorktreesSwitchAvailabilityInput,
+  WorktreesSwitchAvailabilityResult,
   WorktreesRecoverInput,
   WorktreesRecoverResult,
 } from "./worktrees";
@@ -1386,6 +1388,10 @@ export interface NativeApi {
     inspect: (input: WorktreesInspectInput) => Promise<WorktreesInspectResult>;
     remove: (input: WorktreesRemoveInput) => Promise<WorktreesRemoveResult>;
     threadState: (input: WorktreesThreadStateInput) => Promise<WorktreesThreadStateResult>;
+    /** Informational: what would block switching this checkout's branch in place now. */
+    switchAvailability: (
+      input: WorktreesSwitchAvailabilityInput,
+    ) => Promise<WorktreesSwitchAvailabilityResult>;
     recover: (input: WorktreesRecoverInput) => Promise<WorktreesRecoverResult>;
   };
   worktreeSetup: {

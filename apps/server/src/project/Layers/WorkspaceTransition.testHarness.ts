@@ -22,6 +22,7 @@ import { OrchestrationProjectionSnapshotQueryLive } from "../../orchestration/La
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { makeWorkspaceTransitions } from "../../persistence/Layers/WorkspaceTransitions.ts";
 import {
   WorkspaceTransitionError,
@@ -175,6 +176,7 @@ export function createWorkspaceTransitionFixture() {
     const preparations: string[] = [];
     const transitionLayer = WorkspaceTransitionLive.pipe(
       Layer.provideMerge(engineLayer),
+      Layer.provideMerge(ProjectionTurnRepositoryLive),
       Layer.provideMerge(WorktreeSetupGateLive),
       Layer.provideMerge(
         Layer.effect(

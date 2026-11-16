@@ -36,7 +36,13 @@ import { NextTurnQueueDispatcher } from "../../nextTurnQueue/Services/NextTurnQu
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { assertExclusiveProfileCheckout } from "../../profiles/RepositorySharing.ts";
-import { readWorktreeClaims, evaluateWorktreeRemoval } from "../worktreeClaims.ts";
+import {
+  captureOptionalClaimServices,
+  readWorktreeClaims,
+  evaluateWorktreeRemoval,
+  formatInPlaceSwitchBlockers,
+  inPlaceSwitchBlockers,
+} from "../worktreeClaims.ts";
 import { canonicalWorkspace, inspectAttachableWorkspace } from "../workspaceAttachment.ts";
 import { WorkspaceWriteContext } from "../workspaceTransitionContext.ts";
 import { WorktreePreparation } from "../Services/WorktreePreparation.ts";
@@ -80,6 +86,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
     | WorkspaceTransitions
   >();
   const scope = yield* Effect.scope;
+  const withClaimServices = yield* captureOptionalClaimServices;
   const textGeneration = yield* Effect.serviceOption(TextGeneration);
   const settings = yield* Effect.serviceOption(ServerSettingsService);
   const secret = randomBytes(32).toString("hex");
@@ -143,27 +150,32 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
       return record;
     });
   const inspect = (path: string) => git.inspectCheckout(path);
-  const claims = (path: string) => readWorktreeClaims(path).pipe(Effect.provideServices(services));
+  const claims = (path: string) =>
+    withClaimServices(readWorktreeClaims(path).pipe(Effect.provideServices(services)));
   const validateClaims = (record: WorkspaceTransitionRecord, path: string, inPlace: boolean) =>
     Effect.gen(function* () {
       const usage = yield* claims(path);
       if (usage.unknown)
         return yield* Effect.fail(new Error("Workspace usage could not be verified."));
       const foreign = usage.threadIds.filter((id) => id !== record.threadId);
-      if (
-        inPlace &&
-        (foreign.length ||
-          usage.terminals.length ||
-          usage.sessions.length ||
-          usage.activeThreadIds.some((id) => id !== record.threadId) ||
-          usage.queuedThreadIds.some((id) => id !== record.threadId) ||
-          usage.setupThreadIds.some((id) => id !== record.threadId))
-      )
-        return yield* Effect.fail(
-          new WorkspaceRequiresNewWorktreeError(
-            "Another conversation, terminal, session, or queued operation references this checkout. Create a new worktree instead.",
-          ),
-        );
+      if (inPlace) {
+        const { project } = yield* context(record.threadId);
+        const blockers = inPlaceSwitchBlockers(usage, {
+          requester: record.threadId,
+          projectCheckout: path === (yield* canonicalWorkspace(project.workspaceRoot)),
+        });
+        if (blockers.length) {
+          const model = yield* engine.getReadModel();
+          return yield* Effect.fail(
+            new WorkspaceRequiresNewWorktreeError(
+              formatInPlaceSwitchBlockers(
+                blockers,
+                (id) => model.threads.find((thread) => thread.id === id)?.title ?? null,
+              ),
+            ),
+          );
+        }
+      }
       if (
         record.intent === "move_to_new_worktree" &&
         (foreign.length || usage.sessions.length || usage.terminals.length)

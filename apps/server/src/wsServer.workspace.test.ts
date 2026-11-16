@@ -107,6 +107,79 @@ describe("WebSocket Server", () => {
     });
   });
 
+  describe("switching a draft's project folder branch in place", () => {
+    const repoWithTopic = () => {
+      const cwd = fs.realpathSync(makeTempDir("f5-draft-switch-"));
+      const run = (...args: string[]) =>
+        execFileSync(
+          "git",
+          ["-c", "user.name=F5 Test", "-c", "user.email=f5@example.com", ...args],
+          { cwd, encoding: "utf8" },
+        ).trim();
+      run("init", "-q", "-b", "main");
+      fs.writeFileSync(path.join(cwd, "README.md"), "hello\n");
+      run("add", ".");
+      run("commit", "-qm", "init");
+      run("branch", "topic");
+      return { cwd, run };
+    };
+
+    it("switches past an idle local thread", async () => {
+      const { cwd, run } = repoWithTopic();
+      h.server = await createTestServer({ cwd, autoBootstrapProjectFromCwd: true });
+      const addr = h.server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      const [ws, welcome] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      expect((welcome.data as { bootstrapThreadId?: string }).bootstrapThreadId).toBeTruthy();
+      const response = await sendRequest(ws, WS_METHODS.gitCheckout, { cwd, branch: "topic" });
+      expect(response.error).toBeUndefined();
+      expect(run("branch", "--show-current")).toBe("topic");
+    });
+
+    it("refuses while a terminal is open in it, naming the conversation", async () => {
+      const { cwd, run } = repoWithTopic();
+      const terminalManager = new MockTerminalManager();
+      let threadId = "";
+      Object.defineProperty(terminalManager, "listSessions", {
+        value: Effect.sync(() =>
+          threadId ? [{ threadId, terminalId: "default", cwd, status: "running" as const }] : [],
+        ),
+      });
+      h.server = await createTestServer({
+        cwd,
+        autoBootstrapProjectFromCwd: true,
+        terminalManager,
+      });
+      const addr = h.server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      const [ws, welcome] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      threadId = (welcome.data as { bootstrapThreadId: string }).bootstrapThreadId;
+      const response = await sendRequest(ws, WS_METHODS.gitCheckout, { cwd, branch: "topic" });
+      expect(response.error?.code).toBe("WorkspaceRequiresNewWorktree");
+      expect(response.error?.message).toMatch(
+        /^In use by .+ \(open terminal\)\. Start a new worktree instead\.$/,
+      );
+      expect(run("branch", "--show-current")).toBe("main");
+      const availability = await sendRequest(ws, WS_METHODS.worktreesSwitchAvailability, {
+        projectId: (welcome.data as { bootstrapProjectId: string }).bootstrapProjectId,
+        path: cwd,
+      });
+      expect(availability.error).toBeUndefined();
+      expect(availability.result).toEqual({
+        blockers: [{ kind: "terminal", threadId, title: expect.any(String) }],
+      });
+      // The asking conversation's own idle reference never blocks it; its terminal does.
+      const own = await sendRequest(ws, WS_METHODS.worktreesSwitchAvailability, {
+        projectId: (welcome.data as { bootstrapProjectId: string }).bootstrapProjectId,
+        path: cwd,
+        threadId,
+      });
+      expect((own.result as { blockers: unknown[] }).blockers).toHaveLength(1);
+    });
+  });
+
   it("keeps checkout conflict details in ordinary failures from other Git routes", async () => {
     const checkoutConflict = { cwd: "/repo", branch: "main", files: ["index.css"] };
     h.server = await createTestServer({

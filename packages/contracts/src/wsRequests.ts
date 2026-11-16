@@ -81,6 +81,7 @@ import {
   WorktreesRecoverInput,
   WorktreesRemoveInput,
   WorktreesResolveTransitionInput,
+  WorktreesSwitchAvailabilityInput,
   WorktreesSwitchWorkspaceInput,
   WorktreesThreadStateInput,
 } from "./worktrees";
@@ -723,6 +724,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.worktreesInspect, WorktreesInspectInput),
   tagRequestBody(WS_METHODS.worktreesRemove, WorktreesRemoveInput),
   tagRequestBody(WS_METHODS.worktreesThreadState, WorktreesThreadStateInput),
+  tagRequestBody(WS_METHODS.worktreesSwitchAvailability, WorktreesSwitchAvailabilityInput),
   tagRequestBody(WS_METHODS.worktreesRecover, WorktreesRecoverInput),
   tagRequestBody(WS_METHODS.worktreesSwitchWorkspace, WorktreesSwitchWorkspaceInput),
   tagRequestBody(WS_METHODS.worktreesGetTransition, WorktreesGetTransitionInput),

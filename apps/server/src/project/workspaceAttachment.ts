@@ -53,3 +53,24 @@ export const inspectAttachableWorkspace = (
       return yield* Effect.fail(new Error("The target branch changed. Inspect it again."));
     return inspected;
   });
+
+/** Whether `canonicalRoot` is the workspace root of a live project (not a managed worktree). */
+export const isProjectCheckout = (
+  model: {
+    readonly projects: ReadonlyArray<{
+      readonly workspaceRoot: string;
+      readonly deletedAt: string | null;
+    }>;
+  },
+  canonicalRoot: string,
+) =>
+  Effect.gen(function* () {
+    for (const project of model.projects) {
+      if (project.deletedAt !== null) continue;
+      const root = yield* canonicalWorkspace(project.workspaceRoot).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (root === canonicalRoot) return true;
+    }
+    return false;
+  });
