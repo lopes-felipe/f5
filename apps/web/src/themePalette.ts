@@ -324,6 +324,30 @@ export function parseSafeThemeColor(value: unknown): string {
   return parsed.alpha !== undefined && parsed.alpha < 1 ? formatHex8(parsed) : formatHex(parsed);
 }
 
+/**
+ * Converts a theme color to the opaque `#rrggbb` form that native color inputs require.
+ * Alpha is dropped and out-of-gamut colors are clamped to sRGB.
+ */
+export function themeColorToPickerHex(value: string): string | null {
+  const parsed = parse(value.trim());
+  return parsed ? formatHex(parsed) : null;
+}
+
+/**
+ * Turns a native color input pick into a safe theme color, keeping the previous color's
+ * alpha because native color inputs cannot express transparency.
+ */
+export function applyPickedThemeColor(picked: string, previous: string): string {
+  const next = parse(picked.trim());
+  if (!next) return parseSafeThemeColor(picked);
+  const previousAlpha = parse(previous.trim())?.alpha;
+  return parseSafeThemeColor(
+    previousAlpha !== undefined && previousAlpha < 1
+      ? formatHex8({ ...next, alpha: previousAlpha })
+      : picked,
+  );
+}
+
 function parseThemeOverrides(value: unknown): ThemeDefinitionV1["overrides"] | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value) || !hasOnlyKeys(value, new Set(["light", "dark"]))) {

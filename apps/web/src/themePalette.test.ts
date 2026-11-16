@@ -8,6 +8,7 @@ import {
   DERIVED_THEME_TOKEN_NAMES,
   MIN_BODY_TEXT_CONTRAST,
   MIN_DECORATIVE_CONTRAST,
+  applyPickedThemeColor,
   applyThemePalette,
   bodyTextContrast,
   createCustomThemeDefinition,
@@ -18,6 +19,7 @@ import {
   parseCustomThemeLibrary,
   parseThemeDefinitionV1,
   resolveThemePalette,
+  themeColorToPickerHex,
 } from "./themePalette";
 
 const toOklch = converter("oklch");
@@ -244,5 +246,27 @@ describe("theme palette registry", () => {
     expect(properties.get("--faint-foreground")).toBe(palette.dark["faint-foreground"]);
     expect(root.dataset.themeId).toBe(DEFAULT_THEME_ID);
     expect(root.style.colorScheme).toBe("dark");
+  });
+});
+
+describe("native color picker conversion", () => {
+  it("converts theme colors to opaque hex for native color inputs", () => {
+    expect(themeColorToPickerHex("#3366CC")).toBe("#3366cc");
+    expect(themeColorToPickerHex(" oklch(0.5 0.185 264) ")).toMatch(/^#[0-9a-f]{6}$/);
+    expect(themeColorToPickerHex("#3366cc80")).toBe("#3366cc");
+    expect(themeColorToPickerHex("not a color")).toBeNull();
+  });
+
+  it("returns picked colors in the safe theme color format", () => {
+    expect(applyPickedThemeColor("#AABBCC", "oklch(0.5 0.185 264)")).toBe("#aabbcc");
+  });
+
+  it("keeps the previous color's alpha", () => {
+    expect(applyPickedThemeColor("#aabbcc", "#11223380")).toBe("#aabbcc80");
+    expect(applyPickedThemeColor("#aabbcc", "#112233")).toBe("#aabbcc");
+  });
+
+  it("rejects invalid picks", () => {
+    expect(() => applyPickedThemeColor("bogus", "#112233")).toThrow("Invalid theme color");
   });
 });

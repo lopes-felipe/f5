@@ -1,6 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
-import { parseSafeThemeColor } from "../../themePalette";
+import {
+  applyPickedThemeColor,
+  parseSafeThemeColor,
+  themeColorToPickerHex,
+} from "../../themePalette";
 import { Input } from "../ui/input";
 
 export function ThemeColorPicker({
@@ -12,6 +16,7 @@ export function ThemeColorPicker({
   readonly value: string;
   readonly onChange: (value: string) => void;
 }) {
+  const inputId = useId();
   const [draft, setDraft] = useState(value);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,16 +33,40 @@ export function ThemeColorPicker({
     }
   };
 
+  const pick = (picked: string) => {
+    try {
+      const next = applyPickedThemeColor(picked, value);
+      setDraft(next);
+      setError(null);
+      onChange(next);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const pickerValue = themeColorToPickerHex(error ? value : draft) ?? "#000000";
+
   return (
-    <label className="block space-y-1.5">
-      <span className="text-xs font-medium text-foreground">{label}</span>
+    <div className="space-y-1.5">
+      <label htmlFor={inputId} className="block text-xs font-medium text-foreground">
+        {label}
+      </label>
       <span className="flex items-center gap-2">
         <span
-          className="size-7 shrink-0 rounded-md border border-border"
+          className="relative size-7 shrink-0 cursor-pointer rounded-md border border-border has-focus-visible:ring-2 has-focus-visible:ring-ring"
           style={{ backgroundColor: error ? "transparent" : draft }}
-          aria-hidden="true"
-        />
+        >
+          <input
+            type="color"
+            aria-label={`Pick ${label} color`}
+            title={`Pick ${label} color`}
+            className="absolute inset-0 size-full cursor-pointer opacity-0"
+            value={pickerValue}
+            onChange={(event) => pick(event.target.value)}
+          />
+        </span>
         <Input
+          id={inputId}
           nativeInput
           value={draft}
           aria-invalid={error ? true : undefined}
@@ -55,6 +84,6 @@ export function ThemeColorPicker({
         />
       </span>
       {error ? <span className="block text-xs text-destructive-foreground">{error}</span> : null}
-    </label>
+    </div>
   );
 }
