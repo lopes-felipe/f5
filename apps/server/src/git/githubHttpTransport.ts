@@ -125,6 +125,9 @@ export function makeGitHubHttpTransport(
           // is returned as the failed response it is.
           const method = option("--method") ?? "GET";
           const origin = new URL(base).origin;
+          // The flag `gh api` needs to print a job log marks the one request that may leave
+          // the API origin: GitHub answers it with a redirect to the storage that holds the log.
+          const download = method === "GET" && input.args.includes("--allow-escape-sequences");
           let target = url;
           let response: Response;
           for (let hop = 0; ; hop++) {
@@ -143,7 +146,20 @@ export function makeGitHubHttpTransport(
                 (method === "GET" || method === "HEAD"));
             if (!follows || !location || hop === MAX_GITHUB_REDIRECTS) break;
             const next = new URL(location, target);
-            if (next.origin !== origin) break;
+            if (next.origin !== origin) {
+              // Like `gh`, read the stored log without the token or any other GitHub header.
+              // The storage's own answer is final: a further redirect is not followed.
+              if (download && next.protocol === "https:") {
+                await response.body?.cancel();
+                response = await fetcher(next, {
+                  method: "GET",
+                  headers: { "User-Agent": "f5-server" },
+                  signal,
+                  redirect: "manual",
+                });
+              }
+              break;
+            }
             await response.body?.cancel();
             target = next;
           }

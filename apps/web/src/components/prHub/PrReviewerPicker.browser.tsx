@@ -39,6 +39,7 @@ const capabilities: ForgeCapabilities = {
   edit: { changeRequest: true, comment: true },
   stacks: false,
   stackActions: false,
+  checks: { logs: false, rerun: false },
 };
 
 function fixture(

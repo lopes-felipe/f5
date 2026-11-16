@@ -5953,6 +5953,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case PR_HUB_WS_METHODS.listReviewerCandidates:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
         return yield* prHubExtensions.value.listReviewerCandidates(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getChecks:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getChecks(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getCheckLog:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getCheckLog(stripRequestTag(request.body));
 
       case PR_HUB_WS_METHODS.getOverview:
         return yield* prHub.getOverview(stripRequestTag(request.body));

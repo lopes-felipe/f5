@@ -57,6 +57,12 @@ export interface ForgeCommentInput {
   readonly startSha?: string;
   readonly headSha?: string;
 }
+export interface ForgeWorkflowRun {
+  readonly id: number;
+  /** Goes up each time the run is run again. */
+  readonly attempt: number;
+  readonly completed: boolean;
+}
 export interface ForgeProvider extends SourceControlProvider {
   readonly forgeCapabilities: ForgeCapabilities;
   readonly listPullRequests: (
@@ -92,6 +98,26 @@ export interface ForgeProvider extends SourceControlProvider {
     readonly method?: "merge" | "squash" | "rebase";
     readonly expectedHeadOid?: string;
   }) => Effect.Effect<unknown, SourceControlProviderError>;
+  /**
+   * The workflow runs behind "re-run failed jobs", one request per run, so the caller can
+   * record which runs it asked to restart before each request and check exactly those later.
+   */
+  readonly workflowRuns?: {
+    /** The failed runs to restart at the head. Fails, with nothing sent, when there is none. */
+    readonly listFailed: (input: {
+      readonly ref: SourceControlPullRequestRef;
+      readonly expectedHeadOid: string;
+    }) => Effect.Effect<ReadonlyArray<ForgeWorkflowRun>, SourceControlProviderError>;
+    /** Null once the forge accepted the re-run, or the reason it refused. */
+    readonly rerunFailedJobs: (input: {
+      readonly ref: SourceControlPullRequestRef;
+      readonly runId: number;
+    }) => Effect.Effect<string | null, SourceControlProviderError>;
+    readonly get: (input: {
+      readonly ref: SourceControlPullRequestRef;
+      readonly runId: number;
+    }) => Effect.Effect<ForgeWorkflowRun, SourceControlProviderError>;
+  };
   readonly editChangeRequest: (input: {
     readonly ref: SourceControlPullRequestRef;
     readonly title?: string;

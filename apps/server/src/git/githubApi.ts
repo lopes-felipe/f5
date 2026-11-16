@@ -40,6 +40,10 @@ export interface GitHubApiResponse {
   readonly rateLimitResource: string | null;
 }
 
+/** An older `gh` has no flag for printing terminal text, so it cannot return a job log. */
+export const GITHUB_CLI_LOGS_UNSUPPORTED =
+  "The installed GitHub CLI (`gh`) is too old to print job logs.";
+
 export interface GitHubApiRequest {
   readonly cwd: string;
   readonly context: GitHubCredentialContext;
@@ -47,6 +51,11 @@ export interface GitHubApiRequest {
   readonly endpoint: string;
   readonly body?: unknown;
   readonly accept?: "application/vnd.github.diff";
+  /**
+   * The response is terminal output, such as a job log: plain text that can hold escape
+   * sequences. The CLI refuses to print those unless it is told to.
+   */
+  readonly terminalText?: boolean;
   readonly query?: Readonly<Record<string, string | number | boolean>>;
   readonly cache?: GitHubConditionalRead;
   readonly ifNoneMatch?: string | undefined;
@@ -287,6 +296,10 @@ export function makeGitHubApi(
                 throw new Error("Invalid GitHub response format.");
               args.push("--header", `Accept: ${input.accept}`);
             }
+            if (input.terminalText) {
+              if (input.method !== "GET") throw new Error("Invalid GitHub response format.");
+              args.push("--allow-escape-sequences");
+            }
             if (body !== undefined) args.push("--input", "-");
             const timeoutMs = input.timeoutMs ?? 45_000;
             const maxStdoutBytes = input.maxResponseBytes ?? 8 * 1024 * 1024;
@@ -375,7 +388,11 @@ export function makeGitHubApi(
           }
           return yield* Effect.try({
             try: () =>
-              parseGitHubApiResponse(result.stdout, Date.now(), input.accept ? "text" : "json"),
+              parseGitHubApiResponse(
+                result.stdout,
+                Date.now(),
+                input.accept || input.terminalText ? "text" : "json",
+              ),
             catch: (cause) =>
               cause instanceof GitHubResponseParseError
                 ? cause
@@ -391,6 +408,16 @@ export function makeGitHubApi(
                   status: error.status,
                   category: error.category,
                 });
+                if (
+                  result.code !== 0 &&
+                  input.terminalText &&
+                  result.stderr.includes("unknown flag: --allow-escape-sequences")
+                )
+                  return yield* new GitHubCliError({
+                    operation: "request",
+                    kind: "generic",
+                    detail: GITHUB_CLI_LOGS_UNSUPPORTED,
+                  });
                 if (result.code !== 0) {
                   const normalized = normalizeGitHubCliError(
                     "request",
