@@ -23,6 +23,11 @@ interface GitCheckoutConflictDialogProps {
   canApply: () => boolean;
   onClose: () => void;
   onPrepared: (branch: string, worktreePath: string) => void;
+  /**
+   * A draft records a new worktree from the branch instead; it is created when
+   * the first message is sent, so nothing is prepared here.
+   */
+  onStartNewWorktree?: () => void;
 }
 
 export function GitCheckoutConflictDialog({
@@ -32,6 +37,7 @@ export function GitCheckoutConflictDialog({
   canApply,
   onClose,
   onPrepared,
+  onStartNewWorktree,
 }: GitCheckoutConflictDialogProps) {
   const queryClient = useQueryClient();
   const pendingRef = useRef(false);
@@ -48,6 +54,11 @@ export function GitCheckoutConflictDialog({
   }, []);
 
   const openWorktree = async () => {
+    if (onStartNewWorktree) {
+      if (canApply()) onStartNewWorktree();
+      onClose();
+      return;
+    }
     const api = readNativeApi();
     if (!api || pendingRef.current) return;
     pendingRef.current = true;
@@ -113,9 +124,18 @@ export function GitCheckoutConflictDialog({
             ))}
           </ul>
           <p>
-            Open a separate worktree with a new branch based on <code>{conflict.branch}</code>. Your
-            current edits stay in this workspace. To switch here instead, commit or stash these
-            files first.
+            {onStartNewWorktree ? (
+              <>
+                Start a new worktree from <code>{conflict.branch}</code> instead; it is created when
+                you send. Your current edits stay in this workspace.
+              </>
+            ) : (
+              <>
+                Open a separate worktree with a new branch based on <code>{conflict.branch}</code>.
+                Your current edits stay in this workspace.
+              </>
+            )}{" "}
+            To switch here instead, commit or stash these files first.
           </p>
           {error ? (
             <p role="alert" className="text-destructive-foreground">
@@ -128,7 +148,11 @@ export function GitCheckoutConflictDialog({
             Cancel
           </Button>
           <Button disabled={pending} onClick={() => void openWorktree()}>
-            {pending ? "Preparing worktree…" : "Open in a separate worktree"}
+            {pending
+              ? "Preparing worktree…"
+              : onStartNewWorktree
+                ? "Start in a new worktree"
+                : "Open in a separate worktree"}
           </Button>
         </DialogFooter>
       </DialogPopup>

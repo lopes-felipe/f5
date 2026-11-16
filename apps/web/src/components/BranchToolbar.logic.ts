@@ -172,7 +172,7 @@ export function shouldVirtualizeBranchListForCount(count: number): boolean {
  * Upstream `96c9306d` swapped unconditional mouse-hover scroll-into-view for
  * a keyboard-only guard, so the popup no longer jumps when the pointer
  * happens to pass over an off-screen item. The guard mirrors the behavior
- * inside `BranchToolbarBranchSelector`'s `onItemHighlighted` handler.
+ * inside `WorkspacePicker`'s `onItemHighlighted` handler.
  */
 export function shouldScrollHighlightedBranchIntoView(input: {
   isMenuOpen: boolean;

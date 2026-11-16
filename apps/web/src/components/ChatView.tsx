@@ -3055,11 +3055,6 @@ export default memo(function ChatView({
     useRightPanelStore.getState().open(threadId, "preview");
   }, [readSurfaceHeaderState, threadId]);
 
-  const envLocked = Boolean(
-    activeThread &&
-    (activeThread.messages.length > 0 ||
-      (activeThread.session !== null && activeThread.session.status !== "closed")),
-  );
   const activeTerminalGroup =
     terminalState.terminalGroups.find(
       (group) => group.id === terminalState.activeTerminalGroupId,
@@ -4448,7 +4443,8 @@ export default memo(function ChatView({
         command === "composer.envMode" ||
         command === "composer.branch"
       ) {
-        const name = command.slice("composer.".length);
+        // One workspace picker answers both the workspace and the branch command.
+        const name = command === "composer.envMode" ? "branch" : command.slice("composer.".length);
         const trigger =
           document.querySelector<HTMLButtonElement>(`[data-composer-control="${name}"]`) ??
           (name === "effort" || name === "runtimeMode"
@@ -8556,8 +8552,7 @@ export default memo(function ChatView({
                     {isGitRepo && (
                       <BranchToolbar
                         threadId={activeThread.id}
-                        onEnvModeChange={onEnvModeChange}
-                        envLocked={envLocked}
+                        disabled={isPendingTurnDispatchBlocked}
                         multiModel={fanOutModels.length > 1}
                         onOpenTerminal={createNewTerminal}
                         onComposerFocusRequest={scheduleComposerFocus}
