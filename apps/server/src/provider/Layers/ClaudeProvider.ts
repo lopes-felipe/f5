@@ -3,7 +3,10 @@ import { customModelSlug } from "@t3tools/shared/customModels";
 import { parseClaudeAuthStatusFromOutput, AUTH_TIMEOUT_MS } from "./ProviderHealth";
 import { toTitleCaseWords, claudeSubscriptionLabel } from "../claudeSubscription.ts";
 import {
+  MODEL_OPTIONS_BY_PROVIDER,
   type ClaudeSettings,
+  type ClaudeUsageAnalysis,
+  type ClaudeUsageAnalysisWindow,
   type ClaudeBuiltInModelSlug,
   type ModelCapabilities,
   type ModelSelection,
@@ -11,9 +14,10 @@ import {
   type ServerProviderModel,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
-import { Effect, Option, Path, Result } from "effect";
+import { Clock, Effect, FileSystem, Option, Path, Result } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
+  formatModelDisplayName,
   createClaudeModelCapabilities,
   createModelCapabilities,
   createReportedClaudeModelCapabilities,
@@ -21,6 +25,8 @@ import {
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
   normalizeModelSlug,
+  resolveClaudeModelEffort,
+  resolveModelCapabilities,
   supportsClaudeContextWindow,
 } from "@t3tools/shared/model";
 import {
@@ -31,7 +37,6 @@ import {
 
 import {
   buildServerProvider,
-  DEFAULT_TIMEOUT_MS,
   detailFromResult,
   isCommandMissingCause,
   mergeReportedProviderModels,
@@ -42,11 +47,13 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { compareCliVersions } from "../cliVersion.ts";
-import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { makeClaudeEnvironment, readClaudeSettingsBaseUrl } from "../Drivers/ClaudeHome.ts";
 import {
   resolveClaudeCliInvocation,
+  claudeCliSpawnEnvironment,
   resolveClaudeSdkExecutableOptions,
 } from "../claudeSdkExecutable.ts";
+import { hasClaudeManagedMcpConfig } from "../claudeInventory.ts";
 import { AccountUsageReadError, accountUsageErrorCode } from "../../usage/accountUsageErrors.ts";
 import { normalizeClaudeAccountUsage } from "../../usage/claudeAccountUsage.ts";
 import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
@@ -56,80 +63,22 @@ const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabili
 });
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+// Cold CLI startup on Windows can exceed the shared four-second probe deadline.
+const CLAUDE_VERSION_CHECK_TIMEOUT_MS = 20_000;
 const CLAUDE_PRESENTATION = {
   displayName: "Claude",
   showInteractionModeToggle: true,
 } as const;
-const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel & { slug: ClaudeBuiltInModelSlug }> = [
-  {
-    slug: "claude-opus-5-5",
-    name: "Claude Opus 5.5",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-opus-5-5"),
-  },
-  {
-    slug: "claude-opus-5",
-    name: "Claude Opus 5",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-opus-5"),
-  },
-  {
-    slug: "claude-fable-5-1",
-    name: "Claude Fable 5.1",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-fable-5-1"),
-  },
-  {
-    slug: "claude-fable-5",
-    name: "Claude Fable 5",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-fable-5"),
-  },
-  {
-    slug: "claude-sonnet-5",
-    name: "Claude Sonnet 5",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-sonnet-5"),
-  },
-  {
-    slug: "claude-opus-4-8",
-    name: "Claude Opus 4.8",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-opus-4-8"),
-  },
-  {
-    slug: "claude-opus-4-7",
-    name: "Claude Opus 4.7",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-opus-4-7"),
-  },
-  {
-    slug: "claude-opus-4-6",
-    name: "Claude Opus 4.6",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-opus-4-6"),
-  },
-  {
-    slug: "claude-opus-4-5",
-    name: "Claude Opus 4.5",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-opus-4-5"),
-  },
-  {
-    slug: "claude-sonnet-4-6",
-    name: "Claude Sonnet 4.6",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-sonnet-4-6"),
-  },
-  {
-    slug: "claude-haiku-4-5",
-    name: "Claude Haiku 4.5",
-    isCustom: false,
-    capabilities: createClaudeModelCapabilities("claude-haiku-4-5"),
-  },
-];
+const BUILT_IN_MODELS = MODEL_OPTIONS_BY_PROVIDER.claudeAgent.map((model) => ({
+  ...model,
+  isCustom: false,
+  capabilities: createClaudeModelCapabilities(model.slug),
+}));
 
 export const VERSION_GATED_CLAUDE_MODELS = [
+  { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", minVersion: "2.1.299" },
+  { slug: "claude-haiku-5-5", name: "Claude Haiku 5.5", minVersion: "2.1.299" },
+  { slug: "claude-fable-5-2", name: "Claude Fable 5.2", minVersion: "2.1.290" },
   { slug: "claude-opus-5-5", name: "Claude Opus 5.5", minVersion: "2.1.280" },
   { slug: "claude-fable-5-1", name: "Claude Fable 5.1", minVersion: "2.1.257" },
   { slug: "claude-opus-5", name: "Claude Opus 5", minVersion: "2.1.220" },
@@ -147,7 +96,7 @@ function isClaudeModelSupportedAtVersion(minVersion: string, version: string): b
   return compareCliVersions(version, minVersion) >= 0;
 }
 
-function getBuiltInClaudeModelsForVersion(
+export function getBuiltInClaudeModelsForVersion(
   version: string | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
   if (!version) {
@@ -160,7 +109,7 @@ function getBuiltInClaudeModelsForVersion(
   );
   return unsupported.size === 0
     ? BUILT_IN_MODELS
-    : BUILT_IN_MODELS.filter((model) => !unsupported.has(model.slug));
+    : BUILT_IN_MODELS.map((model) => ({ ...model, isUnlisted: unsupported.has(model.slug) }));
 }
 
 function formatClaudeUpgradeMessage(version: string | null): string | undefined {
@@ -170,6 +119,20 @@ function formatClaudeUpgradeMessage(version: string | null): string | undefined 
   );
   if (!gate) return undefined;
   return `Claude Code v${version} is too old for ${gate.name}. Upgrade to v${gate.minVersion} or newer to access it.`;
+}
+
+/**
+ * Model gating for the version a live session reports (`claude_code_version`), which can
+ * differ from the probed `--version` (wrappers, PATH changes). Undefined when allowed.
+ */
+export function claudeSessionModelGateMessage(
+  model: string | null | undefined,
+  version: string | null | undefined,
+): string | undefined {
+  const slug = normalizeModelSlug(model, "claudeAgent");
+  if (!slug || !version || !isClaudeModelGatedOut(slug, version)) return undefined;
+  const gate = VERSION_GATED_CLAUDE_MODELS.find((candidate) => candidate.slug === slug)!;
+  return `This session runs Claude Code v${version}, which is too old for ${gate.name}. Upgrade to v${gate.minVersion} or newer.`;
 }
 
 function isClaudeModelGatedOut(
@@ -208,7 +171,19 @@ export function getClaudeModelCapabilities(model: string | null | undefined): Mo
 export function resolveClaudeEffort(
   caps: ModelCapabilities,
   raw: string | null | undefined,
+  model?: string,
 ): string | undefined {
+  if (model && resolveModelCapabilities("claudeAgent", model, caps).source === "unknown") {
+    return resolveClaudeModelEffort(model, raw, caps) ?? undefined;
+  }
+  if (
+    model &&
+    !caps.optionDescriptors?.some((descriptor) => descriptor.id === "effort") &&
+    caps.supportsEffort !== false
+  ) {
+    const explicit = resolveClaudeModelEffort(model, raw, caps);
+    if (explicit) return explicit;
+  }
   const descriptors = getProviderOptionDescriptors({
     caps,
     ...(raw ? { selections: [{ id: "effort", value: raw }] } : {}),
@@ -294,6 +269,17 @@ function claudeAuthMetadata(input: {
   return undefined;
 }
 
+/** An HTTP(S) `ANTHROPIC_BASE_URL` other than Anthropic's own API host. */
+export function isCustomClaudeApiEndpoint(baseUrl: string | undefined): boolean {
+  const endpoint = URL.parse(baseUrl?.trim() ?? "");
+  return (
+    endpoint !== null &&
+    (endpoint.protocol === "http:" || endpoint.protocol === "https:") &&
+    endpoint.hostname !== "" &&
+    endpoint.hostname !== "api.anthropic.com"
+  );
+}
+
 // ── SDK capability probe ────────────────────────────────────────────
 
 function nonEmptyProbeString(value: string): string | undefined {
@@ -302,6 +288,7 @@ function nonEmptyProbeString(value: string): string | undefined {
 }
 
 export type ClaudeCapabilitiesProbe = {
+  readonly modelCatalogFetchedAt?: string;
   readonly email: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
@@ -326,14 +313,19 @@ export function parseClaudeInitializationModels(
 ): ReadonlyArray<ClaudeReportedModel> {
   const bySlug = new Map<string, ClaudeReportedModel>();
   for (const model of models ?? []) {
-    const raw = nonEmptyProbeString(model.resolvedModel ?? "") ?? nonEmptyProbeString(model.value);
-    const slug = raw
+    const raw = [model.resolvedModel, model.value]
+      .map((value) => nonEmptyProbeString(value ?? ""))
+      .find((value) => value?.startsWith("claude-"));
+    const slug = raw?.startsWith("claude-")
       ? normalizeModelSlug(raw.replace(/\[(?:1m|200k)\]$/i, ""), "claudeAgent")
       : null;
     if (!slug || !slug.startsWith("claude-") || bySlug.has(slug)) continue;
     bySlug.set(slug, {
       slug,
-      name: nonEmptyProbeString(model.displayName) ?? slug,
+      name:
+        formatModelDisplayName("claudeAgent", slug) ??
+        nonEmptyProbeString(model.displayName) ??
+        slug,
       capabilities: createReportedClaudeModelCapabilities({
         value: slug,
         ...(model.supportsEffort !== undefined ? { supportsEffort: model.supportsEffort } : {}),
@@ -440,7 +432,12 @@ export function withClaudeProbeQuery<A>(
   use: (
     query: ReturnType<typeof claudeQuery>,
   ) => Promise<A> | Effect.Effect<A, AccountUsageReadError>,
-  options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string } = {},
+  options: {
+    readonly createQuery?: typeof claudeQuery;
+    readonly cwd?: string;
+    /** Whole-operation budget; the default fits status probes. */
+    readonly timeoutMs?: number;
+  } = {},
 ) {
   return Effect.suspend(() => {
     const abort = new AbortController();
@@ -470,7 +467,9 @@ export function withClaudeProbeQuery<A>(
               allowedTools: [],
               settings: { disableAllHooks: true },
               mcpServers: {},
-              strictMcpConfig: true,
+              // Claude refuses the strict flag next to a managed-mcp.json,
+              // which already excludes every other MCP source.
+              ...(hasClaudeManagedMcpConfig() ? {} : { strictMcpConfig: true }),
               env: {
                 ...claudeEnvironment,
                 ENABLE_CLAUDEAI_MCP_SERVERS: "false",
@@ -500,7 +499,7 @@ export function withClaudeProbeQuery<A>(
           if (!abort.signal.aborted) abort.abort();
         }),
       ),
-      Effect.timeoutOption(8_000),
+      Effect.timeoutOption(options.timeoutMs ?? 8_000),
       Effect.flatMap((result) =>
         Option.isSome(result)
           ? Effect.succeed(result.value)
@@ -509,6 +508,85 @@ export function withClaudeProbeQuery<A>(
     );
   });
 }
+
+export const CLAUDE_USAGE_ANALYSIS_TIMEOUT_MS = 60_000;
+
+function normalizeClaudeUsageAnalysisWindow(value: unknown): ClaudeUsageAnalysisWindow | null {
+  if (!value || typeof value !== "object") return null;
+  const window = value as Record<string, unknown>;
+  const count = (raw: unknown) =>
+    typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : 0;
+  const pct = (raw: unknown) =>
+    typeof raw === "number" && Number.isFinite(raw) ? Math.min(100, Math.max(0, raw)) : 0;
+  const text = (raw: unknown) =>
+    typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : undefined;
+  const rows = (raw: unknown) =>
+    Array.isArray(raw)
+      ? raw.filter((row): row is Record<string, unknown> => !!row && typeof row === "object")
+      : [];
+  return {
+    requestCount: count(window.request_count),
+    sessionCount: count(window.session_count),
+    behaviors: rows(window.behaviors).flatMap((row) => {
+      const key = text(row.key);
+      return key ? [{ key, pct: pct(row.pct), count: count(row.count) }] : [];
+    }),
+    // `fix` is not offered: the account card has no session, and F5 owns effort.
+    recommendations: rows(window.recommendations).flatMap((row) => {
+      const key = text(row.key);
+      const title = text(row.title);
+      const detail = text(row.detail);
+      return key && title ? [{ key, pct: pct(row.pct), title, ...(detail ? { detail } : {}) }] : [];
+    }),
+  };
+}
+
+/** Reads `behaviors` from the experimental usage response; never its rate limits. */
+export function normalizeClaudeUsageAnalysis(
+  response: unknown,
+  analyzedAt: string,
+): ClaudeUsageAnalysis {
+  const behaviors =
+    response && typeof response === "object"
+      ? (response as { behaviors?: unknown }).behaviors
+      : undefined;
+  const windows =
+    behaviors && typeof behaviors === "object" ? (behaviors as Record<string, unknown>) : {};
+  return {
+    analyzedAt,
+    day: normalizeClaudeUsageAnalysisWindow(windows.day),
+    week: normalizeClaudeUsageAnalysisWindow(windows.week),
+  };
+}
+
+/**
+ * On-demand Analyze usage: the same experimental usage call as the account probe, but
+ * with the local transcript scan that fills `behaviors`, within a 60 s budget.
+ */
+export const analyzeClaudeUsage = (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv,
+  options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string } = {},
+) =>
+  withClaudeProbeQuery(
+    claudeSettings,
+    environment,
+    (q) =>
+      Effect.gen(function* () {
+        const read = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+        if (typeof read !== "function")
+          return yield* Effect.fail(new AccountUsageReadError("unsupported"));
+        const response = yield* Effect.tryPromise({
+          try: () => read.call(q, {}),
+          catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+        });
+        return normalizeClaudeUsageAnalysis(
+          response,
+          new Date(yield* Clock.currentTimeMillis).toISOString(),
+        );
+      }),
+    { ...options, timeoutMs: CLAUDE_USAGE_ANALYSIS_TIMEOUT_MS },
+  );
 
 export function claudeCapabilitiesFromInitialization(
   init: Awaited<ReturnType<ReturnType<typeof claudeQuery>["initializationResult"]>>,
@@ -535,7 +613,16 @@ const probeClaudeCapabilities = (
     options,
   ).pipe(
     Effect.result,
-    Effect.map((result) => (Result.isSuccess(result) ? result.success : undefined)),
+    Effect.flatMap((result) =>
+      Result.isSuccess(result)
+        ? Clock.currentTimeMillis.pipe(
+            Effect.map((now) => ({
+              ...result.success,
+              modelCatalogFetchedAt: new Date(now).toISOString(),
+            })),
+          )
+        : Effect.succeed(undefined),
+    ),
   );
 
 export const probeClaudeAccountUsage = (
@@ -556,13 +643,18 @@ export const probeClaudeAccountUsage = (
           try: () => q.initializationResult(),
           catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
         });
-        const capabilities = claudeCapabilitiesFromInitialization(init);
+        const capabilities = {
+          ...claudeCapabilitiesFromInitialization(init),
+          modelCatalogFetchedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+        };
         if (options.onCapabilities) yield* options.onCapabilities(capabilities);
         const read = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
         if (typeof read !== "function")
           return yield* Effect.fail(new AccountUsageReadError("unsupported"));
         const response = yield* Effect.tryPromise({
-          try: () => read.call(q),
+          // Only the rate limits are read, so skip the local transcript scan that fills
+          // `behaviors`: with a few GB of transcripts it outlasts the deadline.
+          try: () => read.call(q, { skipBehaviors: true }),
           // Only a rejection from this operation can prove unsupported usage RPCs.
           catch: (error) =>
             new AccountUsageReadError(
@@ -586,6 +678,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,
   args: ReadonlyArray<string>,
   environment: NodeJS.ProcessEnv = process.env,
+  cwd?: string,
 ) {
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
   const invocation = yield* Effect.try({
@@ -596,7 +689,8 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
         : new CommandNotFoundError(claudeSettings.binaryPath, String(cause)),
   });
   const command = ChildProcess.make(invocation.file, [...invocation.args], {
-    env: claudeEnvironment,
+    env: claudeCliSpawnEnvironment(invocation, claudeEnvironment),
+    ...(cwd ? { cwd } : {}),
   });
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
@@ -607,10 +701,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     claudeSettings: ClaudeSettings,
   ) => Effect.Effect<ClaudeCapabilitiesProbe | undefined>,
   environment: NodeJS.ProcessEnv = process.env,
+  /** Where the CLI probes run; wrappers that scope themselves to their cwd can refuse $HOME. */
+  cwd?: string,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | Path.Path
+  ChildProcessSpawner.ChildProcessSpawner | Path.Path | FileSystem.FileSystem
 > {
   const checkedAt = new Date().toISOString();
   const unknownVersionModels = getProviderClaudeModelsForVersion(null, claudeSettings.customModels);
@@ -620,6 +716,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       presentation: CLAUDE_PRESENTATION,
       enabled: false,
       checkedAt,
+      modelCatalog: { status: "failed" },
       models: unknownVersionModels,
       probe: {
         installed: false,
@@ -631,10 +728,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  const versionProbe = yield* runClaudeCommand(claudeSettings, ["--version"], environment).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-    Effect.result,
-  );
+  const versionProbe = yield* runClaudeCommand(
+    claudeSettings,
+    ["--version"],
+    environment,
+    cwd,
+  ).pipe(Effect.timeoutOption(CLAUDE_VERSION_CHECK_TIMEOUT_MS), Effect.result);
 
   if (Result.isFailure(versionProbe)) {
     const error = versionProbe.failure;
@@ -642,6 +741,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
       checkedAt,
+      modelCatalog: { status: "failed" },
       models: unknownVersionModels,
       probe: {
         installed: !isCommandMissingCause(error),
@@ -660,6 +760,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
       checkedAt,
+      modelCatalog: { status: "failed" },
       models: unknownVersionModels,
       probe: {
         installed: true,
@@ -684,6 +785,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
       checkedAt,
+      modelCatalog: { status: "failed" },
       models: modelsForParsedVersion,
       probe: {
         installed: true,
@@ -708,7 +810,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 
   // SDK initialization and model discovery work without credentials. Only the
   // account probe can establish whether this instance is signed in.
-  const authProbe = yield* runClaudeCommand(claudeSettings, ["auth", "status"], environment).pipe(
+  const authProbe = yield* runClaudeCommand(
+    claudeSettings,
+    ["auth", "status"],
+    environment,
+    cwd,
+  ).pipe(
     Effect.timeout(AUTH_TIMEOUT_MS),
     Effect.map(parseClaudeAuthStatusFromOutput),
     Effect.orElseSucceed(() => ({
@@ -716,11 +823,21 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       message: "Could not verify Claude authentication status. Recheck the account.",
     })),
   );
-  if (authProbe.authStatus !== "authenticated") {
+  // First-party account state cannot verify credentials for a custom endpoint.
+  const customApiEndpoint = isCustomClaudeApiEndpoint(
+    yield* readClaudeSettingsBaseUrl(claudeSettings, environment, cwd),
+  );
+  if (
+    authProbe.authStatus !== "authenticated" &&
+    !(customApiEndpoint && authProbe.authStatus === "unauthenticated")
+  ) {
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
       checkedAt,
+      modelCatalog: capabilities
+        ? { status: "menu", lastSuccessAt: capabilities.modelCatalogFetchedAt ?? checkedAt }
+        : { status: "failed" },
       models: reportedModels,
       slashCommands: dedupedSlashCommands,
       probe: {
@@ -733,14 +850,19 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  const authMetadata = claudeAuthMetadata({
-    subscriptionType: capabilities?.subscriptionType,
-    authMethod: capabilities?.tokenSource,
-  });
+  const authMetadata =
+    (customApiEndpoint ? { type: "customEndpoint", label: "Custom API endpoint" } : undefined) ??
+    claudeAuthMetadata({
+      subscriptionType: capabilities?.subscriptionType,
+      authMethod: capabilities?.tokenSource,
+    });
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
     checkedAt,
+    modelCatalog: capabilities
+      ? { status: "menu", lastSuccessAt: capabilities.modelCatalogFetchedAt ?? checkedAt }
+      : { status: "failed" },
     models: reportedModels,
     slashCommands: dedupedSlashCommands,
     probe: {

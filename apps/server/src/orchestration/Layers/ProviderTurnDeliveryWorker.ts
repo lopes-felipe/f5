@@ -1,6 +1,36 @@
+import { assertScheduledDeliveryAllowed } from "../../scheduledTasks/deliveryGate.ts";
+import { redactProviderFailureText } from "../../provider/failureText.ts";
+import { fenceScheduledRun } from "../../scheduledTasks/cancellation.ts";
+import { scheduledSendGate } from "../../scheduledTasks/sendGate.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { registerShutdown } from "../../shutdown.ts";
+import { DeliveryAttemptContext } from "../../provider/deliveryAttemptContext";
 import { CommandId, TurnId, type OrchestrationUsageLimit, type ThreadId } from "@t3tools/contracts";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { Cause, Duration, Effect, Layer, Option, PubSub, Schema, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Metric,
+  Option,
+  PubSub,
+  Schema,
+  Scope,
+  Semaphore,
+  Stream,
+} from "effect";
+
+import {
+  deliveryAmbiguousTotal,
+  deliveryAttemptsActive,
+  deliveryOutboxRowsDecoded,
+  metricAttributes,
+} from "../../observability/Metrics.ts";
 
 import { reconcileAcceptedPendingTurnStartsBestEffort } from "../acceptedPendingTurnReconciliation.ts";
 import { ProviderTurnDeliveryError, ProviderAdapterRequestError } from "../../provider/Errors.ts";
@@ -18,12 +48,45 @@ import {
   type ProviderTurnDeliveryWorkerShape,
 } from "../Services/ProviderTurnDeliveryWorker.ts";
 
+/** The provider's own explanation, without adapter and thread prefixes. */
+function describeHistoryError(cause: Cause.Cause<unknown>): string {
+  const error = Cause.squash(cause) as { detail?: unknown; message?: unknown } | null;
+  if (typeof error?.detail === "string" && error.detail.trim()) return error.detail.trim();
+  if (typeof error?.message === "string" && error.message.trim()) return error.message.trim();
+  return "The provider did not return its history.";
+}
+
 const make = Effect.gen(function* () {
   const repository = yield* ProviderTurnDeliveryRepository;
+  const scheduledSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const scheduledSettings = yield* Effect.serviceOption(ServerSettingsService);
   const provider = yield* ProviderService;
   const reactor = yield* ProviderCommandReactor;
   const turns = yield* ProjectionTurnRepository;
   const engine = yield* OrchestrationEngineService;
+  const sourceScope = yield* Scope.make("sequential");
+  let stopping = false;
+  const stopSources = Effect.gen(function* () {
+    stopping = true;
+    yield* Scope.close(sourceScope, Exit.void);
+  });
+  yield* Effect.addFinalizer(() => stopSources);
+  yield* registerShutdown("provider-delivery-sources", "admission", () => stopSources);
+  const shutdownBeforeSend = () =>
+    new ProviderTurnDeliveryError({
+      certainty: "not_sent",
+      retryable: true,
+      detail: "Server shutdown stopped this turn before dispatch.",
+    });
+  const scheduledHandoff = (commandId: string) =>
+    Option.isSome(scheduledSql) && Option.isSome(scheduledSettings)
+      ? assertScheduledDeliveryAllowed(commandId).pipe(
+          Effect.provideService(SqlClient.SqlClient, scheduledSql.value),
+          Effect.provideService(ServerSettingsService, scheduledSettings.value),
+        )
+      : Effect.void;
+  const preparationSlots = yield* Semaphore.make(8);
+  const controlPreparationSlots = yield* Semaphore.make(2);
   const delayed = yield* PubSub.unbounded<readonly [CommandId, number]>();
   const outcomes = yield* PubSub.unbounded<ProviderTurnDeliveryOutcome>();
 
@@ -32,17 +95,24 @@ const make = Effect.gen(function* () {
     readonly commandId: CommandId;
     readonly threadId: ProviderTurnDeliveryOutcome["threadId"];
     readonly providerTurnId: TurnId;
+    readonly receipt?: typeof import("../Services/ProviderTurnDeliveryRepository").DeliveryAcceptanceReceipt.Type;
+    readonly attemptId?: string | null | undefined;
   }) =>
     repository.markAccepted(input).pipe(
-      Effect.andThen(reconcileAcceptedPendingTurnStartsBestEffort(turns, input.threadId)),
-      Effect.andThen(
-        PubSub.publish(outcomes, {
-          deliveryId: input.deliveryId,
-          commandId: input.commandId,
-          threadId: input.threadId,
-          state: "accepted",
-          detail: null,
-        }),
+      Effect.flatMap((changed) =>
+        changed
+          ? reconcileAcceptedPendingTurnStartsBestEffort(turns, input.threadId).pipe(
+              Effect.andThen(
+                PubSub.publish(outcomes, {
+                  deliveryId: input.deliveryId,
+                  commandId: input.commandId,
+                  threadId: input.threadId,
+                  state: "accepted",
+                  detail: null,
+                }),
+              ),
+            )
+          : Effect.void,
       ),
       Effect.asVoid,
     );
@@ -51,6 +121,7 @@ const make = Effect.gen(function* () {
     readonly deliveryId: CommandId;
     readonly commandId: CommandId;
     readonly threadId: ProviderTurnDeliveryOutcome["threadId"];
+    readonly attemptId?: string | null | undefined;
     readonly errorCode: string;
     readonly errorDetail: string;
     readonly certainty: "not_sent" | "unknown";
@@ -59,7 +130,9 @@ const make = Effect.gen(function* () {
   }) =>
     Effect.gen(function* () {
       const occurredAt = new Date().toISOString();
-      yield* repository.markRejected({ ...input, occurredAt });
+      const changed = yield* repository.markRejected({ ...input, occurredAt });
+      if (!changed) return;
+      if (input.ambiguous) yield* Metric.update(deliveryAmbiguousTotal, 1);
       yield* PubSub.publish(outcomes, {
         deliveryId: input.deliveryId,
         commandId: input.commandId,
@@ -71,46 +144,91 @@ const make = Effect.gen(function* () {
       });
     });
 
-  // A delivery is proven only by exactly one provider turn that did not exist
-  // before the send and is not already attributed to another accepted
-  // delivery. When a newer send on the thread has been claimed, the turn must
-  // also predate that send, so its turn (accepted or still in flight) is never
-  // mistaken for this one.
-  const findNewProviderTurn = (
-    delivery: ProviderTurnDelivery,
-    turns: ReadonlyArray<{ readonly id: TurnId }>,
+  // A scheduled run fenced after claim (canceled, revoked, or a bound conversation's
+  // settings changed) is a cancellation, not a provider failure: retire only its own
+  // submission so the user's queue is never paused and no failure is reported.
+  const retireFencedScheduledDelivery = (input: {
+    readonly deliveryId: CommandId;
+    readonly commandId: CommandId;
+    readonly threadId: ProviderTurnDeliveryOutcome["threadId"];
+    readonly attemptId?: string | null | undefined;
+  }) =>
+    Option.isSome(scheduledSql) && Option.isSome(scheduledSettings)
+      ? Effect.gen(function* () {
+          const sql = scheduledSql.value;
+          const gate = yield* scheduledSendGate(
+            sql,
+            yield* scheduledSettings.value.getSettings,
+            input.commandId,
+          );
+          if (gate !== "cancel") return false;
+          const links = yield* sql<{
+            run_id: string;
+          }>`SELECT run_id FROM scheduled_run_submissions WHERE submission_id=${input.commandId}`;
+          if (!links[0]) return false;
+          const at = new Date().toISOString();
+          const retired = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const released = yield* repository.markRejected({
+                deliveryId: input.deliveryId,
+                attemptId: input.attemptId,
+                errorCode: "scheduled_run_canceled",
+                errorDetail: "Scheduled execution was canceled before delivery.",
+                certainty: "not_sent",
+                ambiguous: false,
+                occurredAt: at,
+              });
+              if (!released || !(yield* repository.markAbandoned(input.deliveryId))) return false;
+              yield* fenceScheduledRun(links[0]!.run_id, at).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
+              return true;
+            }),
+          );
+          if (retired)
+            yield* PubSub.publish(outcomes, {
+              deliveryId: input.deliveryId,
+              commandId: input.commandId,
+              threadId: input.threadId,
+              state: "abandoned",
+              detail: "Scheduled execution was canceled before delivery.",
+              occurredAt: at,
+            });
+          return retired;
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("failed to retire a fenced scheduled delivery", {
+              deliveryId: input.deliveryId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(false)),
+          ),
+        )
+      : Effect.succeed(false);
+
+  // History alone does not correlate a dispatch: even one new turn may be
+  // another client's turn or a steer. Only a durable acceptance receipt proves
+  // acceptance. Legacy and incomplete baselines therefore remain ambiguous.
+  const findProvenProviderTurn = (delivery: ProviderTurnDelivery) =>
+    Effect.succeed(
+      delivery.acceptanceReceipt?.attemptId === delivery.attemptId
+        ? (delivery.acceptanceReceipt?.turnId ?? null)
+        : null,
+    );
+
+  const settleClaimedDelivery = (
+    deliveryId: CommandId,
+    initialClaimed: ProviderTurnDelivery,
+    handoff: Effect.Effect<void>,
   ) =>
     Effect.gen(function* () {
-      const claimedTurnIds = yield* repository.listAcceptedTurnIdsByThread(delivery.threadId);
-      const supersedingPreSend = yield* repository.getSupersedingPreSendTurnIds(
-        delivery.deliveryId,
-      );
-      const excluded = new Set<TurnId>([...delivery.preSendTurnIds, ...claimedTurnIds]);
-      const bound = supersedingPreSend === null ? null : new Set<TurnId>(supersedingPreSend);
-      const added = turns.filter(
-        (turn) => !excluded.has(turn.id) && (bound === null || bound.has(turn.id)),
-      );
-      return added.length === 1 ? added[0]!.id : null;
-    });
-
-  const processDelivery = (deliveryId: CommandId) =>
-    Effect.gen(function* () {
-      const actionable = yield* repository.listActionable;
-      const candidate = actionable.find((entry) => entry.deliveryId === deliveryId);
-      if (!candidate) return;
-
-      const preSendTurnIds = yield* provider.readThread(candidate.threadId).pipe(
-        Effect.map((snapshot) => snapshot.turns.map((turn) => turn.id)),
-        Effect.catchCause(() => Effect.succeed([] as TurnId[])),
-      );
-      const claimed = yield* repository.claim(deliveryId, preSendTurnIds);
-      if (!claimed) return;
+      let claimed = initialClaimed;
       if (
         claimed.event.type !== "thread.turn-start-requested" &&
         claimed.event.type !== "thread.turn-steer-requested"
       ) {
         yield* markRejected({
           deliveryId,
+          attemptId: claimed.attemptId,
           commandId: claimed.commandId,
           threadId: claimed.threadId,
           errorCode: "invalid_event",
@@ -121,7 +239,134 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const exit = yield* Effect.exit(reactor.deliverTurnStart(claimed.event));
+      const turnEvent = claimed.event;
+      const exit = yield* Effect.exit(
+        Effect.suspend(() =>
+          stopping ? Effect.fail(shutdownBeforeSend()) : reactor.deliverTurnStart(turnEvent),
+        ).pipe(
+          Effect.provideService(
+            DeliveryAttemptContext,
+            claimed.attemptId
+              ? {
+                  attemptId: claimed.attemptId,
+                  accepted: (receipt, identity) =>
+                    Effect.gen(function* () {
+                      const intent = yield* repository.getByCommandId(claimed.commandId);
+                      if (!intent || intent.attemptId !== claimed.attemptId) return;
+                      if (
+                        intent.event.type !== "thread.turn-steer-requested" &&
+                        intent.preSendTurnIds.includes(receipt.turnId)
+                      )
+                        return yield* new ProviderTurnDeliveryError({
+                          certainty: "unknown",
+                          retryable: false,
+                          detail:
+                            "Provider reported a pre-existing turn instead of accepting a new dispatch.",
+                        });
+                      yield* markAccepted({
+                        deliveryId,
+                        commandId: claimed.commandId,
+                        threadId: claimed.threadId,
+                        providerTurnId: receipt.turnId,
+                        attemptId: claimed.attemptId,
+                        receipt: {
+                          turnId: receipt.turnId,
+                          attemptId: claimed.attemptId!,
+                          ...identity,
+                          acceptedAt: new Date().toISOString(),
+                        },
+                      });
+                    }).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderTurnDeliveryError({
+                            certainty: "unknown",
+                            retryable: false,
+                            detail: "Could not persist provider acceptance receipt.",
+                            cause,
+                          }),
+                      ),
+                    ),
+                  prepared: (snapshot) =>
+                    (engine.waitForControlProgress?.(claimed.threadId) ?? Effect.void).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderTurnDeliveryError({
+                            certainty: "not_sent",
+                            retryable: true,
+                            detail: "Control processing stopped before dispatch.",
+                            cause,
+                          }),
+                      ),
+                      Effect.andThen(
+                        Effect.suspend(() =>
+                          stopping
+                            ? Effect.fail(shutdownBeforeSend())
+                            : engine.isTurnStartSuperseded?.(claimed.event)
+                              ? Effect.fail(
+                                  new ProviderTurnDeliveryError({
+                                    certainty: "not_sent",
+                                    retryable: false,
+                                    detail: "The session stopped before this turn was sent.",
+                                  }),
+                                )
+                              : repository
+                                  .recordDispatchIntent({
+                                    deliveryId,
+                                    attemptId: claimed.attemptId!,
+                                    preSendTurnIds:
+                                      snapshot?.turns.map((turn) => turn.id) ??
+                                      claimed.preSendTurnIds,
+                                    historyEvidence:
+                                      snapshot?.history ?? claimed.historyEvidence ?? null,
+                                  })
+                                  .pipe(
+                                    Effect.mapError(
+                                      (cause) =>
+                                        new ProviderTurnDeliveryError({
+                                          certainty: "not_sent",
+                                          retryable: true,
+                                          detail: "Could not persist provider dispatch intent.",
+                                          cause,
+                                        }),
+                                    ),
+                                    Effect.flatMap((recorded) =>
+                                      recorded
+                                        ? Effect.suspend(() =>
+                                            stopping
+                                              ? Effect.fail(shutdownBeforeSend())
+                                              : scheduledHandoff(claimed.commandId).pipe(
+                                                  Effect.andThen(
+                                                    Effect.suspend(() =>
+                                                      stopping
+                                                        ? Effect.fail(shutdownBeforeSend())
+                                                        : handoff,
+                                                    ),
+                                                  ),
+                                                ),
+                                          )
+                                        : Effect.fail(
+                                            new ProviderTurnDeliveryError({
+                                              certainty: "not_sent",
+                                              retryable: false,
+                                              detail:
+                                                "This delivery attempt no longer owns dispatch.",
+                                            }),
+                                          ),
+                                    ),
+                                  ),
+                        ),
+                      ),
+                    ),
+                }
+              : null,
+          ),
+        ),
+      );
+      const settled = yield* repository.getByCommandId(claimed.commandId);
+      if (!settled || (claimed.attemptId && settled.attemptId !== claimed.attemptId)) return;
+      claimed = settled;
+      if (claimed.state === "accepted") return;
       if (
         exit._tag === "Success" &&
         exit.value !== undefined &&
@@ -137,6 +382,7 @@ const make = Effect.gen(function* () {
         });
         yield* markRejected({
           deliveryId,
+          attemptId: claimed.attemptId,
           commandId: claimed.commandId,
           threadId: claimed.threadId,
           errorCode: "provider_turn_not_new",
@@ -150,6 +396,7 @@ const make = Effect.gen(function* () {
       if (exit._tag === "Success" && exit.value !== undefined) {
         yield* markAccepted({
           deliveryId,
+          attemptId: claimed.attemptId,
           commandId: claimed.commandId,
           threadId: claimed.threadId,
           providerTurnId: exit.value.turnId,
@@ -194,16 +441,28 @@ const make = Effect.gen(function* () {
           cause: Cause.pretty(exit.cause),
         });
       }
-      const detail =
+      const detail = redactProviderFailureText(
         typedDeliveryError?.message ??
-        requestError?.message ??
-        "The provider delivery outcome is unknown. Recheck provider history before retrying.";
+          requestError?.message ??
+          "The provider delivery outcome is unknown. Recheck provider history before retrying.",
+      );
+      if (
+        notSent &&
+        !rejectedLimit &&
+        (yield* retireFencedScheduledDelivery({
+          deliveryId,
+          attemptId: claimed.attemptId,
+          commandId: claimed.commandId,
+          threadId: claimed.threadId,
+        }))
+      )
+        return;
       if (
         !steering &&
         notSent &&
         typedDeliveryError?.retryable === true &&
         !typedDeliveryError.usageLimit &&
-        claimed.attempt < 3
+        (stopping || claimed.attempt < 3)
       ) {
         const delayMs = Math.min(30_000, 1_000 * 2 ** Math.max(0, claimed.attempt - 1));
         yield* repository.requeue({
@@ -216,7 +475,7 @@ const make = Effect.gen(function* () {
         yield* PubSub.publish(delayed, [deliveryId, delayMs] as const);
         return;
       }
-      if (!steering)
+      if (claimed.event.type === "thread.turn-start-requested")
         yield* reactor.recordTurnStartFailure(claimed.event, detail).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("failed to record terminal provider delivery error", {
@@ -236,6 +495,7 @@ const make = Effect.gen(function* () {
           : undefined;
       yield* markRejected({
         deliveryId,
+        attemptId: claimed.attemptId,
         commandId: claimed.commandId,
         threadId: claimed.threadId,
         errorCode:
@@ -245,10 +505,81 @@ const make = Effect.gen(function* () {
         ambiguous: !notSent,
         ...(usageLimit ? { usageLimit } : {}),
       });
+    });
+
+  const processDelivery = (deliveryId: CommandId) =>
+    Effect.gen(function* () {
+      if (stopping) return;
+      const candidate = yield* repository.getByCommandId(deliveryId);
+      if (
+        !candidate ||
+        candidate.state !== "pending" ||
+        (candidate.notBefore !== null && Date.parse(candidate.notBefore) > Date.now())
+      )
+        return;
+      if (Option.isSome(scheduledSql) && Option.isSome(scheduledSettings)) {
+        const gate = yield* scheduledSendGate(
+          scheduledSql.value,
+          yield* scheduledSettings.value.getSettings,
+          candidate.commandId,
+        );
+        if (gate === "cancel") {
+          const sql = scheduledSql.value;
+          const links = yield* sql<{
+            run_id: string;
+          }>`SELECT run_id FROM scheduled_run_submissions WHERE submission_id=${candidate.commandId}`;
+          if (links[0])
+            yield* sql.withTransaction(
+              fenceScheduledRun(
+                links[0].run_id,
+                new Date(yield* Clock.currentTimeMillis).toISOString(),
+              ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+            );
+          return;
+        }
+        if (gate === "wait") return;
+      }
+      yield* Metric.update(
+        Metric.withAttributes(deliveryOutboxRowsDecoded, metricAttributes({ source: "claim" })),
+        1,
+      );
+      // A later turn must not create/reuse a session while an earlier stop is
+      // still in the reactor. Stops also reject pending rows before claim.
+      yield* engine.waitForControlProgress?.(candidate.threadId) ?? Effect.void;
+      const baseline = yield* provider
+        .readThread(candidate.threadId)
+        .pipe(Effect.catchCause(() => Effect.succeed(null)));
+      if (stopping) return;
+      const claimed = yield* repository.claim(
+        deliveryId,
+        baseline?.turns.map((turn) => turn.id) ?? [],
+        baseline?.history ?? null,
+      );
+      if (!claimed) return;
+      const slots =
+        claimed.event.type === "thread.turn-steer-requested"
+          ? controlPreparationSlots
+          : preparationSlots;
+      let released = false;
+      const handoff = Effect.suspend(() => {
+        if (released) return Effect.void;
+        released = true;
+        return slots.release(1).pipe(Effect.asVoid);
+      });
+      yield* Effect.acquireUseRelease(
+        slots.take(1),
+        () =>
+          Effect.acquireUseRelease(
+            Metric.modify(deliveryAttemptsActive, 1),
+            () => settleClaimedDelivery(deliveryId, claimed, handoff),
+            () => Metric.modify(deliveryAttemptsActive, -1),
+          ),
+        () => handoff,
+      );
     }).pipe(
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
-          ? Effect.failCause(cause)
+          ? Effect.interrupt
           : Effect.logError("provider turn delivery worker failed", {
               deliveryId,
               cause: Cause.pretty(cause),
@@ -256,26 +587,63 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  // ACP starts await the entire prompt. Steers must reach the adapter while
-  // that prompt is in flight; each lane retains its own delivery order.
-  const worker = yield* makeDrainableWorker(processDelivery);
-  const steerWorker = yield* makeDrainableWorker(processDelivery);
-  const enqueue = (delivery: { deliveryId: CommandId; event: { type: string } }) =>
-    (delivery.event.type === "thread.turn-steer-requested" ? steerWorker : worker).enqueue(
-      delivery.deliveryId,
-    );
+  // The database is the queue. Retain only operations actually handed off,
+  // with one ordinary owner per thread; unrelated ACP prompts run independently.
+  const operationScope = yield* Effect.scope;
+  const active = new Map<string, Fiber.Fiber<void, never> | null>();
+  const enqueue = (delivery: {
+    deliveryId: CommandId;
+    threadId: ThreadId;
+    event: { type: string };
+  }) =>
+    Effect.gen(function* () {
+      if (stopping) return;
+      const key = `${delivery.event.type === "thread.turn-steer-requested" ? "steer" : "start"}:${delivery.threadId}`;
+      const reserved = yield* Effect.sync(() => {
+        if (active.has(key)) return false;
+        active.set(key, null);
+        return true;
+      });
+      if (!reserved) return;
+      // Register before executing, including when the operation finishes synchronously.
+      const ready = yield* Deferred.make<void>();
+      const operation = yield* Effect.forkIn(
+        Deferred.await(ready).pipe(
+          Effect.andThen(
+            processDelivery(delivery.deliveryId).pipe(
+              Effect.provideService(Scope.Scope, operationScope),
+            ),
+          ),
+          Effect.ensuring(Effect.sync(() => active.delete(key))),
+        ),
+        operationScope,
+      );
+      active.set(key, operation);
+      yield* Deferred.succeed(ready, undefined);
+    });
   const enqueueById = (deliveryId: CommandId) =>
     repository
       .getByCommandId(deliveryId)
       .pipe(Effect.flatMap((delivery) => (delivery ? enqueue(delivery) : Effect.void)));
+  const drain: Effect.Effect<void> = Effect.suspend(() =>
+    active.size === 0
+      ? Effect.void
+      : Effect.all([...active.values()].filter((fiber) => fiber !== null).map(Fiber.join), {
+          concurrency: "unbounded",
+          discard: true,
+        }).pipe(Effect.andThen(Effect.yieldNow), Effect.andThen(drain)),
+  );
 
-  const reconcileSending = Effect.gen(function* () {
+  const reconcileSending: Effect.Effect<
+    void,
+    import("../Services/ProviderTurnDeliveryRepository").ProviderTurnDeliveryRepositoryError
+  > = Effect.gen(function* () {
     const sending = yield* repository.listSending;
     yield* Effect.forEach(
       sending,
       (delivery) =>
         provider.readThread(delivery.threadId).pipe(
-          Effect.flatMap((snapshot) => findNewProviderTurn(delivery, snapshot.turns)),
+          Effect.flatMap(() => findProvenProviderTurn(delivery)),
           Effect.flatMap((newTurnId) => {
             return delivery.event.type !== "thread.turn-steer-requested" && newTurnId !== null
               ? markAccepted({
@@ -308,15 +676,21 @@ const make = Effect.gen(function* () {
         ),
       { concurrency: 1, discard: true },
     );
+    if (sending.length === 64) yield* reconcileSending;
   });
 
-  const enqueueActionable = repository.listActionable.pipe(
-    Effect.flatMap((deliveries) =>
-      Effect.forEach(deliveries, (delivery) => enqueue(delivery), {
-        discard: true,
-      }),
-    ),
-  );
+  let scanCursor = "";
+  const enqueueActionable = Effect.gen(function* () {
+    const candidates = yield* repository.listCandidateIds({ afterThreadId: scanCursor, limit: 64 });
+    scanCursor = candidates.length === 64 ? candidates.at(-1)!.threadId : "";
+    yield* Metric.update(
+      Metric.withAttributes(deliveryOutboxRowsDecoded, metricAttributes({ source: "sweep" })),
+      candidates.length,
+    );
+    yield* Effect.forEach(candidates, ({ deliveryId }) => enqueueById(deliveryId), {
+      discard: true,
+    });
+  });
 
   const replayTerminalOutcomes = repository.listUnprojectedTerminal.pipe(
     Effect.flatMap((deliveries) =>
@@ -341,7 +715,11 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  yield* registerShutdown("provider-delivery-work", "drain", () => drain);
+
   const start: ProviderTurnDeliveryWorkerShape["start"] = Effect.gen(function* () {
+    if (stopping) return;
+    yield* Effect.addFinalizer(() => stopSources);
     yield* turns.reconcileAllAcceptedPendingTurnStarts.pipe(
       Effect.catchCause((cause) =>
         Effect.logError("accepted pending turn startup reconciliation failed", {
@@ -379,21 +757,30 @@ const make = Effect.gen(function* () {
               }),
             ),
           )
-        : Effect.void,
-    ).pipe(Effect.forkScoped);
+        : event.type === "thread.session-set" ||
+            event.type === "thread.reverted" ||
+            event.type === "thread.turn-diff-completed"
+          ? enqueueActionable.pipe(
+              Effect.catchCause((cause) => Effect.logWarning("delivery wake failed", { cause })),
+            )
+          : Effect.void,
+    ).pipe(Effect.forkIn(sourceScope, { startImmediately: true }));
     yield* Stream.runForEach(Stream.fromPubSub(delayed), ([deliveryId, delayMs]) =>
       Effect.sleep(Duration.millis(delayMs)).pipe(
         Effect.andThen(enqueueById(deliveryId)),
-        Effect.forkScoped,
+        Effect.forkIn(sourceScope),
         Effect.asVoid,
       ),
-    ).pipe(Effect.forkScoped);
-    yield* Effect.forever(enqueueActionable.pipe(Effect.andThen(Effect.sleep("5 seconds")))).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logError("provider delivery safety sweep failed", { cause: Cause.pretty(cause) }),
+    ).pipe(Effect.forkIn(sourceScope));
+    yield* Effect.forever(
+      enqueueActionable.pipe(
+        Effect.andThen(replayTerminalOutcomes),
+        Effect.catchCause((cause) =>
+          Effect.logError("provider delivery safety sweep failed", { cause: Cause.pretty(cause) }),
+        ),
+        Effect.andThen(Effect.sleep("1 second")),
       ),
-      Effect.forkScoped,
-    );
+    ).pipe(Effect.forkIn(sourceScope));
   });
 
   const getTargetDelivery = (threadId: ThreadId, deliveryId: CommandId) =>
@@ -401,33 +788,39 @@ const make = Effect.gen(function* () {
       .getByCommandId(deliveryId)
       .pipe(Effect.map((delivery) => (delivery?.threadId === threadId ? delivery : null)));
 
-  const recheck: ProviderTurnDeliveryWorkerShape["recheck"] = (threadId, deliveryId) =>
+  const recheckWithReason: ProviderTurnDeliveryWorkerShape["recheckWithReason"] = (
+    threadId,
+    deliveryId,
+  ) =>
     Effect.gen(function* () {
       const delivery =
         deliveryId === undefined
           ? yield* repository.getLatestByThread(threadId)
           : yield* getTargetDelivery(threadId, deliveryId);
-      if (!delivery) return null;
+      if (!delivery) return { delivery: null };
       if (
         delivery.state === "accepted" ||
         delivery.state === "abandoned" ||
         delivery.state === "pending" ||
         (delivery.state === "rejected" && delivery.certainty === "not_sent")
       ) {
-        return delivery;
+        return { delivery };
       }
+      let historyError: string | undefined;
       const snapshot = yield* provider.readThread(threadId).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("provider delivery recheck could not inspect provider history", {
+        Effect.catchCause((cause) => {
+          historyError = describeHistoryError(cause);
+          return Effect.logWarning("provider delivery recheck could not inspect provider history", {
             threadId,
             deliveryId: delivery.deliveryId,
             cause: Cause.pretty(cause),
-          }).pipe(Effect.as(null)),
-        ),
+          }).pipe(Effect.as(null));
+        }),
       );
-      if (!snapshot || delivery.event.type === "thread.turn-steer-requested") return delivery;
-      const newTurnId = yield* findNewProviderTurn(delivery, snapshot.turns);
-      if (newTurnId === null) return delivery;
+      if (!snapshot) return historyError === undefined ? { delivery } : { delivery, historyError };
+      if (delivery.event.type === "thread.turn-steer-requested") return { delivery };
+      const newTurnId = yield* findProvenProviderTurn(delivery);
+      if (newTurnId === null) return { delivery };
       yield* markAccepted({
         deliveryId: delivery.deliveryId,
         commandId: delivery.commandId,
@@ -435,13 +828,15 @@ const make = Effect.gen(function* () {
         providerTurnId: newTurnId,
       });
       return {
-        ...delivery,
-        state: "accepted" as const,
-        providerTurnId: newTurnId,
-        errorCode: null,
-        errorDetail: null,
-        certainty: null,
-        updatedAt: new Date().toISOString(),
+        delivery: {
+          ...delivery,
+          state: "accepted" as const,
+          providerTurnId: newTurnId,
+          errorCode: null,
+          errorDetail: null,
+          certainty: null,
+          updatedAt: new Date().toISOString(),
+        },
       };
     }).pipe(
       Effect.mapError((error) =>
@@ -450,6 +845,9 @@ const make = Effect.gen(function* () {
           : new Error("Could not recheck provider delivery.", { cause: error }),
       ),
     );
+
+  const recheck: ProviderTurnDeliveryWorkerShape["recheck"] = (threadId, deliveryId) =>
+    recheckWithReason(threadId, deliveryId).pipe(Effect.map((result) => result.delivery));
 
   const retry: ProviderTurnDeliveryWorkerShape["retry"] = (input) =>
     Effect.gen(function* () {
@@ -508,10 +906,19 @@ const make = Effect.gen(function* () {
     );
 
   return {
+    wakeScheduled: (threadId) =>
+      Effect.gen(function* () {
+        const rows = Option.isSome(scheduledSql)
+          ? yield* scheduledSql.value<{
+              deliveryId: CommandId;
+            }>`SELECT delivery_id AS "deliveryId" FROM provider_turn_deliveries WHERE thread_id=${threadId} AND state='pending' ORDER BY created_at,delivery_id LIMIT 64`
+          : (yield* repository.listActionable).filter((row) => row.threadId === threadId);
+        yield* Effect.forEach(rows, (row) => enqueueById(row.deliveryId), { discard: true });
+      }).pipe(Effect.ignore),
     start,
     // Starts can remain active while new steers arrive. Observe the steer lane
     // after the start lane drains so shutdown also waits for those deliveries.
-    drain: worker.drain.pipe(Effect.andThen(steerWorker.drain)),
+    drain,
     outcomes: Stream.fromPubSub(outcomes),
     acknowledgeOutcome: (deliveryId) =>
       repository
@@ -524,6 +931,7 @@ const make = Effect.gen(function* () {
           ),
         ),
     recheck,
+    recheckWithReason,
     retry,
     discard,
   } satisfies ProviderTurnDeliveryWorkerShape;

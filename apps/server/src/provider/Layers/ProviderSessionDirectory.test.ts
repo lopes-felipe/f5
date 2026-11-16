@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ThreadId } from "@t3tools/contracts";
+import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { it, assert } from "@effect/vitest";
 import { Effect, Layer, Option } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -29,6 +29,91 @@ function makeDirectoryLayer<E, R>(persistenceLayer: Layer.Layer<SqlClient.SqlCli
 }
 
 it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryLive", (it) => {
+  it("fences incomplete-history markers and retains them through replacement until exact recovery", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.makeUnsafe("incomplete-history");
+      const instanceId = ProviderInstanceId.make("codex");
+      yield* directory.upsert({
+        threadId,
+        provider: "codex",
+        providerInstanceId: instanceId,
+        runtimePayload: { sessionGeneration: 2, activeTurnId: "turn-2" },
+      });
+      const marker = {
+        eventId: "missing-output",
+        turnId: "turn-2",
+        historyIdentity: "native-thread",
+      };
+      assert.isFalse(
+        yield* directory.updateHistoryReconciliationIfCurrent({
+          threadId,
+          instanceId,
+          generation: 1,
+          marker,
+        }),
+      );
+      assert.isFalse(
+        yield* directory.updateHistoryReconciliationIfCurrent({
+          threadId,
+          instanceId: ProviderInstanceId.make("other"),
+          generation: 2,
+          marker,
+        }),
+      );
+      assert.isTrue(
+        yield* directory.updateHistoryReconciliationIfCurrent({
+          threadId,
+          instanceId,
+          generation: 2,
+          marker,
+        }),
+      );
+      yield* directory.upsert({
+        threadId,
+        provider: "codex",
+        providerInstanceId: instanceId,
+        runtimePayload: { sessionGeneration: 3, activeTurnId: null },
+      });
+      const binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.deepEqual(
+        (binding.runtimePayload as Record<string, unknown>).historyReconciliationRequired,
+        marker,
+      );
+      assert.isFalse(
+        yield* directory.updateHistoryReconciliationIfCurrent({
+          threadId,
+          instanceId,
+          generation: 2,
+          marker: null,
+          expectedMarkerId: marker.eventId,
+        }),
+      );
+      assert.isFalse(
+        yield* directory.updateHistoryReconciliationIfCurrent({
+          threadId,
+          instanceId,
+          generation: 3,
+          marker: null,
+          expectedMarkerId: "different-recovery",
+        }),
+      );
+      assert.isTrue(
+        yield* directory.updateHistoryReconciliationIfCurrent({
+          threadId,
+          instanceId,
+          generation: 3,
+          marker: null,
+          expectedMarkerId: marker.eventId,
+        }),
+      );
+      const recovered = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.equal(
+        (recovered.runtimePayload as Record<string, unknown>).historyReconciliationRequired,
+        null,
+      );
+    }));
+
   it("upserts and reads thread bindings", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;
@@ -155,6 +240,54 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       }
     }));
 
+  it("conditionally commits MCP state without touching a replacement or unrelated payload", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.makeUnsafe("mcp-fence");
+      const instanceId = ProviderInstanceId.make("work");
+      yield* directory.upsert({
+        threadId,
+        provider: "codex",
+        providerInstanceId: instanceId,
+        mcpEffectiveConfigVersion: "old",
+        runtimePayload: { sessionGeneration: 2, cwd: "/keep" },
+      });
+      const update = {
+        threadId,
+        instanceId,
+        generation: 2,
+        effectiveVersion: "v2",
+        unconvergedVersion: "v2",
+      };
+      assert.isFalse(yield* directory.updateMcpStateIfCurrent({ ...update, generation: 1 }));
+      assert.isFalse(
+        yield* directory.updateMcpStateIfCurrent({
+          ...update,
+          instanceId: ProviderInstanceId.make("personal"),
+        }),
+      );
+      assert.isTrue(yield* directory.updateMcpStateIfCurrent(update));
+      const binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.equal(binding.mcpEffectiveConfigVersion, "v2");
+      assert.deepEqual(binding.runtimePayload, {
+        sessionGeneration: 2,
+        cwd: "/keep",
+        mcpUnconvergedConfigVersion: "v2",
+      });
+      yield* directory.upsert({
+        threadId,
+        provider: "codex",
+        providerInstanceId: instanceId,
+        mcpEffectiveConfigVersion: "new-generation",
+        runtimePayload: { sessionGeneration: 3 },
+      });
+      assert.isFalse(yield* directory.updateMcpStateIfCurrent(update));
+      assert.equal(
+        Option.getOrThrow(yield* directory.getBinding(threadId)).mcpEffectiveConfigVersion,
+        "new-generation",
+      );
+    }));
+
   it("rehydrates persisted mappings across layer restart", () =>
     Effect.gen(function* () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-directory-"));
@@ -195,4 +328,22 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
 
       fs.rmSync(tempDir, { recursive: true, force: true });
     }));
+
+  it.effect("lists only live bindings when asked to exclude stopped rows", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const live = ThreadId.makeUnsafe("thread-live-binding");
+      const stopped = ThreadId.makeUnsafe("thread-stopped-binding");
+      yield* directory.upsert({ provider: "codex", threadId: live, status: "running" });
+      yield* directory.upsert({ provider: "codex", threadId: stopped, status: "stopped" });
+
+      const all = (yield* directory.listBindings()).map((binding) => binding.threadId);
+      assert.isTrue(all.includes(live) && all.includes(stopped));
+      const liveOnly = (yield* directory.listBindings({ excludeStopped: true })).map(
+        (binding) => binding.threadId,
+      );
+      assert.isTrue(liveOnly.includes(live));
+      assert.isFalse(liveOnly.includes(stopped));
+    }),
+  );
 });

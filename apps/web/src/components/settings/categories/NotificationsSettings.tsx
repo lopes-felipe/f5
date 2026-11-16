@@ -1,39 +1,45 @@
 import { unlockThreadNotificationSound } from "../../../threadAttention";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
-import {
-  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT,
-  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
-  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX,
-  buildAppSettingsPatch,
-} from "../../../appSettings";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import { serverConfigQueryOptions, serverQueryKeys } from "../../../lib/serverReactQuery";
-import { ensureNativeApi } from "../../../nativeApi";
+import { buildAppSettingsPatch } from "../../../appSettings";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
+import { SettingsCard, SettingsRow } from "../SettingsCard";
 import { Button } from "../../ui/button";
-import { Input } from "../../ui/input";
 import { Switch } from "../../ui/switch";
+import {
+  describeDoNotDisturb,
+  DO_NOT_DISTURB_SNOOZE_LABELS,
+  doNotDisturbUntilFor,
+  NOTIFICATION_SOURCE_DESCRIPTIONS,
+  NOTIFICATION_SOURCE_LABELS,
+  NOTIFICATION_SOURCES,
+  type DoNotDisturbSnooze,
+  type NotificationChannelPreference,
+  type NotificationSource,
+} from "../../../notificationCenter/preferences";
 
 export { NOTIFICATIONS_SETTINGS_DESCRIPTORS } from "./NotificationsSettings.descriptors";
-import { Textarea } from "../../ui/textarea";
-import { toastManager } from "../../ui/toast";
-
-const PR_HUB_POLL_INTERVAL_SECONDS_DEFAULT = 180;
-const PR_HUB_POLL_INTERVAL_SECONDS_ENABLED_MIN = 60;
-const PR_HUB_POLL_INTERVAL_SECONDS_MAX = 3600;
 
 const NOTIFICATION_KEYS = [
-  "notificationMode",
-  "inAppThreadNotifications",
+  "notificationPreferences",
   "showAttentionBadge",
-  "enableThreadStatusNotifications",
-  "enablePrAttentionNotifications",
+  "doNotDisturbUntil",
+  "dndAllowUrgent",
+  "toastPosition",
 ] as const;
-const GIT_REFRESH_KEYS = [
-  "enableGitStatusAutoRefresh",
-  "gitStatusAutoRefreshIntervalSeconds",
-] as const;
+
+const SOURCE_SEARCH_TARGETS: Partial<Record<NotificationSource, string>> = {
+  thread: "notifications.thread-status",
+  pr: "notifications.pr-attention",
+};
+
+const CHANNELS = [
+  { key: "inApp", label: "In-app" },
+  { key: "system", label: "System" },
+  { key: "sound", label: "Sound" },
+  { key: "inbox", label: "Inbox" },
+] as const satisfies ReadonlyArray<{ key: keyof NotificationChannelPreference; label: string }>;
+
+const POSITION_LABELS = { "top-right": "Top right", "bottom-right": "Bottom right" } as const;
 
 export function NotificationsSettings() {
   const {
@@ -45,66 +51,158 @@ export function NotificationsSettings() {
     isRequestingNotificationPermission,
     requestNotificationPermission,
   } = useSettingsRouteContext();
-  const serverConfigQuery = useQuery(serverConfigQueryOptions());
-  const queryClient = useQueryClient();
-  const gitAutoRefreshEnabled = settings.enableGitStatusAutoRefresh;
-  const prHubSettings = serverConfigQuery.data?.settings?.prHub ?? {
-    pollIntervalSeconds: PR_HUB_POLL_INTERVAL_SECONDS_DEFAULT,
-    excludeRepos: [],
-  };
-  const prHubRefreshEnabled = prHubSettings.pollIntervalSeconds !== 0;
-  const [excludeReposDraft, setExcludeReposDraft] = useState(prHubSettings.excludeRepos.join("\n"));
-  const notificationsEnabled =
-    settings.notificationMode.includes("system") || settings.enablePrAttentionNotifications;
+  const preferences = settings.notificationPreferences;
+  const systemWanted = NOTIFICATION_SOURCES.some((source) => preferences[source].system);
+  const dndSummary = describeDoNotDisturb(settings.doNotDisturbUntil, new Date());
 
-  useEffect(() => {
-    setExcludeReposDraft(prHubSettings.excludeRepos.join("\n"));
-  }, [prHubSettings.excludeRepos]);
-
-  const updatePrHubSettings = async (patch: Partial<typeof prHubSettings>) => {
-    const nextPrHubSettings = {
-      ...prHubSettings,
-      ...patch,
-    };
-    const nextSettings = await ensureNativeApi().server.updateSettings({
-      prHub: nextPrHubSettings,
+  const setChannel = (
+    source: NotificationSource,
+    channel: keyof NotificationChannelPreference,
+    value: boolean,
+  ) => {
+    // Browsers only allow audio after a gesture; this click is that gesture.
+    if (channel === "sound" && value) unlockThreadNotificationSound();
+    updateSettings({
+      notificationPreferences: {
+        ...preferences,
+        [source]: { ...preferences[source], [channel]: value },
+      },
     });
-    queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
-      existing ? { ...existing, settings: nextSettings } : existing,
-    );
-  };
-
-  const saveExcludeRepos = () => {
-    const excludeRepos = excludeReposDraft
-      .split(/[\n,]/)
-      .map((repo) => repo.trim())
-      .filter(Boolean);
-    void updatePrHubSettings({ excludeRepos });
   };
 
   return (
-    <>
-      <section className="rounded-xl border border-border bg-card p-5">
-        <div className="mb-4">
-          <h2 className="text-sm font-medium text-foreground">Notifications</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Local browser notifications while F5 is open but not focused.
-          </p>
+    <div className="space-y-4">
+      <SettingsCard
+        title="Notifications"
+        description="In-app shows a toast while F5 is focused. System uses your OS notifications while it is in the background. Inbox keeps it in the bell's notification inbox; turning it off also hides what that source already recorded."
+        searchTarget="notifications.in-app"
+        actions={
+          NOTIFICATION_KEYS.some(
+            (key) => JSON.stringify(settings[key]) !== JSON.stringify(defaults[key]),
+          ) ? (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => updateSettings(buildAppSettingsPatch(NOTIFICATION_KEYS, defaults))}
+            >
+              Restore defaults
+            </Button>
+          ) : null
+        }
+      >
+        <div role="table" aria-label="Notification sources" className="text-sm">
+          <div
+            role="row"
+            className="grid grid-cols-[minmax(0,1fr)_repeat(4,--spacing(16))] items-center gap-2 border-b border-border pb-2 text-xs text-muted-foreground"
+          >
+            <span role="columnheader">Source</span>
+            {CHANNELS.map((channel) => (
+              <span key={channel.key} role="columnheader" className="text-center">
+                {channel.label}
+              </span>
+            ))}
+          </div>
+          {NOTIFICATION_SOURCES.map((source) => (
+            <div
+              key={source}
+              role="row"
+              className="grid grid-cols-[minmax(0,1fr)_repeat(4,--spacing(16))] items-center gap-2 border-b border-border py-2.5 last:border-b-0"
+              data-settings-search-target={SOURCE_SEARCH_TARGETS[source]}
+            >
+              <div role="cell" className="min-w-0">
+                <p className="font-medium text-foreground">{NOTIFICATION_SOURCE_LABELS[source]}</p>
+                <p className="text-ui text-muted-foreground">
+                  {NOTIFICATION_SOURCE_DESCRIPTIONS[source]}
+                </p>
+              </div>
+              {CHANNELS.map((channel) => (
+                <div key={channel.key} role="cell" className="flex justify-center">
+                  <Switch
+                    aria-label={`${NOTIFICATION_SOURCE_LABELS[source]}: ${channel.label}`}
+                    checked={preferences[source][channel.key]}
+                    onCheckedChange={(checked) => setChannel(source, channel.key, Boolean(checked))}
+                  />
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
+      </SettingsCard>
 
-        <div className="space-y-3">
-          <label className="flex items-center justify-between gap-3">
-            In-app thread notifications
+      <SettingsCard title="Delivery">
+        <SettingsRow
+          title="Do Not Disturb"
+          description={
+            dndSummary
+              ? `${dndSummary}. Notifications still go to the inbox when its switch is on.`
+              : "Pause toasts, system notifications and sounds. Notifications still go to the inbox when its switch is on."
+          }
+          control={
+            <Select
+              value={dndSummary ? "on" : "off"}
+              onValueChange={(value) => {
+                if (value === "off") updateSettings({ doNotDisturbUntil: null });
+                else if (value === "1h" || value === "tomorrow" || value === "forever")
+                  updateSettings({
+                    doNotDisturbUntil: doNotDisturbUntilFor(
+                      value as DoNotDisturbSnooze,
+                      new Date(),
+                    ),
+                  });
+              }}
+            >
+              <SelectTrigger className="w-56" aria-label="Do Not Disturb">
+                <SelectValue>{dndSummary ?? "Off"}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                <SelectItem value="off">Off</SelectItem>
+                {(Object.keys(DO_NOT_DISTURB_SNOOZE_LABELS) as DoNotDisturbSnooze[]).map(
+                  (snooze) => (
+                    <SelectItem key={snooze} value={snooze}>
+                      {DO_NOT_DISTURB_SNOOZE_LABELS[snooze]}
+                    </SelectItem>
+                  ),
+                )}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Let approvals through"
+          description="During Do Not Disturb, still notify when a thread needs approval or input."
+          control={
             <Switch
-              aria-label="In-app thread notifications"
-              checked={settings.inAppThreadNotifications}
-              onCheckedChange={(checked) =>
-                updateSettings({ inAppThreadNotifications: Boolean(checked) })
-              }
+              aria-label="Let approvals through"
+              checked={settings.dndAllowUrgent}
+              onCheckedChange={(checked) => updateSettings({ dndAllowUrgent: Boolean(checked) })}
             />
-          </label>
-          <label className="flex items-center justify-between gap-3">
-            Show attention badge
+          }
+        />
+        <SettingsRow
+          title="Toast position"
+          description="Where in-app notifications appear."
+          control={
+            <Select
+              value={settings.toastPosition}
+              onValueChange={(value) => {
+                if (value === "top-right" || value === "bottom-right")
+                  updateSettings({ toastPosition: value });
+              }}
+            >
+              <SelectTrigger className="w-56" aria-label="Toast position">
+                <SelectValue>{POSITION_LABELS[settings.toastPosition]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                <SelectItem value="top-right">{POSITION_LABELS["top-right"]}</SelectItem>
+                <SelectItem value="bottom-right">{POSITION_LABELS["bottom-right"]}</SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Show attention badge"
+          description="Count threads needing attention on the app icon and window title."
+          control={
             <Switch
               aria-label="Show attention badge"
               checked={settings.showAttentionBadge}
@@ -112,335 +210,42 @@ export function NotificationsSettings() {
                 updateSettings({ showAttentionBadge: Boolean(checked) })
               }
             />
-          </label>
-
-          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
-            <div>
-              <p className="text-sm font-medium text-foreground">Thread status notifications</p>
-              <p className="text-xs text-muted-foreground">
-                Notify when a thread reaches a sidebar status such as pending approval, awaiting
-                input, plan ready, or completed.
-              </p>
-            </div>
-            <Select
-              value={settings.notificationMode}
-              onValueChange={(value) => {
-                if (value === "sound" || value === "system-and-sound")
-                  unlockThreadNotificationSound();
-                if (
-                  value === "off" ||
-                  value === "system" ||
-                  value === "sound" ||
-                  value === "system-and-sound"
-                )
-                  updateSettings({
-                    notificationMode: value,
-                    enableThreadStatusNotifications:
-                      value === "system" || value === "system-and-sound",
-                  });
-              }}
-            >
-              <SelectTrigger aria-label="Thread status notifications">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectPopup>
-                <SelectItem value="off">Off</SelectItem>
-                <SelectItem value="system">System notification</SelectItem>
-                <SelectItem value="sound">Sound</SelectItem>
-                <SelectItem value="system-and-sound">System notification and sound</SelectItem>
-              </SelectPopup>
-            </Select>
-          </div>
-
-          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
-            <div>
-              <p className="text-sm font-medium text-foreground">PR attention notifications</p>
-              <p className="text-xs text-muted-foreground">
-                Notify when PR Hub finds a pull request that needs your action.
-              </p>
-            </div>
-            <Switch
-              checked={settings.enablePrAttentionNotifications}
-              onCheckedChange={(checked) =>
-                updateSettings({
-                  enablePrAttentionNotifications: Boolean(checked),
-                })
-              }
-              aria-label="PR attention notifications"
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-4 border-b border-border py-2 last:border-b-0">
-            <div>
-              <p className="text-sm font-medium text-foreground">Flag my PRs as stalled after</p>
-              <p className="text-xs text-muted-foreground">
-                Hours waiting; 0 disables. Filters and sorts only, without notifications.
-              </p>
-            </div>
-            <Input
-              className="h-8 w-20"
-              type="number"
-              min={0}
-              max={720}
-              step={1}
-              aria-label="Flag my PRs as stalled after"
-              value={settings.prHubStalledAfterHours}
-              onChange={(event) =>
-                void updateSettings({
-                  prHubStalledAfterHours: Math.max(
-                    0,
-                    Math.min(720, Math.round(Number(event.currentTarget.value) || 0)),
-                  ),
-                })
-              }
-            />
-          </div>
-
-          <div className="rounded-lg border border-border bg-background px-3 py-3">
-            <p className="text-xs font-medium text-foreground">Permission status</p>
-            <p className="mt-1 text-xs text-muted-foreground capitalize">
-              {notificationPermissionSummary}
-            </p>
-            {notificationPermission === "unsupported" ? (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Notifications are unavailable in this environment.
-              </p>
-            ) : null}
-            {notificationPermission === "denied" ? (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Permission is currently denied in the browser. Re-enable it in your browser or
-                desktop shell settings to resume notifications.
-              </p>
-            ) : null}
-            {notificationPermission === "default" ? (
-              <div className="mt-3 flex items-center gap-2">
-                <Button
-                  size="xs"
-                  onClick={requestNotificationPermission}
-                  disabled={!notificationsEnabled || isRequestingNotificationPermission}
-                >
-                  {isRequestingNotificationPermission ? "Requesting..." : "Enable notifications"}
-                </Button>
-                {!notificationsEnabled ? (
-                  <span className="text-xs text-muted-foreground">
-                    Turn a notification feature on before requesting permission.
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        {NOTIFICATION_KEYS.some((key) => settings[key] !== defaults[key]) ? (
-          <div className="mt-3 flex justify-end">
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => updateSettings(buildAppSettingsPatch(NOTIFICATION_KEYS, defaults))}
-            >
-              Restore default
-            </Button>
-          </div>
-        ) : null}
-      </section>
-
-      <section className="rounded-xl border border-border bg-card p-5">
-        <div className="mb-4">
-          <h2 className="text-sm font-medium text-foreground">Git</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Control background git status refresh behavior.
+          }
+        />
+        <div className="mt-3 rounded-lg border border-border bg-background px-3 py-3">
+          <p className="text-xs font-medium text-foreground">System notification permission</p>
+          <p className="mt-1 text-xs text-muted-foreground capitalize">
+            {notificationPermissionSummary}
           </p>
-        </div>
-
-        <div className="flex items-center justify-between gap-4 border-b border-border py-2 last:border-b-0">
-          <div>
-            <p className="text-sm font-medium text-foreground">Auto-refresh git status</p>
-            <p className="text-xs text-muted-foreground">
-              {gitAutoRefreshEnabled
-                ? `Keeps local git status refreshed every ${settings.gitStatusAutoRefreshIntervalSeconds} seconds.`
-                : "Stops background refreshes, but git status still loads when opened and after explicit git actions."}
+          {notificationPermission === "unsupported" ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Notifications are unavailable in this environment.
             </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-3">
-            <Input
-              className="h-8 w-20"
-              type="number"
-              min={GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN}
-              max={GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX}
-              step={5}
-              value={settings.gitStatusAutoRefreshIntervalSeconds}
-              disabled={!gitAutoRefreshEnabled}
-              onChange={(event) => {
-                const value = Math.max(
-                  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
-                  Math.min(
-                    GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX,
-                    Math.round(Number(event.currentTarget.value) || 0),
-                  ),
-                );
-                updateSettings({
-                  gitStatusAutoRefreshIntervalSeconds: value,
-                });
-              }}
-              aria-label="Git auto-refresh interval in seconds"
-            />
-            <Switch
-              checked={gitAutoRefreshEnabled}
-              onCheckedChange={(checked) =>
-                updateSettings({
-                  gitStatusAutoRefreshIntervalSeconds: checked
-                    ? GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT
-                    : 0,
-                })
-              }
-              aria-label="Auto-refresh git status"
-            />
-          </div>
+          ) : null}
+          {notificationPermission === "denied" ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Permission is currently denied in the browser. Re-enable it in your browser or desktop
+              shell settings to resume notifications.
+            </p>
+          ) : null}
+          {notificationPermission === "default" ? (
+            <div className="mt-3 flex items-center gap-2">
+              <Button
+                size="xs"
+                onClick={requestNotificationPermission}
+                disabled={!systemWanted || isRequestingNotificationPermission}
+              >
+                {isRequestingNotificationPermission ? "Requesting..." : "Enable notifications"}
+              </Button>
+              {!systemWanted ? (
+                <span className="text-xs text-muted-foreground">
+                  Turn on a System notification above before requesting permission.
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
-
-        {settings.enableGitStatusAutoRefresh !== defaults.enableGitStatusAutoRefresh ||
-        settings.gitStatusAutoRefreshIntervalSeconds !==
-          defaults.gitStatusAutoRefreshIntervalSeconds ? (
-          <div className="mt-3 flex justify-end">
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => updateSettings(buildAppSettingsPatch(GIT_REFRESH_KEYS, defaults))}
-            >
-              Restore default
-            </Button>
-          </div>
-        ) : null}
-      </section>
-
-      <section className="rounded-xl border border-border bg-card p-5">
-        <div className="mb-4">
-          <h2 className="text-sm font-medium text-foreground">PR Hub</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Control GitHub polling, privacy exclusions, and stored PR Hub data.
-          </p>
-        </div>
-
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-4 border-b border-border py-2 last:border-b-0">
-            <div>
-              <p className="text-sm font-medium text-foreground">Auto-refresh PR Hub</p>
-              <p className="text-xs text-muted-foreground">
-                {prHubRefreshEnabled
-                  ? `Checks GitHub every ${prHubSettings.pollIntervalSeconds} seconds.`
-                  : "Stops scheduled GitHub polling. Manual refresh still works."}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-3">
-              <Input
-                className="h-8 w-20"
-                type="number"
-                min={PR_HUB_POLL_INTERVAL_SECONDS_ENABLED_MIN}
-                max={PR_HUB_POLL_INTERVAL_SECONDS_MAX}
-                step={30}
-                value={
-                  prHubSettings.pollIntervalSeconds === 0
-                    ? PR_HUB_POLL_INTERVAL_SECONDS_DEFAULT
-                    : prHubSettings.pollIntervalSeconds
-                }
-                disabled={!prHubRefreshEnabled}
-                onChange={(event) => {
-                  const value = Math.max(
-                    PR_HUB_POLL_INTERVAL_SECONDS_ENABLED_MIN,
-                    Math.min(
-                      PR_HUB_POLL_INTERVAL_SECONDS_MAX,
-                      Math.round(Number(event.currentTarget.value) || 0),
-                    ),
-                  );
-                  void updatePrHubSettings({ pollIntervalSeconds: value });
-                }}
-                aria-label="PR Hub refresh interval in seconds"
-              />
-              <Switch
-                checked={prHubRefreshEnabled}
-                onCheckedChange={(checked) =>
-                  void updatePrHubSettings({
-                    pollIntervalSeconds: checked ? PR_HUB_POLL_INTERVAL_SECONDS_DEFAULT : 0,
-                  })
-                }
-                aria-label="Auto-refresh PR Hub"
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-3">
-            <div>
-              <p className="text-sm font-medium text-foreground">
-                Discover PRs from GitHub notifications
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Include notification subjects, including mentions. Never marks GitHub notifications
-                as read.
-              </p>
-            </div>
-            <Switch
-              aria-label="Discover PRs from GitHub notifications"
-              checked={prHubSettings.discoverNotifications ?? false}
-              onCheckedChange={(checked) =>
-                void updatePrHubSettings({ discoverNotifications: checked })
-              }
-            />
-          </div>
-
-          <div className="rounded-lg border border-border bg-background px-3 py-3">
-            <div className="mb-2">
-              <p className="text-sm font-medium text-foreground">Excluded repositories</p>
-              <p className="text-xs text-muted-foreground">
-                One `owner/repo` per line. Excluded PRs are dropped before persistence.
-              </p>
-            </div>
-            <Textarea
-              className="min-h-24 font-mono text-xs"
-              value={excludeReposDraft}
-              onChange={(event) => setExcludeReposDraft(event.currentTarget.value)}
-              onBlur={saveExcludeRepos}
-              placeholder="owner/repo"
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-4 border-b border-border py-2 last:border-b-0">
-            <div>
-              <p className="text-sm font-medium text-foreground">Clear PR Hub data</p>
-              <p className="text-xs text-muted-foreground">
-                Clears monitoring records for the selected GitHub account. Drafts, operations and
-                manually tracked PRs are retained.
-              </p>
-            </div>
-            <Button
-              size="xs"
-              variant="destructive-outline"
-              onClick={() => {
-                if (
-                  !window.confirm(
-                    "Clear monitoring data for the selected GitHub account? Saved review work and manually tracked PRs will remain.",
-                  )
-                )
-                  return;
-                void ensureNativeApi()
-                  .prHub.clearData({})
-                  .then(() => {
-                    void queryClient.invalidateQueries({ queryKey: ["prHub"] });
-                    toastManager.add({ type: "success", title: "PR Hub data cleared" });
-                  })
-                  .catch((error) => {
-                    toastManager.add({
-                      type: "error",
-                      title: "Could not clear PR Hub data",
-                      description: error instanceof Error ? error.message : String(error),
-                    });
-                  });
-              }}
-            >
-              Clear data
-            </Button>
-          </div>
-        </div>
-      </section>
-    </>
+      </SettingsCard>
+    </div>
   );
 }

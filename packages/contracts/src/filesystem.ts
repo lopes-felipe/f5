@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import { TrimmedNonEmptyString } from "./baseSchemas";
 
@@ -14,7 +15,7 @@ export const FILESYSTEM_PATH_MAX_LENGTH = 4096;
 // custom `Schema.filter` with a clearer message.
 export const FilesystemBrowseInput = Schema.Struct({
   partialPath: TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH)),
-  cwd: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH))),
+  cwd: Schema.optional(FilesystemPath.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH))),
 });
 export type FilesystemBrowseInput = typeof FilesystemBrowseInput.Type;
 

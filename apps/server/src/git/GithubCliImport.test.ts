@@ -61,6 +61,10 @@ fs.appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify({
   prompt: process.env.GH_PROMPT_DISABLED ?? null,
 }) + "\n");
 if (args[0] === "auth" && args[1] === "status") {
+  if (process.env.FAKE_GH_STATUS === "old") {
+    process.stderr.write("unknown flag: --json\n\nUsage:  gh auth status [flags]\n");
+    process.exit(1);
+  }
   process.stdout.write(process.env.FAKE_GH_STATUS);
   process.exit(0);
 }
@@ -111,6 +115,7 @@ async function setup(tokens: Record<string, string> = {}) {
       get: (key) => Effect.succeed(secrets.get(key) ?? null),
       set: (key, value) => Effect.sync(() => void secrets.set(key, value)),
       remove: (key) => Effect.sync(() => void secrets.delete(key)),
+      list: () => Effect.succeed([]),
       getOrCreateRandom: () => Effect.die("unused"),
     },
     async (_url, init) => {
@@ -295,6 +300,17 @@ describe.skipIf(process.platform === "win32")("GithubCliImport", () => {
     await expect(importer.import({ host: "github.com", login: "-bad" })).rejects.toThrow(
       "Invalid GitHub account",
     );
+  });
+
+  it("asks for a newer gh when it predates auth status --json", async () => {
+    const { account, stateDir, launcherDir, env } = await setup();
+    const importer = new GithubCliImport({
+      account,
+      f5StateRoots: [stateDir],
+      launcherDir,
+      env: { ...env, FAKE_GH_STATUS: "old" },
+    });
+    await expect(importer.candidates()).rejects.toThrow("Update gh to 2.81.0 or newer");
   });
 
   it("reports gh as unavailable when only F5 launchers are on PATH", async () => {

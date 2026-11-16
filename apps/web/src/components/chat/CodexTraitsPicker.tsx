@@ -7,11 +7,13 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import {
-  normalizeCodexModelOptions,
+  resolveCodexFastMode,
+  resolveCodexEffectiveReasoningEffort,
   resolveCodexReasoningEffortForModel,
   resolveModelCapabilities,
 } from "@t3tools/shared/model";
 import { getProviderModelCapabilities } from "../../providerModels";
+import { defaultComposerEffort } from "./composerModelDefaults";
 import { memo, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import { useComposerDraftStore, useComposerThreadDraft } from "../../composerDraftStore";
@@ -41,16 +43,12 @@ const CODEX_REASONING_LABELS: Record<CodexReasoningEffort, string> = {
 
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 
-/** Same resolver the server uses for `turn/start`, fed with reported capabilities. */
-function resolveCodexTraitCapabilities(
+/** Capabilities the session reported; the same input `turn/start` resolves against. */
+function getReportedCodexCapabilities(
   model: string,
   models: ReadonlyArray<ServerProviderModel> | undefined,
 ) {
-  return resolveModelCapabilities(
-    "codex",
-    model,
-    models ? getProviderModelCapabilities(models, model, CODEX_PROVIDER) : undefined,
-  );
+  return models ? getProviderModelCapabilities(models, model, CODEX_PROVIDER) : undefined;
 }
 
 function getSelectedCodexTraits(
@@ -61,17 +59,15 @@ function getSelectedCodexTraits(
   effort: CodexReasoningEffort;
   fastModeEnabled: boolean;
 } {
-  const capabilities = resolveCodexTraitCapabilities(model, models);
-  const requested = modelOptions?.reasoningEffort;
-  const effort =
-    capabilities.source === "reported"
-      ? ((requested && capabilities.effortOptions.includes(requested)
-          ? requested
-          : capabilities.defaultEffort) as CodexReasoningEffort | undefined)
-      : undefined;
+  const reported = getReportedCodexCapabilities(model, models);
+  const capabilities = resolveModelCapabilities("codex", model, reported);
+  const requested =
+    modelOptions?.reasoningEffort ?? defaultComposerEffort(capabilities.effortOptions);
+  // The effort `turn/start` runs at, which the composer also dispatches explicitly.
+  const effort = resolveCodexEffectiveReasoningEffort(model, requested, reported);
   return {
     effort: effort ?? resolveCodexReasoningEffortForModel(model, requested),
-    fastModeEnabled: modelOptions?.fastMode === true && capabilities.supportsFastMode,
+    fastModeEnabled: resolveCodexFastMode(modelOptions, reported) && capabilities.supportsFastMode,
   };
 }
 
@@ -84,10 +80,8 @@ function CodexTraitsMenuContentImpl(props: {
   const draft = useComposerThreadDraft(props.threadId);
   const modelOptions = draft.modelOptions?.codex;
   const setModelOptions = useComposerDraftStore((store) => store.setModelOptions);
-  const reported = props.models
-    ? getProviderModelCapabilities(props.models, props.model, CODEX_PROVIDER)
-    : undefined;
-  const capabilities = resolveCodexTraitCapabilities(props.model, props.models);
+  const reported = getReportedCodexCapabilities(props.model, props.models);
+  const capabilities = resolveModelCapabilities("codex", props.model, reported);
   const options = capabilities.effortOptions as ReadonlyArray<CodexReasoningEffort>;
   const defaultReasoningEffort = capabilities.defaultEffort;
   const { effort, fastModeEnabled } = getSelectedCodexTraits(
@@ -122,13 +116,9 @@ function CodexTraitsMenuContentImpl(props: {
         onValueChange={(value) => {
           const nextEffort = options.find((option) => option === value);
           if (!nextEffort) return;
-          setCodexModelOptions(
-            normalizeCodexModelOptions(
-              props.model,
-              { ...modelOptions, reasoningEffort: nextEffort },
-              reported,
-            ),
-          );
+          // Keep even the provider's default explicit: omission means the
+          // composer's High default, not the user's chosen Medium/Low.
+          setCodexModelOptions({ ...modelOptions, reasoningEffort: nextEffort });
           props.onSelectionComplete?.();
         }}
       />
@@ -139,13 +129,7 @@ function CodexTraitsMenuContentImpl(props: {
             variant="switch"
             checked={fastModeEnabled}
             onCheckedChange={(checked) => {
-              setCodexModelOptions(
-                normalizeCodexModelOptions(
-                  props.model,
-                  { ...modelOptions, fastMode: checked },
-                  reported,
-                ),
-              );
+              setCodexModelOptions({ ...modelOptions, reasoningEffort: effort, fastMode: checked });
             }}
           >
             <FastModeLabel enabled={fastModeEnabled} />

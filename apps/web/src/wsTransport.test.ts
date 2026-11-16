@@ -1,3 +1,4 @@
+import { noteWsSynchronized, noteWsResynchronizing } from "./wsConnectionState";
 import { serverBootstrapFixture } from "./test/serverBootstrap";
 import { F5_PROTOCOL_VERSION, F5_UPGRADE_REQUIRED_CLOSE_CODE } from "@t3tools/contracts";
 import {
@@ -8,6 +9,7 @@ import {
 } from "./protocolState";
 import { ORCHESTRATION_WS_METHODS, WS_CHANNELS, WS_METHODS } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PROVIDER_UPDATE_TIMEOUT_MS } from "@t3tools/shared/providerUpdate";
 
 import {
   getSlowRpcRequests,
@@ -15,7 +17,14 @@ import {
   SLOW_RPC_THRESHOLD_MS,
 } from "./requestLatencyState";
 import { getWsConnectionState, resetWsConnectionStateForTests } from "./wsConnectionState";
-import { jitterReconnectDelay, WsTransport } from "./wsTransport";
+import {
+  isQueryRetryable,
+  jitterReconnectDelay,
+  ORPHAN_RELEASE_GRACE_MS,
+  WsRequestError,
+  WsTransport,
+} from "./wsTransport";
+import { readRpcDiagnostics, resetRpcDiagnosticsForTests } from "./rpcDiagnostics";
 
 type WsEventType = "open" | "message" | "close" | "error";
 type WsEvent = { data?: unknown; type?: string; code?: number };
@@ -152,6 +161,83 @@ afterEach(() => {
 });
 
 describe("WsTransport", () => {
+  it("retries a cold start quickly, then backs off repeated failures", () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    getSocket().close();
+    vi.advanceTimersByTime(499);
+    expect(sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(2);
+    getSocket().close();
+    vi.advanceTimersByTime(2_999);
+    expect(sockets).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(3);
+    transport.dispose();
+  });
+  it("cancels hung authentication on its deadline and retries without stale socket creation", async () => {
+    let reply!: (response: Response) => void;
+    const fetcher = vi.fn(
+      (_url: RequestInfo | URL, _options?: RequestInit) =>
+        new Promise<Response>((resolve) => {
+          reply = resolve;
+        }),
+    );
+    globalThis.fetch = fetcher;
+    const transport = new WsTransport();
+    expect(fetcher).toHaveBeenCalledOnce();
+    const signal = fetcher.mock.calls[0]![1]!.signal!;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(signal.aborted).toBe(true);
+    expect(getWsConnectionState().lastError).toContain("timed out");
+    reply({ ok: true } as Response);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sockets).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    transport.dispose();
+    expect(fetcher.mock.calls[1]![1]!.signal?.aborted).toBe(true);
+  });
+  it("reconnect cancels older auth attempts and late auth cannot open an old socket", async () => {
+    const replies: ((response: Response) => void)[] = [];
+    const fetcher = vi.fn(
+      (_url: RequestInfo | URL, _options?: RequestInit) =>
+        new Promise<Response>((resolve) => replies.push(resolve)),
+    );
+    globalThis.fetch = fetcher;
+    const transport = new WsTransport();
+    transport.reconnect();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0]![1]!.signal?.aborted).toBe(true);
+    replies[0]!({ ok: true } as Response);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sockets).toHaveLength(0);
+    replies[1]!({ ok: true } as Response);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sockets).toHaveLength(1);
+    transport.dispose();
+  });
+  it("expires stuck CONNECTING sockets and ignores their late open callbacks", async () => {
+    const transport = new WsTransport("ws://localhost:3020"),
+      old = getSocket();
+    await vi.advanceTimersByTimeAsync(13_000);
+    expect(sockets).toHaveLength(2);
+    old.open();
+    expect(getWsConnectionState().phase).not.toBe("connected");
+    getSocket().open();
+    expect(getWsConnectionState().phase).toBe("connected");
+    transport.dispose();
+  });
+  it("rejects no-timeout requests immediately after disposal", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    transport.dispose();
+    await expect(
+      transport.request(ORCHESTRATION_WS_METHODS.getSnapshot, undefined, { timeoutMs: null }),
+    ).rejects.toThrow("disposed");
+  });
+
   it("applies bounded reconnect jitter around the existing delay ladder", () => {
     expect(jitterReconnectDelay(1_000, () => 0)).toBe(800);
     expect(jitterReconnectDelay(1_000, () => 0.5)).toBe(1_000);
@@ -207,12 +293,48 @@ describe("WsTransport", () => {
     transport.dispose();
   });
 
+  it("delivers server.configUpdated pushes without issue kinds this build does not know", () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+    socket.open();
+
+    const listener = vi.fn();
+    transport.subscribe(WS_CHANNELS.serverConfigUpdated, listener);
+
+    socket.serverMessage(
+      JSON.stringify({
+        type: "push",
+        sequence: 1,
+        channel: WS_CHANNELS.serverConfigUpdated,
+        data: {
+          issues: [
+            { kind: "keybindings.future-issue", message: "From a newer server" },
+            { kind: "keybindings.malformed-config", message: "Bad file" },
+          ],
+          providers: [],
+        },
+      }),
+    );
+
+    expect(listener).toHaveBeenCalledWith({
+      type: "push",
+      sequence: 1,
+      channel: WS_CHANNELS.serverConfigUpdated,
+      data: {
+        issues: [{ kind: "keybindings.malformed-config", message: "Bad file" }],
+        providers: [],
+      },
+    });
+
+    transport.dispose();
+  });
+
   it("resolves pending requests for valid response envelopes", async () => {
     const transport = new WsTransport("ws://localhost:3020");
     const socket = getSocket();
     socket.open();
 
-    const requestPromise = transport.request("projects.list");
+    const requestPromise = transport.request("git.status");
     const sent = socket.sent.at(-1);
     if (!sent) {
       throw new Error("Expected request envelope to be sent");
@@ -274,7 +396,7 @@ describe("WsTransport", () => {
     const transport = new WsTransport("ws://localhost:3020");
     const socket = getSocket();
 
-    const requestPromise = transport.request("projects.list");
+    const requestPromise = transport.request("git.status");
     expect(socket.sent).toHaveLength(0);
 
     socket.open();
@@ -297,6 +419,7 @@ describe("WsTransport", () => {
     const transport = new WsTransport("ws://localhost:3020");
     const socket = getSocket();
     socket.open();
+    noteWsSynchronized();
     const promise = transport.request(WS_METHODS.gitCheckout, { cwd: "/repo", branch: "main" });
     const envelope = JSON.parse(socket.sent[0] ?? "{}") as { id: string };
     const checkoutConflict = { cwd: "/repo", branch: "main", files: ["index.css"] };
@@ -323,8 +446,11 @@ describe("WsTransport", () => {
     const transport = new WsTransport("ws://localhost:3020");
     const socket = getSocket();
 
-    const requestPromise = transport.request("projects.list", undefined, { timeoutMs: 25 });
-    const rejection = expect(requestPromise).rejects.toThrow("Request timed out: projects.list");
+    const requestPromise = transport.request("git.status", undefined, { timeoutMs: 25 });
+    const rejection = expect(requestPromise).rejects.toMatchObject({
+      code: "QueueExpired",
+      message: "Request timed out before it was sent: git.status",
+    });
     await vi.advanceTimersByTimeAsync(25);
     await rejection;
 
@@ -336,44 +462,43 @@ describe("WsTransport", () => {
 
   it("bounds requests queued before the websocket opens", async () => {
     const transport = new WsTransport("ws://localhost:3020");
-    const pending = Array.from({ length: 256 }, (_, index) =>
-      transport.request(`projects.list.${index}`, undefined, { timeoutMs: null }),
+    const pending = Array.from({ length: 256 }, () =>
+      transport.request("git.status", undefined, { timeoutMs: null }),
     );
     for (const request of pending) {
       void request.catch(() => undefined);
     }
 
-    await expect(
-      transport.request("projects.list.overflow", undefined, { timeoutMs: null }),
-    ).rejects.toThrow("WebSocket request queue is full");
+    await expect(transport.request("git.status", undefined, { timeoutMs: null })).rejects.toThrow(
+      "WebSocket request queue is full",
+    );
 
     transport.dispose();
   });
 
-  it("starts slow-request tracking only after the queued request is actually sent", () => {
+  it("starts slow-request tracking at enqueue so a request waiting to send still shows it", () => {
     const transport = new WsTransport("ws://localhost:3020");
     const socket = getSocket();
 
-    const requestPromise = transport.request(ORCHESTRATION_WS_METHODS.dispatchCommand, {
+    const requestPromise = transport.request(ORCHESTRATION_WS_METHODS.getSnapshot, {
       command: { type: "noop" },
     });
     void requestPromise.catch(() => undefined);
 
-    vi.advanceTimersByTime(SLOW_RPC_THRESHOLD_MS);
-    expect(getSlowRpcRequests()).toEqual([]);
-
-    socket.open();
-    expect(socket.sent).toHaveLength(1);
-
     vi.advanceTimersByTime(SLOW_RPC_THRESHOLD_MS - 1);
     expect(getSlowRpcRequests()).toEqual([]);
-
     vi.advanceTimersByTime(1);
     expect(getSlowRpcRequests()).toMatchObject([
       {
-        method: ORCHESTRATION_WS_METHODS.dispatchCommand,
+        method: ORCHESTRATION_WS_METHODS.getSnapshot,
       },
     ]);
+
+    socket.open();
+    expect(socket.sent).toHaveLength(1);
+    const { id } = JSON.parse(socket.sent[0]!) as { id: string };
+    socket.serverMessage(JSON.stringify({ id, result: {} }));
+    expect(getSlowRpcRequests()).toEqual([]);
 
     transport.dispose();
   });
@@ -386,7 +511,7 @@ describe("WsTransport", () => {
     socket.close();
     socket.close();
 
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(3_000);
     expect(sockets).toHaveLength(2);
 
     vi.advanceTimersByTime(2_000);
@@ -444,8 +569,6 @@ describe("WsTransport", () => {
     window.dispatchEvent(new Event("focus"));
     await vi.advanceTimersByTimeAsync(3_000);
     expect(firstSocket.readyState).toBe(MockWebSocket.CLOSED);
-
-    await vi.advanceTimersByTimeAsync(500);
     expect(sockets).toHaveLength(2);
     const secondSocket = getSocket();
     secondSocket.open();
@@ -542,11 +665,11 @@ describe("WsTransport", () => {
     transport.dispose();
   });
 
-  it("ignores manual reconnect while the newest socket is still connecting", async () => {
+  it("replaces a connecting socket when reconnect is requested", async () => {
     const transport = new WsTransport("ws://localhost:3020");
 
     transport.reconnect();
-    expect(sockets).toHaveLength(1);
+    expect(sockets).toHaveLength(2);
 
     transport.dispose();
   });
@@ -622,7 +745,7 @@ describe("protocol upgrades", () => {
     getSocket().open();
     getSocket().serverMessage(welcome(42));
     getSocket().close();
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(3_000);
     getSocket().open();
     getSocket().serverMessage(welcome(84));
     expect(observed).toEqual([42, 84]);
@@ -635,7 +758,7 @@ describe("protocol upgrades", () => {
     expect(new URL(getSocket().url).searchParams.get("token")).toBe("secret");
     getSocket().open();
     getSocket().close();
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(3_000);
     expect(new URL(getSocket().url).searchParams.get("protocol")).toBe(String(F5_PROTOCOL_VERSION));
     transport.dispose();
   });
@@ -693,7 +816,7 @@ it.each([
   expect(getSocket().url).toBe(expected.href);
   getSocket().open();
   getSocket().close();
-  vi.advanceTimersByTime(500);
+  vi.advanceTimersByTime(3_000);
   expect(getSocket().url).toBe(expected.href);
   transport.dispose();
 });
@@ -714,4 +837,530 @@ it("rejects timeout-free websocket requests when HTTP reports an upgrade, withou
   expect(sockets).toHaveLength(1);
   expect(getWsConnectionState().lastError).toContain("F5 was updated");
   transport.dispose();
+});
+
+it("admits stop and answers during resynchronization but never queues mutations offline", async () => {
+  const transport = new WsTransport("ws://localhost:3020");
+  const socket = sockets[0]!;
+  socket.open();
+  noteWsResynchronizing();
+  for (const type of [
+    "thread.turn.interrupt",
+    "thread.approval.respond",
+    "thread.user-input.respond",
+  ]) {
+    const pending = transport.request("orchestration.dispatchCommand", { command: { type } });
+    const envelope = JSON.parse(socket.sent.at(-1)!);
+    socket.serverMessage(JSON.stringify({ id: envelope.id, result: {} }));
+    await pending;
+  }
+  const steer = transport.request("nextTurnQueue.steer", {});
+  socket.serverMessage(JSON.stringify({ id: JSON.parse(socket.sent.at(-1)!).id, result: {} }));
+  await steer;
+  const sentBeforeMutation = socket.sent.length;
+  const waiting = transport.request("providerAccount.logout", {});
+  const rejected = expect(waiting).rejects.toMatchObject({
+    code: "ConnectionNotReady",
+    message: expect.stringContaining("Your draft is preserved."),
+  });
+  // A mutation created during synchronization waits unsent instead of failing.
+  expect(socket.sent).toHaveLength(sentBeforeMutation);
+  socket.close();
+  // It never crosses into a new socket, and is reported as never sent.
+  await rejected;
+  await expect(
+    transport.request("orchestration.dispatchCommand", {
+      command: { type: "thread.turn.interrupt" },
+    }),
+  ).rejects.toMatchObject({ code: "ConnectionNotReady" });
+  transport.dispose();
+});
+
+it("honours retryAfterMs for busy reads without replaying rejected mutations", async () => {
+  const transport = new WsTransport("ws://localhost:3020");
+  const socket = sockets[0]!;
+  socket.open();
+  const pending = transport.request("terminal.snapshot", {});
+  const rejectBusy = () =>
+    socket.serverMessage(
+      JSON.stringify({
+        id: JSON.parse(socket.sent.at(-1)!).id,
+        error: { message: "busy", code: "RpcBusy", retryable: true, retryAfterMs: 500 },
+      }),
+    );
+  rejectBusy();
+  await vi.advanceTimersByTimeAsync(499);
+  expect(socket.sent).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(socket.sent).toHaveLength(2);
+  socket.serverMessage(JSON.stringify({ id: JSON.parse(socket.sent.at(-1)!).id, result: null }));
+  await pending;
+  noteWsSynchronized();
+  const mutation = transport.request("projects.writeFile", {});
+  const rejected = expect(mutation).rejects.toMatchObject({ code: "RpcBusy" });
+  rejectBusy();
+  await rejected;
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(socket.sent).toHaveLength(3);
+  transport.dispose();
+});
+
+describe("admission-aware scheduling", () => {
+  const sentEnvelopes = (socket: MockWebSocket) =>
+    socket.sent.map(
+      (raw) => JSON.parse(raw) as { id: string; body: { _tag: string; [key: string]: unknown } },
+    );
+  const respond = (socket: MockWebSocket, id: string, payload: object = { result: {} }) =>
+    socket.serverMessage(JSON.stringify({ id, ...payload }));
+  const connectSynchronized = () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+    socket.open();
+    noteWsSynchronized();
+    return { transport, socket };
+  };
+  const welcome = (runtime: object) =>
+    JSON.stringify({
+      type: "push",
+      sequence: 1,
+      channel: WS_CHANNELS.serverWelcome,
+      data: {
+        cwd: "/repo",
+        projectName: "repo",
+        backendIncarnation: "incarnation-1",
+        bootstrap: serverBootstrapFixture,
+        runtime,
+      },
+    });
+  const readiness = (data: object) =>
+    JSON.stringify({
+      type: "push",
+      sequence: 2,
+      channel: WS_CHANNELS.serverRuntimeReadiness,
+      data: { backendIncarnation: "incarnation-1", ...data },
+    });
+
+  beforeEach(() => resetRpcDiagnosticsForTests());
+
+  it("sends at most eight ordinary requests and releases a slot per response", async () => {
+    const { transport, socket } = connectSynchronized();
+    const pending = Array.from({ length: 12 }, () =>
+      transport.request("projects.writeFile", {}).catch(() => undefined),
+    );
+    expect(socket.sent).toHaveLength(8);
+    respond(socket, sentEnvelopes(socket)[0]!.id);
+    expect(socket.sent).toHaveLength(9);
+    transport.dispose();
+    await Promise.all(pending);
+  });
+
+  it("keeps stop, answer and health lanes open while ordinary work saturates", async () => {
+    const { transport, socket } = connectSynchronized();
+    const pending = Array.from({ length: 8 + 256 }, () =>
+      transport.request("git.status", {}, { timeoutMs: null }).catch(() => undefined),
+    );
+    // Reads may hold six of the eight ordinary slots.
+    expect(socket.sent).toHaveLength(6);
+    void transport
+      .request("orchestration.dispatchCommand", { command: { type: "thread.turn.interrupt" } })
+      .catch(() => undefined);
+    void transport.request("nextTurnQueue.steer", {}).catch(() => undefined);
+    void transport.request("server.probe", {}).catch(() => undefined);
+    expect(
+      sentEnvelopes(socket)
+        .slice(6)
+        .map((envelope) => envelope.body._tag),
+    ).toEqual(["orchestration.dispatchCommand", "nextTurnQueue.steer", "server.probe"]);
+    transport.dispose();
+    await Promise.all(pending);
+  });
+
+  it("keeps a timed-out request's slot until its late response or the orphan grace", async () => {
+    const { transport, socket } = connectSynchronized();
+    const timedOut = Array.from({ length: 8 }, () =>
+      transport.request("projects.writeFile", {}, { timeoutMs: 100 }),
+    );
+    const rejections = timedOut.map((request) =>
+      expect(request).rejects.toThrow("Request timed out: projects.writeFile"),
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    await Promise.all(rejections);
+    const waiting = transport.request("projects.writeFile", {}).catch(() => undefined);
+    expect(socket.sent).toHaveLength(8);
+    // A late response still frees its slot.
+    respond(socket, sentEnvelopes(socket)[0]!.id);
+    expect(socket.sent).toHaveLength(9);
+    // Without a response, the slot is released after the grace period.
+    await vi.advanceTimersByTimeAsync(ORPHAN_RELEASE_GRACE_MS);
+    expect(readRpcDiagnostics().counters.rpcOrphanReleased).toBe(7);
+    expect(readRpcDiagnostics().counters.rpcTimeouts).toBe(8);
+    transport.dispose();
+    await waiting;
+  });
+
+  it("releases the slot of an undecodable response whose id is readable", async () => {
+    const { transport, socket } = connectSynchronized();
+    const first = transport.request("projects.writeFile", {});
+    const rejected = expect(first).rejects.toMatchObject({ code: "ResponseDecodeFailed" });
+    const others = Array.from({ length: 8 }, () =>
+      transport.request("projects.writeFile", {}).catch(() => undefined),
+    );
+    expect(socket.sent).toHaveLength(8);
+    socket.serverMessage(JSON.stringify({ id: sentEnvelopes(socket)[0]!.id, result: 1, error: 7 }));
+    await rejected;
+    expect(socket.sent).toHaveLength(9);
+    transport.dispose();
+    await Promise.all(others);
+  });
+
+  it("fails an oversized request locally", async () => {
+    const { transport, socket } = connectSynchronized();
+    await expect(
+      transport.request("projects.writeFile", { contents: "x".repeat(81 * 1024 * 1024) }),
+    ).rejects.toMatchObject({ code: "RequestTooLarge" });
+    expect(socket.sent).toHaveLength(0);
+    transport.dispose();
+  });
+
+  it("never sends an expired queued request and counts it", async () => {
+    const { transport, socket } = connectSynchronized();
+    const blockers = Array.from({ length: 8 }, () =>
+      transport.request("projects.writeFile", {}, { timeoutMs: null }).catch(() => undefined),
+    );
+    const expired = transport.request("projects.writeFile", {}, { timeoutMs: 50 });
+    const rejected = expect(expired).rejects.toMatchObject({ code: "QueueExpired" });
+    await vi.advanceTimersByTimeAsync(50);
+    await rejected;
+    respond(socket, sentEnvelopes(socket)[0]!.id);
+    expect(socket.sent).toHaveLength(8);
+    expect(readRpcDiagnostics().counters.rpcQueueExpired).toBe(1);
+    transport.dispose();
+    await Promise.all(blockers);
+  });
+
+  it("never sends a queued mutation that expired before its timer ran", async () => {
+    const { transport, socket } = connectSynchronized();
+    const blockers = Array.from({ length: 8 }, () =>
+      transport.request("projects.writeFile", {}, { timeoutMs: null }).catch(() => undefined),
+    );
+    const expired = transport.request("projects.writeFile", { marker: "late" }, { timeoutMs: 50 });
+    const rejected = expect(expired).rejects.toMatchObject({ code: "QueueExpired" });
+    // The deadline passes, but its timer has not run when a released slot flushes.
+    vi.setSystemTime(Date.now() + 100);
+    respond(socket, sentEnvelopes(socket)[0]!.id);
+    await rejected;
+    expect(sentEnvelopes(socket).some((envelope) => envelope.body.marker === "late")).toBe(false);
+    transport.dispose();
+    await Promise.all(blockers);
+  });
+
+  it("does not resend a ServerStarting mutation whose deadline passed during the backoff", async () => {
+    const { transport, socket } = connectSynchronized();
+    socket.serverMessage(welcome({ state: "ready", revision: 1 }));
+    const mutation = transport.request(
+      "orchestration.archiveWorkflow",
+      { workflowId: "w" },
+      { timeoutMs: 500 },
+    );
+    const rejected = expect(mutation).rejects.toMatchObject({ code: "QueueExpired" });
+    respond(socket, sentEnvelopes(socket)[0]!.id, {
+      error: { message: "starting", code: "ServerStarting", retryable: true, retryAfterMs: 1000 },
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await rejected;
+    expect(socket.sent).toHaveLength(1);
+    transport.dispose();
+  });
+
+  it("receives the server update timeout after queue and preparation delays", async () => {
+    const { transport, socket } = connectSynchronized();
+    const blockers = Array.from({ length: 4 }, () =>
+      transport.request("git.runStackedAction", {}).catch(() => undefined),
+    );
+    const update = transport.request("server.runProviderUpdate", { instanceId: "codex" });
+    expect(socket.sent).toHaveLength(4);
+    await vi.advanceTimersByTimeAsync(55_000);
+    respond(socket, sentEnvelopes(socket)[0]!.id);
+    const sent = sentEnvelopes(socket).find(
+      (entry) => entry.body._tag === "server.runProviderUpdate",
+    )!;
+    // Server preparation and the installer can together exceed any fixed response margin.
+    await vi.advanceTimersByTimeAsync(PROVIDER_UPDATE_TIMEOUT_MS + 120_000);
+    respond(socket, sent.id, { result: { timedOut: true } });
+    await expect(update).resolves.toEqual({ timedOut: true });
+    transport.dispose();
+    await Promise.all(blockers);
+  });
+
+  it("expires an unsent provider update without dispatching it", async () => {
+    const { transport, socket } = connectSynchronized();
+    const blockers = Array.from({ length: 4 }, () =>
+      transport.request("git.runStackedAction", {}).catch(() => undefined),
+    );
+    const update = transport.request("server.runProviderUpdate", { instanceId: "codex" });
+    const rejected = expect(update).rejects.toMatchObject({ code: "QueueExpired" });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await rejected;
+    expect(socket.sent).toHaveLength(4);
+    transport.dispose();
+    await Promise.all(blockers);
+  });
+
+  it("keeps a policy's unlimited execution deadline instead of the 60 s default", async () => {
+    const { transport, socket } = connectSynchronized();
+    const action = transport.request("git.runStackedAction", { cwd: "/repo", action: "commit" });
+    await vi.advanceTimersByTimeAsync(120_000);
+    const sent = sentEnvelopes(socket)[0]!;
+    expect(sent.body._tag).toBe("git.runStackedAction");
+    respond(socket, sent.id, { result: "done" });
+    await expect(action).resolves.toBe("done");
+    transport.dispose();
+  });
+
+  it("holds only same-method mutations behind one waiting for the runtime", async () => {
+    const { transport, socket } = connectSynchronized();
+    socket.serverMessage(welcome({ state: "starting", revision: 0 }));
+    const held = transport.request("server.updateSettings", {
+      projectSettingsOverrides: { p: {} },
+    });
+    const sameMethod = transport.request("server.updateSettings", { patch: {} });
+    const independent = transport.request("projects.writeFile", {});
+    const read = transport.request("git.status", {});
+    // A write that needs no runtime is not ordered behind one that does.
+    expect(sentEnvelopes(socket).map((envelope) => envelope.body._tag)).toEqual([
+      "projects.writeFile",
+      "git.status",
+    ]);
+    socket.serverMessage(readiness({ state: "ready", revision: 1 }));
+    const released = sentEnvelopes(socket).slice(2);
+    expect(released.map((envelope) => envelope.body._tag)).toEqual([
+      "server.updateSettings",
+      "server.updateSettings",
+    ]);
+    expect(released[0]!.body.projectSettingsOverrides).toBeDefined();
+    for (const envelope of sentEnvelopes(socket)) respond(socket, envelope.id, { result: "ok" });
+    await Promise.all([held, sameMethod, independent, read]);
+    transport.dispose();
+  });
+
+  it("probes on focus once the only sent request has timed out", async () => {
+    const { transport, socket } = connectSynchronized();
+    const timedOut = transport.request("projects.writeFile", {}, { timeoutMs: 100 });
+    const rejected = expect(timedOut).rejects.toThrow("Request timed out: projects.writeFile");
+    await vi.advanceTimersByTimeAsync(100);
+    await rejected;
+    // The timed-out request still holds its slot through the orphan grace, but
+    // it proves nothing about the socket.
+    window.dispatchEvent(new Event("focus"));
+    expect(sentEnvelopes(socket).at(-1)!.body._tag).toBe("server.probe");
+    transport.dispose();
+  });
+
+  it("reconnects when a foreground probe expires behind an orphaned probe in silence", async () => {
+    const { transport, socket } = connectSynchronized();
+    const orphan = transport.request("server.probe", {}, { timeoutMs: 100, retry: false });
+    const timedOut = expect(orphan).rejects.toThrow("Request timed out: server.probe");
+    await vi.advanceTimersByTimeAsync(100);
+    await timedOut;
+    // The orphan still holds the single health slot, so the probe queues.
+    window.dispatchEvent(new Event("focus"));
+    expect(socket.sent).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(sockets).toHaveLength(2);
+    transport.dispose();
+  });
+
+  it("keeps the socket when a frame arrives while a foreground probe waits for the health slot", async () => {
+    const { transport, socket } = connectSynchronized();
+    const orphan = transport.request("server.probe", {}, { timeoutMs: 100, retry: false });
+    const orphanId = sentEnvelopes(socket)[0]!.id;
+    const timedOut = expect(orphan).rejects.toThrow("Request timed out: server.probe");
+    await vi.advanceTimersByTimeAsync(100);
+    await timedOut;
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(2_900);
+    // The late answer frees the slot; the probe is sent with too little time left.
+    respond(socket, orphanId, { result: {} });
+    expect(socket.sent).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sockets).toHaveLength(1);
+    expect(socket.readyState).toBe(MockWebSocket.OPEN);
+    transport.dispose();
+  });
+
+  it("rejects queued work on reconnect and starts the new socket with free slots", async () => {
+    const { transport, socket } = connectSynchronized();
+    const queued = Array.from({ length: 10 }, () =>
+      transport.request("projects.writeFile", {}, { timeoutMs: null }),
+    );
+    // Sent mutations may have executed; the two never sent are reported as not sent.
+    const rejections = queued.map((request, index) =>
+      index < 8
+        ? expect(request).rejects.toThrow("WebSocket connection closed.")
+        : expect(request).rejects.toMatchObject({ code: "ConnectionNotReady" }),
+    );
+    transport.reconnect();
+    await Promise.all(rejections);
+    const next = getSocket();
+    next.open();
+    noteWsSynchronized();
+    const fresh = Array.from({ length: 8 }, () =>
+      transport.request("projects.writeFile", {}).catch(() => undefined),
+    );
+    expect(next.sent).toHaveLength(8);
+    expect(socket.sent).toHaveLength(8);
+    transport.dispose();
+    await Promise.all(fresh);
+  });
+
+  it("holds a mutation created during synchronization and sends it once synchronized", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+    socket.open();
+    const mutation = transport.request("projects.writeFile", {});
+    expect(socket.sent).toHaveLength(0);
+    noteWsSynchronized();
+    expect(sentEnvelopes(socket).map((envelope) => envelope.body._tag)).toEqual([
+      "projects.writeFile",
+    ]);
+    respond(socket, sentEnvelopes(socket)[0]!.id, { result: "ok" });
+    await expect(mutation).resolves.toBe("ok");
+    transport.dispose();
+  });
+
+  it("removes an aborted unsent request from its queue", async () => {
+    const { transport, socket } = connectSynchronized();
+    const blockers = Array.from({ length: 8 }, () =>
+      transport.request("projects.writeFile", {}, { timeoutMs: null }).catch(() => undefined),
+    );
+    const controller = new AbortController();
+    const aborted = transport.request(
+      "projects.writeFile",
+      { marker: "aborted" },
+      { signal: controller.signal },
+    );
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+    respond(socket, sentEnvelopes(socket)[0]!.id);
+    expect(sentEnvelopes(socket).some((envelope) => envelope.body.marker === "aborted")).toBe(
+      false,
+    );
+    transport.dispose();
+    await Promise.all(blockers);
+  });
+
+  it("treats a busy probe answer as alive and skips probing only for sent requests", async () => {
+    const { transport, socket } = connectSynchronized();
+    window.dispatchEvent(new Event("focus"));
+    const probe = sentEnvelopes(socket).at(-1)!;
+    expect(probe.body._tag).toBe("server.probe");
+    respond(socket, probe.id, {
+      error: { message: "busy", code: "RpcBusy", retryable: true, retryAfterMs: 250 },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sockets).toHaveLength(1);
+    expect(socket.readyState).toBe(MockWebSocket.OPEN);
+    // The probe never retried.
+    expect(
+      sentEnvelopes(socket).filter((envelope) => envelope.body._tag === "server.probe"),
+    ).toHaveLength(1);
+    transport.dispose();
+  });
+
+  it("retries a busy read at most three times and never retries a mutation", async () => {
+    const { transport, socket } = connectSynchronized();
+    const read = transport.request("git.status", {});
+    const rejected = expect(read).rejects.toMatchObject({ code: "RpcBusy" });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      respond(socket, sentEnvelopes(socket).at(-1)!.id, {
+        error: { message: "busy", code: "RpcBusy", retryable: true },
+      });
+      await vi.advanceTimersByTimeAsync(600);
+    }
+    await rejected;
+    expect(socket.sent).toHaveLength(3);
+    expect(readRpcDiagnostics().counters.rpcBusy).toBe(3);
+    transport.dispose();
+  });
+
+  it("holds runtime-dependent requests while the server starts and releases them when ready", async () => {
+    const { transport, socket } = connectSynchronized();
+    socket.serverMessage(welcome({ state: "starting", revision: 0 }));
+    const held = transport.request("orchestration.archiveWorkflow", { workflowId: "w" });
+    const independent = transport.request("git.status", {});
+    expect(sentEnvelopes(socket).map((envelope) => envelope.body._tag)).toEqual(["git.status"]);
+    respond(socket, sentEnvelopes(socket)[0]!.id, { result: "status" });
+    await expect(independent).resolves.toBe("status");
+    // A stale revision does not release it.
+    socket.serverMessage(readiness({ state: "ready", revision: 0 }));
+    expect(socket.sent).toHaveLength(1);
+    socket.serverMessage(readiness({ state: "ready", revision: 1 }));
+    const archive = sentEnvelopes(socket).at(-1)!;
+    expect(archive.body._tag).toBe("orchestration.archiveWorkflow");
+    respond(socket, archive.id, { result: "archived" });
+    await expect(held).resolves.toBe("archived");
+    transport.dispose();
+  });
+
+  it("requeues a ServerStarting rejection, even for a mutation, until readiness", async () => {
+    const { transport, socket } = connectSynchronized();
+    const mutation = transport.request("orchestration.archiveWorkflow", { workflowId: "w" });
+    const first = sentEnvelopes(socket)[0]!;
+    respond(socket, first.id, {
+      error: { message: "starting", code: "ServerStarting", retryable: true, retryAfterMs: 1000 },
+    });
+    expect(socket.sent).toHaveLength(1);
+    socket.serverMessage(welcome({ state: "starting", revision: 0 }));
+    socket.serverMessage(readiness({ state: "ready", revision: 1 }));
+    expect(socket.sent).toHaveLength(2);
+    respond(socket, sentEnvelopes(socket)[1]!.id, { result: "archived" });
+    await expect(mutation).resolves.toBe("archived");
+    expect(readRpcDiagnostics().counters.rpcServerStarting).toBe(1);
+    transport.dispose();
+  });
+
+  it("rejects held requests with the server's message when startup fails", async () => {
+    const { transport, socket } = connectSynchronized();
+    socket.serverMessage(welcome({ state: "starting", revision: 0 }));
+    const held = transport.request("orchestration.archiveWorkflow", { workflowId: "w" });
+    socket.serverMessage(readiness({ state: "failed", revision: 1, message: "Migration failed." }));
+    await expect(held).rejects.toThrow("Migration failed.");
+    transport.dispose();
+  });
+
+  it("keeps a failed startup final when a ServerStarting response arrives after it", async () => {
+    const { transport, socket } = connectSynchronized();
+    const inFlight = transport.request("orchestration.archiveWorkflow", { workflowId: "w" });
+    socket.serverMessage(readiness({ state: "failed", revision: 1, message: "Migration failed." }));
+    respond(socket, sentEnvelopes(socket)[0]!.id, {
+      error: { message: "starting", code: "ServerStarting", retryable: true, retryAfterMs: 1000 },
+    });
+    await expect(inFlight).rejects.toMatchObject({
+      code: "ServerStartFailed",
+      message: "Migration failed.",
+    });
+    // Later runtime requests are not parked behind a reopened wait.
+    const later = transport.request("orchestration.archiveWorkflow", { workflowId: "w2" });
+    expect(socket.sent).toHaveLength(2);
+    respond(socket, sentEnvelopes(socket)[1]!.id, { result: "archived" });
+    await expect(later).resolves.toBe("archived");
+    transport.dispose();
+  });
+
+  it("does not let React Query retry transport-owned failures", () => {
+    for (const code of [
+      "RpcBusy",
+      "ServerStarting",
+      "ConnectionNotReady",
+      "QueueExpired",
+      "BackgroundShed",
+      "RpcQueueFull",
+      "ResponseEncodeFailed",
+    ])
+      expect(isQueryRetryable(new WsRequestError("x", code))).toBe(false);
+    expect(isQueryRetryable(new DOMException("aborted", "AbortError"))).toBe(false);
+    expect(isQueryRetryable(new Error("F5 was updated. Reload to continue."))).toBe(false);
+    expect(isQueryRetryable(new WsRequestError("Project not found."))).toBe(true);
+    expect(isQueryRetryable(new Error("Request timed out: git.status"))).toBe(true);
+  });
 });

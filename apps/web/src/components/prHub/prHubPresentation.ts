@@ -1,14 +1,9 @@
-import { canViewerReview } from "@t3tools/shared/prHub";
 import { formatRelativeTimeLabel } from "../../lib/relativeTime";
 import {
   AlertCircleIcon,
   CheckCircle2Icon,
-  GitPullRequestIcon,
   ClockIcon,
-  GitMergeIcon,
   MinusCircleIcon,
-  RefreshCwIcon,
-  SendIcon,
   XCircleIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -17,7 +12,8 @@ import type {
   PrHubAdvisoryRecommendation,
   TrackedPullRequest,
 } from "@t3tools/contracts";
-import { resolveSnoozePreset } from "../../lib/snoozePresets";
+import { readAppSettingsSnapshot } from "../../appSettings";
+import { defaultSnoozeUntil as defaultSnoozeUntilFor } from "../../lib/snoozePresets";
 
 import { ensureNativeApi } from "../../nativeApi";
 import { toastManager } from "../ui/toast";
@@ -76,79 +72,6 @@ export function checkIconFor(checkRollup: TrackedPullRequest["checkRollup"]): {
     case "none":
       return { Icon: MinusCircleIcon, className: "text-muted-foreground" };
   }
-}
-
-export type PrimaryActionKind = "review" | "merge" | "markReady" | "reRequest";
-
-export interface PrimaryActionDescriptor {
-  kind: PrimaryActionKind;
-  label: string;
-  Icon: LucideIcon;
-}
-
-/**
- * The single contextual primary action for a row, derived from the same
- * conditions the row uses to gate its buttons. Returns null when no primary
- * action applies (closed/merged/ignored, or nothing actionable).
- */
-export function primaryActionFor(
-  pr: TrackedPullRequest,
-  flags: { isAuthor: boolean; isOpen: boolean; isIgnored: boolean },
-): PrimaryActionDescriptor | null {
-  const { isAuthor, isOpen, isIgnored } = flags;
-  if (!isOpen || isIgnored || pr.repositoryArchived) return null;
-
-  const canReview = canViewerReview(pr);
-  if (canReview) return { kind: "review", label: "Review", Icon: GitPullRequestIcon };
-
-  if (isAuthor && pr.attentionState === "ready_to_merge") {
-    return { kind: "merge", label: "Merge", Icon: GitMergeIcon };
-  }
-  if (isAuthor && pr.attentionState === "draft") {
-    return { kind: "markReady", label: "Ready", Icon: SendIcon };
-  }
-  if (
-    isAuthor &&
-    (pr.attentionState === "awaiting_review" || pr.attentionState === "unresolved_comments") &&
-    pr.reviewRequestReviewers.length > 0
-  ) {
-    return { kind: "reRequest", label: "Re-request", Icon: RefreshCwIcon };
-  }
-  return null;
-}
-
-export interface PrRowActionVisibility {
-  /** The single contextual primary action, or null when none applies. */
-  primary: PrimaryActionDescriptor | null;
-  /** Reviewer is asked to review → Comment / Request changes are offered. */
-  canReview: boolean;
-  /** Snooze / Unsnooze group is available. */
-  canSnooze: boolean;
-  /** "Suggest actions" is available (also requires an analyze callback). */
-  canSuggest: boolean;
-  /** Ignore is available. */
-  canIgnore: boolean;
-}
-
-/**
- * Single source of truth for which actions a row exposes. Derives the primary
- * action and the overflow-menu item visibility from one place so the row, the
- * actions component, and any future consumer cannot drift out of sync.
- */
-export function prRowActionVisibility(
-  pr: TrackedPullRequest,
-  flags: { isAuthor: boolean; isOpen: boolean; isIgnored: boolean },
-): PrRowActionVisibility {
-  const { isOpen, isIgnored } = flags;
-  const actionable = isOpen && !isIgnored;
-  const canReview = actionable && canViewerReview(pr);
-  return {
-    primary: primaryActionFor(pr, flags),
-    canReview,
-    canSnooze: actionable,
-    canSuggest: actionable,
-    canIgnore: actionable,
-  };
 }
 
 export function advisoryRecommendationLabel(recommendation: PrHubAdvisoryRecommendation): string {
@@ -232,15 +155,8 @@ export function mergeableLabel(mergeable: TrackedPullRequest["mergeable"]): stri
 }
 
 export function defaultSnoozeUntil(): string {
-  return resolveSnoozePreset("three-hours");
+  return defaultSnoozeUntilFor(readAppSettingsSnapshot().snoozePresets);
 }
-
-/** The two layouts the PR Hub can render. Persisted per-user in localStorage. */
-export type PrHubViewMode = "inbox" | "focus";
-
-export const PR_HUB_VIEW_MODE_STORAGE_KEY = "f5.prHub.viewMode";
-
-export { comparePrPriority } from "@t3tools/shared/prHub";
 
 export function safeHttpsUrl(input: string): string | null {
   try {

@@ -1,9 +1,11 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
 import { hasNativeOperationReservation } from "../../provider/nativeOperations.ts";
 import { CommandId, EventId, type OrchestrationEvent, ThreadId } from "@t3tools/contracts";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { Cause, Effect, Layer, Stream } from "effect";
+import { makeBackgroundWorker } from "../../backgroundWorker.ts";
+import { Cause, Effect, Layer, Scope, Stream } from "effect";
 
-import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { ProviderValidationError } from "../../provider/Errors.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { buildThreadCompactionTranscript } from "../compactionService.ts";
@@ -22,7 +24,7 @@ type ThreadCompactRequestedEvent = Extract<
 >;
 
 const compactionCommandId = (tag: string) =>
-  CommandId.makeUnsafe(`compaction:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`compaction:${tag}:${timeOrderedUuid()}`);
 
 function laterIsoString(left: string, right: string): string {
   return left.localeCompare(right) >= 0 ? left : right;
@@ -43,6 +45,7 @@ function threadSessionIsBusy(input: {
 }
 
 const make = Effect.gen(function* () {
+  const sources = yield* makeShutdownSourceScope("conversation-compaction-sources");
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const pendingThreadIds = new Set<ThreadId>();
@@ -60,7 +63,7 @@ const make = Effect.gen(function* () {
       commandId: compactionCommandId("activity"),
       threadId: input.threadId,
       activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         tone: input.tone,
         kind: input.kind,
         summary: input.summary,
@@ -366,41 +369,54 @@ const make = Effect.gen(function* () {
       });
     });
 
-  const worker = yield* makeDrainableWorker((event: ThreadCompactRequestedEvent) =>
-    processEvent(event).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          pendingThreadIds.delete(event.payload.threadId);
+  const worker = yield* makeBackgroundWorker(
+    (event: ThreadCompactRequestedEvent) =>
+      processEvent(event).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            pendingThreadIds.delete(event.payload.threadId);
+          }),
+        ),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.failCause(cause);
+          }
+          return Effect.logWarning("conversation compaction failed", {
+            eventId: event.eventId,
+            threadId: event.payload.threadId,
+            cause: Cause.pretty(cause),
+          });
         }),
       ),
-      Effect.catchCause((cause) => {
-        if (Cause.hasInterruptsOnly(cause)) {
-          return Effect.failCause(cause);
-        }
-        return Effect.logWarning("conversation compaction failed", {
-          eventId: event.eventId,
-          threadId: event.payload.threadId,
-          cause: Cause.pretty(cause),
-        });
-      }),
-    ),
+    { name: "CompactionService" },
   );
 
-  const start: CompactionServiceShape["start"] = Effect.forkScoped(
-    Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-      if (event.type !== "thread.compact-requested") {
-        return Effect.void;
-      }
-      if (pendingThreadIds.has(event.payload.threadId)) {
-        return Effect.logDebug("skipping duplicate thread.compact-requested event", {
-          threadId: event.payload.threadId,
-          eventId: event.eventId,
-        });
-      }
-      pendingThreadIds.add(event.payload.threadId);
-      return worker.enqueue(event);
-    }),
-  ).pipe(Effect.asVoid);
+  const start: CompactionServiceShape["start"] = Effect.gen(function* () {
+    if (sources.stopped) return;
+    yield* Effect.addFinalizer(() => sources.stop);
+    yield* Effect.forkIn(sources.scope)(
+      Scope.provide(sources.scope)(
+        Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
+          if (event.type !== "thread.compact-requested") {
+            return Effect.void;
+          }
+          if (pendingThreadIds.has(event.payload.threadId)) {
+            return Effect.logDebug("skipping duplicate thread.compact-requested event", {
+              threadId: event.payload.threadId,
+              eventId: event.eventId,
+            });
+          }
+          pendingThreadIds.add(event.payload.threadId);
+          return worker.enqueue(event);
+        }),
+      ),
+    ).pipe(Effect.asVoid);
+  });
+
+  yield* registerShutdown("conversation-compaction", "drain", () => worker.drain, [
+    "provider-ingestion",
+  ]);
+  yield* Effect.addFinalizer(() => sources.stop);
 
   return {
     start,

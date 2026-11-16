@@ -1,15 +1,23 @@
+import { WorkspaceTransitionsLive } from "../../persistence/Layers/WorkspaceTransitions.ts";
+import {
+  WorktreePreparation,
+  type WorktreePreparationShape,
+} from "../../project/Services/WorktreePreparation.ts";
+import { RepositoryBusyError } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
+import * as fs from "node:fs/promises";
+import { canonicalWorktreePath } from "../../git/worktreePaths.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import type { OrchestrationThread } from "@t3tools/contracts";
+import type { OrchestrationThread, OrchestrationEvent } from "@t3tools/contracts";
 import path from "node:path";
 import os from "node:os";
 import { GitCommandError } from "../../git/Errors.ts";
 import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
 import { makeFakeGitCore } from "../../git/testDoubles.ts";
-import { CommandId, MessageId, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
+import { CommandId, EventId, MessageId, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
-import { Deferred, Effect, Fiber, Layer, Option, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, Option, Queue, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
@@ -31,7 +39,7 @@ import { NextTurnQueueStoreLive } from "./NextTurnQueueStore.ts";
 const dispatched: CommandId[] = [];
 // Provider delivery rows keyed by command id, and the unresolved delivery that
 // the repository's supersession rule reports per thread.
-const deliveryRows = new Map<string, unknown>();
+const deliveryRows = new Map<string, ReturnType<typeof deliveryRow>>();
 const unresolvedDeliveries = new Map<string, unknown>();
 
 const deliveryRow = (input: {
@@ -52,6 +60,7 @@ const makeDependencies = (
   worktreePath: string | null,
   resumeThread?: OrchestrationThread,
   beforeSessionRead: Effect.Effect<void> = Effect.void,
+  domainEvents: Stream.Stream<OrchestrationEvent> = Stream.empty,
 ) =>
   Layer.mergeAll(
     Layer.succeed(ProjectionThreadRepository, {
@@ -83,6 +92,13 @@ const makeDependencies = (
       getByCommandId: () => Effect.succeed(Option.none()),
     } as never),
     Layer.succeed(ProviderTurnDeliveryRepository, {
+      markAbandoned: (deliveryId: CommandId) =>
+        Effect.sync(() => {
+          const row = [...deliveryRows.values()].find((row) => row.deliveryId === deliveryId);
+          if (!row || (row.state !== "rejected" && row.state !== "ambiguous")) return false;
+          row.state = "abandoned";
+          return true;
+        }),
       getByCommandId: (commandId: CommandId) =>
         Effect.sync(() => deliveryRows.get(commandId) ?? null),
       getUnresolvedByThread: (threadId: ThreadId) =>
@@ -101,7 +117,7 @@ const makeDependencies = (
             { id: ProjectId.makeUnsafe("queue-dispatcher-project"), workspaceRoot: process.cwd() },
           ],
         }),
-      streamDomainEvents: Stream.empty,
+      streamDomainEvents: domainEvents,
     } as never),
     Layer.succeed(RuntimeReceiptBus, {
       publish: () => Effect.void,
@@ -120,12 +136,17 @@ const makeTestLayer = (
   resumeThread?: OrchestrationThread,
   automatic?: boolean,
   beforeSessionRead?: Effect.Effect<void>,
+  preparation?: WorktreePreparationShape,
+  domainEvents?: Stream.Stream<OrchestrationEvent>,
 ) =>
   NextTurnQueueDispatcherLive.pipe(
+    Layer.provideMerge(preparation ? Layer.succeed(WorktreePreparation, preparation) : Layer.empty),
     Layer.provide(Layer.succeed(GitCore, git)),
     Layer.provideMerge(ProjectionTurnRepositoryLive.pipe(Layer.provide(persistence))),
     Layer.provideMerge(storeLayer),
-    Layer.provideMerge(makeDependencies(worktreePath, resumeThread, beforeSessionRead)),
+    Layer.provideMerge(
+      makeDependencies(worktreePath, resumeThread, beforeSessionRead, domainEvents),
+    ),
     Layer.provideMerge(
       automatic === undefined
         ? Layer.empty
@@ -154,6 +175,76 @@ const seedThread = (threadId: ThreadId) =>
       )
     `;
   });
+
+it.effect("republishes the restored queue when rewind preflight fails", () =>
+  Effect.gen(function* () {
+    const events = yield* Queue.unbounded<OrchestrationEvent>();
+    yield* Effect.gen(function* () {
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const store = yield* NextTurnQueueStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.makeUnsafe("rewind-failed-publication");
+      yield* seedThread(threadId);
+      yield* store.setPaused({
+        threadId,
+        paused: true,
+        reasonCode: "rewind_in_progress",
+        detail: "Rewinding the conversation.",
+      });
+      yield* dispatcher.start;
+      yield* dispatcher.drain;
+      const before = yield* dispatcher.getSnapshot(threadId);
+      assert.equal(before.reasonCode, "rewind_in_progress");
+      const publication = yield* Stream.runHead(dispatcher.changes).pipe(
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      // Rewind restores raw SQL before it emits its failure activity.
+      yield* sql`UPDATE next_turn_queue_state SET pause_reason_code = 'manual_pause', pause_detail = 'User paused', revision = revision + 1 WHERE thread_id = ${threadId}`;
+      const at = new Date().toISOString();
+      yield* Queue.offer(events, {
+        sequence: 1,
+        eventId: EventId.makeUnsafe("rewind-failure-event"),
+        type: "thread.activity-appended",
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: at,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.makeUnsafe("rewind-failure"),
+            kind: "conversation.rewind.failed",
+            tone: "error",
+            summary: "Conversation rewind could not start",
+            payload: {},
+            turnId: null,
+            createdAt: at,
+          },
+        },
+      });
+      assert.equal(Option.getOrThrow(yield* Fiber.join(publication)), threadId);
+      const restored = yield* dispatcher.getSnapshot(threadId);
+      assert.equal(restored.paused, true);
+      assert.equal(restored.reasonCode, "manual_pause");
+      assert.equal(restored.reasonDetail, "User paused");
+    }).pipe(
+      Effect.provide(
+        makeTestLayer(
+          undefined,
+          null,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          Stream.fromQueue(events),
+        ),
+      ),
+    );
+  }),
+);
 
 const insert = (index: number, threadId: ThreadId) =>
   Effect.gen(function* () {
@@ -403,6 +494,57 @@ layer("NextTurnQueueDispatcher", (it) => {
       }),
   );
 
+  it.effect(
+    "retires rejected buffered native continuations while preserving human items and ambiguous deliveries",
+    () =>
+      Effect.gen(function* () {
+        const dispatcher = yield* NextTurnQueueDispatcher;
+        const store = yield* NextTurnQueueStore;
+        for (const [index, state] of (["rejected", "ambiguous"] as const).entries()) {
+          const threadId = ThreadId.make(`native-${state}`);
+          yield* seedThread(threadId);
+          const native = yield* insert(100 + 2 * index, threadId);
+          const human = yield* insert(101 + 2 * index, threadId);
+          if (native.kind !== "created" || human.kind !== "created")
+            throw new Error("Expected queued fixtures.");
+          const edited = yield* store.updateCommand({
+            itemId: native.item.itemId,
+            expectedUpdatedAt: native.item.updatedAt,
+            update: (command) => ({ ...command, continuationRequestId: command.commandId }),
+          });
+          deliveryRows.set(
+            edited.command.commandId,
+            deliveryRow({ commandId: edited.command.commandId, threadId, state }),
+          );
+          yield* dispatcher.handleDeliveryOutcome({
+            deliveryId: edited.command.commandId,
+            commandId: edited.command.commandId,
+            threadId,
+            state,
+            detail: "Native fixture ended",
+          });
+          const queue = yield* store.listByThread(threadId);
+          assert.equal(
+            queue.items.some((item) => item.itemId === human.item.itemId),
+            true,
+          );
+          assert.equal(
+            queue.items.some((item) => item.itemId === native.item.itemId),
+            state === "ambiguous",
+          );
+          assert.equal(
+            deliveryRows.get(edited.command.commandId)?.state,
+            state === "ambiguous" ? "ambiguous" : "abandoned",
+          );
+          assert.equal(queue.state.paused, state === "ambiguous");
+          yield* store.clear({ threadId, scope: "all", expectedRevision: queue.state.revision });
+          deliveryRows.delete(edited.command.commandId);
+        }
+        yield* dispatcher.drain;
+        dispatched.length = 0;
+      }),
+  );
+
   it.effect("does not admit a later item after Resume while delivery recovery is unresolved", () =>
     Effect.gen(function* () {
       dispatched.length = 0;
@@ -490,6 +632,31 @@ layer("NextTurnQueueDispatcher", (it) => {
     }),
   );
 
+  it.effect("never pauses the queue for a scheduled delivery abandoned after claim", () =>
+    Effect.gen(function* () {
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const threadId = ThreadId.makeUnsafe("queue-abandoned-scheduled-thread");
+      yield* seedThread(threadId);
+      deliveryRows.set(
+        "abandoned-scheduled",
+        deliveryRow({ commandId: "abandoned-scheduled", threadId, state: "abandoned" }),
+      );
+
+      yield* dispatcher.handleDeliveryOutcome({
+        deliveryId: CommandId.makeUnsafe("abandoned-scheduled"),
+        commandId: CommandId.makeUnsafe("abandoned-scheduled"),
+        threadId,
+        state: "abandoned",
+        detail: "Scheduled execution was canceled before delivery.",
+      });
+
+      const snapshot = yield* dispatcher.getSnapshot(threadId);
+      assert.equal(snapshot.paused, false);
+      assert.equal(snapshot.reasonCode, null);
+      assert.equal(snapshot.unresolvedDelivery, null);
+    }),
+  );
+
   it.effect("keeps a delivery pause and reports the delivery while it is unresolved", () =>
     Effect.gen(function* () {
       const dispatcher = yield* NextTurnQueueDispatcher;
@@ -548,21 +715,101 @@ layer("NextTurnQueueDispatcher", (it) => {
   );
 });
 
-for (const scenario of ["recoverable", "missing-ref", "checked-out-elsewhere"] as const) {
+for (const scenario of [
+  "recoverable",
+  "preparing",
+  "missing-ref",
+  "checked-out-elsewhere",
+  "repository-busy",
+  "inspection-error",
+] as const) {
   it.effect(`handles a missing worktree before queue dispatch: ${scenario}`, () => {
+    const target = path.join(os.tmpdir(), `f5-missing-${crypto.randomUUID()}`);
+    const registration = () =>
+      Effect.promise(async () => ({
+        path: target,
+        canonicalPath: await canonicalWorktreePath(target),
+        branch: "feature",
+        headSha: "abc123",
+        bare: false,
+        detached: false,
+        locked: null,
+        prunable: null,
+        isMain: false,
+      }));
+    let backgroundPreparations = 0;
+    const preparation: WorktreePreparationShape | undefined =
+      scenario === "preparing"
+        ? {
+            startup: Effect.void,
+            needsPreparation: () => Effect.succeed(true),
+            prepare: () =>
+              Effect.die("Preparation scripts must never run on the dispatcher shard."),
+            startBackground: () =>
+              Effect.sync(() => {
+                backgroundPreparations++;
+              }),
+          }
+        : undefined;
+    let busy = scenario === "repository-busy";
+    let unreadable = scenario === "inspection-error";
     const git = makeFakeGitCore({
+      listWorktrees: () =>
+        unreadable
+          ? Effect.fail(
+              new GitCommandError({
+                operation: "inspect",
+                cwd: target,
+                command: "git worktree list",
+                detail: "unreadable metadata",
+              }),
+            )
+          : registration().pipe(Effect.map((entry) => [entry])),
+      inspectCheckout: () =>
+        Effect.gen(function* () {
+          const entry = yield* registration();
+          return {
+            canonicalRoot: entry.canonicalPath,
+            commonDir: yield* Effect.promise(() => canonicalWorktreePath(`${process.cwd()}/.git`)),
+            registration: entry,
+            headSha: "abc123",
+            branch: "feature",
+            operation: null,
+            hasInitializedSubmodules: false,
+            hasTrackedChanges: false,
+            hasUntrackedChanges: false,
+            ignoredEntries: [],
+            ignoredTruncated: false,
+            upstreamRef: null,
+            upstreamSha: null,
+            aheadCount: null,
+            behindCount: null,
+          };
+        }),
       branchExists: () => Effect.succeed(scenario !== "missing-ref"),
       ensureWorktree: () =>
-        scenario === "checked-out-elsewhere"
+        busy
           ? Effect.fail(
               new GitCommandError({
                 operation: "ensureWorktree",
                 cwd: process.cwd(),
                 command: "git worktree add",
-                detail: "Branch feature is checked out at another-worktree.",
+                detail: "Repository busy",
+                cause: new RepositoryBusyError({ message: "Repository busy" }),
               }),
             )
-          : Effect.void,
+          : scenario === "checked-out-elsewhere"
+            ? Effect.fail(
+                new GitCommandError({
+                  operation: "ensureWorktree",
+                  cwd: process.cwd(),
+                  command: "git worktree add",
+                  detail: "Branch feature is checked out at another-worktree.",
+                }),
+              )
+            : Effect.promise(() => fs.mkdir(target, { recursive: true })).pipe(
+                Effect.as({ recreated: true }),
+              ),
     });
     return Effect.gen(function* () {
       dispatched.length = 0;
@@ -579,6 +826,41 @@ for (const scenario of ["recoverable", "missing-ref", "checked-out-elsewhere"] a
       if (scenario === "recoverable") {
         assert.equal(dispatched.length, 1);
         assert.equal(git.calls.ensureWorktree.length, 1);
+      } else if (scenario === "preparing") {
+        assert.equal(backgroundPreparations, 1);
+        assert.equal(dispatched.length, 0);
+        assert.equal(queue.state.paused, false);
+        assert.equal(queue.items[0]?.status, "queued");
+        assert.equal(git.calls.initializeWorktreeSubmodules.length, 0);
+      } else if (scenario === "inspection-error") {
+        assert.equal(queue.state.paused, false);
+        // Reading snapshots must not consume the worker's bounded retry budget.
+        for (let i = 0; i < 10; i++) yield* dispatcher.getSnapshot(threadId);
+        for (let i = 0; i < 4; i++) {
+          yield* dispatcher.notify(threadId);
+          yield* dispatcher.drain;
+        }
+        const store = yield* NextTurnQueueStore;
+        const paused = yield* store.listByThread(threadId);
+        assert.equal(paused.state.pauseReasonCode, "worktree_missing");
+        assert.equal(paused.state.paused, true);
+        assert.equal(dispatched.length, 0);
+        unreadable = false;
+        yield* store.setPaused({
+          threadId,
+          paused: false,
+          expectedRevision: paused.state.revision,
+        });
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.equal(dispatched.length, 1);
+      } else if (scenario === "repository-busy") {
+        assert.equal(dispatched.length, 0);
+        assert.equal(queue.state.paused, false);
+        busy = false;
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.equal(dispatched.length, 1);
       } else {
         assert.equal(dispatched.length, 0);
         assert.equal(queue.state.pauseReasonCode, "worktree_missing");
@@ -587,8 +869,85 @@ for (const scenario of ["recoverable", "missing-ref", "checked-out-elsewhere"] a
       }
     }).pipe(
       Effect.provide(
-        makeTestLayer(git.service, path.join(os.tmpdir(), `f5-missing-${crypto.randomUUID()}`)),
+        makeTestLayer(git.service, target, undefined, undefined, undefined, preparation),
       ),
+      Effect.ensuring(Effect.promise(() => fs.rm(target, { recursive: true, force: true }))),
+    );
+  });
+}
+
+for (const steering of [true, false]) {
+  it.effect(`lets only steers into the live turn through branch drift: ${steering}`, () => {
+    const target = path.join(os.tmpdir(), `f5-drift-${crypto.randomUUID()}`);
+    const threadId = ThreadId.makeUnsafe(`queue-drift-${steering}`);
+    const liveTurn = TurnId.makeUnsafe("live-turn");
+    const thread = {
+      id: threadId,
+      projectId: ProjectId.makeUnsafe("queue-dispatcher-project"),
+      deletedAt: null,
+      archivedAt: null,
+      pendingUserInputs: [],
+      session: {
+        threadId,
+        providerInstanceId: "codex",
+        status: steering ? "running" : "ready",
+        activeTurnId: steering ? liveTurn : null,
+        lastError: null,
+        updatedAt: new Date().toISOString(),
+      },
+    } as unknown as OrchestrationThread;
+    // The agent switched the recorded `feature` worktree to another branch.
+    const git = makeFakeGitCore({
+      listWorktrees: () =>
+        Effect.promise(async () => [
+          {
+            path: target,
+            canonicalPath: await canonicalWorktreePath(target),
+            branch: "agent-branch",
+            headSha: "abc123",
+            bare: false,
+            detached: false,
+            locked: null,
+            prunable: null,
+            isMain: false,
+          },
+        ]),
+      inspectCheckout: () =>
+        Effect.promise(async () => ({
+          canonicalRoot: await canonicalWorktreePath(target),
+          commonDir: await canonicalWorktreePath(`${process.cwd()}/.git`),
+          branch: "agent-branch",
+        })) as never,
+    });
+    return Effect.gen(function* () {
+      dispatched.length = 0;
+      yield* Effect.promise(() => fs.mkdir(target, { recursive: true }));
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const store = yield* NextTurnQueueStore;
+      yield* seedThread(threadId);
+      yield* insert(70, threadId);
+      if (steering) {
+        const sql = yield* SqlClient.SqlClient;
+        const item = (yield* store.listByThread(threadId)).items[0]!;
+        yield* sql`UPDATE next_turn_queue SET command_json = ${JSON.stringify({
+          ...item.command,
+          expectedTurnId: liveTurn,
+        })} WHERE item_id = ${item.itemId}`;
+      }
+      yield* dispatcher.notify(threadId);
+      yield* dispatcher.drain;
+      const queue = yield* store.listByThread(threadId);
+      if (steering) {
+        assert.equal(dispatched.length, 1);
+        assert.equal(queue.state.paused, false);
+      } else {
+        assert.equal(dispatched.length, 0);
+        assert.equal(queue.state.paused, true);
+        assert.equal(queue.state.pauseReasonCode, "worktree_missing");
+      }
+    }).pipe(
+      Effect.provide(makeTestLayer(git.service, target, thread)),
+      Effect.ensuring(Effect.promise(() => fs.rm(target, { recursive: true, force: true }))),
     );
   });
 }
@@ -802,3 +1161,127 @@ it.effect("promotes reset recovery once and returns already-sending on cancellat
     assert.equal(dispatched.length, 1);
   }).pipe(Effect.provide(makeTestLayer(makeFakeGitCore().service, null, thread)));
 });
+
+it.layer(
+  makeTestLayer().pipe(
+    Layer.provideMerge(WorkspaceTransitionsLive.pipe(Layer.provide(persistence))),
+  ),
+)("workspace transition queue barrier", (it) => {
+  it.effect("promotion and Resume cannot clear a durable transition or admit later work", () =>
+    Effect.gen(function* () {
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const store = yield* NextTurnQueueStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.makeUnsafe("transition-barrier-queue");
+      dispatched.length = 0;
+      yield* seedThread(threadId);
+      yield* insert(90, threadId);
+      const checkout = {
+        path: process.cwd(),
+        repository: path.join(process.cwd(), ".git"),
+        branch: "feature",
+        headSha: "head",
+      };
+      const record = {
+        operationId: "transition-barrier",
+        threadId,
+        version: 3,
+        intent: "checkout_branch",
+        phase: "needs_recovery",
+        source: checkout,
+        target: { ...checkout, branch: "topic" },
+        observed: null,
+        result: null,
+        error: "Inspect the interrupted switch.",
+        request: {
+          operationId: "transition-barrier",
+          threadId,
+          intent: "checkout_branch",
+          branch: "topic",
+          expected: { branch: null, worktreePath: null, sessionUpdatedAt: null },
+        },
+        requestHash: "hash",
+        fingerprint: null,
+        mutationAttempted: true,
+        commandId: "workspace:barrier",
+        setupOwnerToken: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      yield* sql`INSERT INTO workspace_transitions(operation_id,thread_id,request_hash,phase,version,record_json,created_at,updated_at) VALUES ('transition-barrier',${threadId},'hash','needs_recovery',3,${JSON.stringify(record)},${record.createdAt},${record.updatedAt})`;
+      yield* dispatcher.start;
+      yield* dispatcher.notify(threadId);
+      yield* dispatcher.drain;
+      assert.deepEqual(dispatched, []);
+      const before = yield* store.listByThread(threadId);
+      yield* dispatcher.promote({
+        itemId: CommandId.makeUnsafe("dispatcher-item-90"),
+        interruptActive: false,
+        expectedRevision: before.state.revision,
+      });
+      yield* store.setPaused({ threadId, paused: false });
+      yield* dispatcher.notify(threadId);
+      yield* dispatcher.drain;
+      const snapshot = yield* dispatcher.getSnapshot(threadId);
+      assert.equal(snapshot.reasonCode, "workspace_switch_failed");
+      assert.equal(snapshot.workspaceTransition?.operationId, "transition-barrier");
+      assert.deepEqual(dispatched, []);
+      assert.equal((yield* insert(91, threadId).pipe(Effect.exit))._tag, "Failure");
+      assert.equal(
+        (yield* store.setWorktreeBlockToken({ threadId, token: "setup-retry" }).pipe(Effect.exit))
+          ._tag,
+        "Failure",
+      );
+    }),
+  );
+});
+
+it.effect("starts every actionable page before the first safety-sweep interval", () =>
+  Effect.gen(function* () {
+    const dispatcher = yield* NextTurnQueueDispatcher;
+    const store = yield* NextTurnQueueStore;
+    const expected = new Set<CommandId>();
+    for (let index = 0; index < 130; index++) {
+      const threadId = ThreadId.makeUnsafe(`startup-page-${String(index).padStart(3, "0")}`);
+      yield* seedThread(threadId);
+      yield* insert(20_000 + index, threadId);
+      expected.add(CommandId.makeUnsafe(`dispatcher-command-${20_000 + index}`));
+    }
+    const periodic = yield* store.listActionableThreadIds;
+    assert.equal(periodic.length, 64);
+    yield* dispatcher.start;
+    yield* dispatcher.drain;
+    assert.equal(dispatched.filter((id) => expected.has(id)).length, 130);
+  }).pipe(Effect.provide(makeTestLayer())),
+);
+
+it.live(
+  "notification before notBefore reinstates the precise wakeup without waiting for a sweep",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const dispatcher = yield* NextTurnQueueDispatcher;
+        const store = yield* NextTurnQueueStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.makeUnsafe("not-before-notified");
+        yield* seedThread(threadId);
+        yield* insert(9998, threadId);
+        const item = (yield* store.listByThread(threadId)).items[0]!;
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const at = Date.now();
+        yield* sql`UPDATE next_turn_queue SET not_before = ${new Date(at + 200).toISOString()} WHERE item_id = ${item.itemId}`;
+        const before = dispatched.length;
+        // Do not start the sweep: progress must come from the scheduled retry alone.
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.equal(dispatched.length, before);
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(40));
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.equal(dispatched.length, before);
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(160));
+        yield* dispatcher.drain;
+        assert.equal(dispatched.length, before + 1);
+      }),
+    ).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers())), Effect.provide(makeTestLayer())),
+);

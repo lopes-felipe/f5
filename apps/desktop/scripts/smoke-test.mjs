@@ -1,5 +1,14 @@
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,16 +16,44 @@ import { fileURLToPath } from "node:url";
 const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requireDesktop = createRequire(join(desktopDir, "package.json"));
 const requireWeb = createRequire(resolve(desktopDir, "../web/package.json"));
+const { writeDiagnostics } = createRequire(import.meta.url)(
+  "../../../scripts/lib/ci-diagnostics.cjs",
+);
+const artifactDirectory = process.env.F5_CI_ARTIFACT_DIR;
+// Certification records are bundled into main; a packaged app never reads docs/.
+{
+  const main = readFileSync(join(desktopDir, "dist-electron/main.js"), "utf8");
+  const certificationDir = resolve(desktopDir, "../../packages/shared/src/certification");
+  for (const file of ["claude-chrome", "codex-chrome", "codex-computer"]) {
+    const records = JSON.parse(
+      readFileSync(join(certificationDir, `${file}.generated.json`), "utf8"),
+    );
+    for (const record of records)
+      if (!main.includes(record.id))
+        throw new Error(`Certification record ${record.id} is not bundled into desktop main`);
+  }
+  if (main.includes("docs/computer-certification"))
+    throw new Error("Desktop main must not resolve certification records from docs/");
+}
 const { _electron } = requireWeb("playwright");
 const directory = mkdtempSync(join(tmpdir(), "f5-desktop-smoke-"));
+const overlayModule = join(directory, "computer-overlay.cjs");
+
 const state = join(directory, "app", "userdata");
 mkdirSync(state, { recursive: true });
 writeFileSync(
   join(state, "settings.json"),
   JSON.stringify({
-    providers: Object.fromEntries(
-      ["codex", "claude", "cursor", "opencode", "grok"].map((id) => [id, { enabled: false }]),
-    ),
+    providers: {
+      ...Object.fromEntries(
+        ["claude", "cursor", "opencode", "grok"].map((id) => [id, { enabled: false }]),
+      ),
+      codex: {
+        enabled: true,
+        binaryPath: resolve(desktopDir, "../../scripts/fixtures/codex-lifecycle-host.mjs"),
+        homePath: join(directory, "codex-home"),
+      },
+    },
     prHub: { pollIntervalSeconds: 0, discoverNotifications: false },
   }),
 );
@@ -30,6 +67,7 @@ app.setPath=(key,value)=>setPath(key,key==='userData'?${JSON.stringify(join(dire
 require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
 `,
 );
+const countMarker = (text, marker) => text.split(marker).length - 1;
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([key]) =>
@@ -41,7 +79,50 @@ env.F5_HOME = join(directory, "app");
 let application;
 let electronProcess;
 let output = "";
+let failure = "";
+let screenshot;
+const exportDiagnostics = () => {
+  writeDiagnostics(artifactDirectory || directory, "desktop-smoke", {
+    logs:
+      output +
+      (() => {
+        try {
+          return (
+            "\nDesktop main process:\n" +
+            readFileSync(join(state, "logs", "desktop-main.log"), "utf8").slice(-65_536)
+          );
+        } catch {
+          return "";
+        }
+      })(),
+    failure,
+    screenshot,
+    paths: [directory, resolve(desktopDir, "../.."), process.env.HOME, process.env.USERPROFILE],
+  });
+};
+// Preserve diagnostics for an unhandled rejection in Playwright's launch internals.
+// Monitoring does not swallow the exception or change its failing exit status.
+process.on("uncaughtExceptionMonitor", (error) => {
+  failure = String(error?.stack ?? error);
+  console.error(`Desktop smoke artifacts: ${artifactDirectory || directory}`);
+  exportDiagnostics();
+});
 try {
+  if (process.platform === "darwin") {
+    execFileSync(
+      "bun",
+      [
+        "build",
+        join(desktopDir, "src/computer/ComputerOverlay.ts"),
+        "--target=node",
+        "--format=cjs",
+        "--external=electron",
+        "--outfile",
+        overlayModule,
+      ],
+      { cwd: desktopDir, stdio: "pipe" },
+    );
+  }
   application = await _electron.launch({
     executablePath: requireDesktop("electron"),
     args: [wrapper],
@@ -55,7 +136,7 @@ try {
       output = (output + chunk.toString()).slice(-65_536);
     });
   }
-  const page = await application.firstWindow({ timeout: 60_000 });
+  let page = await application.firstWindow({ timeout: 60_000 });
   const errors = [];
   page.on("requestfailed", (request) =>
     console.error(
@@ -71,13 +152,83 @@ try {
         message.text().replace(/token=[^&\s']+/gu, "token=REDACTED"),
       );
   });
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("pageerror", (error) => errors.push(error.stack || error.message));
   // Positive evidence: bundled renderer and its authenticated server connection both work.
   await page
     .getByRole("button", { name: "Add your first project", exact: true })
     .waitFor({ timeout: 60_000 });
-  await page.screenshot({ path: join(directory, "welcome.png") });
+  // The renderer can become ready before Electron shows its native surface.
+  // Capturing that hidden surface under Xvfb can fail with a zero-width bitmap.
+  await page.waitForFunction(
+    () => document.visibilityState === "visible" && innerWidth > 0 && innerHeight > 0,
+    undefined,
+    { timeout: 60_000 },
+  );
+  screenshot = await page.screenshot();
+  if (process.platform === "darwin") {
+    await application.evaluate(async ({ app, BrowserWindow, screen }, modulePath) => {
+      const require = process.getBuiltinModule("module").createRequire(modulePath);
+      const { ComputerOverlay } = require(modulePath);
+      const overlay = new ComputerOverlay();
+      const originalWindows = BrowserWindow.getAllWindows();
+      const checkDock = (phase) => {
+        if (!app.dock.isVisible()) throw new Error(`Computer overlay hid the Dock: ${phase}`);
+        if (originalWindows.some((window) => window.isDestroyed() || !window.isVisible()))
+          throw new Error(`Computer overlay hid an app window: ${phase}`);
+      };
+      checkDock("before overlay");
+      try {
+        for (let cycle = 0; cycle < 3; cycle++) {
+          overlay.show({ provider: "claude", executionGeneration: cycle + 1 });
+          checkDock("creating overlay");
+          const windows = BrowserWindow.getAllWindows().filter(
+            (window) => !originalWindows.includes(window),
+          );
+          if (windows.length !== screen.getAllDisplays().length)
+            throw new Error(
+              `Computer overlay window count ${windows.length} did not match display count ${screen.getAllDisplays().length} on cycle ${cycle}`,
+            );
+          await Promise.all(windows.map((window) => window.webContents.executeJavaScript("true")));
+          for (const window of windows) {
+            if (!window.isVisibleOnAllWorkspaces() || window.isFocusable())
+              throw new Error("Computer overlay lost its workspace or non-interactive behavior");
+          }
+          checkDock("showing overlay");
+          const closed = windows.map(
+            (window) => new Promise((resolve) => window.once("closed", resolve)),
+          );
+          overlay.clear();
+          await Promise.all(closed);
+          checkDock("clearing overlay");
+        }
+      } finally {
+        overlay.close();
+      }
+      checkDock("closing overlay");
+    }, overlayModule);
+  }
   await page.evaluate(async () => {
+    const computer = window.desktopBridge.computerAutomation;
+    if (
+      !computer ||
+      typeof computer.status !== "function" ||
+      "execute" in computer ||
+      "request" in computer
+    )
+      throw new Error("Computer bridge must expose controls without an execution path");
+    const computerStatus = await computer.status();
+    if (
+      !computerStatus.available &&
+      ![
+        "not-certified",
+        "helper-missing",
+        "missing-permissions",
+        "monitor-unhealthy",
+        "unsupported-platform",
+        "other-instance",
+      ].includes(computerStatus.reason)
+    )
+      throw new Error(`Unexpected computer backend status: ${computerStatus.reason}`);
     const bridge = window.desktopBridge.preview;
     const original = await bridge.getPreviewConfig();
     const persistent = await bridge.profiles.create("Smoke work", true);
@@ -111,11 +262,17 @@ try {
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     return url.origin;
   });
-  const authorizedStatus = await page.evaluate(
-    async (origin) => (await fetch(`${origin}/api/bootstrap`)).status,
-    backendOrigin,
-  );
-  if (authorizedStatus !== 200) throw new Error("Main renderer backend authentication failed");
+  const authorizedBootstrap = await page.evaluate(async (origin) => {
+    const response = await fetch(`${origin}/api/bootstrap`);
+    return {
+      status: response.status,
+      protocolVersion: response.ok ? (await response.json()).protocolVersion : null,
+    };
+  }, backendOrigin);
+  if (authorizedBootstrap.status !== 200)
+    throw new Error("Main renderer backend authentication failed");
+  if (!Number.isSafeInteger(authorizedBootstrap.protocolVersion))
+    throw new Error("Backend did not advertise a valid protocol version");
   const iframeStatus = await page.evaluate(async (origin) => {
     const frame = document.createElement("iframe");
     frame.srcdoc = "<!doctype html><title>untrusted subframe</title>";
@@ -220,9 +377,16 @@ try {
           "dom-ready",
           () => {
             clearTimeout(timer);
-            // Guests attach blank; load the backend explicitly to check its authorization.
+            // Guests attach blank. A backend navigation can be vetoed before
+            // networking, so test request authentication with a fetch instead.
+            // The session's onCompleted receipt must still report exactly 401;
+            // a cancellation, timeout or authenticated response never passes.
             const url = guest.getURL();
-            void guest.loadURL(target).catch(() => undefined);
+            void guest
+              .executeJavaScript(
+                `fetch(${JSON.stringify(target)}, { mode: "no-cors" }).catch(() => undefined)`,
+              )
+              .catch(() => undefined);
             resolve(url);
           },
           { once: true },
@@ -240,8 +404,142 @@ try {
       session.fromPartition(partition).webRequest.onCompleted(null);
     }
   }, previewConfig.partition);
-  await page.evaluate(() => document.getElementById("smoke-untrusted-guest")?.remove());
   if (guestStatus !== 401) throw new Error(`Guest received backend authorization (${guestStatus})`);
+  const zoomGuestId = await page.evaluate(async () => {
+    const guest = document.getElementById("smoke-untrusted-guest");
+    await window.desktopBridge.preview.createTab("smoke-zoom", { zoomFactor: 1.25, muted: true });
+    const id = guest.getWebContentsId();
+    await window.desktopBridge.preview.registerWebview("smoke-zoom", id);
+    guest.focus();
+    return id;
+  });
+  await application.evaluate(async ({ BrowserWindow, Menu, webContents }, guestId) => {
+    const guest = webContents.fromId(guestId);
+    const owner = BrowserWindow.fromWebContents(guest.hostWebContents);
+    if (owner.webContents.getZoomMode() !== "isolated" || guest.getZoomMode() !== "isolated")
+      throw new Error("App and preview contents must use independent zoom");
+    const findItem = (label, items = Menu.getApplicationMenu().items) => {
+      for (const item of items) {
+        if (item.label === label) return item;
+        if (item.submenu) {
+          const found = findItem(label, item.submenu.items);
+          if (found) return found;
+        }
+      }
+    };
+    const before = owner.webContents.getZoomLevel();
+    guest.focus();
+    findItem("Zoom In").click();
+    // Check after Chromium has propagated the embedder's zoom to its guests.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (owner.webContents.getZoomLevel() !== before + 0.5)
+      throw new Error("View zoom did not target the app while the preview had focus");
+    if (Math.abs(guest.getZoomFactor() - 1.25) > 0.001)
+      throw new Error("View zoom overwrote the preview's chosen zoom");
+    findItem("Actual Size").click();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (owner.webContents.getZoomLevel() !== 0 || Math.abs(guest.getZoomFactor() - 1.25) > 0.001)
+      throw new Error("Resetting app zoom changed the preview zoom");
+  }, zoomGuestId);
+  // Exercise real native keyboard focus twice on a previously focused, zoomed guest.
+  // DOM-only mocks cannot detect keystrokes being routed to the guest after restoration.
+  await application.evaluate(async ({ webContents }, guestId) => {
+    const guest = webContents.fromId(guestId);
+    await guest.executeJavaScript(`
+      document.body.innerHTML = '<button id="focus-target" style="position:absolute;left:100px;top:10px;width:40px;height:40px">Click</button>';
+      globalThis.focusClicks = 0;
+      globalThis.focusKeys = 0;
+      document.addEventListener('keydown', () => globalThis.focusKeys++);
+      document.getElementById('focus-target').onclick = () => globalThis.focusClicks++;
+      void 0;
+    `);
+  }, zoomGuestId);
+  await page.evaluate(() => {
+    const guest = document.getElementById("smoke-untrusted-guest");
+    Object.assign(guest.style, {
+      position: "fixed",
+      top: "150px",
+      right: "0",
+      width: "250px",
+      height: "120px",
+      zIndex: "2147483647",
+    });
+    const input = document.createElement("input");
+    input.id = "smoke-focus-input";
+    Object.assign(input.style, { position: "fixed", top: "0", left: "0", zIndex: "2147483647" });
+    document.body.append(input);
+  });
+  let focusTyped = "";
+  for (const input of [{ selector: "#focus-target" }, { x: 120, y: 30 }]) {
+    await application.evaluate(({ webContents }, guestId) => {
+      const guest = webContents.fromId(guestId);
+      guest.focus();
+      guest.hostWebContents.focus();
+    }, zoomGuestId);
+    await page.locator("#smoke-focus-input").focus();
+    await page.evaluate(
+      (input) => window.desktopBridge.preview.automation.click("smoke-zoom", input),
+      input,
+    );
+    if (process.platform === "linux") {
+      // Child-frame views can report their parent's focus, making the global focused
+      // contents lookup ambiguous. XTest targets Xvfb's focused window, not a renderer.
+      execFileSync(
+        "python3",
+        [
+          "-c",
+          `import ctypes as c
+from ctypes.util import find_library
+x = c.CDLL(find_library("X11"))
+t = c.CDLL(find_library("Xtst"))
+x.XOpenDisplay.argtypes = [c.c_char_p]
+x.XOpenDisplay.restype = c.c_void_p
+x.XKeysymToKeycode.argtypes = [c.c_void_p, c.c_ulong]
+x.XKeysymToKeycode.restype = c.c_uint
+x.XFlush.argtypes = [c.c_void_p]
+x.XCloseDisplay.argtypes = [c.c_void_p]
+t.XTestFakeKeyEvent.argtypes = [c.c_void_p, c.c_uint, c.c_int, c.c_ulong]
+d = x.XOpenDisplay(None)
+if not d: raise RuntimeError("Cannot open smoke-test X display")
+try:
+    key = x.XKeysymToKeycode(d, ord("x"))
+    if not key: raise RuntimeError("Cannot map smoke-test key")
+    t.XTestFakeKeyEvent(d, key, 1, 0)
+    t.XTestFakeKeyEvent(d, key, 0, 0)
+    x.XFlush(d)
+finally:
+    x.XCloseDisplay(d)
+`,
+        ],
+        { timeout: 5000 },
+      );
+    } else {
+      await application.evaluate(({ webContents }, guestId) => {
+        webContents.fromId(guestId).hostWebContents.sendInputEvent({ type: "char", keyCode: "x" });
+      }, zoomGuestId);
+    }
+    focusTyped += "x";
+    await page.waitForFunction(
+      (expected) => document.getElementById("smoke-focus-input").value === expected,
+      focusTyped,
+    );
+  }
+  const focusResult = await application.evaluate(
+    ({ webContents }, guestId) =>
+      webContents
+        .fromId(guestId)
+        .executeJavaScript("({ clicks: globalThis.focusClicks, keys: globalThis.focusKeys })"),
+    zoomGuestId,
+  );
+  if (focusResult.clicks !== 2)
+    throw new Error("Preview clicks missed their CSS coordinates at 125% zoom");
+  if (focusResult.keys !== 0)
+    throw new Error("Preview guest received host typing after an agent click");
+  await page.evaluate(async () => {
+    await window.desktopBridge.preview.closeTab("smoke-zoom");
+    document.getElementById("smoke-untrusted-guest")?.remove();
+    document.getElementById("smoke-focus-input")?.remove();
+  });
 
   const workspace = join(directory, "workspace");
   mkdirSync(workspace);
@@ -254,6 +552,58 @@ try {
     .locator('[data-sidebar="menu-action"]')
     .and(page.getByRole("button", { name: "Project actions for workspace", exact: true }))
     .waitFor({ timeout: 60_000 });
+
+  // Page and native window titles follow the route; no surface falls back to an error.
+  const nativeTitle = () =>
+    application.evaluate(
+      ({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()
+          .find((window) => !window.isDestroyed())
+          ?.getTitle() ?? null,
+    );
+  const waitForTitles = async (expected) => {
+    const deadline = Date.now() + 10_000;
+    let documentTitle = null;
+    let windowTitle = null;
+    while (Date.now() < deadline) {
+      documentTitle = await page.title();
+      windowTitle = await nativeTitle();
+      if (documentTitle === expected && windowTitle === expected) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (documentTitle !== expected || windowTitle !== expected)
+      throw new Error(
+        `Expected title "${expected}", got document "${documentTitle}" and window "${windowTitle}"`,
+      );
+    const fallbacks = await page.locator('[data-slot="surface-error"]').count();
+    if (fallbacks !== 0) throw new Error(`An error fallback is showing on "${expected}"`);
+  };
+  const openRoute = (hash) =>
+    page.evaluate((target) => {
+      window.location.hash = target;
+    }, hash);
+  const selectWindowTitleDetail = async (label) => {
+    await page.getByLabel("Window title", { exact: true }).click();
+    await page.getByRole("option", { name: label, exact: true }).click();
+  };
+  const threadHash = new URL(page.url()).hash;
+  await waitForTitles("workspace · F5");
+  await openRoute("#/usage");
+  await waitForTitles("Usage · F5");
+  await openRoute("#/pull-requests");
+  await waitForTitles("Pull Requests · F5");
+  await openRoute("#/settings");
+  await waitForTitles("Settings · F5");
+  await selectWindowTitleDetail("Thread title");
+  await openRoute(threadHash);
+  await waitForTitles("New thread · F5");
+  await openRoute("#/settings");
+  await waitForTitles("Settings · F5");
+  await selectWindowTitleDetail("Project name");
+  await openRoute(threadHash);
+  await waitForTitles("workspace · F5");
+  await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
+
   await page.locator('[contenteditable="true"]').fill("**a****b**\n# Title **bold**");
   await page.reload();
   await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
@@ -261,6 +611,223 @@ try {
     (await page.locator('[contenteditable="true"]').innerText()) !== "**a****b**\n# Title **bold**"
   ) {
     throw new Error("Composer draft was not restored after reload");
+  }
+  // Stop keeps the window and its immutable preload URL, just like an exited backend.
+  const stopDefaultBackend = () =>
+    application.evaluate(({ Menu }) => {
+      const profile = Menu.getApplicationMenu()
+        .items.flatMap((item) => item.submenu?.items ?? [])
+        .find((item) => item.label === "Default");
+      const stop = profile?.submenu?.items.find((item) => item.label === "Stop");
+      if (!stop) throw new Error("Missing default profile Stop action");
+      stop.click();
+    });
+  const waitForBackend = async (expected) => {
+    await page.waitForFunction(
+      async ({ origin, expected }) => {
+        try {
+          const response = await fetch(`${origin}/api/bootstrap`);
+          // An auth failure still proves a server is listening. Stop recovery
+          // must wait for source closure before trying to start its replacement.
+          return expected ? response.ok : false;
+        } catch {
+          return !expected;
+        }
+      },
+      { origin: backendOrigin, expected },
+      { timeout: 60_000 },
+    );
+    if (!expected) return;
+    // HTTP bootstrap is available before runtime-dependent RPCs can run.
+    const deadline = Date.now() + 60_000;
+    while (true) {
+      const { runtime } = await nativeRequest("server.probe", {});
+      if (runtime.state === "ready") return;
+      if (runtime.state === "failed")
+        throw new Error("Desktop smoke backend startup failed: " + runtime.message);
+      if (Date.now() > deadline) throw new Error("Desktop smoke backend runtime did not start");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
+  const nativeRequest = async (method, body) => {
+    try {
+      return await page.evaluate(
+        ({ method, body, protocolVersion }) =>
+          new Promise((resolve, reject) => {
+            const url = new URL(window.desktopBridge.getWsUrl());
+            url.searchParams.set("protocol", String(protocolVersion));
+            const socket = new WebSocket(url);
+            const controller = new AbortController();
+            const timer = setTimeout(
+              () => finish(new Error(`Desktop smoke request timed out: ${method}`)),
+              15_000,
+            );
+            const finish = (error, value) => {
+              clearTimeout(timer);
+              controller.abort();
+              socket.close();
+              if (error) reject(error);
+              else resolve(value);
+            };
+            socket.addEventListener(
+              "open",
+              () =>
+                socket.send(
+                  JSON.stringify({ id: "desktop-smoke", body: { ...body, _tag: method } }),
+                ),
+              { signal: controller.signal },
+            );
+            socket.addEventListener(
+              "message",
+              (event) => {
+                const response = JSON.parse(String(event.data));
+                if (response.id !== "desktop-smoke") return;
+                finish(response.error ? new Error(response.error.message) : null, response.result);
+              },
+              { signal: controller.signal },
+            );
+            socket.addEventListener(
+              "error",
+              () => finish(new Error("Desktop smoke connection failed")),
+              { signal: controller.signal },
+            );
+            socket.addEventListener(
+              "close",
+              (event) =>
+                finish(
+                  new Error(`Desktop smoke connection closed (${event.code}: ${event.reason})`),
+                ),
+              { signal: controller.signal },
+            );
+          }),
+        { method, body, protocolVersion: authorizedBootstrap.protocolVersion },
+      );
+    } catch (cause) {
+      throw new Error(`Desktop smoke request failed: ${method}`, { cause });
+    }
+  };
+  await waitForBackend(true);
+  const terminalInput = {
+    threadId: "desktop-shutdown-smoke",
+    terminalId: "default",
+    cwd: workspace,
+    cols: 80,
+    rows: 24,
+  };
+  const waitForTerminalOutput = async (marker) => {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const snapshot = await nativeRequest("terminal.snapshot", {
+        threadId: terminalInput.threadId,
+        terminalId: terminalInput.terminalId,
+      });
+      // The echoed shell command contains the marker once. Require actual
+      // subprocess output as well, rather than passing on that echo alone.
+      if (countMarker(snapshot?.history ?? "", marker) >= 3) return snapshot;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("Terminal smoke subprocess did not emit output");
+  };
+  const startTerminalStream = async (marker) => {
+    await nativeRequest("terminal.open", terminalInput);
+    const script = `process.stdout.write('BEGIN'+String.fromCharCode(10));setInterval(()=>process.stdout.write('${marker}'+String.fromCharCode(10)),100)`;
+    await nativeRequest("terminal.write", {
+      threadId: terminalInput.threadId,
+      terminalId: terminalInput.terminalId,
+      data: `node -e "${script}"\r`,
+    });
+    return waitForTerminalOutput(marker);
+  };
+  const recoveryTerminalMarker = "F5_BACKEND_RECOVERY_OUTPUT";
+  await startTerminalStream(recoveryTerminalMarker);
+  // Recovery restores persisted history. On Windows the profile Stop below ends
+  // in a forced kill with no final flush (#300), so wait until the throttled
+  // history write has reached disk rather than racing it.
+  if (process.platform === "win32") {
+    const terminalLogs = join(state, "logs", "terminals");
+    const persistedDeadline = Date.now() + 15_000;
+    let lastError;
+    const historyPersisted = () => {
+      try {
+        return readdirSync(terminalLogs, { withFileTypes: true }).some(
+          (entry) =>
+            entry.isFile() &&
+            countMarker(
+              readFileSync(join(terminalLogs, entry.name), "utf8"),
+              recoveryTerminalMarker,
+            ) >= 3,
+        );
+      } catch (error) {
+        // Not created yet, or an atomic replace is in progress (EPERM on Windows).
+        lastError = error;
+        return false;
+      }
+    };
+    while (!historyPersisted()) {
+      if (Date.now() > persistedDeadline) {
+        let listing;
+        try {
+          listing = readdirSync(terminalLogs).join(", ") || "(empty)";
+        } catch (error) {
+          listing = `unreadable: ${error?.code ?? error}`;
+        }
+        throw new Error(
+          `Terminal history was never persisted (files: ${listing}; last error: ${lastError?.code ?? lastError ?? "none"})`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  const retainedWsUrl = await page.evaluate(() => window.desktopBridge.getWsUrl());
+  const retainedRendererUrl = page.url();
+  const recoveryCount = () =>
+    readFileSync(join(state, "logs", "desktop-main.log"), "utf8").split(
+      "profile open ready profile=",
+    ).length - 1;
+  const waitForRecovery = async (previousCount) => {
+    const deadline = Date.now() + 60_000;
+    while (recoveryCount() <= previousCount) {
+      if (Date.now() > deadline) throw new Error("Profile recovery did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await waitForBackend(true);
+  };
+  await stopDefaultBackend();
+  await waitForBackend(false);
+  const beforeSecondInstance = recoveryCount();
+  await application.evaluate(({ app }) => app.emit("second-instance", {}, [], ""));
+  await waitForRecovery(beforeSecondInstance);
+  const restoredTerminal = await nativeRequest("terminal.open", terminalInput);
+  if (!restoredTerminal.history.includes(recoveryTerminalMarker))
+    throw new Error(
+      `Backend recovery lost terminal history; restored tail: ${JSON.stringify(restoredTerminal.history.slice(-500))}`,
+    );
+  if ((await page.evaluate(() => window.desktopBridge.getWsUrl())) !== retainedWsUrl)
+    throw new Error("Reopening changed the retained window's connection");
+  if (
+    (await page.locator('[contenteditable="true"]').innerText()) !== "**a****b**\n# Title **bold**"
+  )
+    throw new Error("Backend recovery changed the retained composer draft");
+  if (process.platform === "darwin") {
+    await stopDefaultBackend();
+    await waitForBackend(false);
+    await application.evaluate(({ BrowserWindow }) => {
+      for (const window of BrowserWindow.getAllWindows()) window.close();
+    });
+    const beforeActivate = recoveryCount();
+    const reopened = application.waitForEvent("window");
+    await application.evaluate(({ app }) => app.emit("activate"));
+    page = await reopened;
+    page.on("pageerror", (error) => errors.push(error.stack || error.message));
+    await waitForRecovery(beforeActivate);
+    await page.goto(retainedRendererUrl);
+    await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
+    await waitForBackend(true);
+    if (
+      (await page.locator('[contenteditable="true"]').innerText()) !==
+      "**a****b**\n# Title **bold**"
+    )
+      throw new Error("Dock recovery did not restore the saved composer draft");
   }
   await page.screenshot({ path: join(directory, "workspace.png") });
   if (errors.length) throw new Error(errors.join("\n"));
@@ -271,6 +838,9 @@ try {
   )
     throw new Error("Desktop attention badge was not updated");
   await page.evaluate(() => window.desktopBridge.setAttentionBadge(0));
+  // Without a PostHog key the server never creates an anonymous telemetry id.
+  if (existsSync(join(state, "anonymous-id")))
+    throw new Error("Telemetry created an anonymous id without a configured key");
   const observeUnloadDialog = () => {};
   page.on("dialog", observeUnloadDialog);
   await page.evaluate(() => {
@@ -283,6 +853,8 @@ try {
   await application.evaluate(({ app }) => app.quit());
   await page.waitForTimeout(300);
   if (electronProcess.exitCode !== null) throw new Error("Draft veto did not cancel quit");
+  await application.evaluate(({ app }) => app.emit("activate"));
+  await waitForBackend(true);
   if (
     !(await application.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().some((window) => window.isVisible()),
@@ -293,6 +865,71 @@ try {
   page.off("dialog", observeUnloadDialog);
   await page.reload();
   await page.locator('[contenteditable="true"]').waitFor({ timeout: 60000 });
+  const sendProviderPrompt = async (prompt) => {
+    await page.locator('[contenteditable="true"]').fill(prompt);
+    // Interrupting a turn pauses its queue, so the next explicit submission is
+    // labelled "Send now" rather than "Send message".
+    await page.getByRole("button", { name: /^Send (?:message|now)$/ }).click();
+    await page
+      .getByRole("button", {
+        name: prompt.startsWith("F5_SMOKE_APPROVAL") ? "Approve once" : "Stop generation",
+        exact: true,
+      })
+      .waitFor();
+    // The composer renders optimistically. Wait for server acceptance before
+    // taking a persistence snapshot or interrupting the newly started turn.
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const snapshot = await nativeRequest("orchestration.getSnapshot", {});
+      const thread = snapshot.threads.find(
+        (entry) =>
+          entry.session?.activeTurnId &&
+          entry.messages.some((message) => message.role === "user" && message.text === prompt),
+      );
+      if (thread) return thread;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`Provider prompt did not reach active orchestration state: ${prompt}`);
+  };
+  const stopProviderTurn = async () => {
+    await page.getByRole("button", { name: "Stop generation", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Stop generation", exact: true })
+      .waitFor({ state: "hidden" });
+  };
+  await sendProviderPrompt("F5_SMOKE_STREAM stop");
+  await page.getByText("Desktop stream 1", { exact: false }).first().waitFor();
+  await stopProviderTurn();
+  await sendProviderPrompt("F5_SMOKE_APPROVAL");
+  await page.getByRole("button", { name: "Approve once", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Approve once", exact: true })
+    .waitFor({ state: "hidden" });
+  await stopProviderTurn();
+  const providerThread = await sendProviderPrompt("F5_SMOKE_STREAM quit");
+  const providerRendererUrl = page.url();
+  const waitForProviderOutput = async () => {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const details = await nativeRequest("orchestration.getThreadDetails", {
+        threadId: providerThread.id,
+      });
+      const output = details.messages.filter((message) => message.role === "assistant");
+      if (output.length >= 3 && output.every((message) => message.text.includes("Desktop stream")))
+        return output;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("Provider stream did not produce persisted output");
+  };
+  await openRoute("#/usage");
+  await waitForTitles("Usage · F5");
+  await page.goto(providerRendererUrl);
+  await page.getByRole("button", { name: "Stop generation", exact: true }).waitFor();
+  const providerMessages = await waitForProviderOutput();
+  const pendingDraft = "Keep this draft through provider and terminal shutdown";
+  await page.locator('[contenteditable="true"]').fill(pendingDraft);
+  const quitTerminalMarker = "F5_DESKTOP_QUIT_OUTPUT";
+  await startTerminalStream(quitTerminalMarker);
   const popupEvent = application.waitForEvent("window");
   await application.evaluate(({ BrowserWindow }) => {
     const popup = new BrowserWindow({ width: 320, height: 240, webPreferences: { sandbox: true } });
@@ -302,8 +939,8 @@ try {
   await popup.waitForLoadState();
   // Inject through Electron so this exercises before-input-event on a non-app renderer.
   // CDP keyboard events do not consistently reach that native hook on macOS.
-  const pressQuit = () =>
-    application.evaluate(async ({ BrowserWindow }) => {
+  const pressQuit = (taps = 1) =>
+    application.evaluate(({ BrowserWindow }, count) => {
       const popup = BrowserWindow.getAllWindows().find(
         (window) => window.getTitle() === "Quit smoke popup",
       );
@@ -311,23 +948,184 @@ try {
       popup.focus();
       popup.webContents.focus();
       const modifiers = process.platform === "darwin" ? ["meta"] : ["control"];
-      popup.webContents.sendInputEvent({ type: "keyDown", keyCode: "Q", modifiers });
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      if (!popup.isDestroyed())
-        popup.webContents.sendInputEvent({ type: "keyUp", keyCode: "Q", modifiers });
-    });
+      for (let tap = 0; tap < count; tap++) {
+        popup.webContents.sendInputEvent({ type: "keyDown", keyCode: "Q", modifiers });
+        if (!popup.isDestroyed())
+          popup.webContents.sendInputEvent({ type: "keyUp", keyCode: "Q", modifiers });
+      }
+    }, taps);
   await pressQuit();
   await new Promise((resolve) => setTimeout(resolve, 650));
   if (electronProcess.exitCode !== null) throw new Error("A single quit tap closed the app");
-  const closed = application.waitForEvent("close", { timeout: 10000 });
-  await pressQuit();
-  await pressQuit();
-  await closed;
-  console.log(`Desktop smoke test passed. Isolated artifacts: ${directory}`);
+  // Count whole log lines, including a just-rotated file, so unrelated text that
+  // mentions the phrase cannot satisfy the wait.
+  const shutdowns = () =>
+    ["desktop-main.log.1", "desktop-main.log"]
+      .map((name) => {
+        try {
+          return readFileSync(join(state, "logs", name), "utf8");
+        } catch {
+          return "";
+        }
+      })
+      .join("")
+      .split("] shutdown complete\n").length - 1;
+  const shutdownsBeforeQuit = shutdowns();
+  const mainProcessId = await application.evaluate(() => process.pid);
+  let exited = false;
+  const closed = application.waitForEvent("close", { timeout: 0 }).then(() => {
+    exited = true;
+  });
+  // Only output after the quit can show the inspector hold of this exit.
+  let outputAfterQuit = "";
+  for (const stream of [electronProcess.stdout, electronProcess.stderr]) {
+    stream?.on("data", (chunk) => {
+      outputAfterQuit = (outputAfterQuit + chunk.toString()).slice(-65_536);
+    });
+  }
+  // Dispatch both native taps in one synchronous main-process turn: a timer
+  // between them can exceed the 500 ms gesture window under streaming load.
+  await pressQuit(2);
+  // F5's own completed shutdown is the evidence that the gesture quit. Node can
+  // then hold the exited main process open for Playwright's attached inspector
+  // ("Waiting for the debugger to disconnect..."), intermittently on Windows;
+  // only that hold is released here. Both waits are generous because a slow
+  // runner is not the failure this guards against.
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const quitDeadline = Date.now() + 30_000;
+  while (!exited && shutdowns() <= shutdownsBeforeQuit) {
+    if (Date.now() > quitDeadline) throw new Error("The double-tap quit did not shut F5 down");
+    await sleep(50);
+  }
+  const holdDeadline = Date.now() + 25_000;
+  while (!exited && !outputAfterQuit.includes("Waiting for the debugger to disconnect")) {
+    if (Date.now() > holdDeadline)
+      throw new Error("F5 completed shutdown but its process did not exit");
+    await sleep(50);
+  }
+  if (!exited) {
+    console.error("Desktop smoke: releasing an exited main process held by the inspector");
+    // Playwright exposes its cmd.exe launcher on Windows. Include Electron's
+    // own PID so a launcher that has already exited cannot strand the main process.
+    if (process.platform === "win32" && electronProcess.pid) {
+      const killed = spawnSync(
+        "taskkill",
+        ["/pid", String(mainProcessId), "/pid", String(electronProcess.pid), "/T", "/F"],
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+        },
+      );
+      console.error("Desktop smoke inspector cleanup:", {
+        mainProcessId,
+        launcherPid: electronProcess.pid,
+        status: killed.status,
+        error: killed.error?.message,
+        stdout: killed.stdout,
+        stderr: killed.stderr,
+      });
+      // Windows children can retain inherited output handles even after
+      // taskkill terminates the launcher. Release our pipe ends now; waiting
+      // for an exit notification first can itself stall behind those handles.
+      // Playwright's close event can remain blocked on its inspector transport
+      // even after both OS processes exit. Verify those PIDs below instead.
+      electronProcess.stdout?.destroy();
+      electronProcess.stderr?.destroy();
+    } else electronProcess.kill();
+    if (process.platform === "win32" && electronProcess.pid) {
+      const stillRunning = (pid) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (error) {
+          if (error.code === "ESRCH") return false;
+          throw error;
+        }
+      };
+      const exitDeadline = Date.now() + 10_000;
+      while (stillRunning(mainProcessId) || stillRunning(electronProcess.pid)) {
+        if (Date.now() > exitDeadline) throw new Error("F5 did not exit after its shutdown");
+        await sleep(50);
+      }
+    } else {
+      await Promise.race([
+        closed,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("F5 did not exit after its shutdown")), 10_000),
+        ),
+      ]);
+    }
+  }
+  // Reopen the same isolated profile after a real app quit with a live PTY.
+  application = await _electron.launch({
+    executablePath: requireDesktop("electron"),
+    args: [wrapper],
+    cwd: directory,
+    env,
+    timeout: 60_000,
+  });
+  electronProcess = application.process();
+  for (const stream of [electronProcess.stdout, electronProcess.stderr])
+    stream?.on("data", (chunk) => {
+      output = (output + chunk.toString()).slice(-65_536);
+    });
+  page = await application.firstWindow({ timeout: 60_000 });
+  page.on("pageerror", (error) => errors.push(error.stack || error.message));
+  // The window can appear before the app loads its own renderer URL; navigating
+  // first races that load ("interrupted by another navigation").
+  await page.waitForURL((url) => url.protocol === "t3:", { timeout: 60_000 });
+  await page.waitForLoadState("domcontentloaded");
+  await page.goto(providerRendererUrl);
+  await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
+  await waitForBackend(true);
+  const quitHistory = await nativeRequest("terminal.open", terminalInput);
+  if (countMarker(quitHistory.history, quitTerminalMarker) < 3)
+    throw new Error("Desktop quit/reopen lost active terminal output");
+  const restoredProviderMessages = await waitForProviderOutput();
+  for (const before of providerMessages) {
+    const after = restoredProviderMessages.find((message) => message.id === before.id);
+    if (!after?.text.startsWith(before.text))
+      throw new Error("Desktop quit/reopen lost provider output");
+  }
+  if ((await page.locator('[contenteditable="true"]').innerText()) !== pendingDraft)
+    throw new Error("Desktop quit/reopen lost the streaming thread's draft");
+  await page
+    .getByRole("button", { name: "Stop generation", exact: true })
+    .waitFor({ state: "hidden", timeout: 15_000 });
+  await nativeRequest("terminal.close", {
+    threadId: terminalInput.threadId,
+    terminalId: terminalInput.terminalId,
+  });
+  if (errors.length) throw new Error(errors.join("\n"));
+  console.log(
+    artifactDirectory
+      ? "Desktop smoke test passed."
+      : `Desktop smoke test passed. Isolated artifacts: ${directory}`,
+  );
 } catch (error) {
+  failure = String(error?.stack ?? error);
+  try {
+    screenshot = await application?.windows()[0]?.screenshot({ timeout: 5000 });
+  } catch {}
   console.error("Desktop smoke test failed:", error, output);
+  console.error(`Desktop smoke artifacts: ${artifactDirectory || directory}`);
   process.exitCode = 1;
 } finally {
-  writeFileSync(join(directory, "desktop.log"), output);
-  if (electronProcess?.exitCode === null) await application.close();
+  try {
+    exportDiagnostics();
+  } finally {
+    try {
+      if (electronProcess?.exitCode === null) await application.close();
+    } finally {
+      // Preserve local state for debugging. Locked Crashpad/helper files on CI
+      // must not turn successful assertions into a failing smoke verdict.
+      if (artifactDirectory) {
+        try {
+          rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+        } catch (error) {
+          console.warn(`Could not remove desktop smoke temp state at ${directory}:`, error);
+        }
+      }
+    }
+  }
 }

@@ -27,7 +27,8 @@ export function GitBranchWorkspaceDialog(props: {
         <DialogHeader>
           <DialogTitle>Choose workspace for {props.branch}</DialogTitle>
           <DialogDescription>
-            This conversation will use the workspace shown below.
+            This conversation will use the workspace shown below. Files and edits will be shared
+            with any other conversations using it.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-3 text-sm">

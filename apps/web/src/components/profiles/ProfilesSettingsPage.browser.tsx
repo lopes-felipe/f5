@@ -19,7 +19,16 @@ vi.mock("../../nativeApi", () => ({
   readNativeApi: () => nativeApiRef.current,
 }));
 
-const { ProfilesSettings } = await import("../settings/categories/ProfilesSettings");
+// The GitHub sign-in and the forge accounts on this page have their own tests.
+vi.mock("../settings/GithubAccountPanel", () => ({
+  GithubAccountPanel: () => null,
+}));
+vi.mock("../settings/ForgeAccountsPanel", () => ({
+  ForgeAccountsPanel: () => null,
+}));
+
+const { AccountsSettings: ProfilesSettings } =
+  await import("../settings/categories/AccountsSettings");
 const { TooltipProvider } = await import("../ui/tooltip");
 const { clearProfilePatches, useProfileState } = await import("../../profileState");
 

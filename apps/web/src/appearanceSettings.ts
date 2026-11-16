@@ -49,7 +49,7 @@ const GENERIC_FONT_FAMILIES = new Set([
 const CSS_WIDE_KEYWORDS = new Set(["inherit", "initial", "revert", "revert-layer", "unset"]);
 const SAFE_FONT_FAMILY_NAME = /^[\p{L}\p{M}\p{N} ._+-]+$/u;
 
-export const CHAT_CONTENT_WIDTH_OPTIONS = ["narrow", "comfortable", "wide"] as const;
+export const CHAT_CONTENT_WIDTH_OPTIONS = ["narrow", "comfortable", "wide", "full"] as const;
 export type ChatContentWidth = (typeof CHAT_CONTENT_WIDTH_OPTIONS)[number];
 export const CHAT_CONTENT_WIDTH_DEFAULT: ChatContentWidth = "comfortable";
 /** Max width of the conversation column (timeline, composer, banners). */
@@ -57,11 +57,13 @@ export const CHAT_CONTENT_MAX_WIDTH: Record<ChatContentWidth, string> = {
   narrow: "48rem",
   comfortable: "56rem",
   wide: "72rem",
+  full: "100%",
 };
 export const CHAT_CONTENT_WIDTH_LABELS: Record<ChatContentWidth, string> = {
   narrow: "Narrow",
   comfortable: "Comfortable",
   wide: "Wide",
+  full: "Full",
 };
 
 export interface AppearanceSettings {

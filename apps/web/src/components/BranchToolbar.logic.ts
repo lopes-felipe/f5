@@ -6,11 +6,15 @@ export function resolveEffectiveEnvMode(input: {
   activeWorktreePath: string | null;
   hasServerThread: boolean;
   draftThreadEnvMode: EnvMode | undefined;
+  /**
+   * The server is still creating this thread's worktree. The thread exists
+   * from the start of that setup but gets its worktree path only at the end.
+   */
+  preparingWorktree?: boolean;
 }): EnvMode {
-  const { activeWorktreePath, hasServerThread, draftThreadEnvMode } = input;
-  return activeWorktreePath || (!hasServerThread && draftThreadEnvMode === "worktree")
-    ? "worktree"
-    : "local";
+  const { activeWorktreePath, hasServerThread, draftThreadEnvMode, preparingWorktree } = input;
+  if (hasServerThread) return activeWorktreePath || preparingWorktree ? "worktree" : "local";
+  return activeWorktreePath || draftThreadEnvMode === "worktree" ? "worktree" : "local";
 }
 
 export function resolveDraftEnvModeAfterBranchChange(input: {

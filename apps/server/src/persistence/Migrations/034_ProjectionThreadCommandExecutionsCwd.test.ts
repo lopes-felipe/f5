@@ -1,3 +1,4 @@
+import { resetMigrationFixture } from "../migrationTestUtils.ts";
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -31,20 +32,7 @@ const requiredColumnNames = [
   .slice()
   .sort();
 
-const resetDatabase = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-
-  const tables = yield* sql<{ readonly name: string }>`
-    SELECT name
-    FROM sqlite_master
-    WHERE type = 'table'
-      AND name NOT LIKE 'sqlite_%'
-  `;
-
-  yield* Effect.forEach(tables, ({ name }) => sql`DROP TABLE IF EXISTS ${sql(name)}`, {
-    discard: true,
-  });
-});
+const resetDatabase = resetMigrationFixture;
 
 const seedMigrationTableAt = (migrationId: number, name: string) =>
   Effect.gen(function* () {
@@ -196,7 +184,8 @@ const expectCommandExecutionsTable = (
     assert.deepEqual(
       columns
         .map((column) => column.name)
-        .slice()
+        // Migration 153 adds description on full runs; this suite covers the 034/044 shape.
+        .filter((name) => name !== "description")
         .sort(),
       requiredColumnNames,
     );

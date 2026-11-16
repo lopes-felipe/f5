@@ -3,6 +3,13 @@ import { describe, expect, it } from "vitest";
 import { parsePullRequestReference } from "./pullRequestReference";
 
 describe("parsePullRequestReference", () => {
+  it.each([
+    "https://github.acme.test/acme/web/pull/42",
+    "http://git.corp.example/acme/web/pull/42/files?diff=split",
+  ])("accepts Enterprise checkout URL %s", (url) => {
+    expect(parsePullRequestReference(url)).toBe(url);
+    expect(parsePullRequestReference("gh pr checkout " + url)).toBe(url);
+  });
   it("accepts GitHub pull request URLs", () => {
     expect(parsePullRequestReference("https://github.com/pingdotgg/t3code/pull/42")).toBe(
       "https://github.com/pingdotgg/t3code/pull/42",

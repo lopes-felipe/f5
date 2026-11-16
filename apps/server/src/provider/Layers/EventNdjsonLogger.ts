@@ -5,12 +5,12 @@
  * single effect-style text line in a thread-scoped file. Failures are
  * downgraded to warnings so provider runtime behavior is unaffected.
  */
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 
 import type { ThreadId } from "@t3tools/contracts";
-import { RotatingFileSink } from "@t3tools/shared/logging";
-import { Effect, Exit, Logger, Scope } from "effect";
+import { Cause, Effect } from "effect";
+import { appendProviderLog, closeProviderLogs } from "../logWriterRegistry.ts";
 
 import { toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
 
@@ -35,11 +35,6 @@ export interface EventNdjsonLoggerOptions {
   readonly batchWindowMs?: number;
 }
 
-interface ThreadWriter {
-  writeMessage: (message: string) => Effect.Effect<void>;
-  close: () => Effect.Effect<void>;
-}
-
 function logWarning(message: string, context: Record<string, unknown>): Effect.Effect<void> {
   return Effect.logWarning(message, context).pipe(Effect.annotateLogs({ scope: LOG_SCOPE }));
 }
@@ -47,20 +42,6 @@ function logWarning(message: string, context: Record<string, unknown>): Effect.E
 function resolveThreadSegment(raw: string | null | undefined): string {
   const normalized = typeof raw === "string" ? toSafeThreadAttachmentSegment(raw) : null;
   return normalized ?? GLOBAL_THREAD_SEGMENT;
-}
-
-function formatLoggerMessage(message: unknown): string {
-  if (Array.isArray(message)) {
-    return message.map((part) => (typeof part === "string" ? part : String(part))).join(" ");
-  }
-  return typeof message === "string" ? message : String(message);
-}
-
-function makeLineLogger(streamLabel: string): Logger.Logger<unknown, string> {
-  return Logger.make(
-    ({ date, message }) =>
-      `[${date.toISOString()}] ${streamLabel}: ${formatLoggerMessage(message)}\n`,
-  );
 }
 
 function resolveStreamLabel(stream: EventNdjsonStream): string {
@@ -118,76 +99,40 @@ function toLogMessage(event: unknown): Effect.Effect<string | undefined> {
   });
 }
 
-function makeThreadWriter(input: {
-  readonly filePath: string;
-  readonly maxBytes: number;
-  readonly maxFiles: number;
-  readonly batchWindowMs: number;
-  readonly streamLabel: string;
-}): Effect.Effect<ThreadWriter | undefined> {
-  return Effect.gen(function* () {
-    const sinkResult = yield* Effect.sync(() => {
-      try {
-        return {
-          ok: true as const,
-          sink: new RotatingFileSink({
-            filePath: input.filePath,
-            maxBytes: input.maxBytes,
-            maxFiles: input.maxFiles,
-            throwOnError: true,
-          }),
-        };
-      } catch (error) {
-        return { ok: false as const, error };
-      }
-    });
-
-    if (!sinkResult.ok) {
-      yield* logWarning("failed to initialize provider thread log file", {
-        filePath: input.filePath,
-        error: sinkResult.error,
-      });
-      return undefined;
-    }
-
-    const sink = sinkResult.sink;
-    const scope = yield* Scope.make();
-    const lineLogger = makeLineLogger(input.streamLabel);
-    const batchedLogger = yield* Logger.batched(lineLogger, {
-      window: input.batchWindowMs,
-      flush: (messages) =>
-        Effect.gen(function* () {
-          const flushResult = yield* Effect.sync(() => {
-            try {
-              for (const message of messages) {
-                sink.write(message);
-              }
-              return { ok: true as const };
-            } catch (error) {
-              return { ok: false as const, error };
-            }
-          });
-
-          if (!flushResult.ok) {
-            yield* logWarning("provider event log batch flush failed", {
-              filePath: input.filePath,
-              error: flushResult.error,
-            });
-          }
-        }),
-    }).pipe(Effect.provideService(Scope.Scope, scope));
-
-    const loggerLayer = Logger.layer([batchedLogger], { mergeWithExisting: false });
-
-    return {
-      writeMessage(message: string) {
-        return Effect.log(message).pipe(Effect.provide(loggerLayer));
-      },
-      close() {
-        return Scope.close(scope, Exit.void);
-      },
-    } satisfies ThreadWriter;
-  });
+function isCritical(event: unknown): boolean {
+  if (!event || typeof event !== "object") return true;
+  const record = event as Record<string, unknown>;
+  const nested =
+    record.event && typeof record.event === "object"
+      ? (record.event as Record<string, unknown>)
+      : undefined;
+  const type = String(nested?.type ?? nested?.method ?? record.type ?? record.method ?? "");
+  if (type === "session/update") {
+    const frame = nested ?? record;
+    const body = frame.params ?? frame.payload;
+    const params = body && typeof body === "object" ? (body as Record<string, unknown>) : frame;
+    const update =
+      params.update && typeof params.update === "object"
+        ? (params.update as Record<string, unknown>)
+        : params;
+    // ACP content chunks are deltas even though the envelope method is shared
+    // with plans, tool calls and other boundaries which must await persistence.
+    if (
+      ["agent_message_chunk", "agent_thought_chunk", "user_message_chunk"].includes(
+        String(update.sessionUpdate),
+      )
+    )
+      return false;
+  }
+  // Deltas remain lossless but can batch. Envelopes, block boundaries, errors,
+  // session/turn transitions and every unrecognized shape wait for append.
+  return (
+    type !== "content.delta" &&
+    type !== "thread.message-sent" &&
+    type !== "content_block_delta" &&
+    !/[/_.]delta$/i.test(type) &&
+    !/Delta$/.test(type)
+  );
 }
 
 export function makeEventNdjsonLogger(
@@ -197,80 +142,90 @@ export function makeEventNdjsonLogger(
   return Effect.gen(function* () {
     const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
-    const batchWindowMs = options.batchWindowMs ?? DEFAULT_BATCH_WINDOW_MS;
+    if (maxBytes < 1 || maxFiles < 1) throw new Error("Invalid provider log rotation limits");
+    const directoryReady = yield* Effect.tryPromise(() =>
+      fs.mkdir(path.dirname(filePath), { recursive: true }),
+    ).pipe(
+      Effect.as(true),
+      Effect.catch((error) =>
+        logWarning("failed to create provider event log directory", { filePath, error }).pipe(
+          Effect.as(false),
+        ),
+      ),
+    );
+    if (!directoryReady) return undefined;
+    const directory = yield* Effect.promise(() => fs.realpath(path.dirname(filePath)));
+    const owner = Symbol(filePath);
+    let closed = false;
+    const admitted = new Set<Promise<void>>();
     const streamLabel = resolveStreamLabel(options.stream);
-
-    const directoryReady = yield* Effect.sync(() => {
-      try {
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        return true;
-      } catch (error) {
-        return { ok: false as const, error };
-      }
-    });
-    if (directoryReady !== true) {
-      yield* logWarning("failed to create provider event log directory", {
-        filePath,
-        error: directoryReady.error,
-      });
-      return undefined;
-    }
-
-    const threadWriters = new Map<string, ThreadWriter>();
-    const failedSegments = new Set<string>();
-
-    const resolveThreadWriter = (threadSegment: string): Effect.Effect<ThreadWriter | undefined> =>
-      Effect.gen(function* () {
-        if (failedSegments.has(threadSegment)) {
-          return undefined;
-        }
-        const existing = threadWriters.get(threadSegment);
-        if (existing) {
-          return existing;
-        }
-
-        const writer = yield* makeThreadWriter({
-          filePath: path.join(path.dirname(filePath), `${threadSegment}.log`),
-          maxBytes,
-          maxFiles,
-          batchWindowMs,
-          streamLabel,
-        });
-        if (!writer) {
-          failedSegments.add(threadSegment);
-          return undefined;
-        }
-
-        threadWriters.set(threadSegment, writer);
-        return writer;
-      });
-
     return {
       filePath,
-      write(event: unknown, threadId: ThreadId | null) {
-        return Effect.gen(function* () {
-          const threadSegment = resolveThreadSegment(threadId);
-          const message = yield* toLogMessage(event);
-          if (!message) {
-            return;
-          }
-
-          const writer = yield* resolveThreadWriter(threadSegment);
-          if (!writer) {
-            return;
-          }
-
-          yield* writer.writeMessage(message);
+      write(event, threadId) {
+        return Effect.suspend(() => {
+          if (closed) return Effect.void;
+          // Own admission before serialization can yield. Closing must also wait
+          // for accepted records which have not reached the file registry yet.
+          const ticket = Promise.withResolvers<void>();
+          admitted.add(ticket.promise);
+          return Effect.gen(function* () {
+            const message = yield* toLogMessage(event);
+            if (!message) return;
+            yield* Effect.promise(() => {
+              const work = appendProviderLog({
+                filePath: path.join(directory, `${resolveThreadSegment(threadId)}.log`),
+                owner,
+                text: `[${new Date().toISOString()}] ${streamLabel}: ${message}\n`,
+                maxBytes,
+                maxFiles,
+                batchWindowMs: options.batchWindowMs ?? DEFAULT_BATCH_WINDOW_MS,
+                critical: isCritical(event),
+              });
+              return work;
+            }).pipe(
+              Effect.tapCause((cause) =>
+                logWarning("provider event log append failed after retries", { filePath, cause }),
+              ),
+            );
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                admitted.delete(ticket.promise);
+                ticket.resolve();
+              }),
+            ),
+          );
         });
       },
-      close() {
-        return Effect.gen(function* () {
-          for (const writer of threadWriters.values()) {
-            yield* writer.close();
-          }
-          threadWriters.clear();
-        });
-      },
+      close: () =>
+        Effect.promise(async () => {
+          closed = true;
+          const settled = await Promise.allSettled([...admitted]);
+          await closeProviderLogs(owner);
+          const failed = settled.filter((result) => result.status === "rejected");
+          if (failed.length)
+            throw new AggregateError(
+              failed.map((result) => result.reason),
+              "Provider log shutdown incomplete",
+            );
+        }),
     } satisfies EventNdjsonLogger;
   });
 }
+
+/** Log failures are observable, but durable terminal receipts still have to publish. */
+export const writeProviderEventLog = (
+  logger: EventNdjsonLogger,
+  event: unknown,
+  threadId: ThreadId | null,
+): Effect.Effect<void> =>
+  logger.write(event, threadId).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.interrupt
+        : logWarning("provider log write incomplete; continuing authoritative event delivery", {
+            filePath: logger.filePath,
+            cause,
+          }),
+    ),
+  );

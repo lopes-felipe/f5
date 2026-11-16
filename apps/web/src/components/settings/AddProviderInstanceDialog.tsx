@@ -1,5 +1,6 @@
 "use client";
 
+import { decodeDriverConfigField } from "./providerConfigFields";
 import { CheckIcon } from "lucide-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -172,10 +173,19 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
 
     // Build the config blob from non-empty driver-specific field values.
     // Empty strings are dropped so defaults remain in effect on the server.
-    const config: Record<string, string> = {};
-    for (const field of driverOption.fields) {
-      const value = (fieldValues[`${driver}:${field.key}`] ?? "").trim();
-      if (value.length > 0) config[field.key] = value;
+    const config: Record<string, unknown> = {};
+    try {
+      for (const field of driverOption.fields) {
+        const value = decodeDriverConfigField(field, fieldValues[`${driver}:${field.key}`] ?? "");
+        if (value !== undefined) config[field.key] = value;
+      }
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Check provider configuration",
+        description: error instanceof Error ? error.message : "Invalid field value.",
+      });
+      return;
     }
     const hasConfig = Object.keys(config).length > 0;
     const normalizedAccentColor = normalizeProviderAccentColor(accentColor);

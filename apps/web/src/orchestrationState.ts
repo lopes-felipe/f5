@@ -1,3 +1,4 @@
+import { isKnownProviderKind } from "@t3tools/contracts";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   type OrchestrationCheckpointStatus,
@@ -6,7 +7,7 @@ import {
   type OrchestrationSessionStatus,
   type ProviderKind,
 } from "@t3tools/contracts";
-import { inferProviderForModel, resolveModelSlugForProvider } from "@t3tools/shared/model";
+import { inferProviderForModel, normalizeModelSlug } from "@t3tools/shared/model";
 
 import { sanitizeThreadErrorMessage } from "./transportError";
 import type { ChatMessage, Thread } from "./types";
@@ -104,10 +105,8 @@ export function resolveThreadModel(input: {
   readonly model: string;
   readonly sessionProviderName: string | null;
 }): string {
-  return resolveModelSlugForProvider(
-    inferProviderForThreadModel(input),
-    input.model ?? DEFAULT_MODEL_BY_PROVIDER.codex,
-  );
+  const provider = inferProviderForThreadModel(input);
+  return normalizeModelSlug(input.model, provider) ?? DEFAULT_MODEL_BY_PROVIDER[provider];
 }
 
 export function mapSessionFromReadModel(
@@ -218,8 +217,9 @@ export function retainThreadMessagesAfterRevert(
   messages: ReadonlyArray<Thread["messages"][number]>,
   retainedTurnIds: ReadonlySet<string>,
   turnCount: number,
+  verifiedMessageIds: ReadonlyArray<string> = [],
 ): ReadonlyArray<Thread["messages"][number]> {
-  const retainedMessageIds = new Set<string>();
+  const retainedMessageIds = new Set<string>(verifiedMessageIds);
   for (const message of messages) {
     if (message.role === "system") {
       retainedMessageIds.add(message.id);
@@ -351,4 +351,14 @@ function attachmentPreviewRoutePath(attachmentId: string): string {
 /** Served URL for an attachment in the registry, e.g. a tool-result screenshot. */
 export function attachmentPreviewUrlForId(attachmentId: string): string {
   return toAttachmentPreviewUrl(attachmentPreviewRoutePath(attachmentId));
+}
+
+export function resolveProjectModel(
+  model: string | null | undefined,
+  instanceId?: string | null,
+): string {
+  const provider = isKnownProviderKind(instanceId)
+    ? instanceId
+    : inferProviderForModel(model ?? "", "codex");
+  return normalizeModelSlug(model, provider) ?? DEFAULT_MODEL_BY_PROVIDER[provider];
 }

@@ -1,3 +1,5 @@
 apps/web/src/routeTree.gen.ts
-# MSW regenerates this vendor-owned file during dependency installation.
+# MSW worker is vendor-owned; regenerate explicitly when upgrading MSW.
 apps/web/public/mockServiceWorker.js
+# F5 writes the upstream ledger with canonical JSON; CI rejects any other byte form.
+upstream/

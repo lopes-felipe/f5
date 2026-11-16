@@ -15,6 +15,7 @@ function store(): ServerSecretStoreShape {
       Effect.sync(() => {
         values.delete(key);
       }),
+    list: () => Effect.succeed([]),
     getOrCreateRandom: () => Effect.die("Unused"),
   };
 }

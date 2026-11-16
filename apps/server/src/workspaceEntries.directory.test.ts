@@ -2,10 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { listWorkspaceDirectory } from "./workspaceEntries";
 const roots: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true });
 });
 async function fixture() {
@@ -41,15 +42,110 @@ describe("lazy directory listing", () => {
     expect(shown.entries.some((entry) => entry.path === "secret.env")).toBe(true);
     expect(shown.entries.some((entry) => entry.path === ".git")).toBe(false);
   });
-  it("rejects traversal and directory symlinks", async () => {
+  it("rejects traversal and follows internal directory symlinks", async () => {
     const cwd = await fixture();
     await fs.symlink(
       path.join(cwd, "src"),
       path.join(cwd, "link"),
       process.platform === "win32" ? "junction" : "dir",
     );
-    for (const relativePath of ["../", "src/../", ".git", "link", "C:\\outside"]) {
+    for (const relativePath of ["../", "src/../", ".git", "C:\\outside"]) {
       await expect(listWorkspaceDirectory({ cwd, relativePath })).rejects.toThrow();
     }
+    expect((await listWorkspaceDirectory({ cwd, relativePath: "link" })).entries).toEqual([
+      { path: "link/nested.ts", kind: "file", parentPath: "link" },
+    ]);
+  });
+
+  it("filters ignored children through a folder alias using the target's Git rules", async () => {
+    const cwd = await fixture();
+    execFileSync("git", ["init", "-q", cwd]);
+    await fs.writeFile(path.join(cwd, ".gitignore"), "/src/secret.env\n");
+    await fs.writeFile(path.join(cwd, "src", "secret.env"), "synthetic");
+    await fs.writeFile(path.join(cwd, "src", ".gitignore"), "local.env\n");
+    await fs.writeFile(path.join(cwd, "src", "local.env"), "synthetic");
+    await fs.symlink(
+      path.join(cwd, "src"),
+      path.join(cwd, "link"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    for (const relativePath of ["src", "link"]) {
+      const hidden = await listWorkspaceDirectory({ cwd, relativePath });
+      expect(hidden.entries.map((entry) => entry.path)).toEqual([
+        relativePath + "/.gitignore",
+        relativePath + "/nested.ts",
+      ]);
+      expect(hidden.totalEntries).toBe(2);
+      const shown = await listWorkspaceDirectory({ cwd, relativePath, includeIgnored: true });
+      expect(shown.entries.map((entry) => entry.path)).toEqual([
+        relativePath + "/.gitignore",
+        relativePath + "/local.env",
+        relativePath + "/nested.ts",
+        relativePath + "/secret.env",
+      ]);
+      expect(shown.totalEntries).toBe(4);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "hides unsafe links and prevents cycles through sibling folders",
+    async () => {
+      const cwd = await fixture();
+      const outside = await fixture();
+      await fs.mkdir(path.join(cwd, ".git"));
+      await fs.mkdir(path.join(cwd, "other"));
+      for (const [name, target] of [
+        ["file-link", "README.md"],
+        ["dir-link", "src"],
+        ["outside", outside],
+        ["git-link", ".git"],
+        ["dangling", "missing"],
+        ["self", "."],
+        ["src/up", ".."],
+        ["src/sibling", "../other"],
+        ["other/back", "../src"],
+      ])
+        await fs.symlink(target!, path.join(cwd, name!));
+      const list = async (relativePath: string) =>
+        (await listWorkspaceDirectory({ cwd, relativePath, includeIgnored: true })).entries;
+      expect(await list("")).toEqual([
+        { path: "dir-link", kind: "directory" },
+        { path: "other", kind: "directory" },
+        { path: "src", kind: "directory" },
+        { path: "file-link", kind: "file" },
+        { path: "README.md", kind: "file" },
+      ]);
+      expect(await list("src")).toEqual([
+        { path: "src/sibling", kind: "directory", parentPath: "src" },
+        { path: "src/nested.ts", kind: "file", parentPath: "src" },
+      ]);
+      expect(await list("src/sibling")).toEqual([]);
+      for (const relativePath of ["outside", "git-link", "self", "src/up", "src/sibling/back"]) {
+        await expect(list(relativePath)).rejects.toThrow();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("bounds filesystem work for many symlinks", async () => {
+    const cwd = await fixture();
+    await Promise.all(
+      Array.from({ length: 200 }, (_, index) => fs.symlink("src", path.join(cwd, "link-" + index))),
+    );
+    const realpath = fs.realpath;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    vi.spyOn(fs, "realpath").mockImplementation((async (target: string) => {
+      maxInFlight = Math.max(maxInFlight, ++inFlight);
+      try {
+        return await realpath(target);
+      } finally {
+        inFlight--;
+      }
+    }) as typeof fs.realpath);
+    const result = await listWorkspaceDirectory({ cwd, relativePath: "", limit: 500 });
+    expect(result.totalEntries).toBe(202);
+    expect(result.entries.filter((entry) => entry.kind === "directory")).toHaveLength(201);
+    expect(maxInFlight).toBeLessThanOrEqual(64);
+    expect(maxInFlight).toBeGreaterThan(1);
   });
 });

@@ -1,6 +1,11 @@
+import { FilesystemPath, ForwardCompatibleArray, NonNegativeInt } from "./baseSchemas";
 import { Schema } from "effect";
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
-import { KeybindingRule, KeybindingsConfig, ResolvedKeybindingsConfig } from "./keybindings";
+import {
+  ForwardCompatibleKeybindingsConfig,
+  KeybindingRule,
+  ResolvedKeybindingsConfig,
+} from "./keybindings";
 import { EditorId } from "./editor";
 import { ModelCapabilities } from "./model";
 import { ProviderKind, ProviderStartOptions } from "./orchestration";
@@ -24,7 +29,9 @@ export const ServerConfigIssue = Schema.Union([
 ]);
 export type ServerConfigIssue = typeof ServerConfigIssue.Type;
 
-const ServerConfigIssues = Schema.Array(ServerConfigIssue);
+// Issue kinds grow over time; older clients must not fail the whole config
+// decode over a kind they cannot render.
+const ServerConfigIssues = ForwardCompatibleArray(ServerConfigIssue);
 const ServerProviderLatestVersionString = TrimmedNonEmptyString.check(Schema.isMaxLength(64));
 
 export const ServerProviderStatusState = Schema.Literals(["ready", "warning", "error"]);
@@ -65,6 +72,7 @@ export const ServerProviderAuth = Schema.Struct({
   type: Schema.optional(TrimmedNonEmptyString),
   label: Schema.optional(TrimmedNonEmptyString),
   email: Schema.optional(TrimmedNonEmptyString),
+  workspaceName: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 
@@ -74,6 +82,7 @@ export const ServerProviderModel = Schema.Struct({
   shortName: Schema.optional(TrimmedNonEmptyString),
   subProvider: Schema.optional(TrimmedNonEmptyString),
   isCustom: Schema.Boolean,
+  isUnlisted: Schema.optional(Schema.Boolean),
   capabilities: Schema.NullOr(ModelCapabilities),
 });
 export type ServerProviderModel = typeof ServerProviderModel.Type;
@@ -93,7 +102,7 @@ export type ServerProviderSlashCommand = typeof ServerProviderSlashCommand.Type;
 export const ServerProviderSkill = Schema.Struct({
   name: TrimmedNonEmptyString,
   description: Schema.optional(TrimmedNonEmptyString),
-  path: TrimmedNonEmptyString,
+  path: FilesystemPath,
   scope: Schema.optional(TrimmedNonEmptyString),
   enabled: Schema.Boolean,
   displayName: Schema.optional(TrimmedNonEmptyString),
@@ -113,19 +122,48 @@ export const ServerProviderVersionAdvisoryStatus = Schema.Literals([
   "unknown",
   "current",
   "behind_latest",
+  "bundled",
+  "check_failed",
+  "manual",
 ]);
 export type ServerProviderVersionAdvisoryStatus = typeof ServerProviderVersionAdvisoryStatus.Type;
 
 export const ServerProviderUpdateCommand = Schema.Struct({
   executable: TrimmedNonEmptyString,
   args: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
-  channel: Schema.Literals(["npm"]),
-  cwd: Schema.optional(TrimmedNonEmptyString),
+  channel: Schema.Literals(["npm", "homebrew", "self-update"]),
+  shell: Schema.optional(Schema.Literals(["posix", "powershell"])),
+  pathPrepend: Schema.optional(FilesystemPath),
+  cwd: Schema.optional(FilesystemPath),
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type ServerProviderUpdateCommand = typeof ServerProviderUpdateCommand.Type;
 
 export const ServerProviderVersionAdvisory = Schema.Struct({
+  installChannel: Schema.optional(
+    Schema.Literals(["bundled", "npm", "homebrew", "self-update", "unmanaged", "remote"]),
+  ),
+  executablePath: Schema.optional(Schema.String),
+  installKey: Schema.optional(Schema.String),
+  canRunUpdate: Schema.optional(Schema.Boolean),
+  updateAvailable: Schema.optional(Schema.Boolean),
+  blockedReason: Schema.optional(
+    Schema.Literals([
+      "windows",
+      "isolated_profile",
+      "unsupported_source",
+      "custom_registry",
+      "registry_unverified",
+      "permissions",
+      "remote",
+    ]),
+  ),
+  sharedWith: Schema.optional(Schema.Array(ProviderInstanceId)),
+  activeUpdate: Schema.optional(
+    Schema.NullOr(Schema.Struct({ startedAt: IsoDateTime, targetVersion: Schema.String })),
+  ),
+  retryAt: Schema.optional(IsoDateTime),
+  failedAt: Schema.optional(IsoDateTime),
   status: ServerProviderVersionAdvisoryStatus,
   currentVersion: Schema.NullOr(TrimmedNonEmptyString),
   latestVersion: Schema.NullOr(ServerProviderLatestVersionString),
@@ -184,7 +222,23 @@ export const ServerProvider = Schema.Struct({
   availability: Schema.optional(ServerProviderAvailability),
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
   versionAdvisory: Schema.optional(ServerProviderVersionAdvisory),
+  modelCatalog: Schema.optional(
+    Schema.Struct({
+      status: Schema.Literals(["complete", "menu", "partial", "failed"]),
+      lastSuccessAt: Schema.optional(IsoDateTime),
+      firstPartialAt: Schema.optional(IsoDateTime),
+    }),
+  ),
   models: Schema.Array(ServerProviderModel),
+  updateRequiredModels: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        slug: TrimmedNonEmptyString,
+        name: TrimmedNonEmptyString,
+        minVersion: TrimmedNonEmptyString,
+      }),
+    ),
+  ),
   slashCommands: Schema.Array(ServerProviderSlashCommand).pipe(
     Schema.withDecodingDefault(() => []),
   ),
@@ -249,24 +303,55 @@ export const ServerValidateHarnessesResult = Schema.Struct({
 });
 export type ServerValidateHarnessesResult = typeof ServerValidateHarnessesResult.Type;
 
+const DiagnosticsSignal = Schema.Struct({
+  endpoint: Schema.NullOr(Schema.String),
+  source: Schema.Literals(["disabled", "settings", "environment", "unset", "secret-unavailable"]),
+  protocol: Schema.Literals(["http/json", "http/protobuf"]),
+});
+export const DiagnosticsConfiguration = Schema.Struct({
+  traces: DiagnosticsSignal,
+  metrics: DiagnosticsSignal,
+});
+// Older servers omit customized rules; newer ones may echo commands this build
+// does not know.
+const ServerCustomKeybindings = ForwardCompatibleKeybindingsConfig.pipe(
+  Schema.withDecodingDefault(() => []),
+);
+
 export const ServerConfig = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   keybindingsConfigPath: TrimmedNonEmptyString,
   keybindings: ResolvedKeybindingsConfig,
-  customKeybindings: KeybindingsConfig.pipe(Schema.withDecodingDefault(() => [])),
+  customKeybindings: ServerCustomKeybindings,
   issues: ServerConfigIssues,
   providers: ServerProviders,
-  availableEditors: Schema.Array(EditorId),
+  // Editor ids grow over time; drop ones this build does not know rather than
+  // failing the whole config decode.
+  availableEditors: ForwardCompatibleArray(EditorId),
   settings: Schema.optional(ServerSettings),
+  diagnostics: Schema.optionalKey(DiagnosticsConfiguration),
 });
 export type ServerConfig = typeof ServerConfig.Type;
+
+/**
+ * The `ServerConfig` arrays whose element unions grow over time. Clients
+ * decode these from `server.getConfig` so values a newer server sends but this
+ * build cannot represent are dropped before they reach the UI. The other fields
+ * are left as sent, so decoding never rejects a config the client used to accept.
+ */
+export const ServerConfigForwardCompatibleFields = Schema.Struct({
+  keybindings: ServerConfig.fields.keybindings,
+  customKeybindings: ServerConfig.fields.customKeybindings,
+  issues: ServerConfig.fields.issues,
+  availableEditors: ServerConfig.fields.availableEditors,
+});
 
 export const ServerUpsertKeybindingInput = KeybindingRule;
 export type ServerUpsertKeybindingInput = typeof ServerUpsertKeybindingInput.Type;
 
 export const ServerUpsertKeybindingResult = Schema.Struct({
   keybindings: ResolvedKeybindingsConfig,
-  customKeybindings: KeybindingsConfig.pipe(Schema.withDecodingDefault(() => [])),
+  customKeybindings: ServerCustomKeybindings,
   issues: ServerConfigIssues,
 });
 export type ServerUpsertKeybindingResult = typeof ServerUpsertKeybindingResult.Type;
@@ -310,3 +395,89 @@ export const ServerConfigSettingsUpdatedPayload = Schema.Struct({
   settings: ServerSettings,
 });
 export type ServerConfigSettingsUpdatedPayload = typeof ServerConfigSettingsUpdatedPayload.Type;
+
+export const ServerCheckProviderUpdatesInput = Schema.Struct({
+  instanceId: Schema.optional(ProviderInstanceId),
+});
+export type ServerCheckProviderUpdatesInput = typeof ServerCheckProviderUpdatesInput.Type;
+export const ServerRunProviderUpdateInput = Schema.Struct({ instanceId: ProviderInstanceId });
+export type ServerRunProviderUpdateInput = typeof ServerRunProviderUpdateInput.Type;
+export const ServerRunProviderUpdateResult = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  outcome: Schema.Literals(["updated", "unchanged", "unexpected_version", "unverified", "failed"]),
+  previousVersion: Schema.NullOr(Schema.String),
+  currentVersion: Schema.NullOr(Schema.String),
+  exitCode: Schema.NullOr(Schema.Int),
+  timedOut: Schema.Boolean,
+  output: Schema.String,
+  outputTruncated: Schema.Boolean,
+  providers: ServerProviders,
+});
+export type ServerRunProviderUpdateResult = typeof ServerRunProviderUpdateResult.Type;
+
+export const ClientDiagnosticsCounters = Schema.Struct({
+  snapshotSyncs: NonNegativeInt,
+  gapRecoveries: NonNegativeInt,
+  bufferOverflows: NonNegativeInt,
+  poisonBatches: NonNegativeInt,
+  connectedMs: NonNegativeInt,
+});
+export type ClientDiagnosticsCounters = typeof ClientDiagnosticsCounters.Type;
+/** Transport scheduling outcomes, cumulative per page session. */
+export const ClientRpcDiagnosticsCounters = Schema.Struct({
+  rpcBusy: NonNegativeInt,
+  rpcServerStarting: NonNegativeInt,
+  rpcTimeouts: NonNegativeInt,
+  rpcQueueExpired: NonNegativeInt,
+  rpcBackgroundShed: NonNegativeInt,
+  rpcOrphanReleased: NonNegativeInt,
+  rpcConnectionNotReady: NonNegativeInt,
+});
+export type ClientRpcDiagnosticsCounters = typeof ClientRpcDiagnosticsCounters.Type;
+export const ReportClientDiagnosticsInput = Schema.Struct({
+  sessionId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  reportSeq: NonNegativeInt,
+  clientKind: Schema.Literals(["desktop", "web"]),
+  counters: ClientDiagnosticsCounters,
+  applyBatchBuckets: Schema.Array(NonNegativeInt).check(
+    Schema.isMinLength(9),
+    Schema.isMaxLength(9),
+  ),
+  rpcCounters: Schema.optional(ClientRpcDiagnosticsCounters),
+  /** Send wait buckets with lower edges 0, 50, 100, 250, 500, 1k, 2.5k, 10k and 30k ms. */
+  rpcQueueWaitBuckets: Schema.optional(
+    Schema.Array(NonNegativeInt).check(Schema.isMinLength(9), Schema.isMaxLength(9)),
+  ),
+});
+export type ReportClientDiagnosticsInput = typeof ReportClientDiagnosticsInput.Type;
+
+/** One slow RPC route or SQL statement shape, totalled since the server started. */
+export const ServerHealthSlowOperation = Schema.Struct({
+  /** The RPC method, or the statement text without bound values. */
+  name: Schema.String,
+  count: NonNegativeInt,
+  totalMs: NonNegativeInt,
+  maxMs: NonNegativeInt,
+  lastAt: IsoDateTime,
+});
+export type ServerHealthSlowOperation = typeof ServerHealthSlowOperation.Type;
+
+/** What `server.getHealth` returns. Everything is counted since the server process started. */
+export const ServerHealth = Schema.Struct({
+  startedAt: IsoDateTime,
+  uptimeMs: NonNegativeInt,
+  rssBytes: NonNegativeInt,
+  heapUsedBytes: NonNegativeInt,
+  /** How late the server's event loop ran; null when it is not being sampled. */
+  eventLoopDelay: Schema.NullOr(
+    Schema.Struct({ p50Ms: NonNegativeInt, p99Ms: NonNegativeInt, maxMs: NonNegativeInt }),
+  ),
+  slowRouteThresholdMs: NonNegativeInt,
+  slowStatementThresholdMs: NonNegativeInt,
+  /** Largest total time first. Requests that are long by design are left out. */
+  slowRoutes: Schema.Array(ServerHealthSlowOperation),
+  /** False when this server's SQLite driver does not time statements (under Bun). */
+  slowStatementsCollected: Schema.Boolean,
+  slowStatements: Schema.Array(ServerHealthSlowOperation),
+});
+export type ServerHealth = typeof ServerHealth.Type;

@@ -1,5 +1,11 @@
 import { infiniteQueryOptions, queryOptions, type InfiniteData } from "@tanstack/react-query";
-import type { PrHubListInput, PrHubListPage, PullRequestKey } from "@t3tools/contracts";
+import type {
+  PrHubListInput,
+  PrHubListPage,
+  PrHubReviewComment,
+  PrHubSavedQuery,
+  PullRequestKey,
+} from "@t3tools/contracts";
 
 import { ensureNativeApi } from "../nativeApi";
 import { getPrHubSelectedAccountId, getPrHubAccountGeneration } from "./prHubAccount";
@@ -14,23 +20,58 @@ export const prHubQueryKeys = {
   files: (key: PullRequestKey) => ["prHub", "files", getPrHubAccountGeneration(), key] as const,
 };
 
-export function prHubOverviewQueryOptions(stalledBefore?: string) {
+export function prHubPeekQueryOptions(url: string) {
+  const accountId = getPrHubSelectedAccountId();
+  return queryOptions({
+    queryKey: ["prHub", "peek", getPrHubAccountGeneration(), accountId, url] as const,
+    queryFn: () => ensureNativeApi().prHub.peek({ url, accountId }),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function prHubOverviewQueryOptions(
+  stalledBefore?: string,
+  /** Saved views to count; the queue passes its own, other readers pass none. */
+  savedQueries: readonly PrHubSavedQuery[] = [],
+) {
+  const accountId = getPrHubSelectedAccountId();
   return queryOptions({
     queryKey: [
       ...prHubQueryKeys.overview,
       getPrHubAccountGeneration(),
       stalledBefore,
-      getPrHubSelectedAccountId(),
+      accountId,
+      // Readers without saved views share one entry.
+      ...(savedQueries.length > 0 ? [savedQueries] : []),
     ],
     placeholderData: (previous, query) =>
       query?.queryKey[2] === getPrHubAccountGeneration() ? previous : undefined,
-    queryFn: async () =>
-      ensureNativeApi().prHub.getOverview({
+    queryFn: async () => {
+      // The request goes to whichever account is selected when it is sent. A query still
+      // mounted under another account's key must not send one: the answer would be stored
+      // as that other account's overview.
+      if (accountId !== getPrHubSelectedAccountId())
+        throw new Error("Discarded a PR Hub read for a previous account.");
+      return ensureNativeApi().prHub.getOverview({
         stalledBefore,
-        accountId: getPrHubSelectedAccountId(),
-      }),
+        accountId,
+        ...(savedQueries.length > 0 ? { savedQueries } : {}),
+      });
+    },
     staleTime: 30_000,
   });
+}
+
+/** How many unread pull requests the Activity list shows. */
+export const PR_HUB_ACTIVITY_LIMIT = 20;
+
+/** The active pull requests that changed since they were last seen, newest first. */
+export function prHubActivityQueryOptions(revision: string | undefined) {
+  return prHubListQueryOptions(
+    { unread: true, visibility: "active", sort: "updated", limit: PR_HUB_ACTIVITY_LIMIT },
+    revision,
+  );
 }
 
 export function prHubDetailQueryOptions(key: PullRequestKey) {
@@ -39,6 +80,35 @@ export function prHubDetailQueryOptions(key: PullRequestKey) {
     queryKey: prHubQueryKeys.detail(key),
     queryFn: async () => ensureNativeApi().prHub.getDetail({ key, accountGeneration }),
     staleTime: 30_000,
+  });
+}
+
+/** The head commit's checks. A change to the pull request re-reads them. */
+export function prHubChecksQueryOptions(key: PullRequestKey) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return queryOptions({
+    queryKey: ["prHub", "checks", accountGeneration, key] as const,
+    queryFn: async () => ensureNativeApi().prHub.getChecks({ key, accountGeneration }),
+    staleTime: 15_000,
+    // The hub reports a change when the overall result changes, not when one job of many
+    // finishes, so a list with running jobs is read again while it is on screen.
+    refetchInterval: (query) =>
+      query.state.data?.checks.some((check) => check.status === "pending") ? 30_000 : false,
+  });
+}
+
+/**
+ * The part of one check's log around its error. A job that runs again gets a new ID, so a
+ * log that was read stays valid. The pull request's key is kept inside an object so that a
+ * change to the pull request does not re-read every open log.
+ */
+export function prHubCheckLogQueryOptions(key: PullRequestKey, checkId: string) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return queryOptions({
+    queryKey: ["prHub", "checkLog", accountGeneration, { key, checkId }] as const,
+    queryFn: async () => ensureNativeApi().prHub.getCheckLog({ key, accountGeneration, checkId }),
+    staleTime: 5 * 60_000,
+    retry: false,
   });
 }
 
@@ -55,6 +125,53 @@ export function prHubTimelineQueryOptions(key: PullRequestKey) {
       }),
     getNextPageParam: (page) =>
       page.pageInfo.hasNextPage ? (page.pageInfo.endCursor ?? undefined) : undefined,
+    staleTime: 30_000,
+  });
+}
+
+/** Shared by the review threads tab and the timeline, which groups replies by thread. */
+export function prHubReviewThreadsQueryOptions(key: PullRequestKey) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return infiniteQueryOptions({
+    queryKey: ["prHub", "reviewThreads", accountGeneration, key] as const,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      ensureNativeApi().prHub.getReviewThreads({
+        key,
+        accountGeneration,
+        ...(pageParam ? { cursor: pageParam } : {}),
+      }),
+    getNextPageParam: (page) =>
+      page.pageInfo.hasNextPage ? (page.pageInfo.endCursor ?? undefined) : undefined,
+    staleTime: 30_000,
+  });
+}
+
+/** Comment pages one thread read can walk before the rest is left to the host. */
+const THREAD_COMMENT_PAGES = 5;
+
+/** Every comment of one review thread, for threads the threads read cut short. */
+export function prHubReviewThreadCommentsQueryOptions(key: PullRequestKey, threadId: string) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return queryOptions({
+    // Under the threads key, so the invalidations after replies and resolution reach it.
+    queryKey: ["prHub", "reviewThreads", accountGeneration, key, threadId, "all"] as const,
+    queryFn: async () => {
+      const comments: PrHubReviewComment[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < THREAD_COMMENT_PAGES; page++) {
+        const result = await ensureNativeApi().prHub.getReviewThreads({
+          key,
+          accountGeneration,
+          threadId,
+          ...(cursor ? { cursor } : {}),
+        });
+        comments.push(...result.threads.flatMap((thread) => thread.comments));
+        cursor = result.pageInfo.hasNextPage ? (result.pageInfo.endCursor ?? undefined) : undefined;
+        if (!cursor) return { comments, hasNextPage: false };
+      }
+      return { comments, hasNextPage: true };
+    },
     staleTime: 30_000,
   });
 }
@@ -91,7 +208,28 @@ export function prHubAdvisoriesQueryOptions(keys: readonly PullRequestKey[] = []
   });
 }
 
-export function prHubListQueryOptions(input: PrHubListInput, revision: string | undefined) {
+/** Forge accounts are not tied to a PR Hub generation, so they live outside the "prHub" keys. */
+export function forgeAccountsQueryOptions() {
+  return queryOptions({
+    queryKey: ["forgeAccounts"] as const,
+    queryFn: () => ensureNativeApi().prHub.listAccounts(),
+    // Accounts change in Settings; re-read whenever the queue is opened.
+    staleTime: 0,
+  });
+}
+
+const sameListSlice = (a: PrHubListInput, b: PrHubListInput) =>
+  a.visibility === b.visibility && a.section === b.section && a.key === b.key;
+
+/**
+ * `keepPrevious` keeps the rows of the previous search or filter on screen while the next
+ * one loads, as long as it is the same slice of the queue (status and section).
+ */
+export function prHubListQueryOptions(
+  input: PrHubListInput,
+  revision: string | undefined,
+  options: { readonly keepPrevious?: boolean } = {},
+) {
   const accountGeneration = getPrHubAccountGeneration();
   return infiniteQueryOptions<
     PrHubListPage,
@@ -107,8 +245,10 @@ export function prHubListQueryOptions(input: PrHubListInput, revision: string | 
     placeholderData: (previous, query) =>
       query &&
       query.queryKey[2] === accountGeneration &&
-      JSON.stringify({ ...(query.queryKey[3] as PrHubListInput), anchorKey: undefined }) ===
-        JSON.stringify({ ...input, anchorKey: undefined })
+      (options.keepPrevious
+        ? sameListSlice(query.queryKey[3] as PrHubListInput, input)
+        : JSON.stringify({ ...(query.queryKey[3] as PrHubListInput), anchorKey: undefined }) ===
+          JSON.stringify({ ...input, anchorKey: undefined }))
         ? previous
         : undefined,
     queryFn: async ({ pageParam }) => {

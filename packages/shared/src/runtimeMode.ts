@@ -2,6 +2,9 @@ import type { ProviderKind, RuntimeMode } from "@t3tools/contracts";
 
 const BASIC_MODES = new Set<RuntimeMode>(["approval-required", "full-access"]);
 const EDIT_MODES = new Set<RuntimeMode>(["approval-required", "auto-accept-edits", "full-access"]);
+// Muse auto-approves in-workspace edits in every approval mode, so F5 never
+// claims `approval-required` for it.
+const MUSE_MODES = new Set<RuntimeMode>(["auto-accept-edits", "full-access"]);
 const REVIEWED_MODES = new Set<RuntimeMode>([
   "approval-required",
   "auto-accept-edits",
@@ -16,11 +19,15 @@ export function runtimeModeCapabilities(provider: ProviderKind): ReadonlySet<Run
     case "claudeAgent":
       return REVIEWED_MODES;
     case "opencode":
+    case "pi":
       return EDIT_MODES;
     case "cursor":
     case "grok":
     case "antigravity":
+    case "acp":
       return BASIC_MODES;
+    case "muse":
+      return MUSE_MODES;
   }
 }
 

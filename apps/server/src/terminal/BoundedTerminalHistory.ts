@@ -1,4 +1,5 @@
 import { toUSVString } from "node:util";
+import { TerminalHistorySanitizer } from "./TerminalHistorySanitizer";
 
 /** Retained terminal output only; live PTY output is never truncated. */
 export const TERMINAL_HISTORY_MAX_BYTES = 4 * 1024 * 1024;
@@ -20,6 +21,7 @@ export class BoundedTerminalHistory {
   private trailingNewline = false;
   private pendingSurrogate = "";
   private cached: string | null = "";
+  private readonly sanitizer = new TerminalHistorySanitizer();
 
   constructor(
     private readonly maxLines = 5000,
@@ -40,7 +42,7 @@ export class BoundedTerminalHistory {
 
   append(input: string): void {
     if (!input) return;
-    let text = this.pendingSurrogate + input;
+    let text = this.pendingSurrogate + this.sanitizer.append(input);
     this.pendingSurrogate = "";
     const last = text.charCodeAt(text.length - 1);
     if (last >= 0xd800 && last <= 0xdbff) {
@@ -80,6 +82,7 @@ export class BoundedTerminalHistory {
 
   /** Finish a stopped stream without joining its pending half-pair to a new process. */
   finish(): boolean {
+    this.sanitizer.clear();
     if (!this.pendingSurrogate) return false;
     this.pendingSurrogate = "";
     this.append("\ufffd");
@@ -158,6 +161,7 @@ export class BoundedTerminalHistory {
   }
 
   clear(): void {
+    this.sanitizer.clear();
     this.fragments = [];
     this.head = this.bytes = this.newlines = 0;
     this.trailingNewline = false;

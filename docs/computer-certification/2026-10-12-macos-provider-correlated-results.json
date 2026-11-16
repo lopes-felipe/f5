@@ -1,0 +1,121 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-12T13:28:22.448Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "repositoryCommit": "89d821680885a80c0e1c09f24a685244e0bb6e01",
+  "workingTreeDirty": true,
+  "helperSha256": "c3347e49eb5cda11e20da890fd3381b2317eff0e8fea71a75a531d16b06011b2",
+  "scope": "unsigned-real-provider-native-controller-synthetic-app-rehearsal",
+  "signed": false,
+  "certified": false,
+  "scriptedConsent": true,
+  "physicalInterruption": false,
+  "cancelled": false,
+  "results": [
+    {
+      "provider": "claude",
+      "model": "claude-fable-5-1",
+      "completed": true,
+      "interrupted": false,
+      "modelReceivedImage": true,
+      "resultSubtype": "success",
+      "authenticationRejected": false,
+      "additionalApprovalMethods": [],
+      "additionalApprovalDecisions": [],
+      "elapsedMs": 34475,
+      "state": "passed",
+      "exitCode": 0,
+      "checks": {
+        "providerCompleted": true,
+        "scriptedFixtureConsent": true,
+        "nativeCaptureDispatched": true,
+        "modelReceivedNativeImage": true,
+        "nativeInspectionDispatched": true,
+        "nativeInputDispatched": true,
+        "nativeCaptureSucceeded": true,
+        "nativeInspectionSucceeded": true,
+        "nativeInputSucceeded": true,
+        "realAppReceivedExactlyOnePress": true,
+        "realAppReceivedExpectedUnicodeText": true,
+        "serverReleasedTurnLease": true,
+        "leaseReleasedAfterWorkerExit": true
+      },
+      "operations": [
+        "resolveApps",
+        "resolveApps",
+        "activateApp",
+        "screenshot",
+        "resolveApps",
+        "inspect",
+        "resolveApps",
+        "elementAction",
+        "resolveApps",
+        "elementAction",
+        "type",
+        "resolveApps",
+        "inspect"
+      ]
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-6.1-sol",
+      "completed": true,
+      "interrupted": false,
+      "authenticationRejected": false,
+      "additionalApprovalMethods": [
+        "mcpServer/elicitation/request",
+        "mcpServer/elicitation/request",
+        "mcpServer/elicitation/request",
+        "mcpServer/elicitation/request",
+        "mcpServer/elicitation/request"
+      ],
+      "additionalApprovalDecisions": ["accept", "accept", "accept", "accept", "accept"],
+      "elapsedMs": 55181,
+      "state": "passed",
+      "exitCode": 0,
+      "checks": {
+        "providerCompleted": true,
+        "scriptedFixtureConsent": true,
+        "nativeCaptureDispatched": true,
+        "nativeInspectionDispatched": true,
+        "nativeInputDispatched": true,
+        "nativeCaptureSucceeded": true,
+        "nativeInspectionSucceeded": true,
+        "nativeInputSucceeded": true,
+        "realAppReceivedExactlyOnePress": true,
+        "realAppReceivedExpectedUnicodeText": true,
+        "serverReleasedTurnLease": true,
+        "leaseReleasedAfterWorkerExit": true
+      },
+      "operations": [
+        "resolveApps",
+        "resolveApps",
+        "activateApp",
+        "screenshot",
+        "resolveApps",
+        "inspect",
+        "resolveApps",
+        "elementAction",
+        "resolveApps",
+        "elementAction",
+        "type",
+        "resolveApps",
+        "inspect"
+      ]
+    }
+  ],
+  "limitations": [
+    "Production controller, lease, host IPC, broker and provider transports; no Electron renderer or real overlay windows",
+    "Scripted consent permits only this run's synthetic fixture; no real trusted consent dialog proof",
+    "Physical kill chord, stop latency, renderer/backend stalls and multiple profiles/displays remain pending",
+    "Real-app workflow/capture matrix, Windows desktop, signing and installed-build TCC attribution remain pending",
+    "Provider built-in and Chrome integration gates remain closed"
+  ],
+  "signingDeferredByUser": true,
+  "providerVersions": {
+    "claudeAgentSdk": "0.3.295",
+    "codexCli": "0.162.1"
+  }
+}

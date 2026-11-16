@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
-import type { PreToolUseHookInput, Options } from "@anthropic-ai/claude-agent-sdk";
 import {
+  BUILTIN_TOOL_NAMES,
+  LEGACY_TOOL_NAME_ALIASES,
+  type PreToolUseHookInput,
+  type Options,
+} from "@anthropic-ai/claude-agent-sdk";
+import {
+  CLAUDE_DELEGATION_TOOLS,
+  CLAUDE_WORKSPACE_MUTATION_TOOLS,
+  canonicalClaudeToolName,
   claudeMandatoryPolicyOptions,
   evaluateClaudeMandatoryHookPolicy,
   evaluateClaudeMandatoryPolicy,
+  isClaudePlanModeWorkspaceEdit,
 } from "./claudeMandatoryPolicy.ts";
 
 const hookInput = (name: string): PreToolUseHookInput => ({
@@ -93,6 +102,24 @@ describe("mandatory Claude policy before native permissions", () => {
         { toolInput: { file_path: "/home/me/.claude/plans/quiet-fox.md" } },
       ),
     ).toContain("not permitted");
+  });
+  it("classifies plan-mode workspace edits, excluding plan-file writes", () => {
+    const context = { plansDirectory: "/home/me/.claude/plans", cwd: "/repo" };
+    const edits = (toolName: string, filePath: string) =>
+      isClaudePlanModeWorkspaceEdit(toolName, { file_path: filePath }, context);
+    expect(edits("Write", "/home/me/.claude/plans/quiet-fox.md")).toBe(false);
+    expect(edits("Edit", "/home/me/.claude/plans/quiet-fox.md")).toBe(false);
+    expect(edits("Write", "/repo/src/index.ts")).toBe(true);
+    expect(edits("Edit", "src/index.ts")).toBe(true);
+    expect(edits("NotebookEdit", "/home/me/.claude/plans/x.ipynb")).toBe(true);
+    expect(edits("Bash", "/repo/src/index.ts")).toBe(false);
+    expect(
+      isClaudePlanModeWorkspaceEdit(
+        "Write",
+        { file_path: "/home/me/.claude/plans/quiet-fox.md" },
+        { plansDirectory: undefined, cwd: "/repo" },
+      ),
+    ).toBe(true);
   });
   it("still denies delegation in read-only workflows when sub-agents are disabled", () => {
     expect(
@@ -206,5 +233,35 @@ describe("mandatory Claude policy before native permissions", () => {
     expect(options.disallowedTools).toEqual(["*"]);
     for (const name of ["Read", "Bash", "Agent", "mcp__server__tool"])
       expect(evaluateClaudeMandatoryPolicy({ noTools: true }, name)).toContain("disabled");
+  });
+  it("blocks the tool when the hook fails only when the CLI can honor it", () => {
+    expect(
+      claudeMandatoryPolicyOptions({ failClosed: true }).hooks!.PreToolUse![0]!.onFailure,
+    ).toBe("block");
+    expect(claudeMandatoryPolicyOptions({}).hooks!.PreToolUse![0]).not.toHaveProperty("onFailure");
+  });
+  it("evaluates a former tool name as its current one", async () => {
+    expect(canonicalClaudeToolName("KillBash")).toBe("TaskStop");
+    expect(canonicalClaudeToolName("task")).toBe("Agent");
+    expect(canonicalClaudeToolName("Write")).toBe("Write");
+    const dynamic: string[] = [];
+    const options = claudeMandatoryPolicyOptions({
+      evaluateDynamic: async (name) => {
+        dynamic.push(name);
+        return undefined;
+      },
+    });
+    await options.hooks!.PreToolUse![0]!.hooks[0]!(hookInput("KillShell"), undefined, {
+      signal: new AbortController().signal,
+    });
+    expect(dynamic).toEqual(["TaskStop"]);
+  });
+  it("only names tools the bundled runtime still has (or a legacy alias of one)", () => {
+    const builtins = new Set<string>(BUILTIN_TOOL_NAMES);
+    for (const name of CLAUDE_WORKSPACE_MUTATION_TOOLS) expect(builtins, name).toContain(name);
+    for (const name of CLAUDE_DELEGATION_TOOLS)
+      expect(builtins.has(name) || builtins.has(LEGACY_TOOL_NAME_ALIASES[name] ?? ""), name).toBe(
+        true,
+      );
   });
 });

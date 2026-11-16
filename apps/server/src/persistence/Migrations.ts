@@ -1,3 +1,59 @@
+import Migration0147 from "./Migrations/147_StorageMachineCleanupAudit.ts";
+import Migration0161 from "./Migrations/161_UsageNativeIdentity.ts";
+import Migration0154 from "./Migrations/154_DesktopActivityPendingIndex.ts";
+import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts";
+import Migration0156 from "./Migrations/156_UpstreamReclassifyRuns.ts";
+import Migration0157 from "./Migrations/157_ProjectionThreadActivitiesWorktreeSetupIndex.ts";
+import Migration0158 from "./Migrations/158_ProviderTurnDeliveryPendingIndex.ts";
+import Migration0159 from "./Migrations/159_EventCompactionKeepLast.ts";
+import Migration0160 from "./Migrations/160_DropUnreadEventIndexes.ts";
+import Migration0162 from "./Migrations/162_UsageFactsThreadIndex.ts";
+import Migration0163 from "./Migrations/163_DropUnreadReceiptIndexes.ts";
+import Migration0164 from "./Migrations/164_UpstreamPortReviewRecovery.ts";
+import Migration0165 from "./Migrations/165_UsageResetCreditGrant.ts";
+import Migration0166 from "./Migrations/166_ThreadPullRequestLookupIndex.ts";
+import Migration0167 from "./Migrations/167_PrHubSeenBaseline.ts";
+import Migration0152 from "./Migrations/152_UpstreamTopicOutcomes.ts";
+import Migration0137 from "./Migrations/137_UpstreamPorts.ts";
+import Migration0136 from "./Migrations/136_ScratchProjects.ts";
+import Migration0135 from "./Migrations/135_RestartBackgroundWork.ts";
+import Migration0134 from "./Migrations/134_BackgroundWorkEffort.ts";
+import Migration0133 from "./Migrations/133_NativeHistoryRetiredTurns.ts";
+import Migration0132 from "./Migrations/132_McpApps.ts";
+import Migration0131 from "./Migrations/131_ThreadSettlement.ts";
+import Migration0130 from "./Migrations/130_ThreadPullRequestWatches.ts";
+import Migration0129 from "./Migrations/129_PrHubReviewGuides.ts";
+import Migration0128 from "./Migrations/128_ProviderTurnDeliveryBoundaryIndex.ts";
+import Migration0138 from "./Migrations/138_ScheduledTasks.ts";
+import Migration0139 from "./Migrations/139_ScheduledTaskQuarantine.ts";
+import Migration0140 from "./Migrations/140_UpstreamTopicHistoryIndex.ts";
+import Migration0141 from "./Migrations/141_QueueHumanSend.ts";
+import Migration0142 from "./Migrations/142_ScheduledRunSharedThreads.ts";
+import Migration0143 from "./Migrations/143_UpstreamPortQueue.ts";
+import Migration0144 from "./Migrations/144_UpstreamOutcomeRetries.ts";
+import Migration0145 from "./Migrations/145_UpstreamPortReviews.ts";
+import Migration0146 from "./Migrations/146_ProjectionThreadMessagesReasoningTokens.ts";
+import Migration0148 from "./Migrations/148_ProjectionThreadActivitiesRankIndex.ts";
+import Migration0149 from "./Migrations/149_ThreadReferenceGrants.ts";
+import Migration0150 from "./Migrations/150_ExcludeImageOnlyPromptFromSearch.ts";
+import Migration0151 from "./Migrations/151_ProviderHandoffState.ts";
+import Migration0153 from "./Migrations/153_ProjectionThreadCommandExecutionsDescription.ts";
+import Migration0127 from "./Migrations/127_ClearPlanningWorkflowLaneBranches.ts";
+import Migration0126 from "./Migrations/126_ProviderTerminalRecoveryIndexes.ts";
+import Migration0124 from "./Migrations/124_ProviderTerminalRetry.ts";
+import Migration0125 from "./Migrations/125_ProviderTerminalRetryIndexes.ts";
+import Migration0123 from "./Migrations/123_WorkspaceMoveRecoveryIndex.ts";
+import Migration0122 from "./Migrations/122_StorageActivity.ts";
+import Migration0121 from "./Migrations/121_AttachmentDeletionGuards.ts";
+import Migration0120 from "./Migrations/120_ProjectMcpDisabledCommonServers.ts";
+import Migration0119 from "./Migrations/119_WorkspaceTransitions.ts";
+import Migration0118 from "./Migrations/118_WorktreePreparations.ts";
+import Migration0117 from "./Migrations/117_WorkflowSummaries.ts";
+import Migration0116 from "./Migrations/116_UsageAccountHistory.ts";
+import Migration0115 from "./Migrations/115_DeliveryHistoryEvidence.ts";
+import Migration0114 from "./Migrations/114_BotTasks.ts";
+import Migration0113 from "./Migrations/113_AgentBridge.ts";
+import Migration0112 from "./Migrations/112_ProviderNativeCommandIds.ts";
 import Migration0111 from "./Migrations/111_ThreadBackgroundWorkIdentity.ts";
 import Migration0110 from "./Migrations/110_NativeOperations.ts";
 import Migration0107 from "./Migrations/107_DatabaseCompaction.ts";
@@ -144,6 +200,63 @@ import Migration0102 from "./Migrations/102_ForgeAccounts.ts";
 import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
 
 export const MIGRATIONS = {
+  "161_UsageNativeIdentity": Migration0161,
+  "154_DesktopActivityPendingIndex": Migration0154,
+  "155_BackgroundWorkNativeParentSession": Migration0155,
+  "156_UpstreamReclassifyRuns": Migration0156,
+  "157_ProjectionThreadActivitiesWorktreeSetupIndex": Migration0157,
+  "158_ProviderTurnDeliveryPendingIndex": Migration0158,
+  "159_EventCompactionKeepLast": Migration0159,
+  "160_DropUnreadEventIndexes": Migration0160,
+  "162_UsageFactsThreadIndex": Migration0162,
+  "163_DropUnreadReceiptIndexes": Migration0163,
+  "164_UpstreamPortReviewRecovery": Migration0164,
+  "165_UsageResetCreditGrant": Migration0165,
+  "166_ThreadPullRequestLookupIndex": Migration0166,
+  "167_PrHubSeenBaseline": Migration0167,
+  "152_UpstreamTopicOutcomes": Migration0152,
+  "147_StorageMachineCleanupAudit": Migration0147,
+  // 124 to 128 shipped on main first; the October migrations follow them.
+  "137_UpstreamPorts": Migration0137,
+  "136_ScratchProjects": Migration0136,
+  "135_RestartBackgroundWork": Migration0135,
+  "131_ThreadSettlement": Migration0131,
+  "132_McpApps": Migration0132,
+  "133_NativeHistoryRetiredTurns": Migration0133,
+  "134_BackgroundWorkEffort": Migration0134,
+  "130_ThreadPullRequestWatches": Migration0130,
+  "129_PrHubReviewGuides": Migration0129,
+  "124_ProviderTerminalRetry": Migration0124,
+  "125_ProviderTerminalRetryIndexes": Migration0125,
+  "126_ProviderTerminalRecoveryIndexes": Migration0126,
+  "127_ClearPlanningWorkflowLaneBranches": Migration0127,
+  "128_ProviderTurnDeliveryBoundaryIndex": Migration0128,
+  "138_ScheduledTasks": Migration0138,
+  "139_ScheduledTaskQuarantine": Migration0139,
+  "140_UpstreamTopicHistoryIndex": Migration0140,
+  "141_QueueHumanSend": Migration0141,
+  "142_ScheduledRunSharedThreads": Migration0142,
+  "143_UpstreamPortQueue": Migration0143,
+  "144_UpstreamOutcomeRetries": Migration0144,
+  "145_UpstreamPortReviews": Migration0145,
+  "146_ProjectionThreadMessagesReasoningTokens": Migration0146,
+  "148_ProjectionThreadActivitiesRankIndex": Migration0148,
+  "149_ThreadReferenceGrants": Migration0149,
+  "150_ExcludeImageOnlyPromptFromSearch": Migration0150,
+  "151_ProviderHandoffState": Migration0151,
+  "153_ProjectionThreadCommandExecutionsDescription": Migration0153,
+  "122_StorageActivity": Migration0122,
+  "123_WorkspaceMoveRecoveryIndex": Migration0123,
+  "121_AttachmentDeletionGuards": Migration0121,
+  "119_WorkspaceTransitions": Migration0119,
+  "120_ProjectMcpDisabledCommonServers": Migration0120,
+  "118_WorktreePreparations": Migration0118,
+  "116_UsageAccountHistory": Migration0116,
+  "117_WorkflowSummaries": Migration0117,
+  "115_DeliveryHistoryEvidence": Migration0115,
+  "114_BotTasks": Migration0114,
+  "113_AgentBridge": Migration0113,
+  "112_ProviderNativeCommandIds": Migration0112,
   "111_ThreadBackgroundWorkIdentity": Migration0111,
   "110_NativeOperations": Migration0110,
   "109_AttachmentOwnerActivity": Migration0109,

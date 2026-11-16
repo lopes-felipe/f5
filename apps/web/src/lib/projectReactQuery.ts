@@ -7,45 +7,13 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
+import type { ComposerPathSearchTarget } from "../composer-logic";
 import { ensureNativeApi } from "~/nativeApi";
 import { randomUUID } from "./utils";
 
-export const projectQueryKeys = {
-  all: ["projects"] as const,
-  listDirectories: (cwd: string | null) => ["projects", "list-directory", cwd] as const,
-  listDirectory: (
-    cwd: string | null,
-    relativePath: string,
-    includeIgnored: boolean,
-    limit: number | undefined,
-  ) => ["projects", "list-directory", cwd, relativePath, includeIgnored, limit ?? null] as const,
-  listEntries: (cwd: string | null, limit: number | undefined) =>
-    ["projects", "list-entries", cwd, limit ?? null] as const,
-  searchEntries: (cwd: string | null, query: string, limit: number) =>
-    ["projects", "search-entries", cwd, query, limit] as const,
-  searchContents: (input: {
-    projectId: ProjectId | null;
-    threadId: ThreadId | null;
-    query: string;
-    caseSensitive: boolean;
-    wholeWord: boolean;
-    useRegex: boolean;
-    limit: number;
-  }) =>
-    [
-      "projects",
-      "search-contents",
-      input.projectId,
-      input.threadId,
-      input.query,
-      input.caseSensitive,
-      input.wholeWord,
-      input.useRegex,
-      input.limit,
-    ] as const,
-  filesystemBrowse: (partialPath: string, cwd: string | null) =>
-    ["filesystem", "browse", partialPath, cwd] as const,
-};
+import { projectQueryKeys } from "./projectQueryKeys";
+
+export { projectQueryKeys } from "./projectQueryKeys";
 
 const DEFAULT_SEARCH_ENTRIES_LIMIT = 80;
 const DEFAULT_SEARCH_ENTRIES_STALE_TIME = 15_000;
@@ -111,6 +79,7 @@ export function projectListEntriesQueryOptions(input: {
   });
 }
 
+/** Keep each result's search identity when TanStack reuses it as placeholder data. */
 export function projectSearchEntriesQueryOptions(input: {
   cwd: string | null;
   query: string;
@@ -121,20 +90,27 @@ export function projectSearchEntriesQueryOptions(input: {
   const limit = input.limit ?? DEFAULT_SEARCH_ENTRIES_LIMIT;
   return queryOptions({
     queryKey: projectQueryKeys.searchEntries(input.cwd, input.query, limit),
-    queryFn: async () => {
+    queryFn: async (): Promise<
+      ProjectSearchEntriesResult & { searchedTarget: ComposerPathSearchTarget }
+    > => {
       const api = ensureNativeApi();
       if (!input.cwd) {
         throw new Error("Workspace entry search is unavailable.");
       }
-      return api.projects.searchEntries({
+      const result = await api.projects.searchEntries({
         cwd: input.cwd,
         query: input.query,
         limit,
       });
+      return { ...result, searchedTarget: { cwd: input.cwd, query: input.query } };
     },
     enabled: (input.enabled ?? true) && input.cwd !== null,
     staleTime: input.staleTime ?? DEFAULT_SEARCH_ENTRIES_STALE_TIME,
-    placeholderData: (previous) => previous ?? EMPTY_SEARCH_ENTRIES_RESULT,
+    placeholderData: (previous) =>
+      previous ?? {
+        ...EMPTY_SEARCH_ENTRIES_RESULT,
+        searchedTarget: { cwd: input.cwd, query: input.query },
+      },
   });
 }
 

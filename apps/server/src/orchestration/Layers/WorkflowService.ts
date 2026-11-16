@@ -1,3 +1,7 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
+import { setupProjectScript } from "@t3tools/shared/projectScripts";
+import { makeWorkflowArchiveLifecycle } from "../workflowArchiveLifecycle.ts";
 import {
   CommandId,
   DOCUMENT_WORKFLOW_TEMPLATE_ID,
@@ -15,7 +19,7 @@ import {
   type WorkflowReviewSlot,
 } from "@t3tools/contracts";
 import { createHash } from "node:crypto";
-import { Cause, Clock, Duration, Effect, Layer, Stream } from "effect";
+import { Cause, Clock, Duration, Effect, Layer, Scope, Stream } from "effect";
 import {
   defaultDocumentReaderSlot,
   documentWorkflowForThread,
@@ -24,7 +28,7 @@ import {
   validateDocumentArtifact,
   type DocumentValidationResult,
 } from "@t3tools/shared/documentWorkflow";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
 import { planningWorkflowBranchFailureStage } from "@t3tools/shared/planningWorkflow";
 import {
@@ -35,12 +39,10 @@ import {
 import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowArchive";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 
-import { ServerConfig } from "../../config.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckpointDiffQuery } from "../../checkpointing/Services/CheckpointDiffQuery.ts";
 import { truncatePatchAtFileBoundary } from "../../git/patchTruncation.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
-import { resolveDefaultWorktreePath } from "../../git/worktreePaths.ts";
 import { buildFallbackTitle, resolveBestEffortGeneratedTitle } from "../../threadTitle.ts";
 import {
   OrchestrationEngineService,
@@ -83,8 +85,7 @@ import {
   nextWorkflowSlug,
   reviewFeedbackForPinnedTurn,
   slotLabel,
-  workflowArtifactFit,
-  WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+  workflowPromptFitError,
 } from "../workflowSharedUtils.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 import {
@@ -145,29 +146,15 @@ function workflowPromptInvariant(input: {
     "estimatedContextTokens"
   > | null;
 }): OrchestrationCommandInvariantError | null {
-  if (input.prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
-    return new OrchestrationCommandInvariantError({
-      commandType: "workflow.turn.start",
-      detail: `${input.artifactLabel} rendered prompt is ${input.prompt.length} characters; maximum is ${WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT}.`,
-    });
-  }
   const behavior = resolveWorkflowBehavior({
     runKind: "planning",
     templateId: input.workflow.templateId,
     templateVersion: input.workflow.templateVersion,
   });
-  if (!behavior.loudAuthoritativeArtifactLimit) return null;
-  const fit = workflowArtifactFit({
-    artifacts: input.artifacts,
-    targetSlot: input.targetSlot,
-    ...(input.thread ? { thread: input.thread } : {}),
+  return workflowPromptFitError({
+    ...input,
+    enforceArtifactBudget: behavior.loudAuthoritativeArtifactLimit,
   });
-  return fit.fits
-    ? null
-    : new OrchestrationCommandInvariantError({
-        commandType: "workflow.turn.start",
-        detail: `${input.artifactLabel} requires an estimated ${fit.estimatedTokens} tokens; only ${fit.availableTokens} authoritative-artifact tokens are available.`,
-      });
 }
 
 type WorkflowTitleGenerationWorkItem = {
@@ -1155,6 +1142,32 @@ function hasProposedPlanForTurn(
   return thread.proposedPlans.some((plan) => plan.turnId === turnId);
 }
 
+// Review thread ids are derived from the draft turn they reviewed, so the
+// reviewed draft stays recoverable even if `planTurnId` was later overwritten.
+function reviewedPlanTurnIdForBranch(
+  workflow: PlanningWorkflow,
+  branchId: "a" | "b",
+  branch: PlanningWorkflow["branchA"],
+  snapshot: OrchestrationReadModel,
+): TurnId | null {
+  if (branch.reviews.length === 0) return null;
+  const thread = snapshot.threads.find((entry) => entry.id === branch.authorThreadId);
+  if (!thread) return null;
+  for (const plan of thread.proposedPlans) {
+    const turnId = plan.turnId;
+    if (
+      turnId &&
+      branch.reviews.every(
+        (review) =>
+          review.threadId ===
+          stableWorkflowUuid("plan-review-thread", workflow.id, branchId, review.slot, turnId),
+      )
+    )
+      return turnId;
+  }
+  return null;
+}
+
 function validateCapturedPlanForTurn(input: {
   readonly workflow: PlanningWorkflow;
   readonly provider: PlanningWorkflow["branchA"]["authorSlot"]["provider"];
@@ -1294,10 +1307,10 @@ function resolveMergedPlanForImplementation(
 }
 
 export const makeWorkflowService = Effect.gen(function* () {
+  const sources = yield* makeShutdownSourceScope("planning-workflows-sources");
   const baseOrchestrationEngine = yield* OrchestrationEngineService;
   const textGeneration = yield* TextGeneration;
   const gitCore = yield* GitCore;
-  const serverConfig = yield* ServerConfig;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const providerTurnDeliveryWorker = yield* Effect.serviceOption(ProviderTurnDeliveryWorker);
   const providerTurnDeliveryRepository = yield* Effect.serviceOption(
@@ -1315,7 +1328,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   const upsertWorkflow = (workflow: PlanningWorkflow) =>
     orchestrationEngine.dispatch({
       type: "project.workflow.upsert",
-      commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+      commandId: CommandId.makeUnsafe(timeOrderedUuid()),
       projectId: workflow.projectId,
       workflow,
       createdAt: workflow.updatedAt,
@@ -1462,7 +1475,8 @@ export const makeWorkflowService = Effect.gen(function* () {
           ),
         ),
       ),
-      Effect.forkScoped,
+      Scope.provide(sources.scope),
+      Effect.forkIn(sources.scope),
     );
 
   const forkPlanningReviewAutoRetry = (input: {
@@ -1571,10 +1585,11 @@ export const makeWorkflowService = Effect.gen(function* () {
           );
         }),
       ),
-      Effect.forkScoped,
+      Scope.provide(sources.scope),
+      Effect.forkIn(sources.scope),
     );
 
-  const titleGenerationWorker = yield* makeDrainableWorker(
+  const titleGenerationWorker = yield* makeBackgroundWorker(
     (item: WorkflowTitleGenerationWorkItem) =>
       Effect.gen(function* () {
         const snapshot = yield* orchestrationEngine.getReadModel();
@@ -1629,6 +1644,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           }),
         ),
       ),
+    { name: "WorkflowService", key: (item) => String(item.workflowId) },
   );
 
   const reviewFeedbackForBranch = (
@@ -1779,7 +1795,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
         yield* orchestrationEngine.dispatch({
           type: "thread.proposed-plan.upsert",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId: input.thread.id,
           proposedPlan: {
             id: OrchestrationProposedPlanId.makeUnsafe(crypto.randomUUID()),
@@ -1815,7 +1831,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
       yield* orchestrationEngine.dispatch({
         type: "thread.proposed-plan.upsert",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
         threadId: input.thread.id,
         proposedPlan: {
           id: OrchestrationProposedPlanId.makeUnsafe(crypto.randomUUID()),
@@ -1853,6 +1869,21 @@ export const makeWorkflowService = Effect.gen(function* () {
           ? workflow.branchA
           : workflow.branchB
         : null;
+      // Format repair may create a new turn only for a currently running stage.
+      if (
+        branch
+          ? branch.status !== "authoring" && branch.status !== "revising"
+          : workflow.merge.status !== "in_progress"
+      )
+        return;
+      // A turn this stage already rejected has its repair outstanding. A later
+      // evaluation of it (a session update while the repair turn starts, with
+      // the same logical timestamp) must neither repair nor fail it again.
+      if (
+        input.turnId ===
+        (branch ? branch.rejectedDocumentTurnId : workflow.merge.rejectedDocumentTurnId)
+      )
+        return;
       const provider = branch?.authorSlot.provider ?? workflow.merge.mergeSlot.provider;
       const validation = validateCapturedPlanForTurn({
         workflow: workflow,
@@ -1861,24 +1892,52 @@ export const makeWorkflowService = Effect.gen(function* () {
         turnId: input.turnId,
       });
       if (validation.valid) return;
-      if (isDocumentWorkflow(workflow)) {
-        if (branch && input.branchId) {
-          branch = { ...branch, rejectedDocumentTurnId: input.turnId };
-          workflow = { ...workflow, [input.branchId === "a" ? "branchA" : "branchB"]: branch };
-        } else {
-          workflow = {
-            ...workflow,
-            merge: { ...workflow.merge, rejectedDocumentTurnId: input.turnId },
-          };
-        }
+      // Every workflow kind records the rejected turn, so the stage evaluates it once. Planning
+      // workflows record it only once the repair turn was dispatched: until then a repeated
+      // evaluation must still be able to fail the stage visibly (dispatch failure, restart),
+      // instead of skipping the turn with no repair running. Events are handled one at a
+      // time, so the record lands before any event the dispatch itself causes.
+      const deferRejection = !isDocumentWorkflow(workflow);
+      const beforeRejection = { workflow, branch };
+      // A repair turn that cannot be dispatched fails its stage visibly (with Retry) instead
+      // of leaving it running with no turn. Returns whether the turn was dispatched.
+      const dispatchRepair = <E, R>(
+        start: Effect.Effect<unknown, E, R>,
+        failed: (message: string) => PlanningWorkflow,
+      ) =>
+        start.pipe(
+          Effect.as(true),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("workflow format repair turn could not be dispatched", {
+                  workflowId: workflow.id,
+                  cause: Cause.pretty(cause),
+                }).pipe(
+                  Effect.andThen(
+                    upsertWorkflow(failed("The format repair turn could not be started.")),
+                  ),
+                  Effect.as(false),
+                ),
+          ),
+        );
+      if (branch && input.branchId) {
+        branch = { ...branch, rejectedDocumentTurnId: input.turnId };
+        workflow = { ...workflow, [input.branchId === "a" ? "branchA" : "branchB"]: branch };
+      } else {
+        workflow = {
+          ...workflow,
+          merge: { ...workflow.merge, rejectedDocumentTurnId: input.turnId },
+        };
       }
 
       const error = `${isDocumentWorkflow(workflow) ? "Invalid document" : "Invalid proposed-plan capture"}: ${validation.error}`;
+      const branchStage = branch?.status === "revising" ? "revision" : "authoring";
       const budgetError = workflowBudgetError(workflow);
       if (
         budgetError &&
         (branch
-          ? branch.status === "revising"
+          ? branchStage === "revision"
             ? (branch.revisionFormatRepairAttempts ?? 0)
             : (branch.authorFormatRepairAttempts ?? 0)
           : (workflow.merge.formatRepairAttempts ?? 0)) < 1
@@ -1887,7 +1946,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           branch && input.branchId
             ? markBranchError(workflow, input.branchId, {
                 error: budgetError.message,
-                stage: branch.status === "revising" ? "revision" : "authoring",
+                stage: branchStage,
                 updatedAt: input.createdAt,
               })
             : markMergeError(workflow, budgetError.message, input.createdAt),
@@ -1895,7 +1954,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
       if (branch && input.branchId) {
-        const stage = branch.status === "revising" ? ("revision" as const) : ("authoring" as const);
+        const stage = branchStage;
         const formatRepairAttempts =
           stage === "revision"
             ? (branch.revisionFormatRepairAttempts ?? 0)
@@ -1911,17 +1970,18 @@ export const makeWorkflowService = Effect.gen(function* () {
           return;
         }
 
+        const retryBase = deferRejection ? beforeRejection : { workflow, branch };
         const repairedBranch: PlanningWorkflow["branchA"] = {
-          ...branch,
+          ...retryBase.branch!,
           ...(stage === "revision"
             ? { revisionFormatRepairAttempts: formatRepairAttempts + 1 }
             : { authorFormatRepairAttempts: formatRepairAttempts + 1 }),
           updatedAt: input.createdAt,
         };
         const retryWorkflow: PlanningWorkflow = {
-          ...workflow,
-          branchA: input.branchId === "a" ? repairedBranch : workflow.branchA,
-          branchB: input.branchId === "b" ? repairedBranch : workflow.branchB,
+          ...retryBase.workflow,
+          branchA: input.branchId === "a" ? repairedBranch : retryBase.workflow.branchA,
+          branchB: input.branchId === "b" ? repairedBranch : retryBase.workflow.branchB,
           updatedAt: input.createdAt,
         };
         const retryBranch = input.branchId === "a" ? retryWorkflow.branchA : retryWorkflow.branchB;
@@ -1932,14 +1992,26 @@ export const makeWorkflowService = Effect.gen(function* () {
           reusedThread: true,
           priorFailure: error,
         };
-        if (stage === "authoring") {
-          yield* startAuthoringTurn({
-            orchestrationEngine,
-            workflow: retryWorkflow,
-            branch: retryBranch,
-            createdAt: input.createdAt,
-            retry,
+        const branchId = input.branchId;
+        const failBranch = (message: string) =>
+          markBranchError(retryWorkflow, branchId, {
+            error: `${error} ${message}`,
+            stage,
+            updatedAt: input.createdAt,
           });
+        if (stage === "authoring") {
+          const started = yield* dispatchRepair(
+            startAuthoringTurn({
+              orchestrationEngine,
+              workflow: retryWorkflow,
+              branch: retryBranch,
+              createdAt: input.createdAt,
+              retry,
+            }),
+            failBranch,
+          );
+          if (started && deferRejection)
+            yield* recordRejectedPlanTurn(workflow.id, branchId, input.turnId);
           return;
         }
 
@@ -1960,16 +2032,21 @@ export const makeWorkflowService = Effect.gen(function* () {
           );
           return;
         }
-        yield* startRevisionTurn({
-          orchestrationEngine,
-          workflow: retryWorkflow,
-          branch: retryBranch,
-          originalPlanMarkdown: originalPlan,
-          reviews,
-          thread: input.thread,
-          createdAt: input.createdAt,
-          retry,
-        });
+        const started = yield* dispatchRepair(
+          startRevisionTurn({
+            orchestrationEngine,
+            workflow: retryWorkflow,
+            branch: retryBranch,
+            originalPlanMarkdown: originalPlan,
+            reviews,
+            thread: input.thread,
+            createdAt: input.createdAt,
+            retry,
+          }),
+          failBranch,
+        );
+        if (started && deferRejection)
+          yield* recordRejectedPlanTurn(workflow.id, branchId, input.turnId);
         return;
       }
 
@@ -1999,30 +2076,70 @@ export const makeWorkflowService = Effect.gen(function* () {
         );
         return;
       }
+      const mergeBase = deferRejection ? beforeRejection.workflow : workflow;
       const retryWorkflow: PlanningWorkflow = {
-        ...workflow,
+        ...mergeBase,
         merge: {
-          ...workflow.merge,
+          ...mergeBase.merge,
           status: "in_progress",
           error: null,
-          formatRepairAttempts: (workflow.merge.formatRepairAttempts ?? 0) + 1,
+          formatRepairAttempts: (mergeBase.merge.formatRepairAttempts ?? 0) + 1,
           updatedAt: input.createdAt,
         },
         updatedAt: input.createdAt,
       };
       yield* upsertWorkflow(retryWorkflow);
-      yield* startMergeTurn({
-        orchestrationEngine,
-        workflow: retryWorkflow,
-        threadId: workflow.merge.threadId,
-        planA,
-        planB,
-        reviews: [
-          ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchA, input.snapshot)),
-          ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchB, input.snapshot)),
-        ],
-        createdAt: input.createdAt,
-        retry: { kind: "retry", formatRepair: true, reusedThread: true, priorFailure: error },
+      const reviews = [
+        ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchA, input.snapshot)),
+        ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchB, input.snapshot)),
+      ];
+      const started = yield* dispatchRepair(
+        startMergeTurn({
+          orchestrationEngine,
+          workflow: retryWorkflow,
+          threadId: workflow.merge.threadId,
+          planA,
+          planB,
+          reviews,
+          createdAt: input.createdAt,
+          retry: { kind: "retry", formatRepair: true, reusedThread: true, priorFailure: error },
+        }),
+        (message) => markMergeError(retryWorkflow, `${error} ${message}`, input.createdAt),
+      );
+      if (started && deferRejection)
+        yield* recordRejectedPlanTurn(workflow.id, undefined, input.turnId);
+    });
+
+  /**
+   * Records a planning stage's rejected turn once its repair turn was dispatched, on the
+   * workflow as it is now: dispatching may itself have updated it.
+   */
+  const recordRejectedPlanTurn = (
+    workflowId: PlanningWorkflow["id"],
+    branchId: "a" | "b" | undefined,
+    turnId: TurnId,
+  ) =>
+    Effect.gen(function* () {
+      const current = (yield* orchestrationEngine.getReadModel()).planningWorkflows.find(
+        (entry) => entry.id === workflowId,
+      );
+      if (!current) return;
+      if (branchId) {
+        const key = branchId === "a" ? "branchA" : "branchB";
+        const branch = current[key];
+        if (
+          (branch.status !== "authoring" && branch.status !== "revising") ||
+          branch.rejectedDocumentTurnId === turnId
+        )
+          return;
+        yield* upsertWorkflow({ ...current, [key]: { ...branch, rejectedDocumentTurnId: turnId } });
+        return;
+      }
+      if (current.merge.status !== "in_progress" || current.merge.rejectedDocumentTurnId === turnId)
+        return;
+      yield* upsertWorkflow({
+        ...current,
+        merge: { ...current.merge, rejectedDocumentTurnId: turnId },
       });
     });
 
@@ -2595,6 +2712,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       const snapshot = yield* orchestrationEngine.getReadModel();
       const persisted = snapshot.planningWorkflows.find((entry) => entry.id === workflow.id);
       if (persisted) current = persisted;
+      if (isArchivedWorkflow(current)) return;
       const pass = current.readerPass;
       if (!pass || current.merge.status !== "merged") return;
       const stage =
@@ -2825,6 +2943,7 @@ export const makeWorkflowService = Effect.gen(function* () {
     updatedAt: string,
   ) =>
     Effect.gen(function* () {
+      if (isArchivedWorkflow(workflow)) return;
       yield* maybeStartReviews(workflow, snapshot, updatedAt);
       yield* maybeStartRevisions(workflow, snapshot, updatedAt);
       yield* maybeStartMerge(workflow, snapshot, updatedAt);
@@ -2913,15 +3032,33 @@ export const makeWorkflowService = Effect.gen(function* () {
           return workflow;
         }
         const failureStage = planningWorkflowBranchFailureStage(branch);
-        const isRevisionCompletion = branch.status === "revising" || failureStage === "revision";
-        const isAuthoringCompletion = branch.status === "authoring" || failureStage === "authoring";
+        // Once the current draft has been fully reviewed, the next author turn
+        // is a revision even if a stale failure stage says otherwise.
+        const currentDraftReviewed =
+          branch.reviews.length > 0 &&
+          branch.reviews.every((review) => review.status === "completed") &&
+          reviewedPlanTurnIdForBranch(workflow, authorBranchId, branch, snapshot) ===
+            branch.planTurnId;
+        const authoringStage = branch.status === "authoring" || failureStage === "authoring";
+        const isRevisionCompletion =
+          branch.status === "revising" ||
+          failureStage === "revision" ||
+          (authoringStage && currentDraftReviewed);
+        const isAuthoringCompletion = authoringStage && !currentDraftReviewed;
         if (!isAuthoringCompletion && !isRevisionCompletion) {
           return workflow;
         }
         if (isRevisionCompletion && turnId === branch.planTurnId) {
           return workflow;
         }
-        if (isDocumentWorkflow(workflow) && turnId === branch.rejectedDocumentTurnId) {
+        // A rejected turn is not evaluated again while its stage still runs.
+        // Planning branches in error may still accept a late valid capture.
+        if (
+          turnId === branch.rejectedDocumentTurnId &&
+          (isDocumentWorkflow(workflow) ||
+            branch.status === "authoring" ||
+            branch.status === "revising")
+        ) {
           return workflow;
         }
         const completionEvidenceAt =
@@ -2945,6 +3082,9 @@ export const makeWorkflowService = Effect.gen(function* () {
             createdAt: updatedAt,
           });
           if (!synthesized) {
+            // Valid late output can still be captured; a failed turn must not
+            // trigger another provider turn to repair invalid output.
+            if (branch.status === "error") return workflow;
             yield* retryOrFailInvalidPlanCapture({
               workflow,
               snapshot,
@@ -3014,7 +3154,10 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
       const mergeCompletionEvidenceAt =
         thread.latestTurn?.completedAt ?? thread.latestTurn?.requestedAt ?? null;
-      if (isDocumentWorkflow(workflow) && turnId === workflow.merge.rejectedDocumentTurnId)
+      if (
+        turnId === workflow.merge.rejectedDocumentTurnId &&
+        (isDocumentWorkflow(workflow) || workflow.merge.status === "in_progress")
+      )
         return workflow;
       if (
         workflow.merge.status === "error" &&
@@ -3038,6 +3181,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           createdAt: updatedAt,
         });
         if (!synthesized) {
+          if (workflow.merge.status === "error") return workflow;
           yield* retryOrFailInvalidPlanCapture({
             workflow,
             snapshot,
@@ -3049,6 +3193,9 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
       }
 
+      // The output path comes from the merge turn's file-change activity, which a
+      // thread archived before startup has not loaded yet.
+      yield* orchestrationEngine.ensureThreadActivities?.([threadId]) ?? Effect.void;
       const latestReadModel = yield* orchestrationEngine.getReadModel();
       const latestMergeThread =
         latestReadModel.threads.find((entry) => entry.id === threadId) ?? thread;
@@ -3408,9 +3555,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
 
       const prompt = buildImplementationRevisionPrompt({
-        requirementPrompt: workflow.requirementPrompt,
         reviews: reviewTexts,
-        targetSlot: workflow.implementation.implementationSlot,
       });
       const implementationThread = snapshot.threads.find(
         (entry) => entry.id === workflow.implementation?.threadId,
@@ -3453,7 +3598,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         const dispatchResult = yield* orchestrationEngine
           .dispatch({
             type: "thread.turn.start",
-            commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+            commandId: CommandId.makeUnsafe(timeOrderedUuid()),
             threadId: workflow.implementation.threadId,
             message: {
               messageId: MessageId.makeUnsafe(crypto.randomUUID()),
@@ -3560,6 +3705,14 @@ export const makeWorkflowService = Effect.gen(function* () {
     updatedAt: string,
   ) =>
     Effect.gen(function* () {
+      if (isArchivedWorkflow(workflow)) {
+        if (
+          workflow.implementation?.status === "implemented" &&
+          !workflow.implementation.codeReviewEnabled
+        )
+          yield* upsertWorkflow(markImplementationCompleted(workflow, null, updatedAt));
+        return;
+      }
       if (!workflow.implementation) {
         return;
       }
@@ -3678,7 +3831,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (!implementationThread) {
         yield* orchestrationEngine.dispatch({
           type: "thread.create",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId: implementation.threadId,
           projectId: workflow.projectId,
           title: "Implementation",
@@ -3716,7 +3869,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (!implementationThread?.latestTurn && !existingDelivery) {
         yield* orchestrationEngine.dispatch({
           type: "thread.turn.start",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId: implementation.threadId,
           message: {
             messageId: MessageId.makeUnsafe(crypto.randomUUID()),
@@ -3786,7 +3939,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
       return yield* orchestrationEngine.dispatch({
         type: "thread.turn.start",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
         threadId: input.thread.id,
         message: {
           messageId: MessageId.makeUnsafe(crypto.randomUUID()),
@@ -3874,6 +4027,55 @@ export const makeWorkflowService = Effect.gen(function* () {
         const repairedBranch: PlanningWorkflow["branchA"] = {
           ...branch,
           errorStage: legacyStage === "revision" ? "revision" : "authoring",
+          updatedAt,
+        };
+        reconciledWorkflow = {
+          ...reconciledWorkflow,
+          branchA: branchId === "a" ? repairedBranch : reconciledWorkflow.branchA,
+          branchB: branchId === "b" ? repairedBranch : reconciledWorkflow.branchB,
+          updatedAt,
+        };
+      }
+      // A revision recorded as a fresh draft leaves `plan_saved` with completed
+      // reviews of an earlier draft, which no lifecycle step can advance.
+      for (const branchId of ["a", "b"] as const) {
+        const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
+        if (
+          branch.status !== "plan_saved" ||
+          branch.reviews.length === 0 ||
+          !branch.reviews.every((review) => review.status === "completed")
+        ) {
+          continue;
+        }
+        const reviewedTurnId = reviewedPlanTurnIdForBranch(
+          reconciledWorkflow,
+          branchId,
+          branch,
+          snapshot,
+        );
+        if (!reviewedTurnId || reviewedTurnId === branch.planTurnId) {
+          continue;
+        }
+        const authorThread = snapshot.threads.find((entry) => entry.id === branch.authorThreadId);
+        if (
+          !branch.planTurnId ||
+          !authorThread?.proposedPlans.some((plan) => plan.turnId === branch.planTurnId)
+        ) {
+          yield* Effect.logWarning("workflow revision recorded as draft could not be repaired", {
+            workflowId: workflow.id,
+            branchId,
+            reviewedTurnId,
+            planTurnId: branch.planTurnId,
+          });
+          continue;
+        }
+        const repairedBranch: PlanningWorkflow["branchA"] = {
+          ...branch,
+          status: "revised",
+          planTurnId: reviewedTurnId,
+          revisionTurnId: branch.planTurnId,
+          error: null,
+          errorStage: null,
           updatedAt,
         };
         reconciledWorkflow = {
@@ -5102,6 +5304,8 @@ export const makeWorkflowService = Effect.gen(function* () {
     );
 
   const start: WorkflowServiceShape["start"] = Effect.gen(function* () {
+    if (sources.stopped) return;
+    yield* Effect.addFinalizer(() => sources.stop);
     yield* reconcileStuckWorkflows.pipe(
       Effect.catchCause((cause) =>
         Effect.logError("WorkflowService.reconcileStuckWorkflows failed", {
@@ -5117,7 +5321,8 @@ export const makeWorkflowService = Effect.gen(function* () {
       ),
     );
     yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, handleDomainEvent).pipe(
-      Effect.forkScoped,
+      Scope.provide(sources.scope),
+      Effect.forkIn(sources.scope, { startImmediately: true }),
       Effect.asVoid,
     );
   }).pipe(
@@ -5255,7 +5460,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
       yield* orchestrationEngine.dispatch({
         type: "project.workflow.create",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
         workflowId,
         projectId: input.projectId,
         title: initialTitle,
@@ -5284,7 +5489,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           input,
           threadId: authorThreadIdA,
           suffix: document ? "Draft A" : "Branch A",
-          branch: "a",
+          lane: "a",
           now,
         }),
         createWorkflowThread({
@@ -5292,7 +5497,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           input,
           threadId: authorThreadIdB,
           suffix: document ? "Draft B" : "Branch B",
-          branch: "b",
+          lane: "b",
           now,
         }),
       ]).pipe(
@@ -5375,6 +5580,10 @@ export const makeWorkflowService = Effect.gen(function* () {
       const workflow = yield* readWorkflow(orchestrationEngine, input.workflowId).pipe(
         Effect.mapError((error) => new Error(`Failed to load workflow: ${String(error)}`)),
       );
+      if (workflow && isArchivedWorkflow(workflow))
+        return yield* Effect.fail(
+          new Error("Restore the workflow before starting implementation."),
+        );
       if (!workflow) {
         return yield* Effect.fail(new Error(`Workflow '${input.workflowId}' does not exist.`));
       }
@@ -5449,16 +5658,21 @@ export const makeWorkflowService = Effect.gen(function* () {
           );
         }
         const newBranch = buildTemporaryWorktreeBranchName();
+        const preparationScript = setupProjectScript(
+          snapshot.projects.find((project) => project.id === implementationWorkflow.projectId)
+            ?.scripts ?? [],
+        );
         const createdWorktree = yield* gitCore
           .createWorktree({
+            preparation: {
+              owner: `workflow:${implementationWorkflow.id}`,
+              runSetupScript: preparationScript !== null,
+              setupIdentity: preparationScript?.command ?? null,
+            },
             cwd: workspaceRoot,
             branch: input.baseBranch,
             newBranch,
-            path: resolveDefaultWorktreePath({
-              worktreesDir: serverConfig.worktreesDir,
-              cwd: workspaceRoot,
-              branch: newBranch,
-            }),
+            path: yield* gitCore.allocateWorktreePath({ cwd: workspaceRoot, branch: newBranch }),
           })
           .pipe(
             Effect.mapError(
@@ -5506,69 +5720,51 @@ export const makeWorkflowService = Effect.gen(function* () {
       yield* resumeImplementationStart(pendingImplementationWorkflow, latestSnapshot, now);
     });
 
-  const deleteWorkflow: WorkflowServiceShape["deleteWorkflow"] = (workflowId) =>
-    Effect.gen(function* () {
-      const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
-        Effect.mapError(
-          (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
-        ),
-      );
-      if (!workflow) {
-        return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
-      }
+  const deleteWorkflow: WorkflowServiceShape["deleteWorkflow"] = (
+    workflowId,
+    deleteThreads = false,
+  ) =>
+    changeWorkflowArchive.delete(
+      workflowId,
+      Effect.gen(function* () {
+        const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
+          Effect.mapError(
+            (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
+          ),
+        );
+        if (!workflow) {
+          return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
+        }
 
-      yield* orchestrationEngine.dispatch({
-        type: "project.workflow.delete",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
-        workflowId,
-        projectId: workflow.projectId,
-        createdAt: new Date().toISOString(),
-      });
-    });
+        const result = yield* orchestrationEngine.dispatch({
+          type: "project.workflow.delete",
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+          workflowId,
+          deleteThreads,
+          projectId: workflow.projectId,
+          createdAt: new Date().toISOString(),
+        });
+        return deleteThreads
+          ? { deletedThreadIds: [...(result.deletedThreadIds ?? [])] }
+          : undefined;
+      }),
+    );
+
+  const changeWorkflowArchive = makeWorkflowArchiveLifecycle(orchestrationEngine, "planning");
 
   const archiveWorkflow: WorkflowServiceShape["archiveWorkflow"] = (workflowId) =>
-    Effect.gen(function* () {
-      const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
-        Effect.mapError(
-          (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
-        ),
-      );
-      if (!workflow) {
-        return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
-      }
-      if (isArchivedWorkflow(workflow)) {
-        return yield* Effect.fail(new Error(`Workflow '${workflowId}' is already archived.`));
-      }
-
-      const updatedAt = new Date().toISOString();
-      yield* upsertWorkflow({
-        ...workflow,
-        archivedAt: updatedAt,
-        updatedAt,
-      });
-    });
+    changeWorkflowArchive.archive(workflowId);
 
   const unarchiveWorkflow: WorkflowServiceShape["unarchiveWorkflow"] = (workflowId) =>
-    Effect.gen(function* () {
-      const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
-        Effect.mapError(
-          (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
-        ),
-      );
-      if (!workflow) {
-        return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
-      }
-      if (!isArchivedWorkflow(workflow)) {
-        return yield* Effect.fail(new Error(`Workflow '${workflowId}' is not archived.`));
-      }
-
-      const updatedAt = new Date().toISOString();
-      yield* upsertWorkflow({
-        ...workflow,
-        archivedAt: null,
-        updatedAt,
-      });
-    });
+    changeWorkflowArchive.unarchive(workflowId, (snapshot) =>
+      Effect.gen(function* () {
+        const workflow = snapshot.planningWorkflows.find((entry) => entry.id === workflowId);
+        if (workflow) yield* reconcileStuckWorkflow(workflow, snapshot);
+        const latest = yield* orchestrationEngine.getReadModel();
+        const current = latest.planningWorkflows.find((entry) => entry.id === workflowId);
+        if (current) yield* reconcileWorkflowImplementationLifecycle(current, latest);
+      }),
+    );
 
   const retryWorkflow: WorkflowServiceShape["retryWorkflow"] = (input) =>
     Effect.gen(function* () {
@@ -5580,6 +5776,8 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (!workflow) {
         return yield* Effect.fail(new Error(`Workflow '${input.workflowId}' does not exist.`));
       }
+      if (isArchivedWorkflow(workflow))
+        return yield* Effect.fail(new Error("Restore the workflow before retrying it."));
 
       const updatedAt = new Date().toISOString();
       const failedThreadIds = new Set<ThreadId>();
@@ -6737,6 +6935,12 @@ export const makeWorkflowService = Effect.gen(function* () {
       Effect.orElseSucceed(() => null),
     );
 
+  yield* registerShutdown("planning-workflows-titles", "drain", () => titleGenerationWorker.drain, [
+    "provider-ingestion",
+  ]);
+
+  yield* Effect.addFinalizer(() => sources.stop);
+
   return {
     start,
     drain: titleGenerationWorker.drain,
@@ -6756,27 +6960,28 @@ function createWorkflowThread({
   input,
   threadId,
   suffix,
-  branch,
+  lane,
   now,
 }: {
   orchestrationEngine: OrchestrationEngineShape;
   input: CreateWorkflowInput;
   threadId: ThreadId;
   suffix: string;
-  branch: "a" | "b";
+  lane: "a" | "b";
   now: string;
 }) {
-  const slot = branch === "a" ? input.branchA : input.branchB;
+  const slot = lane === "a" ? input.branchA : input.branchB;
   return orchestrationEngine.dispatch({
     type: "thread.create",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     threadId,
     projectId: input.projectId,
     title: suffix,
     model: slot.model,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: WORKFLOW_PLANNING_INTERACTION_MODE,
-    branch,
+    // The lane is not a Git branch; authors work in the project checkout.
+    branch: null,
     worktreePath: null,
     createdAt: now,
   });
@@ -6813,7 +7018,7 @@ function startAuthoringTurn({
   if (promptError) return Effect.fail(promptError);
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     threadId: branch.authorThreadId,
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
@@ -7137,7 +7342,7 @@ function createCodeReviewThread({
 }) {
   return orchestrationEngine.dispatch({
     type: "thread.create",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     threadId,
     projectId: workflow.projectId,
     title: `Code Review (${reviewerLabel})`,
@@ -7231,7 +7436,7 @@ function startCodeReviewTurn({
   if (!("prompt" in prepared)) return Effect.fail(prepared);
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     threadId: reviewThreadId,
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
@@ -7265,7 +7470,7 @@ function dispatchWorkflowDeleteCompensation({
 }) {
   return orchestrationEngine.dispatch({
     type: "project.workflow.delete",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     workflowId,
     projectId,
     createdAt,

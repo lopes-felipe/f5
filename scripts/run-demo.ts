@@ -1,67 +1,61 @@
 #!/usr/bin/env bun
 /**
- * run-demo.ts — One-shot launcher that puts F5 into "demo mode" for
- * screenshots:
+ * run-demo.ts: one-shot launcher that puts F5 into "demo mode" for manual
+ * desktop screenshots:
  *
- *   1. Wipes and recreates an isolated state directory under /tmp/f5-demo/.
- *   2. Builds the desktop + server bundles if they are missing.
- *   3. Runs `seed-demo.ts` against the isolated state dir.
- *   4. Launches the prebuilt desktop app pointed at the isolated state dir,
- *      with auto-update disabled.
+ *   1. Creates a fresh sandbox root under the OS temp dir (`f5-demo-*`) with
+ *      its own state dir and an empty HOME. Roots are never reused or deleted.
+ *   2. Builds the desktop + server bundles (skip with `--skip-build`).
+ *   3. Runs `seed-demo.ts` against the sandbox state dir.
+ *   4. Launches the prebuilt desktop app pointed at the sandbox, with
+ *      auto-update disabled and an allowlisted environment, so provider
+ *      credentials from your shell never reach the demo.
  *
  * The user's real F5 and legacy T3 state directories are never read or written.
  *
  * Usage:
- *   bun run scripts/run-demo.ts
+ *   bun run scripts/run-demo.ts [--skip-build]
  *
- * Override the demo state dir (rarely needed — the default is fine):
- *   T3CODE_DEMO_STATE_DIR=/tmp/screenshots/state bun run scripts/run-demo.ts
+ * For automated README screenshots use `bun run screenshots:capture` instead.
  */
 import { spawn, spawnSync } from "node:child_process";
 import * as FS from "node:fs";
 import * as Path from "node:path";
-import { isProtectedAppStateDir } from "@t3tools/shared/appStatePaths";
+import { isRunning, waitForChild } from "./lib/child-lifecycle.ts";
+import {
+  createDemoRoot,
+  demoStateDir,
+  isolatedEnv,
+  writeDemoSettings,
+} from "./lib/demo-sandbox.ts";
 
 const REPO_ROOT = Path.resolve(import.meta.dirname, "..");
-const DEFAULT_STATE_DIR = "/tmp/f5-demo/state";
-const STATE_DIR = process.env.T3CODE_DEMO_STATE_DIR?.trim() || DEFAULT_STATE_DIR;
-const DEMO_ROOT = Path.dirname(STATE_DIR);
+const skipBuild = process.argv.includes("--skip-build");
 
-// ---------------------------------------------------------------------------
-// Safety guard. Make absolutely sure we never point this at the real F5 dir.
-// ---------------------------------------------------------------------------
-
-const normalized = Path.resolve(STATE_DIR);
-if (isProtectedAppStateDir(normalized)) {
+if (process.env.T3CODE_DEMO_STATE_DIR?.trim()) {
   console.error(
-    `[run-demo] Refusing to run: demo state dir (${STATE_DIR}) overlaps with the real F5/T3 state directories.`,
+    "[run-demo] T3CODE_DEMO_STATE_DIR is no longer supported: each run now gets a fresh temp root. Unset it and rerun.",
   );
   process.exit(1);
 }
+
+const DEMO_ROOT = createDemoRoot("f5-demo-");
+const STATE_DIR = demoStateDir(DEMO_ROOT);
+writeDemoSettings(DEMO_ROOT);
+const env = isolatedEnv(DEMO_ROOT, { F5_SKIP_USERDATA_IMPORT: "1" });
 
 console.log(`[run-demo] demo root : ${DEMO_ROOT}`);
 console.log(`[run-demo] state dir : ${STATE_DIR}`);
 
 // ---------------------------------------------------------------------------
-// 1. Reset the demo dir.
+// 1. Build the desktop + server bundles. The desktop launches the prebuilt
+//    server from `apps/server/dist/index.mjs` and the prebuilt Electron main
+//    from `apps/desktop/dist-electron/main.js`.
 // ---------------------------------------------------------------------------
 
-if (FS.existsSync(DEMO_ROOT)) {
-  console.log(`[run-demo] removing previous demo dir at ${DEMO_ROOT}`);
-  FS.rmSync(DEMO_ROOT, { recursive: true, force: true });
-}
-FS.mkdirSync(STATE_DIR, { recursive: true });
-
-// ---------------------------------------------------------------------------
-// 2. Make sure the desktop + server bundles exist. The desktop launches the
-//    prebuilt server from `apps/server/dist/index.mjs` and the prebuilt
-//    Electron main from `apps/desktop/dist-electron/main.js`. If either is
-//    missing, a `bun run build:desktop` rebuilds both.
-// ---------------------------------------------------------------------------
-
-const desktopBundle = Path.join(REPO_ROOT, "apps/desktop/dist-electron/main.js");
-const serverBundle = Path.join(REPO_ROOT, "apps/server/dist/index.mjs");
-if (!FS.existsSync(desktopBundle) || !FS.existsSync(serverBundle)) {
+if (skipBuild) {
+  console.log("[run-demo] --skip-build: using existing desktop + server bundles");
+} else {
   console.log("[run-demo] building desktop + server bundles (this can take a minute)...");
   const built = spawnSync("bun", ["run", "build:desktop"], {
     cwd: REPO_ROOT,
@@ -71,23 +65,24 @@ if (!FS.existsSync(desktopBundle) || !FS.existsSync(serverBundle)) {
     console.error(`[run-demo] build:desktop failed with exit code ${built.status}`);
     process.exit(built.status ?? 1);
   }
-} else {
-  console.log("[run-demo] desktop + server bundles already exist; skipping build");
+}
+
+for (const bundle of ["apps/desktop/dist-electron/main.js", "apps/server/dist/index.mjs"]) {
+  if (!FS.existsSync(Path.join(REPO_ROOT, bundle))) {
+    console.error(`[run-demo] missing ${bundle}; rerun without --skip-build`);
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------
-// 3. Seed the isolated state dir.
+// 2. Seed the sandbox state dir.
 // ---------------------------------------------------------------------------
 
 console.log("[run-demo] seeding fake demo data...");
 const seeded = spawnSync("bun", ["run", Path.join(REPO_ROOT, "apps/server/scripts/seed-demo.ts")], {
   cwd: REPO_ROOT,
   stdio: "inherit",
-  env: {
-    ...process.env,
-    F5_STATE_DIR: STATE_DIR,
-    T3CODE_STATE_DIR: STATE_DIR,
-  },
+  env,
 });
 if (seeded.status !== 0) {
   console.error(`[run-demo] seed-demo failed with exit code ${seeded.status}`);
@@ -95,38 +90,38 @@ if (seeded.status !== 0) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Launch the prebuilt desktop app pointed at the demo state dir.
-//    Auto-updater disabled so screenshots never get interrupted by an
-//    update prompt and no surprise network traffic happens during the run.
+// 3. Launch the prebuilt desktop app pointed at the sandbox.
 // ---------------------------------------------------------------------------
 
-console.log("[run-demo] launching desktop app — Cmd+Shift+4 to take screenshots, Ctrl+C to exit");
+console.log("[run-demo] launching desktop app. Cmd+Shift+4 to take screenshots, Ctrl+C to exit");
 
-const desktop = spawn("bun", ["run", "start:desktop"], {
-  cwd: REPO_ROOT,
+// Launch Electron directly rather than through turbo: turbo's `start` task
+// rebuilds first and filters the environment, which would drop sandbox
+// variables such as F5_SKIP_USERDATA_IMPORT and T3CODE_DISABLE_AUTO_UPDATE.
+const desktop = spawn("bun", ["run", "scripts/start-electron.mjs"], {
+  cwd: Path.join(REPO_ROOT, "apps/desktop"),
   stdio: "inherit",
-  env: {
-    ...process.env,
-    F5_STATE_DIR: STATE_DIR,
-    T3CODE_STATE_DIR: STATE_DIR,
-    T3CODE_DISABLE_AUTO_UPDATE: "1",
-    T3CODE_NO_BROWSER: "1",
-    // Force observability off so no telemetry pings happen during the
-    // demo session, even if the user has it on globally.
-    T3CODE_OBSERVABILITY_ENABLED: "0",
-  },
+  env,
 });
 
+// Forward every signal while the app runs, so a second Ctrl+C still reaches a
+// child that ignored the first.
 const forwardSignal = (signal: NodeJS.Signals) => {
-  if (!desktop.killed) {
-    desktop.kill(signal);
-  }
+  if (isRunning(desktop)) desktop.kill(signal);
 };
 process.on("SIGINT", () => forwardSignal("SIGINT"));
 process.on("SIGTERM", () => forwardSignal("SIGTERM"));
 
-desktop.on("exit", (code, signal) => {
+try {
+  const { code, signal } = await waitForChild(desktop);
   console.log(`\n[run-demo] desktop exited (code=${code ?? "null"}, signal=${signal ?? "null"})`);
-  console.log(`[run-demo] to clean up: rm -rf ${DEMO_ROOT}`);
-  process.exit(code ?? 0);
-});
+  process.exitCode = code ?? 0;
+} catch (error) {
+  console.error(
+    `[run-demo] could not launch the desktop app: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exitCode = 1;
+} finally {
+  console.log(`[run-demo] demo data kept at ${DEMO_ROOT}`);
+}
+process.exit();

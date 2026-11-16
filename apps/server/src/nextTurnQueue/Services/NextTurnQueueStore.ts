@@ -58,7 +58,19 @@ export interface UsageResumeLedger {
   previousTarget?: string | null;
 }
 export interface NextTurnQueueStoreShape {
+  readonly readWorkspaceClaims: (threadIds: ReadonlyArray<ThreadId>) => Effect.Effect<
+    ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly hasQueuedWork: boolean;
+      readonly worktreeBlockToken: string | null;
+    }>,
+    NextTurnQueueError
+  >;
   readonly scheduleUsageLimitResume: (input: {
+    scheduledSourceTurnId?: string | null | undefined;
+    scheduledRun?:
+      | import("../../scheduledTasks/continuations.ts").ScheduledContinuationContext
+      | undefined;
     command: ThreadTurnStartCommand;
     itemId: CommandId;
     submissionId: CommandId;
@@ -109,7 +121,12 @@ export interface NextTurnQueueStoreShape {
   readonly listByThread: (
     threadId: ThreadId,
   ) => Effect.Effect<NextTurnQueueThreadData, NextTurnQueueError>;
+  /** At most 64 actionable threads; successive reads rotate fairly through the inventory. */
   readonly listActionableThreadIds: Effect.Effect<ReadonlyArray<ThreadId>, NextTurnQueueError>;
+  /** Visit all startup candidates in pages of 64, up to a captured high-water ID. */
+  readonly scanActionableThreads: (
+    visit: (threadIds: ReadonlyArray<ThreadId>) => Effect.Effect<void>,
+  ) => Effect.Effect<void, NextTurnQueueError>;
   readonly getItem: (
     itemId: CommandId,
   ) => Effect.Effect<NextTurnQueueItem | null, NextTurnQueueError>;
@@ -120,14 +137,19 @@ export interface NextTurnQueueStoreShape {
     submissionId: CommandId,
   ) => Effect.Effect<NextTurnQueueSubmissionRecord | null, NextTurnQueueError>;
   readonly insertSubmission: (input: {
+    scheduledRun?:
+      | import("../../scheduledTasks/continuations.ts").ScheduledContinuationContext
+      | undefined;
     readonly submissionSource?: "human" | "automation";
+    /** A new client message resumes a user-held queue; steering does not. */
+    readonly resumeQueue?: boolean;
     readonly submissionId: CommandId;
     readonly requestHash: string;
     readonly itemId: CommandId;
     readonly command: ThreadTurnStartCommand;
     readonly atHead: boolean;
     readonly notBefore?: string | undefined;
-    readonly scheduleReason?: "usage_limit_reset" | undefined;
+    readonly scheduleReason?: "usage_limit_reset" | "pull_request_watch" | undefined;
     readonly scheduleLimitKey?: string | undefined;
     readonly scheduleProviderInstanceId?: string | undefined;
     readonly supersedeUsageResume?: boolean | undefined;
@@ -190,6 +212,8 @@ export interface NextTurnQueueStoreShape {
     readonly reasonCode?: QueueReasonCode | null | undefined;
     readonly detail?: string | null | undefined;
     readonly expectedRevision?: number | undefined;
+    /** A delayed Stop must not hold a plain human send admitted after this event. */
+    readonly interruptRequestedSequence?: number | undefined;
   }) => Effect.Effect<void, NextTurnQueueError>;
   readonly setInterruptSuppression: (input: {
     readonly threadId: ThreadId;

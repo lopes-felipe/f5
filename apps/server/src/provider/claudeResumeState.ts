@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, TurnId } from "@t3tools/contracts";
 
 export interface ClaudeTurnBoundary {
   readonly turnId: string;
@@ -14,6 +14,8 @@ export interface ClaudeResumeState {
   readonly resume?: string;
   readonly resumeSessionAt?: string;
   readonly resumeLatest?: boolean;
+  /** Claude reported lost transcript writes (disk full/quota) for this session. */
+  readonly transcriptIncomplete?: boolean;
   readonly turnCount?: number;
   readonly lastTotalCostUsd?: number;
   readonly baseContextChars?: number;
@@ -47,6 +49,7 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     threadId?: unknown;
     resumeSessionAt?: unknown;
     resumeLatest?: unknown;
+    transcriptIncomplete?: unknown;
     turnCount?: unknown;
     lastTotalCostUsd?: unknown;
     baseContextChars?: unknown;
@@ -112,6 +115,7 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     ...(resume ? { resume } : {}),
     ...(resumeSessionAt ? { resumeSessionAt } : {}),
     ...(cursor.resumeLatest === true ? { resumeLatest: true } : {}),
+    ...(cursor.transcriptIncomplete === true ? { transcriptIncomplete: true } : {}),
     ...(turnCount !== undefined ? { turnCount } : {}),
     ...(lastTotalCostUsd !== undefined ? { lastTotalCostUsd } : {}),
     ...(baseContextChars !== undefined ? { baseContextChars } : {}),
@@ -125,10 +129,23 @@ export function readClaudeRecoveryMetadata(cursor: unknown): {
   resumeRecoveryGeneration?: string;
   transcriptRepairBackupId?: string;
   missingResumePoint?: string;
+  transcriptFork?: { target: string; activeLeaf?: string };
 } {
   if (!cursor || typeof cursor !== "object") return {};
   const value = cursor as Record<string, unknown>;
+  const fork =
+    value.transcriptFork && typeof value.transcriptFork === "object"
+      ? (value.transcriptFork as Record<string, unknown>)
+      : undefined;
   return {
+    ...(typeof fork?.target === "string"
+      ? {
+          transcriptFork: {
+            target: fork.target,
+            ...(typeof fork.activeLeaf === "string" ? { activeLeaf: fork.activeLeaf } : {}),
+          },
+        }
+      : {}),
     ...(typeof value.resumeRecoveryGeneration === "string"
       ? { resumeRecoveryGeneration: value.resumeRecoveryGeneration }
       : {}),
@@ -147,7 +164,9 @@ export function readClaudeNativeResumeMetadata(cursor: unknown) {
   const tasks: Array<{
     taskId: string;
     toolUseId?: string;
+    turnId?: TurnId;
     model?: string;
+    effort?: string;
     description?: string;
     taskType?: string;
   }> = [];
@@ -162,8 +181,15 @@ export function readClaudeNativeResumeMetadata(cursor: unknown) {
     )
       continue;
     const task: (typeof tasks)[number] = { taskId: value.taskId };
-    for (const key of ["toolUseId", "model", "description", "taskType"] as const)
+    if (
+      typeof value.turnId === "string" &&
+      value.turnId.trim().length > 0 &&
+      value.turnId.length <= 1024
+    )
+      task.turnId = TurnId.makeUnsafe(value.turnId.trim());
+    for (const key of ["toolUseId", "model", "effort", "description", "taskType"] as const)
       if (typeof value[key] === "string" && value[key].length <= 4000) task[key] = value[key];
+    if (task.effort && task.effort.length > 64) delete task.effort;
     tasks.push(task);
   }
   const receipts: Array<[string, { state: "completed" | "failed"; result?: unknown }]> = [];

@@ -1,25 +1,15 @@
+import { normalizeServerName } from "./mcpServerName";
+import { McpProjectServersConfig as McpServersSchema } from "@t3tools/contracts";
+import { Schema } from "effect";
 import type {
   ClaudeThinkingOption,
   McpProjectServersConfig,
-  McpServerDefinition,
   ProviderKind,
   ProviderModelOptions,
   ProviderStartOptions,
 } from "@t3tools/contracts";
+import { normalizeOptionalString } from "./mcpNormalization";
 import { canonicalizeClaudeLaunchArgs } from "./cliArgs";
-import {
-  normalizeOptionalString,
-  normalizeOptionalStringArray,
-  normalizeStringRecord,
-} from "./mcpNormalization";
-
-const MAX_MCP_SERVER_COUNT = 16;
-const MAX_MCP_SERVER_NAME_LENGTH = 128;
-
-function normalizeNonNegativeInt(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
-}
-
 function normalizeThinkingDisplay(value: unknown): "summarized" | "omitted" | undefined {
   return value === "summarized" || value === "omitted" ? value : undefined;
 }
@@ -70,118 +60,19 @@ export function claudeThinkingEnvironmentKeyComponent(
   }
 }
 
-function normalizeMcpServerName(name: string): string | undefined {
-  const normalized = normalizeOptionalString(name);
-  if (!normalized || normalized.length > MAX_MCP_SERVER_NAME_LENGTH) {
-    return undefined;
-  }
-  return normalized;
-}
-
-function normalizeMcpServerDefinition(
-  server: McpServerDefinition | null | undefined,
-): McpServerDefinition | undefined {
-  if (!server) {
-    return undefined;
-  }
-
-  const common = {
-    ...(typeof server.enabled === "boolean" ? { enabled: server.enabled } : {}),
-    ...(normalizeOptionalStringArray(server.enabledTools)
-      ? { enabledTools: normalizeOptionalStringArray(server.enabledTools)! }
-      : {}),
-    ...(normalizeOptionalStringArray(server.disabledTools)
-      ? { disabledTools: normalizeOptionalStringArray(server.disabledTools)! }
-      : {}),
-    ...(normalizeOptionalStringArray(server.scopes)
-      ? { scopes: normalizeOptionalStringArray(server.scopes)! }
-      : {}),
-    ...(normalizeOptionalString(server.bearerTokenEnvVar)
-      ? { bearerTokenEnvVar: normalizeOptionalString(server.bearerTokenEnvVar)! }
-      : {}),
-    ...(normalizeOptionalString(server.oauthClientId)
-      ? { oauthClientId: normalizeOptionalString(server.oauthClientId)! }
-      : {}),
-    ...(typeof server.oauthCallbackPort === "number" &&
-    Number.isInteger(server.oauthCallbackPort) &&
-    server.oauthCallbackPort > 0 &&
-    server.oauthCallbackPort <= 65535
-      ? { oauthCallbackPort: server.oauthCallbackPort }
-      : {}),
-    ...(normalizeOptionalString(server.oauthCallbackUrl)
-      ? { oauthCallbackUrl: normalizeOptionalString(server.oauthCallbackUrl)! }
-      : {}),
-    ...(typeof server.supportsParallelToolCalls === "boolean"
-      ? { supportsParallelToolCalls: server.supportsParallelToolCalls }
-      : {}),
-    ...(normalizeNonNegativeInt(server.startupTimeoutSec) !== undefined
-      ? { startupTimeoutSec: normalizeNonNegativeInt(server.startupTimeoutSec)! }
-      : {}),
-    ...(normalizeNonNegativeInt(server.toolTimeoutSec) !== undefined
-      ? { toolTimeoutSec: normalizeNonNegativeInt(server.toolTimeoutSec)! }
-      : {}),
-    ...(normalizeOptionalString(server.oauthResource)
-      ? { oauthResource: normalizeOptionalString(server.oauthResource)! }
-      : {}),
-  } satisfies Partial<McpServerDefinition>;
-
-  if (server.type === "stdio") {
-    const command = normalizeOptionalString(server.command);
-    if (!command) {
-      return undefined;
-    }
-    return {
-      type: "stdio",
-      command,
-      ...(normalizeOptionalStringArray(server.args)
-        ? { args: normalizeOptionalStringArray(server.args)! }
-        : {}),
-      ...(normalizeStringRecord(server.env) ? { env: normalizeStringRecord(server.env)! } : {}),
-      ...(normalizeOptionalString(server.cwd) ? { cwd: normalizeOptionalString(server.cwd)! } : {}),
-      ...common,
-    };
-  }
-
-  if (server.type === "sse" || server.type === "http") {
-    const url = normalizeOptionalString(server.url);
-    if (!url) {
-      return undefined;
-    }
-    return {
-      type: server.type,
-      url,
-      ...(normalizeStringRecord(server.headers)
-        ? { headers: normalizeStringRecord(server.headers)! }
-        : {}),
-      ...common,
-    };
-  }
-
-  return undefined;
-}
-
 function normalizeMcpServers(
   servers: McpProjectServersConfig | null | undefined,
 ): McpProjectServersConfig | undefined {
-  if (!servers) {
-    return undefined;
-  }
-
-  const normalized = Object.fromEntries(
-    Object.entries(servers)
-      .slice(0, MAX_MCP_SERVER_COUNT)
-      .map(([name, server]) => {
-        const normalizedName = normalizeMcpServerName(name);
-        const normalizedServer = normalizeMcpServerDefinition(server);
-        if (!normalizedName || !normalizedServer) {
-          return null;
-        }
-        return [normalizedName, normalizedServer] as const;
-      })
-      .filter((entry): entry is readonly [string, McpServerDefinition] => entry !== null),
+  if (!servers || Object.keys(servers).length === 0) return undefined;
+  const result = Schema.decodeUnknownExit(McpServersSchema)(servers);
+  const decoded = result._tag === "Success" ? result.value : servers;
+  const entries = Object.entries(decoded).map(
+    ([name, server]) => [normalizeServerName(name) ?? name, server] as const,
   );
-
-  return Object.keys(normalized).length > 0 ? normalized : undefined;
+  // Preserve legacy aliases when trimming would otherwise overwrite an entry.
+  return new Set(entries.map(([name]) => name)).size === entries.length
+    ? Object.fromEntries(entries)
+    : decoded;
 }
 
 function arePlainObjectEntriesEqual(
@@ -348,6 +239,7 @@ export function normalizeProviderStartOptions(
           ? providerOptions.claudeAgent.subagentsEnabled
           : undefined;
       const subagentModel = normalizeOptionalString(providerOptions?.claudeAgent?.subagentModel);
+      const subagentEffort = providerOptions?.claudeAgent?.subagentEffort;
       const launchArgs = canonicalizeClaudeLaunchArgs(providerOptions?.claudeAgent?.launchArgs);
 
       if (
@@ -360,6 +252,7 @@ export function normalizeProviderStartOptions(
         nativeCompaction === undefined &&
         subagentsEnabled === undefined &&
         !subagentModel &&
+        !subagentEffort &&
         !launchArgs &&
         !hasMcpServers
       ) {
@@ -377,6 +270,7 @@ export function normalizeProviderStartOptions(
         nativeCompaction !== undefined ||
         subagentsEnabled !== undefined ||
         subagentModel ||
+        subagentEffort ||
         launchArgs
           ? {
               claudeAgent: {
@@ -389,6 +283,7 @@ export function normalizeProviderStartOptions(
                 ...(thinking !== undefined ? { thinking } : {}),
                 ...(subagentsEnabled !== undefined ? { subagentsEnabled } : {}),
                 ...(subagentModel ? { subagentModel } : {}),
+                ...(subagentEffort ? { subagentEffort } : {}),
                 ...(launchArgs ? { launchArgs } : {}),
               },
             }
@@ -499,7 +394,7 @@ export function getProviderEnvironmentKey(
             })
             .join(",")
         : "";
-      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}${claudeThinkingEnvironmentKeyComponent(normalized?.claudeAgent?.thinking)}${normalized?.claudeAgent?.promptSuggestions === true ? "|promptSuggestions:true" : ""}${normalized?.claudeAgent?.enableFileCheckpointing !== undefined ? `|fileCheckpointing:${normalized.claudeAgent.enableFileCheckpointing}` : ""}`;
+      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}${normalized?.claudeAgent?.subagentEffort ? `|subagentEffort:${normalized.claudeAgent.subagentEffort}` : ""}${claudeThinkingEnvironmentKeyComponent(normalized?.claudeAgent?.thinking)}${normalized?.claudeAgent?.promptSuggestions === true ? "|promptSuggestions:true" : ""}${normalized?.claudeAgent?.enableFileCheckpointing !== undefined ? `|fileCheckpointing:${normalized.claudeAgent.enableFileCheckpointing}` : ""}`;
     }
     case "cursor":
       return `cursor|binary:${normalized?.cursor?.binaryPath ?? ""}|apiEndpoint:${normalized?.cursor?.apiEndpoint ?? ""}`;
@@ -509,5 +404,12 @@ export function getProviderEnvironmentKey(
       return `grok|binary:${normalized?.grok?.binaryPath ?? ""}`;
     case "antigravity":
       return "antigravity|managed";
+    case "acp":
+      return "acp|instance";
+    case "pi":
+      return "pi|instance";
+    case "muse":
+      // Binary path and credentials live on the provider instance.
+      return "muse|instance";
   }
 }

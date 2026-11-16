@@ -4,6 +4,9 @@ import type { TerminalEvent, TerminalSessionSnapshot } from "@t3tools/contracts"
 import { terminalRunningSubprocessFromEvent } from "./terminalActivity";
 
 const snapshot: TerminalSessionSnapshot = {
+  epoch: "test",
+  generation: 1,
+  revision: 1,
   threadId: "thread-1",
   terminalId: "default",
   cwd: "/tmp",
@@ -17,6 +20,9 @@ const snapshot: TerminalSessionSnapshot = {
 
 function eventBase() {
   return {
+    epoch: "test",
+    generation: 1,
+    revision: 1,
     threadId: "thread-1",
     terminalId: "default",
     createdAt: "2026-01-01T00:00:00.000Z",

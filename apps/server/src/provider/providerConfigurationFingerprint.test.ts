@@ -86,7 +86,7 @@ it("preserves protected execution fingerprints across independent server process
     expect(second).toBe(first);
     const secret = path.join(directory, "secrets", "usage-resume-fingerprint-key.bin");
     expect((await readFile(secret)).length).toBe(32);
-    expect((await stat(secret)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect((await stat(secret)).mode & 0o777).toBe(0o600);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

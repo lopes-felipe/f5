@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { OrchestrationCommandIdConflictError } from "../orchestration/Errors.ts";
+import {
+  OrchestrationCommandIdConflictError,
+  OrchestrationOverloadError,
+} from "../orchestration/Errors.ts";
 
 import { MAX_DISPATCH_ATTEMPTS } from "./constants.ts";
 import { classifyNextTurnDispatchFailure, nextTurnDispatchBackoffMs } from "./dispatchOutcome.ts";
@@ -85,4 +88,20 @@ describe("next-turn dispatch outcomes", () => {
     expect(nextTurnDispatchBackoffMs(1, () => 1)).toBe(1_200);
     expect(nextTurnDispatchBackoffMs(20, () => 0.5)).toBe(60_000);
   });
+});
+
+it("does not consume delivery attempts on overload or resurrect starts superseded by stop", () => {
+  expect(
+    classifyNextTurnDispatchFailure({
+      error: new OrchestrationOverloadError({ lane: "ordinary", reason: "full" }),
+      postClaimAttempt: 100,
+      random: () => 0.5,
+    }),
+  ).toMatchObject({ kind: "retry", clearDispatchStartedAt: true, consumeAttempt: false });
+  expect(
+    classifyNextTurnDispatchFailure({
+      error: new OrchestrationOverloadError({ lane: "ordinary", reason: "superseded" }),
+      postClaimAttempt: 1,
+    }),
+  ).toMatchObject({ kind: "failed" });
 });

@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AntigravityInstallation } from "./AntigravityInstallation.ts";
-import type { AntigravityReleaseAsset } from "./antigravityRelease.ts";
+import {
+  resolveAntigravityReleaseAsset,
+  type AntigravityReleaseAsset,
+} from "./antigravityRelease.ts";
 
 // Synthetic archive containing two tiny executable placeholders, never provider binaries.
 const zip = Buffer.from(
@@ -31,6 +34,20 @@ afterEach(async () => {
 });
 
 describe("Antigravity explicit installation", () => {
+  it("resolves verified 1.3.0 assets for every supported platform including Intel Mac", () => {
+    for (const platform of ["darwin", "linux", "win32"] as const) {
+      for (const arch of ["arm64", "x64"]) {
+        const release = resolveAntigravityReleaseAsset(platform, arch);
+        expect(release?.version).toBe("1.3.0");
+        expect(release?.url).toContain("1.3.0");
+        expect(release?.sha256).toMatch(/^[a-f0-9]{64}$/);
+        expect(release?.archiveBytes).toBeGreaterThan(0);
+        expect(release?.executable.bytes).toBeGreaterThan(0);
+        expect(release?.harness.bytes).toBeGreaterThan(0);
+      }
+    }
+    expect(resolveAntigravityReleaseAsset("freebsd", "x64")).toBeNull();
+  });
   it("does not download during status resolution and publishes only a verified complete release", async () => {
     const download = vi.fn(async () => new Response(zip));
     vi.stubGlobal("fetch", download);
@@ -54,6 +71,29 @@ describe("Antigravity explicit installation", () => {
     await expect(install.install()).rejects.toThrow("integrity");
     expect(await fs.readdir(install.directory)).toEqual([]);
     await expect(install.resolve()).rejects.toThrow("Install Antigravity");
+  });
+
+  it("reports an existing release as needing an explicit update and keeps it usable during installation", async () => {
+    const download = vi.fn(async () => new Response(zip));
+    vi.stubGlobal("fetch", download);
+    const install = await setup();
+    const oldHash = "a".repeat(64);
+    const oldDirectory = path.join(install.directory, oldHash);
+    await fs.mkdir(oldDirectory, { recursive: true });
+    await fs.writeFile(
+      path.join(oldDirectory, "complete.json"),
+      JSON.stringify({ sha256: oldHash, version: "1.1.1" }),
+    );
+    await fs.writeFile(path.join(oldDirectory, "running-harness"), "still in use");
+    await expect(install.resolve()).rejects.toThrow("1.1.1 is installed. Update to test");
+    expect(download).not.toHaveBeenCalled();
+    const current = await install.install();
+    expect(current.version).toBe("test");
+    expect(await install.resolve()).toEqual(current);
+    expect(await fs.readFile(path.join(oldDirectory, "running-harness"), "utf8")).toBe(
+      "still in use",
+    );
+    expect(download).toHaveBeenCalledTimes(1);
   });
   it("cancels a stalled download without publishing or retaining partial files", async () => {
     const controller = new AbortController();

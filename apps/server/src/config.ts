@@ -49,6 +49,8 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly devUrl: URL | undefined;
   readonly noBrowser: boolean;
   readonly authToken: string | undefined;
+  /** Reverse proxies whose `X-Forwarded-For` is believed; see `ServerAuthOptions.trustedProxies`. */
+  readonly trustedProxies?: ReadonlyArray<string>;
   readonly autoBootstrapProjectFromCwd: boolean;
   readonly logWebSocketEvents: boolean;
   readonly observabilityEnabled: boolean;
@@ -96,6 +98,14 @@ export const ensureStateDirectories = Effect.fn(function* (paths: ServerDerivedP
   for (const directory of [paths.stateDir, paths.logsDir, paths.attachmentsDir, paths.secretsDir]) {
     if (directory) yield* fs.makeDirectory(directory, { recursive: true });
   }
+  // Logs, traces and the database use the process umask; restrict access at their parent.
+  yield* fs
+    .chmod(paths.stateDir, 0o700)
+    .pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not restrict state directory permissions.", { cause }),
+      ),
+    );
 });
 
 /**

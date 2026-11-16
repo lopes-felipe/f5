@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { TrimmedString } from "./baseSchemas";
+import { ForwardCompatibleArray, TrimmedString } from "./baseSchemas";
 
 export const MAX_KEYBINDING_VALUE_LENGTH = 64;
 export const MAX_KEYBINDING_WHEN_LENGTH = 256;
@@ -27,9 +27,61 @@ export const MODEL_PICKER_KEYBINDING_COMMANDS = [
 ] as const;
 export type ModelPickerKeybindingCommand = (typeof MODEL_PICKER_KEYBINDING_COMMANDS)[number];
 
+/** Apply favorite preset N (model plus optional pinned effort) without opening the picker. */
+export const MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS = [
+  "model.favorite.1",
+  "model.favorite.2",
+  "model.favorite.3",
+  "model.favorite.4",
+  "model.favorite.5",
+  "model.favorite.6",
+  "model.favorite.7",
+  "model.favorite.8",
+  "model.favorite.9",
+] as const;
+export type ModelFavoriteJumpKeybindingCommand =
+  (typeof MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS)[number];
+
+export const MODEL_FAVORITE_KEYBINDING_COMMANDS = [
+  "model.favorite.next",
+  "model.favorite.previous",
+  ...MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS,
+  "model.favorite.saveCurrent",
+] as const;
+export type ModelFavoriteKeybindingCommand = (typeof MODEL_FAVORITE_KEYBINDING_COMMANDS)[number];
+
+/** Upstream page list commands, in the order of their default keys. */
+export const UPSTREAM_KEYBINDING_COMMANDS = [
+  "upstream.next",
+  "upstream.previous",
+  "upstream.toggleSelect",
+  "upstream.selectAll",
+  "upstream.acceptSuggestion",
+  "upstream.port",
+  "upstream.skip",
+  "upstream.watch",
+  "upstream.decline",
+  "upstream.reopen",
+  "upstream.openDetail",
+  "upstream.openUpstreamPr",
+  "upstream.startPort",
+  "upstream.equivalent",
+  "upstream.extendNext",
+  "upstream.extendPrevious",
+  "upstream.clearSelection",
+  "upstream.nextList",
+  "upstream.previousList",
+  "upstream.focusSearch",
+  "upstream.undo",
+] as const;
+export type UpstreamKeybindingCommand = (typeof UPSTREAM_KEYBINDING_COMMANDS)[number];
+
 export const STATIC_KEYBINDING_COMMANDS = [
+  "workspace.focusNext",
+  "workspace.focusPrevious",
   "thread.stop",
   "thread.togglePin",
+  "thread.toggleSettled",
   "thread.copyReference",
   "thread.undo",
   "navigation.back",
@@ -37,8 +89,13 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "chat.pageUp",
   "chat.pageDown",
   "chat.newBackground",
+  "chat.sendAndNew",
   "rightPanel.closeTab",
+  "rightPanel.tabMenu",
+  "rightPanel.reopenClosed",
   "composer.effort",
+  "composer.effortUp",
+  "composer.effortDown",
   "composer.runtimeMode",
   "composer.envMode",
   "composer.branch",
@@ -46,6 +103,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "modelPicker.previousProvider",
   "modelPicker.nextProvider",
   "prHub.copyNumber",
+  ...UPSTREAM_KEYBINDING_COMMANDS,
   "sidebar.toggle",
   "terminal.toggle",
   "terminal.split",
@@ -54,8 +112,10 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "diff.toggle",
   "chat.new",
   "chat.newLocal",
+  "chat.newScratch",
   "workflow.new",
   "chat.scrollToBottom",
+  "chat.find",
   "chat.queueTurn",
   "chat.steerTurn",
   "chat.queueTurnNext",
@@ -66,10 +126,23 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "thread.switchRecentNext",
   "thread.switchRecentPrevious",
   "model.switchRecent",
+  ...MODEL_FAVORITE_KEYBINDING_COMMANDS,
   "prHub.open",
+  "home.open",
+  "notifications.toggle",
   "palette.files",
   "projectContentSearch.toggle",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,
+  "usage.open",
+  "usage.tokens",
+  "usage.cost",
+  "usage.turns",
+  "usage.limits",
+  "usage.pricing",
+  "usage.period.day",
+  "usage.period.week",
+  "usage.period.month",
+  "usage.period.quarter",
   "commandPalette.toggle",
   "help.shortcuts",
 ] as const;
@@ -110,6 +183,16 @@ export const KeybindingsConfig = Schema.Array(KeybindingRule).check(
 );
 export type KeybindingsConfig = typeof KeybindingsConfig.Type;
 
+/**
+ * Server->client view of the user's customized rules. A newer server may have
+ * accepted rules whose command this build does not know; decoding drops them
+ * instead of failing the payload. Input and persistence keep the strict
+ * `KeybindingsConfig`.
+ */
+export const ForwardCompatibleKeybindingsConfig = ForwardCompatibleArray(KeybindingRule, {
+  maxItems: MAX_KEYBINDINGS_COUNT,
+});
+
 export const KeybindingShortcut = Schema.Struct({
   key: KeybindingValue,
   metaKey: Schema.Boolean,
@@ -120,24 +203,24 @@ export const KeybindingShortcut = Schema.Struct({
 });
 export type KeybindingShortcut = typeof KeybindingShortcut.Type;
 
-export const KeybindingWhenNode: Schema.Schema<KeybindingWhenNode> = Schema.Union([
+export const KeybindingWhenNode: Schema.Codec<KeybindingWhenNode> = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("identifier"),
     name: Schema.NonEmptyString,
   }),
   Schema.Struct({
     type: Schema.Literal("not"),
-    node: Schema.suspend((): Schema.Schema<KeybindingWhenNode> => KeybindingWhenNode),
+    node: Schema.suspend((): Schema.Codec<KeybindingWhenNode> => KeybindingWhenNode),
   }),
   Schema.Struct({
     type: Schema.Literal("and"),
-    left: Schema.suspend((): Schema.Schema<KeybindingWhenNode> => KeybindingWhenNode),
-    right: Schema.suspend((): Schema.Schema<KeybindingWhenNode> => KeybindingWhenNode),
+    left: Schema.suspend((): Schema.Codec<KeybindingWhenNode> => KeybindingWhenNode),
+    right: Schema.suspend((): Schema.Codec<KeybindingWhenNode> => KeybindingWhenNode),
   }),
   Schema.Struct({
     type: Schema.Literal("or"),
-    left: Schema.suspend((): Schema.Schema<KeybindingWhenNode> => KeybindingWhenNode),
-    right: Schema.suspend((): Schema.Schema<KeybindingWhenNode> => KeybindingWhenNode),
+    left: Schema.suspend((): Schema.Codec<KeybindingWhenNode> => KeybindingWhenNode),
+    right: Schema.suspend((): Schema.Codec<KeybindingWhenNode> => KeybindingWhenNode),
   }),
 ]);
 export type KeybindingWhenNode =
@@ -153,7 +236,13 @@ export const ResolvedKeybindingRule = Schema.Struct({
 }).annotate({ parseOptions: { onExcessProperty: "ignore" } });
 export type ResolvedKeybindingRule = typeof ResolvedKeybindingRule.Type;
 
-export const ResolvedKeybindingsConfig = Schema.Array(ResolvedKeybindingRule).check(
-  Schema.isMaxLength(MAX_KEYBINDINGS_COUNT),
-);
+/**
+ * The command set grows over time, so a client may receive rules it cannot
+ * represent (a command or `when` node added after that client shipped).
+ * Decoding drops those rules instead of failing the whole payload: a
+ * shortcut the client couldn't dispatch is not worth losing the config over.
+ */
+export const ResolvedKeybindingsConfig = ForwardCompatibleArray(ResolvedKeybindingRule, {
+  maxItems: MAX_KEYBINDINGS_COUNT,
+});
 export type ResolvedKeybindingsConfig = typeof ResolvedKeybindingsConfig.Type;

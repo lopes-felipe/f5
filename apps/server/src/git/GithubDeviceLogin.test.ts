@@ -22,6 +22,7 @@ function setup() {
         Effect.sync(() => {
           values.delete(key);
         }),
+      list: () => Effect.succeed([]),
       getOrCreateRandom: () => Effect.die("unused"),
     },
     async () => Response.json({ login: "octocat" }),

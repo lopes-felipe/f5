@@ -36,6 +36,7 @@ const common: ForgeCapabilities = {
   edit: { changeRequest: true, comment: true },
   stacks: false,
   stackActions: false,
+  checks: { logs: false, rerun: false },
 };
 function fixture(provider: TrackedPullRequest["provider"] = "gitlab"): TrackedPullRequest {
   const caps: ForgeCapabilities = {
@@ -107,14 +108,6 @@ beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
   setPrHubAccount({ host: "git.example.com", viewerId: "viewer", generation: "generation" });
-  api.listReviewerCandidates.mockResolvedValue({
-    candidates: [
-      { id: 1, username: "alice" },
-      { id: 2, username: "bob" },
-    ],
-    currentReviewers: [{ id: 1, username: "alice" }],
-    candidatesSupported: true,
-  });
   api.getOperation.mockResolvedValue(null);
   api.prepareOperation.mockImplementation(async (input) => ({ ...input, status: "prepared" }));
   api.submitOperation.mockImplementation(async (input) => ({
@@ -125,27 +118,56 @@ beforeEach(() => {
   }));
 });
 
+it.each([
+  [true, "BLOCKED", true],
+  [false, "BLOCKED", false],
+  [true, "CLEAN", false],
+  [true, "HAS_HOOKS", false],
+  [true, "UNSTABLE", false],
+] as const)(
+  "updates auto-merge controls from fresh detail (%s, %s)",
+  async (autoMergeAllowed, mergeStateStatus, expected) => {
+    const base = fixture("github");
+    const pr: TrackedPullRequest = {
+      ...base,
+      forgeCapabilities: { ...base.forgeCapabilities!, actions: ["close", "enable-auto-merge"] },
+    };
+    const screen = await mount(
+      <ForgeControls
+        pr={pr}
+        detail={{
+          state: "open",
+          providerDetails: {
+            provider: "github",
+            nodeId: "pr",
+            mergeStateStatus,
+            autoMergeAllowed,
+            headRefOid: "head",
+            baseRefOid: "base",
+            viewerCanUpdate: true,
+            viewerDidAuthor: true,
+          },
+        }}
+      />,
+    );
+    try {
+      await expect
+        .element(page.getByRole("combobox", { name: "Forge action", exact: true }))
+        .toBeVisible();
+      expect(
+        document
+          .querySelector('[aria-label="Forge action"]')
+          ?.textContent?.includes("enable auto merge"),
+      ).toBe(expected);
+    } finally {
+      await screen.unmount();
+    }
+  },
+);
+
 it.each(["github", "gitlab", "bitbucket", "azure-devops", "forgejo"] as const)(
   "renders only advertised %s controls",
   async (provider) => {
-    if (provider === "github" || provider === "forgejo")
-      api.listReviewerCandidates.mockResolvedValue({
-        candidates: [{ login: "alice" }],
-        currentReviewers: [{ login: "alice" }],
-        candidatesSupported: true,
-      });
-    if (provider === "bitbucket")
-      api.listReviewerCandidates.mockResolvedValue({
-        candidates: [{ uuid: "uuid-a", nickname: "alice" }],
-        currentReviewers: [{ uuid: "uuid-a", nickname: "alice" }],
-        candidatesSupported: true,
-      });
-    if (provider === "azure-devops")
-      api.listReviewerCandidates.mockResolvedValue({
-        candidates: [],
-        currentReviewers: [{ id: "azure-id", displayName: "alice" }],
-        candidatesSupported: false,
-      });
     const pr = fixture(provider);
     mount(<ForgeControls pr={pr} />);
     await expect
@@ -162,14 +184,11 @@ it.each(["github", "gitlab", "bitbucket", "azure-devops", "forgejo"] as const)(
       await expect
         .element(page.getByRole("textbox", { name: "Forge labels", exact: true }))
         .not.toBeInTheDocument();
-    if (provider === "azure-devops") {
+    if (provider === "azure-devops")
       await expect
         .element(page.getByRole("textbox", { name: "Comment and review text", exact: true }))
         .not.toBeInTheDocument();
-      await expect
-        .element(page.getByRole("textbox", { name: "Reviewer provider ID", exact: true }))
-        .toBeVisible();
-    } else
+    else
       await expect
         .element(page.getByRole("textbox", { name: "Comment and review text", exact: true }))
         .toBeVisible();
@@ -178,40 +197,13 @@ it.each(["github", "gitlab", "bitbucket", "azure-devops", "forgejo"] as const)(
   },
 );
 
-it("preserves the existing native reviewer ID when adding a candidate and requires confirmation", async () => {
+it("leaves reviewers to the Overview's reviewer picker", async () => {
   mount(<ForgeControls pr={fixture()} />);
   await expect
-    .element(page.getByRole("checkbox", { name: "Reviewer alice", exact: true }))
-    .toBeChecked();
-  await page.getByRole("checkbox", { name: "Reviewer bob", exact: true }).click();
-  await page.getByRole("button", { name: "Prepare reviewers", exact: true }).click();
-  await expect.poll(() => api.prepareOperation.mock.calls.length).toBe(1);
-  expect(api.prepareOperation.mock.calls[0]?.[0].payload).toEqual({
-    kind: "reviewers",
-    reviewers: ["1", "2"],
-  });
-  expect(api.submitOperation).not.toHaveBeenCalled();
-  await expect
-    .element(page.getByRole("button", { name: "Confirm reviewers", exact: true }))
+    .element(page.getByRole("combobox", { name: "Forge action", exact: true }))
     .toBeVisible();
-  await expect
-    .element(page.getByLabelText("Reviewers preview", { exact: true }))
-    .toHaveTextContent('"1"');
-});
-
-it("disables reviewer changes when existing provider identities cannot be verified", async () => {
-  api.listReviewerCandidates.mockResolvedValue({
-    candidates: [{ id: 2, username: "bob" }],
-    currentReviewers: [{ username: "alice" }],
-    candidatesSupported: true,
-  });
-  mount(<ForgeControls pr={fixture()} />);
-  await expect
-    .element(page.getByRole("alert"))
-    .toHaveTextContent("Existing reviewer identities could not be verified.");
-  await expect
-    .element(page.getByRole("button", { name: "Prepare reviewers", exact: true }))
-    .not.toBeInTheDocument();
+  expect(page.getByRole("group", { name: "Reviewer selection" }).query()).toBeNull();
+  expect(api.listReviewerCandidates).not.toHaveBeenCalled();
 });
 
 it("recovers a persisted ambiguous operation without preparing or submitting again", async () => {

@@ -1,9 +1,15 @@
-import { killProcessTree } from "@t3tools/shared/processTree";
-import { BoundedTerminalHistory } from "../BoundedTerminalHistory";
-import { readTerminalHistory } from "../historyPersistence";
+import { registerShutdown, ServerShutdown } from "../../shutdown.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { writeFileStringAtomically } from "../../atomicWrite.ts";
+import { createHash, randomUUID } from "node:crypto";
+import { killProcessTreeAsync } from "@t3tools/shared/processTree";
+import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
+import { BoundedTerminalHistory, TERMINAL_HISTORY_MAX_BYTES } from "../BoundedTerminalHistory";
+import { neutralizeInheritedHistory, readTerminalHistory } from "../historyPersistence";
 import { readTerminalProcessTable, type TerminalProcessTable } from "../processTable";
 import { githubTerminalStartup } from "../../git/githubShellStartup";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
+import { withBrowserOpenThreadToken } from "../../browser/BrowserOpenThreadToken";
 import type { ServerConfigShape } from "../../config";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -20,12 +26,14 @@ import {
   type TerminalEvent,
   type TerminalSessionSnapshot,
 } from "@t3tools/contracts";
-import { Effect, Encoding, Layer, Schema } from "effect";
+import { Effect, Encoding, Layer, Option, Schema } from "effect";
 
 import { createLogger } from "../../logger";
 import {
   increment,
   terminalRestartsTotal,
+  terminalSnapshotsTotal,
+  terminalStateChangesTotal,
   terminalSessionsTotal,
 } from "../../observability/Metrics.ts";
 import {
@@ -49,13 +57,29 @@ import {
 } from "../Services/Manager";
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
-const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
+// Busy terminals write their whole retained history each flush; batching keeps
+// that bounded while close and restart still flush the latest output.
+const DEFAULT_PERSIST_DEBOUNCE_MS = 250;
 const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
 const DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS = 128;
 const DEFAULT_OPEN_COLS = 120;
 const DEFAULT_OPEN_ROWS = 30;
-const TERMINAL_ENV_BLOCKLIST = new Set(["PORT", "ELECTRON_RENDERER_PORT", "ELECTRON_RUN_AS_NODE"]);
+const MULTIPLEXER_ENV_NAMES = new Set([
+  "TMUX",
+  "TMUX_PANE",
+  "STY",
+  "WINDOW",
+  "ZELLIJ",
+  "ZELLIJ_SESSION_NAME",
+  "ZELLIJ_PANE_ID",
+]);
+const TERMINAL_ENV_BLOCKLIST = new Set([
+  "PORT",
+  "ELECTRON_RENDERER_PORT",
+  "ELECTRON_RUN_AS_NODE",
+  ...MULTIPLEXER_ENV_NAMES,
+]);
 
 const decodeTerminalOpenInput = Schema.decodeUnknownSync(TerminalOpenInput);
 const decodeTerminalRestartInput = Schema.decodeUnknownSync(TerminalRestartInput);
@@ -115,6 +139,10 @@ function shellCandidateFromCommand(command: string | null): ShellCandidate | nul
   const shellName = path.basename(command).toLowerCase();
   if (process.platform !== "win32" && shellName === "zsh") {
     return { shell: command, args: ["-o", "nopromptsp"] };
+  }
+  // Login shells load ~/.bash_profile, matching macOS terminal startup.
+  if (process.platform === "darwin" && shellName === "bash") {
+    return { shell: command, args: ["-l"] };
   }
   return { shell: command };
 }
@@ -178,8 +206,18 @@ function toSafeThreadId(threadId: string): string {
   return `terminal_${Encoding.encodeBase64Url(threadId)}`;
 }
 
-function toSafeTerminalId(terminalId: string): string {
-  return Encoding.encodeBase64Url(terminalId);
+const MAX_FILE_NAME_BYTES = 255;
+function hashHistoryId(id: string): string {
+  return createHash("sha256").update(id).digest("base64url");
+}
+
+// "~" is outside both the base64url alphabet and legacySafeThreadId's output.
+function hashedThreadPart(threadId: string): string {
+  return `terminal_sha256~${hashHistoryId(threadId)}`;
+}
+
+function hasLegacyHistoryPath(threadId: string): boolean {
+  return Buffer.byteLength(`${legacySafeThreadId(threadId)}.log`) <= MAX_FILE_NAME_BYTES;
 }
 
 function toSessionKey(threadId: string, terminalId: string): string {
@@ -217,7 +255,39 @@ function createTerminalSpawnEnv(
   }
   // Both terminal clients support 24-bit color; preserve explicit overrides.
   if (!spawnEnv.COLORTERM) spawnEnv.COLORTERM = "truecolor";
+  disableFishTerminalQueries(spawnEnv);
   return spawnEnv;
+}
+
+/**
+ * fish 4.1+ can wait 10s at startup for a DA1 reply before a renderer attaches.
+ * Skip the query unless the user or provider already chose `query-term` or `no-query-term`.
+ */
+export function disableFishTerminalQueries(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  const key =
+    platform === "win32"
+      ? (Object.keys(env).find((candidate) => candidate.toLowerCase() === "fish_features") ??
+        "fish_features")
+      : "fish_features";
+  const features = env[key];
+  if (features?.includes("query-term")) return;
+  env[key] = features ? `${features},no-query-term` : "no-query-term";
+}
+
+function explicitTerminalRuntimeEnvOf(
+  runtimeEnv: Record<string, string> | null,
+): Record<string, string> | null {
+  if (!runtimeEnv) return null;
+  return Object.fromEntries(
+    Object.entries(runtimeEnv).filter(
+      ([key]) =>
+        PROJECT_SCRIPT_ENV_NAMES.some((name) => name === key.toUpperCase()) ||
+        MULTIPLEXER_ENV_NAMES.has(key.toUpperCase()),
+    ),
+  );
 }
 
 function normalizedRuntimeEnv(
@@ -251,11 +321,20 @@ interface TerminalManagerOptions {
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
+  writeHistory?: (filePath: string, history: string) => Promise<void>;
 }
 
 export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> {
+  private readonly epoch = randomUUID();
+  private closing = false;
+  private disposal: Promise<void> | undefined;
+  private readonly evicting = new Set<string>();
+  private readonly writeHistory: (filePath: string, history: string) => Promise<void>;
+  private nextGeneration = 0;
+  private readonly revisions = new Map<string, { generation: number; revision: number }>();
   private readonly sessions = new Map<string, TerminalSessionState>();
   private readonly accountConfig: ServerConfigShape | undefined;
+  private readonly inputRevisions = new WeakMap<TerminalSessionState, number>();
   private readonly logsDir: string;
   private readonly historyLineLimit: number;
   private readonly ptyAdapter: PtyAdapterShape;
@@ -272,12 +351,21 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   private readonly maxRetainedInactiveSessions: number;
   private subprocessPollTimer: ReturnType<typeof setInterval> | null = null;
   private subprocessPollInFlight = false;
+  private readonly sourceStops = new WeakMap<PtyProcess, Promise<void>>();
   private readonly killEscalationTimers = new Map<PtyProcess, ReturnType<typeof setTimeout>>();
   private readonly logger = createLogger("terminal");
 
   constructor(options: TerminalManagerOptions) {
     super();
     this.accountConfig = options.accountConfig;
+    this.writeHistory =
+      options.writeHistory ??
+      ((filePath, contents) =>
+        Effect.runPromise(
+          writeFileStringAtomically({ filePath, contents }).pipe(
+            Effect.provide(NodeServices.layer),
+          ),
+        ));
     this.logsDir = options.logsDir ?? path.resolve(process.cwd(), ".logs", "terminals");
     this.historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
     this.ptyAdapter = options.ptyAdapter;
@@ -301,7 +389,20 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       const existing = this.sessions.get(sessionKey);
       if (!existing) {
         await this.flushPersistQueue(input.threadId, input.terminalId);
-        const history = await this.readHistory(input.threadId, input.terminalId);
+        const inherited = await this.readHistory(input.threadId, input.terminalId);
+        // The previous shell is gone; reset the terminal modes its history leaves on.
+        const neutralized = neutralizeInheritedHistory(
+          inherited.value(),
+          this.historyLineLimit,
+          TERMINAL_HISTORY_MAX_BYTES,
+        );
+        let history = inherited;
+        if (neutralized !== inherited.value()) {
+          history = new BoundedTerminalHistory(this.historyLineLimit);
+          history.append(neutralized);
+        }
+        // Restored bytes belong to a dead process, never to the new shell's parser state.
+        history.finish();
         const cols = input.cols ?? DEFAULT_OPEN_COLS;
         const rows = input.rows ?? DEFAULT_OPEN_ROWS;
         const session: TerminalSessionState = {
@@ -321,6 +422,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           unsubscribeExit: null,
           hasRunningSubprocess: false,
           runtimeEnv: normalizedRuntimeEnv(input.env),
+          stopOnSettle: input.stopOnSettle ?? false,
         };
         this.sessions.set(sessionKey, session);
         this.evictInactiveSessionsIfNeeded();
@@ -328,6 +430,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         return this.snapshot(session);
       }
 
+      if (input.stopOnSettle !== undefined) existing.stopOnSettle = input.stopOnSettle;
       const nextRuntimeEnv = normalizedRuntimeEnv(input.env);
       const currentRuntimeEnv = existing.runtimeEnv;
       const targetCols = input.cols ?? existing.cols;
@@ -336,14 +439,26 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         JSON.stringify(currentRuntimeEnv) !== JSON.stringify(nextRuntimeEnv);
 
       if (existing.cwd !== input.cwd || runtimeEnvChanged) {
-        this.stopProcess(existing);
+        await this.stopProcess(existing);
         existing.cwd = input.cwd;
         existing.runtimeEnv = nextRuntimeEnv;
         existing.history.clear();
+        this.emitEvent({
+          type: "cleared",
+          threadId: existing.threadId,
+          terminalId: existing.terminalId,
+          createdAt: new Date().toISOString(),
+        });
         await this.persistHistory(existing.threadId, existing.terminalId, existing.history.value());
       } else if (existing.status === "exited" || existing.status === "error") {
         existing.runtimeEnv = nextRuntimeEnv;
         existing.history.clear();
+        this.emitEvent({
+          type: "cleared",
+          threadId: existing.threadId,
+          terminalId: existing.terminalId,
+          createdAt: new Date().toISOString(),
+        });
         await this.persistHistory(existing.threadId, existing.terminalId, existing.history.value());
       } else if (currentRuntimeEnv !== nextRuntimeEnv) {
         existing.runtimeEnv = nextRuntimeEnv;
@@ -363,6 +478,14 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         existing.rows = targetRows;
         existing.process.resize(targetCols, targetRows);
         existing.updatedAt = new Date().toISOString();
+        this.emitEvent({
+          type: "resized",
+          threadId: existing.threadId,
+          terminalId: existing.terminalId,
+          createdAt: existing.updatedAt,
+          cols: targetCols,
+          rows: targetRows,
+        });
       }
 
       return this.snapshot(existing);
@@ -380,6 +503,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         `Terminal is not running for thread: ${input.threadId}, terminal: ${input.terminalId}`,
       );
     }
+    this.inputRevisions.set(session, (this.inputRevisions.get(session) ?? 0) + 1);
     session.process.write(input.data);
   }
 
@@ -395,6 +519,14 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     session.rows = input.rows;
     session.updatedAt = new Date().toISOString();
     session.process.resize(input.cols, input.rows);
+    this.emitEvent({
+      type: "resized",
+      threadId: input.threadId,
+      terminalId: input.terminalId,
+      createdAt: session.updatedAt,
+      cols: input.cols,
+      rows: input.rows,
+    });
   }
 
   async clear(raw: TerminalClearInput): Promise<void> {
@@ -403,13 +535,13 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       const session = this.requireSession(input.threadId, input.terminalId);
       session.history.clear();
       session.updatedAt = new Date().toISOString();
-      await this.persistHistory(input.threadId, input.terminalId, session.history.value());
       this.emitEvent({
         type: "cleared",
         threadId: input.threadId,
         terminalId: input.terminalId,
         createdAt: new Date().toISOString(),
       });
+      await this.persistHistory(input.threadId, input.terminalId, session.history.value());
     });
   }
 
@@ -440,11 +572,12 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           unsubscribeExit: null,
           hasRunningSubprocess: false,
           runtimeEnv: normalizedRuntimeEnv(input.env),
+          stopOnSettle: false,
         };
         this.sessions.set(sessionKey, session);
         this.evictInactiveSessionsIfNeeded();
       } else {
-        this.stopProcess(session);
+        await this.stopProcess(session);
         session.cwd = input.cwd;
         session.runtimeEnv = normalizedRuntimeEnv(input.env);
       }
@@ -453,6 +586,12 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       const rows = input.rows ?? session.rows;
 
       session.history.clear();
+      this.emitEvent({
+        type: "cleared",
+        threadId: input.threadId,
+        terminalId: input.terminalId,
+        createdAt: new Date().toISOString(),
+      });
       await this.persistHistory(input.threadId, input.terminalId, session.history.value());
       await this.startSession(session, { ...input, cols, rows }, "restarted");
       return this.snapshot(session);
@@ -469,8 +608,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
       const threadSessions = this.sessionsForThread(input.threadId);
       for (const session of threadSessions) {
-        this.stopProcess(session);
+        await this.stopProcess(session);
         this.sessions.delete(toSessionKey(session.threadId, session.terminalId));
+        this.revisions.delete(toSessionKey(session.threadId, session.terminalId));
       }
       await Promise.all(
         threadSessions.map((session) =>
@@ -485,6 +625,40 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     });
   }
 
+  async closeOnSettleForThread(threadId: string): Promise<void> {
+    await this.runWithThreadLock(threadId, async () => {
+      for (const session of this.sessionsForThread(threadId)) {
+        if (session.stopOnSettle) await this.closeSession(threadId, session.terminalId, false);
+      }
+    });
+    await this.closeIdleForThread(threadId);
+  }
+
+  async closeIdleForThread(threadId: string): Promise<void> {
+    await this.runWithThreadLock(threadId, async () => {
+      const captured = this.sessionsForThread(threadId).map((session) => ({
+        session,
+        pid: session.pid,
+        revision: this.inputRevisions.get(session) ?? 0,
+      }));
+      if (!captured.length) return;
+      // Probe failure leaves every session intact. A cached activity bit cannot prove idle.
+      const table = await this.processTableReader();
+      for (const { session, pid, revision } of captured) {
+        if (
+          this.sessions.get(toSessionKey(threadId, session.terminalId)) !== session ||
+          session.pid !== pid ||
+          session.status === "starting" ||
+          (this.inputRevisions.get(session) ?? 0) !== revision ||
+          (pid !== null && table.has(pid))
+        )
+          continue;
+        await this.closeSession(threadId, session.terminalId, false);
+      }
+      this.updateSubprocessPollingState();
+    });
+  }
+
   listSessions(): TerminalSessionSummary[] {
     return [...this.sessions.values()].map((session) => ({
       threadId: session.threadId,
@@ -494,24 +668,77 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     }));
   }
 
-  dispose(): void {
+  flush(): Promise<void> {
+    return Promise.all(
+      [...this.sessions.values()].map((session) =>
+        this.flushPersistQueue(session.threadId, session.terminalId),
+      ),
+    ).then(() => undefined);
+  }
+
+  dispose(deadline = Date.now() + 1_800): Promise<void> {
+    if (this.disposal) return this.disposal;
+    this.closing = true;
     this.stopSubprocessPolling();
-    const sessions = [...this.sessions.values()];
-    this.sessions.clear();
-    for (const session of sessions) {
-      this.stopProcess(session);
-    }
-    for (const timer of this.persistTimers.values()) {
-      clearTimeout(timer);
-    }
+    for (const timer of this.persistTimers.values()) clearTimeout(timer);
     this.persistTimers.clear();
-    for (const timer of this.killEscalationTimers.values()) {
-      clearTimeout(timer);
+    this.disposal = this.finishDisposal(deadline);
+    return this.disposal;
+  }
+
+  private async finishDisposal(deadline: number): Promise<void> {
+    const withinBudget = async (work: Promise<unknown>, phase: string) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          work,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(
+              () => {
+                this.logger.warn("terminal shutdown phase incomplete", { phase });
+                resolve();
+              },
+              Math.max(0, deadline - Date.now()),
+            );
+          }),
+        ]);
+      } catch (error) {
+        this.logger.warn("terminal shutdown phase failed", { phase, error: String(error) });
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+    await withinBudget(Promise.all([...this.threadLocks.values()]), "admission");
+    const sessions = [...this.sessions.values()];
+    await withinBudget(
+      Promise.all(
+        sessions.map((session) => this.flushPersistQueue(session.threadId, session.terminalId)),
+      ),
+      "initial history flush",
+    );
+    await withinBudget(
+      Promise.all(sessions.map((session) => this.stopProcess(session, deadline))),
+      "source closure",
+    );
+    for (const session of sessions) {
+      if (session.history.finish())
+        this.queuePersist(session.threadId, session.terminalId, session.history);
+      this.cleanupProcessHandles(session);
+      session.process = null;
     }
+    await withinBudget(
+      Promise.all(
+        sessions.map((session) => this.flushPersistQueue(session.threadId, session.terminalId)),
+      ),
+      "final history flush",
+    );
+    for (const timer of this.killEscalationTimers.values()) clearTimeout(timer);
     this.killEscalationTimers.clear();
-    this.pendingPersistHistory.clear();
-    this.threadLocks.clear();
-    this.persistQueues.clear();
+    this.sessions.clear();
+    this.revisions.clear();
+    this.removeAllListeners();
+    // Pending writes retain their own ownership until they settle, including a
+    // failed write's dirty snapshot. They are never erased to report success.
   }
 
   private async startSession(
@@ -519,7 +746,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     input: TerminalStartInput,
     eventType: "started" | "restarted",
   ): Promise<void> {
-    this.stopProcess(session);
+    await this.stopProcess(session);
 
     session.status = "starting";
     session.cwd = input.cwd;
@@ -539,17 +766,25 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         }),
       );
       const shellCandidates = resolveShellCandidates(this.shellResolver);
-      const terminalEnv = createTerminalSpawnEnv(
-        this.accountConfig
-          ? buildAccountExecutionEnvironment({
-              purpose: "terminal",
-              profile: this.accountConfig.profile,
-              stateDir: this.accountConfig.stateDir,
-              baseEnv: process.env,
-              ...(session.runtimeEnv ? { overrides: session.runtimeEnv } : {}),
-            })
-          : process.env,
-        this.accountConfig ? null : session.runtimeEnv,
+      // A thread's terminals follow its access mode for browser opens, like its agent.
+      const terminalEnv = withBrowserOpenThreadToken(
+        createTerminalSpawnEnv(
+          this.accountConfig
+            ? buildAccountExecutionEnvironment({
+                purpose: "terminal",
+                profile: this.accountConfig.profile,
+                stateDir: this.accountConfig.stateDir,
+                baseEnv: process.env,
+                ...(session.runtimeEnv ? { overrides: session.runtimeEnv } : {}),
+              })
+            : process.env,
+          // Restore intentional script/multiplexer overrides after filtering the
+          // account environment; inherited pane identities remain excluded.
+          this.accountConfig
+            ? explicitTerminalRuntimeEnvOf(session.runtimeEnv)
+            : session.runtimeEnv,
+        ),
+        session.threadId,
       );
       let lastSpawnError: unknown = null;
 
@@ -645,15 +880,19 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         throw new Error(`${detail}.${tried}`.trim());
       }
 
+      if (this.closing) {
+        ptyProcess.kill("SIGKILL");
+        throw new Error("Terminal manager is shutting down");
+      }
       session.process = ptyProcess;
       session.pid = ptyProcess.pid;
       session.status = "running";
       session.updatedAt = new Date().toISOString();
       session.unsubscribeData = ptyProcess.onData((data) => {
-        this.onProcessData(session, data);
+        if (session.process === ptyProcess) this.onProcessData(session, data);
       });
       session.unsubscribeExit = ptyProcess.onExit((event) => {
-        this.onProcessExit(session, event);
+        if (session.process === ptyProcess) this.onProcessExit(session, event);
       });
       this.updateSubprocessPollingState();
       this.emitEvent({
@@ -708,6 +947,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     if (session.history.finish())
       this.queuePersist(session.threadId, session.terminalId, session.history);
     this.clearKillEscalationTimer(session.process);
+    // Intentional stops still drain output/decoder state. Their owner completes
+    // cleanup and emits restarted/opened, rather than closing the user's tab.
+    if (session.process && this.sourceStops.has(session.process)) return;
     this.cleanupProcessHandles(session);
     session.process = null;
     session.pid = null;
@@ -728,18 +970,100 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.updateSubprocessPollingState();
   }
 
-  private stopProcess(session: TerminalSessionState): void {
-    const process = session.process;
-    if (!process) return;
-    if (session.history.finish())
-      this.queuePersist(session.threadId, session.terminalId, session.history);
-    this.cleanupProcessHandles(session);
-    session.process = null;
-    session.pid = null;
-    session.hasRunningSubprocess = false;
-    session.status = "exited";
-    session.updatedAt = new Date().toISOString();
-    this.killProcessWithEscalation(process, session.threadId, session.terminalId);
+  /** Keep source listeners alive through graceful termination and decoder finish. */
+  private stopProcess(session: TerminalSessionState, deadline = Date.now() + 1_800): Promise<void> {
+    const source = session.process;
+    if (!source) return Promise.resolve();
+    const existing = this.sourceStops.get(source);
+    if (existing) return existing;
+    const completion = Promise.withResolvers<void>();
+    this.sourceStops.set(source, completion.promise);
+    void this.stopProcessSource(session, source, deadline).then(
+      completion.resolve,
+      completion.reject,
+    );
+    return completion.promise;
+  }
+
+  private async stopProcessSource(
+    session: TerminalSessionState,
+    source: PtyProcess,
+    deadline: number,
+  ): Promise<void> {
+    let escalation: ReturnType<typeof setTimeout> | undefined;
+    let sourceDeadline: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe = () => {};
+    let finished = false;
+    let treeStop: Promise<unknown> = Promise.resolve();
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (escalation) clearTimeout(escalation);
+        if (sourceDeadline) clearTimeout(sourceDeadline);
+        unsubscribe();
+        resolve();
+      };
+      const kill = (signal: string) => {
+        try {
+          source.kill(signal);
+        } catch (error) {
+          this.logger.warn("failed to stop terminal source", { signal, error: String(error) });
+        }
+      };
+      unsubscribe = source.onExit(finish);
+      escalation = setTimeout(
+        () => kill("SIGKILL"),
+        Math.min(this.processKillGraceMs, Math.max(0, deadline - Date.now() - 100)),
+      );
+      sourceDeadline = setTimeout(
+        () => {
+          this.logger.warn("terminal source did not close before deadline", {
+            threadId: session.threadId,
+            terminalId: session.terminalId,
+          });
+          kill("SIGKILL");
+          finish();
+        },
+        Math.max(0, deadline - Date.now() - 50),
+      );
+      if (globalThis.process.platform === "win32") {
+        // Discover descendants before closing ConPTY; never block the event loop
+        // or spend a new timeout after the shared shutdown budget expires.
+        treeStop = killProcessTreeAsync(
+          {
+            pid: source.pid,
+            kill: (signal) => {
+              source.kill(signal);
+              return true;
+            },
+          },
+          {
+            isGroupLeader: false,
+            graceful: false,
+            timeoutMs: Math.max(1, deadline - Date.now() - 100),
+          },
+        ).then((result) => {
+          if (result.usedFallback)
+            this.logger.warn("terminal descendant cleanup used fallback", {
+              threadId: session.threadId,
+              terminalId: session.terminalId,
+            });
+          if (!finished) kill("SIGKILL");
+        });
+      } else kill("SIGTERM");
+    });
+    await treeStop;
+    if (session.process === source) {
+      if (session.history.finish())
+        this.queuePersist(session.threadId, session.terminalId, session.history);
+      this.cleanupProcessHandles(session);
+      session.process = null;
+      session.pid = null;
+      session.hasRunningSubprocess = false;
+      session.status = "exited";
+      session.updatedAt = new Date().toISOString();
+    }
     this.evictInactiveSessionsIfNeeded();
     this.updateSubprocessPollingState();
   }
@@ -767,7 +1091,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.clearKillEscalationTimer(process);
     if (globalThis.process.platform === "win32") {
       // Discover descendants before closing ConPTY, while their parent still exists.
-      const result = killProcessTree(
+      void killProcessTreeAsync(
         {
           pid: process.pid,
           kill: (signal) => {
@@ -776,18 +1100,19 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           },
         },
         { isGroupLeader: false, graceful: false },
-      );
-      if (result.usedFallback)
-        this.logger.warn("failed to stop terminal descendants; closed terminal process", {
-          threadId,
-          terminalId,
-          taskkillStatus: result.taskkillStatus,
-        });
-      try {
-        process.kill();
-      } catch {
-        /* ConPTY may already have exited with its tree. */
-      }
+      ).then((result) => {
+        if (result.usedFallback)
+          this.logger.warn("failed to stop terminal descendants; closed terminal process", {
+            threadId,
+            terminalId,
+            taskkillStatus: result.taskkillStatus,
+          });
+        try {
+          process.kill();
+        } catch {
+          /* ConPTY may already have exited. */
+        }
+      });
       return;
     }
     try {
@@ -822,8 +1147,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private evictInactiveSessionsIfNeeded(): void {
+    if (this.closing) return;
     const inactiveSessions = [...this.sessions.values()].filter(
-      (session) => session.status !== "running",
+      (session) => session.status === "exited" || session.status === "error",
     );
     if (inactiveSessions.length <= this.maxRetainedInactiveSessions) {
       return;
@@ -838,11 +1164,26 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     const toEvict = inactiveSessions.length - this.maxRetainedInactiveSessions;
     for (const session of inactiveSessions.slice(0, toEvict)) {
       const key = toSessionKey(session.threadId, session.terminalId);
-      this.sessions.delete(key);
-      this.clearPersistTimer(session.threadId, session.terminalId);
-      this.pendingPersistHistory.delete(key);
-      this.persistQueues.delete(key);
-      this.clearKillEscalationTimer(session.process);
+      if (this.evicting.has(key)) continue;
+      this.evicting.add(key);
+      void this.flushPersistQueue(session.threadId, session.terminalId)
+        .then(() => {
+          if (
+            this.sessions.get(key) !== session ||
+            (session.status !== "exited" && session.status !== "error")
+          )
+            return;
+          this.sessions.delete(key);
+          this.revisions.delete(key);
+        })
+        .catch((error) => {
+          this.logger.warn("terminal eviction deferred after history failure", {
+            error: String(error),
+          });
+        })
+        .finally(() => {
+          this.evicting.delete(key);
+        });
     }
   }
 
@@ -874,18 +1215,26 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   ): Promise<void> {
     const persistenceKey = toSessionKey(threadId, terminalId);
     const task = async () => {
-      await fs.promises.writeFile(this.historyPath(threadId, terminalId), history, "utf8");
+      await this.writeHistory(this.historyPath(threadId, terminalId), history);
     };
     const previous = this.persistQueues.get(persistenceKey) ?? Promise.resolve();
     const next = previous
       .catch(() => undefined)
       .then(task)
       .catch((error) => {
+        if (!this.pendingPersistHistory.has(persistenceKey)) {
+          const retained =
+            this.sessions.get(persistenceKey)?.history ??
+            new BoundedTerminalHistory(this.historyLineLimit);
+          if (!this.sessions.has(persistenceKey)) retained.append(history);
+          this.pendingPersistHistory.set(persistenceKey, retained);
+        }
         this.logger.warn("failed to persist terminal history", {
           threadId,
           terminalId,
           error: error instanceof Error ? error.message : String(error),
         });
+        throw error;
       });
     this.persistQueues.set(persistenceKey, next);
     const finalized = next.finally(() => {
@@ -905,13 +1254,20 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   private schedulePersist(threadId: string, terminalId: string): void {
     const persistenceKey = toSessionKey(threadId, terminalId);
-    if (this.persistTimers.has(persistenceKey) || this.persistQueues.has(persistenceKey)) return;
+    if (
+      this.closing ||
+      this.persistTimers.has(persistenceKey) ||
+      this.persistQueues.has(persistenceKey)
+    )
+      return;
     const timer = setTimeout(() => {
       this.persistTimers.delete(persistenceKey);
       const pendingHistory = this.pendingPersistHistory.get(persistenceKey);
       if (pendingHistory === undefined) return;
       this.pendingPersistHistory.delete(persistenceKey);
-      void this.enqueuePersistWrite(threadId, terminalId, pendingHistory.value());
+      void this.enqueuePersistWrite(threadId, terminalId, pendingHistory.value()).catch(
+        () => undefined,
+      );
     }, this.persistDebounceMs);
     this.persistTimers.set(persistenceKey, timer);
   }
@@ -928,7 +1284,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     const nextPath = this.historyPath(threadId, terminalId);
     try {
       const { history, truncated } = await readTerminalHistory(nextPath, this.historyLineLimit);
-      if (truncated) await fs.promises.writeFile(nextPath, history.value(), "utf8");
+      if (truncated) await this.writeHistory(nextPath, history.value());
       return history;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -936,7 +1292,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       }
     }
 
-    if (terminalId !== DEFAULT_TERMINAL_ID) {
+    if (terminalId !== DEFAULT_TERMINAL_ID || !hasLegacyHistoryPath(threadId)) {
       return new BoundedTerminalHistory(this.historyLineLimit);
     }
 
@@ -945,7 +1301,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       const { history } = await readTerminalHistory(legacyPath, this.historyLineLimit);
 
       // Migrate legacy transcript filename to the terminal-scoped path.
-      await fs.promises.writeFile(nextPath, history.value(), "utf8");
+      await this.writeHistory(nextPath, history.value());
       try {
         await fs.promises.rm(legacyPath, { force: true });
       } catch (cleanupError) {
@@ -966,7 +1322,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   private async deleteHistory(threadId: string, terminalId: string): Promise<void> {
     const deletions = [fs.promises.rm(this.historyPath(threadId, terminalId), { force: true })];
-    if (terminalId === DEFAULT_TERMINAL_ID) {
+    if (terminalId === DEFAULT_TERMINAL_ID && hasLegacyHistoryPath(threadId)) {
       deletions.push(fs.promises.rm(this.legacyHistoryPath(threadId), { force: true }));
     }
     try {
@@ -1105,8 +1461,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     const key = toSessionKey(threadId, terminalId);
     const session = this.sessions.get(key);
     if (session) {
-      this.stopProcess(session);
+      await this.stopProcess(session);
       this.sessions.delete(key);
+      this.revisions.delete(key);
     }
     this.updateSubprocessPollingState();
     await this.flushPersistQueue(threadId, terminalId);
@@ -1120,7 +1477,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private async deleteAllHistoryForThread(threadId: string): Promise<void> {
-    const threadPrefix = `${toSafeThreadId(threadId)}_`;
+    const threadParts = [toSafeThreadId(threadId), hashedThreadPart(threadId)];
     try {
       const entries = await fs.promises.readdir(this.logsDir, { withFileTypes: true });
       const removals = entries
@@ -1128,9 +1485,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         .map((entry) => entry.name)
         .filter(
           (name) =>
-            name === `${toSafeThreadId(threadId)}.log` ||
             name === `${legacySafeThreadId(threadId)}.log` ||
-            name.startsWith(threadPrefix),
+            threadParts.some((part) => name === `${part}.log` || name.startsWith(`${part}_`)),
         )
         .map((name) => fs.promises.rm(path.join(this.logsDir, name), { force: true }));
       await Promise.all(removals);
@@ -1150,30 +1506,71 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     return session;
   }
 
+  readSnapshot(input: { threadId: string; terminalId?: string }): TerminalSessionSnapshot | null {
+    recordTerminalMetric(increment(terminalSnapshotsTotal, {}));
+    const session = this.sessions.get(
+      toSessionKey(input.threadId, input.terminalId ?? DEFAULT_TERMINAL_ID),
+    );
+    return session ? this.snapshot(session) : null;
+  }
+
+  private revision(session: { threadId: string; terminalId: string }) {
+    const key = toSessionKey(session.threadId, session.terminalId);
+    let state = this.revisions.get(key);
+    if (!state) {
+      state = { generation: ++this.nextGeneration, revision: 0 };
+      this.revisions.set(key, state);
+    }
+    return state;
+  }
+
   private snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
     return {
+      epoch: this.epoch,
+      ...this.revision(session),
       threadId: session.threadId,
       terminalId: session.terminalId,
       cwd: session.cwd,
       status: session.status,
       pid: session.pid,
       history: session.history.value(),
+      cols: session.cols,
+      rows: session.rows,
       exitCode: session.exitCode,
       exitSignal: session.exitSignal,
       updatedAt: session.updatedAt,
     };
   }
 
-  private emitEvent(event: TerminalEvent): void {
-    this.emit("event", event);
+  private emitEvent(
+    event: TerminalEvent extends infer E
+      ? E extends TerminalEvent
+        ? Omit<E, "epoch" | "generation" | "revision">
+        : never
+      : never,
+  ): void {
+    const state = this.revision(event);
+    if (event.type === "started" || event.type === "restarted")
+      state.generation = ++this.nextGeneration;
+    state.revision++;
+    recordTerminalMetric(increment(terminalStateChangesTotal, { eventType: event.type }));
+    const version = { epoch: this.epoch, ...state };
+    // No await between snapshot capture, revision and publication.
+    this.emit("event", {
+      ...event,
+      ...version,
+      ...("snapshot" in event ? { snapshot: { ...event.snapshot, ...version } } : {}),
+    });
   }
 
   private historyPath(threadId: string, terminalId: string): string {
-    const threadPart = toSafeThreadId(threadId);
-    if (terminalId === DEFAULT_TERMINAL_ID) {
-      return path.join(this.logsDir, `${threadPart}.log`);
-    }
-    return path.join(this.logsDir, `${threadPart}_${toSafeTerminalId(terminalId)}.log`);
+    const isDefault = terminalId === DEFAULT_TERMINAL_ID;
+    const encoded = `${toSafeThreadId(threadId)}${isDefault ? "" : "_" + Encoding.encodeBase64Url(terminalId)}.log`;
+    if (encoded.length <= MAX_FILE_NAME_BYTES) return path.join(this.logsDir, encoded);
+    return path.join(
+      this.logsDir,
+      `${hashedThreadPart(threadId)}${isDefault ? "" : "_" + hashHistoryId(terminalId)}.log`,
+    );
   }
 
   private legacyHistoryPath(threadId: string): string {
@@ -1181,6 +1578,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private async runWithThreadLock<T>(threadId: string, task: () => Promise<T>): Promise<T> {
+    if (this.closing) throw new Error("Terminal manager is shutting down");
     const ownerKey = terminalOwnerKey({ kind: "thread", threadId });
     const previous = this.threadLocks.get(ownerKey) ?? Promise.resolve();
     let release!: () => void;
@@ -1190,6 +1588,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.threadLocks.set(ownerKey, current);
     await previous.catch(() => undefined);
     try {
+      if (this.closing) throw new Error("Terminal manager is shutting down");
       return await task();
     } finally {
       release();
@@ -1207,11 +1606,19 @@ export const TerminalManagerLive = Layer.effect(
     const { terminalLogsDir } = accountConfig;
 
     const ptyAdapter = yield* PtyAdapter;
+    const shutdown = yield* Effect.serviceOption(ServerShutdown);
     const runtime = yield* Effect.acquireRelease(
       Effect.sync(
         () => new TerminalManagerRuntime({ logsDir: terminalLogsDir, ptyAdapter, accountConfig }),
       ),
-      (r) => Effect.sync(() => r.dispose()),
+      (r) => Effect.promise(() => r.dispose(Option.getOrUndefined(shutdown)?.deadline)),
+    );
+
+    yield* registerShutdown("terminal-history", "flush", () =>
+      Effect.promise(() => runtime.flush()),
+    );
+    yield* registerShutdown("terminals", "producers", (deadline) =>
+      Effect.promise(() => runtime.dispose(deadline)),
     );
 
     const openTerminal = Effect.fn("terminal.open")(function* (input: TerminalOpenInput) {
@@ -1254,6 +1661,7 @@ export const TerminalManagerLive = Layer.effect(
     });
 
     return {
+      snapshot: (input) => Effect.sync(() => runtime.readSnapshot(input)),
       open: (input) => openTerminal(input).pipe(Effect.withSpan("terminal.open")),
       write: (input) =>
         Effect.tryPromise({
@@ -1276,6 +1684,18 @@ export const TerminalManagerLive = Layer.effect(
           try: () => runtime.close(input),
           catch: (cause) => new TerminalError({ message: "Failed to close terminal", cause }),
         }),
+      closeIdleForThread: (threadId) =>
+        Effect.tryPromise({
+          try: () => runtime.closeIdleForThread(threadId),
+          catch: (cause) =>
+            new TerminalError({ message: "Could not verify and close idle terminals", cause }),
+        }),
+      closeOnSettleForThread: (threadId) =>
+        Effect.tryPromise({
+          try: () => runtime.closeOnSettleForThread(threadId),
+          catch: (cause) =>
+            new TerminalError({ message: "Could not close settled terminals", cause }),
+        }),
       createAccountProcess: (input) =>
         ptyAdapter
           .spawn(input)
@@ -1292,7 +1712,7 @@ export const TerminalManagerLive = Layer.effect(
           };
         }),
       listSessions: Effect.sync(() => runtime.listSessions()),
-      dispose: Effect.sync(() => runtime.dispose()),
+      dispose: Effect.promise(() => runtime.dispose()),
     } satisfies TerminalManagerShape;
   }),
 );

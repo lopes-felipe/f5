@@ -1,4 +1,9 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vitest";
 import { deriveProviderInstanceEntries } from "./providerInstances";
@@ -7,7 +12,98 @@ import {
   getAppModelOptions,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
+  resolveFallbackModelOptions,
+  resolveComposerFallbackModel,
 } from "./modelSelection";
+
+describe("composer fallback model options", () => {
+  it("tries the saved model, then the instance default before picker ordering", () => {
+    const base = {
+      driver: ProviderDriverKind.make("codex"),
+      instanceDefault: "gpt-5.4",
+      models: [
+        { slug: "first-custom", name: "First" },
+        { slug: "gpt-5.4", name: "Default" },
+      ],
+    };
+    expect(resolveComposerFallbackModel({ ...base, candidate: "missing-custom" })).toBe("gpt-5.4");
+    expect(resolveComposerFallbackModel({ ...base, candidate: "first-custom" })).toBe(
+      "first-custom",
+    );
+    expect(
+      resolveComposerFallbackModel({
+        ...base,
+        candidate: "missing-custom",
+        instanceDefault: "also-missing",
+      }),
+    ).toBe("first-custom");
+  });
+  const requestedInstanceId = ProviderInstanceId.make("codex_old");
+  const selectedInstanceId = ProviderInstanceId.make("codex_work");
+  const selectedDriver = ProviderDriverKind.make("codex");
+  const options = [{ id: "reasoningEffort", value: "high" }];
+  const base = {
+    settings: DEFAULT_UNIFIED_SETTINGS,
+    providers: [
+      { ...provider({ instanceId: requestedInstanceId }), enabled: false },
+      provider({ instanceId: selectedInstanceId }),
+    ],
+    requestedInstanceId,
+    selectedInstanceId,
+    selectedDriver,
+    selectedModel: "gpt-5.4",
+    selection: { model: "gpt-5.4", options },
+  };
+
+  it.each(["gpt-5.4", "5.4"])("keeps effort saved as %s", (model) => {
+    expect(resolveFallbackModelOptions({ ...base, selection: { model, options } })).toEqual(
+      options,
+    );
+  });
+
+  it("does not copy effort from another model or driver", () => {
+    expect(resolveFallbackModelOptions({ ...base, selectedModel: "gpt-5.4-mini" })).toBeUndefined();
+    expect(
+      resolveFallbackModelOptions({
+        ...base,
+        selectedDriver: ProviderDriverKind.make("claudeAgent"),
+      }),
+    ).toBeUndefined();
+  });
+
+  it.each([requestedInstanceId, selectedInstanceId])(
+    "keeps custom slug identity on %s",
+    (instanceId) => {
+      const settings = {
+        ...DEFAULT_UNIFIED_SETTINGS,
+        providerInstances: {
+          [instanceId]: {
+            driver: selectedDriver,
+            enabled: true,
+            config: { customModels: ["5.4"] },
+          },
+        },
+      };
+      expect(
+        resolveFallbackModelOptions({
+          ...base,
+          settings,
+          selectedModel: instanceId === selectedInstanceId ? "5.4" : "gpt-5.4",
+          selection: { model: instanceId === requestedInstanceId ? "5.4" : "gpt-5.4", options },
+        }),
+      ).toBeUndefined();
+    },
+  );
+
+  it("does not expand instance catalog aliases", () => {
+    expect(
+      resolveFallbackModelOptions({
+        ...base,
+        selection: { model: "instance-default", options },
+      }),
+    ).toBeUndefined();
+  });
+});
 
 function provider(input: {
   provider?: ProviderDriverKind;
@@ -38,6 +134,33 @@ function provider(input: {
     skills: [],
   };
 }
+
+it("offers and resolves all saved custom models beyond the first 32", () => {
+  const providers = [provider({ instanceId: "claude_openrouter" })];
+  const customModels = Array.from({ length: 40 }, (_, index) => "proxy/model-" + (index + 1));
+  const settings = {
+    ...settingsWithProviderInstances(),
+    providerInstances: {
+      [ProviderInstanceId.make("claude_openrouter")]: {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        config: { customModels },
+      },
+    },
+  };
+  expect(
+    getAppModelOptionsForInstance(settings, deriveProviderInstanceEntries(providers)[0]!).map(
+      (model) => model.slug,
+    ),
+  ).toEqual(customModels);
+  expect(
+    resolveAppModelSelectionForInstance(
+      ProviderInstanceId.make("claude_openrouter"),
+      settings,
+      providers,
+      "proxy/model-40",
+    ),
+  ).toBe("proxy/model-40");
+});
 
 function settingsWithProviderInstances(): UnifiedSettings {
   return {
@@ -90,19 +213,19 @@ describe("instance-scoped model selection", () => {
       },
     };
     expect(getAppModelOptionsForInstance(hidden, entry).map((option) => option.slug)).toEqual([
-      "claude-opus-5-5",
       "claude-fable-5",
+      "claude-opus-5-5",
     ]);
     expect(resolveAppModelSelectionForInstance(instanceId, hidden, providers, "fable")).toBe(
       "claude-opus-5-5",
     );
   });
-  it("keeps Fable 5.1 gated per instance and falls back for persisted bare aliases", () => {
+  it("keeps Fable 5.2 gated per instance and falls back for persisted bare aliases", () => {
     const providers = [
       provider({
         provider: ProviderDriverKind.make("claudeAgent"),
         instanceId: "claudeAgent",
-        models: ["claude-opus-5", "claude-fable-5-1", "claude-fable-5"],
+        models: ["claude-opus-5", "claude-fable-5-2", "claude-fable-5"],
       }),
       provider({ instanceId: "claude_old", models: ["claude-opus-5", "claude-fable-5"] }),
     ];
@@ -111,12 +234,12 @@ describe("instance-scoped model selection", () => {
       getAppModelOptionsForInstance(DEFAULT_UNIFIED_SETTINGS, entries[0]!).map(
         (option) => option.slug,
       ),
-    ).toContain("claude-fable-5-1");
+    ).toContain("claude-fable-5-2");
     expect(
       getAppModelOptionsForInstance(DEFAULT_UNIFIED_SETTINGS, entries[1]!).map(
         (option) => option.slug,
       ),
-    ).not.toContain("claude-fable-5-1");
+    ).not.toContain("claude-fable-5-2");
     expect(
       resolveAppModelSelectionForInstance(
         ProviderInstanceId.make("claudeAgent"),
@@ -124,7 +247,7 @@ describe("instance-scoped model selection", () => {
         providers,
         "fable",
       ),
-    ).toBe("claude-fable-5-1");
+    ).toBe("claude-fable-5-2");
     expect(
       resolveAppModelSelectionForInstance(
         ProviderInstanceId.make("claude_old"),
@@ -288,7 +411,7 @@ describe("instance-scoped model selection", () => {
     const stock = deriveProviderInstanceEntries(providers)[0]!;
     const slugs = getAppModelOptionsForInstance(settings, stock).map((option) => option.slug);
 
-    expect(slugs).toEqual(["claude-opus-5", "claude-fable-5"]);
+    expect(slugs).toEqual(["claude-fable-5", "claude-opus-5"]);
     expect(
       resolveAppModelSelectionForInstance(
         ProviderInstanceId.make("claudeAgent"),
@@ -320,7 +443,7 @@ describe("instance-scoped model selection", () => {
     const stock = deriveProviderInstanceEntries(providers)[0]!;
     const slugs = getAppModelOptionsForInstance(settings, stock).map((option) => option.slug);
 
-    expect(slugs).toEqual(["claude-opus-5-5", "claude-fable-5"]);
+    expect(slugs).toEqual(["claude-fable-5", "claude-opus-5-5"]);
     expect(
       resolveAppModelSelectionForInstance(
         ProviderInstanceId.make("claudeAgent"),
@@ -455,6 +578,34 @@ describe("instance-scoped model selection", () => {
       instanceId: ProviderInstanceId.make("claude_openrouter"),
       model: "openai/gpt-5.5",
     });
+  });
+
+  it("falls back to the text generation default, not the chat default, for a removed model", () => {
+    const providers = [provider({ instanceId: "codex", models: ["gpt-6-astra", "gpt-6-luna"] })];
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.6-luna",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers).model).toBe(
+      DEFAULT_GIT_TEXT_GENERATION_MODEL,
+    );
+  });
+
+  it("keeps a saved text generation model the catalog still lists", () => {
+    const providers = [provider({ instanceId: "codex", models: ["gpt-6-astra", "gpt-6-luna"] })];
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6-astra",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers).model).toBe("gpt-6-astra");
   });
 });
 

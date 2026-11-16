@@ -1,5 +1,6 @@
+import { isEnoent } from "./storagePathSafety.ts";
+import { storageLstat, storageReadDir } from "./diskUsage.ts";
 import * as OS from "node:os";
-import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 
 import type { StorageCleanupTarget, StoragePathWarning } from "@t3tools/contracts";
@@ -41,7 +42,7 @@ type LegacyProbeCategoryId = keyof NonNullable<LegacyProbeResult["targetsByCateg
 
 async function pathExists(path: string): Promise<boolean> {
   try {
-    await FS.lstat(path);
+    await storageLstat(path);
     return true;
   } catch {
     return false;
@@ -54,9 +55,11 @@ async function directoryRootState(
 ): Promise<"missing" | "ready" | "refused"> {
   let stat: import("node:fs").Stats;
   try {
-    stat = await FS.lstat(path);
-  } catch {
-    return "missing";
+    stat = await storageLstat(path);
+  } catch (error) {
+    if (isEnoent(error)) return "missing";
+    warnings.push({ path, reason: error instanceof Error ? error.message : String(error) });
+    return "refused";
   }
   if (stat.isSymbolicLink()) {
     warnings.push({
@@ -77,7 +80,7 @@ async function directoryRootState(
 
 async function fileExistsNonEmpty(path: string): Promise<boolean> {
   try {
-    const stat = await FS.lstat(path);
+    const stat = await storageLstat(path);
     return stat.isFile() && stat.size > 0;
   } catch {
     return false;
@@ -92,11 +95,17 @@ async function sizeTarget(input: {
   readonly disabledReason?: string | undefined;
   readonly detail?: string | undefined;
   readonly warnings: StoragePathWarning[];
+  readonly signal?: AbortSignal | undefined;
 }): Promise<StorageCleanupTarget | null> {
   let stat: import("node:fs").Stats;
   try {
-    stat = await FS.lstat(input.path);
-  } catch {
+    stat = await storageLstat(input.path);
+  } catch (error) {
+    if (!isEnoent(error))
+      input.warnings.push({
+        path: input.path,
+        reason: error instanceof Error ? error.message : String(error),
+      });
     return null;
   }
   if (stat.isSymbolicLink()) {
@@ -114,7 +123,7 @@ async function sizeTarget(input: {
       ...(input.detail ? { detail: input.detail } : {}),
     };
   }
-  const usage = await recursiveSize(input.path);
+  const usage = await recursiveSize(input.path, input.signal ? { signal: input.signal } : {});
   input.warnings.push(...usage.errors);
   return {
     id: input.id,
@@ -159,14 +168,16 @@ async function listLegacyGitWorktreeDirectories(input: {
   readonly root: string;
   readonly maxDepth: number;
   readonly warnings: StoragePathWarning[];
+  readonly signal?: AbortSignal | undefined;
 }): Promise<ReadonlyArray<string>> {
   const paths: string[] = [];
 
   const visit = async (directory: string, depth: number): Promise<void> => {
+    input.signal?.throwIfAborted();
     const gitPath = Path.join(directory, ".git");
     let gitStat: import("node:fs").Stats | null = null;
     try {
-      gitStat = await FS.lstat(gitPath);
+      gitStat = await storageLstat(gitPath);
     } catch {
       gitStat = null;
     }
@@ -180,7 +191,7 @@ async function listLegacyGitWorktreeDirectories(input: {
 
     let entries: import("node:fs").Dirent[] = [];
     try {
-      entries = await FS.readdir(directory, { withFileTypes: true });
+      entries = await storageReadDir(directory, { withFileTypes: true });
     } catch (error) {
       input.warnings.push({
         path: directory,
@@ -213,6 +224,7 @@ export async function probeLegacyState(input: {
   readonly config: ServerConfigShape;
   readonly liveWorktreePaths: ReadonlySet<string>;
   readonly homeDir?: string;
+  readonly signal?: AbortSignal | undefined;
 }): Promise<LegacyProbeResult> {
   const homeDir = input.homeDir ?? OS.homedir();
   const legacyBase = legacyT3BaseDir(homeDir);
@@ -274,6 +286,7 @@ export async function probeLegacyState(input: {
           disabledReason,
           detail: "Migrated source state.",
           warnings,
+          signal: input.signal,
         })
       : Promise.resolve(null),
   );
@@ -281,7 +294,7 @@ export async function probeLegacyState(input: {
   if (legacyBaseState === "ready") {
     let entries: import("node:fs").Dirent[] = [];
     try {
-      entries = await FS.readdir(legacyBase, { withFileTypes: true });
+      entries = await storageReadDir(legacyBase, { withFileTypes: true });
     } catch (error) {
       warnings.push({
         path: legacyBase,
@@ -302,6 +315,7 @@ export async function probeLegacyState(input: {
             disabledReason,
             detail: "Manual migration snapshot.",
             warnings,
+            signal: input.signal,
           }),
         );
       }
@@ -321,6 +335,7 @@ export async function probeLegacyState(input: {
             (input.config.devUrl !== undefined ? "Development URL is active." : undefined),
           detail: "Legacy development state.",
           warnings,
+          signal: input.signal,
         })
       : Promise.resolve(null),
   );
@@ -336,6 +351,7 @@ export async function probeLegacyState(input: {
           disabledReason,
           detail: "Rebuilt on demand.",
           warnings,
+          signal: input.signal,
         })
       : Promise.resolve(null),
   );
@@ -348,6 +364,7 @@ export async function probeLegacyState(input: {
       root: legacyWorktrees,
       maxDepth: LEGACY_WORKTREE_SCAN_MAX_DEPTH,
       warnings,
+      signal: input.signal,
     });
     for (const worktreePath of worktreePaths) {
       const referenced = Array.from(input.liveWorktreePaths).some((liveWorktreePath) =>
@@ -365,6 +382,7 @@ export async function probeLegacyState(input: {
             disabledReason ?? (referenced ? "Referenced by a live thread." : undefined),
           detail: referenced ? "Live thread worktree." : "Legacy Git worktree.",
           warnings,
+          signal: input.signal,
         }),
       );
     }
@@ -373,7 +391,7 @@ export async function probeLegacyState(input: {
   if (f5BaseState === "ready") {
     let entries: import("node:fs").Dirent[] = [];
     try {
-      entries = await FS.readdir(f5Base, { withFileTypes: true });
+      entries = await storageReadDir(f5Base, { withFileTypes: true });
     } catch (error) {
       warnings.push({
         path: f5Base,
@@ -393,6 +411,7 @@ export async function probeLegacyState(input: {
             disabledReason,
             detail: "Empty userdata artifact.",
             warnings,
+            signal: input.signal,
           }),
         );
       }
@@ -402,7 +421,7 @@ export async function probeLegacyState(input: {
   if (legacyBaseState === "ready") {
     let entries: string[] = [];
     try {
-      entries = (await FS.readdir(legacyBase)).filter((entry) => entry !== ".DS_Store");
+      entries = (await storageReadDir(legacyBase)).filter((entry) => entry !== ".DS_Store");
     } catch (error) {
       warnings.push({
         path: legacyBase,
@@ -421,6 +440,7 @@ export async function probeLegacyState(input: {
           disabledReason ?? (rootIsEmpty ? undefined : "Delete legacy subdirectories first."),
         detail: rootIsEmpty ? "Empty legacy root." : "Legacy root is not empty.",
         warnings,
+        signal: input.signal,
       }),
     );
   }

@@ -1,9 +1,40 @@
 import { PROVIDER_DISPLAY_NAMES, type ServerProvider } from "@t3tools/contracts";
-import { XIcon } from "lucide-react";
-import { memo } from "react";
+import { RefreshCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { memo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
+import { ensureNativeApi } from "../../nativeApi";
+import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { presentProviderStatus } from "../onboarding/providerStatusIcon";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
+import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
+import type { ThreadNoticeChip } from "./ThreadNoticeStack";
+
+function providerHealthLabel(status: Pick<ServerProvider, "displayName" | "driver">): string {
+  return (
+    status.displayName ??
+    (PROVIDER_DISPLAY_NAMES as Partial<Record<string, string>>)[status.driver] ??
+    status.driver
+  );
+}
+
+/**
+ * Limited availability can fold into a status chip. A disabled or unavailable
+ * provider blocks sends, so it stays inline.
+ */
+export function providerHealthChip(
+  status: Pick<ServerProvider, "displayName" | "driver" | "status">,
+): ThreadNoticeChip | null {
+  if (status.status !== "warning") return null;
+  const providerLabel = providerHealthLabel(status);
+  return {
+    icon: TriangleAlertIcon,
+    tone: "warning",
+    label: `${providerLabel} limited`,
+    ariaLabel: `${providerLabel} status: limited`,
+  };
+}
 
 export const ProviderHealthBanner = memo(function ProviderHealthBanner({
   status,
@@ -12,14 +43,38 @@ export const ProviderHealthBanner = memo(function ProviderHealthBanner({
   status: ServerProvider | null;
   onDismiss?: () => void;
 }) {
+  const queryClient = useQueryClient();
+  const refreshingRef = useRef(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const refresh = async () => {
+    if (!status || refreshingRef.current) return;
+    refreshingRef.current = true;
+    setIsRefreshing(true);
+    try {
+      const { providers } = await ensureNativeApi().server.refreshProviders({
+        instanceId: status.instanceId,
+      });
+      queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
+        existing ? { ...existing, providers } : existing,
+      );
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Failed to refresh provider status",
+        description: error instanceof Error ? error.message : "Please try again.",
+      });
+    } finally {
+      refreshingRef.current = false;
+      setIsRefreshing(false);
+    }
+  };
+
   if (!status || status.status === "ready") {
     return null;
   }
 
-  const providerLabel =
-    status.displayName ??
-    (PROVIDER_DISPLAY_NAMES as Partial<Record<string, string>>)[status.driver] ??
-    status.driver;
+  const providerLabel = providerHealthLabel(status);
   const defaultMessage =
     status.status === "error"
       ? `${providerLabel} provider is unavailable.`
@@ -34,8 +89,24 @@ export const ProviderHealthBanner = memo(function ProviderHealthBanner({
     <Alert variant={isError ? "error" : "warning"}>
       <StatusIcon aria-label={presentation.ariaLabel} />
       <AlertTitle>{title}</AlertTitle>
-      <AlertDescription className="line-clamp-3" title={status.message ?? defaultMessage}>
-        {status.message ?? defaultMessage}
+      <AlertDescription>
+        <div className="line-clamp-3" title={status.message ?? defaultMessage}>
+          {status.message ?? defaultMessage}
+        </div>
+        {status.status === "warning" || status.status === "error" ? (
+          <div className="mt-2 flex justify-end">
+            <Button
+              aria-label={`Refresh ${providerLabel} provider status`}
+              disabled={isRefreshing}
+              onClick={() => void refresh()}
+              size="xs"
+              variant="outline"
+            >
+              <RefreshCwIcon className={isRefreshing ? "animate-spin" : undefined} />
+              {isRefreshing ? "Refreshing..." : "Refresh"}
+            </Button>
+          </div>
+        ) : null}
       </AlertDescription>
       {onDismiss && (
         <AlertAction>

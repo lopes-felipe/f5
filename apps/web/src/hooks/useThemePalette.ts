@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo } from "react";
 
-import { useAppSettings } from "../appSettings";
+import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import {
   applyThemePalette,
   parseCustomThemeLibrary,
@@ -17,8 +17,12 @@ export interface ResolvedThemePalette {
   readonly revision: string;
 }
 
+function selectThemeSettings(settings: AppSettings) {
+  return { customThemes: settings.customThemes, themeId: settings.themeId };
+}
+
 export function useResolvedThemePalette(variant: ThemeVariant): ResolvedThemePalette {
-  const { settings } = useAppSettings();
+  const settings = useAppSettingsSelector(selectThemeSettings);
   return useMemo(() => {
     const library = parseCustomThemeLibrary(settings.customThemes);
     const palette = resolveThemePalette(settings.themeId, settings.customThemes);

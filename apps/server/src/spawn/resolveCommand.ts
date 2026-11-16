@@ -1,4 +1,5 @@
-import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { accessSync, constants, readFileSync, readdirSync, statSync } from "node:fs";
 import * as NodePath from "node:path";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 import { Effect } from "effect";
@@ -16,9 +17,29 @@ export interface ResolvedCliInvocation {
 }
 
 export interface CommandResolutionOptions {
+  readonly pathDirectoryListings?: PathDirectoryListings | undefined;
   readonly platform?: NodeJS.Platform;
   readonly useCache?: boolean;
   readonly cwd?: string | undefined;
+}
+
+/** Scan-local listings; unreadable directories fall back to candidate probes. */
+export class PathDirectoryListings {
+  private readonly entries = new Map<string, { mtime: number; names: Set<string> }>();
+
+  names(directory: string): ReadonlySet<string> | undefined {
+    try {
+      const mtime = statSync(directory).mtimeMs;
+      const cached = this.entries.get(directory);
+      if (cached?.mtime === mtime) return cached.names;
+      const names = new Set(readdirSync(directory).map((name) => name.toLowerCase()));
+      this.entries.set(directory, { mtime, names });
+      return names;
+    } catch {
+      this.entries.delete(directory);
+      return undefined;
+    }
+  }
 }
 
 export class CommandNotFoundError extends Error {
@@ -163,6 +184,71 @@ export function clearCommandResolutionCache(): void {
   resolutionCache.clear();
 }
 
+function findExecutables(
+  command: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  cwd: string | undefined,
+  firstOnly: boolean,
+  listings?: PathDirectoryListings,
+): string[] {
+  const pathExtensions =
+    platform === "win32" ? resolveWindowsPathExtensions(env) : ([] as ReadonlyArray<string>);
+  const pathQualified = isPathQualified(command, platform);
+  const candidates = commandCandidates(command, platform, pathExtensions, pathQualified);
+
+  if (pathQualified) {
+    const found = candidates
+      .map((candidate) => resolveQualifiedCandidate(candidate, platform, cwd))
+      .find((candidate) => isExecutableFile(candidate, platform));
+    return found ? [found] : [];
+  }
+
+  // Skip exact repeats only. Windows can make a directory case-sensitive, so
+  // entries that differ in case are not provably the same directory.
+  const pathEntries = new Set(
+    resolvePathValue(env)
+      .split(platform === "win32" ? ";" : ":")
+      .map(stripWrappingQuotes)
+      .filter(Boolean),
+  );
+  const found: string[] = [];
+  for (const pathEntry of pathEntries) {
+    const names = listings?.names(pathEntry);
+    for (const candidate of candidates) {
+      if (names && !names.has(candidate.toLowerCase())) continue;
+      const candidatePath = joinForPlatform(pathEntry, candidate, platform);
+      if (isExecutableFile(candidatePath, platform)) {
+        found.push(candidatePath);
+        if (firstOnly) return found;
+        // One match per directory, as PATH lookup would pick it.
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Every executable match for `command`, in PATH order and at most one per PATH
+ * entry. Used where the first match may be a launcher that must be skipped.
+ * Not cached.
+ */
+export function resolveExecutables(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: Omit<CommandResolutionOptions, "useCache"> = {},
+): string[] {
+  return findExecutables(
+    command,
+    env,
+    options.platform ?? process.platform,
+    options.cwd,
+    false,
+    options.pathDirectoryListings,
+  );
+}
+
 export function resolveExecutable(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -177,32 +263,9 @@ export function resolveExecutable(
   }
   if (cached) resolutionCache.delete(cacheKey);
 
-  const pathExtensions =
-    platform === "win32" ? resolveWindowsPathExtensions(env) : ([] as ReadonlyArray<string>);
-  const pathQualified = isPathQualified(command, platform);
-  const candidates = commandCandidates(command, platform, pathExtensions, pathQualified);
-  let resolved: string | null = null;
-
-  if (pathQualified) {
-    resolved =
-      candidates
-        .map((candidate) => resolveQualifiedCandidate(candidate, platform, options.cwd))
-        .find((candidate) => isExecutableFile(candidate, platform)) ?? null;
-  } else {
-    const pathEntries = resolvePathValue(env)
-      .split(platform === "win32" ? ";" : ":")
-      .map(stripWrappingQuotes)
-      .filter(Boolean);
-    search: for (const pathEntry of pathEntries) {
-      for (const candidate of candidates) {
-        const candidatePath = joinForPlatform(pathEntry, candidate, platform);
-        if (isExecutableFile(candidatePath, platform)) {
-          resolved = candidatePath;
-          break search;
-        }
-      }
-    }
-  }
+  const resolved =
+    findExecutables(command, env, platform, options.cwd, true, options.pathDirectoryListings)[0] ??
+    null;
 
   // Misses must self-heal immediately when a CLI is installed into an
   // existing PATH directory. Positive entries are bounded to avoid stale
@@ -213,6 +276,192 @@ export function resolveExecutable(
       expiresAt: Date.now() + POSITIVE_RESOLUTION_CACHE_TTL_MS,
     });
   }
+  return resolved;
+}
+
+// Git for Windows 2.56 moved x64 builds from mingw64 to ucrt64; ARM64 builds
+// live in clangarm64 and 32-bit ones in mingw32.
+const GIT_FOR_WINDOWS_BUILDS = ["ucrt64", "clangarm64", "mingw64", "mingw32"] as const;
+
+// Exact forms that cannot start hooks, helpers, pagers, editors or lazy fetches.
+const CONSOLE_FREE_GIT_READS = [
+  "rev-parse --git-path index",
+  "rev-parse --path-format=absolute --git-path index",
+  "rev-parse --path-format=absolute --git-path MERGE_HEAD",
+  "rev-parse --path-format=absolute --git-common-dir",
+  "rev-parse --path-format=absolute --show-toplevel",
+  "rev-parse --git-common-dir",
+  "rev-parse --show-toplevel",
+  "rev-parse --symbolic-full-name HEAD",
+  "rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
+  "symbolic-ref --quiet HEAD",
+  "symbolic-ref *",
+  "remote",
+  "remote -v",
+  "remote get-url *",
+  "remote get-url -- *",
+  "config --get *",
+  "config --get -- *",
+].map((form) => form.split(" "));
+
+export function runsGitWithoutConsole(
+  platform: NodeJS.Platform,
+  executable: string,
+  args: ReadonlyArray<string>,
+): boolean {
+  if (platform !== "win32") return false;
+  const { basename, dirname } = NodePath.win32;
+  const bin = dirname(executable);
+  const build = basename(dirname(bin)).toLowerCase();
+  if (basename(executable).toLowerCase() !== "git.exe" || basename(bin).toLowerCase() !== "bin")
+    return false;
+  if (!GIT_FOR_WINDOWS_BUILDS.some((candidate) => candidate === build)) return false;
+  const rest =
+    args[0] === "--git-dir" && args[1] !== undefined && !args[1].startsWith("-")
+      ? args.slice(2)
+      : args;
+  return CONSOLE_FREE_GIT_READS.some(
+    (form) =>
+      form.length === rest.length &&
+      form.every((part, i) => part === rest[i] || (part === "*" && !rest[i]!.startsWith("-"))),
+  );
+}
+
+/**
+ * Swaps Git for Windows' launcher (`<Git>\cmd\git.exe`, the only git its
+ * installer puts on PATH, or the portable build's `<Git>\bin\git.exe`) for the
+ * git.exe it starts. The launcher costs a second process on every git command,
+ * and each launch leaks a kernel token reference that slows process creation
+ * machine-wide until reboot. The real binary sets HOME itself, but adds its own
+ * folders to PATH for hooks, ssh and credential helpers only when MSYSTEM is
+ * unset, so the launcher stays when MSYSTEM is set. Anything else is returned
+ * as is.
+ */
+export function preferGitForWindowsBinary(
+  executable: string,
+  env: NodeJS.ProcessEnv,
+  fileExists: (filePath: string) => boolean = isFile,
+): string {
+  if (findEnvironmentValue(env, "MSYSTEM")) return executable;
+  const path = NodePath.win32;
+  if (path.basename(executable).toLowerCase() !== "git.exe") return executable;
+  const launcherDirectory = path.dirname(executable);
+  const launcherFolder = path.basename(launcherDirectory).toLowerCase();
+  if (launcherFolder !== "cmd" && launcherFolder !== "bin") return executable;
+  const installRoot = path.dirname(launcherDirectory);
+  for (const build of GIT_FOR_WINDOWS_BUILDS) {
+    const candidate = path.join(installRoot, build, "bin", "git.exe");
+    if (fileExists(candidate)) return candidate;
+  }
+  return executable;
+}
+
+export type XcodeGitLocator = (env: NodeJS.ProcessEnv) => string | undefined;
+
+// xcrun honors DEVELOPER_DIR and the `xcode-select` choice, as the shim does.
+function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv): string | undefined {
+  try {
+    const located = execFileSync("/usr/bin/xcrun", ["--find", "git"], {
+      encoding: "utf8",
+      env,
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return NodePath.posix.isAbsolute(located) ? located : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const MACOS_GIT_SHIM = "/usr/bin/git";
+const XCODE_GIT_CACHE_TTL_MS = 30_000;
+
+// An injected locator may answer differently for the same PATH, so its entries
+// are kept apart from every other locator's.
+let xcodeGitLocatorIdCount = 0;
+const xcodeGitLocatorIds = new WeakMap<XcodeGitLocator, number>();
+function xcodeGitLocatorId(locator: XcodeGitLocator): number {
+  let id = xcodeGitLocatorIds.get(locator);
+  if (id === undefined) {
+    id = xcodeGitLocatorIdCount++;
+    xcodeGitLocatorIds.set(locator, id);
+  }
+  return id;
+}
+
+export interface GitExecutableOptions {
+  readonly locateXcodeGit?: XcodeGitLocator;
+  /** The xcrun shim's path; only tests change it. */
+  readonly macosGitShim?: string;
+}
+
+/**
+ * /usr/bin/git is an xcrun shim that finds the active developer directory on
+ * every run: about 8 ms per spawn, against under 3 ms for the git behind it.
+ * Only the shim is replaced, so a git the user put first on PATH (Homebrew,
+ * Nix) still wins, and git's own children keep the same PATH. Any lookup
+ * failure keeps plain `git`.
+ */
+function resolveMacosGit(env: NodeJS.ProcessEnv, options: GitExecutableOptions): string {
+  const locateXcodeGit = options.locateXcodeGit ?? locateXcodeGitWithXcrun;
+  const shim = options.macosGitShim ?? MACOS_GIT_SHIM;
+  const cacheKey = [
+    resolutionCacheKey("git", "darwin", env, undefined),
+    "xcode-git",
+    env.DEVELOPER_DIR ?? "",
+    shim,
+    String(xcodeGitLocatorId(locateXcodeGit)),
+  ].join("\0");
+  const cached = resolutionCache.get(cacheKey);
+  // An Xcode update or removal deletes the binary; look again instead of failing the spawn.
+  if (
+    cached &&
+    cached.expiresAt > Date.now() &&
+    (cached.value === "git" || isExecutableFile(cached.value, "darwin"))
+  ) {
+    return cached.value;
+  }
+  const located =
+    resolveExecutable("git", env, { platform: "darwin" }) === shim
+      ? locateXcodeGit(env)
+      : undefined;
+  const resolved = located !== undefined && isExecutableFile(located, "darwin") ? located : "git";
+  resolutionCache.set(cacheKey, {
+    value: resolved,
+    expiresAt: Date.now() + XCODE_GIT_CACHE_TTL_MS,
+  });
+  return resolved;
+}
+
+/**
+ * The executable to spawn for git. On Linux, and when PATH holds a git.cmd
+ * wrapper (which would need cmd.exe, cutting multi-line commit messages at the
+ * first newline), this stays `git` for the platform's own lookup. On macOS the
+ * xcrun shim is skipped (see `resolveMacosGit`).
+ */
+export function resolveGitExecutable(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  options: GitExecutableOptions = {},
+): string {
+  if (platform === "darwin") return resolveMacosGit(env, options);
+  if (platform !== "win32") return "git";
+  const cacheKey = `${resolutionCacheKey("git", platform, env, undefined)}\0real-git\0${
+    findEnvironmentValue(env, "MSYSTEM") ? "msystem" : ""
+  }`;
+  const cached = resolutionCache.get(cacheKey);
+  // Cached with the PATH scan: its file checks would otherwise run before every
+  // git launch.
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const found = resolveExecutable("git", env, { platform });
+  const resolved =
+    found && NodePath.win32.extname(found).toLowerCase() === ".exe"
+      ? preferGitForWindowsBinary(found, env)
+      : "git";
+  resolutionCache.set(cacheKey, {
+    value: resolved,
+    expiresAt: Date.now() + POSITIVE_RESOLUTION_CACHE_TTL_MS,
+  });
   return resolved;
 }
 
@@ -243,6 +492,58 @@ function resolveNodeExecutable(
     );
   }
   return node;
+}
+
+// What npm's cmd-shim writes for a package whose bin is a native executable.
+const NPM_EXECUTABLE_SHIM_PREFIX = [
+  "@ECHO off",
+  "GOTO start",
+  ":find_dp0",
+  "SET dp0=%~dp0",
+  "EXIT /b",
+  ":start",
+  "SETLOCAL",
+  "CALL :find_dp0",
+];
+const NPM_EXECUTABLE_SHIM_RUN = /^"%dp0%\\([^"%]+\.exe)" +%\*$/;
+
+function readShimSource(shimPath: string): string | undefined {
+  try {
+    if (statSync(shimPath).size > MAX_CMD_SHIM_BYTES) return undefined;
+    return readFileSync(shimPath, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The executable an npm cmd-shim runs, when the shim does nothing else (as
+ * `npm install -g opencode-ai` writes for opencode.exe). Started directly, the
+ * executable stays in the kill-on-close job libuv puts every child in, so it
+ * stops when this process is killed.
+ */
+export function npmShimExecutable(
+  shimPath: string,
+  readFile: (filePath: string) => string | undefined = readShimSource,
+  fileExists: (filePath: string) => boolean = isFile,
+): string | undefined {
+  if (NodePath.win32.extname(shimPath).toLowerCase() !== ".cmd") return undefined;
+  // Compared exactly: whitespace CMD keeps, such as after `SET dp0=`, would
+  // make it run a different file than the one found here.
+  const lines = readFile(shimPath)
+    ?.split(/\r?\n/)
+    .filter((line) => line.length > 0);
+  if (lines?.length !== NPM_EXECUTABLE_SHIM_PREFIX.length + 1) return undefined;
+  if (NPM_EXECUTABLE_SHIM_PREFIX.some((expected, index) => lines[index] !== expected)) {
+    return undefined;
+  }
+  const target = NPM_EXECUTABLE_SHIM_RUN.exec(lines.at(-1)!)?.[1];
+  if (target === undefined) return undefined;
+  // Platform-simulated tests use POSIX temporary directories.
+  const executable = shimPath.startsWith("/")
+    ? NodePath.join(NodePath.dirname(shimPath), target.replaceAll("\\", "/"))
+    : NodePath.win32.join(NodePath.win32.dirname(shimPath), target);
+  return fileExists(executable) ? executable : undefined;
 }
 
 function resolveNpmShimTarget(shimPath: string, command: string): string {
@@ -335,6 +636,10 @@ export function resolveInvocation(
     };
   }
   if (extension === ".cmd") {
+    const shimExecutable = npmShimExecutable(executable);
+    if (shimExecutable !== undefined) {
+      return { file: shimExecutable, args: [...args], kind: "native" };
+    }
     const target = resolveNpmShimTarget(executable, command);
     return {
       file: resolveNodeExecutable(command, env, platform, executable),

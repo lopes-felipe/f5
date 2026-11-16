@@ -1,0 +1,143 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-codex-session-actions",
+  "state": "failed",
+  "repositoryCommit": "cf7b9172a8c316d0b496068624e56e562eecef94",
+  "workingTreeDirty": false,
+  "recordedAt": "2026-10-13T21:21:17.401Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "provider": "codex",
+  "providerVersion": "0.162.1",
+  "runtimeMode": "approval-required",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "d0b66a0825bd9dbee0e77aeabeece1d89438adf6adbb915a8fabb0c69e9fa7f7",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "ea62f0d7c5e23f4680500e33563e13df80ccf04ba656002dd33a6915bdda920d",
+    "observerSource": "70d7271c2e6ffcc96c89879466433f5bbfbdbfcd784a53a5dd8f01e34fd85605",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "26dea6aed6480fa4e3c93b2f51fc8ecf4216f7d78d69b070c42ddfc4d4cb26fc",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "17281f635c4f653e13d7dcbeb52e8570e6930a32e93414c0de713437e5abe95d",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140"
+  },
+  "admission": {
+    "version": 1,
+    "suiteId": "750a4cba-1429-4ae2-80eb-09b74f8c7ed3",
+    "scenario": "session-actions.codex",
+    "attempt": 1,
+    "identityHash": "6c54c902640e57cbefe6447f8c532e91b209f284044b0c09a1810d279ec961be",
+    "state": "failed",
+    "evidenceKind": "provider-desktop",
+    "startedAt": "2026-10-13T21:18:56.694Z",
+    "finishedAt": "2026-10-13T21:21:17.417Z",
+    "checks": {
+      "realElectronPermissionsAvailable": true,
+      "sessionActionsInitiallyEmpty": true,
+      "sessionActionsTrustedAppConsent": true,
+      "sessionActionsAppConsentNoInput": true,
+      "approvalModeActuallySubmitted": true,
+      "sessionActionsProviderTailObserved": true,
+      "sessionActionsOnlyExpectedDenial": false,
+      "sessionActionsCleanup": true,
+      "sessionActionsReceiptsComplete": false
+    },
+    "measurements": {},
+    "cleanup": "confirmed",
+    "reason": "command-failed",
+    "evidenceSha256": "6fa52f30242649dd8cbe63b6138f2ecca5b8b3b86678e8de2f8619730ad48724"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "sessionActionsInitiallyEmpty": true,
+    "sessionActionsTrustedAppConsent": true,
+    "sessionActionsAppConsentNoInput": true,
+    "approvalModeActuallySubmitted": true,
+    "sessionActionsProviderTailObserved": true,
+    "sessionActionsOnlyExpectedDenial": false,
+    "sessionActionsCleanup": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "submittedRuntimeModes": ["approval-required", "approval-required"],
+  "composerSubmissions": 2,
+  "approvalModeVerifiedTurns": 2,
+  "failureStage": "session-actions-denial",
+  "failureCode": "timeout",
+  "providerTailObserved": true,
+  "providerErrorCodes": [],
+  "sessionActionsFailures": [],
+  "fixtureObservation": {
+    "presses": 0,
+    "expectedSyntheticTextReceived": false,
+    "humanFinishAcknowledged": false
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": false,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "activityMessages": 0,
+    "activityThumbnails": 0,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "pendingResponses": 0,
+    "accessRequests": 1,
+    "accessAnswersForwarded": 1,
+    "accessAnswerSummaries": [
+      {
+        "kind": "apps",
+        "appCount": 1,
+        "allowed": 1,
+        "remembered": 0
+      }
+    ],
+    "sessionGenerationsObserved": 1,
+    "requestSessions": [
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      }
+    ],
+    "backendRestarts": [],
+    "backendLifecycle": [],
+    "grantChanges": 2,
+    "lastGrantCount": 1,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      }
+    ]
+  },
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "App consent passed; the second provider turn completed without activation reaching F5 or a session-actions request",
+    "Timed out waiting for consent; root cause and additional provider-approval behavior are unestablished",
+    "No lease, capture or input; cleanup confirmed",
+    "Failed attempt preserved; not a qualifying release pass"
+  ]
+}

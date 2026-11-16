@@ -1,0 +1,89 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-13T09:18:17.863Z",
+  "repositoryCommit": "5b60b4bebfa75911ca7fd1c9c86cc7cef9133530",
+  "workingTreeDirty": false,
+  "sourceHashes": {
+    "helper": "1ad51ad9e98fed5820461304019f55708a7f6667908fccb5c6db199ade79c176",
+    "rehearsal": "825a8061f57cb246a379dc803a71b367b0a5a7c731cee0bb6aeb276051e88406",
+    "verifier": "4c368f8ad4a2b8ee3d892db980423e0fa20bab9ae2a0dec1c6e1dcb68dda7e48"
+  },
+  "displayGeometry": [
+    {
+      "displayId": "3",
+      "geometryGeneration": "3:0.0:0.0:3337.0:1397.0:6674:2794:0.0",
+      "primary": true,
+      "nativeBounds": {
+        "x": 0,
+        "y": 0,
+        "width": 3337,
+        "height": 1397
+      },
+      "pixelSize": {
+        "width": 6674,
+        "height": 2794
+      },
+      "rotation": 0,
+      "modelSize": {
+        "width": 1456,
+        "height": 609
+      }
+    },
+    {
+      "displayId": "1",
+      "geometryGeneration": "1:902.0:1397.0:1728.0:1117.0:3456:2234:0.0",
+      "primary": false,
+      "nativeBounds": {
+        "x": 902,
+        "y": 1397,
+        "width": 1728,
+        "height": 1117
+      },
+      "pixelSize": {
+        "width": 3456,
+        "height": 2234
+      },
+      "rotation": 0,
+      "modelSize": {
+        "width": 1333,
+        "height": 862
+      }
+    }
+  ],
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "scope": "unsigned-suspended-helper-empty-grant-capture",
+  "signed": false,
+  "certified": false,
+  "state": "passed",
+  "helperStayedSuspended": true,
+  "heartbeats": 23,
+  "checks": [
+    {
+      "displayId": "3",
+      "op": "screenshot",
+      "passed": true
+    },
+    {
+      "displayId": "3",
+      "op": "zoom",
+      "passed": true
+    },
+    {
+      "displayId": "1",
+      "op": "screenshot",
+      "passed": true
+    },
+    {
+      "displayId": "1",
+      "op": "zoom",
+      "passed": true
+    }
+  ],
+  "limitations": [
+    "Empty-grant neutral frames only; no granted app, provider, consent, overlay, OS input or active lease tested",
+    "Each connected display's neutral encoding/zoom geometry checked; not multi-display app privacy, focus or pointer proof",
+    "No signed installed-build attribution, real-keychain/autofill, Windows or complete release certification"
+  ]
+}

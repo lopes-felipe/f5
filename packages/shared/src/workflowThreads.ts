@@ -1,7 +1,7 @@
 import type {
-  CodeReviewWorkflow,
-  InvestigationWorkflow,
-  PlanningWorkflow,
+  CodeReviewWorkflowSummary as CodeReviewWorkflow,
+  InvestigationWorkflowSummary as InvestigationWorkflow,
+  PlanningWorkflowSummary as PlanningWorkflow,
   ThreadId,
 } from "@t3tools/contracts";
 

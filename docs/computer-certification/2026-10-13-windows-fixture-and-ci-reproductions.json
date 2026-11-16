@@ -1,0 +1,112 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-13T16:24:44.155Z",
+  "scope": "software-only-certification-preparation-and-ci-reproductions",
+  "baselineCommit": "1c38069aef190f3ce2c10554c001de7b9d2ee2f3",
+  "ciMergeCommit": "dd3c85db151124bf1ccaa5c155868db5d0b921ab",
+  "sourceHashes": {
+    "apps/server/src/persistence/NodeSqliteClient.ts": "3c95b79b61727f8a0047b973097359205182ef94287e96906260724f346b5a5c",
+    "apps/server/src/persistence/NodeSqliteClient.test.ts": "d02239666243b0f9b26d713dce11cb8d913ce1c9b31f2f6ca69f783a705aa591",
+    "apps/web/src/components/ChatView.browser.tsx": "e2e4379c8c676cb57ce28a3074922d05038be841c5ca8e5580d16fe429235ece",
+    "apps/desktop/native/windows/fixture/src/lib.rs": "0bae2eed20da6f6b09f34d36351ab02e39757c52df87fc1f1c46072f66c1619e",
+    "apps/desktop/native/windows/fixture/src/main.rs": "2047f3718d8048ec6e08cbdf455fb8519dfb7c01dd39608a6cf309696270b258",
+    "apps/desktop/native/windows/fixture/src/window.rs": "a3b4cfcc88752772d393cef958ccce0bc982efe4f2b39f6f927affdef9ad1039",
+    "apps/desktop/native/windows/fixture/Cargo.toml": "a951618c196154c5dfd8368dc6ea0acd4b714ce244d8f3bf16dd089778996cde",
+    "apps/desktop/native/windows/fixture/Cargo.lock": "789fac6a18bb02bce734a6c8af91d657df8416e0e042a2353c220bc670b8b3e4"
+  },
+  "checks": [
+    {
+      "id": "windows-fixture-cross-check",
+      "state": "passed",
+      "target": "x86_64-pc-windows-msvc",
+      "executedOn": "darwin",
+      "runtimeExecuted": false
+    },
+    {
+      "id": "windows-fixture-portable-tests",
+      "state": "passed",
+      "tests": 3,
+      "executedOn": "darwin",
+      "nativeUiExecuted": false
+    },
+    {
+      "id": "fixture-coordinator-tests",
+      "state": "passed",
+      "tests": 54
+    },
+    {
+      "id": "sqlite-original-regressions",
+      "state": "failed",
+      "expectedFailure": true,
+      "failedTests": 2,
+      "remainingPages": 255,
+      "expectedRemainingPages": 0,
+      "executedOn": "linux",
+      "nodeVersion": "24.13.1"
+    },
+    {
+      "id": "sqlite-fixed-regressions",
+      "state": "passed",
+      "tests": 8,
+      "rawWriteMetadataPreserved": true,
+      "existingVacuumAssertionsUnchanged": true,
+      "executedOn": "linux",
+      "nodeVersion": "24.13.1"
+    },
+    {
+      "id": "linux-browser-baseline",
+      "state": "passed",
+      "files": 74,
+      "tests": 687,
+      "nodeVersion": "24.13.1",
+      "bunVersion": "1.3.9",
+      "playwrightVersion": "1.58.2",
+      "architecture": "arm64"
+    },
+    {
+      "id": "stale-anchor-reproducer",
+      "state": "failed",
+      "expectedFailure": true,
+      "failedTests": 2,
+      "artificialStaleFixtureAnchor": true
+    },
+    {
+      "id": "reset-anchor-reproducer",
+      "state": "passed",
+      "tests": 2,
+      "productionTimelineChanged": false
+    },
+    {
+      "id": "linux-browser-fixed-fixture",
+      "state": "passed",
+      "files": 74,
+      "tests": 687,
+      "architecture": "arm64"
+    },
+    {
+      "id": "local-format-lint-typecheck-full",
+      "state": "passed",
+      "exhaustiveGitTests": 136
+    },
+    {
+      "id": "windows-native-ui-and-input",
+      "state": "not-run",
+      "reason": "interactive-windows-machine-required"
+    },
+    {
+      "id": "current-macos-operator-run",
+      "state": "not-run",
+      "reason": "active-development-app-owns-device-lock"
+    }
+  ],
+  "certified": false,
+  "signedInstalledEvidence": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Cross compilation and receipt tests do not prove Windows UIA, capture or input behavior.",
+    "Linux reproduction used arm64; hosted Linux CI uses x64. Its CI result remains necessary.",
+    "The stale-anchor control proves a fixture-state failure mechanism; current remote CI must confirm the setup fix.",
+    "No new physical computer action, capture or human-consent evidence was produced.",
+    "No passing evidence is transferred to a different compiled artifact."
+  ]
+}

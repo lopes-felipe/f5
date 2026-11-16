@@ -14,12 +14,15 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   planMarkdown,
   cwd,
   workspaceRoot,
+  forceExpanded = false,
 }: {
   planMarkdown: string;
   cwd: string | undefined;
   workspaceRoot: string | undefined;
+  forceExpanded?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const showExpanded = expanded || forceExpanded;
   const title = proposedPlanTitle(planMarkdown) ?? "Proposed plan";
   const lineCount = planMarkdown.split("\n").length;
   const canCollapse = planMarkdown.length > 900 || lineCount > 20;
@@ -32,7 +35,9 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
     <div className="rounded-3xl border border-border/80 bg-card/70 p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <Badge variant="secondary">Plan</Badge>
+          <Badge variant="secondary" data-thread-find-ignore>
+            Plan
+          </Badge>
           <p className="truncate text-sm font-medium text-foreground">{title}</p>
         </div>
         <MarkdownArtifactActions
@@ -42,17 +47,19 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
         />
       </div>
       <div className="mt-4">
-        <div className={cn("relative", canCollapse && !expanded && "max-h-104 overflow-hidden")}>
-          {canCollapse && !expanded ? (
+        <div
+          className={cn("relative", canCollapse && !showExpanded && "max-h-104 overflow-hidden")}
+        >
+          {canCollapse && !showExpanded ? (
             <ChatMarkdown text={collapsedPreview ?? ""} cwd={cwd} isStreaming={false} />
           ) : (
             <ChatMarkdown text={displayedPlanMarkdown} cwd={cwd} isStreaming={false} />
           )}
-          {canCollapse && !expanded ? (
+          {canCollapse && !showExpanded ? (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-linear-to-t from-card/95 via-card/80 to-transparent" />
           ) : null}
         </div>
-        {canCollapse ? (
+        {canCollapse && !forceExpanded ? (
           <div className="mt-4 flex justify-center">
             <Button
               size="sm"

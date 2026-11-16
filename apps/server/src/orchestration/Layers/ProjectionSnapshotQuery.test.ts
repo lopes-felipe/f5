@@ -272,6 +272,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.deepEqual(snapshot.projects, [
         {
           id: asProjectId("project-1"),
+          kind: "standard",
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",
           defaultModel: "gpt-5-codex",
@@ -309,6 +310,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       ]);
       assert.deepEqual(snapshot.threads, [
         {
+          settledAt: null,
+          settledBy: null,
+          autoSettleDisabled: false,
           id: ThreadId.makeUnsafe("thread-1"),
           pendingUserInputs: [],
           rewindDrafts: [],
@@ -323,6 +327,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           runtimeMode: "full-access",
           branch: null,
           worktreePath: null,
+          scratchPath: null,
           latestTurn: {
             turnId: asTurnId("turn-1"),
             state: "completed",
@@ -415,6 +420,18 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
         },
       ]);
+      yield* sql`UPDATE projection_threads SET deleted_at = '2026-02-24T00:00:09.000Z' WHERE thread_id = 'thread-1'`;
+      const filtered = yield* snapshotQuery.getBootstrapSnapshot();
+      const deleted = filtered.threads.find((thread) => thread.id === "thread-1")!;
+      assert.deepStrictEqual(deleted.messages, []);
+      assert.deepStrictEqual(deleted.proposedPlans, []);
+      assert.deepStrictEqual(deleted.activities, []);
+      const retained = yield* snapshotQuery.getRetainedThreadDetails!(
+        ThreadId.makeUnsafe("thread-1"),
+      );
+      assert.equal(retained.messages[0]?.text, "hello from projection");
+      assert.equal(retained.proposedPlans[0]?.planMarkdown, "# Ship it");
+      assert.equal(retained.activities[0]?.summary, "provider started");
     }),
   );
 
@@ -1128,6 +1145,64 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     60_000,
   );
 
+  it.effect("getSnapshot carries each thread's newest PR links, capped at 20", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_pull_requests`;
+      yield* sql`DELETE FROM projection_state`;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model, scripts_json, created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-links', 'Project', '/tmp/project-links', 'gpt-5-codex', '[]',
+          '2026-02-24T00:00:00.000Z', '2026-02-24T00:00:01.000Z', NULL
+        )
+      `;
+      for (const threadId of ["thread-links", "thread-no-links"])
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, model, branch, worktree_path, latest_turn_id,
+            estimated_context_tokens, created_at, last_interaction_at, updated_at, deleted_at
+          ) VALUES (
+            ${threadId}, 'project-links', 'Thread', 'gpt-5-codex', NULL, NULL, NULL,
+            NULL, '2026-02-24T00:00:02.000Z', '2026-02-24T00:00:03.000Z', '2026-02-24T00:00:03.000Z', NULL
+          )
+        `;
+      for (let number = 1; number <= 22; number += 1) {
+        const updatedAt = new Date(Date.UTC(2026, 1, 24, 1, 0, number)).toISOString();
+        yield* sql`
+          INSERT INTO projection_thread_pull_requests (
+            link_id, thread_id, provider, host, repository, number, title, url, updated_at
+          ) VALUES (
+            ${`link-${number}`}, 'thread-links', 'github', 'github.com', 'o/r', ${number},
+            ${`PR ${number}`}, ${`https://github.com/o/r/pull/${number}`}, ${updatedAt}
+          )
+        `;
+      }
+
+      const snapshot = yield* snapshotQuery.getSnapshot();
+      const linked = snapshot.threads.find((thread) => thread.id === "thread-links");
+      const unlinked = snapshot.threads.find((thread) => thread.id === "thread-no-links");
+      assert.deepEqual(
+        linked?.pullRequests?.map((link) => link.number),
+        Array.from({ length: 20 }, (_, index) => 22 - index),
+      );
+      assert.deepEqual(linked?.pullRequests?.[0], {
+        provider: "github",
+        host: "github.com",
+        repository: "o/r",
+        number: 22,
+        title: "PR 22",
+        url: "https://github.com/o/r/pull/22",
+      });
+      assert.isUndefined(unlinked?.pullRequests);
+    }),
+  );
+
   it.effect("getRewindDrafts returns only one thread's unresolved drafts", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
@@ -1220,6 +1295,52 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         plan.some((row) => row.detail.includes("idx_rewind_operations_unresolved_drafts")),
         plan.map((row) => row.detail).join("\n"),
       );
+    }),
+  );
+
+  it.effect("returns command execution descriptions in thread tail details", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model, branch, worktree_path, latest_turn_id,
+          created_at, last_interaction_at, updated_at, deleted_at
+        )
+        VALUES (
+          'thread-command-description', 'project-1', 'Command description', 'gpt-5-codex',
+          NULL, NULL, 'turn-command-description', '2026-02-24T00:00:00.000Z',
+          '2026-02-24T00:00:00.000Z', '2026-02-24T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_command_executions (
+          command_execution_id, thread_id, turn_id, provider_item_id, command, cwd, description,
+          title, status, detail, output, output_truncated, exit_code, started_sequence,
+          last_updated_sequence, started_at, completed_at, updated_at
+        )
+        VALUES
+          (
+            'command-described', 'thread-command-description', 'turn-command-description', NULL,
+            'df -h', NULL, 'Check free disk space', 'Command run — completed', 'completed', NULL,
+            '', 0, 0, 1, 2, '2026-02-24T00:00:01.000Z', '2026-02-24T00:00:02.000Z',
+            '2026-02-24T00:00:02.000Z'
+          ),
+          (
+            'command-plain', 'thread-command-description', 'turn-command-description', NULL,
+            'pwd', NULL, NULL, NULL, 'completed', NULL, '', 0, 0, 3, 4,
+            '2026-02-24T00:00:03.000Z', '2026-02-24T00:00:04.000Z', '2026-02-24T00:00:04.000Z'
+          )
+      `;
+
+      const details = yield* snapshotQuery.getThreadTailDetails({
+        threadId: ThreadId.makeUnsafe("thread-command-description"),
+      });
+
+      const byId = new Map(details.commandExecutions.map((entry) => [entry.id, entry]));
+      assert.equal(byId.get("command-described" as never)?.description, "Check free disk space");
+      assert.isFalse("description" in (byId.get("command-plain" as never) ?? {}));
     }),
   );
 

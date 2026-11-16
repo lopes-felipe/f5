@@ -1,3 +1,4 @@
+import { resolveProjectProviderInstanceEnabled } from "@t3tools/shared/serverSettings";
 /**
  * ProviderInstanceRegistryHydration — derive a `ProviderInstanceConfigMap`
  * from `ServerSettings` and keep `ProviderInstanceRegistry` in sync with it.
@@ -101,6 +102,43 @@ export const deriveProviderInstanceConfigMap = (
   return merged as ProviderInstanceConfigMap;
 };
 
+/** Runtime resources exist when any project opts in; global policy stays independent. */
+export function deriveRuntimeProviderInstanceConfigMap(
+  settings: ServerSettings,
+): ProviderInstanceConfigMap {
+  const configured = deriveProviderInstanceConfigMap(settings);
+  const projectIds = Object.keys(settings.projectSettingsOverrides) as Array<
+    keyof ServerSettings["projectSettingsOverrides"]
+  >;
+  return Object.fromEntries(
+    Object.entries(configured).map(([id, config]) => {
+      const instanceId = id as keyof typeof configured;
+      const projectEnabled = projectIds.some(
+        (projectId) =>
+          settings.projectSettingsOverrides[projectId]?.providerInstances?.[instanceId]?.enabled ===
+          true,
+      );
+      const enabled =
+        projectEnabled || resolveProjectProviderInstanceEnabled(settings, null, instanceId);
+      const payload = config.config;
+      // Canonicalize both legacy and envelope flags. A global toggle must not
+      // restart project-owned sessions while the effective runtime policy stays on.
+      const runtimeConfig =
+        payload &&
+        typeof payload === "object" &&
+        !Array.isArray(payload) &&
+        "enabled" in payload &&
+        typeof payload.enabled === "boolean"
+          ? { ...payload, enabled }
+          : payload;
+      return [
+        id,
+        { ...config, enabled, ...(runtimeConfig === undefined ? {} : { config: runtimeConfig }) },
+      ];
+    }),
+  ) as ProviderInstanceConfigMap;
+}
+
 /**
  * Layer that consumes `ProviderInstanceRegistryMutator` and forks a
  * settings-watcher fiber. The fiber's lifetime is tied to the enclosing
@@ -121,7 +159,7 @@ const settingsWatcherLive = (
       yield* settingsChanges.pipe(
         Stream.runForEach((next) =>
           mutator
-            .reconcile(deriveProviderInstanceConfigMap(next))
+            .reconcile(deriveRuntimeProviderInstanceConfigMap(next))
             .pipe(
               Effect.catchCause((cause) =>
                 Effect.logError("ProviderInstanceRegistry reconcile failed", cause),
@@ -163,7 +201,7 @@ export const ProviderInstanceRegistryHydrationLive: Layer.Layer<
     const initialConfigMap =
       initialSettings === undefined
         ? ({} as ProviderInstanceConfigMap)
-        : deriveProviderInstanceConfigMap(initialSettings);
+        : deriveRuntimeProviderInstanceConfigMap(initialSettings);
 
     const mutableLayer = ProviderInstanceRegistryMutableLayer({
       drivers: BUILT_IN_DRIVERS,

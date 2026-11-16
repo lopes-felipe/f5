@@ -4,12 +4,16 @@ import {
   type NextTurnQueueItem,
   type NextTurnQueueSnapshot,
 } from "@t3tools/contracts";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildQueueRowDisplay,
   describeQueueBlockedState,
   isFoldedUsageLimitItem,
   mergeVisibleOrder,
+  queuedTurnLabel,
+  rebuildEditedText,
 } from "./NextTurnQueuePanel.logic";
 
 describe("isFoldedUsageLimitItem", () => {
@@ -90,6 +94,120 @@ describe("describeQueueBlockedState", () => {
     };
     expect(describeQueueBlockedState(snapshot)).toBe(
       "Resume to recheck the previous message. If the queue pauses again, its delivery is still unconfirmed.",
+    );
+  });
+
+  it("points a workspace pause at the banner instead of repeating its details", () => {
+    const snapshot: NextTurnQueueSnapshot = {
+      threadId: ThreadId.makeUnsafe("drifted"),
+      items: [],
+      revision: 1,
+      paused: true,
+      blockedKind: "error",
+      reasonCode: "worktree_missing",
+      reasonDetail: "The recorded worktree does not match this repository and branch.",
+      maxItems: 10,
+      quarantinedCount: 0,
+    };
+    expect(describeQueueBlockedState(snapshot, { workspaceBannerShown: true })).toBe(
+      "Queue paused: workspace needs attention (see above).",
+    );
+    // Without a recorded worktree no banner renders, so keep the server's detail.
+    expect(describeQueueBlockedState(snapshot)).toBe(snapshot.reasonDetail);
+  });
+});
+
+describe("buildQueueRowDisplay", () => {
+  const item = (commandId: string, text: string, messageId = `message:${commandId}`) =>
+    ({
+      command: {
+        commandId: CommandId.makeUnsafe(commandId),
+        message: { messageId, text, attachments: [] },
+      },
+    }) as unknown as NextTurnQueueItem;
+
+  it("renders message-mode answers instead of their JSON payload", () => {
+    expect(
+      buildQueueRowDisplay(
+        item("answer-delivery:1", JSON.stringify({ 0: { answers: ["Connected successfully"] } })),
+      ).label,
+    ).toBe("Answer · Connected successfully");
+  });
+
+  it("still recognizes an answer after an edit or retry renamed its command", () => {
+    expect(
+      buildQueueRowDisplay(
+        item(
+          "edited-command",
+          JSON.stringify({ 0: { answers: ["A", "B"] }, 1: { answers: ["C"] } }),
+          "answer:respond#retry",
+        ),
+      ).label,
+    ).toBe("Answer · A · B · C");
+  });
+
+  it("keeps the raw text for malformed answers and ordinary turns", () => {
+    expect(buildQueueRowDisplay(item("answer-delivery:2", "not json")).label).toBe("not json");
+    const ordinary = JSON.stringify({ 0: { answers: ["x"] } });
+    expect(buildQueueRowDisplay(item("plain", ordinary)).label).toBe(ordinary);
+  });
+
+  it("labels a pending send the same way from its composer counts", () => {
+    const empty = { visibleText: "", attachedFilePaths: [] };
+    expect(queuedTurnLabel(empty, { imageCount: 2, fileCount: 0 })).toBe("Image-only turn");
+    expect(queuedTurnLabel(empty, { imageCount: 1, fileCount: 1 })).toBe("Attachment-only turn");
+    expect(queuedTurnLabel({ ...empty, visibleText: "Fix" }, { imageCount: 1, fileCount: 0 })).toBe(
+      "Fix",
+    );
+  });
+
+  it("labels an image-only turn instead of showing its hidden prompt", () => {
+    const display = buildQueueRowDisplay(imageOnlyItem());
+    expect(display.label).toBe("Image-only turn");
+    expect(display.visibleText).toBe("");
+    expect(display.copyText).toBe("");
+  });
+});
+
+const attachment = {
+  image: { type: "image", id: "image-1", name: "shot.png" },
+  file: { type: "file", id: "file-1", name: "spec.pdf" },
+};
+const imageOnlyItem = (
+  text = IMAGE_ONLY_BOOTSTRAP_PROMPT,
+  attachments: ReadonlyArray<object> = [attachment.image],
+) =>
+  ({
+    command: {
+      commandId: CommandId.makeUnsafe("image-only"),
+      message: { messageId: "image-only-message", text, attachments },
+    },
+  }) as unknown as NextTurnQueueItem;
+
+describe("rebuildEditedText", () => {
+  it("keeps the hidden prompt when an attachment-only turn is saved without words", () => {
+    expect(rebuildEditedText(imageOnlyItem(), "")).toBe(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+    expect(rebuildEditedText(imageOnlyItem(), "  ")).toBe(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+    const fileOnly = imageOnlyItem(IMAGE_ONLY_BOOTSTRAP_PROMPT, [attachment.file]);
+    expect(rebuildEditedText(fileOnly, "")).toBe(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+  });
+
+  it("restores the hidden prompt when the words of a turn with images are cleared", () => {
+    expect(rebuildEditedText(imageOnlyItem("Fix this"), "")).toBe(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+  });
+
+  it("leaves nothing to send when a turn without attachments loses its words", () => {
+    expect(rebuildEditedText(imageOnlyItem("Fix this", []), " ")).toBe("");
+  });
+
+  it("replaces the hidden prompt with words added while editing", () => {
+    expect(rebuildEditedText(imageOnlyItem(), " What is this? ")).toBe("What is this?");
+  });
+
+  it("keeps send-time context after edited words", () => {
+    const text = "Fix it\n\n<attached_files>\n- /repo/a.ts\n</attached_files>";
+    expect(rebuildEditedText(imageOnlyItem(text), "Fix this")).toBe(
+      "Fix this\n\n<attached_files>\n- /repo/a.ts\n</attached_files>",
     );
   });
 });

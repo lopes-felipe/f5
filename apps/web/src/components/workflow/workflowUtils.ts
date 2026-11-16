@@ -1,5 +1,5 @@
 import { isDocumentWorkflow, normalizeDocumentMarkdown } from "@t3tools/shared/documentWorkflow";
-import type { PlanningWorkflow, ThreadId } from "@t3tools/contracts";
+import type { PlanningWorkflowSummary as PlanningWorkflow, ThreadId } from "@t3tools/contracts";
 import { threadIdsForPlanningWorkflow } from "@t3tools/shared/workflowThreads";
 
 export function threadIdsForWorkflow(workflow: PlanningWorkflow): ThreadId[] {

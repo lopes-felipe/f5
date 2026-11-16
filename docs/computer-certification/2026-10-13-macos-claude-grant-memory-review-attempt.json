@@ -1,0 +1,123 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-claude-grant-memory",
+  "state": "failed",
+  "recordedAt": "2026-10-13T19:43:09.550Z",
+  "repositoryCommit": "034ba367567870bdeae97c92a9e8034e3592b63c",
+  "workingTreeDirty": false,
+  "platform": "darwin",
+  "arch": "arm64",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "c63d9d93b292e61888db6417c531527303c47e9137f585c56ccded97e8ded08a",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "ee099330181bbd525898a6e8fc22444c44be9bf6a16349829c42a6e3f64e70de",
+    "observerSource": "c0d196645749db082eb9afd76797c63f0eebbfcfe48e58b2046fc5612ef6c392",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "26dea6aed6480fa4e3c93b2f51fc8ecf4216f7d78d69b070c42ddfc4d4cb26fc",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "d82ceb8de727ec5091054a3c7113d21d006e7ed622cb2b3c3b5ce3f0fd2b1dcb",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140",
+    "claudeLaunchSource": "aadef868ab32b858a0078ae619922dd69fd4b1f9cde03640f119e28bfb7559df"
+  },
+  "failureStage": "grant-memory-remember",
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "grantMemoryInitiallyEmpty": true,
+    "grantMemoryTrustedDenial": true,
+    "grantMemoryDenialSuppressedReprompt": true,
+    "grantMemoryProviderTailObserved": true,
+    "grantMemoryNoTaggedProviderErrors": true,
+    "grantMemoryCleanup": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "consentObservation": {
+    "requested": true,
+    "trustedClick": false,
+    "settled": false,
+    "allowed": false,
+    "fixtureGranted": false,
+    "cardHasError": false,
+    "dialogPresentInDom": true
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": false,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "activityMessages": 0,
+    "activityThumbnails": 0,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "pendingResponses": 0,
+    "accessRequests": 2,
+    "accessAnswersForwarded": 1,
+    "accessAnswerSummaries": [
+      {
+        "kind": "apps",
+        "appCount": 1,
+        "allowed": 0,
+        "remembered": 0
+      }
+    ],
+    "sessionGenerationsObserved": 1,
+    "grantChanges": 4,
+    "lastGrantCount": 0,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      }
+    ]
+  },
+  "grantMemoryConsentReceipts": [
+    {
+      "trustedReview": true,
+      "visibleAtReview": true,
+      "settled": true,
+      "allowed": false,
+      "kind": "apps",
+      "appCount": 1,
+      "visible": true,
+      "rememberRequested": false
+    }
+  ],
+  "providerErrorCodes": [],
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "The initial genuine denial and same-turn suppression passed, but the complete phase failed at the next consent review",
+    "No lease, capture or input occurred; cleanup was confirmed",
+    "The original harness retained the failure stage but not an exception category; the exact exception is unknown",
+    "Partial checks do not qualify the consent release gate; the failed attempt is preserved"
+  ]
+}

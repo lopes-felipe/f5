@@ -1,6 +1,63 @@
+import "./stdioErrors";
+import { systemLocale } from "./systemLocale";
+import { installKeepAwake } from "./keepAwake/install";
+import { registerHtmlPreviewIpc } from "./htmlPreview";
+import {
+  appZoomMenu,
+  selectAppZoomWindow,
+  zoomAppContents,
+  type AppZoomDirection,
+} from "./appZoom";
+import {
+  desktopCloseWindowItem,
+  desktopRuntimeName,
+  desktopWindowMenu,
+  selectAppMenuWindow,
+  selectReloadContents,
+} from "./windowMenu";
+import {
+  BackendOutputTail,
+  STARTUP_FAILURE_RESTART_ATTEMPTS,
+  STARTUP_RECOVERY_RELEASES_URL,
+  resolveStartupRecoveryOffer,
+  startupRecoveryAction,
+  startupRecoveryHtml,
+  type BackendStartupFailure,
+} from "./startupRecovery";
+import {
+  createEmbeddedFrameNavigationGuard,
+  installAppFramePermissionPolicy,
+} from "./appFramePolicy";
+import { createDesktopCliInstaller } from "./cliCommand";
+import { compileCachePreloadArgs } from "./compileCachePreload";
+import { offerApplicationsMove, createBootstrapGate } from "./startupInstallation";
+import { createUpdatePoller } from "./updatePoller";
+import { getUpdateErrorMessage } from "./updateErrors";
+import { recoverUpdateSession, restoreUpdateWindows } from "./updateRecovery";
+import { createUpdaterInstallerAdapter } from "./updateInstallerAdapter";
+import { createUpdateInstaller } from "./updateInstall";
+import { assertUpdateCaller } from "./updateIpc";
+import { revealSenderWindow } from "./revealWindow";
+import { createUpdateController } from "./updateController";
+import { hasCachedUpdate } from "./updateCache";
+import { isDebPackage } from "./linuxPackage";
+import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
+import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
+import { migrateUserData } from "./userDataMigration";
+import { isolatedBackendCommand } from "./backendComputerIsolation";
+import { computerHostMetadata } from "@t3tools/shared/computerExecution";
+import {
+  assertFileActionCaller,
+  MAC_REVEAL_TIMEOUT_MS,
+  macRevealFailureMessage,
+  macRevealLaunch,
+  registerDesktopFileActions,
+} from "./fileActions";
 import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
+import { capturePreviewSnapshotPage } from "./preview/snapshotScript";
+import { buildPreviewPickScript } from "./preview/pickScript";
 import {
   PreviewAutomationControl,
   PreviewDiagnostics,
@@ -20,31 +77,90 @@ import {
   gateMainFrameRequests,
 } from "./preview/previewNavigationGuard";
 import { registerPreviewWindowOpen } from "./preview/previewWindowOpen";
+import { installAgentDownloadHandler } from "./preview/agentDownloads";
+import { installPreviewPermissionPolicy } from "./preview/previewPermissions";
 import { captureMacWindow } from "./snapShot/MacSnapShot";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
+import { classifyQuitRequest, makeQuitStallTracker, type QuitRequestDecision } from "./quitStall";
+import { resolveLinuxDisableFeaturesSwitch } from "./linuxColorManager";
+import { createDesktopTheme } from "./desktopTheme";
 import { installDesktopAttention } from "./desktopAttention";
-import { registerComputerAutomationIpc } from "./computerAutomation";
+import {
+  computerBackgroundGate,
+  computerCertificationStatus,
+  chromeControlCertified,
+  verifyCodexChromeAdoption,
+} from "./computer/certification";
+import {
+  COMPUTER_BACKGROUND_CAPABILITY,
+  COMPUTER_SHARED_APP_CAPABILITY,
+  type ComputerBackgroundStatus,
+} from "@t3tools/contracts";
+import { ComputerHelperClient } from "./computer/ComputerHelperClient";
+import { ComputerLeaseAuthority } from "./computer/ComputerLeaseAuthority";
+import { ComputerController } from "./computer/ComputerController";
+import { computerScreenshotThumbnail } from "./computer/computerThumbnail";
+import { ComputerOverlay } from "./computer/ComputerOverlay";
+import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
+import { ComputerConsentStore } from "./computer/ComputerConsentStore";
+import { ComputerGrantAuthority } from "./computer/ComputerGrantAuthority";
+import {
+  IntegrationConsentStore,
+  fileConsentIo,
+  keychainConsentKey,
+} from "./computer/IntegrationConsentStore";
+import { ComputerHostChannel } from "./computer/ComputerHostChannel";
+import { BrowserOpenAuthority } from "./browser/BrowserOpenAuthority";
+import {
+  createInAppBrowserOpenPrompt,
+  createNativeBrowserOpenPrompt,
+} from "./browser/BrowserOpenPrompt";
+import { registerBrowserOpenIpc } from "./browser/registerBrowserOpenIpc";
+import { appMainFrameProfile } from "./appRendererCaller";
+import { getSafeExternalUrl } from "./browser/externalUrl";
+import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
+import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
+import { registerComputerIpc } from "./computer/registerComputerIpc";
+import { applyComputerPause } from "./computer/computerPause";
+import { capturePermissions, openComputerPermissionSettings } from "./computer/permissions";
+import { clickPreviewGuest } from "./preview/guestFocus";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
+import {
+  PromptLinkInbox,
+  promptLinkInArgv,
+  promptLinkSchemeFor,
+  entryScriptInArgv,
+  protocolClientRegistration,
+} from "./promptLinkInbox";
 import {
   profilePartition,
   profileWindowArguments,
   singleProfileOpen,
   ensureProfileConnection,
+  ensureProfileBackend,
+  isProfileBackendRunning,
+  waitForProfileBackend,
+  BACKEND_HEALTHY_RESET_MS,
+  monitorBackendHealth,
+  planBackendRestart,
   MAX_ACTIVE_PROFILE_BACKENDS,
 } from "./profileRuntime";
 import { profilesRootDir } from "@t3tools/shared/profilePaths";
+import { composeNativeWindowTitle } from "./windowTitle";
 import * as ChildProcess from "node:child_process";
 import * as Crypto from "node:crypto";
 import * as FS from "node:fs";
 import * as OS from "node:os";
 import * as Path from "node:path";
+import { releasePreviewCaptures } from "./preview/capture";
 
 import {
   app,
   BrowserWindow,
   clipboard,
+  ClipboardItem,
   dialog,
   ipcMain,
   globalShortcut,
@@ -53,6 +169,8 @@ import {
   nativeImage,
   nativeTheme,
   protocol,
+  Notification,
+  safeStorage,
   shell,
   session as electronSession,
   webContents as electronWebContents,
@@ -87,12 +205,13 @@ import {
   normalizePreviewUrl,
   validatePreviewHostPatterns,
 } from "@t3tools/shared/preview";
-import { killProcessTree } from "@t3tools/shared/processTree";
+import { killProcessTreeAsync } from "@t3tools/shared/processTree";
 import { buildDesktopBackendEnv, resolveDesktopStateDirConfig } from "./backendEnv";
 import {
   authorizeDesktopBackendRequestHeaders,
   DESKTOP_BACKEND_REQUEST_FILTER,
   getDesktopBackendWebSocketUrl,
+  getDesktopBackendHttpOrigin,
 } from "./backendRequestAuth";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { syncShellEnvironment } from "./syncShellEnvironment";
@@ -100,27 +219,45 @@ import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./
 import { readDesktopImageActionBytes, saveDesktopImageDownload } from "./imageActions";
 import {
   createInitialDesktopUpdateState,
-  reduceDesktopUpdateStateOnCheckFailure,
-  reduceDesktopUpdateStateOnCheckStart,
   reduceDesktopUpdateStateOnDownloadComplete,
-  reduceDesktopUpdateStateOnDownloadFailure,
   reduceDesktopUpdateStateOnDownloadProgress,
-  reduceDesktopUpdateStateOnDownloadStart,
   reduceDesktopUpdateStateOnInstallFailure,
-  reduceDesktopUpdateStateOnNoUpdate,
-  reduceDesktopUpdateStateOnUpdateAvailable,
+  claimRecentInstall,
 } from "./updateMachine";
 import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
-import { formatErrorMessage, isPreviewNavigationAbortError } from "./previewNavigationErrors";
+import { formatErrorMessage, loadPreviewURL } from "./previewNavigationErrors";
 import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
 import { fetchPreviewFaviconDataUrl } from "./preview/previewFavicon";
 import { registerPreviewIpc } from "./preview/registerPreviewIpc";
 import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendererCrashRecovery";
 import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rendererWindowUrl";
+import {
+  DESKTOP_NOTIFICATION_ACTIVATIONS_AVAILABLE_CHANNEL,
+  DESKTOP_NOTIFICATION_SHOW_CHANNEL,
+  DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL,
+  DesktopNotificationRegistry,
+  parseDesktopNotificationInput,
+} from "./desktopNotifications";
 import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
+import { buildContextMenuTemplate } from "./contextMenuTemplate";
+import { createWindowWithOptionalControl } from "./optionalAppControl";
+import {
+  takeAppActivations,
+  completeAppActivation,
+  type AppActivationEntry,
+} from "./appActivationQueue";
+import { startDesktopAppControl, type DesktopAppRequest } from "@t3tools/shared/desktopAppControl";
 
-const shellEnvironmentReady = syncShellEnvironment();
+const shellEnvironmentStartedAt = performance.now();
+let shellEnvironmentPrepared = false;
+/** Resolves with the capture's duration; the log sink opens later, so bootstrap logs it. */
+const shellEnvironmentReady = syncShellEnvironment().then((prepared) => {
+  shellEnvironmentPrepared = prepared;
+  return performance.now() - shellEnvironmentStartedAt;
+});
+/** Main windows awaiting their first composer-ready marker, by renderer id. */
+const windowCreatedAtByWebContentsId = new Map<number, number>();
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
@@ -135,10 +272,14 @@ const MAX_DESKTOP_WINDOWS = 12;
 const OPEN_THREAD_WINDOW_MIN_INTERVAL_MS = 500;
 const lastOpenThreadWindowAtByRenderer = new Map<number, number>();
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
+const TRACKPAD_SCROLL_CHANNEL = "desktop:trackpad-scroll";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
+const UPDATE_CHECK_CHANNEL = "desktop:update-check";
+const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
+const UPDATE_CLAIM_RECENT_INSTALL_CHANNEL = "desktop:update-claim-recent-install";
 const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const lastPreviewStateEmissionByTabId = new Map<
@@ -155,10 +296,12 @@ const STATE_DIR = STATE_DIR_CONFIG.stateDir;
 const DESKTOP_SCHEME = "t3";
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
-const APP_DISPLAY_NAME = isDevelopment ? "F5 (Dev)" : "F5 (Alpha)";
-const APP_USER_MODEL_ID = "com.t3tools.t3code";
-const USER_DATA_DIR_NAME = isDevelopment ? "t3code-dev" : "t3code";
-const LEGACY_USER_DATA_DIR_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+const APP_DISPLAY_NAME = isDevelopment ? "F5 (Dev)" : "F5";
+const APP_USER_MODEL_ID = "io.github.lopesfelipe.f5";
+const USER_DATA_DIR_NAME = isDevelopment ? "f5-dev" : "f5";
+const LEGACY_USER_DATA_DIR_NAMES = isDevelopment
+  ? ["T3 Code (Dev)", "t3code-dev"]
+  : ["T3 Code (Alpha)", "t3code"];
 const COMMIT_HASH_PATTERN = /^[0-9a-f]{7,40}$/i;
 const COMMIT_HASH_DISPLAY_LENGTH = 12;
 const LOG_DIR = Path.join(STATE_DIR, "logs");
@@ -167,14 +310,11 @@ const LOG_FILE_MAX_FILES = 10;
 const APP_RUN_ID = Crypto.randomBytes(6).toString("hex");
 const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
-const DESKTOP_UPDATE_CHANNEL = "latest";
-const DESKTOP_UPDATE_ALLOW_PRERELEASE = false;
+
 const PREVIEW_WEBVIEW_PREFERENCES = "contextIsolation=true,sandbox=true,nodeIntegration=false";
 const PREVIEW_DEFAULT_ZOOM_FACTOR = 1;
 const PREVIEW_CAPTURE_MAX_EDGE_PX = 1600;
 const PREVIEW_CAPTURE_MAX_PIXELS = 2_000_000;
-const PREVIEW_AUTOMATION_MAX_TEXT_LENGTH = 20_000;
-const PREVIEW_AUTOMATION_MAX_ELEMENTS = 80;
 const PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES = 64_000;
 const PREVIEW_AUTOMATION_EVALUATE_DEFAULT_TIMEOUT_MS = 15_000;
 const PREVIEW_AUTOMATION_WAIT_INTERVAL_MS = 100;
@@ -214,6 +354,7 @@ const PREVIEW_AUTOMATION_SUPPORTED_NAMED_KEYS: ReadonlySet<string> = new Set([
 type DesktopUpdateErrorContext = DesktopUpdateState["errorContext"];
 
 let mainWindow: BrowserWindow | null = null;
+let keepAwake: Awaited<ReturnType<typeof installKeepAwake>> | undefined;
 interface BackendRuntime {
   profile: ProfileRecord;
   backendProcess: ChildProcess.ChildProcess | null;
@@ -222,7 +363,13 @@ interface BackendRuntime {
   backendWsUrl: string;
   restartAttempt: number;
   restartTimer: ReturnType<typeof setTimeout> | null;
+  /** Cancels the current process generation's sustained-health monitor. */
+  cancelHealthMonitor: (() => void) | null;
   stopped: boolean;
+  outputTail: BackendOutputTail;
+  startupReady: boolean;
+  recoveryWindow: BrowserWindow | null;
+  startupFailure: BackendStartupFailure | null;
 }
 const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
   profile,
@@ -232,11 +379,91 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
   backendWsUrl: "",
   restartAttempt: 0,
   restartTimer: null,
+  cancelHealthMonitor: null,
   stopped: false,
+  outputTail: new BackendOutputTail(),
+  startupReady: false,
+  recoveryWindow: null,
+  startupFailure: null,
 });
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
 const profileByWebContentsId = new Map<number, string>();
+function profileWindows(profileId: string): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter(
+    (window) =>
+      !window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId,
+  );
+}
+const desktopNotifications = new DesktopNotificationRegistry({
+  create: ({ icon, ...input }) =>
+    new Notification({
+      ...input,
+      // macOS always shows the app icon; Windows and Linux show the status glyph.
+      ...(icon && process.platform !== "darwin"
+        ? { icon: nativeImage.createFromDataURL(icon) }
+        : {}),
+    }),
+  // Resolved at click time; `openProfile` is declared further down.
+  openProfile: (profileId) => openProfile(profileId),
+  // `openProfile` focuses the profile's first window or creates one, so after it resolves the
+  // focused window of the profile is the one it brought forward.
+  selectWindow: (profileId) => {
+    const windows = profileWindows(profileId);
+    const focused = BrowserWindow.getFocusedWindow();
+    const chosen = windows.find((window) => window === focused) ?? windows[0];
+    return chosen ? chosen.webContents.id : null;
+  },
+  announce: (profileId, webContentsId) => {
+    for (const window of profileWindows(profileId))
+      if (webContentsId === null || window.webContents.id === webContentsId)
+        window.webContents.send(DESKTOP_NOTIFICATION_ACTIVATIONS_AVAILABLE_CHANNEL);
+  },
+  log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
+});
+const browserOpenWindows = {
+  window: (profileId: string) =>
+    BrowserWindow.getAllWindows().find(
+      (window) =>
+        !window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId,
+    ),
+  profileName: (profileId: string) => backends.get(profileId)?.profile.name ?? profileId,
+};
+const browserOpenPrompt = createInAppBrowserOpenPrompt({
+  ...browserOpenWindows,
+  // The card must not pull F5 in front of the app the user is typing in.
+  openProfile: (profileId) => openProfile(profileId, { activate: false }),
+  attention: (profileId, host) => {
+    const bounce = app.dock?.bounce("informational");
+    // Held until the request settles, so the click handler survives garbage collection.
+    let notice: Notification | undefined;
+    if (Notification.isSupported()) {
+      notice = new Notification({
+        title: `Open ${host} in browser?`,
+        body: `Requested by a terminal or agent in ${browserOpenWindows.profileName(profileId)}.`,
+      });
+      notice.on("click", () => {
+        void openProfile(profileId);
+      });
+      notice.show();
+    }
+    return () => {
+      if (bounce !== undefined) app.dock?.cancelBounce(bounce);
+      notice?.close();
+    };
+  },
+  native: createNativeBrowserOpenPrompt({
+    ...browserOpenWindows,
+    openProfile: (profileId) => openProfile(profileId),
+    show: (owner, options) => dialog.showMessageBox(owner, options),
+  }),
+});
+const browserOpenAuthority = new BrowserOpenAuthority({
+  prompt: browserOpenPrompt.prompt,
+  waitingChanged: browserOpenPrompt.waitingChanged,
+  open: (url) => shell.openExternal(url, { activate: true }),
+  copy: (url) => clipboard.writeText(url),
+});
 const appRendererWebContentsIds = new Set<number>();
 const authenticatedSessions = new Set<Electron.Session>();
 const registeredDesktopSessions = new Set<Electron.Session>();
@@ -246,7 +473,426 @@ function runtimeForRenderer(id: number): BackendRuntime {
   if (!runtime) throw new Error("Renderer does not own a profile.");
   return runtime;
 }
+/** Consent answers come only from an F5 app main frame on the app origin. */
+function authorizeAppMainFrame(event: Electron.IpcMainInvokeEvent, purpose: string): string {
+  return appMainFrameProfile(event, {
+    registered: (id) => appRendererWebContentsIds.has(id),
+    // A profile counts only while its backend runtime exists, as in `runtimeForRenderer`.
+    profile: (id) => {
+      const profileId = profileByWebContentsId.get(id);
+      return profileId && backends.has(profileId) ? profileId : undefined;
+    },
+    expectedOrigin: isDevelopment ? new URL(mainRendererUrl()).origin : `${DESKTOP_SCHEME}://app`,
+    purpose,
+  });
+}
+let computerSystem:
+  | {
+      helper: ComputerHelperClient;
+      controller: ComputerController;
+      channel: ComputerHostChannel;
+      overlay: ComputerOverlay;
+      supervisor: ChromeProcessSupervisor;
+    }
+  | undefined;
+function initializeComputerSystem(): void {
+  const root = app.isPackaged
+    ? Path.join(process.resourcesPath, "native")
+    : Path.resolve(
+        __dirname,
+        "../dist-native",
+        `${process.platform === "darwin" ? "mac" : "win"}-${process.arch}`,
+      );
+  const helper = new ComputerHelperClient(
+    root,
+    Path.join(root, process.platform === "win32" ? "f5-computer-helper.exe" : "f5-computer-helper"),
+  );
+  const lease = new ComputerLeaseAuthority(Date.now, {
+    shareApps: () => helper.capabilities().includes(COMPUTER_SHARED_APP_CAPABILITY),
+    profileName: (profileId) => backends.get(profileId)?.profile.name,
+  });
+  const overlay = new ComputerOverlay();
+  const nativeStatus = () => {
+    const gate = computerCertificationStatus(
+      process.platform,
+      app.isPackaged,
+      process.env.F5_COMPUTER_CONTROL_DEV,
+    );
+    if (!gate.available) return gate;
+    const native = helper.status();
+    if (process.platform === "darwin") {
+      const permissions = capturePermissions();
+      const missing: Array<"screen-recording" | "accessibility"> = [];
+      if (!permissions.screen) missing.push("screen-recording");
+      if (!permissions.accessibility) missing.push("accessibility");
+      if (native.available && missing.length)
+        return {
+          available: false as const,
+          reason: "missing-permissions" as const,
+          missing,
+          detail: "Helper permissions are not attributed to F5.",
+        };
+      if (!native.available && native.reason === "missing-permissions" && !missing.length)
+        return { ...native, detail: "Helper permissions are not attributed to F5." };
+    }
+    return native;
+  };
+  const status = () => ({ ...nativeStatus(), ...computerHostMetadata(process.platform) });
+  // Desktop + helper half of background availability; each backend adds its own capability.
+  const backgroundStatus = (): ComputerBackgroundStatus => {
+    const gate = computerBackgroundGate(
+      process.platform,
+      app.isPackaged,
+      process.env.F5_COMPUTER_BACKGROUND_DEV,
+    );
+    if (!gate.available) return gate;
+    const current = status();
+    if (!current.available)
+      return {
+        available: false,
+        reason: current.reason === "monitor-unhealthy" ? "monitor-unhealthy" : "permissions",
+      };
+    if (!helper.capabilities().includes(COMPUTER_BACKGROUND_CAPABILITY))
+      return { available: false, reason: "peer-capability" };
+    return { available: true };
+  };
+  // Settings show why background control is unavailable on this desktop.
+  const rendererStatus = () => {
+    const current = status();
+    return current.available ? { ...current, background: backgroundStatus() } : current;
+  };
+  const controller = new ComputerController(lease, helper, overlay, {
+    f5Pids: () => [process.pid, ...app.getAppMetrics().map((metric) => metric.pid)],
+    f5BundlePath:
+      process.platform === "darwin"
+        ? Path.resolve(Path.dirname(process.execPath), "../..")
+        : Path.dirname(process.execPath),
+    platform: process.platform === "win32" ? "win32" : "darwin",
+    activity: (profileId, activity) =>
+      computerSystem?.channel.send(profileId, { type: "activity", activity }),
+    thumbnail: computerScreenshotThumbnail,
+    paused: (holder, cause) => {
+      computerSystem?.channel.cancelSessionAccess(
+        holder.profileId,
+        holder.threadId,
+        holder.sessionGeneration,
+      );
+      computerSystem?.channel.send(holder.profileId, {
+        type: "pauseChanged",
+        threadId: holder.threadId,
+        paused: true,
+      });
+      if (cause === "kill-switch")
+        computerSystem?.channel.send(holder.profileId, {
+          type: "killSwitch",
+          threadId: holder.threadId,
+          sessionGeneration: holder.sessionGeneration,
+          turnId: holder.turnId,
+        });
+    },
+    backgroundAvailable: () => backgroundStatus().available,
+    cooperationEnabled: (profileId) =>
+      computerSystem?.channel.cooperationCapable(profileId) ?? false,
+    targetYielded: (holder, appId) => {
+      if (computerSystem?.channel.cooperationCapable(holder.profileId))
+        computerSystem.channel.send(holder.profileId, {
+          type: "targetYielded",
+          threadId: holder.threadId,
+          sessionGeneration: holder.sessionGeneration,
+          ...(appId ? { appId } : {}),
+        });
+    },
+    foregroundContinued: (previous, next) =>
+      computerSystem?.channel.execution.continueTakeover(
+        previous,
+        next,
+        computerSystem.channel.incarnation(previous.profileId),
+      ),
+    executionState: (profileId, update) =>
+      computerSystem?.channel.sendExecutionState(profileId, update),
+    log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
+    takeoverValid: (holder) =>
+      computerSystem?.channel.execution.validTakeover(
+        holder,
+        computerSystem.channel.incarnation(holder.profileId),
+      ) ?? false,
+    holderStopped: (holder) =>
+      computerSystem?.channel.execution.revokeTakeovers(
+        (receipt) => receipt.profileId === holder.profileId && receipt.threadId === holder.threadId,
+      ),
+  });
+  const killChord =
+    process.platform === "darwin" ? "Control+Command+Escape" : "Control+Alt+Shift+F12";
+  // One owner-aware registration covers native holders, the Chrome lease and a pending
+  // takeover. Returns false when the chord could not be registered.
+  let killChordRegistered = false;
+  // "Always allow" for a profile's Codex Chrome sessions, owned by main and signed with a
+  // key only the keychain releases to F5.
+  const consentKey = keychainConsentKey(
+    Path.join(app.getPath("userData"), "computer", "integration-consent.key"),
+    {
+      available: () => safeStorage.isEncryptionAvailable(),
+      encrypt: (plain) => safeStorage.encryptString(plain),
+      decrypt: (encrypted) => safeStorage.decryptString(encrypted),
+    },
+  );
+  const integrationConsents = new IntegrationConsentStore(
+    fileConsentIo(Path.join(app.getPath("userData"), "computer", "integration-consent.json")),
+    consentKey,
+  );
+  const computerConsents = new ComputerConsentStore(
+    fileConsentIo(Path.join(app.getPath("userData"), "computer", "remembered-consent.json")),
+    consentKey,
+  );
+  const computerGrants = new ComputerGrantAuthority(
+    process.platform === "win32" ? "win32" : "darwin",
+    computerConsents,
+  );
+  // Provider-integration children are registered here so main can stop them and observe
+  // their exit without the (possibly frozen) profile server.
+  const supervisor = new ChromeProcessSupervisor({
+    statePath: Path.join(app.getPath("userData"), "computer", "chrome-recovery.json"),
+    registered: () => {
+      // The emergency shortcut must cover every live integration process.
+      if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
+    },
+    exited: (registration) => {
+      computerSystem?.channel.processExited(registration);
+      syncKillChord();
+    },
+    recoveryChanged: () => computerSystem?.channel.publishChrome(),
+  });
+  const syncKillChord = (): boolean => {
+    const chromeHolder = computerSystem?.channel.chrome.current() ?? null;
+    const needed =
+      lease.holders().length > 0 ||
+      lease.pendingTakeover() !== null ||
+      chromeHolder !== null ||
+      supervisor.registrations().length > 0;
+    if (!needed) {
+      if (killChordRegistered) globalShortcut.unregister(killChord);
+      killChordRegistered = false;
+      return true;
+    }
+    if (killChordRegistered) return true;
+    try {
+      killChordRegistered = globalShortcut.register(killChord, () => {
+        controller.stop("kill-switch");
+        // Invalidate synchronously and stop every registered integration group here;
+        // the server is told afterwards, but nothing depends on it answering.
+        const chrome = computerSystem?.channel.chrome.interrupt("emergency") ?? [];
+        // Idle integrations (Codex holds the lease only per call) are stopped too; their
+        // generations stay invalidated in main until the user resumes the thread.
+        const stopped = supervisor.stop(() => true, "emergency");
+        const threads = new Map<
+          string,
+          { profileId: string; threadId: string; generation: string }
+        >();
+        for (const entry of [
+          ...chrome.map((holder) => ({
+            profileId: holder.profileId,
+            threadId: holder.threadId,
+            generation: holder.sessionGeneration,
+          })),
+          ...stopped.map((registration) => ({
+            profileId: registration.profileId,
+            threadId: registration.threadId,
+            generation: registration.sessionGeneration,
+          })),
+        ])
+          threads.set(`${entry.profileId}\0${entry.threadId}\0${entry.generation}`, entry);
+        for (const { profileId, threadId, generation } of threads.values()) {
+          computerSystem?.channel.send(profileId, { type: "pauseChanged", threadId, paused: true });
+          computerSystem?.channel.send(profileId, {
+            type: "chromeInterrupted",
+            threadId,
+            sessionGeneration: generation,
+          });
+        }
+      });
+    } catch {
+      killChordRegistered = false;
+    }
+    return killChordRegistered;
+  };
+  const channel = new ComputerHostChannel(
+    controller,
+    status,
+    (profileId, request) => {
+      if (!Notification.isSupported()) return;
+      // Held by the registry so the click survives garbage collection; the latest request
+      // replaces an older one still on screen.
+      desktopNotifications.show(profileId, {
+        id: `computer-access:${Date.now()}`,
+        tag: "computer-access",
+        target: { kind: "none" },
+        title: "Computer access requested",
+        body:
+          request.kind === "chrome-setup"
+            ? "An agent wants to change a browser's native messaging setup."
+            : request.kind === "chrome-session"
+              ? "An agent wants to use a provider browser or computer integration."
+              : request.kind === "session-actions"
+                ? "An agent wants permission to control approved apps."
+                : request.kind === "foreground-takeover"
+                  ? `An agent wants the foreground in ${request.takeover?.appName ?? "an app"}.`
+                  : `An agent wants to use ${request.apps.map((app) => app.name).join(", ")}.`,
+      });
+    },
+    {
+      certified: (provider) => chromeControlCertified(provider),
+      builtinCertified: () =>
+        isIntegrationCertified("codex-computer", process.platform, process.arch),
+      supervisor,
+      verifyAdoption: (parentPid, runtimePid) => verifyCodexChromeAdoption(parentPid, runtimePid),
+      alwaysAllowed: (profileId, integration) =>
+        integrationConsents.allowed(profileId, integration),
+      changed: () => {
+        if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
+      },
+      log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
+    },
+    computerGrants,
+    {
+      consents: computerConsents,
+      profileName: (profileId) => backends.get(profileId)?.profile.name,
+      grantForgetFailed: (_profileId, message) =>
+        dialog.showErrorBox("Could not forget this app", message),
+      ...(process.platform === "darwin"
+        ? {
+            openExternalUrl: (
+              profileId: string,
+              url: string,
+              options?: { preapproved?: boolean },
+            ) => browserOpenAuthority.request(profileId, url, options),
+            cancelBrowserOpen: (profileId: string) => browserOpenAuthority.cancelProfile(profileId),
+          }
+        : {}),
+      notificationAvailable: () => Notification.isSupported(),
+      notification: (profileId, payload) => {
+        if (!Notification.isSupported()) return false;
+        // The renderer navigates in place when it takes the activation; no full reload.
+        return desktopNotifications.show(profileId, {
+          id: payload.id,
+          tag: payload.id,
+          title: payload.title,
+          body: payload.body,
+          target: payload.threadId
+            ? { kind: "thread", threadId: payload.threadId }
+            : { kind: "scheduled", taskId: payload.taskId },
+        });
+      },
+      background: backgroundStatus,
+      advertiseBackground: computerBackgroundGate(
+        process.platform,
+        app.isPackaged,
+        process.env.F5_COMPUTER_BACKGROUND_DEV,
+      ).available,
+    },
+  );
+  computerSystem = { helper, controller, channel, overlay, supervisor };
+  lease.subscribe(() => {
+    channel.publishLeases();
+    if (syncKillChord()) return;
+    // Without the emergency shortcut neither native control nor a takeover may proceed.
+    // Registration only fails on the first need, so a lone reservation is all there is to undo;
+    // other threads' observations keep running.
+    lease.cancelTakeover();
+    if (lease.holders().length > 0) controller.stop("paused");
+  });
+  let lastComputerStatus = "";
+  helper.onEvent((message) => {
+    if (message.type !== "status" && message.type !== "hello") return;
+    const currentStatus = status();
+    const serialized = JSON.stringify([currentStatus, backgroundStatus()]);
+    if (serialized === lastComputerStatus) return;
+    lastComputerStatus = serialized;
+    // Helper unavailability stops every native holder and any pending takeover.
+    if (!currentStatus.available && (lease.holders().length > 0 || lease.pendingTakeover()))
+      controller.stop();
+    channel.broadcastStatus();
+    for (const id of appRendererWebContentsIds)
+      electronWebContents.fromId(id)?.send("desktop-computer:status-changed", rendererStatus());
+  });
+  const consent = new ComputerConsentAuthority({
+    remembered: true,
+    cooperative: (profileId) => channel.cooperationCapable(profileId),
+    platform: process.platform === "win32" ? "win32" : "darwin",
+    request: (profileId, answer) => channel.accessRequest(profileId, answer),
+    answer: (profileId, answer, policies) => channel.answerAccess(profileId, answer, policies),
+    show: (profileId, options) => {
+      const parent = BrowserWindow.getAllWindows().find(
+        (window) =>
+          appRendererWebContentsIds.has(window.webContents.id) &&
+          profileByWebContentsId.get(window.webContents.id) === profileId,
+      );
+      return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+    },
+    alwaysAllow: (profileId, integration) => {
+      integrationConsents.allow(profileId, integration);
+      channel.answerPendingAlwaysAllowed(profileId);
+    },
+  });
+  registerComputerIpc(ipcMain, {
+    computerConsents: {
+      list: (profileId) => channel.rememberedConsents(profileId),
+      revoke: (profileId, record) => channel.revokeRemembered(profileId, record),
+    },
+    integrationConsents: {
+      list: (profileId) => integrationConsents.list(profileId),
+      revoke: (profileId, integration) => integrationConsents.revoke(profileId, integration),
+    },
+    authorize: (event) => authorizeAppMainFrame(event, "Computer controls"),
+    status: rendererStatus,
+    retry: () => {
+      if (
+        computerCertificationStatus(
+          process.platform,
+          app.isPackaged,
+          process.env.F5_COMPUTER_CONTROL_DEV,
+        ).available
+      )
+        helper.retry();
+    },
+    answer: (profile, answer) => consent.review(profile, answer),
+    pause: (profileId, threadId, paused) =>
+      applyComputerPause({ controller, channel, consent, supervisor }, profileId, threadId, paused),
+    // A waiting thread's Stop pauses only the holder it waits for, even in another profile.
+    // Pausing only removes agent power; resuming stays with the holder's own profile.
+    stopHolder: async (profileId, token) => {
+      const target = channel.resolveBlocker(profileId, token);
+      if (!target) return false;
+      writeDesktopLogHeader(
+        sanitizeLogValue(
+          `computer: profile=${profileId} stopped the holder profile=${target.profileId} thread=${target.threadId}`,
+        ),
+      );
+      await applyComputerPause(
+        { controller, channel, consent, supervisor },
+        target.profileId,
+        target.threadId,
+        true,
+      );
+      return true;
+    },
+  });
+  if (
+    computerCertificationStatus(
+      process.platform,
+      app.isPackaged,
+      process.env.F5_COMPUTER_CONTROL_DEV,
+    ).available
+  )
+    helper.start();
+}
 let isQuitting = false;
+const quitStall = makeQuitStallTracker();
+/** Set while the update installer closes windows and cleans up for its own quit. */
+let updateInstallOwnsQuit = false;
+function beginQuitting(): void {
+  isQuitting = true;
+  quitStall.begin();
+}
 
 let aboutCommitHashCache: string | null | undefined;
 let desktopLogSink: RotatingFileSink | null = null;
@@ -368,25 +1014,6 @@ function writeBackendSessionBoundary(phase: "START" | "END", details: string): v
   backendLogSink.write(
     `[${logTimestamp()}] ---- APP SESSION ${phase} run=${APP_RUN_ID} ${normalizedDetails} ----\n`,
   );
-}
-
-function getSafeExternalUrl(rawUrl: unknown): string | null {
-  if (typeof rawUrl !== "string" || rawUrl.length === 0) {
-    return null;
-  }
-
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(rawUrl);
-  } catch {
-    return null;
-  }
-
-  if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
-    return null;
-  }
-
-  return parsedUrl.toString();
 }
 
 function getSafePreviewUrl(
@@ -615,6 +1242,22 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   entry.removeListeners = [];
   entry.ownerWebContentsId = guest.hostWebContents?.id ?? null;
   entry.webContentsId = webContentsId;
+  installAgentDownloadHandler(guest.session, {
+    // Each profile keeps its own downloads; sessions can outlive the guest that installed this.
+    directoryFor: (sourceId) => {
+      const hostId = electronWebContents.fromId(sourceId)?.hostWebContents?.id;
+      const profileId = hostId === undefined ? undefined : profileByWebContentsId.get(hostId);
+      const runtime = profileId ? backends.get(profileId) : undefined;
+      return runtime
+        ? Path.join(profileStateDir(STATE_DIR, runtime.profile), "preview-downloads")
+        : undefined;
+    },
+    isAgentDriven: (sourceId) =>
+      [...previewTabs.entries()].some(
+        ([candidateTabId, candidate]) =>
+          candidate.webContentsId === sourceId && isAgentPreviewNavigation(candidateTabId),
+      ),
+  });
   // Preserve the new-tab zoom default rather than inheriting an unrelated guest zoom.
 
   const owner = guest.hostWebContents ? BrowserWindow.fromWebContents(guest.hostWebContents) : null;
@@ -641,6 +1284,7 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
     );
     entry.enforcePopupPolicy = popups.enforcePolicy;
   }
+  guest.setZoomMode("isolated");
   guest.setZoomFactor(entry.zoomFactor);
   guest.setAudioMuted(entry.muted ?? false);
   installGuestControls(guest);
@@ -865,6 +1509,7 @@ function closePreviewTab(tabId: string): void {
   entry.faviconAbortController = null;
   const guest = getPreviewWebContents(tabId);
   void previewRuntime.discardRecordingsForTab(tabId);
+  if (guest) releasePreviewCaptures(guest);
   forgetPreviewRecordingOwners((ownership) => ownership.scopedTabId === tabId);
   if (guest && !guest.isDestroyed()) {
     guest.close();
@@ -879,133 +1524,6 @@ function closePreviewTab(tabId: string): void {
     clientPreviewTabId(tabId),
     previewStateFromWebContents(tabId, null),
   );
-}
-
-function buildPreviewPickScript(): string {
-  return String.raw`
-(() => {
-  if (window.__f5PreviewPickCancel) {
-    window.__f5PreviewPickCancel();
-  }
-
-  const selectorFor = (element) => {
-    if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
-    if (element.id) return "#" + CSS.escape(element.id);
-    const parts = [];
-    let current = element;
-    while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.documentElement) {
-      let part = current.localName;
-      if (!part) break;
-      const parent = current.parentElement;
-      if (parent) {
-        const siblings = Array.from(parent.children).filter((child) => child.localName === current.localName);
-        if (siblings.length > 1) {
-          part += ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")";
-        }
-      }
-      parts.unshift(part);
-      current = parent;
-    }
-    return parts.length > 0 ? parts.join(" > ") : null;
-  };
-
-  const previewText = (value, limit) => String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);
-
-  return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #2563eb;background:rgba(37,99,235,.12);box-shadow:0 0 0 99999px rgba(15,23,42,.18);border-radius:4px;display:none;";
-    const label = document.createElement("div");
-    label.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;background:#2563eb;color:white;font:12px system-ui,sans-serif;padding:3px 6px;border-radius:4px;display:none;max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
-    document.documentElement.append(overlay, label);
-
-    const cleanup = () => {
-      window.__f5PreviewPickCancel = undefined;
-      window.removeEventListener("mousemove", onMove, true);
-      window.removeEventListener("click", onClick, true);
-      window.removeEventListener("keydown", onKeyDown, true);
-      overlay.remove();
-      label.remove();
-    };
-
-    const finish = (value) => {
-      cleanup();
-      resolve(value);
-    };
-
-    const update = (target) => {
-      if (!target || target === document.documentElement || target === document.body) {
-        overlay.style.display = "none";
-        label.style.display = "none";
-        return;
-      }
-      const rect = target.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      overlay.style.display = "block";
-      overlay.style.left = rect.left + "px";
-      overlay.style.top = rect.top + "px";
-      overlay.style.width = rect.width + "px";
-      overlay.style.height = rect.height + "px";
-      label.style.display = "block";
-      label.textContent = target.localName + (target.id ? "#" + target.id : "");
-      label.style.left = Math.max(8, Math.min(window.innerWidth - 120, rect.left)) + "px";
-      label.style.top = Math.max(8, rect.top - 28) + "px";
-    };
-
-    function onMove(event) {
-      update(event.target);
-    }
-
-    function onClick(event) {
-      event.preventDefault();
-      event.stopPropagation();
-      const target = event.target;
-      if (!target || target.nodeType !== Node.ELEMENT_NODE) {
-        finish(null);
-        return;
-      }
-      const rect = target.getBoundingClientRect();
-      const pageUrl = location.href;
-      const pageTitle = document.title || null;
-      finish({
-        pageUrl,
-        pageTitle,
-        viewport: {
-          width: Math.max(1, Math.floor(window.innerWidth || 1)),
-          height: Math.max(1, Math.floor(window.innerHeight || 1))
-        },
-        rect: {
-          x: Math.max(0, Math.floor(rect.x)),
-          y: Math.max(0, Math.floor(rect.y)),
-          width: Math.max(1, Math.ceil(rect.width)),
-          height: Math.max(1, Math.ceil(rect.height))
-        },
-        element: {
-          pageUrl,
-          pageTitle,
-          tagName: target.localName || "",
-          selector: selectorFor(target),
-          htmlPreview: previewText(target.outerHTML, 1600),
-          textPreview: previewText(target.innerText || target.textContent, 500),
-          pickedAt: new Date().toISOString()
-        }
-      });
-    }
-
-    function onKeyDown(event) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        finish(null);
-      }
-    }
-
-    window.__f5PreviewPickCancel = () => finish(null);
-    window.addEventListener("mousemove", onMove, true);
-    window.addEventListener("click", onClick, true);
-    window.addEventListener("keydown", onKeyDown, true);
-  });
-})()
-`;
 }
 
 function normalizePickRect(value: unknown): PreviewAnnotationRect | null {
@@ -1351,78 +1869,16 @@ function waitPreviewAutomationPoll(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, PREVIEW_AUTOMATION_WAIT_INTERVAL_MS));
 }
 
-function buildPreviewAutomationSnapshotScript(): string {
-  return String.raw`
-(() => {
-  const selectorFor = (element) => {
-    if (!element || element.nodeType !== Node.ELEMENT_NODE) return "";
-    if (element.id) return "#" + CSS.escape(element.id);
-    for (const attribute of ["data-testid", "name", "aria-label"]) {
-      const value = element.getAttribute(attribute);
-      if (value) return element.tagName.toLowerCase() + "[" + attribute + "=" + JSON.stringify(value) + "]";
-    }
-    const parts = [];
-    let current = element;
-    while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 8) {
-      const parent = current.parentElement;
-      const siblings = parent
-        ? Array.from(parent.children).filter((child) => child.tagName === current.tagName)
-        : [];
-      const base = current.tagName.toLowerCase();
-      parts.unshift(siblings.length > 1 ? base + ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")" : base);
-      current = parent;
-    }
-    return parts.join(" > ");
-  };
-  const visible = (element) => {
-    const style = getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
-  };
-  const elements = Array.from(document.querySelectorAll("a[href],button,input,textarea,select,[role],[tabindex],[contenteditable='true']"))
-    .filter(visible)
-    .slice(0, ${PREVIEW_AUTOMATION_MAX_ELEMENTS})
-    .map((element) => {
-      const rect = element.getBoundingClientRect();
-      return {
-        tag: element.tagName.toLowerCase(),
-        role: element.getAttribute("role"),
-        name: element.getAttribute("aria-label") || element.getAttribute("name") || element.innerText || element.textContent || element.value || "",
-        selector: selectorFor(element),
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height
-      };
-    });
-  return {
-    url: location.href,
-    title: document.title,
-    loading: document.readyState !== "complete",
-    visibleText: (document.body?.innerText || "").slice(0, ${PREVIEW_AUTOMATION_MAX_TEXT_LENGTH}),
-    interactiveElements: elements,
-    accessibilityTree: null,
-    consoleEntries: [],
-    networkEntries: [],
-    actionTimeline: []
-  };
-})()
-`;
-}
-
 async function previewAutomationSnapshot(
   tabId: string,
   save = false,
 ): Promise<PreviewAutomationSnapshot> {
   const guest = requirePreviewWebContents(tabId);
   requireAllowedPreviewPage(tabId, guest);
-  const scriptedPage = await executePreviewJavaScript<
-    Omit<PreviewAutomationSnapshot, "screenshot">
-  >(guest, buildPreviewAutomationSnapshotScript());
+  const scriptedPage = await capturePreviewSnapshotPage(guest, previewDiagnostics.read(tabId));
   const popupOpen = (lookupPreviewTabEntry(tabId)?.popupCount ?? 0) > 0;
   const page = boundSnapshotPageData({
     ...scriptedPage,
-    ...previewDiagnostics.read(tabId),
     ...(popupOpen ? { popupOpen } : {}),
   });
   const viewport = normalizePickViewport(
@@ -1503,10 +1959,7 @@ async function previewAutomationClick(
     const point = await resolveAutomationClickPoint(guest, input, checkpoint);
     const x = Math.round(point.x);
     const y = Math.round(point.y);
-    checkpoint.check();
-    guest.sendInputEvent({ type: "mouseMove", x, y });
-    guest.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
-    guest.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+    await clickPreviewGuest(guest, x, y, checkpoint);
     return { point: { x, y } };
   });
 }
@@ -1747,7 +2200,7 @@ function writeDesktopStreamChunk(
 }
 
 function installStdIoCapture(): void {
-  if (!app.isPackaged || desktopLogSink === null || restoreStdIoCapture !== null) {
+  if (desktopLogSink === null || restoreStdIoCapture !== null) {
     return;
   }
 
@@ -1785,8 +2238,7 @@ function installStdIoCapture(): void {
   };
 }
 
-function initializePackagedLogging(): void {
-  if (!app.isPackaged) return;
+function initializeDesktopLogging(): void {
   try {
     desktopLogSink = new RotatingFileSink({
       filePath: Path.join(LOG_DIR, "desktop-main.log"),
@@ -1802,22 +2254,31 @@ function initializePackagedLogging(): void {
     writeDesktopLogHeader(`runtime log capture enabled logDir=${LOG_DIR}`);
   } catch (error) {
     // Logging setup should never block app startup.
-    console.error("[desktop] failed to initialize packaged logging", error);
+    console.error("[desktop] failed to initialize desktop logging", error);
   }
 }
 
-function captureBackendOutput(child: ChildProcess.ChildProcess, profileSlug: string): void {
-  if (!app.isPackaged || backendLogSink === null) return;
-  const writeChunk = (chunk: unknown): void => {
-    if (!backendLogSink) return;
+function captureBackendOutput(child: ChildProcess.ChildProcess, runtime: BackendRuntime): void {
+  const tail = runtime.outputTail;
+  const writeChunk = (stream: "stdout" | "stderr") => (chunk: unknown) => {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
-    backendLogSink.write(Buffer.concat([Buffer.from(`[${profileSlug}] `), buffer]));
+    tail.append(stream, buffer);
+    backendLogSink?.write(Buffer.concat([Buffer.from(`[${runtime.profile.slug}] `), buffer]));
+    if (!app.isPackaged) process[stream].write(buffer);
   };
-  child.stdout?.on("data", writeChunk);
-  child.stderr?.on("data", writeChunk);
+  child.stdout?.on("data", writeChunk("stdout"));
+  child.stderr?.on("data", writeChunk("stderr"));
 }
 
-initializePackagedLogging();
+initializeDesktopLogging();
+process.on("uncaughtExceptionMonitor", (error) => {
+  writeDesktopLogHeader(`uncaught exception: ${error.stack ?? error.message}`);
+});
+app.on("child-process-gone", (_event, details) => {
+  writeDesktopLogHeader(
+    `child process gone type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`,
+  );
+});
 
 function getDestructiveMenuIcon(): Electron.NativeImage | undefined {
   if (process.platform !== "darwin") return undefined;
@@ -1841,16 +2302,12 @@ function getDestructiveMenuIcon(): Electron.NativeImage | undefined {
     return undefined;
   }
 }
-let updatePollTimer: ReturnType<typeof setInterval> | null = null;
-let updateStartupTimer: ReturnType<typeof setTimeout> | null = null;
-let updateCheckInFlight = false;
-let updateDownloadInFlight = false;
 let updaterConfigured = false;
 let updateState: DesktopUpdateState = initialUpdateState();
 
 function resolveUpdaterErrorContext(): DesktopUpdateErrorContext {
-  if (updateDownloadInFlight) return "download";
-  if (updateCheckInFlight) return "check";
+  if (updateState.status === "downloading") return "download";
+  if (updateState.status === "checking") return "check";
   return updateState.errorContext;
 }
 
@@ -1862,6 +2319,7 @@ protocol.registerSchemesAsPrivileged([
       secure: true,
       supportFetchAPI: true,
       corsEnabled: true,
+      codeCache: true,
     },
   },
 ]);
@@ -1871,28 +2329,6 @@ function resolveAppRoot(): string {
     return ROOT_DIR;
   }
   return app.getAppPath();
-}
-
-/** Read the baked-in app-update.yml config (if applicable). */
-function readAppUpdateYml(): Record<string, string> | null {
-  try {
-    // electron-updater reads from process.resourcesPath in packaged builds,
-    // or dev-app-update.yml via app.getAppPath() in dev.
-    const ymlPath = app.isPackaged
-      ? Path.join(process.resourcesPath, "app-update.yml")
-      : Path.join(app.getAppPath(), "dev-app-update.yml");
-    const raw = FS.readFileSync(ymlPath, "utf-8");
-    // The YAML is simple key-value pairs — avoid pulling in a YAML parser by
-    // doing a line-based parse (fields: provider, owner, repo, releaseType, …).
-    const entries: Record<string, string> = {};
-    for (const line of raw.split("\n")) {
-      const match = line.match(/^(\w+):\s*(.+)$/);
-      if (match?.[1] && match[2]) entries[match[1]] = match[2].trim();
-    }
-    return entries.provider ? entries : null;
-  } catch {
-    return null;
-  }
 }
 
 function normalizeCommitHash(value: unknown): string | null {
@@ -2009,6 +2445,7 @@ function handleFatalStartupError(stage: string, error: unknown): void {
   writeDesktopLogHeader(`fatal startup error stage=${stage} message=${message}`);
   console.error(`[desktop] fatal startup error (${stage})`, error);
   if (!isQuitting) {
+    // The stall clock starts at before-quit, not while this dialog blocks.
     isQuitting = true;
     dialog.showErrorBox("F5 failed to start", `Stage: ${stage}\n${message}${detail}`);
   }
@@ -2057,9 +2494,46 @@ function registerDesktopProtocol(profileSession = electronSession.defaultSession
   registeredDesktopSessions.add(profileSession);
 }
 
+function zoomMainWindow(direction: AppZoomDirection): void {
+  const window = selectAppZoomWindow(
+    BrowserWindow.getFocusedWindow(),
+    mainWindow,
+    BrowserWindow.getAllWindows(),
+    (candidate) => !candidate.isDestroyed() && profileByWebContentsId.has(candidate.webContents.id),
+    (candidate) =>
+      !candidate.isDestroyed() &&
+      [...backends.values()].some((runtime) => runtime.recoveryWindow === candidate),
+  );
+  if (!window || window.webContents.isDestroyed()) return;
+  zoomAppContents(window.webContents, direction);
+  // Isolated origin zoom still receives the embedder's zoom through webview.
+  // Restore only this window's guests, retaining each tab's chosen factor.
+  for (const [tabId, entry] of previewTabs) {
+    if (entry.ownerWebContentsId !== window.webContents.id) continue;
+    const guest = getPreviewWebContents(tabId);
+    if (guest && !guest.isDestroyed()) guest.setZoomFactor(entry.zoomFactor);
+  }
+}
+
+function reloadFocusedContents(ignoreCache: boolean): void {
+  const focused = electronWebContents.getFocusedWebContents();
+  const target = selectReloadContents(
+    focused,
+    BrowserWindow.getFocusedWindow()?.webContents,
+    isPreviewGuestWebContents,
+  );
+  if (!target || target.isDestroyed()) return;
+  if (ignoreCache) target.reloadIgnoringCache();
+  else target.reload();
+}
+
 function dispatchMenuAction(action: string): void {
-  const existingWindow =
-    BrowserWindow.getFocusedWindow() ?? mainWindow ?? BrowserWindow.getAllWindows()[0];
+  const existingWindow = selectAppMenuWindow(
+    BrowserWindow.getFocusedWindow(),
+    mainWindow,
+    BrowserWindow.getAllWindows(),
+    (window) => !window.isDestroyed() && profileByWebContentsId.has(window.webContents.id),
+  );
   const targetWindow = existingWindow ?? createWindow();
   if (!existingWindow) {
     mainWindow = targetWindow;
@@ -2083,13 +2557,7 @@ function dispatchMenuAction(action: string): void {
 }
 
 function handleCheckForUpdatesMenuClick(): void {
-  const disabledReason = getAutoUpdateDisabledReason({
-    isDevelopment,
-    isPackaged: app.isPackaged,
-    platform: process.platform,
-    appImage: process.env.APPIMAGE,
-    disabledByEnv: process.env.T3CODE_DISABLE_AUTO_UPDATE === "1",
-  });
+  const disabledReason = updateState.enabled ? null : updateState.message;
   if (disabledReason) {
     console.info("[desktop-updater] Manual update check requested, but updates are disabled.");
     void dialog.showMessageBox({
@@ -2111,7 +2579,18 @@ function handleCheckForUpdatesMenuClick(): void {
 async function checkForUpdatesFromMenu(): Promise<void> {
   await checkForUpdates("menu");
 
-  if (updateState.status === "up-to-date") {
+  if (updateState.status === "available" && updateState.availableVersion) {
+    const choice = await dialog.showMessageBox({
+      type: "info",
+      title: "Update available",
+      message: `F5 ${updateState.availableVersion} is available.`,
+      detail: `You have ${updateState.currentVersion}. The download runs in the background and you can keep working.`,
+      buttons: ["Download", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (choice.response === 0) void downloadAvailableUpdate();
+  } else if (updateState.status === "up-to-date") {
     void dialog.showMessageBox({
       type: "info",
       title: "You're up to date!",
@@ -2166,9 +2645,9 @@ function configureApplicationMenu(): void {
 
   if (process.platform === "darwin") {
     template.push({
-      label: app.name,
+      label: APP_DISPLAY_NAME,
       submenu: [
-        { role: "about" },
+        { role: "about", label: `About ${APP_DISPLAY_NAME}` },
         {
           label: "Check for Updates...",
           click: () => handleCheckForUpdatesMenuClick(),
@@ -2182,7 +2661,7 @@ function configureApplicationMenu(): void {
         { type: "separator" },
         { role: "services" },
         { type: "separator" },
-        { role: "hide" },
+        { role: "hide", label: `Hide ${APP_DISPLAY_NAME}` },
         { role: "hideOthers" },
         { role: "unhide" },
         { type: "separator" },
@@ -2220,26 +2699,27 @@ function configureApplicationMenu(): void {
               },
               { type: "separator" as const },
             ]),
-        ...(process.platform === "darwin" ? [{ role: "close" as const }] : []),
+        ...(process.platform === "darwin" ? [desktopCloseWindowItem()] : []),
       ],
     },
     { role: "editMenu" },
     {
       label: "View",
       submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
+        { label: "Reload", accelerator: "CmdOrCtrl+R", click: () => reloadFocusedContents(false) },
+        {
+          label: "Force Reload",
+          accelerator: "CmdOrCtrl+Shift+R",
+          click: () => reloadFocusedContents(true),
+        },
         { role: "toggleDevTools" },
         { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn", accelerator: "CmdOrCtrl+=" },
-        { role: "zoomIn", accelerator: "CmdOrCtrl+Plus", visible: false },
-        { role: "zoomOut" },
+        ...appZoomMenu(zoomMainWindow),
         { type: "separator" },
         { role: "togglefullscreen" },
       ],
     },
-    { role: "windowMenu" },
+    desktopWindowMenu(process.platform),
     {
       role: "help",
       submenu: [
@@ -2275,18 +2755,7 @@ function resolveIconPath(ext: "ico" | "icns" | "png"): string | null {
   return resolveResourcePath(`icon.${ext}`);
 }
 
-/**
- * Resolve the Electron userData directory path.
- *
- * Electron derives the default userData path from `productName` in
- * package.json, which currently produces directories with spaces and
- * parentheses (e.g. `~/.config/T3 Code (Alpha)` on Linux). This is
- * unfriendly for shell usage and violates Linux naming conventions.
- *
- * We override it to a clean lowercase name (`t3code`). If the legacy
- * directory already exists we keep using it so existing users don't
- * lose their Chromium profile data (localStorage, cookies, sessions).
- */
+/** Copy legacy Chromium data once, keeping the t3 renderer origin and backend state intact. */
 function resolveUserDataPath(): string {
   const appDataBase =
     process.platform === "win32"
@@ -2295,16 +2764,24 @@ function resolveUserDataPath(): string {
         ? Path.join(OS.homedir(), "Library", "Application Support")
         : process.env.XDG_CONFIG_HOME || Path.join(OS.homedir(), ".config");
 
-  const legacyPath = Path.join(appDataBase, LEGACY_USER_DATA_DIR_NAME);
-  if (FS.existsSync(legacyPath)) {
-    return legacyPath;
+  const result = migrateUserData({
+    appDataBase,
+    targetName: USER_DATA_DIR_NAME,
+    legacyNames: LEGACY_USER_DATA_DIR_NAMES,
+    skipImport: process.env.F5_SKIP_USERDATA_IMPORT === "1",
+    platform: process.platform,
+    hostname: OS.hostname(),
+  });
+  if (result.kind === "blocked") {
+    dialog.showErrorBox(result.title, result.message);
+    app.exit(1);
+    throw new Error(result.message);
   }
-
-  return Path.join(appDataBase, USER_DATA_DIR_NAME);
+  return result.path;
 }
 
 function configureAppIdentity(): void {
-  app.setName(APP_DISPLAY_NAME);
+  app.setName(desktopRuntimeName(isDevelopment));
   const commitHash = resolveAboutCommitHash();
   app.setAboutPanelOptions({
     applicationName: APP_DISPLAY_NAME,
@@ -2324,15 +2801,13 @@ function configureAppIdentity(): void {
   }
 }
 
+const updatePoller = createUpdatePoller(
+  checkForUpdates,
+  AUTO_UPDATE_STARTUP_DELAY_MS,
+  AUTO_UPDATE_POLL_INTERVAL_MS,
+);
 function clearUpdatePollTimer(): void {
-  if (updateStartupTimer) {
-    clearTimeout(updateStartupTimer);
-    updateStartupTimer = null;
-  }
-  if (updatePollTimer) {
-    clearInterval(updatePollTimer);
-    updatePollTimer = null;
-  }
+  updatePoller.stop();
 }
 
 function emitUpdateState(): void {
@@ -2345,141 +2820,219 @@ function emitUpdateState(): void {
 function setUpdateState(patch: Partial<DesktopUpdateState>): void {
   updateState = { ...updateState, ...patch };
   emitUpdateState();
+  for (const runtime of backends.values()) renderStartupRecovery(runtime);
 }
 
-function shouldEnableAutoUpdates(): boolean {
-  return (
-    getAutoUpdateDisabledReason({
-      isDevelopment,
-      isPackaged: app.isPackaged,
-      platform: process.platform,
-      appImage: process.env.APPIMAGE,
-      disabledByEnv: process.env.T3CODE_DISABLE_AUTO_UPDATE === "1",
-    }) === null
-  );
-}
-
+let updateController: ReturnType<typeof createUpdateController> | null = null;
 async function checkForUpdates(reason: string): Promise<void> {
-  if (isQuitting || !updaterConfigured || updateCheckInFlight) return;
-  if (updateState.status === "downloading" || updateState.status === "downloaded") {
-    console.info(
-      `[desktop-updater] Skipping update check (${reason}) while status=${updateState.status}.`,
-    );
-    return;
-  }
-  updateCheckInFlight = true;
-  setUpdateState(reduceDesktopUpdateStateOnCheckStart(updateState, new Date().toISOString()));
-  console.info(`[desktop-updater] Checking for updates (${reason})...`);
-
-  try {
-    await autoUpdater.checkForUpdates();
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    setUpdateState(
-      reduceDesktopUpdateStateOnCheckFailure(updateState, message, new Date().toISOString()),
-    );
-    console.error(`[desktop-updater] Failed to check for updates: ${message}`);
-  } finally {
-    updateCheckInFlight = false;
-  }
+  if (!isQuitting) await updateController?.requestCheck(reason);
+}
+async function downloadAvailableUpdate() {
+  return updateController?.download() ?? { accepted: false, completed: false };
 }
 
-async function downloadAvailableUpdate(): Promise<{ accepted: boolean; completed: boolean }> {
-  if (!updaterConfigured || updateDownloadInFlight || updateState.status !== "available") {
-    return { accepted: false, completed: false };
-  }
-  updateDownloadInFlight = true;
-  setUpdateState(reduceDesktopUpdateStateOnDownloadStart(updateState));
-  autoUpdater.disableDifferentialDownload = isArm64HostRunningIntelBuild(desktopRuntimeInfo);
-  console.info("[desktop-updater] Downloading update...");
-
-  try {
-    await autoUpdater.downloadUpdate();
-    return { accepted: true, completed: true };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    setUpdateState(reduceDesktopUpdateStateOnDownloadFailure(updateState, message));
-    console.error(`[desktop-updater] Failed to download update: ${message}`);
-    return { accepted: true, completed: false };
-  } finally {
-    updateDownloadInFlight = false;
-  }
+let runningBeforeInstall: BackendRuntime[] = [];
+let windowsBeforeInstall: {
+  window: BrowserWindow;
+  runtime: BackendRuntime;
+  threadId: string | null;
+  bounds: Electron.Rectangle;
+}[] = [];
+let installCleanupStarted = false;
+function restoreInstallWindows(): void {
+  restoreUpdateWindows(windowsBeforeInstall, (threadId, runtime) => {
+    const restored = createWindow(threadId, runtime);
+    mainWindow ??= restored;
+    return restored;
+  });
 }
-
-async function installDownloadedUpdate(): Promise<{ accepted: boolean; completed: boolean }> {
-  if (isQuitting || !updaterConfigured || updateState.status !== "downloaded") {
-    return { accepted: false, completed: false };
-  }
-
-  // Cleanup marks every runtime stopped; retain the pre-install set so recovery
-  // cannot revive profiles the user stopped or exceed the active-profile limit.
-  const runningBeforeInstall = [...backends.values()].filter((runtime) => !runtime.stopped);
-  isQuitting = true;
-  try {
+const updaterInstallerAdapter = createUpdaterInstallerAdapter(autoUpdater, process.platform);
+const updateInstaller = createUpdateInstaller({
+  stage: () => updaterInstallerAdapter.stage(),
+  onStageStart: () => {
+    writeDesktopLogHeader("update install confirmed");
+    setUpdateState({ status: "preparing", installPhase: "staging", message: null });
+  },
+  onCancel: () => setUpdateState({ status: "downloaded", installPhase: null }),
+  resetAttempt: () => updaterInstallerAdapter.resetAttempt(),
+  watchdogEnabled: updaterInstallerAdapter.watchdogEnabled,
+  canInstall: () => !isQuitting && updaterConfigured && updateState.status === "downloaded",
+  confirm: async () => {
+    runningBeforeInstall = [];
+    windowsBeforeInstall = [];
+    installCleanupStarted = false;
+    const choice = await dialog.showMessageBox({
+      type: "warning",
+      message: "Restart F5 to install the update?",
+      detail: "All windows will close and running agent work will be interrupted.",
+      buttons: ["Restart to update", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    return choice.response === 0;
+  },
+  prepare: async () => {
+    runningBeforeInstall = [...backends.values()].filter((runtime) => !runtime.stopped);
+    windowsBeforeInstall = BrowserWindow.getAllWindows()
+      .filter((window) => profileByWebContentsId.has(window.webContents.id))
+      .map((window) => {
+        let threadId: string | null = null;
+        try {
+          threadId = normalizeThreadIdForDesktopWindow(
+            decodeURIComponent(new URL(window.webContents.getURL()).hash.slice(2)),
+          );
+        } catch {
+          /* A window may still be loading. */
+        }
+        return {
+          window,
+          runtime: runtimeForRenderer(window.webContents.id),
+          threadId,
+          bounds: window.getBounds(),
+        };
+      });
+    setUpdateState({ installPhase: "stopping" });
+    // The installer owns this quit: repeats must not cut its cleanup short.
+    isQuitting = true;
+    updateInstallOwnsQuit = true;
     if (!(await closeWindowsForQuit(BrowserWindow.getAllWindows()))) {
       cancelQuit();
-      return { accepted: true, completed: false };
+      restoreInstallWindows();
+      return false;
     }
+    writeDesktopLogHeader("update install: windows closed");
+    installCleanupStarted = true;
     await cleanupBeforeExit();
+    writeDesktopLogHeader("update install: cleanup complete");
     shutdownComplete = true;
-    // NSIS can relaunch explicitly after the parent has drained all profile backends.
-    if (process.platform === "win32") autoUpdater.quitAndInstall(false, true);
-    else autoUpdater.quitAndInstall();
     restoreStdIoCapture?.();
-    return { accepted: true, completed: true };
-  } catch (error: unknown) {
-    const message = formatErrorMessage(error);
-    cancelQuit();
-    await previewRuntime.initialize();
-    for (const runtime of runningBeforeInstall) {
-      runtime.stopped = false;
-      startBackend(runtime);
+    return true;
+  },
+  // A marker left by a failed install is dropped at startup because the
+  // running version will not match, so recovery does not need to clear it.
+  onPrepared: () => {
+    const toVersion = updateState.downloadedVersion;
+    if (!toVersion) return;
+    try {
+      writeUpdateInstallMarker(updateInstallMarkerPath(), {
+        fromVersion: updateState.currentVersion,
+        toVersion,
+        releaseNotes: updateState.releaseNotes ?? null,
+      });
+    } catch (error) {
+      console.warn("[desktop-updater] Could not record the pending update", error);
     }
-    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
-    setUpdateState(reduceDesktopUpdateStateOnInstallFailure(updateState, message));
-    console.error(`[desktop-updater] Failed to install update: ${message}`);
-    return { accepted: true, completed: false };
-  }
+  },
+  install: async () => {
+    writeDesktopLogHeader("update install: launching installer");
+    await updaterInstallerAdapter.install();
+    writeDesktopLogHeader("update install: installer launched");
+  },
+  recover: async (message) => {
+    writeDesktopLogHeader(`update install recovery: ${message}`);
+    cancelQuit();
+    try {
+      const errors = await recoverUpdateSession<BackendRuntime>({
+        cleanupStarted: installCleanupStarted,
+        initializePreview: () => previewRuntime.initialize(),
+        initializeComputer: initializeComputerSystem,
+        initializeKeepAwake,
+        runningBeforeInstall,
+        startBackend,
+        restoreWindows: restoreInstallWindows,
+        resumeUpdates: () => {
+          if (updaterConfigured) updatePoller.start();
+        },
+      });
+      for (const error of errors) console.error("[desktop-updater] Session recovery failed", error);
+      if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
+    } catch (error) {
+      console.error("[desktop-updater] Recovery failed", error);
+    } finally {
+      installStdIoCapture();
+      setUpdateState(
+        reduceDesktopUpdateStateOnInstallFailure(
+          updateState,
+          getUpdateErrorMessage(message, "install"),
+        ),
+      );
+    }
+  },
+});
+async function installDownloadedUpdate() {
+  return updateInstaller.request();
 }
 
-function configureAutoUpdater(): void {
-  const enabled = shouldEnableAutoUpdates();
+function updateInstallMarkerPath(): string {
+  return Path.join(app.getPath("userData"), "update-pending.json");
+}
+
+async function configureAutoUpdater(): Promise<void> {
+  const preferencesPath = Path.join(app.getPath("userData"), "update-preferences.json");
+  const channel = initializeUpdatePreferences(preferencesPath, app.getVersion());
+  const recentlyInstalled = consumeUpdateInstallMarker(updateInstallMarkerPath(), app.getVersion());
+  const disabledReason = getAutoUpdateDisabledReason({
+    isDevelopment,
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    appImage: process.env.APPIMAGE,
+    isDebPackage: app.isPackaged && (await isDebPackage(process.platform, process.resourcesPath)),
+    disabledByEnv: process.env.T3CODE_DISABLE_AUTO_UPDATE === "1",
+    hasUpdateFeed: FS.existsSync(Path.join(process.resourcesPath, "app-update.yml")),
+    runningFromReadOnlyLocation:
+      process.platform === "darwin" &&
+      (process.execPath.startsWith("/Volumes/") || process.execPath.includes("/AppTranslocation/")),
+  });
+  const enabled = disabledReason === null;
   setUpdateState({
     ...createInitialDesktopUpdateState(app.getVersion(), desktopRuntimeInfo),
     enabled,
     status: enabled ? "idle" : "disabled",
+    channel,
+    message: disabledReason,
+    recentlyInstalled,
   });
-  if (!enabled) {
-    return;
-  }
-  updaterConfigured = true;
-
-  const githubToken =
-    process.env.T3CODE_DESKTOP_UPDATE_GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim() || "";
-  if (githubToken) {
-    // When a token is provided, re-configure the feed with `private: true` so
-    // electron-updater uses the GitHub API (api.github.com) instead of the
-    // public Atom feed (github.com/…/releases.atom) which rejects Bearer auth.
-    const appUpdateYml = readAppUpdateYml();
-    if (appUpdateYml?.provider === "github") {
-      autoUpdater.setFeedURL({
-        ...appUpdateYml,
-        provider: "github" as const,
-        private: true,
-        token: githubToken,
-      });
-    }
-  }
-
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
-  // Keep alpha branding, but force all installs onto the stable update track.
-  autoUpdater.channel = DESKTOP_UPDATE_CHANNEL;
-  autoUpdater.allowPrerelease = DESKTOP_UPDATE_ALLOW_PRERELEASE;
-  autoUpdater.allowDowngrade = false;
+  let lastLoggedDownloadMilestone = -1;
+  updateController = createUpdateController({
+    isQuitting: () => isQuitting,
+    getState: () => updateState,
+    emit: (state) => setUpdateState(state),
+    writePreferences: (value) => writeUpdatePreferences(preferencesPath, value),
+    port: {
+      applySettings: (settings) => {
+        autoUpdater.channel = settings.channel;
+        autoUpdater.allowPrerelease = settings.allowPrerelease;
+        autoUpdater.allowDowngrade = false;
+      },
+      check: async () => {
+        const result = await autoUpdater.checkForUpdates();
+        return result?.isUpdateAvailable
+          ? {
+              version: result.updateInfo.version,
+              cachedDownload: await hasCachedUpdate(
+                autoUpdater,
+                result.updateInfo.files,
+                desktopRuntimeInfo,
+                process.platform,
+                process.resourcesPath,
+              ),
+              releaseNotes: normalizeDesktopUpdateReleaseNotes(result.updateInfo.releaseNotes),
+            }
+          : null;
+      },
+      download: () => {
+        lastLoggedDownloadMilestone = -1;
+        return autoUpdater.downloadUpdate();
+      },
+    },
+  });
+  updateController.applyChannel(channel);
+  if (!enabled) return;
+  updaterConfigured = true;
   autoUpdater.fullChangelog = true;
   autoUpdater.disableDifferentialDownload = isArm64HostRunningIntelBuild(desktopRuntimeInfo);
-  let lastLoggedDownloadMilestone = -1;
 
   if (isArm64HostRunningIntelBuild(desktopRuntimeInfo)) {
     console.info(
@@ -2490,26 +3043,13 @@ function configureAutoUpdater(): void {
   autoUpdater.on("checking-for-update", () => {
     console.info("[desktop-updater] Looking for updates...");
   });
-  autoUpdater.on("update-available", (info) => {
-    setUpdateState(
-      reduceDesktopUpdateStateOnUpdateAvailable(
-        updateState,
-        info.version,
-        new Date().toISOString(),
-        normalizeDesktopUpdateReleaseNotes(info.releaseNotes),
-      ),
-    );
-    lastLoggedDownloadMilestone = -1;
-    console.info(`[desktop-updater] Update available: ${info.version}`);
-  });
-  autoUpdater.on("update-not-available", () => {
-    setUpdateState(reduceDesktopUpdateStateOnNoUpdate(updateState, new Date().toISOString()));
-    lastLoggedDownloadMilestone = -1;
-    console.info("[desktop-updater] No updates available.");
-  });
   autoUpdater.on("error", (error) => {
-    const message = formatErrorMessage(error);
-    if (!updateCheckInFlight && !updateDownloadInFlight) {
+    const message = getUpdateErrorMessage(error, resolveUpdaterErrorContext() ?? "check");
+    if (updateInstaller.pending) {
+      void updateInstaller.onError(message);
+      return;
+    }
+    if (updateState.status !== "checking" && updateState.status !== "downloading") {
       setUpdateState({
         status: "error",
         message,
@@ -2527,7 +3067,7 @@ function configureAutoUpdater(): void {
       shouldBroadcastDownloadProgress(updateState, progress.percent) ||
       updateState.message !== null
     ) {
-      setUpdateState(reduceDesktopUpdateStateOnDownloadProgress(updateState, progress.percent));
+      setUpdateState(reduceDesktopUpdateStateOnDownloadProgress(updateState, progress));
     }
     const milestone = percent - (percent % 10);
     if (milestone > lastLoggedDownloadMilestone) {
@@ -2546,18 +3086,7 @@ function configureAutoUpdater(): void {
     console.info(`[desktop-updater] Update downloaded: ${info.version}`);
   });
 
-  clearUpdatePollTimer();
-
-  updateStartupTimer = setTimeout(() => {
-    updateStartupTimer = null;
-    void checkForUpdates("startup");
-  }, AUTO_UPDATE_STARTUP_DELAY_MS);
-  updateStartupTimer.unref();
-
-  updatePollTimer = setInterval(() => {
-    void checkForUpdates("poll");
-  }, AUTO_UPDATE_POLL_INTERVAL_MS);
-  updatePollTimer.unref();
+  updatePoller.start(true);
 }
 function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv {
   return buildDesktopBackendEnv(process.env, {
@@ -2566,6 +3095,7 @@ function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv
     stateDir: STATE_DIR,
     stateDirSource: STATE_DIR_CONFIG.source,
     authToken: runtime.backendAuthToken,
+    shellEnvironmentPrepared,
   });
 }
 
@@ -2605,19 +3135,127 @@ function configureBackendRequestAuthentication(runtime: BackendRuntime = default
   );
 }
 
+let lastStartedVersion: string | null | undefined;
+let failedRecoveryInstallVersion: string | null = null;
+const recoveryHtmlByRuntime = new WeakMap<BackendRuntime, string>();
+function startupRecoveryOffer() {
+  if (lastStartedVersion === undefined) {
+    try {
+      lastStartedVersion =
+        FS.readFileSync(Path.join(STATE_DIR, "desktop-last-started-version"), "utf8").trim() ||
+        null;
+    } catch {
+      lastStartedVersion = null;
+    }
+  }
+  if (updateState.errorContext === "install")
+    failedRecoveryInstallVersion = updateState.downloadedVersion;
+  return resolveStartupRecoveryOffer(updateState, lastStartedVersion, failedRecoveryInstallVersion);
+}
+
+function renderStartupRecovery(runtime: BackendRuntime): void {
+  const window = runtime.recoveryWindow;
+  if (!window || window.isDestroyed() || !runtime.startupFailure || isQuitting) return;
+  const html = startupRecoveryHtml({
+    version: app.getVersion(),
+    profile: runtime.profile.name,
+    failure: runtime.startupFailure,
+    offer: startupRecoveryOffer(),
+    logDir: LOG_DIR,
+  });
+  if (recoveryHtmlByRuntime.get(runtime) === html) return;
+  recoveryHtmlByRuntime.set(runtime, html);
+  void window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html)).catch((error) => {
+    recoveryHtmlByRuntime.delete(runtime);
+    console.error("[desktop] Could not render startup recovery", error);
+  });
+}
+
+function showStartupRecovery(runtime: BackendRuntime, reason: string): void {
+  if (isQuitting) return;
+  // Keep the diagnostic from the run that first failed; restart output is reset per run.
+  runtime.startupFailure ??= { reason, output: runtime.outputTail.value };
+  if (!runtime.recoveryWindow || runtime.recoveryWindow.isDestroyed()) {
+    const window = new BrowserWindow({
+      width: 760,
+      height: 600,
+      show: false,
+      title: "F5 could not start",
+      autoHideMenuBar: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        zoomMode: "isolated",
+      },
+    });
+    runtime.recoveryWindow = window;
+    recoveryHtmlByRuntime.delete(runtime);
+    window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    let actionPending = false;
+    window.webContents.on("will-navigate", (event, url) => {
+      event.preventDefault();
+      if (actionPending) return;
+      const action = startupRecoveryAction(url);
+      actionPending = true;
+      void (async () => {
+        const offer = startupRecoveryOffer();
+        if (action === "quit") app.quit();
+        else if (action === "retry") {
+          await stopBackendAndWaitForExit(5_000, runtime);
+          await openProfile(runtime.profile.id);
+        } else if (action === "copy")
+          clipboard.writeText(
+            "F5 " +
+              app.getVersion() +
+              "\n" +
+              runtime.profile.name +
+              "\n" +
+              runtime.startupFailure?.reason +
+              "\n" +
+              runtime.startupFailure?.output +
+              "\nLogs: " +
+              LOG_DIR,
+          );
+        else if (action === "download")
+          await shell.openExternal(
+            STARTUP_RECOVERY_RELEASES_URL +
+              (offer.kind === "download" && offer.version
+                ? "/tag/v" + encodeURIComponent(offer.version)
+                : ""),
+          );
+        else if (action === "update" && offer.kind === "update") {
+          if (updateState.status !== "downloaded") await downloadAvailableUpdate();
+          if (updateState.status === "downloaded") await installDownloadedUpdate();
+        }
+      })()
+        .catch((error) => console.error("[desktop] Startup recovery action failed", error))
+        .finally(() => {
+          actionPending = false;
+          renderStartupRecovery(runtime);
+        });
+    });
+    window.once("ready-to-show", () => window.show());
+    window.on("closed", () => {
+      if (runtime.recoveryWindow === window) runtime.recoveryWindow = null;
+    });
+    void checkForUpdates("startup-recovery");
+  } else runtime.recoveryWindow.show();
+  renderStartupRecovery(runtime);
+}
+
 function scheduleBackendRestart(reason: string, runtime: BackendRuntime = defaultBackend): void {
   if (isQuitting || runtime.stopped || runtime.restartTimer) return;
-  if (runtime.restartAttempt >= 6) {
+  const plan = planBackendRestart(runtime);
+  if (plan.kind === "stop") {
     runtime.stopped = true;
-    dialog.showErrorBox(
-      "F5 profile failed to start",
-      `${runtime.profile.name}: ${reason}. Stop and reopen this profile after fixing the startup error.`,
-    );
+    showStartupRecovery(runtime, reason);
     return;
   }
+  if (!runtime.startupReady && runtime.restartAttempt >= STARTUP_FAILURE_RESTART_ATTEMPTS)
+    showStartupRecovery(runtime, "The server could not start (" + reason + ").");
 
-  const delayMs = Math.min(500 * 2 ** runtime.restartAttempt, 10_000);
-  runtime.restartAttempt += 1;
+  const delayMs = plan.delayMs;
   console.error(`[desktop] backend exited unexpectedly (${reason}); restarting in ${delayMs}ms`);
 
   runtime.restartTimer = setTimeout(() => {
@@ -2635,18 +3273,71 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     return;
   }
 
-  const captureBackendLogs = app.isPackaged && backendLogSink !== null;
-  const child = ChildProcess.spawn(process.execPath, [backendEntry], {
+  const backendIncarnation = Crypto.randomUUID();
+  runtime.outputTail = new BackendOutputTail();
+  runtime.startupReady = false;
+  const isolated = isolatedBackendCommand(
+    process.platform,
+    process.execPath,
+    backendEntry,
+    app.isPackaged ? compileCachePreloadArgs(__dirname) : [],
+  );
+  const child = ChildProcess.spawn(isolated.executable, isolated.args, {
     cwd: resolveBackendCwd(),
     // In Electron main, process.execPath points to the Electron binary.
     // Run the child in Node mode so this backend process does not become a GUI app instance.
     env: {
       ...backendEnv(runtime),
       ELECTRON_RUN_AS_NODE: "1",
+      F5_DESKTOP_COMPUTER_HOST: "ipc",
+      F5_DESKTOP_BACKEND_INCARNATION: backendIncarnation,
     },
-    stdio: captureBackendLogs ? ["ignore", "pipe", "pipe"] : "inherit",
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
   runtime.backendProcess = child;
+  computerSystem?.channel.register(runtime.profile.id, backendIncarnation, child);
+  stopHealthMonitor(runtime);
+  runtime.cancelHealthMonitor = monitorBackendHealth({
+    isCurrent: () =>
+      !isQuitting &&
+      !runtime.stopped &&
+      runtime.backendProcess === child &&
+      isProfileBackendRunning(runtime),
+    checkReady: () => checkBackendReady(runtime),
+    onReady: () => {
+      runtime.startupReady = true;
+      runtime.startupFailure = null;
+      if (
+        runtime.recoveryWindow &&
+        !BrowserWindow.getAllWindows().some(
+          (window) => profileByWebContentsId.get(window.webContents.id) === runtime.profile.id,
+        )
+      ) {
+        const restored = createWindow(null, runtime);
+        mainWindow ??= restored;
+      }
+      runtime.recoveryWindow?.close();
+      runtime.recoveryWindow = null;
+    },
+    onStartupTimeout: () =>
+      showStartupRecovery(runtime, "The server started but did not become ready in time."),
+    onSustainedHealth: () => {
+      if (runtime === defaultBackend) {
+        try {
+          FS.writeFileSync(Path.join(STATE_DIR, "desktop-last-started-version"), app.getVersion());
+          lastStartedVersion = app.getVersion();
+        } catch (error) {
+          console.warn("[desktop] Could not save last started version", error);
+        }
+      }
+      if (runtime.restartAttempt > 0) {
+        console.info(
+          `[desktop] backend healthy for ${BACKEND_HEALTHY_RESET_MS}ms; resetting restart budget`,
+        );
+      }
+      runtime.restartAttempt = 0;
+    },
+  });
   let backendSessionClosed = false;
   const closeBackendSession = (details: string) => {
     if (backendSessionClosed) return;
@@ -2657,24 +3348,27 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     "START",
     `pid=${child.pid ?? "unknown"} port=${runtime.backendPort} cwd=${resolveBackendCwd()}`,
   );
-  captureBackendOutput(child, runtime.profile.slug);
+  captureBackendOutput(child, runtime);
 
   child.on("error", (error) => {
     if (runtime.backendProcess === child) {
       runtime.backendProcess = null;
+      stopHealthMonitor(runtime);
     }
     closeBackendSession(`pid=${child.pid ?? "unknown"} error=${error.message}`);
     scheduleBackendRestart(error.message, runtime);
   });
 
   child.on("exit", (code, signal) => {
+    const current = runtime.backendProcess === child;
     if (runtime.backendProcess === child) {
       runtime.backendProcess = null;
+      stopHealthMonitor(runtime);
     }
     closeBackendSession(
       `pid=${child.pid ?? "unknown"} code=${code ?? "null"} signal=${signal ?? "null"}`,
     );
-    if (isQuitting || runtime.stopped) return;
+    if (!current || isQuitting || runtime.stopped) return;
     if (code === 78) {
       runtime.stopped = true;
       let message = "Profile startup failed. Check its registry, lock, and configured port.";
@@ -2688,7 +3382,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       } catch {
         /* Startup may have failed before the diagnostic could be written. */
       }
-      dialog.showErrorBox(`Unable to start ${runtime.profile.name}`, message);
+      showStartupRecovery(runtime, message);
       return;
     }
     const reason = `code=${code ?? "null"} signal=${signal ?? "null"}`;
@@ -2696,8 +3390,31 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
   });
 }
 
+function stopHealthMonitor(runtime: BackendRuntime): void {
+  runtime.cancelHealthMonitor?.();
+  runtime.cancelHealthMonitor = null;
+}
+
+async function checkBackendReady(runtime: BackendRuntime): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `${getDesktopBackendHttpOrigin(runtime.backendPort)}/api/bootstrap`,
+      {
+        headers: { Authorization: `Bearer ${runtime.backendAuthToken}` },
+        signal: AbortSignal.timeout(1000),
+        redirect: "error",
+      },
+    );
+    await response.body?.cancel();
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 function stopBackend(runtime: BackendRuntime = defaultBackend): void {
   runtime.stopped = true;
+  stopHealthMonitor(runtime);
   if (runtime.restartTimer) {
     clearTimeout(runtime.restartTimer);
     runtime.restartTimer = null;
@@ -2707,10 +3424,10 @@ function stopBackend(runtime: BackendRuntime = defaultBackend): void {
   if (!child) return;
 
   if (child.exitCode === null && child.signalCode === null) {
-    killProcessTree(child, { isGroupLeader: false, graceful: true });
+    void killProcessTreeAsync(child, { isGroupLeader: false, graceful: true });
     setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) {
-        killProcessTree(child, { isGroupLeader: false, graceful: false });
+        void killProcessTreeAsync(child, { isGroupLeader: false, graceful: false });
       }
     }, 2_000).unref();
   }
@@ -2721,6 +3438,7 @@ async function stopBackendAndWaitForExit(
   runtime: BackendRuntime = defaultBackend,
 ): Promise<void> {
   runtime.stopped = true;
+  stopHealthMonitor(runtime);
   if (runtime.restartTimer) {
     clearTimeout(runtime.restartTimer);
     runtime.restartTimer = null;
@@ -2757,11 +3475,19 @@ async function stopBackendAndWaitForExit(
     }
 
     backendChild.once("exit", onExit);
-    killProcessTree(backendChild, { isGroupLeader: false, graceful: true });
+    // Asynchronous: a blocking taskkill once froze the main thread during update installs.
+    void killProcessTreeAsync(backendChild, { isGroupLeader: false, graceful: true }).then(
+      (result) => {
+        if (!result.terminated || result.usedFallback)
+          writeDesktopLogHeader(
+            `backend stop: process tree kill pid=${backendChild.pid} ${JSON.stringify(result)}`,
+          );
+      },
+    );
 
     forceKillTimer = setTimeout(() => {
       if (backendChild.exitCode === null && backendChild.signalCode === null) {
-        killProcessTree(backendChild, { isGroupLeader: false, graceful: false });
+        void killProcessTreeAsync(backendChild, { isGroupLeader: false, graceful: false });
       }
     }, 2_000);
     forceKillTimer.unref();
@@ -2778,63 +3504,289 @@ async function stopBackendAndWaitForExit(
   if (runtime.backendProcess === backendChild) runtime.backendProcess = null;
 }
 
-const openProfile = singleProfileOpen(async (id) => {
+const bootstrapGate = createBootstrapGate();
+let lastOpenedProfileId = defaultBackend.profile.id;
+
+async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
+  await ensureProfileBackend(runtime, {
+    stop: () => stopBackendAndWaitForExit(5000, runtime),
+    prepare: async () => {
+      if (isQuitting) throw new Error("F5 is shutting down.");
+      const otherBackends = [...backends.values()].filter(
+        (entry) => entry !== runtime && (!entry.stopped || isProfileBackendRunning(entry)),
+      );
+      if (otherBackends.length >= MAX_ACTIVE_PROFILE_BACKENDS)
+        throw new Error("Six profiles are already running. Stop one before opening another.");
+      await ensureProfileConnection(
+        runtime,
+        () =>
+          Effect.runPromise(
+            Effect.service(NetService).pipe(
+              Effect.flatMap((net) => net.reserveLoopbackPort()),
+              Effect.provide(NetService.layer),
+            ),
+          ),
+        () => Crypto.randomBytes(24).toString("hex"),
+        getDesktopBackendWebSocketUrl,
+      );
+      await shellEnvironmentReady;
+      if (isQuitting) throw new Error("F5 is shutting down.");
+      configureBackendRequestAuthentication(runtime);
+    },
+    start: () => {
+      writeDesktopLogHeader(`starting profile backend profile=${runtime.profile.id}`);
+      startBackend(runtime);
+    },
+    ready: () =>
+      waitForProfileBackend(
+        () => !isQuitting && !runtime.stopped && isProfileBackendRunning(runtime),
+        () => checkBackendReady(runtime),
+      ),
+  });
+}
+
+interface ProfileOpenOptions {
+  /** False shows the profile window without focusing it or activating F5. */
+  activate?: boolean;
+}
+const openProfile = singleProfileOpen(async (id: string, options?: ProfileOpenOptions) => {
   try {
-    return await openProfileOnce(id);
+    await bootstrapGate.wait();
+    if (isQuitting) return false;
+    return await openProfileOnce(id, options);
   } catch (cause) {
     const runtime = backends.get(id);
-    if (runtime && !runtime.backendProcess) runtime.stopped = true;
+    if (runtime && !runtime.backendProcess && !runtime.restartTimer) runtime.stopped = true;
     throw cause;
   }
 });
-async function openProfileOnce(profileId: string): Promise<boolean> {
+async function openProfileOnce(
+  profileId: string,
+  options: ProfileOpenOptions = {},
+): Promise<boolean> {
   const profile = readDesktopProfiles(STATE_DIR).find(
     (record) => record.id === profileId && record.status === "ready",
   );
   if (!profile) throw new Error("Profile is unknown or not ready.");
+  const runtime = backends.get(profileId) ?? makeBackendRuntime(profile);
+  backends.set(profileId, runtime);
+  await ensureBackendRunning(runtime);
+  if (isQuitting) return false;
   const existingWindow = BrowserWindow.getAllWindows().find(
     (window) => profileByWebContentsId.get(window.webContents.id) === profileId,
   );
-  if (existingWindow && backends.has(profileId) && !backends.get(profileId)!.stopped) {
-    existingWindow.show();
-    existingWindow.focus();
-    return true;
-  }
-  let runtime = backends.get(profileId);
-  if (runtime?.stopped && runtime.backendProcess) await stopBackendAndWaitForExit(5000, runtime);
-  if (!runtime || runtime.stopped) {
-    if (
-      [...backends.values()].filter((entry) => !entry.stopped || entry.backendProcess !== null)
-        .length >= MAX_ACTIVE_PROFILE_BACKENDS
-    )
-      throw new Error("Six profiles are already running. Stop one before opening another.");
-    runtime = runtime ?? makeBackendRuntime(profile);
-    runtime.stopped = false;
-    runtime.restartAttempt = 0;
-    backends.set(profileId, runtime);
-    await ensureProfileConnection(
-      runtime,
-      () =>
-        Effect.runPromise(
-          Effect.service(NetService).pipe(
-            Effect.flatMap((net) => net.reserveLoopbackPort()),
-            Effect.provide(NetService.layer),
-          ),
-        ),
-      () => Crypto.randomBytes(24).toString("hex"),
-      getDesktopBackendWebSocketUrl,
-    );
-    configureBackendRequestAuthentication(runtime);
-    startBackend(runtime);
-  }
-  if (existingWindow) {
-    existingWindow.show();
-    existingWindow.focus();
-  } else createWindow(null, runtime);
+  if (existingWindow && !existingWindow.isDestroyed()) {
+    if (options.activate === false) {
+      // A minimized window stays minimized: restoring it would take focus.
+      if (!existingWindow.isVisible() && !existingWindow.isMinimized())
+        existingWindow.showInactive();
+    } else {
+      if (existingWindow.isMinimized()) existingWindow.restore();
+      existingWindow.show();
+      existingWindow.focus();
+    }
+  } else createWindow(null, runtime, { activate: options.activate !== false });
+  lastOpenedProfileId = profile.id;
+  writeDesktopLogHeader(`profile open ready profile=${profile.id}`);
   return true;
 }
 
+const PROMPT_LINK_SCHEME_FOR_BUILD = promptLinkSchemeFor(isDevelopment);
+const PROMPT_LINKS_AVAILABLE_CHANNEL = "desktop:prompt-links-available";
+const promptLinks = new PromptLinkInbox(PROMPT_LINK_SCHEME_FOR_BUILD);
+const appActivations = new Map<string, AppActivationEntry>();
+
+function activateProject(request: DesktopAppRequest): Promise<void> {
+  if (appActivations.has(request.id))
+    return Promise.reject(new Error("Duplicate desktop request."));
+  if (appActivations.size >= 32)
+    return Promise.reject(new Error("Too many pending desktop requests."));
+  const profileId = reopenTargetProfileId();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () =>
+        complete(
+          "Desktop activation is taking longer than expected and may still complete. Retry to reuse the project.",
+        ),
+      15_000,
+    );
+    const complete = (error?: string) => {
+      clearTimeout(timer);
+      appActivations.delete(request.id);
+      if (error) reject(new Error(error));
+      else resolve();
+    };
+    appActivations.set(request.id, { request, profileId, senderId: -1, complete });
+    void openProfile(profileId)
+      .then((opened) => {
+        const entry = appActivations.get(request.id);
+        if (!entry) return;
+        if (!opened) {
+          complete("The desktop app is quitting.");
+          return;
+        }
+        const focused = BrowserWindow.getFocusedWindow();
+        const window =
+          focused && profileByWebContentsId.get(focused.webContents.id) === profileId
+            ? focused
+            : BrowserWindow.getAllWindows().find(
+                (candidate) => profileByWebContentsId.get(candidate.webContents.id) === profileId,
+              );
+        if (!window || window.isDestroyed()) {
+          complete("No desktop window is available.");
+          return;
+        }
+        entry.senderId = window.webContents.id;
+        if (process.platform === "darwin") app.focus({ steal: true });
+        window.focus();
+        window.webContents.send("desktop:app-activations-available");
+      })
+      .catch((error: unknown) =>
+        complete(error instanceof Error ? error.message : "Could not open the desktop window."),
+      );
+  });
+}
+
+function registerPromptLinkProtocol(): void {
+  const entryScript = entryScriptInArgv(process.argv);
+  const registration = protocolClientRegistration({
+    defaultApp: Boolean(process.defaultApp),
+    execPath: process.execPath,
+    entryScript: entryScript ? Path.resolve(entryScript) : undefined,
+  });
+  const registered = registration
+    ? app.setAsDefaultProtocolClient(PROMPT_LINK_SCHEME_FOR_BUILD, registration.path, [
+        ...registration.args,
+      ])
+    : app.setAsDefaultProtocolClient(PROMPT_LINK_SCHEME_FOR_BUILD);
+  writeDesktopLogHeader(
+    `prompt link protocol ${PROMPT_LINK_SCHEME_FOR_BUILD} registered=${registered}`,
+  );
+}
+
+/**
+ * The running instance opens every link in the profile in use, so a link never starts a second
+ * F5. Renderers take queued links when they load, when told, and when their window gains focus.
+ */
+function receivePromptLink(url: string): void {
+  // Before the app is ready no profile window exists, so the first one to load takes the link.
+  const profileId = app.isReady() ? reopenTargetProfileId() : null;
+  if (!promptLinks.receive(url, profileId)) {
+    writeDesktopLogHeader("prompt link ignored: not a link this build opens");
+    return;
+  }
+  if (!app.isReady() || isQuitting) return;
+  reopenApplication();
+  for (const window of BrowserWindow.getAllWindows())
+    if (!window.isDestroyed()) window.webContents.send(PROMPT_LINKS_AVAILABLE_CHANNEL);
+}
+
+/** The profile a reopen brings forward: the focused window's, else the last one opened. */
+function reopenTargetProfileId(): string {
+  const window = BrowserWindow.getFocusedWindow();
+  return (window && profileByWebContentsId.get(window.webContents.id)) ?? lastOpenedProfileId;
+}
+
+function reopenApplication(): void {
+  if (!app.isReady() || isQuitting) return;
+  const profileId = reopenTargetProfileId();
+  const runtime = backends.get(profileId);
+  if (runtime?.startupFailure && !runtime.startupReady) {
+    showStartupRecovery(runtime, runtime.startupFailure.reason);
+    return;
+  }
+  void openProfile(profileId).catch((error) => {
+    writeDesktopLogHeader(
+      `profile reopen failed profile=${profileId}: ${formatErrorMessage(error)}`,
+    );
+    if (!isQuitting) dialog.showErrorBox("Cannot reopen F5", formatErrorMessage(error));
+  });
+}
+
 function registerIpcHandlers(): void {
+  ipcMain.handle("desktop:is-app-activation-pending", (event, id: string) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    const entry = appActivations.get(id);
+    return entry?.profileId === runtime.profile.id && entry.senderId === event.sender.id;
+  });
+  ipcMain.handle("desktop:resolve-activation-paths", async (event, values: unknown) => {
+    authorizeAppMainFrame(event, "Resolve activation paths");
+    if (!Array.isArray(values) || values.length > 10_000) throw new Error("Invalid paths");
+    const fs = await import("node:fs/promises");
+    const result: (string | null)[] = [];
+    for (const value of values) {
+      result.push(typeof value === "string" ? await fs.realpath(value).catch(() => null) : null);
+    }
+    return result;
+  });
+  ipcMain.handle("desktop:reveal-window", (event) => {
+    revealSenderWindow(
+      () => {
+        authorizeAppMainFrame(event, "Window reveal");
+      },
+      () => BrowserWindow.fromWebContents(event.sender),
+      () => {
+        if (process.platform === "darwin") app.focus({ steal: true });
+      },
+    );
+  });
+  const assertFileCaller = (event: Electron.IpcMainInvokeEvent) => {
+    assertFileActionCaller({
+      registered: appRendererWebContentsIds.has(event.sender.id),
+      mainFrame: event.senderFrame === event.sender.mainFrame,
+      origin: event.senderFrame?.origin ?? "",
+      expectedOrigin: isDevelopment ? new URL(mainRendererUrl()).origin : `${DESKTOP_SCHEME}://app`,
+    });
+    runtimeForRenderer(event.sender.id);
+  };
+  const fileActions = registerDesktopFileActions(ipcMain, {
+    assertCaller: assertFileCaller,
+    openExternal: (url) => shell.openExternal(url, { activate: true }),
+    revealFile: (filePath) =>
+      process.platform !== "darwin"
+        ? Promise.resolve(shell.showItemInFolder(filePath))
+        : new Promise<void>((resolve, reject) => {
+            const launch = macRevealLaunch(filePath);
+            ChildProcess.execFile(
+              launch.file,
+              launch.args,
+              { timeout: MAC_REVEAL_TIMEOUT_MS },
+              (error, _stdout, stderr) =>
+                error
+                  ? reject(new Error(macRevealFailureMessage(Object.assign(error, { stderr }))))
+                  : resolve(),
+            );
+          }),
+  });
+  registerBrowserOpenIpc(ipcMain, {
+    authorize: (event) => authorizeAppMainFrame(event, "Browser open answers"),
+    prompt: browserOpenPrompt,
+  });
+  registerHtmlPreviewIpc(
+    ipcMain,
+    (event) => {
+      if (
+        !appRendererWebContentsIds.has(event.sender.id) ||
+        event.senderFrame !== event.sender.mainFrame
+      )
+        throw new Error("HTML previews require an F5 app main frame.");
+      const expectedOrigin = isDevelopment
+        ? new URL(mainRendererUrl()).origin
+        : `${DESKTOP_SCHEME}://app`;
+      if (event.senderFrame.origin !== expectedOrigin)
+        throw new Error("Untrusted HTML preview origin.");
+      runtimeForRenderer(event.sender.id);
+    },
+    writeDesktopLogHeader,
+  );
+  // Startup diagnostics: only the first marker per main window is logged.
+  ipcMain.on("desktop:startup-marker", (event, marker: unknown) => {
+    const createdAt = windowCreatedAtByWebContentsId.get(event.sender.id);
+    if (marker !== "composer-ready" || createdAt === undefined) return;
+    windowCreatedAtByWebContentsId.delete(event.sender.id);
+    writeDesktopLogHeader(`window composer ready ms=${Math.round(performance.now() - createdAt)}`);
+  });
   ipcMain.on("desktop:get-ws-url", (event) => {
     try {
       if (event.senderFrame !== event.sender.mainFrame)
@@ -2843,6 +3795,60 @@ function registerIpcHandlers(): void {
     } catch {
       event.returnValue = null;
     }
+  });
+  const cliInstaller = createDesktopCliInstaller({
+    executable: process.execPath,
+    entry: resolveBackendEntry(),
+    launcherDirectory: Path.join(app.getPath("userData"), "cli"),
+    home: OS.homedir(),
+    transientPaths: Boolean(process.env.APPIMAGE),
+  });
+  for (const [channel, action] of [
+    ["desktop:cli-command-state", cliInstaller.state],
+    ["desktop:cli-command-install", cliInstaller.install],
+  ] as const) {
+    ipcMain.handle(channel, async (event) => {
+      assertUpdateCaller(event, runtimeForRenderer);
+      if (!app.isPackaged) {
+        if (channel === "desktop:cli-command-state")
+          return { supported: false, installedPaths: { f5: null, t3: null }, onPath: false };
+        throw new Error("The CLI installer requires a packaged desktop application.");
+      }
+      return action();
+    });
+  }
+  ipcMain.handle("desktop:take-prompt-links", (event) => {
+    const runtime = runtimeForRenderer(event.sender.id);
+    const links = promptLinks.take(runtime.profile.id);
+    let profileCount = 1;
+    try {
+      profileCount = readDesktopProfiles(STATE_DIR).length;
+    } catch {
+      // Without a readable registry there is only the default profile to name.
+    }
+    // With several profiles, the user is told which one the link opened in.
+    return { links, profileName: profileCount > 1 ? runtime.profile.name : null };
+  });
+  ipcMain.handle("desktop:take-app-activations", (event) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    return takeAppActivations(appActivations, runtime.profile.id, event.sender.id);
+  });
+  ipcMain.handle("desktop:complete-app-activation", (event, id: string, error?: string) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    completeAppActivation(appActivations, runtime.profile.id, event.sender.id, id, error);
+  });
+  ipcMain.handle(DESKTOP_NOTIFICATION_SHOW_CHANNEL, (event, raw: unknown) => {
+    const profileId = authorizeAppMainFrame(event, "Notification");
+    if (!Notification.isSupported()) return false;
+    const input = parseDesktopNotificationInput(raw);
+    if (!input) throw new Error("Invalid notification.");
+    return desktopNotifications.show(profileId, input);
+  });
+  ipcMain.handle(DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL, (event) => {
+    const profileId = authorizeAppMainFrame(event, "Notification activation");
+    return desktopNotifications.take(profileId, event.sender.id);
   });
   ipcMain.handle("desktop:switch-profile", async (event, id: unknown) => {
     runtimeForRenderer(event.sender.id);
@@ -2890,21 +3896,24 @@ function registerIpcHandlers(): void {
       return;
     }
 
-    nativeTheme.themeSource = theme;
+    if (desktopTheme) desktopTheme.setSource(theme);
+    else nativeTheme.themeSource = theme;
   });
 
   ipcMain.removeHandler(CONTEXT_MENU_CHANNEL);
   ipcMain.handle(
     CONTEXT_MENU_CHANNEL,
-    async (_event, items: ContextMenuItem[], position?: { x: number; y: number }) => {
-      const normalizedItems = items
-        .filter((item) => typeof item.id === "string" && typeof item.label === "string")
-        .map((item) => ({
-          id: item.id,
-          label: item.label,
-          destructive: item.destructive === true,
-        }));
-      if (normalizedItems.length === 0) {
+    async (
+      event,
+      items: ContextMenuItem[],
+      position?: { x: number; y: number },
+      fileAction?: { editorTarget: string },
+    ) => {
+      if (fileAction) {
+        assertFileCaller(event);
+        fileActions.clearNativeMenu(event.sender.id);
+      }
+      if (!Array.isArray(items) || items.length === 0) {
         return null;
       }
 
@@ -2916,24 +3925,25 @@ function registerIpcHandlers(): void {
       );
 
       return new Promise<string | null>((resolve) => {
-        const template: MenuItemConstructorOptions[] = [];
-        let hasInsertedDestructiveSeparator = false;
-        for (const item of normalizedItems) {
-          if (item.destructive && !hasInsertedDestructiveSeparator && template.length > 0) {
-            template.push({ type: "separator" });
-            hasInsertedDestructiveSeparator = true;
-          }
-          const itemOption: MenuItemConstructorOptions = {
-            label: item.label,
-            click: () => resolve(item.id),
-          };
-          if (item.destructive) {
-            const destructiveIcon = getDestructiveMenuIcon();
-            if (destructiveIcon) {
-              itemOption.icon = destructiveIcon;
-            }
-          }
-          template.push(itemOption);
+        const template = buildContextMenuTemplate(
+          items,
+          (id) => {
+            if (
+              (id === "open-in-editor" || id === "reveal-in-file-manager") &&
+              typeof fileAction?.editorTarget === "string"
+            )
+              fileActions.nativeMenuSelected(
+                event.sender.id,
+                fileAction.editorTarget,
+                id === "open-in-editor" ? "editor" : "reveal",
+              );
+            resolve(id);
+          },
+          getDestructiveMenuIcon() ?? undefined,
+        );
+        if (template.length === 0) {
+          resolve(null);
+          return;
         }
 
         const menu = Menu.buildFromTemplate(template);
@@ -2956,7 +3966,7 @@ function registerIpcHandlers(): void {
     if (source !== "clipboard" && source !== "selection")
       throw new Error("Invalid clipboard source.");
     if (source === "selection" && process.platform !== "linux") return "";
-    return clipboard.readText(source);
+    return (source === "selection" ? clipboard.selection : clipboard).readText();
   });
 
   ipcMain.removeHandler(COPY_IMAGE_CHANNEL);
@@ -2966,7 +3976,9 @@ function registerIpcHandlers(): void {
     if (image.isEmpty()) {
       throw new Error("F5 could not decode the image for copying.");
     }
-    clipboard.writeImage(image);
+    await clipboard.write([
+      new ClipboardItem({ "image/png": new Blob([new Uint8Array(image.toPNG())]) }),
+    ]);
   });
 
   ipcMain.removeHandler(DOWNLOAD_IMAGE_CHANNEL);
@@ -3021,11 +4033,47 @@ function registerIpcHandlers(): void {
     }
   });
 
+  const assertUpdateSender = (event: Electron.IpcMainInvokeEvent) =>
+    assertUpdateCaller(event, runtimeForRenderer);
   ipcMain.removeHandler(UPDATE_GET_STATE_CHANNEL);
-  ipcMain.handle(UPDATE_GET_STATE_CHANNEL, async () => updateState);
+  ipcMain.handle(UPDATE_GET_STATE_CHANNEL, async (event) => {
+    assertUpdateSender(event);
+    return updateState;
+  });
 
+  ipcMain.removeHandler(UPDATE_CHECK_CHANNEL);
+  ipcMain.handle(UPDATE_CHECK_CHANNEL, async (event) => {
+    assertUpdateSender(event);
+    return (
+      updateController?.requestCheck("about") ?? {
+        accepted: false,
+        completed: false,
+        state: updateState,
+      }
+    );
+  });
+  ipcMain.removeHandler(UPDATE_SET_CHANNEL_CHANNEL);
+  ipcMain.handle(UPDATE_SET_CHANNEL_CHANNEL, async (event, channel: unknown) => {
+    assertUpdateSender(event);
+    if (channel !== "stable" && channel !== "beta") throw new Error("Invalid update channel");
+    return (
+      updateController?.setChannel(channel) ?? {
+        accepted: false,
+        completed: false,
+        state: updateState,
+      }
+    );
+  });
+  ipcMain.removeHandler(UPDATE_CLAIM_RECENT_INSTALL_CHANNEL);
+  ipcMain.handle(UPDATE_CLAIM_RECENT_INSTALL_CHANNEL, async (event) => {
+    assertUpdateSender(event);
+    const { claimed, state } = claimRecentInstall(updateState);
+    if (claimed) setUpdateState(state);
+    return claimed;
+  });
   ipcMain.removeHandler(UPDATE_DOWNLOAD_CHANNEL);
-  ipcMain.handle(UPDATE_DOWNLOAD_CHANNEL, async () => {
+  ipcMain.handle(UPDATE_DOWNLOAD_CHANNEL, async (event) => {
+    assertUpdateSender(event);
     const result = await downloadAvailableUpdate();
     return {
       accepted: result.accepted,
@@ -3035,7 +4083,8 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.removeHandler(UPDATE_INSTALL_CHANNEL);
-  ipcMain.handle(UPDATE_INSTALL_CHANNEL, async () => {
+  ipcMain.handle(UPDATE_INSTALL_CHANNEL, async (event) => {
+    assertUpdateSender(event);
     if (isQuitting) {
       return {
         accepted: false,
@@ -3149,19 +4198,10 @@ function registerIpcHandlers(): void {
       capturePending = false;
     }
   };
-  previewHandle("snapshot:permissions", () => ({
-    supported: process.platform === "darwin",
-    screen:
-      process.platform === "darwin" &&
-      systemPreferences.getMediaAccessStatus("screen") === "granted",
-    accessibility:
-      process.platform === "darwin" && systemPreferences.isTrustedAccessibilityClient(false),
-  }));
+  previewHandle("snapshot:permissions", () => capturePermissions());
   previewHandle("snapshot:capture", (id) => capture(id));
   previewHandle("snapshot:permissions-open", () =>
-    shell.openExternal(
-      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-    ),
+    openComputerPermissionSettings("screen-recording"),
   );
   const captureShortcut = new CaptureShortcut(
     (key, run) => globalShortcut.register(key, run),
@@ -3262,10 +4302,10 @@ function registerIpcHandlers(): void {
         // interrupted rather than report success or a load failure.
         const takeover = agent ? previewAutomationControl.checkpoint(scopedTabId) : null;
         try {
-          await guest.loadURL(url);
+          await loadPreviewURL(guest, url);
         } catch (error) {
           takeover?.check();
-          if (!isPreviewNavigationAbortError(error)) throw error;
+          throw error;
         }
         takeover?.check();
       },
@@ -3357,17 +4397,21 @@ function mainRendererUrl(): string {
 function createWindow(
   initialThreadId: string | null = null,
   runtime: BackendRuntime = defaultBackend,
+  { activate = true }: { activate?: boolean } = {},
 ): BrowserWindow {
   const partition = profilePartition(runtime.profile);
-  registerDesktopProtocol(
-    partition ? electronSession.fromPartition(partition) : electronSession.defaultSession,
-  );
+  const appSession = partition
+    ? electronSession.fromPartition(partition)
+    : electronSession.defaultSession;
+  registerDesktopProtocol(appSession);
+  installAppFramePermissionPolicy(appSession);
   const rendererUrl = rendererUrlForThread(mainRendererUrl(), initialThreadId);
+  const createdAt = performance.now();
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
-    minWidth: 840,
-    minHeight: 620,
+    minWidth: 400,
+    minHeight: 360,
     show: false,
     autoHideMenuBar: true,
     ...getIconOption(),
@@ -3378,18 +4422,22 @@ function createWindow(
       ...(partition ? { partition } : {}),
       additionalArguments: [
         ...profileWindowArguments(runtime.profile.id),
-        `--f5-system-locale=${app.getSystemLocale()}`,
+        `--f5-system-locale=${systemLocale(app.getSystemLocale(), process.platform, process.env, (key) => systemPreferences.getUserDefault(key, "boolean"))}`,
       ],
       preload: Path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
       webviewTag: true,
+      zoomMode: "isolated",
     },
   });
 
   appRendererWebContentsIds.add(window.webContents.id);
   profileByWebContentsId.set(window.webContents.id, runtime.profile.id);
+  window.on("focus", () => {
+    lastOpenedProfileId = runtime.profile.id;
+  });
   window.webContents.once("destroyed", () =>
     appRendererWebContentsIds.delete(rendererWebContentsId),
   );
@@ -3403,8 +4451,19 @@ function createWindow(
     // before this tab's allowlist and navigation listeners exist. The renderer navigates
     // once the guest registers and those are in place.
     params.src = "about:blank";
+    installPreviewPermissionPolicy(electronSession.fromPartition(partition), {
+      isUserDriven: (guest) => {
+        const id = (guest as { readonly id?: unknown }).id;
+        return [...previewTabs.entries()].some(
+          ([tabId, tab]) => tab.webContentsId === id && !isAgentPreviewNavigation(tabId),
+        );
+      },
+    });
+    // A page that goes fullscreen fills its own webview instead of the whole F5 window.
+    webPreferences.disableHtmlFullscreenWindowResize = true;
     // Agent-driven previews may be hidden or headless; keep timers and rendering running.
     webPreferences.backgroundThrottling = false;
+    webPreferences.zoomMode = "isolated";
     webPreferences.sandbox = true;
     webPreferences.nodeIntegration = false;
     webPreferences.nodeIntegrationInSubFrames = false;
@@ -3448,6 +4507,29 @@ function createWindow(
     return { action: "deny" };
   });
 
+  // Wheel events carry no phase; the renderer's swipe navigation needs to know when fingers lift.
+  // Two-finger page swipes are a macOS trackpad convention, so other platforms get none.
+  if (process.platform === "darwin") {
+    // Read from the wheel event that starts each scroll; the gesture events do not carry it.
+    let wheelPrecise: boolean | undefined;
+    window.webContents.on("input-event", (_event, input) => {
+      if (input.type === "mouseWheel") {
+        const precise = (input as { hasPreciseScrollingDeltas?: unknown })
+          .hasPreciseScrollingDeltas;
+        wheelPrecise = typeof precise === "boolean" ? precise : undefined;
+      } else if (input.type === "gestureScrollBegin") {
+        window.webContents.send(
+          TRACKPAD_SCROLL_CHANNEL,
+          wheelPrecise === undefined
+            ? { phase: "begin" }
+            : { phase: "begin", precise: wheelPrecise },
+        );
+      } else if (input.type === "gestureScrollEnd") {
+        window.webContents.send(TRACKPAD_SCROLL_CHANNEL, { phase: "end" });
+      }
+    });
+  }
+
   const rendererWebContentsId = window.webContents.id;
   const rendererCrashRecovery = new MainRendererCrashRecovery({
     cleanupRendererResources: () => resetRendererOwnedPreviewResources(rendererWebContentsId),
@@ -3478,17 +4560,38 @@ function createWindow(
   window.webContents.on("will-navigate", (_event, url) => {
     if (url === rendererUrl) rendererCrashRecovery.beginManualRetry();
   });
+  const blocksEmbeddedFrameNavigation = createEmbeddedFrameNavigationGuard();
+  window.webContents.on("will-frame-navigate", (event) => {
+    const frameIds: number[] = [];
+    for (let frame = event.frame; frame; frame = frame.parent) frameIds.push(frame.frameTreeNodeId);
+    const blocked = blocksEmbeddedFrameNavigation({
+      isMainFrame: event.isMainFrame,
+      isSameDocument: event.isSameDocument,
+      frameIds,
+      frameUrl: event.frame?.url,
+      url: event.url,
+    });
+    if (blocked) event.preventDefault();
+  });
 
-  window.on("page-title-updated", (event) => {
+  const applyWindowTitle = (pageTitle: string) =>
+    window.setTitle(
+      composeNativeWindowTitle({ pageTitle, appName: APP_DISPLAY_NAME, profile: runtime.profile }),
+    );
+  // Composition stays here so every page title (and its attention prefix) gets the profile.
+  window.on("page-title-updated", (event, title) => {
     event.preventDefault();
-    window.setTitle(`${APP_DISPLAY_NAME} ? ${runtime.profile.name}`);
+    applyWindowTitle(title);
   });
   window.webContents.on("did-finish-load", () => {
-    window.setTitle(`${APP_DISPLAY_NAME} ? ${runtime.profile.name}`);
+    applyWindowTitle(window.webContents.getTitle());
     emitUpdateState();
   });
+  windowCreatedAtByWebContentsId.set(rendererWebContentsId, createdAt);
   window.once("ready-to-show", () => {
-    window.show();
+    writeDesktopLogHeader(`window first paint ms=${Math.round(performance.now() - createdAt)}`);
+    if (activate) window.show();
+    else window.showInactive();
   });
 
   void window.loadURL(rendererUrl);
@@ -3498,6 +4601,7 @@ function createWindow(
 
   window.on("closed", () => {
     profileByWebContentsId.delete(rendererWebContentsId);
+    windowCreatedAtByWebContentsId.delete(rendererWebContentsId);
     rendererCrashRecovery.dispose();
     lastOpenThreadWindowAtByRenderer.delete(rendererWebContentsId);
     void resetRendererOwnedPreviewResources(rendererWebContentsId);
@@ -3514,19 +4618,43 @@ function createWindow(
 // Must be called synchronously at the top level — before `app.whenReady()`.
 app.setPath("userData", resolveUserDataPath());
 
+if (process.platform === "linux") {
+  const switchValue = (name: string) =>
+    app.commandLine.hasSwitch(name) ? app.commandLine.getSwitchValue(name) : null;
+  // Chromium keeps only the last --disable-features value, so pass the merged list.
+  const disableFeatures = resolveLinuxDisableFeaturesSwitch({
+    env: process.env,
+    ozonePlatform: switchValue("ozone-platform"),
+    enableFeatures: switchValue("enable-features"),
+    disableFeatures: switchValue("disable-features"),
+    // Runs only on Hyprland Wayland sessions without an explicit feature override.
+    readHyprctlVersionJson: () =>
+      ChildProcess.execFileSync("hyprctl", ["version", "-j"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 1000,
+        maxBuffer: 64 * 1024,
+      }),
+  });
+  if (disableFeatures !== null) app.commandLine.appendSwitch("disable-features", disableFeatures);
+}
+
 if (!app.requestSingleInstanceLock()) app.exit(0);
-app.on("second-instance", () => {
-  const window = BrowserWindow.getAllWindows()[0];
-  if (window) {
-    if (window.isMinimized()) window.restore();
-    window.show();
-    window.focus();
-  } else if (app.isReady()) {
-    void openProfile(defaultBackend.profile.id).catch((error) =>
-      dialog.showErrorBox("Cannot open Default", String(error)),
-    );
-  }
+app.on("second-instance", (_event, argv) => {
+  const link = promptLinkInArgv(argv, PROMPT_LINK_SCHEME_FOR_BUILD);
+  if (link) receivePromptLink(link);
+  else reopenApplication();
 });
+// macOS delivers links as `open-url`, possibly before the app is ready; Windows and Linux pass
+// them on the command line, to this launch or to a second one.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  receivePromptLink(url);
+});
+{
+  const launchLink = promptLinkInArgv(process.argv, PROMPT_LINK_SCHEME_FOR_BUILD);
+  if (launchLink) promptLinks.receive(launchLink);
+}
 configureAppIdentity();
 
 async function bootstrap(): Promise<void> {
@@ -3563,34 +4691,88 @@ async function bootstrap(): Promise<void> {
     registryWatcher.close();
     if (profileWatchTimer) clearTimeout(profileWatchTimer);
   });
+  const shellEnvironmentMs = await shellEnvironmentReady;
+  writeDesktopLogHeader(
+    `bootstrap shell environment ready durationMs=${Math.round(shellEnvironmentMs)}`,
+  );
   await previewRuntime.initialize();
+  initializeComputerSystem();
   registerIpcHandlers();
   writeDesktopLogHeader("bootstrap ipc handlers registered");
   configureBackendRequestAuthentication();
   writeDesktopLogHeader("bootstrap backend request authentication configured");
-  mainWindow = createWindow();
+  mainWindow = createWindowWithOptionalControl({
+    createWindow: () => createWindow(),
+    startControl: () =>
+      startDesktopAppControl(STATE_DIR, activateProject, (error) =>
+        writeDesktopLogHeader("desktop CLI connection error: " + formatErrorMessage(error)),
+      ),
+    onError: (error) =>
+      writeDesktopLogHeader("desktop CLI control unavailable: " + formatErrorMessage(error)),
+    onReady: (stop) => {
+      app.once("quit", () => {
+        for (const entry of appActivations.values()) entry.complete("The desktop app is quitting.");
+        void stop();
+      });
+    },
+  });
   writeDesktopLogHeader("bootstrap main window created");
-  await shellEnvironmentReady;
-  writeDesktopLogHeader("bootstrap shell environment ready");
   if (!isQuitting) {
-    startBackend();
-    writeDesktopLogHeader("bootstrap backend start requested");
+    try {
+      await ensureBackendRunning(defaultBackend);
+      writeDesktopLogHeader("bootstrap backend ready");
+    } catch (error) {
+      if (!isQuitting) showStartupRecovery(defaultBackend, formatErrorMessage(error));
+    }
   }
 }
 
 installDesktopAttention((id) => profileByWebContentsId.get(id));
-registerComputerAutomationIpc(ipcMain);
 
 let shutdownPending = false;
 let shutdownComplete = false;
 function cancelQuit(): void {
+  writeDesktopLogHeader("quit cancelled by renderer");
   shutdownPending = false;
   shutdownComplete = false;
   isQuitting = false;
+  updateInstallOwnsQuit = false;
+  quitStall.reset();
   for (const window of BrowserWindow.getAllWindows()) window.show();
 }
 
+function classifyCurrentQuitRequest(): QuitRequestDecision {
+  return classifyQuitRequest({ tracker: quitStall, shutdownComplete, updateInstallOwnsQuit });
+}
+
+/** Handles a Quit or signal that arrived while a quit is already in progress. */
+function handleRepeatedQuitRequest(source: string, decision: QuitRequestDecision): void {
+  if (decision.kind === "stalled") {
+    writeDesktopLogHeader(
+      `desktop shutdown stalled; exiting without it source=${source} pendingMs=${decision.pendingMs}`,
+    );
+    restoreStdIoCapture?.();
+    app.exit(0);
+    return;
+  }
+  writeDesktopLogHeader(
+    decision.kind === "pending"
+      ? `quit already in progress source=${source} pendingMs=${decision.pendingMs}`
+      : `quit already in progress source=${source} state=${decision.kind}`,
+  );
+}
+
 async function cleanupBeforeExit(): Promise<void> {
+  writeDesktopLogHeader("cleanup: closing computer control");
+  // Normal shutdown: 2 s grace, then SIGTERM and SIGKILL for registered integration groups.
+  // Awaited below (exit, or persisted recovery by 5 s) so no group outlives F5 untracked.
+  const integrationsStopped =
+    computerSystem?.supervisor.stopAndWait(() => true, "shutdown") ?? Promise.resolve();
+  computerSystem?.channel.close();
+  computerSystem?.controller.close();
+  computerSystem?.overlay.close();
+  computerSystem?.helper.close();
+  writeDesktopLogHeader("cleanup: stopping backends and preview");
   clearUpdatePollTimer();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -3598,6 +4780,8 @@ async function cleanupBeforeExit(): Promise<void> {
       Promise.allSettled([
         ...[...backends.values()].map((runtime) => stopBackendAndWaitForExit(5000, runtime)),
         previewRuntime.dispose(),
+        integrationsStopped,
+        keepAwake?.dispose(),
       ]),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, 6000);
@@ -3616,39 +4800,103 @@ app.on("web-contents-created", (_event, contents) => {
   });
 });
 app.on("before-quit", () => {
-  isQuitting = true;
+  const decision = classifyCurrentQuitRequest();
+  // Shutdown's own final app.quit() arrives as "complete".
+  if (decision.kind !== "begin" && decision.kind !== "complete") {
+    handleRepeatedQuitRequest("before-quit", decision);
+    return;
+  }
+  writeDesktopLogHeader("before-quit received");
+  beginQuitting();
 });
 app.on("will-quit", (event) => {
   if (shutdownComplete) return;
   event.preventDefault();
   if (shutdownPending) return;
   shutdownPending = true;
-  isQuitting = true;
+  beginQuitting();
   // will-quit is emitted only after all renderer unload checks have succeeded.
   void cleanupBeforeExit().finally(() => {
     shutdownComplete = true;
+    writeDesktopLogHeader("shutdown complete");
     restoreStdIoCapture?.();
     app.quit();
   });
 });
 
+async function initializeKeepAwake(): Promise<void> {
+  keepAwake = await installKeepAwake({
+    authorize: (event) => authorizeAppMainFrame(event, "Keep awake settings"),
+    backends: () =>
+      [...backends.values()]
+        .filter((runtime) => runtime.backendProcess !== null && runtime.startupReady)
+        .map((runtime) => ({
+          origin: getDesktopBackendHttpOrigin(runtime.backendPort),
+          token: runtime.backendAuthToken,
+        })),
+    broadcast: (state) => {
+      for (const window of BrowserWindow.getAllWindows())
+        if (!window.isDestroyed() && appRendererWebContentsIds.has(window.webContents.id))
+          window.webContents.send("desktop:keep-awake-state", state);
+    },
+  });
+}
+
+let desktopTheme: ReturnType<typeof createDesktopTheme> | undefined;
+
 app
   .whenReady()
-  .then(() => {
+  .then(async () => {
     writeDesktopLogHeader("app ready");
+    // Non-Linux artifacts omit dbus-next and its Unix-only native transport.
+    const watchLinuxColorScheme =
+      process.platform === "linux"
+        ? (await import("./linuxColorScheme")).watchLinuxColorScheme
+        : undefined;
+    desktopTheme = createDesktopTheme(
+      nativeTheme,
+      watchLinuxColorScheme
+        ? (onChange, onError) => watchLinuxColorScheme(onChange, undefined, onError)
+        : undefined,
+      (cause) =>
+        writeDesktopLogHeader(
+          `Linux system appearance watcher failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        ),
+    );
+    app.once("quit", () => desktopTheme?.stop());
     configureAppIdentity();
+    if (
+      app.isPackaged &&
+      process.platform === "darwin" &&
+      (process.execPath.startsWith("/Volumes/") || process.execPath.includes("/AppTranslocation/"))
+    ) {
+      const moved = await offerApplicationsMove({
+        prompt: async () =>
+          (
+            await dialog.showMessageBox({
+              type: "question",
+              message: "Move F5 to Applications?",
+              buttons: ["Move to Applications", "Not Now"],
+              defaultId: 0,
+              cancelId: 1,
+            })
+          ).response === 0,
+        move: () => app.moveToApplicationsFolder(),
+        report: (error) => console.error("[desktop] Could not move F5 to Applications", error),
+      });
+      if (moved) return; // Electron relaunches the moved application itself.
+    }
     configureApplicationMenu();
     registerDesktopProtocol();
-    configureAutoUpdater();
-    void bootstrap().catch((error) => {
+    registerPromptLinkProtocol();
+    await configureAutoUpdater();
+    await initializeKeepAwake();
+    const bootstrapReady = bootstrapGate.start(bootstrap);
+    void bootstrapReady.catch((error) => {
       handleFatalStartupError("bootstrap", error);
     });
 
-    app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        mainWindow = createWindow();
-      }
-    });
+    app.on("activate", reopenApplication);
   })
   .catch((error) => {
     handleFatalStartupError("whenReady", error);
@@ -3662,16 +4910,24 @@ app.on("window-all-closed", () => {
 
 if (process.platform !== "win32") {
   process.on("SIGINT", () => {
-    if (isQuitting) return;
-    isQuitting = true;
+    const decision = classifyCurrentQuitRequest();
+    if (decision.kind !== "begin") {
+      handleRepeatedQuitRequest("SIGINT", decision);
+      return;
+    }
+    beginQuitting();
     writeDesktopLogHeader("SIGINT received");
     clearUpdatePollTimer();
     app.quit();
   });
 
   process.on("SIGTERM", () => {
-    if (isQuitting) return;
-    isQuitting = true;
+    const decision = classifyCurrentQuitRequest();
+    if (decision.kind !== "begin") {
+      handleRepeatedQuitRequest("SIGTERM", decision);
+      return;
+    }
+    beginQuitting();
     writeDesktopLogHeader("SIGTERM received");
     clearUpdatePollTimer();
     app.quit();

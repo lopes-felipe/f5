@@ -1,6 +1,7 @@
 import * as SqliteClient from "../../persistence/NodeSqliteClient.ts";
 import { assert, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer, Option } from "effect";
+import { GitHubRequestPriority, GitHubSyncWait } from "../../git/githubRequestScheduler.ts";
 import { TestClock } from "effect/testing";
 import type { PrHubSnapshot } from "@t3tools/contracts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -21,6 +22,46 @@ const layer = PrHubJobCoordinatorLive.pipe(
 );
 
 it.layer(layer)("PR background coordination", (it) => {
+  it.effect(
+    "a manual sync following a background force flight keeps its own wait and priority",
+    () =>
+      Effect.gen(function* () {
+        const coordinator = yield* PrHubJobCoordinator;
+        const started = yield* Deferred.make<void>();
+        const gate = yield* Deferred.make<void>();
+        const scopes: Array<{ wait: boolean; priority: string }> = [];
+        const refresh = yield* coordinator.createRefresh(() =>
+          Effect.gen(function* () {
+            scopes.push({
+              wait: Option.getOrElse(yield* Effect.serviceOption(GitHubSyncWait), () => false),
+              priority: Option.getOrElse(
+                yield* Effect.serviceOption(GitHubRequestPriority),
+                () => "absent",
+              ),
+            });
+            if (scopes.length === 1) {
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(gate);
+            }
+            return snapshot;
+          }),
+        );
+        const first = yield* refresh({ mode: "force" }).pipe(
+          Effect.provideService(GitHubRequestPriority, "background"),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(started);
+        const manual = yield* refresh({ mode: "force" }).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(gate, undefined);
+        yield* Fiber.join(first);
+        yield* Fiber.join(manual);
+        assert.deepStrictEqual(scopes, [
+          { wait: false, priority: "background" },
+          { wait: true, priority: "interactive" },
+        ]);
+      }),
+  );
   it.effect(
     "finishes shared work after caller cancellation and coalesces trailing force refreshes",
     () =>

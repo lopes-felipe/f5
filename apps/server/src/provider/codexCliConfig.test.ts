@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { translateMcpForCodex } from "@t3tools/shared/mcpTranslation";
+import headerFixture from "./fixtures/codex-0.162.1-mcp-headers.json";
 
 import {
   buildCodexCliMcpConfigArgs,
@@ -6,6 +8,27 @@ import {
 } from "./codexCliConfig";
 
 describe("buildCodexCliMcpConfigArgs", () => {
+  it("matches the installed Codex 0.162.1 header-key fixture", () => {
+    expect(headerFixture.version).toBe("codex-cli 0.162.1");
+    const accepted = headerFixture.cases.find((entry) => entry.field === "http_headers")!;
+    const translated = translateMcpForCodex({
+      fixture: {
+        type: "http",
+        url: "https://example.invalid/mcp",
+        headers: { "X-Fixture": "fixture-value" },
+      },
+    });
+    expect(buildCodexCliMcpConfigArgs(translated)).toEqual(accepted.args.slice(0, 2));
+    expect(translated!.fixture!.http_headers).toEqual(accepted.servers[0]!.transport.http_headers);
+    const envHeaders = headerFixture.cases.find((entry) => entry.field === "env_http_headers")!;
+    expect(envHeaders.servers[0]!.transport.env_http_headers).toEqual({
+      "X-Fixture": "fixture-value",
+    });
+    const ignored = headerFixture.cases.find((entry) => entry.field === "headers")!;
+    expect(ignored.servers[0]!.transport.http_headers).toBeNull();
+    expect(ignored.servers[0]!.transport.env_http_headers).toBeNull();
+  });
+
   it("always emits an explicit empty mcp_servers override", () => {
     expect(buildCodexCliMcpConfigArgs(undefined)).toEqual(["-c", "mcp_servers={}"]);
   });
@@ -52,14 +75,14 @@ describe("buildCodexCliMcpConfigArgs", () => {
         'danger = key, } "quoted"': {
           type: "http",
           url: "https://mcp.example.test",
-          headers: {
+          http_headers: {
             'X Danger.Key "quoted"': "Bearer secret",
           },
         },
       }),
     ).toEqual([
       "-c",
-      'mcp_servers={"danger = key, } \\"quoted\\""={"url"="https://mcp.example.test","headers"={"X Danger.Key \\"quoted\\""="Bearer secret"}}}',
+      'mcp_servers={"danger = key, } \\"quoted\\""={"url"="https://mcp.example.test","http_headers"={"X Danger.Key \\"quoted\\""="Bearer secret"}}}',
     ]);
   });
 

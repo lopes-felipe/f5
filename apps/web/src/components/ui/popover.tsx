@@ -1,10 +1,11 @@
 "use client";
 
-import { usePopupFocus } from "./popupFocus";
+import { usePopupFocus, usePopupOwnerAttributes } from "./popupFocus";
 
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 
 import { cn } from "~/lib/utils";
+import { popupSurfaceClassName } from "./popupSurface";
 
 const PopoverCreateHandle = PopoverPrimitive.createHandle;
 
@@ -27,6 +28,8 @@ function PopoverPopup({
   alignOffset = 0,
   tooltipStyle = false,
   anchor,
+  touchBackdrop = false,
+  collisionAvoidance,
   ...props
 }: PopoverPrimitive.Popup.Props & {
   side?: PopoverPrimitive.Positioner.Props["side"];
@@ -35,15 +38,26 @@ function PopoverPopup({
   alignOffset?: PopoverPrimitive.Positioner.Props["alignOffset"];
   tooltipStyle?: boolean;
   anchor?: PopoverPrimitive.Positioner.Props["anchor"];
+  touchBackdrop?: boolean;
+  collisionAvoidance?: PopoverPrimitive.Positioner.Props["collisionAvoidance"];
 }) {
   const finalFocus = usePopupFocus();
+  const ownerAttributes = usePopupOwnerAttributes();
   return (
     <PopoverPrimitive.Portal>
+      {touchBackdrop ? (
+        // Intercept outside taps so dismissing the popup cannot activate a control below it.
+        <PopoverPrimitive.Backdrop
+          className="fixed inset-0 z-[130] hidden pointer-coarse:block"
+          data-slot="popover-backdrop"
+        />
+      ) : null}
       <PopoverPrimitive.Positioner
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
-        className="z-50 h-(--positioner-height) w-(--positioner-width) max-w-(--available-width) transition-[top,left,right,bottom,transform] data-instant:transition-none"
+        className="z-[130] h-(--positioner-height) max-h-(--available-height) w-(--positioner-width) max-w-(--available-width) transition-[top,left,right,bottom,transform] data-instant:transition-none"
+        collisionAvoidance={collisionAvoidance}
         data-slot="popover-positioner"
         side={side}
         sideOffset={sideOffset}
@@ -51,12 +65,14 @@ function PopoverPopup({
         <PopoverPrimitive.Popup
           finalFocus={finalFocus}
           className={cn(
-            "relative flex h-(--popup-height,auto) w-(--popup-width,auto) origin-(--transform-origin) rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 outline-none transition-[width,height,scale,opacity] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] has-data-[slot=calendar]:rounded-xl has-data-[slot=calendar]:before:rounded-[calc(var(--radius-xl)-1px)] data-starting-style:scale-98 data-starting-style:opacity-0 dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
-            tooltipStyle &&
-              "w-fit text-balance rounded-md text-xs shadow-md/5 before:rounded-[calc(var(--radius-md)-1px)]",
+            popupSurfaceClassName,
+            // Electron drag hit-testing ignores z-index, including portaled popups.
+            "[-webkit-app-region:no-drag]",
+            tooltipStyle && "w-fit text-balance rounded-md text-xs shadow-md/5",
             className,
           )}
           data-slot="popover-popup"
+          {...ownerAttributes}
           {...props}
         >
           <PopoverPrimitive.Viewport

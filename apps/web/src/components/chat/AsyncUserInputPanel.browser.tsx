@@ -4,8 +4,10 @@ import { page, userEvent } from "vitest/browser";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncUserInputPanel } from "./AsyncUserInputPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+import { usePendingUserInputDraftStore } from "../../pendingUserInputDraftStore";
 const mocks = vi.hoisted(() => ({ dispatch: vi.fn(), release: vi.fn() }));
-vi.mock("~/nativeApi", () => ({
+vi.mock("~/nativeApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../nativeApi")>()),
   readNativeApi: () => ({
     orchestration: { dispatchCommand: mocks.dispatch },
     attachments: { releaseUploads: mocks.release },
@@ -58,6 +60,125 @@ describe("async questions", () => {
   beforeEach(() => {
     mocks.dispatch.mockReset().mockResolvedValue({ sequence: 1 });
     mocks.release.mockReset().mockResolvedValue(undefined);
+    usePendingUserInputDraftStore.setState({
+      answersByThreadId: {},
+      questionIndexByThreadId: {},
+      asyncDraftsByThreadId: {},
+    });
+  });
+  it("submits native option values and hides custom answers for option-only questions", async () => {
+    const input: PendingUserInput = {
+      ...question,
+      questions: [
+        {
+          id: "branch",
+          header: "Branch",
+          question: "Choose branch",
+          options: [{ label: "Main", description: "Default branch", value: "opt-main" }],
+          allowCustomAnswer: false,
+        },
+      ],
+    };
+    const screen = await render(<AsyncUserInputPanel threadId={threadId} input={input} />);
+    try {
+      await expect.element(page.getByRole("button", { name: "Other…" })).not.toBeInTheDocument();
+      await page.getByRole("button", { name: "Main", exact: true }).click();
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(mocks.dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({ answers: { branch: { answers: ["opt-main"] } } }),
+        ),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("keeps a typed answer and the question position after a remount", async () => {
+    const first = await render(<AsyncUserInputPanel threadId={threadId} input={twoQuestions} />);
+    await page.getByRole("button", { name: "Ready", exact: true }).click();
+    await expect.element(page.getByText("Did a dialog open?")).toBeVisible();
+    await page.getByRole("button", { name: "Other…" }).click();
+    await page.getByRole("textbox", { name: "Other answer: Did a dialog open?" }).fill("Typed");
+    await first.unmount();
+
+    const second = await render(<AsyncUserInputPanel threadId={threadId} input={twoQuestions} />);
+    try {
+      await expect
+        .element(page.getByRole("textbox", { name: "Other answer: Did a dialog open?" }))
+        .toHaveValue("Typed");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(mocks.dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "thread.user-input.respond",
+            answers: { retry: { answers: ["Ready"] }, dialog: { answers: ["Typed"] } },
+          }),
+        ),
+      );
+      expect(usePendingUserInputDraftStore.getState().asyncDraftsByThreadId).toEqual({});
+    } finally {
+      await second.unmount();
+    }
+  });
+  it("links URLs and files in the question text", async () => {
+    const url = "https://accounts.example.com/device?user_code=RTJS-TQGS";
+    const linked: PendingUserInput = {
+      ...question,
+      questions: [
+        { ...question.questions[0]!, question: `Open ${url} and check [notes](./notes.md).` },
+      ],
+    };
+    const screen = await render(
+      <>
+        <AsyncUserInputPanel threadId={threadId} input={linked} cwd="/repo" />
+        <ComposerPendingUserInputPanel
+          pendingUserInputs={[{ ...linked, responseMode: undefined }]}
+          cwd="/repo"
+          respondingRequestIds={[]}
+          answers={{}}
+          questionIndex={0}
+          onSelectOption={() => {}}
+          onToggleOption={() => {}}
+          onAdvance={() => {}}
+        />
+      </>,
+    );
+    try {
+      const links = page.getByRole("link", { name: url }).all();
+      expect(links).toHaveLength(2);
+      for (const link of links) await expect.element(link).toHaveAttribute("href", url);
+      expect(screen.container.querySelectorAll(".chat-markdown-file-link")).toHaveLength(2);
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("shows an editable prefill and submits an explicitly cleared editor without restoring its old text", async () => {
+    const input = {
+      ...question,
+      questions: [
+        {
+          id: "editor",
+          header: "Edit",
+          question: "Edit draft",
+          options: [],
+          initialAnswer: "Existing draft",
+          optional: true,
+        },
+      ],
+    };
+    const screen = await render(<AsyncUserInputPanel threadId={threadId} input={input} />);
+    try {
+      const editor = page.getByRole("textbox");
+      await expect.element(editor).toHaveValue("Existing draft");
+      expect(mocks.dispatch).not.toHaveBeenCalled();
+      await editor.fill("");
+      await page.getByRole("button", { name: "Send (0/1)", exact: true }).click();
+      expect(mocks.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ answers: { editor: { answers: [] } } }),
+      );
+    } finally {
+      await screen.unmount();
+    }
   });
   it("preserves multiple selected choices and typed answers in one response", async () => {
     const screen = await render(<AsyncUserInputPanel threadId={threadId} input={question} />);
@@ -73,6 +194,61 @@ describe("async questions", () => {
           requestId: question.requestId,
           answers: { "0": { answers: ["A", "B", "Typed detail"] } },
         }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("answers a blocking request with one value per question, as its provider reads it", async () => {
+    // No `responseMode`: the provider's own request waits on this answer.
+    const { responseMode: _responseMode, ...blocking } = {
+      ...twoQuestions,
+      questions: [
+        twoQuestions.questions[0]!,
+        { ...question.questions[0]!, id: "tools" },
+        { ...twoQuestions.questions[1]!, id: "notes", optional: true },
+      ],
+    };
+    const screen = await render(<AsyncUserInputPanel threadId={threadId} input={blocking} />);
+    try {
+      // A single choice moves on by itself; several choices wait for Next.
+      await page.getByRole("button", { name: "Later", exact: true }).click();
+      await expect.element(page.getByText("2/3")).toBeVisible();
+      await page.getByRole("button", { name: "A", exact: true }).click();
+      await page.getByRole("button", { name: "B", exact: true }).click();
+      await page.getByRole("button", { name: "Go to next question" }).click();
+      await expect.element(page.getByText("3/3")).toBeVisible();
+      await page.getByRole("button", { name: /^Send/ }).click();
+      await vi.waitFor(() =>
+        expect(mocks.dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "thread.user-input.respond",
+            // A string, an array for several choices, and "" for the skipped optional one.
+            answers: { retry: "Later", tools: ["A", "B"], notes: "" },
+          }),
+        ),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("answers a blocking question with the typed text alone, as the composer does", async () => {
+    const { responseMode: _responseMode, ...blocking } = question;
+    const screen = await render(<AsyncUserInputPanel threadId={threadId} input={blocking} />);
+    try {
+      await page.getByRole("button", { name: "A", exact: true }).click();
+      await page.getByRole("button", { name: "B", exact: true }).click();
+      await page.getByRole("button", { name: "Other…" }).click();
+      await page.getByRole("textbox", { name: "Other answer: Choose tools" }).fill("Typed detail");
+      await page.getByRole("button", { name: /^Send/ }).click();
+      await vi.waitFor(() =>
+        expect(mocks.dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "thread.user-input.respond",
+            // Not ["A", "B", "Typed detail"]: the provider's request takes the text as the answer.
+            answers: { "0": "Typed detail" },
+          }),
+        ),
       );
     } finally {
       await screen.unmount();

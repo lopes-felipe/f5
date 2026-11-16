@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   claudeAgentMemoryPath,
+  hasClaudeManagedMcpConfig,
   hookProgramName,
   parseClaudeHooks,
   parseInstalledPlugins,
@@ -33,6 +34,24 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await NodeFs.rm(root, { recursive: true, force: true });
+});
+
+describe("hasClaudeManagedMcpConfig", () => {
+  it("checks the managed-mcp.json path Claude Code reads on each platform", () => {
+    const checked: string[] = [];
+    const exists = (path: string) => {
+      checked.push(path);
+      return path.endsWith("managed-mcp.json") && path.startsWith("/Library");
+    };
+    expect(hasClaudeManagedMcpConfig("darwin", exists)).toBe(true);
+    expect(hasClaudeManagedMcpConfig("linux", exists)).toBe(false);
+    expect(hasClaudeManagedMcpConfig("win32", exists)).toBe(false);
+    expect(checked).toEqual([
+      "/Library/Application Support/ClaudeCode/managed-mcp.json",
+      "/etc/claude-code/managed-mcp.json",
+      "C:\\Program Files\\ClaudeCode\\managed-mcp.json",
+    ]);
+  });
 });
 
 describe("hookProgramName", () => {
@@ -107,13 +126,13 @@ describe("claudeAgentMemoryPath", () => {
   it("maps each scope to its directory and resolves user scope through the config dir", () => {
     const base = { agentName: "reviewer", configDir: "/profiles/a/.claude", projectRoot: "/repo" };
     expect(claudeAgentMemoryPath({ ...base, scope: "user" })).toBe(
-      "/profiles/a/.claude/agent-memory/reviewer",
+      NodePath.normalize("/profiles/a/.claude/agent-memory/reviewer"),
     );
     expect(claudeAgentMemoryPath({ ...base, scope: "project" })).toBe(
-      "/repo/.claude/agent-memory/reviewer",
+      NodePath.normalize("/repo/.claude/agent-memory/reviewer"),
     );
     expect(claudeAgentMemoryPath({ ...base, scope: "local" })).toBe(
-      "/repo/.claude/agent-memory-local/reviewer",
+      NodePath.normalize("/repo/.claude/agent-memory-local/reviewer"),
     );
     expect(claudeAgentMemoryPath({ ...base, agentName: "../escape", scope: "user" })).toBe(
       undefined,
@@ -124,9 +143,11 @@ describe("claudeAgentMemoryPath", () => {
 describe("resolveClaudeUserStatePath", () => {
   it("uses the config dir only when CLAUDE_CONFIG_DIR is set", () => {
     expect(resolveClaudeUserStatePath({ CLAUDE_CONFIG_DIR: "/c" }, "/c", "linux")).toBe(
-      "/c/.claude.json",
+      NodePath.normalize("/c/.claude.json"),
     );
-    expect(resolveClaudeUserStatePath({}, "/home/u/.claude", "linux")).toBe("/home/u/.claude.json");
+    expect(resolveClaudeUserStatePath({}, "/home/u/.claude", "linux")).toBe(
+      NodePath.normalize("/home/u/.claude.json"),
+    );
   });
 });
 

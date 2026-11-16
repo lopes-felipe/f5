@@ -16,6 +16,17 @@ export interface AntigravityExecutable {
   version: string;
 }
 
+export class AntigravityUpdateRequiredError extends Error {
+  constructor(
+    readonly installedVersion: string,
+    requiredVersion: string,
+  ) {
+    super(
+      `Antigravity ${installedVersion} is installed. Update to ${requiredVersion} using Install Antigravity in Settings before starting a new session.`,
+    );
+  }
+}
+
 /** Only explicitly invoked setup may download. Probes and turns only resolve a complete release. */
 export class AntigravityInstallation {
   readonly directory: string;
@@ -31,8 +42,12 @@ export class AntigravityInstallation {
     if (!asset) throw new Error("Antigravity does not support this platform and architecture.");
     const directory = path.join(this.directory, asset.sha256);
     const record = await fs.readFile(path.join(directory, "complete.json"), "utf8").catch(() => "");
-    if (record !== JSON.stringify({ sha256: asset.sha256, version: asset.version }))
+    if (record !== JSON.stringify({ sha256: asset.sha256, version: asset.version })) {
+      const installedVersion = await this.previousInstalledVersion();
+      if (installedVersion)
+        throw new AntigravityUpdateRequiredError(installedVersion, asset.version);
       throw new Error("Install Antigravity in Settings before using it.");
+    }
     for (const file of [asset.executable, asset.harness]) {
       const stat = await fs.lstat(path.join(directory, file.name));
       if (!stat.isFile() || stat.size !== file.bytes)
@@ -53,6 +68,28 @@ export class AntigravityInstallation {
     });
     this.pending = pending;
     return pending;
+  }
+  private async previousInstalledVersion(): Promise<string | undefined> {
+    const directories = await fs.readdir(this.directory, { withFileTypes: true }).catch(() => []);
+    for (const entry of directories) {
+      if (
+        !entry.isDirectory() ||
+        !/^[0-9a-f]{64}$/.test(entry.name) ||
+        entry.name === this.asset?.sha256
+      )
+        continue;
+      const recordPath = path.join(this.directory, entry.name, "complete.json");
+      const stat = await fs.lstat(recordPath).catch(() => undefined);
+      if (!stat?.isFile() || stat.size > 512) continue;
+      try {
+        const record = JSON.parse(await fs.readFile(recordPath, "utf8"));
+        if (record.sha256 === entry.name && /^\d+\.\d+\.\d+$/.test(record.version))
+          return record.version;
+      } catch {
+        // Incomplete releases do not establish an installed version.
+      }
+    }
+    return undefined;
   }
   private async installRelease(signal?: AbortSignal): Promise<AntigravityExecutable> {
     const asset = this.asset;
@@ -117,6 +154,8 @@ export class AntigravityInstallation {
       } finally {
         await record.close();
       }
+      // Retain earlier immutable releases: another process can still be running
+      // their agent or harness. Cleanup needs cross-process runtime ownership.
       combined.throwIfAborted();
       const destination = path.join(this.directory, asset.sha256);
       try {

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { resolvePastedPath } from "@t3tools/shared/path";
 import { create } from "zustand";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ensureNativeApi } from "../nativeApi";
@@ -15,12 +16,14 @@ import {
 } from "./ui/dialog";
 import { toastManager } from "./ui/toast";
 
-const useCloneDialog = create<{ open: boolean; parentPath: string }>(() => ({
+const useCloneDialog = create<{ open: boolean; parentPath: string; initialUrl: string }>(() => ({
   open: false,
   parentPath: "",
+  initialUrl: "",
 }));
-export function openProjectCloneDialog(parentPath = "") {
-  useCloneDialog.setState({ open: true, parentPath });
+/** Opens the clone dialog; `initialUrl` pre-fills the repository, as prompt links do. */
+export function openProjectCloneDialog(parentPath = "", initialUrl = "") {
+  useCloneDialog.setState({ open: true, parentPath, initialUrl });
 }
 const queryKey = ["project-clones"] as const;
 export function cloneDirectoryName(url: string): string {
@@ -35,9 +38,14 @@ export function cloneDirectoryName(url: string): string {
   );
 }
 export function ProjectCloneController() {
-  const { open, parentPath } = useCloneDialog();
+  const { open, parentPath, initialUrl } = useCloneDialog();
   const [url, setUrl] = useState("");
   const [directoryName, setDirectoryName] = useState("");
+  useEffect(() => {
+    if (!open || !initialUrl) return;
+    setUrl(initialUrl);
+    setDirectoryName(cloneDirectoryName(initialUrl));
+  }, [initialUrl, open]);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const operation = useRef<{ key: string; id: string } | null>(null);
@@ -155,7 +163,11 @@ export function ProjectCloneController() {
               <div className="flex gap-2">
                 <Input
                   value={parentPath}
-                  onChange={(event) => useCloneDialog.setState({ parentPath: event.target.value })}
+                  onChange={(event) =>
+                    useCloneDialog.setState({
+                      parentPath: resolvePastedPath(parentPath, event.target.value),
+                    })
+                  }
                   disabled={pending}
                 />
                 <Button

@@ -3,7 +3,17 @@ import { TestClock } from "effect/testing";
 import { Effect, Deferred, Ref, Scope, Exit, Fiber, Clock } from "effect";
 import * as Semaphore from "effect/Semaphore";
 import type { UsageAccount, AccountUsageSection } from "@t3tools/contracts";
-import { makeAccountUsageCapability, emptyAccountSection } from "./AccountUsageService.ts";
+import {
+  makeAccountUsageCapability as makeCapability,
+  emptyAccountSection,
+} from "./AccountUsageService.ts";
+import { AccountUsageReadError } from "../accountUsageErrors.ts";
+
+const makeAccountUsageCapability = <E>(
+  account: UsageAccount,
+  read: Effect.Effect<ReadonlyArray<AccountUsageSection>, E>,
+  options: { readonly readerOwnsTimeout?: boolean; readonly retryFailedReads?: boolean } = {},
+) => makeCapability(account, read, { identity: `test:${account.key}`, ...options });
 
 const initial = (key = "claude:test", enabled = true): UsageAccount => ({
   key,
@@ -29,6 +39,90 @@ const sections: ReadonlyArray<AccountUsageSection> = [
 const settle = Effect.gen(function* () {
   for (let i = 0; i < 40; i++) yield* Effect.yieldNow;
 });
+
+it.effect(
+  "retains conservative partial quotas and retries after 30 seconds until a complete probe recovers",
+  () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      let partial = false;
+      const read = Effect.gen(function* () {
+        reads += 1;
+        const fetchedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        return [
+          {
+            kind: "provider-limits" as const,
+            outcome: partial ? ("unavailable" as const) : ("available" as const),
+            errorCode: partial ? ("temporary-failure" as const) : null,
+            lastAttemptAt: fetchedAt,
+            snapshot: {
+              fetchedAt,
+              data: {
+                windows: partial
+                  ? [
+                      { id: "shared", label: "Shared", usedPercent: 10, resetsAt: null },
+                      { id: "new", label: "New quota", usedPercent: 20, resetsAt: null },
+                    ]
+                  : [
+                      {
+                        id: "shared",
+                        label: "Shared",
+                        usedPercent: reads === 1 ? 100 : 25,
+                        resetsAt: null,
+                      },
+                      { id: "gemini", label: "Gemini", usedPercent: 50, resetsAt: null },
+                    ],
+              },
+            },
+          },
+        ];
+      });
+      const capability = yield* makeAccountUsageCapability(
+        {
+          ...initial("antigravity:test"),
+          provider: "antigravity",
+          sections: [emptyAccountSection("provider-limits")],
+        },
+        read,
+        { retryFailedReads: true },
+      );
+      const permits = yield* Semaphore.make(1);
+      const first = yield* capability.refreshAccount!(permits);
+      expect(first.fresh).toBe(true);
+      yield* TestClock.adjust("5 seconds");
+      partial = true;
+      const degraded = yield* capability.refreshAccount!(permits);
+      expect(degraded.fresh).toBe(false);
+      const section = degraded.snapshot.sections[0];
+      expect(section?.outcome).toBe("unavailable");
+      if (section?.kind !== "provider-limits") throw new Error("Missing provider limits");
+      expect(section.snapshot?.fetchedAt).toBe(first.snapshot.sections[0]?.snapshot?.fetchedAt);
+      expect(
+        section.snapshot?.data.windows.map((window) => [window.id, window.usedPercent]),
+      ).toEqual([
+        ["shared", 100],
+        ["gemini", 50],
+        ["new", 20],
+      ]);
+      yield* TestClock.adjust("29 seconds");
+      yield* capability.refreshAccount!(permits, "if-stale");
+      expect(reads).toBe(2);
+      yield* TestClock.adjust("1 second");
+      partial = false;
+      const recovered = yield* capability.refreshAccount!(permits, "if-stale");
+      expect(reads).toBe(3);
+      expect(recovered.fresh).toBe(true);
+      const recoveredSection = recovered.snapshot.sections[0];
+      expect(recoveredSection?.outcome).toBe("available");
+      if (recoveredSection?.kind === "provider-limits")
+        expect(
+          recoveredSection.snapshot?.data.windows.map((window) => [window.id, window.usedPercent]),
+        ).toEqual([
+          ["shared", 25],
+          ["gemini", 50],
+        ]);
+    }).pipe(Effect.scoped),
+);
 
 it.effect("coalesces concurrent requests, bypasses caches on force, and never reads on none", () =>
   Effect.gen(function* () {
@@ -342,6 +436,119 @@ it.effect("awaited failed reads do not call a retained snapshot fresh", () =>
     const result = yield* capability.refreshAccount!(permits);
     expect(result.fresh).toBe(false);
     expect(result.snapshot.sections[0]?.snapshot).toEqual(sections[0]?.snapshot);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("retries failed reads when only fresh usage holds the attempt TTL", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    const calls = yield* Ref.make(0);
+    let failed = true;
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Ref.update(calls, (n) => n + 1).pipe(
+        Effect.andThen(
+          Effect.suspend(() =>
+            failed ? Effect.fail(new Error("signed out")) : Effect.succeed(sections),
+          ),
+        ),
+      ),
+      { retryFailedReads: true },
+    );
+    yield* capability.refreshAccount!(permits, "if-stale");
+    // A failed read holds briefly, not for the attempt TTL.
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(1);
+    yield* TestClock.adjust("30 seconds");
+    const retried = yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(2);
+    expect(retried.fresh).toBe(false);
+    failed = false;
+    yield* TestClock.adjust("30 seconds");
+    const recovered = yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(3);
+    expect(recovered.fresh).toBe(true);
+    // Fresh usage keeps the TTL.
+    yield* TestClock.adjust("1 minute");
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(3);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("keeps unsupported reads for the attempt TTL even when failed reads retry", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    const calls = yield* Ref.make(0);
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Ref.update(calls, (n) => n + 1).pipe(
+        Effect.andThen(Effect.fail(new AccountUsageReadError("unsupported"))),
+      ),
+      { retryFailedReads: true },
+    );
+    const result = yield* capability.refreshAccount!(permits, "if-stale");
+    expect(result.snapshot.sections[0]?.outcome).toBe("unsupported");
+    yield* TestClock.adjust("1 minute");
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(1);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("keeps failed reads for the attempt TTL by default", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    const calls = yield* Ref.make(0);
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Ref.update(calls, (n) => n + 1).pipe(Effect.andThen(Effect.fail(new Error("signed out")))),
+    );
+    yield* capability.refreshAccount!(permits, "if-stale");
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(1);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("invalidate drops a cached read so the next refresh probes again", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    const calls = yield* Ref.make(0);
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Ref.update(calls, (n) => n + 1).pipe(Effect.as(sections)),
+    );
+    yield* capability.refreshAccount!(permits, "if-stale");
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(1);
+    yield* capability.invalidate;
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(2);
+    // Invalidation does not lift the forced-refresh throttle.
+    yield* capability.invalidate;
+    const throttled = yield* capability.refreshAccount!(permits, "force");
+    expect(yield* Ref.get(calls)).toBe(2);
+    expect(throttled.nextAllowedAt).toBeDefined();
+  }).pipe(Effect.scoped),
+);
+
+it.effect("a read running during invalidate cannot restore the attempt hold", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    const calls = yield* Ref.make(0);
+    const gate = yield* Deferred.make<void>();
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Ref.updateAndGet(calls, (n) => n + 1).pipe(
+        Effect.tap((n) => (n === 1 ? Deferred.await(gate) : Effect.void)),
+        Effect.as(sections),
+      ),
+    );
+    const running = yield* capability.refreshAccount!(permits, "if-stale").pipe(Effect.forkChild);
+    yield* settle;
+    yield* capability.invalidate;
+    yield* Deferred.succeed(gate, undefined);
+    yield* Fiber.join(running);
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(2);
   }).pipe(Effect.scoped),
 );
 

@@ -1,7 +1,16 @@
+import { WorkspaceRequiresNewWorktreeError } from "../git/workspaceSwitch.ts";
+import { stripPathTerminator } from "../git/worktreeList.ts";
+import { canonicalWorktreePath } from "../git/worktreePaths.ts";
+import { pathContains } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
-import type { ProfileSummary } from "@t3tools/contracts";
+import { ServerSettings, type ProfileSummary } from "@t3tools/contracts";
+import { Schema } from "effect";
+import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import { managedWorktreesDirectories, isFilesystemRoot } from "../worktreesDirectoryPaths.ts";
+import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { executionDirectoryIssue } from "./executionDirectory";
+import { ProfileRegistryStore } from "./ProfileRegistryStore.ts";
 
 export async function invalidExecutionDirectories(stateDir: string) {
   const file = Path.join(stateDir, "state.sqlite");
@@ -40,7 +49,7 @@ export async function canonicalGitCommonDirectory(workspaceRoot: string): Promis
       ? marker
       : Path.resolve(
           workspaceRoot,
-          (await FS.readFile(marker, "utf8")).replace(/^gitdir:\s*/i, "").trim(),
+          stripPathTerminator(await FS.readFile(marker, "utf8")).replace(/^gitdir: /i, ""),
         );
     const common = await FS.readFile(Path.join(gitDir, "commondir"), "utf8").catch(
       (error: NodeJS.ErrnoException) => {
@@ -48,28 +57,41 @@ export async function canonicalGitCommonDirectory(workspaceRoot: string): Promis
         throw error;
       },
     );
-    return await FS.realpath(Path.resolve(gitDir, common.trim()));
+    return await FS.realpath(Path.resolve(gitDir, stripPathTerminator(common)));
   } catch {
     return null;
   }
 }
 
-async function projectRoots(stateDir: string): Promise<string[]> {
+async function profilePaths(stateDir: string, query: string): Promise<string[]> {
   const file = Path.join(stateDir, "state.sqlite");
-  if (!(await FS.stat(file).catch(() => null))?.isFile()) return [];
+  const stat = await FS.stat(file).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat?.isFile()) return [];
   const database = process.versions.bun
     ? new (await import("bun:sqlite")).Database(file, { readonly: true })
     : new (await import("node:sqlite")).DatabaseSync(file, { readOnly: true });
   try {
-    return (
-      database
-        .prepare("SELECT workspace_root FROM projection_projects WHERE deleted_at IS NULL")
-        .all() as { workspace_root: string }[]
-    ).map((row) => row.workspace_root);
+    return (database.prepare(query).all() as { path: string }[]).map((row) => row.path);
   } finally {
     database.close();
   }
 }
+
+export const projectRoots = (stateDir: string) =>
+  profilePaths(
+    stateDir,
+    "SELECT workspace_root AS path FROM projection_projects WHERE deleted_at IS NULL",
+  );
+
+/** Archived/deleted threads keep their recorded path until their records are purged. */
+export const recordedWorktreePaths = (stateDir: string) =>
+  profilePaths(
+    stateDir,
+    "SELECT worktree_path AS path FROM projection_threads WHERE worktree_path IS NOT NULL",
+  );
 
 /** Only project roots are read from siblings; no account or conversation data leaves its profile. */
 export async function repositorySharingWarnings(
@@ -101,4 +123,120 @@ export async function repositorySharingWarnings(
       .map((entry) => entry.profile.name);
     return otherProfiles.length ? [{ workspaceRoot: root.workspaceRoot, otherProfiles }] : [];
   });
+}
+
+/** Read-only cross-profile guard for in-place checkout. Unknown ownership fails closed. */
+export async function assertExclusiveProfileCheckout(
+  config: Pick<import("../config.ts").ServerConfigShape, "defaultStateDir" | "profile">,
+  checkout: string,
+): Promise<void> {
+  if (!config.defaultStateDir || !config.profile) return;
+  const registry = await new ProfileRegistryStore(config.defaultStateDir).read();
+  if (!registry.ok) throw new Error("Other-profile checkout ownership could not be established.");
+  const target = await canonicalWorktreePath(checkout);
+  for (const profile of registry.registry.profiles) {
+    if (profile.id === config.profile.id) continue;
+    const stateDir = profileStateDir(config.defaultStateDir, profile);
+    const file = Path.join(stateDir, "state.sqlite");
+    const stat = await FS.stat(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" && profile.status === "provisioning") return null;
+      throw error;
+    });
+    if (!stat) continue;
+    const database = process.versions.bun
+      ? new (await import("bun:sqlite")).Database(file, { readonly: true })
+      : new (await import("node:sqlite")).DatabaseSync(file, { readOnly: true });
+    try {
+      const rows = database
+        .prepare(`SELECT workspace_root AS path FROM projection_projects WHERE deleted_at IS NULL
+        UNION SELECT COALESCE(t.worktree_path,p.workspace_root) AS path FROM projection_threads t
+        LEFT JOIN projection_projects p ON p.project_id=t.project_id WHERE t.deleted_at IS NULL`)
+        .all() as { path: string | null }[];
+      for (const row of rows) {
+        if (!row.path)
+          throw new Error("Other-profile checkout ownership could not be established.");
+        if (pathContains(target, await canonicalWorktreePath(row.path)))
+          throw new WorkspaceRequiresNewWorktreeError(
+            "Another profile references this checkout. Create a new worktree instead.",
+          );
+      }
+    } finally {
+      database.close();
+    }
+  }
+}
+
+/** Read ownership once per inventory; an unreadable registry fails closed. */
+export async function readOtherProfileManagedRoots(
+  config: Pick<import("../config.ts").ServerConfigShape, "defaultStateDir" | "profile" | "baseDir">,
+  options: { destructive?: boolean } = {},
+): Promise<string[]> {
+  if (!config.defaultStateDir || !config.profile) return [];
+  const registry = await new ProfileRegistryStore(config.defaultStateDir).read();
+  if (!registry.ok) throw new Error("Managed workspace ownership could not be established.");
+  const roots = await Promise.all(
+    registry.registry.profiles
+      .filter((profile) => profile.id !== config.profile!.id)
+      .map(async (profile) => {
+        const stateDir = profileStateDir(config.defaultStateDir!, profile);
+        let raw = "{}";
+        try {
+          raw = await FS.readFile(Path.join(stateDir, "settings.json"), "utf8");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            if (options.destructive)
+              throw new Error(
+                "Managed workspace ownership could not be read for profile " + profile.name + ".",
+              );
+            console.warn(
+              "Could not read settings for profile " +
+                profile.name +
+                "; using its default root for browsing.",
+            );
+          }
+        }
+        const settings = Schema.decodeUnknownOption(
+          fromLenientJson(
+            Schema.Struct({
+              worktreesDirectory: ServerSettings.fields.worktreesDirectory,
+              previousWorktreesDirectories: ServerSettings.fields.previousWorktreesDirectories,
+            }),
+          ),
+        )(raw);
+        if (settings._tag === "None" && options.destructive)
+          throw new Error(
+            "Managed workspace ownership could not be established for profile " +
+              profile.name +
+              ".",
+          );
+        if (settings._tag === "None")
+          console.warn(
+            "Could not read worktree locations for profile " +
+              profile.name +
+              "; using its default root for browsing.",
+          );
+        const directories = managedWorktreesDirectories(
+          settings._tag === "Some"
+            ? settings.value
+            : { worktreesDirectory: "", previousWorktreesDirectories: [] },
+          Path.join(profile.isDefault ? config.baseDir : stateDir, "worktrees"),
+        );
+        return (await Promise.all(directories.map(canonicalWorktreePath))).filter(
+          (root) => !isFilesystemRoot(root),
+        );
+      }),
+  );
+  return [...new Set(roots.flat())];
+}
+
+/** A project root cannot turn another profile's managed checkout into an attachable target. */
+export async function assertNotOtherProfileManagedCheckout(
+  config: Pick<import("../config.ts").ServerConfigShape, "defaultStateDir" | "profile" | "baseDir">,
+  checkout: string,
+): Promise<void> {
+  if (!config.defaultStateDir || !config.profile) return;
+  const roots = await readOtherProfileManagedRoots(config);
+  const target = await canonicalWorktreePath(checkout);
+  if (roots.some((root) => pathContains(root, target)))
+    throw new Error("Another profile owns this managed checkout. It is inspect-only.");
 }

@@ -1,18 +1,82 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
+  ProjectId,
   ProviderInstanceId,
+  ServerSettings,
+  ServerSettingsPatch,
 } from "@t3tools/contracts";
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { createModelSelection } from "./model";
 import {
   applyServerSettingsPatch,
+  resolveProjectProviderInstanceEnabled,
   extractPersistedServerObservabilitySettings,
   normalizePersistedServerSettingString,
   parsePersistedServerObservabilitySettings,
 } from "./serverSettings";
 
 describe("serverSettings helpers", () => {
+  it("drops an override key this server does not know from a patch and keeps one it stored", () => {
+    const projectId = ProjectId.make("project-a");
+    const current = Schema.decodeUnknownSync(ServerSettings)({
+      projectSettingsOverrides: {
+        [projectId]: { autoPullDefaultBranch: true, addedByNewerServer: 3 },
+      },
+    });
+    const patch = Schema.decodeUnknownSync(ServerSettingsPatch)({
+      projectSettingsOverrides: {
+        [projectId]: {
+          autoPullDefaultBranch: false,
+          addedByNewerServer: 4,
+          addedByNewerClient: "x",
+        },
+      },
+    });
+
+    const updated = applyServerSettingsPatch(current, patch);
+    expect(updated.projectSettingsOverrides[projectId]).toEqual({
+      autoPullDefaultBranch: false,
+      addedByNewerServer: 3,
+    });
+    const reset = applyServerSettingsPatch(updated, {
+      projectSettingsOverrides: { [projectId]: {} },
+    });
+    expect(reset.projectSettingsOverrides[projectId]).toEqual({ addedByNewerServer: 3 });
+    expect(
+      applyServerSettingsPatch(reset, {
+        projectSettingsOverrides: { [projectId]: null },
+      }).projectSettingsOverrides[projectId],
+    ).toBeUndefined();
+  });
+
+  it("does not claim unused worktree locations when changing settings", () => {
+    const first = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { worktreesDirectory: "/a" });
+    expect(first.previousWorktreesDirectories).toEqual([]);
+    const second = applyServerSettingsPatch(first, { worktreesDirectory: "/b" });
+    expect(second.previousWorktreesDirectories).toEqual([]);
+    const reset = applyServerSettingsPatch(second, { worktreesDirectory: "" });
+    expect(reset.previousWorktreesDirectories).toEqual([]);
+    expect(
+      applyServerSettingsPatch(reset, { worktreesDirectory: "/a" }).previousWorktreesDirectories,
+    ).toEqual([]);
+  });
+
+  it("replaces usage model aliases so removed mappings stay removed", () => {
+    const both = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      usageModelAliases: { "gpt-a": "gpt-5", "gpt-b": "gpt-5" },
+    });
+    const removed = applyServerSettingsPatch(both, { usageModelAliases: { "gpt-a": "gpt-5" } });
+    expect(removed.usageModelAliases).toEqual({ "gpt-a": "gpt-5" });
+    expect(applyServerSettingsPatch(removed, { usageModelAliases: {} }).usageModelAliases).toEqual(
+      {},
+    );
+    expect(
+      applyServerSettingsPatch(removed, { worktreesDirectory: "/a" }).usageModelAliases,
+    ).toEqual({ "gpt-a": "gpt-5" });
+  });
+
   it("defaults summaries to Luna low independently of Git generation", () => {
     expect(DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection).toEqual({
       instanceId: "codex",
@@ -192,6 +256,58 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("merges partial upstream ports patches without resetting sibling fields", () => {
+    const triage = createModelSelection(ProviderInstanceId.make("claude"), "claude-opus-5-5");
+    const port = createModelSelection(ProviderInstanceId.make("claude"), "claude-sonnet-5-5");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      upstreamPorts: {
+        ...DEFAULT_SERVER_SETTINGS.upstreamPorts,
+        portConcurrency: 5,
+        autoRecordOutcomes: true,
+        schedule: { mode: "daily" as const, hour: 9, weekday: 1 },
+        triageModelSelection: triage,
+        portModelSelection: port,
+        areaPolicy: { git: "follow" as const },
+      },
+    };
+    const patch = Schema.decodeUnknownSync(ServerSettingsPatch)({
+      upstreamPorts: { schedule: { mode: "weekly" } },
+    });
+    expect(applyServerSettingsPatch(current, patch).upstreamPorts).toEqual({
+      ...current.upstreamPorts,
+      schedule: { mode: "weekly", hour: 9, weekday: 1 },
+    });
+    // Budget and auto-port fields merge; the area policy map replaces.
+    expect(
+      applyServerSettingsPatch(current, {
+        upstreamPorts: {
+          budget: { expireAfterDays: 14 },
+          autoPort: { mode: "security-and-bugs" },
+          areaPolicy: { mcp: "ignore" },
+        },
+      }).upstreamPorts,
+    ).toEqual({
+      ...current.upstreamPorts,
+      budget: { shortlistSize: 15, expireAfterDays: 14, keepScore: 70 },
+      autoPort: { mode: "security-and-bugs", dailyLimit: 5 },
+      areaPolicy: { mcp: "ignore" },
+    });
+    expect(
+      applyServerSettingsPatch(current, { upstreamPorts: { triageModelSelection: null } })
+        .upstreamPorts,
+    ).toEqual({ ...current.upstreamPorts, triageModelSelection: null });
+    const review = {
+      enabled: false,
+      reviewerA: { provider: "codex" as const, model: "gpt-5" },
+      reviewerB: null,
+      consolidation: null,
+    };
+    expect(
+      applyServerSettingsPatch(current, { upstreamPorts: { portReview: review } }).upstreamPorts,
+    ).toEqual({ ...current.upstreamPorts, portReview: review });
+  });
+
   it("replaces providerInstances maps so omitted instance fields are cleared", () => {
     const codexId = ProviderInstanceId.make("codex");
     const current = {
@@ -293,4 +409,60 @@ describe("serverSettings helpers", () => {
       binaryPath: "opencode",
     });
   });
+});
+
+describe("project provider policy", () => {
+  const project = ProjectId.makeUnsafe("policy-project");
+  const codex = ProviderInstanceId.make("codex");
+  const personal = ProviderInstanceId.make("personal");
+  it("supports explicit true/false, inheritance, custom instances and missing instances", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [personal]: { driver: ProviderDriverKind.make("codex"), enabled: false },
+      },
+      projectSettingsOverrides: {
+        [project]: {
+          providerInstances: { [codex]: { enabled: false }, [personal]: { enabled: true } },
+        },
+      },
+    };
+    expect(resolveProjectProviderInstanceEnabled(settings, project, codex)).toBe(false);
+    expect(resolveProjectProviderInstanceEnabled(settings, null, codex)).toBe(true);
+    expect(resolveProjectProviderInstanceEnabled(settings, project, personal)).toBe(true);
+    expect(resolveProjectProviderInstanceEnabled(settings, null, personal)).toBe(false);
+    expect(
+      resolveProjectProviderInstanceEnabled(settings, project, ProviderInstanceId.make("missing")),
+    ).toBe(false);
+  });
+  it("preserves a policy through partial project patches and clears only an explicit empty map or project reset", () => {
+    const policy = { [codex]: { enabled: false } };
+    const initial = {
+      ...DEFAULT_SERVER_SETTINGS,
+      projectSettingsOverrides: { [project]: { providerInstances: policy } },
+    };
+    const patched = applyServerSettingsPatch(initial, {
+      projectSettingsOverrides: { [project]: { defaultRuntimeMode: "approval-required" } },
+    });
+    expect(patched.projectSettingsOverrides[project]?.providerInstances).toEqual(policy);
+    expect(
+      applyServerSettingsPatch(patched, {
+        projectSettingsOverrides: { [project]: { providerInstances: {} } },
+      }).projectSettingsOverrides[project]?.providerInstances,
+    ).toEqual({});
+    expect(
+      applyServerSettingsPatch(patched, { projectSettingsOverrides: { [project]: null } })
+        .projectSettingsOverrides[project],
+    ).toBeUndefined();
+  });
+});
+
+it("does not invent a globally enabled ACP runtime for an unconfigured instance", () => {
+  expect(
+    resolveProjectProviderInstanceEnabled(
+      DEFAULT_SERVER_SETTINGS,
+      null,
+      ProviderInstanceId.make("acp"),
+    ),
+  ).toBe(false);
 });

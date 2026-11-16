@@ -1,7 +1,7 @@
 import type {
-  CodeReviewWorkflow,
-  InvestigationWorkflow,
-  PlanningWorkflow,
+  CodeReviewWorkflowSummary as CodeReviewWorkflow,
+  InvestigationWorkflowSummary as InvestigationWorkflow,
+  PlanningWorkflowSummary as PlanningWorkflow,
   ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -11,8 +11,7 @@ import {
 } from "@t3tools/shared/workflowThreads";
 
 import type { ThreadStatus } from "../threadStatus";
-import type { Thread } from "../types";
-import { getVisibleThreads, sortThreadsByActivity } from "./threadOrdering";
+import { getVisibleThreads, type ListedThread, sortThreadsByActivity } from "./threadOrdering";
 
 /** Statuses that need the user; lower sorts first. A paused queue sorts last. */
 const ATTENTION_PRIORITY = {
@@ -59,11 +58,11 @@ export function compareAttentionPriority(
   );
 }
 
-export interface ThreadAttentionBuckets {
+export interface ThreadAttentionBuckets<T extends ListedThread = ListedThread> {
   /** Needs the user, most urgent first, recency preserved within a priority. */
-  readonly attention: Thread[];
-  readonly working: Thread[];
-  readonly remaining: Thread[];
+  readonly attention: T[];
+  readonly working: T[];
+  readonly remaining: T[];
 }
 
 /**
@@ -80,15 +79,15 @@ export function isWorkflowThreadBlockedOnUser(status: ThreadStatus, queuePaused:
  * `workflowThreads` (owned by a workflow, any order) only join attention, and
  * only when blocked on the user; otherwise they surface through their workflow.
  */
-export function bucketThreadsByAttention(
-  sortedThreads: ReadonlyArray<Thread>,
+export function bucketThreadsByAttention<T extends ListedThread>(
+  sortedThreads: ReadonlyArray<T>,
   statusByThreadId: ReadonlyMap<ThreadId, ThreadStatus>,
   pausedQueueThreadIds: ReadonlySet<ThreadId>,
-  workflowThreads: ReadonlyArray<Thread> = [],
-): ThreadAttentionBuckets {
-  const attention: Thread[] = [];
-  const working: Thread[] = [];
-  const remaining: Thread[] = [];
+  workflowThreads: ReadonlyArray<T> = [],
+): ThreadAttentionBuckets<T> {
+  const attention: T[] = [];
+  const working: T[] = [];
+  const remaining: T[] = [];
 
   const blockedWorkflowThreads = workflowThreads.filter((thread) =>
     isWorkflowThreadBlockedOnUser(
@@ -117,7 +116,7 @@ export function bucketThreadsByAttention(
     }
   }
 
-  const candidate = (thread: Thread): AttentionCandidate => ({
+  const candidate = (thread: T): AttentionCandidate => ({
     status: statusByThreadId.get(thread.id) ?? "none",
     queuePaused: pausedQueueThreadIds.has(thread.id),
   });
@@ -149,12 +148,12 @@ export function collectWorkflowThreadIds(
  * Threads Home and the sidebar surface: not archived or snoozed, not owned by
  * a workflow (those surface through their workflow), most recent first.
  */
-export function selectStandaloneThreadsByActivity(input: {
-  threads: ReadonlyArray<Thread>;
+export function selectStandaloneThreadsByActivity<T extends ListedThread>(input: {
+  threads: ReadonlyArray<T>;
   planningWorkflows: ReadonlyArray<PlanningWorkflow>;
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>;
   investigationWorkflows: ReadonlyArray<InvestigationWorkflow>;
-}): Thread[] {
+}): T[] {
   const workflowThreadIds = collectWorkflowThreadIds(
     input.planningWorkflows,
     input.codeReviewWorkflows,
@@ -173,12 +172,12 @@ export function selectStandaloneThreadsByActivity(input: {
  * Visible threads owned by an active workflow. Pass them to
  * `bucketThreadsByAttention` so a step blocked on the user reaches Needs you.
  */
-export function selectVisibleWorkflowThreads(input: {
-  threads: ReadonlyArray<Thread>;
+export function selectVisibleWorkflowThreads<T extends ListedThread>(input: {
+  threads: ReadonlyArray<T>;
   planningWorkflows: ReadonlyArray<PlanningWorkflow>;
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>;
   investigationWorkflows: ReadonlyArray<InvestigationWorkflow>;
-}): Thread[] {
+}): T[] {
   const workflowThreadIds = collectWorkflowThreadIds(
     input.planningWorkflows,
     input.codeReviewWorkflows,

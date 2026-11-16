@@ -3,12 +3,13 @@ import {
   InvestigationWorkflowId,
   PlanningWorkflowId,
   ThreadId,
+  type ProjectId,
 } from "@t3tools/contracts";
 
 import {
-  resolveSettingsCategoryFromSearch,
+  resolveSettingsSearch,
   type SettingsCategory,
-} from "./components/settings/settingsCategories";
+} from "./components/settings/settingsRouting";
 
 export type TabTargetKey = string;
 
@@ -22,6 +23,8 @@ export type TabTarget =
       key: TabTargetKey;
       kind: "settings";
       category: SettingsCategory;
+      /** Set when the settings tab is in a project's scope. */
+      project?: ProjectId;
     }
   | {
       key: TabTargetKey;
@@ -142,10 +145,12 @@ export function resolveTabTargetFromRoute(route: TabRouteSnapshot | null): TabTa
   }
 
   if (route.pathname === "/settings") {
+    const { category, project } = resolveSettingsSearch(route.search);
     return {
       key: settingsTabTargetKey(),
       kind: "settings",
-      category: resolveSettingsCategoryFromSearch(route.search),
+      category,
+      ...(project ? { project } : {}),
     };
   }
 

@@ -1,0 +1,14 @@
+{
+  "provider": "cursor",
+  "at": "2026-10-18T14:06:25.370Z",
+  "status": "failed",
+  "flagEligible": false,
+  "pending": [
+    "live harness plan-mode observation",
+    "held foreground takeover",
+    "unrelated-session attribution",
+    "signed desktop checks"
+  ],
+  "nativeLogCount": 12,
+  "eventCount": 0
+}

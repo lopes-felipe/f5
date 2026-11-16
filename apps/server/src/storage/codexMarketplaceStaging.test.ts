@@ -189,7 +189,7 @@ describe("resolveCodexLaunchHomes", () => {
         stateDir,
         baseEnv: { CODEX_HOME: "/env/codex" },
       }),
-    ).toEqual(["/env/codex"]);
+    ).toEqual([path.resolve("/env/codex")]);
     expect(
       resolveCodexLaunchHomes({ settings, profile: undefined, stateDir, baseEnv: {} }),
     ).toEqual([path.join(homedir, ".codex")]);
@@ -205,7 +205,13 @@ describe("resolveCodexLaunchHomes", () => {
     });
     expect(
       resolveCodexLaunchHomes({ settings, profile: undefined, stateDir, baseEnv: {} }).toSorted(),
-    ).toEqual([path.join(homedir, "work-codex"), "/shadow/codex", "/personal/codex"].toSorted());
+    ).toEqual(
+      [
+        path.join(homedir, "work-codex"),
+        path.resolve("/shadow/codex"),
+        path.resolve("/personal/codex"),
+      ].toSorted(),
+    );
   });
 
   it("never reaches outside an isolated profile for an instance without a home", () => {
@@ -229,7 +235,7 @@ describe("resolveCodexLaunchHomes", () => {
         stateDir,
         baseEnv: {},
       }),
-    ).toEqual(["/state/profile/provider-homes/codex"]);
+    ).toEqual([path.resolve("/state/profile/provider-homes/codex")]);
   });
 
   it("honors a CODEX_HOME set in the instance environment", () => {
@@ -244,6 +250,6 @@ describe("resolveCodexLaunchHomes", () => {
     });
     expect(
       resolveCodexLaunchHomes({ settings, profile: undefined, stateDir, baseEnv: {} }),
-    ).toEqual(["/instance/codex"]);
+    ).toEqual([path.resolve("/instance/codex")]);
   });
 });

@@ -1,0 +1,41 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    groups:
+      dev-tools:
+        dependency-type: development
+        patterns: ["*"]
+    # Deliberate runtime/harness upgrades follow CONTRIBUTING.md's audit procedure.
+    ignore:
+      - dependency-name: effect
+      - dependency-name: "@effect/*"
+      - dependency-name: electron
+      - dependency-name: electron-updater
+      - dependency-name: "@anthropic-ai/claude-agent-sdk"
+      - dependency-name: "@muse-code/sdk"
+      - dependency-name: "@opencode-ai/sdk"
+      - dependency-name: "@openai/codex"
+  - package-ecosystem: cargo
+    directory: /apps/desktop/native/windows
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 1
+  - package-ecosystem: cargo
+    directory: /apps/desktop/native/windows/fixture
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 1

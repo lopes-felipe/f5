@@ -13,9 +13,11 @@ import type {
   ExpireThreadBackgroundWorkInput,
   ThreadBackgroundWorkFreshnessInput,
   ThreadBackgroundWorkThreadFreshnessInput,
+  ThreadBackgroundWorkRepositoryShape,
 } from "../../persistence/Services/ThreadBackgroundWork.ts";
 
 export interface ThreadBackgroundWorkShape {
+  readonly getOwnedEntries: ThreadBackgroundWorkRepositoryShape["getOwnedEntries"];
   readonly recordProviderEvent: (
     event: ProviderRuntimeEvent,
   ) => Effect.Effect<void, ProjectionRepositoryError>;

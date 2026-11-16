@@ -1,0 +1,1 @@
+- A pull request's checks show an icon for their own result. Failed, running and skipped checks used the same tick as passed ones, in a different colour.

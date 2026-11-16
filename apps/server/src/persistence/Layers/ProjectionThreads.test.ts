@@ -1,6 +1,6 @@
 import { ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 
 import { ProjectionThreadRepository } from "../Services/ProjectionThreads.ts";
 import { ProjectionThreadRepositoryLive } from "./ProjectionThreads.ts";
@@ -131,6 +131,35 @@ layer("ProjectionThreadRepository", (it) => {
       assert.equal(rows[0]?.modelContextWindowTokens, 400_000);
       assert.equal(rows[0]?.tasks[0]?.id, "task-1");
       assert.equal(rows[0]?.tasksTurnId, "turn-1");
+      assert.deepEqual(
+        yield* repository.getActivityState({ threadId }),
+        Option.some({
+          estimatedContextTokens: 72_000,
+          hasProviderTokenUsage: false,
+        }),
+      );
+      for (const { expected, ...input } of [
+        { occurredAt: "2026-03-10T09:10:00.000Z", expected: 72_000 },
+        { occurredAt: "2026-03-10T09:20:00.000Z", estimatedContextTokens: null, expected: null },
+      ]) {
+        yield* repository.touchActivity({ threadId, ...input });
+        assert.deepEqual(
+          yield* repository.getById({ threadId }),
+          Option.some({
+            ...row.value,
+            estimatedContextTokens: expected,
+            lastInteractionAt: input.occurredAt,
+            updatedAt: input.occurredAt,
+          }),
+        );
+      }
+      const missingId = ThreadId.makeUnsafe("missing-activity-thread");
+      yield* repository.touchActivity({
+        threadId: missingId,
+        occurredAt: "2026-03-10T09:30:00.000Z",
+      });
+      assert.deepEqual(yield* repository.getById({ threadId: missingId }), Option.none());
+      assert.deepEqual(yield* repository.getActivityState({ threadId: missingId }), Option.none());
     }),
   );
 });

@@ -9,7 +9,14 @@ async function readInstructions(cwd: string, name: string): Promise<string> {
   try {
     const root = await realpath(cwd);
     const target = await realpath(path.join(root, name));
-    if (!target.startsWith(root + path.sep)) return "";
+    const relative = path.relative(root, target);
+    if (
+      !relative ||
+      relative === ".." ||
+      relative.startsWith(".." + path.sep) ||
+      path.isAbsolute(relative)
+    )
+      return "";
     const file = await open(target, "r");
     try {
       if (!(await file.stat()).isFile()) return "";

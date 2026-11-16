@@ -42,6 +42,7 @@ export function makeGitHubConditionalCache(now = Date.now, budget = 8 * 1024 * 1
         input.context.host,
         input.context.generation,
         input.endpoint,
+        input.accept ?? "json",
         Object.entries(input.query ?? {}).sort(([a], [b]) => a.localeCompare(b)),
         policy.identity,
       ]);

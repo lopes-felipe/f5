@@ -9,6 +9,27 @@
  * the window level (it has no built-in key handling), so matching listbox here
  * would suppress the very handler we want to run after clicking a row.
  */
+/** Cmd/Ctrl+Enter in a PR composer runs its primary action, unless an IME is composing. */
+export function isPrSubmitShortcut(event: {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  repeat: boolean;
+  keyCode: number;
+  nativeEvent: { isComposing: boolean };
+}): boolean {
+  if (event.nativeEvent.isComposing || event.keyCode === 229) return false;
+  return (
+    event.key === "Enter" &&
+    (event.metaKey || event.ctrlKey) &&
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.repeat
+  );
+}
+
 export function isInteractiveTextTarget(): boolean {
   const element = document.activeElement as HTMLElement | null;
   if (!element) return false;

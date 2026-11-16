@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { atomicJson, exclusiveJson, exists, readJson } from "./files";
+import { runWindowsPowerShell } from "../windowsPowerShell";
 import { readInstalled, preflightRuntime } from "./installation";
 import {
   managedChild,
@@ -34,15 +35,9 @@ async function processBirth(pid: number): Promise<string> {
   }
   const result =
     process.platform === "win32"
-      ? await exec(
-          "powershell.exe",
-          [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`,
-          ],
-          { timeout: 5000, maxBuffer: 4096 },
+      ? await runWindowsPowerShell(
+          `[Console]::Write([System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().Ticks)`,
+          { timeoutMs: 10_000, maxBuffer: 4096 },
         )
       : await exec("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
           timeout: 5000,
@@ -51,11 +46,15 @@ async function processBirth(pid: number): Promise<string> {
   if (!result.stdout.trim()) throw new Error("Process identity is unavailable.");
   return result.stdout.trim();
 }
-async function sameProcess(pid: number, birth?: string): Promise<boolean> {
+async function sameProcess(
+  pid: number,
+  birth: string | undefined,
+  probeBirth: typeof processBirth,
+): Promise<boolean> {
   if (!alive(pid)) return false;
   if (!birth) return true; // Old leases fail closed; never guess whether a live PID is the server.
   try {
-    return (await processBirth(pid)) === birth;
+    return (await probeBirth(pid)) === birth;
   } catch {
     return alive(pid);
   }
@@ -97,6 +96,7 @@ function parseLease(value: unknown): Lease {
 }
 export async function acquireLauncherLease(
   root: string,
+  probeBirth: (pid: number) => Promise<string> = processBirth,
 ): Promise<{ child(pid: number | null): Promise<void>; release(): Promise<void> }> {
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
   const file = path.join(root, "launcher.json");
@@ -111,17 +111,19 @@ export async function acquireLauncherLease(
     try {
       if (await exists(file)) {
         const lease = parseLease(await readJson(file));
-        if (await sameProcess(lease.pid, lease.birth))
+        if (await sameProcess(lease.pid, lease.birth, probeBirth))
           throw new Error(
             "An F5 launcher is already running, or its saved PID was reused. Verify the process before manually removing launcher.json.",
           );
         for (
           let attempt = 0;
-          lease.child && (await sameProcess(lease.child, lease.childBirth)) && attempt < 30;
+          lease.child &&
+          (await sameProcess(lease.child, lease.childBirth, probeBirth)) &&
+          attempt < 30;
           attempt++
         )
           await delay(100);
-        if (lease.child && (await sameProcess(lease.child, lease.childBirth)))
+        if (lease.child && (await sameProcess(lease.child, lease.childBirth, probeBirth)))
           throw new Error(
             "The previous server child is still alive, or its PID was reused; database recovery is blocked. Verify the process before manually removing launcher.json.",
           );
@@ -133,7 +135,7 @@ export async function acquireLauncherLease(
   }
   const lease: Lease = {
     pid: process.pid,
-    birth: await processBirth(process.pid),
+    birth: await probeBirth(process.pid),
     token: randomUUID(),
     child: null,
   };
@@ -143,7 +145,7 @@ export async function acquireLauncherLease(
   return {
     async child(pid) {
       lease.child = pid;
-      if (pid) lease.childBirth = await processBirth(pid);
+      if (pid) lease.childBirth = await probeBirth(pid);
       else delete lease.childBirth;
       await atomicJson(file, lease);
     },

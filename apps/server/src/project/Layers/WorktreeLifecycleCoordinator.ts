@@ -42,6 +42,10 @@ const HeldLifecycleLocks = ServiceMap.Reference<ReadonlySet<string>>(
   { defaultValue: () => new Set<string>() },
 );
 
+/** Detached background work must acquire its own leases after its caller returns. */
+export const withoutLifecycleLocks = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.provideService(HeldLifecycleLocks, new Set<string>()));
+
 const locks = new Map<string, { semaphore: Semaphore.Semaphore; users: number }>();
 
 function withKeyedLock<A, E, R>(key: string, action: Effect.Effect<A, E, R>) {
@@ -102,12 +106,11 @@ export interface RepositoryLockOptions {
   readonly mode?: "user" | "background";
 }
 
+export const repositoryIdentityHash = (canonicalCommonDir: string) =>
+  createHash("sha256").update(canonicalCommonDir).digest("hex");
+
 export const repositoryLockPath = (baseDir: string, canonicalCommonDir: string) =>
-  path.join(
-    baseDir,
-    "locks",
-    createHash("sha256").update(canonicalCommonDir).digest("hex") + ".sqlite",
-  );
+  path.join(baseDir, "locks", repositoryIdentityHash(canonicalCommonDir) + ".sqlite");
 
 /** Git-common-dir mutations are shared by every F5 profile opening this repository. */
 export function withRepositoryLifecycleLock<A, E, R>(
@@ -169,4 +172,18 @@ export function pathContains(parent: string, child: string): boolean {
     relative === "" ||
     (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
   );
+}
+
+/** Acquire multiple checkout locks in canonical order; repository lock always comes later. */
+export function withWorktreeLifecycleLocks<A, E, R>(
+  paths: ReadonlyArray<string>,
+  action: Effect.Effect<A, E, R>,
+) {
+  return Effect.gen(function* () {
+    const keys = [...new Set(yield* Effect.forEach(paths, worktreeLockKey))].sort();
+    return yield* keys.reduceRight(
+      (next, key) => withWorktreeLifecycleLock(key, next),
+      action as Effect.Effect<A, E | RepositoryLifecycleError, R>,
+    );
+  });
 }

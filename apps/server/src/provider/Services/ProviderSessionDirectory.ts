@@ -39,6 +39,16 @@ export type ProviderSessionDirectoryWriteError =
   | ProviderSessionDirectoryPersistenceError;
 
 export interface ProviderSessionDirectoryShape {
+  readonly updateHistoryReconciliationIfCurrent: (
+    input: import("../../persistence/Services/ProviderSessionRuntime.ts").ProviderHistoryReconciliationUpdate,
+  ) => Effect.Effect<boolean, ProviderSessionDirectoryWriteError>;
+  readonly updateTerminalLifecycleIfCurrent: (
+    input: import("../../persistence/Services/ProviderSessionRuntime.ts").ProviderTerminalLifecycleUpdate,
+  ) => Effect.Effect<boolean, ProviderSessionDirectoryWriteError>;
+  readonly updateMcpStateIfCurrent: (
+    input: import("../../persistence/Services/ProviderSessionRuntime.ts").ProviderMcpStateUpdate,
+  ) => Effect.Effect<boolean, ProviderSessionDirectoryWriteError>;
+
   readonly upsert: (
     binding: ProviderRuntimeBinding,
   ) => Effect.Effect<void, ProviderSessionDirectoryWriteError>;
@@ -59,7 +69,10 @@ export interface ProviderSessionDirectoryShape {
     ProviderSessionDirectoryPersistenceError
   >;
 
-  readonly listBindings: () => Effect.Effect<
+  /** `excludeStopped` skips stopped rows in the query, not after decoding. */
+  readonly listBindings: (options?: {
+    readonly excludeStopped?: boolean;
+  }) => Effect.Effect<
     ReadonlyArray<ProviderRuntimeBindingWithMetadata>,
     ProviderSessionDirectoryPersistenceError
   >;

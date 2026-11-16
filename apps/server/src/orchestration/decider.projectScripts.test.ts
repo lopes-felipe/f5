@@ -42,6 +42,34 @@ describe("decider project scripts", () => {
     expect((event.payload as { scripts: unknown[] }).scripts).toEqual([]);
   });
 
+  it("persists the selected instance and model through project creation", async () => {
+    const now = new Date().toISOString();
+    const initial = createEmptyReadModel(now);
+    const selection = {
+      instanceId: ProviderInstanceId.make("claude_work"),
+      model: "claude-fable-5",
+      options: [{ id: "effort", value: "high" }],
+    };
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "project.create",
+          commandId: CommandId.makeUnsafe("create-selected-project"),
+          projectId: asProjectId("selected-project"),
+          title: "Selected provider",
+          workspaceRoot: "/tmp/selected-project",
+          defaultModelSelection: selection,
+          createdAt: now,
+        },
+        readModel: initial,
+      }),
+    );
+    const event = Array.isArray(result) ? result[0]! : result;
+    const projected = await Effect.runPromise(projectEvent(initial, { ...event, sequence: 1 }));
+    expect(projected.projects[0]?.defaultModelSelection).toEqual(selection);
+    expect(projected.projects[0]?.defaultModel).toBe(selection.model);
+  });
+
   it("rejects project.workflow.create when the slug already exists in the same project", async () => {
     const now = new Date().toISOString();
     const initial = createEmptyReadModel(now);

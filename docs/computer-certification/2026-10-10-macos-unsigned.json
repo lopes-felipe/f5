@@ -1,0 +1,320 @@
+{
+  "evidenceVersion": 1,
+  "scope": "unsigned-development-rehearsal-not-release-certification",
+  "signingDeferredByUser": true,
+  "certified": false,
+  "preflight": {
+    "reportVersion": 1,
+    "recordedAt": "2026-10-09T23:21:56.100Z",
+    "buildCommit": null,
+    "repositoryCommit": "109b2ab6ca00162c5a6e2fa244b8f655072e8654",
+    "workingTreeDirty": true,
+    "platform": "darwin",
+    "osVersion": "27.0.0",
+    "arch": "arm64",
+    "packaged": false,
+    "helperSha256": "e80e11bb51c9420f35746686c4efddeb54d26b7448a793cea1081c7c5165cc02",
+    "helperSignature": {
+      "verified": false,
+      "detail": "Signature verification failed or the signing tool is unavailable."
+    },
+    "appSignature": {
+      "verified": false,
+      "detail": "Development helper; no installed app supplied."
+    },
+    "permissionProbe": {
+      "displays": [
+        {
+          "displayId": "1",
+          "modelSize": {
+            "height": 862,
+            "width": 1333
+          },
+          "geometryGeneration": "1:0.0:0.0:1728.0:1117.0:3456:2234:0.0",
+          "primary": true,
+          "pixelSize": {
+            "width": 3456,
+            "height": 2234
+          },
+          "nativeBounds": {
+            "width": 1728,
+            "y": 0,
+            "x": 0,
+            "height": 1117
+          },
+          "rotation": 0
+        }
+      ],
+      "available": true
+    },
+    "providerReadiness": {
+      "claudeComputer": {
+        "available": false,
+        "reason": "Claude's built-in computer use requires an interactive CLI session; the Agent SDK uses non-interactive mode"
+      },
+      "codexComputer": {
+        "version": "26.1002.52244",
+        "manifestHash": "e1ea23ac6a4d2191d69832b7475151f5861a1bd012905241a7f3665b5259fd41",
+        "available": false,
+        "state": "host-managed",
+        "reason": "The bundled unified-computer-use plugin requires ChatGPT's runtime configuration; its launch and F5 veto/profile-isolation bridge are not certified"
+      },
+      "codexChrome": {
+        "version": "26.1002.52244",
+        "manifestHash": "1e94b81784e0d5591d88e0ac6acef1dd9e42ec20f41640580ab1bb6af83fc20e",
+        "available": false,
+        "state": "host-managed",
+        "reason": "The bundled chrome plugin has no standalone MCP launch metadata; it requires a host-provided runtime"
+      }
+    },
+    "certified": false,
+    "checks": [
+      {
+        "name": "TCC attribution and permission revocation",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Both providers: native and multi-app workflows",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Command-app typing restrictions and secure fields",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Kill chord under 100ms, including hung renderer and stopped backend",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Physical input pause and fresh geometry on resume",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Focus/dialog changes and drag across protected windows",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Include-only capture and secure masking while windows move",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Inspect/zoom/semantic actions require grants",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Two-profile lease and multiple-build device lock",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Mixed-DPI displays, fullscreen overlays excluded from capture",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Control with all macOS F5 windows closed",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Signed packaging and installed helper path confinement",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Chrome consent, drift, pause, policy-off, and exact restore",
+        "state": "pending",
+        "evidence": null
+      },
+      {
+        "name": "Built-in launch, consent, veto, F5 isolation, and profile isolation",
+        "state": "pending",
+        "evidence": null
+      }
+    ],
+    "note": "Read-only preflight. Signature/permission observations do not certify attribution, capture isolation, consent, or interruption latency. Release gates must be reviewed and changed separately after recorded machine tests."
+  },
+  "rehearsals": [
+    {
+      "reportVersion": 1,
+      "recordedAt": "2026-10-09T23:18:34.680Z",
+      "platform": "darwin",
+      "arch": "arm64",
+      "helperSha256": "4d04234d0ea24276bbec8aedc4723eafb9a423ee3d12f87da117b007e9567729",
+      "scope": "unsigned-native-helper-only",
+      "signed": false,
+      "certified": false,
+      "checks": [
+        {
+          "name": "Granted fixture app activation",
+          "state": "failed",
+          "outcome": "OutcomeUnknown",
+          "elapsedMs": 30001
+        }
+      ],
+      "physicalInterruption": false,
+      "remaining": [
+        "Provider-mediated app consent and real provider turns",
+        "Capture isolation and secure masking",
+        "Coordinate/drag/typing focus changes",
+        "Physical kill-chord latency and user-input interruption",
+        "Renderer/backend-stall stop path",
+        "Multiple profiles, overlays and mixed-DPI/fullscreen displays",
+        "Windows desktop runtime",
+        "Signed packaging and TCC attribution"
+      ]
+    },
+    {
+      "reportVersion": 1,
+      "recordedAt": "2026-10-09T23:20:38.446Z",
+      "platform": "darwin",
+      "arch": "arm64",
+      "helperSha256": "e80e11bb51c9420f35746686c4efddeb54d26b7448a793cea1081c7c5165cc02",
+      "scope": "unsigned-native-helper-only",
+      "signed": false,
+      "certified": false,
+      "checks": [
+        {
+          "name": "Granted fixture app activation",
+          "state": "passed",
+          "elapsedMs": 323
+        },
+        {
+          "name": "Real accessibility inspection and secure-value omission",
+          "state": "passed",
+          "elapsedMs": 22
+        },
+        {
+          "name": "Semantic press reaches the real app",
+          "state": "passed",
+          "elapsedMs": 559
+        },
+        {
+          "name": "Secure semantic setValue is refused",
+          "state": "passed",
+          "elapsedMs": 12
+        },
+        {
+          "name": "Revoked fixture inspect is refused",
+          "state": "passed",
+          "elapsedMs": 1
+        },
+        {
+          "name": "Permit expiry blocks the next real action",
+          "state": "passed",
+          "elapsedMs": 1252
+        }
+      ],
+      "physicalInterruption": false,
+      "remaining": [
+        "Provider-mediated app consent and real provider turns",
+        "Capture isolation and secure masking",
+        "Coordinate/drag/typing focus changes",
+        "Physical kill-chord latency and user-input interruption",
+        "Renderer/backend-stall stop path",
+        "Multiple profiles, overlays and mixed-DPI/fullscreen displays",
+        "Windows desktop runtime",
+        "Signed packaging and TCC attribution"
+      ]
+    },
+    {
+      "reportVersion": 1,
+      "recordedAt": "2026-10-09T23:22:16.526Z",
+      "platform": "darwin",
+      "arch": "arm64",
+      "helperSha256": "e80e11bb51c9420f35746686c4efddeb54d26b7448a793cea1081c7c5165cc02",
+      "scope": "unsigned-native-helper-only",
+      "signed": false,
+      "certified": false,
+      "checks": [
+        {
+          "name": "Granted fixture app activation",
+          "state": "passed",
+          "elapsedMs": 327
+        },
+        {
+          "name": "Real accessibility inspection and secure-value omission",
+          "state": "passed",
+          "elapsedMs": 23
+        },
+        {
+          "name": "Semantic press reaches the real app",
+          "state": "passed",
+          "elapsedMs": 551
+        },
+        {
+          "name": "Secure semantic setValue is refused",
+          "state": "passed",
+          "elapsedMs": 14
+        },
+        {
+          "name": "Revoked fixture inspect is refused",
+          "state": "passed",
+          "elapsedMs": 2
+        },
+        {
+          "name": "Coordinate click reaches the fixture in display model space",
+          "state": "failed",
+          "outcome": "TargetBlocked",
+          "blockKind": "system-ui",
+          "elapsedMs": 31
+        }
+      ],
+      "physicalInterruption": false,
+      "remaining": [
+        "Provider-mediated app consent and real provider turns",
+        "Capture isolation and secure masking",
+        "Coordinate/drag/typing focus changes",
+        "Physical kill-chord latency and user-input interruption",
+        "Renderer/backend-stall stop path",
+        "Multiple profiles, overlays and mixed-DPI/fullscreen displays",
+        "Windows desktop runtime",
+        "Signed packaging and TCC attribution"
+      ]
+    },
+    {
+      "reportVersion": 1,
+      "recordedAt": "2026-10-09T23:23:00.650Z",
+      "platform": "darwin",
+      "arch": "arm64",
+      "helperSha256": "e80e11bb51c9420f35746686c4efddeb54d26b7448a793cea1081c7c5165cc02",
+      "scope": "unsigned-native-helper-only",
+      "signed": false,
+      "certified": false,
+      "checks": [
+        {
+          "name": "Granted fixture app activation",
+          "state": "failed",
+          "outcome": "Interrupted",
+          "elapsedMs": 9
+        }
+      ],
+      "physicalInterruption": true,
+      "remaining": [
+        "Provider-mediated app consent and real provider turns",
+        "Capture isolation and secure masking",
+        "Coordinate/drag/typing focus changes",
+        "Physical kill-chord latency and user-input interruption",
+        "Renderer/backend-stall stop path",
+        "Multiple profiles, overlays and mixed-DPI/fullscreen displays",
+        "Windows desktop runtime",
+        "Signed packaging and TCC attribution"
+      ]
+    }
+  ],
+  "limitations": [
+    "The first helper did not process short control commands; its action outcome was unknown. No action was retried in that session.",
+    "The rebuilt helper completed six real-app checks. Later pointer checks were refused as system-ui; no pointer delivery is claimed.",
+    "Physical input stopped a later independent run. There was no automatic resume; this is not kill-chord latency evidence.",
+    "No signed app, Windows desktop, real provider turn, capture masking, or multi-profile certification was performed.",
+    "All native, provider-built-in and Chrome release gates remain closed."
+  ]
+}

@@ -1,4 +1,5 @@
 import { PrOperationRecovery } from "./PrOperationRecovery";
+import { isPrSubmitShortcut } from "./prHubKeyboard";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PrHubReplyDraft, PullRequestKey } from "@t3tools/contracts";
@@ -89,6 +90,8 @@ function ReplyEditor({
     query.data.status !== "succeeded" &&
     query.data.status !== "rejected" &&
     query.data.status !== "abandoned";
+  const replyDisabled =
+    busy || query.isPending || query.isError || !body.trim() || !draft.saved || stale;
   async function reply() {
     setBusy(true);
     setError(null);
@@ -195,19 +198,18 @@ function ReplyEditor({
             disabled={busy || query.isPending || query.isError}
             maxLength={65_536}
             onChange={(event) => setBody(event.target.value)}
+            onKeyDown={(event) => {
+              if (!isPrSubmitShortcut(event)) return;
+              event.preventDefault();
+              if (!replyDisabled) void reply();
+            }}
           />
           {body.trim() ? (
             <pre aria-label="Reply preview" className="whitespace-pre-wrap text-xs">
               {prReplyBody(body, id)}
             </pre>
           ) : null}
-          <Button
-            size="xs"
-            disabled={
-              busy || query.isPending || query.isError || !body.trim() || !draft.saved || stale
-            }
-            onClick={() => void reply()}
-          >
+          <Button size="xs" disabled={replyDisabled} onClick={() => void reply()}>
             Post reply to GitHub
           </Button>
         </>

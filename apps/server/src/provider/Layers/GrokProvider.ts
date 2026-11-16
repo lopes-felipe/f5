@@ -6,6 +6,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
 
 import { resolveGrokAcpBaseModelId } from "../acp/GrokAcpSupport.ts";
+import { compareCliVersions } from "../cliVersion.ts";
 import {
   buildServerProvider,
   detailFromResult,
@@ -16,7 +17,9 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 
-const VERSION_PROBE_TIMEOUT_MS = 4_000;
+const VERSION_PROBE_TIMEOUT_MS = 10_000;
+// Older Grok CLIs do not work with F5's ACP integration.
+const MINIMUM_GROK_VERSION = "1.0.13";
 const GROK_MODELS_TIMEOUT_MS = 8_000;
 
 const GROK_PRESENTATION = {
@@ -98,6 +101,16 @@ export function parseGrokModelsCliOutput(output: string) {
   return { authenticated, models: [...models.values()] };
 }
 
+/**
+ * Grok checks for a newer CLI when it launches. Health and skill probes run in
+ * the background, so an update they start is invisible, and on Windows it
+ * opens a console window for npm. `GROK_DISABLE_AUTOUPDATER=1` suppresses it
+ * for one process. Sessions and text generation keep the caller's environment.
+ */
+export function grokProbeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...environment, GROK_DISABLE_AUTOUPDATER: "1" };
+}
+
 const runGrokCliCommand = (
   grokSettings: GrokSettings,
   args: ReadonlyArray<string>,
@@ -105,11 +118,12 @@ const runGrokCliCommand = (
 ) =>
   Effect.gen(function* () {
     const command = grokSettings.binaryPath || "grok";
-    const invocation = yield* resolveInvocationEffect(command, args, environment);
+    const probeEnvironment = grokProbeEnvironment(environment);
+    const invocation = yield* resolveInvocationEffect(command, args, probeEnvironment);
     return yield* spawnAndCollect(
       command,
       ChildProcess.make(invocation.file, [...invocation.args], {
-        env: environment,
+        env: probeEnvironment,
       }),
     );
   });
@@ -200,18 +214,44 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       },
     });
   }
+  if (version && compareCliVersions(version, MINIMUM_GROK_VERSION) < 0) {
+    return buildServerProvider({
+      presentation: GROK_PRESENTATION,
+      enabled: grokSettings.enabled,
+      checkedAt,
+      models: fallbackModels,
+      probe: {
+        installed: true,
+        version,
+        status: "error",
+        auth: { status: "unknown" },
+        message: `Grok CLI v${version} is too old. Upgrade to v${MINIMUM_GROK_VERSION} or newer.`,
+      },
+    });
+  }
 
-  const modelsResult = yield* runGrokCliCommand(grokSettings, ["models"], environment).pipe(
+  const probeModels = runGrokCliCommand(grokSettings, ["models"], environment).pipe(
     Effect.timeoutOption(GROK_MODELS_TIMEOUT_MS),
     Effect.result,
+    Effect.map((modelsResult) => {
+      const result =
+        Result.isSuccess(modelsResult) && Option.isSome(modelsResult.success)
+          ? modelsResult.success.value
+          : undefined;
+      return result?.code === 0
+        ? parseGrokModelsCliOutput(`${result.stdout}\n${result.stderr}`)
+        : undefined;
+    }),
   );
-  const result =
-    Result.isSuccess(modelsResult) && Option.isSome(modelsResult.success)
-      ? modelsResult.success.value
-      : undefined;
-  const parsed =
-    result?.code === 0 ? parseGrokModelsCliOutput(`${result.stdout}\n${result.stderr}`) : undefined;
-  const authenticated = environment.XAI_API_KEY?.trim() ? true : parsed?.authenticated;
+  const hasApiKey = !!environment.XAI_API_KEY?.trim();
+  let parsed = yield* probeModels;
+  // An expired access token prints the logged-out line, then the CLI refreshes it in the same
+  // process. Probing again after that process exited tells a refresh from a real logout.
+  if (parsed?.authenticated === false && !hasApiKey) {
+    const recheck = yield* probeModels;
+    if (recheck && recheck.authenticated !== null) parsed = recheck;
+  }
+  const authenticated = hasApiKey ? true : parsed?.authenticated;
   return buildServerProvider({
     presentation: GROK_PRESENTATION,
     enabled: true,

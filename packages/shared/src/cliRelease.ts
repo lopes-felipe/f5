@@ -1,6 +1,18 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
+import * as path from "node:path";
+/**
+ * The tar used for CLI archives. On Windows this is the bundled bsdtar: a GNU
+ * tar earlier on PATH (Git Bash, MSYS) reads `C:\...` as a remote `host:path`.
+ */
+export function tarExecutable(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (platform !== "win32") return "tar";
+  return path.win32.join(env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+}
 export const CLI_TARGETS = [
   "darwin-arm64",
   "linux-x64",

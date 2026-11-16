@@ -2,13 +2,16 @@ import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 import * as OS from "node:os";
 import { Effect } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import type { ServerSecretStoreShape } from "../auth/Services/ServerSecretStore";
 import { ProfileGithubAccount } from "./ProfileGithubAccount";
 import { buildAccountExecutionEnvironment } from "../providerProcessEnv";
 import { fallbackDefaultProfile } from "../profiles/ProfileRegistryStore";
 import { runProcess } from "../processRunner";
+
+// These tests apply real Windows ACLs, including cold PowerShell startup.
+if (process.platform === "win32") vi.setConfig({ testTimeout: 60_000 });
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -33,6 +36,7 @@ async function profile() {
       ),
     remove: (name) =>
       Effect.promise(() => FS.rm(Path.join(secretsDir, `${name}.bin`), { force: true })),
+    list: () => Effect.succeed([]),
     getOrCreateRandom: () => Effect.die("unused"),
   };
   const account = new ProfileGithubAccount(
@@ -213,7 +217,7 @@ it("starts native gh with only the disconnected placeholder, then an Enterprise-
   }
   await p.account.reconcile();
   const invoke = (host: string) =>
-    runProcess("gh", ["auth", "token", "--hostname", host], { env, timeoutMs: 3000 });
+    runProcess("gh", ["auth", "token", "--hostname", host], { env, timeoutMs: 15000 });
   expect((await invoke("github.com")).stdout.trim()).toBe("f5-profile-not-connected");
   await p.account.set("git.example.com", "enterprise-only");
   expect((await invoke("git.example.com")).stdout.trim()).toBe("enterprise-only");

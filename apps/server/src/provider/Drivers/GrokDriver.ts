@@ -1,3 +1,6 @@
+import { Option } from "effect";
+import { PreviewMcpHttpServer } from "../../mcp/PreviewMcpHttpServer";
+import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { makeProviderLimits } from "../../usage/providerLimits.ts";
 import { discoverGrokSkills, discoverGlobalGrokSkills } from "./GrokSkills.ts";
 /**
@@ -28,6 +31,7 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("grok");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -80,8 +84,14 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
       });
       const effectiveConfig = { ...config, enabled } satisfies GrokSettings;
 
+      const previewMcp = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
+      const computerBroker = Option.getOrUndefined(
+        yield* Effect.serviceOption(ComputerAutomationBroker),
+      );
       const adapter = yield* makeGrokAdapter(effectiveConfig, {
         environment: processEnv,
+        ...(previewMcp ? { previewMcpHttpServer: previewMcp } : {}),
+        ...(computerBroker ? { computerAutomationBroker: computerBroker } : {}),
         discoverSkillCommands: (cwd) =>
           discoverGrokSkills(effectiveConfig, processEnv, cwd).pipe(
             Effect.map((skills) =>
@@ -139,6 +149,13 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          driver: DRIVER_KIND,
+          binaryPath: effectiveConfig.binaryPath,
+          resolutionEnvironment: processEnv,
+          instanceEnvironment: environment,
+          instanceId,
+        }),
         continuationIdentity,
         displayName,
         accentColor,

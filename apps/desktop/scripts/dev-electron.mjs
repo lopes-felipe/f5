@@ -86,8 +86,13 @@ function startApp() {
     }
 
     const exitedAbnormally = signal !== null || code !== 0;
-    if (!shuttingDown && !expectedExits.has(app) && exitedAbnormally) {
-      scheduleRestart();
+    if (!shuttingDown && !expectedExits.has(app)) {
+      if (exitedAbnormally) {
+        scheduleRestart();
+      } else {
+        // Respect an explicit quit: a later build must not reopen the Dev app.
+        void shutdown(0);
+      }
     }
   });
 }

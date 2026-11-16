@@ -14,6 +14,7 @@ export const PROVIDER_SESSION_ACTIONS = [
   "nativeCommands",
   "nativeSessionCleanup",
   "nativeReview",
+  "nativeAside",
   "nativeCompaction",
   "nativeFork",
   "nativeGoals",
@@ -70,7 +71,18 @@ export type ProviderSessionDiscoveryOutcome = typeof ProviderSessionDiscoveryOut
 export const ProviderSessionCapabilities = Schema.Struct({
   generation: NonNegativeInt,
   providerInstanceId: Schema.optional(ProviderInstanceId),
+  /** The live session's reported version when known, else the probed executable's. */
   executableVersion: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Session cache writes by lifetime, as the SDK reports them for the whole agent tree
+   * (Claude `result.modelUsage`). Display only: never F5 token facts or cost.
+   */
+  latestCacheWrites: Schema.optional(
+    Schema.Struct({
+      ephemeral5mInputTokens: NonNegativeInt,
+      ephemeral1hInputTokens: NonNegativeInt,
+    }),
+  ),
   discovery: ProviderSessionDiscoveryOutcome,
   checkedAt: IsoDateTime,
   actions: Schema.Array(ProviderSessionActionSupport),

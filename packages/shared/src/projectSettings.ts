@@ -1,5 +1,8 @@
 import { parsePreviewHostPattern } from "./preview";
-import { resolveTextGenerationProvider } from "./serverSettings";
+import {
+  resolveProjectProviderInstanceEnabled,
+  resolveTextGenerationProvider,
+} from "./serverSettings";
 import {
   type WorktreeCleanupRules,
   DEFAULT_SERVER_SETTINGS,
@@ -17,12 +20,20 @@ import {
  * that removes worktrees or pulls branches.
  */
 const USER_ONLY_PROJECT_SETTING_KEYS: ReadonlySet<string> = new Set([
+  "providerInstances",
+  "autoSettleOnPullRequestMerge",
+  "autoSettleAfterDays",
+  "autoSettleKeepPullRequests",
   "worktreeCleanup",
+  "worktreeDisposablePaths",
   "autoPullDefaultBranch",
   // Capabilities that widen what an agent can reach must never come from a checked-in file.
   "previewExternalHosts",
   "enableClaudeInChrome",
+  "enableCodexChrome",
   "enableAgentComputerUse",
+  // A checked-in file must never enable scheduled upstream runs.
+  "upstreamPorts",
 ]);
 
 /** Resolve only the approved project-scoped keys. Explicit false and null are values. */
@@ -63,7 +74,36 @@ export function resolveProjectSettings(input: {
           : overrides[key];
       source = "project";
     }
-    Object.assign(settings, { [key]: value });
+    if (key === "providerInstances") {
+      // Never replace driver configuration with the narrow project policy map.
+      const providerInstances = Object.fromEntries(
+        Object.entries(global.providerInstances).map(([id, config]) => [
+          id,
+          {
+            ...config,
+            enabled: resolveProjectProviderInstanceEnabled(
+              global,
+              input.projectId,
+              id as keyof typeof global.providerInstances,
+            ),
+          },
+        ]),
+      );
+      const providers = Object.fromEntries(
+        Object.entries(global.providers).map(([id, config]) => [
+          id,
+          {
+            ...config,
+            enabled: resolveProjectProviderInstanceEnabled(
+              global,
+              input.projectId,
+              id as keyof typeof global.providerInstances,
+            ),
+          },
+        ]),
+      );
+      Object.assign(settings, { providerInstances, providers });
+    } else Object.assign(settings, { [key]: value });
     Object.assign(sources, { [key]: source });
   }
   return { settings: resolveTextGenerationProvider(settings), sources, overrides };
@@ -77,14 +117,25 @@ export interface AgentBrowserPolicy {
   readonly previewAutomation: boolean;
   readonly externalHosts: ReadonlyArray<string>;
   readonly claudeInChrome: boolean;
+  /** Codex Chrome through F5's integration proxy. */
+  readonly codexChrome: boolean;
   readonly computerUse: boolean;
+  /**
+   * Global preference; missing means foreground. Background still needs every peer's
+   * capability at invocation.
+   */
+  readonly computerUseExecutionMode?: "foreground" | "background";
+  readonly computerUsePasswordMasking?: "fast" | "conservative";
 }
 
 export const DISABLED_AGENT_BROWSER_POLICY: AgentBrowserPolicy = {
   previewAutomation: false,
   externalHosts: [],
   claudeInChrome: false,
+  codexChrome: false,
   computerUse: false,
+  computerUseExecutionMode: "foreground",
+  computerUsePasswordMasking: "fast",
 };
 
 /** User overrides for the project win over global settings; checked-in files never apply. */
@@ -104,7 +155,12 @@ export function agentBrowserPolicyFromSettings(
       (pattern) => parsePreviewHostPattern(pattern).ok,
     ),
     claudeInChrome: overrides?.enableClaudeInChrome ?? settings.enableClaudeInChrome,
+    codexChrome: overrides?.enableCodexChrome ?? settings.enableCodexChrome,
     computerUse: overrides?.enableAgentComputerUse ?? settings.enableAgentComputerUse,
+    // No project override: the execution mode is a machine-wide choice.
+    computerUseExecutionMode:
+      settings.computerUseExecutionMode ?? DEFAULT_SERVER_SETTINGS.computerUseExecutionMode,
+    computerUsePasswordMasking: settings.computerUsePasswordMasking ?? "fast",
   };
 }
 
@@ -122,7 +178,11 @@ export function resolveWorktreeCleanupRules(settings: ServerSettings): WorktreeC
         ? policy.rules
         : settings.storageCleanup.worktree;
   if (!rules) return null;
-  return rules.afterDays !== null || rules.onMerge || rules.onDelete || rules.unchanged
+  return rules.afterDays !== null ||
+    rules.onMerge ||
+    rules.onDelete ||
+    rules.unchanged ||
+    rules.onSettle
     ? rules
     : null;
 }

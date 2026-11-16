@@ -6,12 +6,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
+const disabledReasons = vi.hoisted(() => new Map<string, string | undefined>());
+
+vi.mock("../ui/toolbar-toggle", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../ui/toolbar-toggle")>();
+  return {
+    ToolbarToggle: (props: ComponentProps<typeof original.ToolbarToggle>) => {
+      if (props.disabled) disabledReasons.set(props.label, props.disabledReason);
+      return <original.ToolbarToggle {...props} />;
+    },
+  };
+});
+
 vi.mock("../GitActionsControl", () => ({
-  default: () => null,
+  default: () => <span data-testid="git-actions" />,
 }));
 
 vi.mock("../ProjectScriptsControl", () => ({
-  default: () => null,
+  default: () => <span data-testid="project-scripts" />,
 }));
 
 vi.mock("./OpenInPicker", () => ({
@@ -23,6 +35,12 @@ vi.mock("../ui/sidebar", () => ({
 }));
 
 import { ChatHeader } from "./ChatHeader";
+import {
+  displayProfilePatchFor,
+  getDisplayProfile,
+  readAppSettingsSnapshot,
+  updateAppSettings,
+} from "../../appSettings";
 
 type ChatHeaderProps = ComponentProps<typeof ChatHeader>;
 
@@ -36,6 +54,7 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
     onOpenWorkflow: undefined,
     isGitRepo: true,
     openInCwd: null,
+    openInShortcutEnabled: true,
     activeProjectScripts: undefined,
     preferredScriptId: null,
     keybindings: [],
@@ -86,9 +105,83 @@ function renderHeader(overrides: Partial<ChatHeaderProps> = {}, width = 900) {
 }
 
 describe("ChatHeader", () => {
+  it("changes display density from the header", async () => {
+    const previousSettings = readAppSettingsSnapshot();
+    updateAppSettings(displayProfilePatchFor("detailed"));
+    const screen = await renderHeader();
+    try {
+      await page
+        .getByRole("group", { name: "Conversation view" })
+        .getByRole("button", { name: "Display density" })
+        .click();
+      await expect.element(page.getByRole("menuitemcheckbox", { name: "Detailed" })).toBeChecked();
+      await page.getByRole("menuitemcheckbox", { name: "Minimal" }).click();
+      expect(getDisplayProfile(readAppSettingsSnapshot())).toBe("minimal");
+    } finally {
+      await screen.unmount();
+      updateAppSettings(previousSettings);
+    }
+  });
+
+  it.each([
+    ["scratch", "after the first message creates the thread's folder."],
+    ["standard", "because the project's folder is missing."],
+  ] as const)("explains unavailable workspace controls for %s threads", async (kind, reason) => {
+    await renderHeader({ activeProjectKind: kind });
+    expect(disabledReasons.get("Files")).toBe(
+      `Workspace files are ${kind === "scratch" ? "available" : "unavailable"} ${reason}`,
+    );
+    expect(disabledReasons.get("Terminal")).toBe(
+      `Terminal is ${kind === "scratch" ? "available" : "unavailable"} ${reason}`,
+    );
+  });
+
+  it("shows scratch breadcrumbs without project settings or scripts, with terminal available after allocation", async () => {
+    const base = {
+      activeProjectId: "scratch" as never,
+      activeProjectKind: "scratch" as const,
+      activeProjectName: "No project",
+      isGitRepo: false,
+      activeProjectScripts: undefined,
+      onNewThreadInProject: () => {},
+      onOpenProjectSettings: undefined,
+    };
+    const view = await renderHeader(base);
+    await expect.element(page.getByText("No project", { exact: true })).toBeVisible();
+    expect(page.getByRole("button", { name: "Project actions for No project" }).all()).toHaveLength(
+      0,
+    );
+    expect(document.querySelector('[data-testid="project-scripts"]')).toBeNull();
+    expect(document.querySelector("img")).toBeNull();
+    await expect
+      .element(page.getByRole("button", { name: "Toggle terminal drawer" }))
+      .toBeDisabled();
+    await view.unmount();
+    await renderHeader({
+      ...base,
+      openInCwd: "/state/scratch/own",
+      terminalAvailable: true,
+      workspaceFilesAvailable: true,
+    });
+    await expect
+      .element(page.getByRole("button", { name: "Toggle terminal drawer" }))
+      .toBeEnabled();
+  });
   afterEach(() => {
+    disabledReasons.clear();
     for (const client of queryClients.splice(0)) client.clear();
     document.body.innerHTML = "";
+  });
+
+  it("renders provider-native goal status in the header", async () => {
+    const screen = await renderHeader({ nativeGoalSummary: "Goal: All tests pass · active" });
+    try {
+      await expect
+        .element(page.getByText("Goal: All tests pass · active", { exact: true }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
   });
 
   it("collapses the panel toggles into a Panels menu when the header is narrow", async () => {
@@ -262,10 +355,12 @@ describe("ChatHeader", () => {
   it("offers project-scoped actions from the project badge", async () => {
     const onNewThreadInProject = vi.fn();
     const onOpenProjectSettings = vi.fn();
+    const onOpenProjectActions = vi.fn();
     const screen = await renderHeader({
       activeProjectName: "Project Alpha",
       onNewThreadInProject,
       onOpenProjectSettings,
+      onOpenProjectActions,
     });
 
     try {
@@ -276,6 +371,51 @@ describe("ChatHeader", () => {
       await page.getByRole("button", { name: "Project actions for Project Alpha" }).click();
       await page.getByRole("menuitem", { name: "Project settings" }).click();
       expect(onOpenProjectSettings).toHaveBeenCalledTimes(1);
+
+      await page.getByRole("button", { name: "Project actions for Project Alpha" }).click();
+      await page.getByRole("menuitem", { name: "Manage actions" }).click();
+      expect(onOpenProjectActions).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("replaces the project actions with a project picker on an unsent draft", async () => {
+    const onSelect = vi.fn();
+    const project = (id: string, name: string) => ({
+      id: id as never,
+      name,
+      cwd: `/repo/${id}`,
+      model: "gpt-5.1",
+      createdAt: "2026-11-01T00:00:00.000Z",
+      expanded: true,
+      scripts: [],
+      memories: [],
+    });
+    const screen = await renderHeader({
+      isServerThread: false,
+      activeProjectId: "alpha" as never,
+      activeProjectName: "Project Alpha",
+      onNewThreadInProject: () => {},
+      onOpenProjectSettings: () => {},
+      projectPicker: {
+        projects: [project("alpha", "Project Alpha"), project("beta", "Project Beta")],
+        selection: { kind: "project", projectId: "alpha" as never },
+        onSelect,
+      },
+    });
+
+    try {
+      expect(
+        page.getByRole("button", { name: "Project actions for Project Alpha" }).elements(),
+      ).toHaveLength(0);
+      await page.getByRole("combobox", { name: "Project: Project Alpha" }).click();
+      await page.getByRole("option", { name: "Project Beta" }).click();
+      expect(onSelect).toHaveBeenCalledWith({ kind: "project", projectId: "beta" });
+
+      await page.getByRole("combobox", { name: "Project: Project Alpha" }).click();
+      await page.getByTestId("project-picker-no-project").click();
+      expect(onSelect).toHaveBeenLastCalledWith({ kind: "none" });
     } finally {
       await screen.unmount();
     }

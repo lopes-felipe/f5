@@ -133,6 +133,9 @@ describe("orchestration projector", () => {
     expect(next.snapshotSequence).toBe(1);
     expect(next.threads).toEqual([
       {
+        settledAt: null,
+        settledBy: null,
+        autoSettleDisabled: false,
         id: "thread-1",
         projectId: "project-1",
         title: "demo",
@@ -141,6 +144,7 @@ describe("orchestration projector", () => {
         interactionMode: "default",
         branch: null,
         worktreePath: null,
+        scratchPath: null,
         latestTurn: null,
         archivedAt: null,
         pinnedAt: null,
@@ -733,6 +737,99 @@ describe("orchestration projector", () => {
     });
   });
 
+  it("keeps a settled turn completed when a late missing checkpoint placeholder arrives", async () => {
+    const createdAt = "2026-10-19T09:47:45.000Z";
+    const startedAt = "2026-10-19T09:47:45.553Z";
+    const settledAt = "2026-10-19T10:23:17.980Z";
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-settled",
+          occurredAt: createdAt,
+          commandId: "cmd-create-settled",
+          payload: {
+            threadId: "thread-settled",
+            projectId: "project-1",
+            title: "demo",
+            model: "claude-opus-5-5",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const makeSessionEvent = (
+      sequence: number,
+      status: "running" | "ready",
+      updatedAt: string,
+      settledTurnId?: string,
+    ) =>
+      makeEvent({
+        sequence,
+        type: "thread.session-set",
+        aggregateKind: "thread",
+        aggregateId: "thread-settled",
+        occurredAt: updatedAt,
+        commandId: `cmd-settled-${sequence}`,
+        payload: {
+          threadId: "thread-settled",
+          ...(settledTurnId ? { settledTurnId } : {}),
+          session: {
+            threadId: "thread-settled",
+            status,
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: status === "running" ? "turn-settled" : null,
+            lastError: null,
+            updatedAt,
+          },
+        },
+      });
+    const afterRunning = await Effect.runPromise(
+      projectEvent(afterCreate, makeSessionEvent(2, "running", startedAt)),
+    );
+    const afterReady = await Effect.runPromise(
+      projectEvent(afterRunning, makeSessionEvent(3, "ready", settledAt, "turn-settled")),
+    );
+    const afterPlaceholder = await Effect.runPromise(
+      projectEvent(
+        afterReady,
+        makeEvent({
+          sequence: 4,
+          type: "thread.turn-diff-completed",
+          aggregateKind: "thread",
+          aggregateId: "thread-settled",
+          occurredAt: settledAt,
+          commandId: "cmd-settled-placeholder",
+          payload: {
+            threadId: "thread-settled",
+            turnId: "turn-settled",
+            checkpointTurnCount: 1,
+            checkpointRef: "refs/t3/checkpoints/thread-settled/turn/1",
+            status: "missing",
+            files: [],
+            assistantMessageId: "assistant-settled",
+            completedAt: settledAt,
+          },
+        }),
+      ),
+    );
+
+    expect(afterReady.threads[0]?.latestTurn?.state).toBe("completed");
+    expect(afterPlaceholder.threads[0]?.latestTurn).toMatchObject({
+      turnId: "turn-settled",
+      state: "completed",
+      assistantMessageId: "assistant-settled",
+    });
+  });
+
   it("keeps the latest turn running when a turn diff is refreshed before the turn completes", async () => {
     const createdAt = "2026-02-23T08:00:00.000Z";
     const startedAt = "2026-02-23T08:00:05.000Z";
@@ -943,6 +1040,36 @@ describe("orchestration projector", () => {
       assistantMessageId: "assistant-final",
       processingQuiescedAt: null,
     });
+    const lateCheckpoint = makeEvent({
+      sequence: 5,
+      type: "thread.turn-diff-completed",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      occurredAt: messageAt,
+      commandId: "late-checkpoint",
+      payload: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        checkpointTurnCount: 1,
+        checkpointRef: "refs/t3/checkpoints/late",
+        status: "ready",
+        files: [],
+        assistantMessageId: "assistant:toolu_placeholder",
+        completedAt: messageAt,
+      },
+    });
+    const afterLateCheckpoint = await Effect.runPromise(
+      projectEvent(afterAssistantMessage, lateCheckpoint),
+    );
+    expect(afterLateCheckpoint.threads[0]?.latestTurn?.assistantMessageId).toBe("assistant-final");
+    expect(afterLateCheckpoint.threads[0]?.checkpoints[0]?.assistantMessageId).toBe(
+      "assistant-final",
+    );
+    // Historical checkpoint events carry the bad id too; replay must be equally safe.
+    const replay = await Effect.runPromise(
+      projectEvent(afterLateCheckpoint, { ...lateCheckpoint, sequence: 6 }),
+    );
+    expect(replay.threads[0]?.latestTurn?.assistantMessageId).toBe("assistant-final");
   });
 
   it("projects session token usage snapshots onto the thread and preserves them across later session updates", async () => {

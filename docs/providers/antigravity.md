@@ -1,51 +1,53 @@
 # Antigravity
 
-Antigravity is disabled by default. Add or enable its provider instance in Settings,
-choose **Install Antigravity**, then **Sign in** and follow the Google link. Installation
-is explicit: status checks and thread starts never download software or open a browser.
+Use Google's Antigravity agent as an F5 provider. It's off by default, and F5 installs its
+runtime only when you ask.
 
-F5 pins the official `agy_acp_server_1.1.1` release. It streams the archive into a staging
-directory, verifies its SHA-256 and exact size, extracts only the two pinned executables,
-and publishes the completed installation atomically. Interrupted installations do not
-become available. A damaged existing installation produces an error naming the managed
-release directory rather than overwriting it. The supported assets are macOS arm64,
-Linux x64/arm64, and Windows x64/arm64.
+## How to
 
-Google personal OAuth credentials belong to one F5 profile and provider instance.
-They survive server restarts and are not imported from another profile or the ambient
-Google environment. Account setup uses F5's existing owner-bound jobs and installation-wide
-OAuth lease. Changing accounts requires stopping active turns; idle runtimes are stopped
-before account changes so they do not retain the previous credentials. New sessions, turns,
-compaction and metadata generation are rejected until the account job exits. Installation
-uses a separate profile lock, so downloading the release does not block other sign-ins.
+1. Open **Settings → Providers** and add or enable the Antigravity provider.
+2. Click **Install Antigravity**.
+3. Click **Sign in** and follow the Google link.
+4. Pick **Antigravity Default** or another model in the composer.
 
-The composer uses the model choices advertised by the running agent. Until the first
-session supplies that inventory, **Antigravity Default** uses the agent's account default.
-Explicit custom model names remain available. Native slash commands, reasoning text,
-questions, file/tool approvals and form elicitation use the existing F5 thread UI.
-Optional form fields may be skipped, including on entirely optional forms. Unsupported
-forms are cancelled rather than approving fields the user cannot see.
-Permission buttons show only native choices, including native persistence warnings.
+Status checks and new threads never download software or open a browser on their own.
 
-Native `/compact` is off by default and must be enabled in the instance settings.
-F5's existing compaction remains the default. Antigravity supports approval-required and
-full-access modes; it does not advertise read-only workflow enforcement. Questions still
-require an answer in full-access mode. Message-mode asynchronous questions and durable
-answer attachments remain part of Phase 8.
+## Models and conversations
 
-The current image-only attachment path enforces the existing per-image limit and an
-additional 50 MiB total per Antigravity turn. Generic file uploads and their advertised
-per-provider limits arrive in Phase 7. Subagent launch receipts remain running work until
-the parent turn finishes; the UI does not claim that a successful launch means every
-subagent completed.
+The composer lists the models the running agent reports. Until the first session starts,
+**Antigravity Default** uses your account's default model; custom model names also work. Slash
+commands, reasoning, questions, approvals and forms use the normal F5 thread UI. Approval buttons
+show only Antigravity's own choices.
 
-Provider status checks only inspect local installation/account files. Each live process
-gets a scoped temporary directory, removed after shutdown. Only user skill directories
-are linked from `~/.gemini/config/skills` and `~/.gemini/antigravity-cli/skills`; credentials,
-hooks and MCP configuration are not shared this way. The same two directories in the
-instance's home form its private skill catalog. The CLI publishes no catalog of its own,
-so F5 scans them on each status check.
+## Good to know
 
-The browser helper alone sets `ELECTRON_RUN_AS_NODE`. Agent tool commands retain Python
-and Google Cloud tool configuration; Antigravity-specific authentication overrides are
-removed, and the runtime explicitly uses the profile's personal OAuth account.
+- Antigravity supports **Supervised** and **Full access** modes. Questions still need an answer in
+  full access.
+- Native `/compact` is off by default; turn it on in the provider settings to use it instead of
+  F5's compaction.
+- Google sign-ins belong to one F5 profile and provider, survive restarts, and are never copied
+  from your global Google setup.
+- Stop running turns before changing accounts.
+- Attachments are limited to 50 MiB per turn.
+
+- F5 preview tools remain gated pending startup verification and negotiated HTTP MCP support; F5 computer tools await Antigravity live privacy verification.
+
+<details>
+<summary>Details and limits</summary>
+
+| Topic             | Detail                                                                                                                                                                                                                           |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pinned release    | `agy_acp_server_1.1.1` for macOS arm64, Linux x64/arm64 and Windows x64/arm64                                                                                                                                                    |
+| Install           | Streams to a staging folder, checks SHA-256 and exact size, extracts only the two pinned executables and publishes atomically. A damaged install reports its folder instead of being overwritten                                 |
+| Account changes   | Idle runtimes stop first. New sessions, turns, compaction and metadata are blocked until the account job ends. Installing doesn't block other sign-ins                                                                           |
+| Forms             | Optional fields can be skipped. Unsupported forms are cancelled, never auto-approved                                                                                                                                             |
+| Subagents         | A launched subagent counts as running work until the parent turn finishes                                                                                                                                                        |
+| Skills            | Only `~/.gemini/config/skills` and `~/.gemini/antigravity-cli/skills` are linked in. Credentials, hooks and MCP config are not. The same folders in the provider's home form its own skill catalog, scanned on each status check |
+| Process isolation | Each process gets its own temp folder, removed at shutdown. Agent commands keep Python and Google Cloud config, but Antigravity auth overrides are removed                                                                       |
+
+</details>
+
+## Related
+
+- [Provider prerequisites](../provider-prerequisites.md)
+- [Usage and limits](../user/usage-limits.md) (Antigravity quotas through CLIProxyAPI)

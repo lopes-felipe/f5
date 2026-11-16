@@ -124,6 +124,7 @@ it("records accepted sends and reconnect recovery, not rejected transient artifa
   expect(useComposerMentionHistoryStore.getState().entries).toHaveLength(1);
   expect(recallComposerMentions("t", "m", prompt)).toHaveLength(1);
 });
+// The oversized fixture checks storage bounds, not a performance deadline.
 it("caps entry count and storage bytes, including hydration", () => {
   for (let index = 0; index < 205; index++)
     useComposerMentionHistoryStore.getState().remember(historyEntry(String(index)));
@@ -151,7 +152,7 @@ it("caps entry count and storage bytes, including hydration", () => {
   expect(
     mentionHistoryBytes(useComposerMentionHistoryStore.getState().entries),
   ).toBeLessThanOrEqual(MAX_MENTION_HISTORY_BYTES);
-});
+}, 30_000);
 it("does not persist prompt bodies and overwrites legacy bodies during migration", async () => {
   const prompt = "Read @src/a.ts " + "PRIVATE CONTENT ".repeat(8000);
   const entry = historyEntry("large", prompt);

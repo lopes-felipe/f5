@@ -1,26 +1,26 @@
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
-import { useQuery } from "@tanstack/react-query";
+import { withoutScratchProjects } from "@t3tools/shared/scratchProject";
+import { invalidateWorkflowQueries } from "../../lib/workflowQueries";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   defaultInstanceIdForDriver,
   type ProjectId,
   type ProjectIcon,
   type ProjectMemoryType,
-  type ProviderKind,
   ProviderDriverKind,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
-import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   CLAUDE_SUBAGENT_MODEL_INHERIT,
+  type ClaudeSubagentSettingsPatch,
   DEFAULT_CLAUDE_PROJECT_SETTINGS,
-  MAX_CUSTOM_MODEL_LENGTH,
   getAppModelOptions,
   getClaudeProjectSettings,
+  getClaudeSubagentDefaults,
   useAppSettings,
 } from "../../appSettings";
 import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
@@ -61,72 +61,49 @@ export const EMPTY_MEMORY_DRAFT: MemoryDraft = {
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
+function normalizeClaudeSubagentPatch(
+  patch: ClaudeSubagentSettingsPatch,
+  current: typeof DEFAULT_CLAUDE_PROJECT_SETTINGS,
+): typeof DEFAULT_CLAUDE_PROJECT_SETTINGS {
+  return {
+    subagentsEnabled:
+      ("subagentsEnabled" in patch ? patch.subagentsEnabled : current.subagentsEnabled) !== false,
+    subagentModel:
+      "subagentModel" in patch
+        ? typeof patch.subagentModel === "string" && patch.subagentModel.trim().length > 0
+          ? patch.subagentModel.trim()
+          : CLAUDE_SUBAGENT_MODEL_INHERIT
+        : current.subagentModel,
+    // An explicit undefined in the patch returns to Claude's default effort.
+    ...("subagentEffort" in patch
+      ? patch.subagentEffort
+        ? { subagentEffort: patch.subagentEffort }
+        : {}
+      : current.subagentEffort
+        ? { subagentEffort: current.subagentEffort }
+        : {}),
+  };
+}
+
 function memoryScopeForType(type: ProjectMemoryType): "user" | "project" {
   return type === "user" || type === "feedback" ? "user" : "project";
 }
 
-export function getCustomModelsForProvider(
-  settings: ReturnType<typeof useAppSettings>["settings"],
-  provider: ProviderKind,
-) {
-  switch (provider) {
-    case "claudeAgent":
-      return settings.customClaudeModels;
-    case "grok":
-      return settings.customGrokModels;
-    case "antigravity":
-      return [];
-    case "codex":
-    default:
-      return settings.customCodexModels;
-  }
-}
-
-export function getDefaultCustomModelsForProvider(
-  defaults: ReturnType<typeof useAppSettings>["defaults"],
-  provider: ProviderKind,
-) {
-  switch (provider) {
-    case "claudeAgent":
-      return defaults.customClaudeModels;
-    case "grok":
-      return defaults.customGrokModels;
-    case "antigravity":
-      return [];
-    case "codex":
-    default:
-      return defaults.customCodexModels;
-  }
-}
-
-export function patchCustomModels(provider: ProviderKind, models: string[]) {
-  switch (provider) {
-    case "claudeAgent":
-      return { customClaudeModels: models };
-    case "grok":
-      return { customGrokModels: models };
-    case "antigravity":
-      return {};
-    case "codex":
-    default:
-      return { customCodexModels: models };
-  }
-}
-
 export interface UseSettingsRouteStateOptions {
-  readonly projectSelection?: {
-    readonly projectId: ProjectId | null;
-    readonly onProjectIdChange: (projectId: ProjectId | null) => void;
-  };
+  /** The project selected in the settings scope picker, or null for global scope. */
+  readonly projectId?: ProjectId | null;
 }
 
 export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}) {
+  const queryClient = useQueryClient();
   const { theme, setTheme, resolvedTheme } = useTheme();
   const { defaults: appDefaults } = useAppSettings();
   const settings = useSettings();
   const defaults = { ...DEFAULT_UNIFIED_SETTINGS, ...appDefaults };
   const { updateSettings } = useUpdateSettings();
-  const projects = useStore((state) => state.projects);
+  const storeProjects = useStore((state) => state.projects);
+  // The home for threads without a project has no project settings of its own.
+  const projects = useMemo(() => withoutScratchProjects(storeProjects), [storeProjects]);
   const projectsHydrated = useStore((state) => state.threadsHydrated);
   const syncStartupSnapshot = useStore((state) => state.syncStartupSnapshot);
   const notificationPermission = useThreadStatusNotificationPermissionState();
@@ -135,20 +112,6 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
   const [openKeybindingsError, setOpenKeybindingsError] = useState<string | null>(null);
   const [isRequestingNotificationPermission, setIsRequestingNotificationPermission] =
     useState(false);
-  const [customModelInputByProvider, setCustomModelInputByProvider] = useState<
-    Record<ProviderKind, string>
-  >({
-    codex: "",
-    claudeAgent: "",
-    cursor: "",
-    opencode: "",
-    grok: "",
-    antigravity: "",
-  });
-  const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
-    Partial<Record<ProviderKind, string | null>>
-  >({});
-  const [localSelectedProjectId, setLocalSelectedProjectId] = useState<ProjectId | null>(null);
   const [memoryDraft, setMemoryDraft] = useState<MemoryDraft>(EMPTY_MEMORY_DRAFT);
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
   const [editingMemoryDraft, setEditingMemoryDraft] = useState<MemoryDraft>(EMPTY_MEMORY_DRAFT);
@@ -158,10 +121,6 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
   const [projectMetadataPending, setProjectMetadataPending] = useState(false);
   const [projectMetadataError, setProjectMetadataError] = useState<string | null>(null);
 
-  const claudeLaunchArgsParseResult = useMemo(
-    () => parseClaudeLaunchArgs(settings.claudeLaunchArgs),
-    [settings.claudeLaunchArgs],
-  );
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
   const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
   const customKeybindings = serverConfigQuery.data?.customKeybindings ?? [];
@@ -175,16 +134,12 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
         : notificationPermission === "default"
           ? "not requested"
           : "unsupported";
-  const isProjectSelectionControlled = options.projectSelection !== undefined;
-  const selectedProjectId = isProjectSelectionControlled
-    ? (options.projectSelection?.projectId ?? null)
-    : localSelectedProjectId;
-  const selectedProjectMatch = selectedProjectId
+  const selectedProjectId = options.projectId ?? null;
+  const selectedProject = selectedProjectId
     ? (projects.find((project) => project.id === selectedProjectId) ?? null)
     : null;
   const selectedProjectUnavailable =
-    projectsHydrated && selectedProjectId !== null && selectedProjectMatch === null;
-  const selectedProject = selectedProjectId ? selectedProjectMatch : (projects[0] ?? null);
+    projectsHydrated && selectedProjectId !== null && selectedProject === null;
   const selectedProjectSummaryId = selectedProject?.id ?? null;
   const selectedProjectSummaryName = selectedProject?.name ?? null;
   const selectedProjectMemories = selectedProject?.memories ?? [];
@@ -199,7 +154,10 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
     [selectedProjectSummaryId, selectedProjectSummaryName],
   );
   const hasProjects = projects.length > 0;
+  const claudeSubagentDefaults = getClaudeSubagentDefaults(settings);
   const selectedProjectClaudeSettings = getClaudeProjectSettings(settings, selectedProject?.id);
+  const selectedProjectHasClaudeOverride =
+    selectedProject !== null && Object.hasOwn(settings.claudeProjectSettings, selectedProject.id);
   const defaultClaudeInstanceId = defaultInstanceIdForDriver(
     ProviderDriverKind.make("claudeAgent"),
   );
@@ -207,15 +165,12 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
     serverConfigQuery.data?.providers.find(
       (provider) => provider.instanceId === defaultClaudeInstanceId,
     )?.models ?? [];
-  const effectiveClaudeSubagentModel = resolveClaudeSubagentModel(
-    selectedProjectClaudeSettings.subagentModel,
-    claudeSubagentModelOptions,
-  );
-  const selectedClaudeSubagentModelLabel =
-    effectiveClaudeSubagentModel === CLAUDE_SUBAGENT_MODEL_INHERIT
+  const claudeSubagentModelLabel = (model: string) => {
+    const effective = resolveClaudeSubagentModel(model, claudeSubagentModelOptions);
+    return effective === CLAUDE_SUBAGENT_MODEL_INHERIT
       ? "Inherit from parent"
-      : (claudeSubagentModelOptions.find((option) => option.slug === effectiveClaudeSubagentModel)
-          ?.name ?? effectiveClaudeSubagentModel);
+      : (claudeSubagentModelOptions.find((option) => option.slug === effective)?.name ?? effective);
+  };
   const gitTextGenerationModelOptions = getAppModelOptions(
     "codex",
     settings.customCodexModels,
@@ -227,35 +182,13 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
         option.slug === (settings.textGenerationModel ?? DEFAULT_GIT_TEXT_GENERATION_MODEL),
     )?.name ?? settings.textGenerationModel;
 
-  const onControlledProjectIdChange = options.projectSelection?.onProjectIdChange;
-  const handleSelectedProjectChange = useCallback(
-    (projectId: ProjectId | null) => {
-      if (isProjectSelectionControlled) {
-        onControlledProjectIdChange?.(projectId);
-      } else {
-        setLocalSelectedProjectId(projectId);
-      }
-      setEditingMemoryId(null);
-      setEditingMemoryDraft(EMPTY_MEMORY_DRAFT);
-      setCreateMemoryError(null);
-      setExistingMemoryError(null);
-    },
-    [isProjectSelectionControlled, onControlledProjectIdChange],
-  );
-
+  // Memory drafts belong to one project; drop them when the scope changes.
   useEffect(() => {
-    if (!selectedProjectId && projects[0]) {
-      handleSelectedProjectChange(projects[0].id);
-      return;
-    }
-    if (
-      !isProjectSelectionControlled &&
-      selectedProjectId &&
-      !projects.some((project) => project.id === selectedProjectId)
-    ) {
-      handleSelectedProjectChange(projects[0]?.id ?? null);
-    }
-  }, [handleSelectedProjectChange, isProjectSelectionControlled, projects, selectedProjectId]);
+    setEditingMemoryId(null);
+    setEditingMemoryDraft(EMPTY_MEMORY_DRAFT);
+    setCreateMemoryError(null);
+    setExistingMemoryError(null);
+  }, [selectedProjectId]);
 
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) {
@@ -298,77 +231,15 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
       });
   }, []);
 
-  const addCustomModel = useCallback(
-    (provider: ProviderKind) => {
-      const customModelInput = customModelInputByProvider[provider];
-      const customModels = getCustomModelsForProvider(settings, provider);
-      const normalized = normalizeModelSlug(customModelInput, provider);
-      if (!normalized) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: "Enter a model slug.",
-        }));
-        return;
-      }
-      if (getModelOptions(provider).some((option) => option.slug === normalized)) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: "That model is already built in.",
-        }));
-        return;
-      }
-      if (normalized.length > MAX_CUSTOM_MODEL_LENGTH) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: `Model slugs must be ${MAX_CUSTOM_MODEL_LENGTH} characters or less.`,
-        }));
-        return;
-      }
-      if (customModels.includes(normalized)) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: "That custom model is already saved.",
-        }));
-        return;
-      }
-
-      updateSettings(patchCustomModels(provider, [...customModels, normalized]));
-      setCustomModelInputByProvider((existing) => ({
-        ...existing,
-        [provider]: "",
-      }));
-      setCustomModelErrorByProvider((existing) => ({
-        ...existing,
-        [provider]: null,
-      }));
-    },
-    [customModelInputByProvider, settings, updateSettings],
-  );
-
-  const removeCustomModel = useCallback(
-    (provider: ProviderKind, slug: string) => {
-      const customModels = getCustomModelsForProvider(settings, provider);
-      updateSettings(
-        patchCustomModels(
-          provider,
-          customModels.filter((model) => model !== slug),
-        ),
-      );
-      setCustomModelErrorByProvider((existing) => ({
-        ...existing,
-        [provider]: null,
-      }));
-    },
-    [settings, updateSettings],
-  );
-
   const refreshSnapshot = useCallback(async () => {
     const { snapshot } = await ensureNativeApi().orchestration.getStartupSnapshot();
     syncStartupSnapshot(snapshot);
-  }, [syncStartupSnapshot]);
+    await invalidateWorkflowQueries(queryClient);
+  }, [syncStartupSnapshot, queryClient]);
 
   const updateSelectedProjectMetadata = useCallback(
     async (patch: {
+      readonly title?: string;
       readonly defaultEnvMode?: "local" | "worktree" | null;
       readonly icon?: ProjectIcon | null;
     }) => {
@@ -502,35 +373,30 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
     [editingMemoryId, refreshSnapshot, selectedProject],
   );
 
+  const updateClaudeSubagentDefaults = useCallback(
+    (patch: ClaudeSubagentSettingsPatch) => {
+      updateSettings({
+        claudeSubagentDefaults: normalizeClaudeSubagentPatch(patch, claudeSubagentDefaults),
+      });
+    },
+    [claudeSubagentDefaults, updateSettings],
+  );
+
+  /** Sets the project's own sub-agent settings; `null` returns it to the global defaults. */
   const updateSelectedProjectClaudeSettings = useCallback(
-    (patch: Partial<typeof DEFAULT_CLAUDE_PROJECT_SETTINGS>) => {
+    (patch: ClaudeSubagentSettingsPatch | null) => {
       if (!selectedProject) {
         return;
       }
-
-      const normalized = {
-        subagentsEnabled:
-          ("subagentsEnabled" in patch
-            ? patch.subagentsEnabled
-            : selectedProjectClaudeSettings.subagentsEnabled) !== false,
-        subagentModel:
-          "subagentModel" in patch
-            ? typeof patch.subagentModel === "string" && patch.subagentModel.trim().length > 0
-              ? patch.subagentModel.trim()
-              : CLAUDE_SUBAGENT_MODEL_INHERIT
-            : selectedProjectClaudeSettings.subagentModel,
-      };
       const nextProjectSettings = { ...settings.claudeProjectSettings };
-
-      if (
-        normalized.subagentsEnabled === DEFAULT_CLAUDE_PROJECT_SETTINGS.subagentsEnabled &&
-        normalized.subagentModel === DEFAULT_CLAUDE_PROJECT_SETTINGS.subagentModel
-      ) {
+      if (patch === null) {
         delete nextProjectSettings[selectedProject.id];
       } else {
-        nextProjectSettings[selectedProject.id] = normalized;
+        nextProjectSettings[selectedProject.id] = normalizeClaudeSubagentPatch(
+          patch,
+          selectedProjectClaudeSettings,
+        );
       }
-
       updateSettings({
         claudeProjectSettings: nextProjectSettings,
       });
@@ -561,7 +427,6 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
     projectMetadataPending,
     projectMetadataError,
     updateSelectedProjectMetadata,
-    handleSelectedProjectChange,
     notificationPermission,
     notificationPermissionSummary,
     isRequestingNotificationPermission,
@@ -573,13 +438,6 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
     isOpeningKeybindings,
     openKeybindingsError,
     openKeybindingsFile,
-    claudeLaunchArgsParseResult,
-    customModelInputByProvider,
-    setCustomModelInputByProvider,
-    customModelErrorByProvider,
-    setCustomModelErrorByProvider,
-    addCustomModel,
-    removeCustomModel,
     gitTextGenerationModelOptions,
     selectedGitTextGenerationModelLabel,
     memoryDraft,
@@ -596,10 +454,12 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
     submitMemoryCreate,
     submitMemoryUpdate,
     deleteMemory,
+    claudeSubagentDefaults,
+    updateClaudeSubagentDefaults,
     selectedProjectClaudeSettings,
-    effectiveClaudeSubagentModel,
+    selectedProjectHasClaudeOverride,
     claudeSubagentModelOptions,
-    selectedClaudeSubagentModelLabel,
+    claudeSubagentModelLabel,
     updateSelectedProjectClaudeSettings,
   } as const;
 }

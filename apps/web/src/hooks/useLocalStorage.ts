@@ -54,7 +54,8 @@ interface LocalStorageChangeDetail {
   key: string;
 }
 
-function dispatchLocalStorageChange(key: string) {
+/** Tells same-window subscribers that `key` was written outside a `useLocalStorage` setter. */
+export function dispatchLocalStorageChange(key: string) {
   if (typeof window === "undefined") return;
   window.dispatchEvent(
     new CustomEvent<LocalStorageChangeDetail>(LOCAL_STORAGE_CHANGE_EVENT, {
@@ -63,8 +64,13 @@ function dispatchLocalStorageChange(key: string) {
   );
 }
 
+/** Reads a raw item; blocked or failing storage reads as missing. */
 export function readLocalStorageRawItem(key: string): string | null {
-  return getIsomorphicLocalStorage().getItem(key);
+  try {
+    return getIsomorphicLocalStorage().getItem(key);
+  } catch {
+    return null;
+  }
 }
 
 export function subscribeLocalStorageKey(key: string, listener: () => void): () => void {

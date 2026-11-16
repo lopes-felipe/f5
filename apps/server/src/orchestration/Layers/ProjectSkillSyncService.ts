@@ -1,152 +1,245 @@
-import { CommandId, type OrchestrationEvent, type ProjectId } from "@t3tools/contracts";
-import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { Deferred, Effect, Exit, FileSystem, Layer, Path, Ref, Scope, Stream } from "effect";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { registerShutdown } from "../../shutdown.ts";
+import { CommandId, type ProjectId } from "@t3tools/contracts";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import {
+  makeBackgroundWorker,
+  type BackgroundWorker as DrainableWorker,
+} from "../../backgroundWorker.ts";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  FileSystem,
+  Fiber,
+  Layer,
+  Ref,
+  Schedule,
+  Scope,
+  Stream,
+} from "effect";
 
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProjectSkillSyncService,
   type ProjectSkillSyncServiceShape,
 } from "../Services/ProjectSkillSyncService.ts";
-import { buildProjectSkillFingerprint, scanProjectSkills } from "../projectSkills.ts";
-
-type ProjectSkillRefreshEvent = Extract<
-  OrchestrationEvent,
-  { type: "project.created" | "project.meta-updated" | "project.deleted" }
->;
-
-const projectSkillCommandId = (tag: string) =>
-  CommandId.makeUnsafe(`project-skills:${tag}:${crypto.randomUUID()}`);
+import {
+  buildProjectSkillFingerprint,
+  scanProjectSkills,
+  type ProjectSkillScanWarning,
+} from "../projectSkills.ts";
 
 const make = Effect.gen(function* () {
-  const orchestrationEngine = yield* OrchestrationEngineService;
+  const engine = yield* OrchestrationEngineService;
   const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
+  const scope = yield* Effect.scope;
   const startedRef = yield* Ref.make(false);
-  const startedDeferred = yield* Deferred.make<void, never>();
-  const pendingRefreshRef = yield* Ref.make(false);
-  const watcherScopeRef = yield* Ref.make<Scope.Closeable | null>(null);
+  const started = yield* Deferred.make<void>();
+  const dirty = new Set<ProjectId>();
+  const pathsByProject = new Map<ProjectId, ReadonlyArray<string>>();
+  const warnings = new Map<ProjectId, ReadonlyArray<ProjectSkillScanWarning>>();
+  const watchers = new Map<string, { scope: Scope.Closeable; projects: Set<ProjectId> }>();
+  const failedWatchPaths = new Set<string>();
+  let stopping = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let worker!: DrainableWorker<void>;
+  let poller: Fiber.Fiber<unknown, never> | undefined;
 
-  const closeWatcherScope = Effect.gen(function* () {
-    const watcherScope = yield* Ref.get(watcherScopeRef);
-    if (watcherScope) {
-      yield* Scope.close(watcherScope, Exit.void).pipe(Effect.ignoreCause({ log: true }));
-      yield* Ref.set(watcherScopeRef, null);
+  const queueRefresh = (ids: Iterable<ProjectId>) =>
+    Effect.sync(() => {
+      if (stopping) return;
+      for (const id of ids) dirty.add(id);
+      if (timer !== undefined || dirty.size === 0) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        void Effect.runPromise(worker.enqueue(undefined));
+      }, 150);
+      timer.unref?.();
+    });
+
+  const reconcileWatchers = Effect.gen(function* () {
+    if (stopping) return;
+    const desired = new Map<string, Set<ProjectId>>();
+    for (const [id, paths] of pathsByProject) {
+      for (const path of paths) {
+        const projects = desired.get(path) ?? new Set<ProjectId>();
+        projects.add(id);
+        desired.set(path, projects);
+      }
+    }
+    for (const path of failedWatchPaths) if (!desired.has(path)) failedWatchPaths.delete(path);
+    for (const [path, watcher] of watchers) {
+      if (!desired.has(path) || failedWatchPaths.has(path)) {
+        watchers.delete(path);
+        yield* Scope.close(watcher.scope, Exit.void);
+      }
+    }
+    for (const [path, projects] of desired) {
+      const existing = watchers.get(path);
+      if (existing) {
+        existing.projects = projects;
+        continue;
+      }
+      const watcherScope = yield* Scope.make("sequential");
+      const watcher = { scope: watcherScope, projects };
+      watchers.set(path, watcher);
+      failedWatchPaths.delete(path);
+      yield* Stream.runForEach(fs.watch(path), () =>
+        queueRefresh(watchers.get(path)?.projects ?? []),
+      ).pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (watchers.get(path) !== watcher) return;
+            failedWatchPaths.add(path);
+            const reason = Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "Watch stream ended";
+            for (const id of watcher.projects)
+              warnings.set(id, [
+                ...(warnings.get(id) ?? []),
+                {
+                  scope: "project",
+                  commandName: "",
+                  path,
+                  reason: `Skill watcher unavailable; polling will retry: ${reason}`,
+                },
+              ]);
+          }),
+        ),
+        Effect.catchCause(() => Effect.void),
+        Effect.forkIn(watcherScope),
+      );
     }
   });
 
-  let worker!: DrainableWorker<string>;
-
-  const queueRefresh = (reason: string) =>
-    Ref.modify(pendingRefreshRef, (pending) => (pending ? [false, true] : [true, true])).pipe(
-      Effect.flatMap((shouldEnqueue) => (shouldEnqueue ? worker.enqueue(reason) : Effect.void)),
+  const refresh = Effect.gen(function* () {
+    const model = yield* engine.getReadModel();
+    const ids = new Set(dirty);
+    dirty.clear();
+    const active = new Set(
+      model.projects
+        .filter((project) => project.deletedAt === null && !isScratchProject(project))
+        .map((project) => project.id),
     );
-
-  const scanSkillsForProject = (projectId: ProjectId, workspaceRoot: string) =>
-    scanProjectSkills({
-      projectId,
-      workspaceRoot,
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(Path.Path, path),
-    );
-
-  const refreshAllProjects = () =>
-    Effect.gen(function* () {
-      const readModel = yield* orchestrationEngine.getReadModel();
-      const activeProjects = readModel.projects.filter((project) => project.deletedAt === null);
-      const watchPaths = new Set<string>();
-
-      for (const project of activeProjects) {
-        const scanResult = yield* scanSkillsForProject(project.id, project.workspaceRoot);
-
-        for (const warning of scanResult.warnings) {
-          yield* Effect.logWarning("omitting invalid Claude skill during scan", warning);
-        }
-        for (const watchPath of scanResult.watchPaths) {
-          watchPaths.add(watchPath);
-        }
-
-        const currentFingerprint = buildProjectSkillFingerprint(project.skills ?? []);
-        const nextFingerprint = buildProjectSkillFingerprint(scanResult.skills);
-        if (currentFingerprint === nextFingerprint) {
-          continue;
-        }
-
-        yield* orchestrationEngine.dispatch({
-          type: "project.skills.replace",
-          commandId: projectSkillCommandId("replace"),
+    for (const id of pathsByProject.keys()) {
+      if (!active.has(id)) {
+        pathsByProject.delete(id);
+        warnings.delete(id);
+      }
+    }
+    for (const project of model.projects) {
+      if (!active.has(project.id) || !ids.has(project.id)) continue;
+      yield* Effect.gen(function* () {
+        const result = yield* scanProjectSkills({
           projectId: project.id,
-          skills: [...scanResult.skills],
-          updatedAt: new Date().toISOString(),
+          workspaceRoot: project.workspaceRoot,
         });
-      }
-
-      yield* closeWatcherScope;
-      if (watchPaths.size === 0) {
-        return;
-      }
-
-      const watcherScope = yield* Scope.make("sequential");
-      yield* Ref.set(watcherScopeRef, watcherScope);
-      const queueFilesystemRefresh = queueRefresh("filesystem-change");
-
-      yield* Effect.forEach(
-        [...watchPaths].toSorted((left, right) => left.localeCompare(right)),
-        (watchPath) =>
-          Stream.runForEach(fs.watch(watchPath), () => queueFilesystemRefresh).pipe(
-            Effect.ignoreCause({ log: true }),
-            Effect.forkIn(watcherScope),
-            Effect.asVoid,
-          ),
-        { concurrency: 1 },
-      ).pipe(Effect.asVoid);
-    });
-
-  worker = yield* makeDrainableWorker((reason: string) =>
-    Ref.set(pendingRefreshRef, false).pipe(
-      Effect.flatMap(() => refreshAllProjects()),
-      Effect.catchCause((cause) =>
-        Effect.logWarning("project skill refresh failed", {
-          reason,
-          cause: String(cause),
+        pathsByProject.set(project.id, result.watchPaths);
+        warnings.set(project.id, result.warnings);
+        if (
+          buildProjectSkillFingerprint(project.skills ?? []) !==
+          buildProjectSkillFingerprint(result.skills)
+        ) {
+          yield* engine.dispatch({
+            type: "project.skills.replace",
+            commandId: CommandId.makeUnsafe(`project-skills:${timeOrderedUuid()}`),
+            projectId: project.id,
+            skills: [...result.skills],
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }).pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+          dirty.add(project.id);
+          return Effect.logWarning("project skill refresh failed; queued for retry", {
+            projectId: project.id,
+            cause: Cause.pretty(cause),
+          });
         }),
+      );
+    }
+  }).pipe(Effect.ensuring(reconcileWatchers));
+
+  worker = yield* makeBackgroundWorker(
+    () =>
+      refresh.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("project skill refresh failed", { cause: String(cause) }),
+        ),
       ),
-    ),
+    { name: "ProjectSkillSyncService", key: () => "projects" },
   );
 
-  const handleDomainEvent = (event: ProjectSkillRefreshEvent) =>
-    queueRefresh(`domain:${event.type}`);
+  const drain = Effect.gen(function* () {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    for (const [id, paths] of pathsByProject)
+      if (paths.some((path) => failedWatchPaths.has(path))) dirty.add(id);
+    if (!stopping && dirty.size > 0) yield* worker.enqueue(undefined);
+    yield* worker.drain;
+  });
 
-  const start: ProjectSkillSyncServiceShape["start"] = Ref.modify(startedRef, (alreadyStarted) => [
-    alreadyStarted,
-    true,
-  ]).pipe(
-    Effect.flatMap((alreadyStarted) => {
-      if (alreadyStarted) {
-        return Deferred.await(startedDeferred);
-      }
+  const stopSources = Effect.gen(function* () {
+    stopping = true;
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (poller) {
+      yield* Fiber.interrupt(poller);
+      poller = undefined;
+    }
+    for (const [path, watcher] of watchers) {
+      watchers.delete(path);
+      yield* Scope.close(watcher.scope, Exit.void);
+    }
+  });
+  yield* registerShutdown("project-skill-sources", "admission", () => stopSources);
+  yield* registerShutdown("project-skill-work", "drain", () => worker.drain);
 
-      return Effect.gen(function* () {
-        yield* refreshAllProjects().pipe(Effect.ignoreCause({ log: true }));
-        yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-          if (
-            event.type !== "project.created" &&
-            event.type !== "project.meta-updated" &&
-            event.type !== "project.deleted"
-          ) {
-            return Effect.void;
-          }
-          return handleDomainEvent(event);
-        }).pipe(Effect.forkScoped, Effect.asVoid);
-        yield* Effect.addFinalizer(() => closeWatcherScope);
-        yield* Deferred.succeed(startedDeferred, undefined).pipe(Effect.orDie);
-      });
-    }),
+  const start: ProjectSkillSyncServiceShape["start"] = Ref.getAndSet(startedRef, true).pipe(
+    Effect.flatMap((alreadyStarted) =>
+      alreadyStarted
+        ? Deferred.await(started)
+        : Effect.gen(function* () {
+            yield* Stream.runForEach(engine.streamDomainEvents, (event) =>
+              event.type === "project.created" ||
+              event.type === "project.meta-updated" ||
+              event.type === "project.deleted"
+                ? queueRefresh([event.aggregateId as ProjectId])
+                : Effect.void,
+            ).pipe(Effect.forkIn(scope, { startImmediately: true }));
+            for (const project of (yield* engine.getReadModel()).projects) dirty.add(project.id);
+            yield* drain.pipe(Effect.orDie);
+            // Watch failures/deleted roots recover even if the OS emits no final event.
+            poller = yield* Effect.sync(
+              () =>
+                new Set([
+                  ...dirty,
+                  ...[...pathsByProject]
+                    .filter(([, paths]) => paths.some((path) => failedWatchPaths.has(path)))
+                    .map(([id]) => id),
+                ]),
+            ).pipe(
+              Effect.flatMap(queueRefresh),
+              Effect.repeat(Schedule.spaced("30 seconds")),
+              Effect.forkIn(scope),
+            );
+            yield* Deferred.succeed(started, undefined);
+          }),
+    ),
+  );
+  yield* Effect.addFinalizer(() =>
+    stopSources.pipe(Effect.andThen(Effect.sync(() => failedWatchPaths.clear()))),
   );
 
   return {
     start,
-    drain: worker.drain,
+    drain,
+    getWarnings: (projectId) => Effect.sync(() => warnings.get(projectId) ?? []),
   } satisfies ProjectSkillSyncServiceShape;
 });
 

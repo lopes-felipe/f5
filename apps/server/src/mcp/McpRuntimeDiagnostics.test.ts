@@ -1,4 +1,4 @@
-import { ProjectId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -105,11 +105,29 @@ diagnosticsLayer("McpRuntimeDiagnostics", (it) => {
           )
       `;
 
+      yield* sql`UPDATE provider_session_runtime SET provider_instance_id = 'codex-work', runtime_payload_json = '{"sessionGeneration":2}'`;
+      yield* sql`UPDATE projection_thread_activities SET payload_json = json_set(payload_json, '$.providerInstanceId', 'codex-work', '$.sessionGeneration', 2)`;
+      for (const [id, payload] of [
+        ["legacy", '{"name":"Observability","status":"failed","error":"unstamped"}'],
+        [
+          "wrong-instance",
+          '{"name":"Observability","status":"failed","error":"wrong instance","providerInstanceId":"codex-other","sessionGeneration":2}',
+        ],
+        [
+          "old-generation",
+          '{"name":"Observability","status":"failed","error":"old generation","providerInstanceId":"codex-work","sessionGeneration":1}',
+        ],
+      ])
+        yield* sql`INSERT INTO projection_thread_activities (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at) VALUES (${id!}, 'thread-current', NULL, 'error', 'mcp.status.updated', 'Ignored history', ${payload!}, NULL, '2026-05-18T20:06:00.000Z')`;
+
       const service = yield* McpRuntimeDiagnostics;
       const diagnostics = yield* service.listLatestServerDiagnostics({
         projectId: ProjectId.makeUnsafe("project-1"),
         provider: "codex",
         configVersion: "mcp-v2",
+        instanceId: ProviderInstanceId.make("codex-work"),
+        threadId: ThreadId.make("thread-current"),
+        sessionGeneration: 2,
       });
 
       assert.strictEqual(diagnostics.length, 1);

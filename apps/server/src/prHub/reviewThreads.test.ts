@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { decodeUnresolvedThreads } from "./reviewThreads";
+import {
+  decodeUnresolvedThreads,
+  parseReviewThreads,
+  GITHUB_REVIEW_COMMENT_FIELDS,
+} from "./reviewThreads";
 
 const response = (nodes: unknown[], totalCount: number) => ({
   data: { repository: { pullRequest: { reviewThreads: { nodes, totalCount } } } },
@@ -43,4 +47,23 @@ describe("review thread coverage", () => {
     expect(() => decodeUnresolvedThreads({ errors: [{ message: "denied" }], data: {} })).toThrow();
     expect(() => decodeUnresolvedThreads({ data: {} })).toThrow();
   });
+});
+
+it("retains explicit bot identity even when its login has no bot suffix", () => {
+  expect(GITHUB_REVIEW_COMMENT_FIELDS).toContain("__typename");
+  const [thread] = parseReviewThreads({
+    nodes: [
+      {
+        id: "thread",
+        comments: {
+          nodes: [
+            { id: "bot", author: { login: "assistant", __typename: "Bot" } },
+            { id: "human", author: { login: "botanist", __typename: "User" } },
+          ],
+        },
+      },
+    ],
+  });
+  expect(thread?.comments[0]).toMatchObject({ author: "assistant", authorIsBot: true });
+  expect(thread?.comments[1]?.authorIsBot).toBeUndefined();
 });

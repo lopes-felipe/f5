@@ -1,0 +1,281 @@
+# Threads and workspaces
+
+A thread is one conversation with one agent in one workspace. The agent edits files in the
+workspace you choose, and F5 records its commands, file changes and plans so you can inspect them
+afterwards.
+
+![Chat thread with commands, file changes and the diff panel open on a new Postgres adapter](../../assets/screenshots/thread.png)
+
+## How to
+
+1. Click **New thread** (`mod+N`), or [start it from Home](#start-a-thread-from-home).
+2. Pick the **provider and model** from the model chip, and **traits** such as reasoning effort.
+3. Pick **Access**, the thread's [runtime mode](../runtime-modes.md).
+4. Choose **Agent** or **Plan**. Plan asks for a plan you can accept or revise before any change.
+5. Choose the **workspace**: **Local** (the project checkout) or a
+   [worktree](worktrees-and-storage-automation.md) with its own branch and directory.
+   For unrelated work, use [a thread without a project](#threads-without-a-project).
+6. Send your message.
+
+The composer also takes [attachments](attachments-and-media.md), `@` file mentions and `/`
+commands, including provider and project skills. The context ring shows how full the model's
+context window is.
+
+## Start a thread from Home
+
+The box at the top of Home starts a thread without leaving Home. Pick the project, the model
+and its effort, **Agent** or **Plan**, **Access**, and **Local** or **New worktree**, type the
+task and press `Enter`. The thread starts in the background and shows up under **Running**;
+`mod+Enter` starts it and opens it. The settings begin from the project's defaults for a new
+thread, and a new worktree starts from the project's current branch. If F5 cannot read the
+project's branches, the workspace shows **Local** and the thread starts in the project folder.
+
+The box follows **Settings → Conversation → Send shortcut**:
+
+| Send shortcut                            | `Enter`                                                              | `mod+Enter`                 |
+| ---------------------------------------- | -------------------------------------------------------------------- | --------------------------- |
+| Enter                                    | Starts the thread                                                    | Starts the thread, opens it |
+| Command/Ctrl+Enter                       | Adds a line                                                          | Starts the thread           |
+| Command/Ctrl+Enter for multiline prompts | Starts the thread while the text is one line; adds a line after that | Starts the thread           |
+
+When `mod+Enter` does not open the thread, open it from the **Open** button in the
+confirmation.
+
+If the send fails, your text stays in the box. If no answer came back, for example because the
+connection dropped, send the same text again without changing the project or any setting: F5
+resends the same message, so the thread starts once. If you change the text, the project, the
+model, the effort, the mode, the access or the workspace first, F5 sends a new message, and
+the first one may still have started a thread. Text that begins with a `/` command or a skill
+opens the full composer instead, where those are resolved. For attachments, `@` mentions or
+another base branch, click **Open full composer**: it opens a new thread with your text and
+the settings you picked, unsent.
+
+To give the agent another thread as context, drag that thread from the sidebar into the
+composer. If you selected several threads, dragging one of them adds them all, up to 10 per
+message. Each one appears as a chip, and the agent reads it with the
+[`thread_read`](agent-tools.md#f5-browser-and-computer-tools) tool when it needs to. The agent
+can read only references you send yourself, or ones you put in the request of a planning or
+document workflow. References that arrive through Bots or scheduled tasks are not readable.
+Clicking a chip opens that thread.
+
+## Threads without a project
+
+For internet research or one-off tasks, click the sidebar's **New thread without a project**
+button, choose **No project** in Home's project picker, or use **New thread without a project**
+in the command palette. The main **New thread** button also starts one when no project context
+is available. Once the **No project** group exists, its hover **New thread** action starts another.
+You can bind the `chat.newScratch` command in keyboard settings; it has no default shortcut.
+
+The first message creates a separate folder for the thread under `<stateDir>/scratch/`, named
+with its date, first words and a short id. Attachments, generated files and terminals use that
+folder. Provider tools handle internet research as usual. These threads have no Git repository,
+branches, worktrees or workflows. The folders separate working context but are not a filesystem
+sandbox; provider permissions still apply.
+
+Threads are grouped under **No project** in the sidebar and Usage. Deleting a thread removes
+its folder; archiving keeps it.
+
+## While the agent works
+
+In Supervised and Auto-accept edits modes the agent stops for approval, and its questions wait for
+your answer. Where the provider supports it, a message sent mid-turn can steer the turn instead of
+waiting (**Settings → Threads → Follow-up behavior**). **Stop generation** ends the turn.
+
+Queued messages appear above the composer. You can pause the queue, reorder it, run one now, edit,
+duplicate or cancel it. The queue is stored on the server, so it survives restarts.
+
+## Switch provider mid-thread
+
+On a started thread, the model chip can pick another provider. The composer shows **Switching to
+…** until you send. Your next message starts the new provider and carries the conversation so far
+with it:
+
+- **First switch to a provider.** It starts a fresh session. F5 puts a transcript of the thread's
+  messages in front of your message, once. Long threads are trimmed to fit the new model's context
+  window. F5 keeps the latest exchange and your first message, fills the rest newest first, and
+  shortens very long messages in the middle. The transcript states how many messages it left out.
+  Where the thread was compacted, the compaction summary stands in for the older messages, inside
+  the same budget.
+- **Switching back.** F5 keeps the session you left. When you return to that provider, it resumes
+  the session and sends only the messages since you left. If the session cannot be resumed, or F5
+  cannot confirm it is the same session, the provider starts fresh with the full transcript instead.
+- **What carries over.** Only user and assistant message text. Attachments, tool calls and
+  reasoning are not replayed. The workspace files are unchanged, and the new agent is told to read
+  them for the current state.
+- **Failures.** If a message fails before the provider receives it, the transcript is kept and the
+  retry sends the same transcript. If the provider's session changed in between, or it rejects the
+  resumed session, the retry starts the provider fresh and sends the full transcript instead. Once
+  the provider accepts the message, the transcript is not sent again. F5 never switches providers
+  by itself, and the transcript is never summarized by a model.
+
+F5 refuses the switch, and the message stays unsent, while an approval or question is waiting, a
+provider goal or rewind is in progress, or background work is still running. It also refuses when
+the message starts with a command for the new provider, such as `/compact`, because the command
+would run without the conversation; send an ordinary message first. Codex takes no such commands. A message that starts with a path
+such as `/Users/me/app.ts` is not a command. A message so long that no history fits beside it is
+not sent; shorten it or remove attachments. A message with only attachments carries the transcript
+like any other.
+
+If the thread's selected provider is turned off or unavailable, the composer says so and sending
+waits; F5 does not move the conversation to another provider. Switching models within the same
+provider instance needs none of this, but switching between two instances of one provider, such as
+two Codex accounts, hands the conversation off the same way. The thread records each handoff as an
+activity.
+
+## Panels
+
+The right side of a thread holds the **Agents**, **Diff**, **Plan**, **Files** and **Preview**
+panels; open them from the panel picker or their shortcuts. The terminal (`mod+J`) opens below the
+thread in the workspace directory, and project scripts run from the thread header.
+
+In the terminal, Shift+PageUp and Shift+PageDown page through scrollback. `mod+Shift+Home` and
+`mod+Shift+End` jump to the start and the latest output; full-screen programs keep those keys.
+Cmd+A on macOS and Ctrl+Shift+A elsewhere select all retained output, while Ctrl+A still moves to
+the start of shell input.
+
+F5 starts fish with `no-query-term` in `fish_features`, so fish 4.1+ does not wait for terminal
+replies at startup. This disables optional fish features that depend on those replies, and the
+exported variable hides flags set with `set -U fish_features`. To keep those flags or enable
+queries with `query-term`, set `fish_features` in the environment that launches F5; a shell export
+does not reach a desktop app launched from the Dock or Finder. Enabling queries can restore the
+startup wait.
+
+The Files panel can edit files. If a file changes on disk while you have unsaved edits, F5 marks a
+conflict and keeps your draft. **Open in editor** hands the file to your external editor.
+
+## Review changes and rewind
+
+Each turn lists its changed files with line counts, and **View diff** opens the Diff panel for that
+turn. F5 records a checkpoint after each turn; on providers that support it, you can revert the
+thread to an earlier message, which restores the files. Stop the agent before reverting.
+
+## Git
+
+Threads show their branch. From the thread header you can create branches, open worktrees and run
+commit, push and pull request actions. Linked pull requests also appear in the
+[Pull Requests hub](pr-hub-forges.md).
+
+## Good to know
+
+> [!NOTE]
+> **Thread summaries** (**Settings → Threads**) send thread messages, activities, plans, tasks and
+> checkpoints to the account you choose, including threads that ran on other providers.
+
+- **Home** (`mod+shift+H`) is a triage queue in four groups: **Needs a decision** (approvals,
+  questions, plans, paused queues), **Ready for review** (failed turns, then finished ones you
+  have not opened), **Running** (threads and workflows) and **Pinned**. The pane beside the queue
+  shows the selected thread's request or error and its last exchange, and acts on it without
+  opening the thread: approve or decline a request with any of its choices, answer a question,
+  implement or revise a plan, resume a paused queue, reply to finished or failed work, or queue
+  a message behind a running turn. Messages sent from Home use the thread's own model and
+  modes and go out as plain text; one that starts with a `/command` or a `$skill` opens the
+  thread with the text in its composer, which resolves it. `J`/`K` or the arrow keys move,
+  `O` opens, `E` settles (not a running thread or one waiting on an approval or a question),
+  `H` snoozes, `P` pins, `R` starts a reply and `/` jumps to the
+  [new thread box](#start-a-thread-from-home). `Enter`
+  approves the request once or implements the plan, and opens other threads; `D` declines.
+  `Enter` and the arrow keys act from the queue: after a click in the pane to read it, they
+  scroll and answer nothing. `Enter` is left unbound when the provider asks for "no" to be the
+  default, and the key hints under the queue list only the keys that act on the selected
+  thread. Forms sent by a provider or an MCP server are
+  filled in the thread. A line above the queue counts pull requests and upstream topics waiting
+  on you, and shows the next scheduled run, an account limit above 50% and low disk space; each
+  opens its page. Recent threads are in the sidebar's **Recent** view.
+- `mod+K` searches threads, workflows and commands.
+- Archive a thread from its sidebar menu; archived items are under **Settings → Archive**.
+- A usage-limit notice can be snoozed until a time you pick; snoozed threads show a moon icon.
+- **Settings → Threads → Snooze options** sets the choices in every snooze menu: up to 8, either
+  a duration ("In 3 hours") or a day and time ("Friday at 6:00 PM"). Menus list them soonest
+  first; a weekday means the next one after today. The defaults are 3 hours, tomorrow at 9:00 and
+  a week from today at 9:00; menus fall back to them when none of your options is left.
+- A turn running during a restart resumes only if **Settings → Threads → Resume active turns after
+  restart** is on (off by default).
+- Sending a new message resumes a queue held by Stop or Pause, preserving its order. **Queue at end**,
+  **Queue next**, steering an active turn, and automated messages leave the hold in place. Workspace
+  and provider recovery gates still need to be resolved before queued work can run.
+
+<details>
+<summary>Panels in detail</summary>
+
+| Panel   | What it shows                                                                   |
+| ------- | ------------------------------------------------------------------------------- |
+| Agents  | Subagents and background workflows started from the thread                      |
+| Diff    | Files the thread changed, per turn or for a recorded file change                |
+| Plan    | The current implementation plan                                                 |
+| Files   | The workspace file tree and a file viewer with editing                          |
+| Preview | The built-in browser, in desktop builds ([preview browser](preview-browser.md)) |
+
+New threads default to **Full access**; change the default under **Settings → Threads → Default
+permissions** or per project. Resumed turns show "Resuming after restart", and projects can
+override the resume setting.
+
+</details>
+
+## Related
+
+- [Getting started](getting-started.md)
+- [Agent tools](agent-tools.md)
+- [Workflows](workflows.md)
+- [Keybindings](../../KEYBINDINGS.md)
+
+## Panel tabs
+
+Drag a tab to change its order. **Mod+T** opens a searchable list of the thread's
+open panel tabs; Enter selects a result and Escape closes the list.
+**Mod+Shift+T** reopens the last closed tab, including its file location. F5
+remembers up to 20 closed tabs per thread for the current app session. Closing
+others, closing to the right and closing all also add to that history. Hiding
+the entire panel keeps its tabs open.
+
+In **Settings → Appearance → Conversation width**, select **Full** to use the
+available conversation width. Messages, the composer and conversation banners
+use the same width preference.
+
+Reasoning effort can also be stepped with the **Increase reasoning effort** and
+**Decrease reasoning effort** commands in keyboard settings. Both start unbound.
+They move through the selected model's supported levels, wrapping at either end,
+and keep the draft text, mode and other model options intact.
+
+In an existing thread's composer, **Mod+Alt+Enter** sends your message and opens
+a project draft after the server accepts it. A failed submission keeps you in the
+original thread with your text restored. A thread you leave while waiting for
+acceptance does not pull you back. **Steer active turn** remains available as a
+custom binding; it no longer shares that default shortcut.
+
+## Diagrams and shell commands
+
+Settled `mermaid` code blocks render a diagram when they come into view. **Show
+code** keeps the original source available in place, including when rendering
+fails. Diagrams follow the app's light or dark theme; diagram scripts and links
+are inactive. Large diagrams can remain as source.
+
+Complete shell fences offer **Run in terminal** in a connected thread. Execution
+starts only when you click. F5 opens a fresh terminal in the thread workspace so
+it preserves commands already typed in other terminals. Streaming, unfinished,
+empty or concealed-control-character blocks cannot run through this action.
+
+## Settle completed work
+
+Choose **Settle** in a thread's menu to keep completed work in the project's
+collapsed **Settled** group. The conversation stays searchable and opens at its
+existing address. **Unsettle** returns it to the active list. A new message, turn
+or queued wake also brings it back before the work starts. The unbound
+**Toggle thread settlement** keyboard command can be assigned in keyboard settings.
+The project menu's **Settle idle threads** leaves running, pinned, snoozed and
+pending work alone.
+
+Automatic settlement is off by default. In **Settings → Git & GitHub → Thread
+settlement**, enable resolved-PR settlement or choose an inactivity period from
+1 to 365 days. Project settings can override these choices. Resolved-PR settlement
+requires every linked PR to be merged or closed after your latest human message
+or wake. Old merges do not immediately settle a conversation you just unsettled.
+The inactivity rule keeps linked PR threads unless you disable that preference.
+The header's **Auto-settle** switch lets one thread opt out of enabled rules.
+
+Running turns, unfinished terminal processing, pending approvals or questions,
+queued work, background work and active PR watches prevent automatic settlement.
+An explicit manual settlement stops its PR watches. F5 closes idle terminals only
+when a fresh process check proves they have no live children; terminal history is
+retained. Agents can explicitly request settlement with **thread_settle**. During
+a turn, that request waits until processing finishes; Stop or a new message
+cancels it.

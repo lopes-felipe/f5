@@ -1,0 +1,184 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-codex-session-actions",
+  "state": "failed",
+  "repositoryCommit": "c87ea00b8a5af829ad8067f9c2ff94a5c1ea961e",
+  "workingTreeDirty": false,
+  "recordedAt": "2026-10-13T21:44:31.683Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "provider": "codex",
+  "providerVersion": "0.162.1",
+  "runtimeMode": "approval-required",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "d0b66a0825bd9dbee0e77aeabeece1d89438adf6adbb915a8fabb0c69e9fa7f7",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "16b5a4238964c9c528e8901589819ddb0ef486d5c06153b7c60bbc3f148c1188",
+    "observerSource": "f6d4da736aaec2bb21e0e00c6a828d4e488d7e6e9906f46a057a29ca6f915f1e",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "26dea6aed6480fa4e3c93b2f51fc8ecf4216f7d78d69b070c42ddfc4d4cb26fc",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "17281f635c4f653e13d7dcbeb52e8570e6930a32e93414c0de713437e5abe95d",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140"
+  },
+  "admission": {
+    "version": 1,
+    "suiteId": "f0f5c4f7-2c6e-4798-9a48-857621d0deae",
+    "scenario": "session-actions.codex",
+    "attempt": 1,
+    "identityHash": "2ff8d36f66752a881a711f08861bcd2a894c256181f474d6c5d63a9a1a2d63a1",
+    "state": "failed",
+    "evidenceKind": "provider-desktop",
+    "startedAt": "2026-10-13T21:42:06.710Z",
+    "finishedAt": "2026-10-13T21:44:31.696Z",
+    "checks": {
+      "realElectronPermissionsAvailable": true,
+      "sessionActionsInitiallyEmpty": true,
+      "sessionActionsTrustedAppConsent": true,
+      "sessionActionsAppConsentNoInput": true,
+      "approvalModeActuallySubmitted": true,
+      "sessionActionsProviderTailObserved": true,
+      "sessionActionsOnlyExpectedDenial": false,
+      "sessionActionsCleanup": true,
+      "sessionActionsReceiptsComplete": false
+    },
+    "measurements": {},
+    "cleanup": "confirmed",
+    "reason": "command-failed",
+    "evidenceSha256": "39d202ed533620e984935e949e54cb62cc9b090ec220fc4ea80028e6ad5b24df"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "sessionActionsInitiallyEmpty": true,
+    "sessionActionsTrustedAppConsent": true,
+    "sessionActionsAppConsentNoInput": true,
+    "approvalModeActuallySubmitted": true,
+    "sessionActionsProviderTailObserved": true,
+    "sessionActionsOnlyExpectedDenial": false,
+    "sessionActionsCleanup": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "failureStage": "session-actions-denial",
+  "failureCode": "timeout",
+  "submittedRuntimeModes": ["approval-required", "approval-required"],
+  "composerSubmissions": 2,
+  "providerActivityCounts": {
+    "observed": true,
+    "boundedOrMalformed": false,
+    "turns": [
+      {
+        "turnOrdinal": 1,
+        "toolStarted": 0,
+        "toolCompleted": 0,
+        "toolFailed": 0,
+        "toolDeclined": 0,
+        "approvalsRequested": 0,
+        "approvalsResolved": 0,
+        "userInputsRequested": 0,
+        "userInputsResolved": 0,
+        "other": 12
+      },
+      {
+        "turnOrdinal": 2,
+        "toolStarted": 2,
+        "toolCompleted": 2,
+        "toolFailed": 0,
+        "toolDeclined": 0,
+        "approvalsRequested": 1,
+        "approvalsResolved": 1,
+        "userInputsRequested": 0,
+        "userInputsResolved": 0,
+        "other": 1
+      },
+      {
+        "turnOrdinal": 3,
+        "toolStarted": 1,
+        "toolCompleted": 1,
+        "toolFailed": 1,
+        "toolDeclined": 0,
+        "approvalsRequested": 1,
+        "approvalsResolved": 1,
+        "userInputsRequested": 0,
+        "userInputsResolved": 0,
+        "other": 1
+      }
+    ]
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": false,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "activityMessages": 0,
+    "activityThumbnails": 0,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "pendingResponses": 0,
+    "accessRequests": 1,
+    "accessAnswersForwarded": 1,
+    "accessAnswerSummaries": [
+      {
+        "kind": "apps",
+        "appCount": 1,
+        "allowed": 1,
+        "remembered": 0
+      }
+    ],
+    "sessionGenerationsObserved": 1,
+    "requestSessions": [
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      }
+    ],
+    "backendRestarts": [],
+    "backendLifecycle": [],
+    "grantChanges": 2,
+    "lastGrantCount": 1,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      }
+    ]
+  },
+  "fixtureObservation": {
+    "presses": 0,
+    "expectedSyntheticTextReceived": false,
+    "humanFinishAcknowledged": false
+  },
+  "operatorReport": {
+    "providerToolApprovalDeniedBeforeF5SessionConsent": true,
+    "source": "explicit-user-confirmation"
+  },
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "The ordinary activity tail records a resolved provider approval and one failed tool in the second turn; it does not record the approval decision",
+    "The operator separately confirmed denying Codex’s initial tool approval before F5 session consent",
+    "No lease, capture or input; cleanup confirmed; this failed attempt is preserved",
+    "Future operator instructions must distinguish provider tool approval from F5 app/session consent; neither may be auto-answered"
+  ]
+}

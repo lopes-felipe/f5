@@ -1,6 +1,7 @@
-import { DEFAULT_MODEL_BY_PROVIDER, type ProjectId } from "@t3tools/contracts";
+import { type ProjectId } from "@t3tools/contracts";
 import { ensureNativeApi } from "../nativeApi";
 import { useStore } from "../store";
+import { resolveDefaultProviderModelSelection } from "../providerInstances";
 import { newCommandId, newProjectId } from "./utils";
 
 const pathKey = (cwd: string) => {
@@ -52,13 +53,19 @@ export function registerProjectFromPath(cwd: string, title?: string): Promise<Pr
     const projectId = newProjectId();
     pendingProjectIds.add(projectId);
     try {
-      await ensureNativeApi().orchestration.dispatchCommand({
+      const api = ensureNativeApi();
+      const config = await api.server.getConfig().catch(() => undefined);
+      const defaultModelSelection = resolveDefaultProviderModelSelection(
+        config?.providers ?? [],
+        null,
+      );
+      await api.orchestration.dispatchCommand({
         type: "project.create",
         commandId: newCommandId(),
         projectId,
         title: title ?? cwd.split(/[/\\]/).filter(Boolean).at(-1) ?? cwd,
         workspaceRoot: cwd,
-        defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
+        ...(defaultModelSelection ? { defaultModelSelection } : {}),
         createdAt: new Date().toISOString(),
       });
       return await waitForRegisteredProject(projectId, true);

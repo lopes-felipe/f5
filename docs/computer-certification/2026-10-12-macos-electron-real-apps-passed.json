@@ -1,0 +1,465 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-12T21:36:36.309Z",
+  "scope": "unsigned-real-electron-codex-textedit-and-calculator",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "repositoryCommit": "bc51241ac69fd3d96adf267da7efe1cfb5fe48b9",
+  "workingTreeDirty": false,
+  "helperSha256": "a11ef2e783c9d344372f9b12a86e0a1a67ec40ddecaafc1e0f5a27cfcd8d7c9e",
+  "buildHashes": {
+    "desktopMain": "cd0f182b9f352998908652fe3bf3c80bb7a4f4a176ccb27aa98c6116d86206d9",
+    "serverBundle": "4e880cd60ded1d912017af59b63a01c8c3be6f8f5d966de4e26d627b00f58a30",
+    "rendererIndex": "f40903b377ac9e9ae9f0e100b7f022405c7d0668877feb94315d20dc7cb728fe",
+    "rehearsalSource": "6bffcc1d7e1ae8b4dc8efa17ed2db81f6c4735c978e011fd6e07a003a09f5179",
+    "observerSource": "f09543c97a8cfeec9a79d600305fb84e1751215aa984402d3b981722be20632e",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "bcfa8b28fd23448027e6672be0eaa1db138c806f273a130709750b84fcd16451",
+    "realAppVerifierSource": "09997879740c1df6bc2129c47d87d0cda533b1068f12bd27cedf61989e72aa68",
+    "realAppObserverSource": "c17613eb7c8e17c6257f08f3dcfb376013a35e3d96b30d9fc01ebcb0e0f84514"
+  },
+  "signed": false,
+  "certified": false,
+  "provider": "codex",
+  "runtimeMode": "full-access",
+  "state": "passed",
+  "interrupted": false,
+  "permissionStatus": {
+    "available": true,
+    "displays": [
+      {
+        "displayId": "1",
+        "geometryGeneration": "1:0.0:0.0:1728.0:1117.0:3456:2234:0.0",
+        "primary": true,
+        "nativeBounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1728,
+          "height": 1117
+        },
+        "pixelSize": {
+          "width": 3456,
+          "height": 2234
+        },
+        "rotation": 0,
+        "modelSize": {
+          "width": 1333,
+          "height": 862
+        }
+      }
+    ]
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": true,
+      "nativeInspectionSucceeded": true,
+      "nativeInputSucceeded": true
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": true,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 3,
+    "inspectionResponses": 11,
+    "activityMessages": 32,
+    "activityThumbnails": 6,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "accessRequests": 1,
+    "accessAnswersForwarded": 1,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "activateApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": true
+      },
+      {
+        "op": "screenshot",
+        "outcome": "ok",
+        "validCapture": true
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 13
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "key",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "type",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "key",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "activateApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": true
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 13
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "openApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": true
+      },
+      {
+        "op": "screenshot",
+        "outcome": "ok",
+        "validCapture": true
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 68
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "activateApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": true
+      },
+      {
+        "op": "screenshot",
+        "outcome": "ok",
+        "validCapture": true
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 68
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 65
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 66
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 66
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 66
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 66
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 66
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 68
+      }
+    ]
+  },
+  "threadObservation": {
+    "found": true,
+    "runtimeMode": "full-access",
+    "sessionRuntimeMode": "full-access",
+    "interactionMode": "default",
+    "turnState": "completed",
+    "pendingUserInputs": 0
+  },
+  "consentObservation": {
+    "requested": true,
+    "trustedClick": true,
+    "settled": true,
+    "allowed": true,
+    "fixtureGranted": true,
+    "cardHasError": false,
+    "dialogPresentInDom": true
+  },
+  "providerErrorCodes": [],
+  "toolOutcomeErrors": [],
+  "thumbnailObservation": {
+    "visible": true,
+    "loaded": true
+  },
+  "realAppObservation": {
+    "textEditInspected": true,
+    "calculatorInspected": true,
+    "textEditTyping": true,
+    "textEditKeys": 2,
+    "expectedTextTyping": true,
+    "selectAllKeySucceeded": true,
+    "saveKeySucceeded": true,
+    "calculatorOpened": true,
+    "calculatorPresses": 7,
+    "unexpectedAppInput": false,
+    "traceComplete": true
+  },
+  "realAppPrerequisites": {
+    "textEditInitiallyClosed": true,
+    "calculatorInitiallyClosed": true
+  },
+  "retainedTestDocument": false,
+  "setupOpenedTemporaryDocument": true,
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "realConsentDialogVisible": true,
+    "realConsentSettledAllowed": true,
+    "humanTrustedConsent": true,
+    "consentTurnEmittedNoInput": true,
+    "ownedTextEditDocumentFocusedBeforeInput": true,
+    "realLeaseBannerVisible": true,
+    "savedTestDocumentMatchesExpectedText": true,
+    "ownedTestDocumentClosed": true,
+    "calculatorResultInitiallyDifferent": true,
+    "calculatorResultVerifiedIndependently": true,
+    "realAppNativeResponsesCorrelated": true,
+    "realAppCapturesReceived": true,
+    "realAppTurnLeaseReleased": true,
+    "realAppComposerSubmittedFourTurns": true,
+    "realAppGrantsSurvivedTurns": true
+  },
+  "limitations": [
+    "One real provider, TextEdit and Calculator, on the current display only",
+    "Real human app consent; full-access mode excludes the session-actions consent test",
+    "Setup opened its own temporary TextEdit file after consent; provider tools performed edit/save/close and Calculator launch/arithmetic",
+    "App grants are app-wide; this run does not certify capture privacy, protected targets or the complete real-app matrix",
+    "No installed-build TCC attribution, signed packaging, multi-profile/display or complete real-app certification",
+    "Overlay capture exclusion, hung-renderer/host stop latency, Stop interruption and Windows runtime remain pending",
+    "Provider built-in and Chrome gates remain closed; no image bytes, typed values, accessibility content or raw errors retained"
+  ]
+}

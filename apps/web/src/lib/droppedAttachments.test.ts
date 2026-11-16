@@ -1,11 +1,31 @@
 import { expect, it } from "vitest";
 
 import { partitionDroppedAttachments } from "./droppedAttachments";
+import { resolveAttachedFileReferencePaths } from "../components/ChatView.logic";
+import { appendPendingUserInputFileReferences } from "../pendingUserInput";
 
 const item = (file: File, isDirectory: boolean) => ({
   kind: "file" as const,
   getAsFile: () => file,
   webkitGetAsEntry: () => ({ isDirectory }),
+});
+
+it("routes a copied folder to desktop file references and question-answer text", () => {
+  const folder = new File([], "notes");
+  const clipboard = { items: [item(folder, true)], files: [folder] as unknown as FileList };
+  const split = partitionDroppedAttachments(clipboard);
+  expect(split.files).toEqual([]);
+  const references = resolveAttachedFileReferencePaths({
+    files: split.folders,
+    isElectron: true,
+    desktopBridge: { getPathForFile: () => "/repo/notes" },
+    workspaceRoots: ["/repo"],
+  });
+  expect(references).toEqual({ filePaths: ["notes"], invalidPathCount: 0, missingPathCount: 0 });
+  expect(
+    appendPendingUserInputFileReferences({ customAnswer: "Inspect" }, references.filePaths)
+      .customAnswer,
+  ).toBe("Inspect\nnotes");
 });
 
 it("classifies each dropped file by its own entry, even when names collide", () => {

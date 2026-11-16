@@ -13,7 +13,8 @@
  */
 import type {
   ElicitationSubmitInput,
-  McpReloadResult,
+  McpSessionReloadOutcome,
+  ProviderInstanceId,
   ProjectId,
   ProviderInterruptTurnInput,
   ProviderKind,
@@ -44,17 +45,56 @@ import type {
 
 export interface ProviderMcpReloadOutcome {
   /** Sessions the reload reached, with their final result after retries. */
-  readonly sessions: ReadonlyArray<{
-    readonly threadId: ThreadId;
-    readonly result: McpReloadResult;
-  }>;
+  readonly sessions: ReadonlyArray<McpSessionReloadOutcome>;
 }
 
 /**
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
+export interface ProviderSubmissionHandle {
+  readonly acceptance: Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
+  readonly completion: Effect.Effect<void, ProviderServiceError>;
+}
+
 export interface ProviderServiceShape {
+  readonly readChildThreadItems?: (input: {
+    threadId: ThreadId;
+    childId: string;
+    providerInstanceId: ProviderInstanceId | null;
+    cursor: string | null;
+    limit: number;
+  }) => Effect.Effect<
+    | { kind: "page"; data: unknown[]; nextCursor: string | null }
+    | { kind: "session-not-running" | "unsupported-provider" },
+    ProviderServiceError
+  >;
+  readonly mcpApps?: import("./ProviderAdapter.ts").ProviderMcpApps<ProviderServiceError>;
+  /** Stop the matching live turn and preserve a send fence after event ingestion fails. */
+  readonly requireHistoryReconciliation?: (
+    event: ProviderRuntimeEvent,
+  ) => Effect.Effect<void, ProviderServiceError>;
+  /** Published before adapter startup, until its durable binding has been written. */
+  readonly getStartingSessionIdentity?: (
+    threadId: ThreadId,
+  ) => { readonly instanceId: ProviderInstanceId; readonly generation: number } | undefined;
+  readonly acknowledgeHistoryReconciliation?: (input: {
+    readonly threadId: ThreadId;
+    readonly markerId: string;
+    readonly historyIdentity: string;
+    readonly instanceId: import("@t3tools/contracts").ProviderInstanceId;
+    readonly generation: number;
+  }) => Effect.Effect<boolean, ProviderServiceError>;
+  /** Registers a service-owned operation; caller cancellation cannot abandon transport. */
+  readonly submitTurn?: (input: ProviderSendTurnInput) => Effect.Effect<ProviderSubmissionHandle>;
+
   readonly nativeOperations?: {
+    readonly markRead?: (threadId: ThreadId) => Effect.Effect<void, ProviderServiceError>;
+    readonly historyRecovery?: (
+      input: import("@t3tools/contracts").NativeHistoryRecoveryInput,
+    ) => Effect.Effect<
+      import("@t3tools/contracts").NativeHistoryRecovery | null,
+      ProviderServiceError
+    >;
     readonly resolve?: (
       input: import("@t3tools/contracts").NativeOperationResolutionInput,
     ) => Effect.Effect<import("@t3tools/contracts").NativeOperationRecord, ProviderServiceError>;
@@ -88,6 +128,13 @@ export interface ProviderServiceShape {
     threadId: ThreadId,
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, ProviderServiceError>;
+
+  /** Replace only the generation inspected by the caller, under one service gate. */
+  readonly replaceSession: (
+    threadId: ThreadId,
+    input: ProviderSessionStartInput,
+    expected: { readonly instanceId: ProviderInstanceId; readonly generation: number },
+  ) => Effect.Effect<ProviderSession | null, ProviderServiceError>;
 
   /**
    * Send a provider turn.
@@ -138,14 +185,31 @@ export interface ProviderServiceShape {
    *
    * Aggregates runtime session lists from all registered adapters.
    */
+  /** In-flight starts are workspace claims, never reusable provider sessions. */
+  readonly listStartingWorkspaces: () => Effect.Effect<
+    ReadonlyArray<Pick<ProviderSession, "threadId" | "cwd">>
+  >;
   readonly listSessions: () => Effect.Effect<ReadonlyArray<ProviderSession>>;
 
   /**
-   * Read static capabilities for a provider adapter.
+   * Read static capabilities from the exact instance when supplied. The legacy
+   * kind-only form resolves the default instance.
    */
   readonly getCapabilities: (
     provider: ProviderKind,
+    instanceId?: ProviderInstanceId,
   ) => Effect.Effect<ProviderAdapterCapabilities, ProviderServiceError>;
+
+  /**
+   * Whether the instance's adapter would run `text` as a native command rather
+   * than an ordinary prompt. Unknown instances and adapters classify as prompt.
+   */
+  readonly classifyTurnInput?: (input: {
+    readonly threadId: ThreadId;
+    readonly instanceId: ProviderInstanceId;
+    readonly text: string;
+    readonly cwd?: string | undefined;
+  }) => Effect.Effect<"prompt" | "native-command">;
 
   /**
    * Capabilities of the session generation a thread is bound to, routed
@@ -205,14 +269,83 @@ export interface ProviderServiceShape {
    * its next turn. Per-session failures are reported in the result (and as
    * runtime warnings), not raised.
    */
+  readonly readMcpSessionStatuses?: (
+    input: import("@t3tools/contracts").McpGetServerStatusesRequest & {
+      readonly desiredVersion: string;
+    },
+  ) => Effect.Effect<
+    {
+      readonly sessions: ReadonlyArray<import("@t3tools/contracts").McpSessionSummary>;
+      readonly selected?: import("@t3tools/contracts").McpSessionSummary;
+      readonly observation?: import("../mcpObservation.ts").McpAdapterObservation;
+    },
+    ProviderServiceError
+  >;
+  readonly getMcpReconnectTargets?: (
+    input: import("@t3tools/contracts").McpReconnectServerRequest & {
+      readonly provider: ProviderKind;
+    },
+  ) => Effect.Effect<
+    {
+      threadIds: ReadonlyArray<ThreadId>;
+      failures: ReadonlyArray<{ threadId: ThreadId; message: string }>;
+    },
+    ProviderServiceError
+  >;
+  readonly reconnectMcpServerForProject?: (
+    input: import("@t3tools/contracts").McpReconnectServerRequest & {
+      readonly provider: ProviderKind;
+      /** Server-internal: also reconnect provider-configured (external) servers by exact name. */
+      readonly allowExternal?: boolean;
+      /** Server-internal: skip these conversations (for example the one that just signed in). */
+      readonly excludeThreadIds?: ReadonlyArray<ThreadId>;
+    },
+  ) => Effect.Effect<import("@t3tools/contracts").McpReconnectServerResult, ProviderServiceError>;
+  /** The conversation's live session summary without provider I/O; `undefined` once it ends. */
+  readonly getLiveMcpSession?: (input: {
+    readonly provider: ProviderKind;
+    readonly projectId: ProjectId;
+    readonly instanceId?: ProviderInstanceId;
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<
+    import("@t3tools/contracts").McpSessionSummary | undefined,
+    ProviderServiceError
+  >;
+  /**
+   * Starts a user-initiated MCP sign-in through one running session: the requested
+   * conversation, or the session `readMcpSessionStatuses` would select.
+   */
+  readonly authenticateMcpServerForProject?: (input: {
+    readonly provider: ProviderKind;
+    readonly projectId: ProjectId;
+    readonly instanceId?: ProviderInstanceId;
+    readonly serverName: string;
+    readonly threadId?: ThreadId;
+    readonly desiredVersion?: string;
+  }) => Effect.Effect<
+    {
+      readonly threadId: ThreadId;
+      readonly instanceId: ProviderInstanceId;
+      readonly generation: number;
+      readonly authUrl?: string;
+      readonly callbackExpected: boolean;
+      readonly ownership: "managed" | "external";
+    },
+    ProviderServiceError
+  >;
+
   readonly reloadMcpConfigForProject: (input: {
     readonly provider: ProviderKind;
+    readonly instanceId?: ProviderInstanceId;
+    readonly requestedVersion?: string;
     readonly projectId: ProjectId;
     readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
     /** Limit the reload to these threads. */
     readonly threadIds?: ReadonlyArray<ThreadId>;
-    /** Skip the per-session backoff (callers with their own retry loop). */
+    /** Skip the per-session backoff for one-shot internal callers. */
     readonly retry?: boolean;
+    /** Internal caller-specific backoff; all attempts keep the gated snapshot. */
+    readonly retryDelaysMs?: ReadonlyArray<number>;
     /**
      * Post per-session runtime warnings for failures a later attempt might fix
      * (default true). Restart-required results are final and always warn.

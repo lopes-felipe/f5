@@ -59,6 +59,7 @@ describe("worktree setup card logic", () => {
     expect(isNewerWorktreeSetup(first, { ...first, sequence: 3 })).toBe(false);
     const retry = makeWorktreeSetupSnapshot({
       operationId: "op-2",
+      generation: 1,
       sequence: 1,
       startedAt: "2026-10-01T10:05:00.000Z",
     });

@@ -9,7 +9,10 @@ import { useEffect, useMemo } from "react";
 
 import type { AgentsPanelScope } from "../agentsPanelStore";
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
+import { useShallow } from "zustand/react/shallow";
+
 import { useStore } from "../store";
+import { selectThreadById } from "../threadSelectors";
 import type { Project, Thread } from "../types";
 import { onServerWelcome } from "../wsNativeApi";
 import {
@@ -30,9 +33,14 @@ type DecodedAgentsSnapshot = ReturnType<typeof decodeAgentsSnapshot>;
 const EMPTY_STORE_ITEMS: readonly never[] = [];
 const EMPTY_ACTIVITY_THREADS: ReadonlyArray<AgentActivityThreadSource> = [];
 
+/** The thread fields the agents panel correlates with snapshot entries. */
+export type AgentActivityThreadInput = Pick<Thread, "id" | "title" | "projectId" | "activities"> & {
+  readonly history?: Pick<NonNullable<Thread["history"]>, "hasOlderActivities"> | undefined;
+};
+
 export function selectAgentActivityThreads(input: {
   readonly snapshot: DecodedAgentsSnapshot | null;
-  readonly threads: ReadonlyArray<Thread>;
+  readonly threads: ReadonlyArray<AgentActivityThreadInput>;
   readonly projects: ReadonlyArray<Project>;
 }): ReadonlyArray<AgentActivityThreadSource> {
   if (!input.snapshot || input.snapshot.entries.length === 0) {
@@ -129,7 +137,20 @@ export function useAgentsPanelModel(options: {
     enabled: options.scope === "thread",
   });
   const snapshotQuery = options.scope === "thread" ? threadQuery : globalQuery;
-  const threads = useStore((state) => (includeActivityIndex ? state.threads : EMPTY_STORE_ITEMS));
+  const snapshotThreadIds = useMemo(
+    () =>
+      includeActivityIndex
+        ? [
+            ...new Set(
+              [...(globalQuery.data?.entries ?? []), ...(threadQuery.data?.entries ?? [])].map(
+                (entry) => entry.threadId,
+              ),
+            ),
+          ]
+        : EMPTY_STORE_ITEMS,
+    [globalQuery.data, includeActivityIndex, threadQuery.data],
+  );
+  const threads = useAgentActivityThreadInputs(snapshotThreadIds);
   const projects = useStore((state) => (includeActivityIndex ? state.projects : EMPTY_STORE_ITEMS));
 
   useEffect(() => {
@@ -183,10 +204,52 @@ export function useAgentsPanelModel(options: {
   };
 }
 
+const FIELDS_PER_ACTIVITY_THREAD = 5;
+
+/**
+ * The activity inputs of the threads a snapshot lists. Selected as a flat
+ * field list so streaming deltas, which replace the thread object but keep
+ * its title and activities, do not re-derive the agents model.
+ */
+function useAgentActivityThreadInputs(
+  threadIds: ReadonlyArray<ThreadId>,
+): ReadonlyArray<AgentActivityThreadInput> {
+  const fields = useStore(
+    useShallow((state) => {
+      const flat: unknown[] = [];
+      for (const threadId of threadIds) {
+        const thread = selectThreadById(state, threadId);
+        if (!thread) continue;
+        flat.push(
+          thread.id,
+          thread.title,
+          thread.projectId,
+          thread.activities,
+          thread.history?.hasOlderActivities ?? false,
+        );
+      }
+      return flat;
+    }),
+  );
+  return useMemo(() => {
+    const inputs: AgentActivityThreadInput[] = [];
+    for (let offset = 0; offset < fields.length; offset += FIELDS_PER_ACTIVITY_THREAD) {
+      inputs.push({
+        id: fields[offset] as Thread["id"],
+        title: fields[offset + 1] as string,
+        projectId: fields[offset + 2] as Thread["projectId"],
+        activities: fields[offset + 3] as Thread["activities"],
+        history: { hasOlderActivities: fields[offset + 4] as boolean },
+      });
+    }
+    return inputs;
+  }, [fields]);
+}
+
 function useDerivedAgentsModel(
   snapshot: DecodedAgentsSnapshot | null,
   includeActivityIndex: boolean,
-  threads: ReadonlyArray<Thread>,
+  threads: ReadonlyArray<AgentActivityThreadInput>,
   projects: ReadonlyArray<Project>,
 ) {
   const activityThreads = useMemo<ReadonlyArray<AgentActivityThreadSource>>(() => {

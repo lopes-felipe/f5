@@ -1,4 +1,30 @@
-import { supportsCodexNativeOperations } from "@t3tools/shared/providerRuntimeCapabilities";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
+import { raceWithAbort } from "@t3tools/shared/abortSignal";
+import { probeCodexCliVersion } from "./codex/cliVersionProbe.ts";
+import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
+import { Utf8Lines } from "@t3tools/shared/utf8Lines";
+import { CODEX_MAX_INCOMING_MESSAGE_BYTES, ProviderLineReader } from "./codex/lineReader.ts";
+import {
+  CODEX_BROWSER_RESUME_TOOL,
+  validBrowserResumeArguments,
+  codexBrowserResumeCursor,
+} from "./provider/codexBrowserResume";
+import { waitForControl } from "./computer/CodexControlHandoff";
+
+export { CODEX_MAX_INCOMING_MESSAGE_BYTES };
+import type { ProviderAdapterSessionStartInput } from "./provider/Services/ProviderAdapter.ts";
+import { readBoundedPages } from "./codex/readBoundedPages.ts";
+import {
+  mergeCodexMcpStartupStatuses,
+  decodeCodexMcpServerStatus,
+} from "./codex/codexMcpServerStatus.ts";
+import type { CodexControlMcpServerStatus } from "./codex/CodexControlClient.ts";
+import {
+  supportsCodexNativeOperations,
+  supportsCodexRelease5,
+} from "@t3tools/shared/providerRuntimeCapabilities";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import type {
   NativeOperationInput,
@@ -17,15 +43,15 @@ import {
   ElicitationRegistry,
   type ElicitationTerminalReceipt,
 } from "./provider/elicitationRegistry.ts";
-import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { StringDecoder } from "node:string_decoder";
+import { appendStderrTail, stderrExcerpt } from "./codex/stderrDiagnostics.ts";
 import * as OS from "node:os";
-import readline from "node:readline";
 
 import {
   ApprovalRequestId,
-  CODEX_REASONING_EFFORT_OPTIONS,
   type CodexMcpServerEntry,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_RUNTIME_MODE,
@@ -46,29 +72,29 @@ import {
   type ProviderTurnStartResult,
   RuntimeMode,
   ProviderInteractionMode,
+  SubagentActivityKind,
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
 import {
   normalizeModelSlug,
-  resolveCodexReasoningEffortForModel,
+  resolveCodexEffectiveReasoningEffort,
   resolveModelCapabilities,
-  resolveReasoningEffortForProvider,
 } from "@t3tools/shared/model";
+import { readCodexModelPages } from "./codex/readCodexModelPages.ts";
 import { readCodexReportedModelCapabilities } from "./provider/codexModelCatalog.ts";
+import { normalizeCodexThreadItemType } from "./provider/codexItemPresentation.ts";
 import { assertNever } from "@t3tools/shared/exhaustive";
 import { killProcessTree } from "@t3tools/shared/processTree";
-import { Effect, ServiceMap } from "effect";
+import { Effect, Schema, ServiceMap } from "effect";
 
-import {
-  formatCodexCliUpgradeMessage,
-  isCodexCliVersionSupported,
-  parseCodexCliVersion,
-} from "./provider/codexCliVersion";
 import { formatCodexUnsupportedModelError } from "./provider/codexErrors.ts";
 import {
-  buildCodexAssistantInstructions,
+  buildCodexAdditionalContext,
+  buildCodexModeInstructions,
   buildInstructionProfile,
+  CODEX_RESUMED_CONTEXT_KEY,
+  type CodexAdditionalContextEntry,
   INSTRUCTION_PROFILE_CONFIG_KEY,
   type SharedInstructionInput,
 } from "./provider/sharedAssistantContract";
@@ -79,20 +105,59 @@ import {
 import { prependCodexCliTelemetryDisabledConfig } from "./provider/codexCliConfig";
 import { buildCodexAppServerCommand } from "./provider/codexLaunchArgs.ts";
 import { buildProviderChildProcessEnv } from "./providerProcessEnv";
+import { withBrowserOpenThreadToken } from "./browser/BrowserOpenThreadToken";
+import { resolveCodexCommand } from "./provider/codexExecutable.ts";
 import {
   fingerprintSupportedSlashCommands,
   normalizeSupportedSlashCommands,
   type SupportedSlashCommand,
 } from "./provider/supportedSlashCommands";
-import { createJsonRpcStdinWriter, type JsonRpcStdinWriter } from "./codex/JsonRpcStdinWriter.ts";
+import {
+  createJsonRpcStdinWriter,
+  JsonRpcDeliveryError,
+  jsonRpcWriteLane,
+  type JsonRpcWriteOptions,
+  type JsonRpcStdinWriter,
+} from "./codex/JsonRpcStdinWriter.ts";
 import { resolveCodexHome } from "./os-jank.ts";
 import { resolveInvocation } from "./spawn/resolveCommand.ts";
+
+export function buildCodexSampleParams(
+  threadId: string,
+  expectedTurnId: string,
+  prompt: string,
+  effort?: string,
+) {
+  return { threadId, expectedTurnId, prompt, ...(effort ? { effort } : {}) };
+}
+
+export function buildCodexReadMarkParams(threadId: string, expectedRevision: string) {
+  return { threadId, expectedRevision, operation: { type: "read" as const } };
+}
+
+export function buildCodexMemoryReadParams(threadId: string) {
+  return { threadId };
+}
+
+export function buildCodexUsageReadParams(threadId: string) {
+  return { threadId };
+}
+
+export function buildCodexGoalPauseParams(threadId: string, origin: "user" | "automatic") {
+  return { threadId, status: "paused" as const, origin };
+}
+
+export function buildCodexGoalClearParams(threadId: string) {
+  return { threadId, origin: "user" as const };
+}
 
 type PendingRequestKey = string;
 
 interface PendingRequest {
   method: string;
-  timeout: ReturnType<typeof setTimeout>;
+  wasWritten?: boolean;
+  cancelWrite?: () => void;
+  timeout: ReturnType<typeof setTimeout> | undefined;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
 }
@@ -114,6 +179,8 @@ interface PendingApprovalRequest {
   /** Decisions and execpolicy prefix the command request offered; responses must match. */
   commandOffer?: CodexCommandApprovalOffer;
   requestedPermissions?: Record<string, unknown>;
+  /** The session allowance read when the request arrived; a session answer adds to it. */
+  sessionAllowance?: Set<ProviderRequestKind>;
   threadId: ThreadId;
   turnId?: TurnId;
   itemId?: ProviderItemId;
@@ -143,13 +210,29 @@ interface CodexUserInputAnswer {
 }
 
 interface CodexSessionContext {
+  browserResume?: () => Promise<unknown>;
+  browserResumeRegistered?: boolean;
+  mcpCalls?: Set<string>;
+  mcpCallOwners?: Map<string, { threadId: string; turnId: string }>;
+  retiredMcpTurns?: Set<string>;
+  retiredMcpThreads?: Set<string>;
+  mcpEventIdentity?: ProviderAdapterSessionStartInput["mcpEventIdentity"];
   session: ProviderSession;
+  mcpStartupStatuses?: Map<string, CodexControlMcpServerStatus>;
+  mcpObservationContext?: object;
   account: CodexAccountSnapshot;
   child: ChildProcessWithoutNullStreams;
-  output: readline.Interface;
+  output: ProviderLineReader;
   writer: JsonRpcStdinWriter;
   pending: Map<PendingRequestKey, PendingRequest>;
   pendingApprovals: Map<ApprovalRequestId, PendingApprovalRequest>;
+  /**
+   * Approval kinds the user chose "Always allow this session" for. Codex's own
+   * acceptForSession only skips the exact command or patch it answered, so every
+   * new command would ask again. A different runtime mode ends the allowance, and
+   * so does the session closing, like Codex's own session approvals.
+   */
+  sessionApprovals?: { runtimeMode: RuntimeMode; kinds: Set<ProviderRequestKind> };
   memoryThreadIds?: Set<string>;
   pendingUserInputs: Map<ApprovalRequestId, PendingUserInputRequest>;
   /** MCP form/URL requests answered privately; optional for hand-built test contexts. */
@@ -169,10 +252,21 @@ interface CodexSessionContext {
   initialSkillsRetryTimeout: ReturnType<typeof setTimeout> | undefined;
   initialSkillsRetryAttempted: boolean;
   resumedContextSent: boolean;
+  /** The `additionalContext` of the latest `turn/start`, restored after compaction. */
+  lastAdditionalContext?: Record<string, CodexAdditionalContextEntry> | undefined;
   cliVersion?: string | null;
+  readState?: { firstUnread: unknown; revision: string } | null;
+  readMarkInFlight?: boolean;
+  sampleRequestId?: number;
+  sampleCompletion?: Promise<unknown>;
+  sampleCancellation?: Promise<void>;
+  samplePreparing?: boolean;
+  sampleCancelled?: boolean;
   protocolDecodeFailureCount: number;
   nextRequestId: number;
   stopping: boolean;
+  phase?: "accepting" | "draining" | "closed";
+  beginDrain?: (error: Error, method: string, message: string) => void;
   turnPaginationUnsupported?: boolean;
   /** Set once the CLI rejects `thread/revert` as unknown; rollback then uses `thread/rollback`. */
   revertUnsupported?: boolean;
@@ -187,6 +281,11 @@ interface CodexSessionContext {
   nativeGoalBudget?: number;
   nativeGoalPauseInFlight?: boolean;
   requestedRuntime?: Record<string, unknown>;
+  /**
+   * Whether F5 put a service tier on this provider thread. A turn clears the
+   * tier only then, so a tier from the user's `config.toml` is left alone.
+   */
+  serviceTierApplied?: boolean;
   childThreadIds?: Set<string>;
   forkNotifications?: JsonRpcNotification[] | undefined;
   forkNotificationOverflow?: boolean;
@@ -197,6 +296,7 @@ interface CodexSessionContext {
 interface JsonRpcError {
   code?: number;
   message?: string;
+  data?: unknown;
 }
 
 export class CodexJsonRpcError extends Error {
@@ -204,6 +304,8 @@ export class CodexJsonRpcError extends Error {
     readonly method: string,
     readonly code: number | undefined,
     message: string,
+    readonly data?: unknown,
+    readonly rawMessage: string = message,
   ) {
     super(`${method} failed: ${message}`);
   }
@@ -264,12 +366,15 @@ export interface CodexAppServerSendTurnInput {
     { type: "image"; url: string } | { type: "localImage"; path: string }
   >;
   readonly model?: string;
-  readonly serviceTier?: string | null;
+  readonly serviceTier?: "fast" | "default" | null;
   readonly effort?: string;
   readonly interactionMode?: ProviderInteractionMode;
 }
 
 export interface CodexAppServerStartSessionInput {
+  readonly browserResume?: () => Promise<unknown>;
+  readonly mcpEventIdentity?: ProviderAdapterSessionStartInput["mcpEventIdentity"];
+  readonly effectiveModelCapabilities?: ReadonlyMap<string, ModelCapabilities>;
   readonly threadId: ThreadId;
   readonly provider?: "codex";
   readonly cwd?: string;
@@ -288,6 +393,8 @@ export interface CodexAppServerStartSessionInput {
   readonly serviceTier?: string;
   readonly mcpServers?: Record<string, CodexMcpServerEntry>;
   readonly mcpEnvironment?: Record<string, string>;
+  /** Appended to developer instructions (absolute, F5-verified integration paths). */
+  readonly integrationInstructions?: ReadonlyArray<string>;
   readonly mcpOAuthCallbackPort?: number;
   readonly mcpOAuthCallbackUrl?: string;
   readonly resumeCursor?: unknown;
@@ -307,18 +414,25 @@ export interface CodexThreadTurnSnapshot {
 }
 
 export interface CodexThreadSnapshot {
+  historyCoverage?: "complete" | "partial";
   threadId: string;
   turns: CodexThreadTurnSnapshot[];
 }
 
-const CODEX_VERSION_CHECK_TIMEOUT_MS = 4_000;
 const CODEX_JSON_RPC_TIMEOUT_MS = 20_000;
+/** How long a closed stdout waits for the process exit status before ending the session. */
+export const CODEX_EXIT_STATUS_GRACE_MS = 250;
+export const CODEX_STDOUT_ENDED_MESSAGE =
+  "codex app-server closed its output stream; the session was ended.";
 export const CODEX_THREAD_OPEN_TIMEOUT_MS = 60_000;
 /** Internal event methods for private MCP form/URL requests (value-free payloads). */
 export const CODEX_ELICITATION_OPENED_METHOD = "f5/elicitation/opened";
 export const CODEX_ELICITATION_SETTLED_METHOD = "f5/elicitation/settled";
 
 export function codexRequestTimeoutMs(method: string): number {
+  // Inference ends on response, cancellation or exit, not the control RPC clock.
+  // Its stdin write still has the normal bounded deadline.
+  if (method === "thread/sample") return 0;
   return method === "thread/start" || method === "thread/resume"
     ? CODEX_THREAD_OPEN_TIMEOUT_MS
     : CODEX_JSON_RPC_TIMEOUT_MS;
@@ -396,6 +510,21 @@ function codexPermissionApprovalResponse(
     return { scope: "session", permissions };
   }
   return { permissions: {} };
+}
+
+/**
+ * The answer to a command or file-change request the user already allowed for the session,
+ * or null when the request does not offer a session (or plain) approval and must ask.
+ */
+export function codexSessionAllowedResponse(
+  responseKind: PendingApprovalRequest["responseKind"],
+  commandOffer: CodexCommandApprovalOffer | undefined,
+): Record<string, unknown> | null {
+  if (responseKind === "legacy-decision") return { decision: "approved_for_session" };
+  if (responseKind !== "decision") return null;
+  const offered = commandOffer?.decisions;
+  if (!offered || offered.has("acceptForSession")) return { decision: "acceptForSession" };
+  return offered.has("accept") ? { decision: "accept" } : null;
 }
 
 function codexApprovalResponse(
@@ -590,6 +719,15 @@ export function mapCodexRuntimeMode(runtimeMode: RuntimeMode): {
   }
 }
 
+/**
+ * Config overrides sent with every thread start, resume and fork, layered above
+ * the user's and project's `config.toml`. Codex waits this long for MCP servers
+ * before the first model request and leaves out any server still starting
+ * (default 1 s, too short for cold `npx`/`uvx` servers). A hung server delays
+ * only the first turn of a session, not its 30 s startup timeout.
+ */
+export const CODEX_THREAD_CONFIG = { mcp_optional_startup_grace_ms: 10_000 } as const;
+
 export function buildCodexThreadOpenRequestParams(input: {
   readonly cwd?: string;
   readonly model?: string;
@@ -598,11 +736,13 @@ export function buildCodexThreadOpenRequestParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
   readonly serviceTier?: string;
+  readonly browserResume?: boolean;
 }) {
   const overrides = {
     model: input.model ?? null,
     ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
     cwd: input.cwd ?? null,
+    config: CODEX_THREAD_CONFIG,
     ...(input.workflowExecutionProfile
       ? {
           approvalPolicy: "never" as const,
@@ -615,6 +755,11 @@ export function buildCodexThreadOpenRequestParams(input: {
     start: {
       ...overrides,
       experimentalRawEvents: false,
+      ...(input.browserResume &&
+      input.runtimeMode === "full-access" &&
+      supportsCodexRelease5(input.cliVersion)
+        ? { dynamicTools: [CODEX_BROWSER_RESUME_TOOL] }
+        : {}),
     },
     ...(input.resumeThreadId
       ? {
@@ -661,8 +806,11 @@ export function buildCodexThreadForkParams(
   threadId: string,
   beforeTurnId?: string,
 ) {
-  const { experimentalRawEvents: _rawEvents, ...overrides } =
-    buildCodexThreadOpenRequestParams(input).start;
+  const {
+    experimentalRawEvents: _rawEvents,
+    dynamicTools: _dynamicTools,
+    ...overrides
+  } = buildCodexThreadOpenRequestParams(input).start;
   return {
     ...overrides,
     threadId,
@@ -719,24 +867,18 @@ export function normalizeCodexModelSlug(
   return normalized;
 }
 
-/**
- * Same downgrade rule as `resolveCodexReasoningEffortForModel` (walk towards
- * lower efforts until one is supported), over the reported effort list.
- */
-function resolveReportedCodexEffort(
-  model: string,
-  effort: string,
-  reported: ModelCapabilities,
-): string | undefined {
-  const capabilities = resolveModelCapabilities("codex", model, reported);
-  const requested = resolveReasoningEffortForProvider("codex", effort);
-  if (requested) {
-    const start = CODEX_REASONING_EFFORT_OPTIONS.indexOf(requested);
-    for (const candidate of CODEX_REASONING_EFFORT_OPTIONS.slice(start)) {
-      if (capabilities.effortOptions.includes(candidate)) return candidate;
-    }
-  }
-  return capabilities.defaultEffort;
+export function resolveCodexServiceTier(
+  requested: string | null | undefined,
+  capabilities?: ModelCapabilities,
+): string | null | undefined {
+  if (requested !== "fast") return requested;
+  if (capabilities && !resolveModelCapabilities("codex", undefined, capabilities).supportsFastMode)
+    return null;
+  return (
+    capabilities?.serviceTiers?.find((tier) => tier.id === "fast")?.id ??
+    capabilities?.serviceTiers?.find((tier) => tier.id === "priority")?.id ??
+    "fast"
+  );
 }
 
 export function buildCodexTurnStartParams(
@@ -791,10 +933,11 @@ export function buildCodexTurnStartParams(
       mode: "default" | "plan";
       settings: {
         model: string;
-        reasoning_effort: string;
+        reasoning_effort: string | null;
         developer_instructions: string;
       };
     };
+    additionalContext?: Record<string, CodexAdditionalContextEntry>;
   } = {
     threadId: state.providerThreadId,
     input: turnInput,
@@ -816,22 +959,21 @@ export function buildCodexTurnStartParams(
     // A persisted fast-mode choice must not reach a model whose reported tiers
     // lack it (the composer hides the toggle); null clears a thread-level tier.
     turnStartParams.serviceTier =
-      input.serviceTier === "fast" &&
-      reportedCapabilities &&
-      !resolveModelCapabilities("codex", effortModel, reportedCapabilities).supportsFastMode
-        ? null
-        : input.serviceTier;
+      resolveCodexServiceTier(input.serviceTier, reportedCapabilities) ?? null;
   }
-  const resolvedEffort =
-    input.effort === undefined
-      ? undefined
-      : reportedCapabilities
-        ? resolveReportedCodexEffort(effortModel, input.effort, reportedCapabilities)
-        : resolveCodexReasoningEffortForModel(effortModel, input.effort);
+  // The web client sends an explicit effort, but other callers and persisted
+  // state may omit it (meaning the model default), so the resolver always runs
+  // instead of letting the collaboration mode fall back to a fixed effort. It is
+  // the same resolver the pickers use, so what they show is what runs.
+  const resolvedEffort = resolveCodexEffectiveReasoningEffort(
+    effortModel,
+    input.effort,
+    reportedCapabilities,
+  );
   if (resolvedEffort) {
     turnStartParams.effort = resolvedEffort;
   }
-  const collaborationMode = buildCodexCollaborationMode({
+  const { collaborationMode, additionalContext } = buildCodexTurnInstructions({
     ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
     ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
     ...(resolvedEffort !== undefined ? { effort: resolvedEffort } : {}),
@@ -844,6 +986,7 @@ export function buildCodexTurnStartParams(
     turnStartParams.model = collaborationMode.settings.model;
   }
   turnStartParams.collaborationMode = collaborationMode;
+  turnStartParams.additionalContext = additionalContext;
 
   return turnStartParams;
 }
@@ -880,19 +1023,27 @@ export function buildCodexInitializeParams() {
   } as const;
 }
 
-function buildCodexCollaborationMode(input: {
+/**
+ * The collaboration mode carries only the mode prompt; the rest of F5's
+ * contract travels as `additionalContext`, which Codex keeps even when the
+ * model catalog replaces the client's `developer_instructions`.
+ */
+function buildCodexTurnInstructions(input: {
   readonly interactionMode?: "default" | "plan";
   readonly model?: string;
   readonly effort?: string;
   readonly instructionContext?: Partial<SharedInstructionInput>;
   readonly includeResumedContext?: boolean;
 }): {
-  mode: "default" | "plan";
-  settings: {
-    model: string;
-    reasoning_effort: string;
-    developer_instructions: string;
+  collaborationMode: {
+    mode: "default" | "plan";
+    settings: {
+      model: string;
+      reasoning_effort: string | null;
+      developer_instructions: string;
+    };
   };
+  additionalContext: Record<string, CodexAdditionalContextEntry>;
 } {
   const effectiveMode = input.interactionMode ?? "default";
   const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL_BY_PROVIDER.codex;
@@ -906,8 +1057,14 @@ function buildCodexCollaborationMode(input: {
     ...(context?.threadTitle ? { threadTitle: context.threadTitle } : {}),
     ...(context?.turnCount !== undefined ? { turnCount: context.turnCount } : {}),
     ...(context?.cwd ? { cwd: context.cwd } : {}),
+    ...(context?.workflowExecutionProfile
+      ? { workflowExecutionProfile: context.workflowExecutionProfile }
+      : {}),
     ...(context?.runtimeMode ? { runtimeMode: context.runtimeMode } : {}),
     ...(context?.projectMemories ? { projectMemories: context.projectMemories } : {}),
+    ...(context?.integrationInstructions
+      ? { integrationInstructions: context.integrationInstructions }
+      : {}),
     ...(input.includeResumedContext && context?.priorWorkSummary
       ? { priorWorkSummary: context.priorWorkSummary }
       : {}),
@@ -931,12 +1088,17 @@ function buildCodexCollaborationMode(input: {
       : {}),
   };
   return {
-    mode: effectiveMode,
-    settings: {
-      model,
-      reasoning_effort: input.effort ?? "medium",
-      developer_instructions: buildCodexAssistantInstructions(instructionInput),
+    collaborationMode: {
+      mode: effectiveMode,
+      settings: {
+        model,
+        // Null when the model takes no effort; a fixed fallback here would
+        // override the resolved model default.
+        reasoning_effort: input.effort ?? null,
+        developer_instructions: buildCodexModeInstructions(instructionInput),
+      },
     },
+    additionalContext: buildCodexAdditionalContext(instructionInput),
   };
 }
 
@@ -954,6 +1116,9 @@ function buildCodexInstructionContext(
       ? { workflowExecutionProfile: input.workflowExecutionProfile }
       : {}),
     ...(input.projectMemories ? { projectMemories: input.projectMemories } : {}),
+    ...(input.integrationInstructions?.length
+      ? { integrationInstructions: input.integrationInstructions }
+      : {}),
     ...(input.priorWorkSummary ? { priorWorkSummary: input.priorWorkSummary } : {}),
     ...(input.preservedTranscriptBefore
       ? { preservedTranscriptBefore: input.preservedTranscriptBefore }
@@ -997,7 +1162,7 @@ export function codexOneOffPoolKey(
 ): string {
   const options = providerOptions?.codex;
   return JSON.stringify([
-    options?.binaryPath ?? "codex",
+    resolveCodexCommand(options?.binaryPath),
     resolveCodexHome({ homePath: options?.homePath }) ?? "",
     options?.launchArgs ?? [],
   ]);
@@ -1057,12 +1222,25 @@ export function classifyCodexStderrLine(rawLine: string): { message: string } | 
 }
 
 export function isRecoverableThreadResumeError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const message = (
+    error instanceof CodexJsonRpcError
+      ? error.rawMessage + " " + error.message
+      : error instanceof Error
+        ? error.message
+        : String(error)
+  ).toLowerCase();
+  if (message.includes("already has an active writer")) return false;
   if (!message.includes("thread/resume")) {
     return false;
   }
 
   return RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS.some((snippet) => message.includes(snippet));
+}
+
+/** Codex refuses to resume a session the user archived until it is unarchived. */
+export function isArchivedThreadResumeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\bsession \S+ is archived\b|\bcodex unarchive\b/i.test(message);
 }
 
 export interface CodexAppServerManagerEvents {
@@ -1071,6 +1249,8 @@ export interface CodexAppServerManagerEvents {
 
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
   private readonly sessions = new Map<ThreadId, CodexSessionContext>();
+  private shutdownDeadline: number | undefined;
+  private readonly sourceDrains = new Map<Promise<void>, () => void>();
   private readonly sessionStartLocks = new Map<ThreadId, Promise<void>>();
   private readonly oneOffWorkers = new Map<ThreadId, CodexOneOffWorker>();
 
@@ -1080,7 +1260,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     this.runPromise = services ? Effect.runPromiseWith(services) : Effect.runPromise;
   }
 
-  async startSession(input: CodexAppServerStartSessionInput): Promise<ProviderSession> {
+  async startSession(
+    input: CodexAppServerStartSessionInput,
+    signal?: AbortSignal,
+  ): Promise<ProviderSession> {
     const previous = this.sessionStartLocks.get(input.threadId) ?? Promise.resolve();
     let release!: () => void;
     const barrier = new Promise<void>((resolve) => {
@@ -1088,25 +1271,32 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     });
     const current = previous.catch(() => undefined).then(() => barrier);
     this.sessionStartLocks.set(input.threadId, current);
-    await previous.catch(() => undefined);
     try {
+      await raceWithAbort(
+        previous.catch(() => undefined),
+        signal,
+      );
+      signal?.throwIfAborted();
       if (this.sessions.has(input.threadId)) {
         this.stopSession(input.threadId);
       }
-      return await this.startSessionUnlocked(input);
+      return await this.startSessionUnlocked(input, signal);
     } finally {
       release();
-      if (this.sessionStartLocks.get(input.threadId) === current) {
-        this.sessionStartLocks.delete(input.threadId);
-      }
+      void current.finally(() => {
+        if (this.sessionStartLocks.get(input.threadId) === current)
+          this.sessionStartLocks.delete(input.threadId);
+      });
     }
   }
 
   private async startSessionUnlocked(
     input: CodexAppServerStartSessionInput,
+    signal?: AbortSignal,
   ): Promise<ProviderSession> {
     const threadId = input.threadId;
     const now = new Date().toISOString();
+    let removeStartupAbort: (() => void) | undefined;
     let context: CodexSessionContext | undefined;
     const resumeThreadId = readResumeThreadId(input);
     const requestedModel = normalizeCodexModelSlug(input.model);
@@ -1128,21 +1318,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       };
 
       const codexOptions = readCodexProviderOptions(input);
-      const codexBinaryPath = codexOptions.binaryPath ?? "codex";
+      const codexBinaryPath = resolveCodexCommand(codexOptions.binaryPath);
       const codexHomePath = resolveCodexHome({ homePath: codexOptions.homePath });
       const processCwd = input.processCwd ?? resolvedCwd;
-      const cliVersion = this.assertSupportedCodexCliVersion({
+      const cliVersion = await this.assertSupportedCodexCliVersion({
         processEnvironment: input.processEnvironment ?? process.env,
         binaryPath: codexBinaryPath,
         cwd: processCwd,
+        ...(signal ? { signal } : {}),
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
-      const childEnvironment = buildProviderChildProcessEnv(
-        input.processEnvironment ?? process.env,
-        {
+      const childEnvironment = withBrowserOpenThreadToken(
+        buildProviderChildProcessEnv(input.processEnvironment ?? process.env, {
           ...input.mcpEnvironment,
           ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
-        },
+        }),
+        threadId,
       );
       const appServerCommand = buildCodexAppServerCommand({
         ...(codexOptions.launchArgs ? { providerLaunchArgs: codexOptions.launchArgs } : {}),
@@ -1168,19 +1359,29 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           cwd: processCwd,
         },
       );
+      signal?.throwIfAborted();
       const child = spawn(invocation.file, [...invocation.args], {
         cwd: processCwd,
         env: childEnvironment,
         stdio: ["pipe", "pipe", "pipe"],
       });
-      const output = readline.createInterface({ input: child.stdout });
+      const output = new ProviderLineReader(child.stdout, CODEX_MAX_INCOMING_MESSAGE_BYTES);
       const writer = createJsonRpcStdinWriter({
         stdin: child.stdin,
         closedMessage: "Cannot write to codex app-server stdin.",
+        onFailure: (cause) => {
+          if (!context || context.phase === "closed" || context.phase === "draining") return;
+          const error = cause instanceof Error ? cause : new Error(String(cause));
+          context.beginDrain?.(error, "session/exited", error.message);
+          if (!child.killed) killChildTree(child);
+        },
       });
 
       context = {
+        ...(input.browserResume ? { browserResume: input.browserResume } : {}),
+        browserResumeRegistered: false,
         session,
+        ...(input.mcpEventIdentity ? { mcpEventIdentity: input.mcpEventIdentity } : {}),
         account: {
           type: "unknown",
           planType: null,
@@ -1212,6 +1413,18 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       this.sessions.set(threadId, context);
       this.attachProcessListeners(context);
+      if (signal) {
+        const startedContext = context;
+        const abort = () => {
+          if (this.sessions.get(threadId) === startedContext) this.stopSession(threadId);
+        };
+        signal.addEventListener("abort", abort, { once: true });
+        removeStartupAbort = () => signal.removeEventListener("abort", abort);
+        if (signal.aborted) {
+          abort();
+          signal.throwIfAborted();
+        }
+      }
 
       this.emitLifecycleEvent(context, "session/connecting", "Starting codex app-server");
 
@@ -1219,10 +1432,23 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       await this.writeMessage(context, { method: "initialized" });
       try {
-        const modelListResponse = await this.sendRequest(context, "model/list", {});
+        const pages = await readCodexModelPages((params) =>
+          this.sendRequest(context!, "model/list", params),
+        );
+        const modelListResponse = { data: pages.entries };
         context.modelContextWindowCatalog = readCodexModelContextWindowCatalog(modelListResponse);
-        context.reportedModelCapabilities = readCodexReportedModelCapabilities(modelListResponse);
+        context.reportedModelCapabilities = new Map([
+          ...[...(input.effectiveModelCapabilities ?? [])].filter(
+            ([, caps]) => caps.source === "reported",
+          ),
+          ...readCodexReportedModelCapabilities(modelListResponse),
+        ]);
       } catch (error) {
+        context.reportedModelCapabilities = new Map(
+          [...(input.effectiveModelCapabilities ?? [])].filter(
+            ([, caps]) => caps.source === "reported",
+          ),
+        );
         await Effect.logWarning("codex model/list did not expose context window metadata", {
           threadId,
           cause: error instanceof Error ? error.message : String(error),
@@ -1239,11 +1465,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
 
       const normalizedModel = resolveCodexModelForAccount(fallbackModel, context.account);
+      const launchServiceTier = resolveCodexServiceTier(
+        input.serviceTier,
+        context.reportedModelCapabilities?.get(normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
+      );
       context.workflowExecutionProfile = input.workflowExecutionProfile;
       const threadOpenParams = buildCodexThreadOpenRequestParams({
         cliVersion,
+        browserResume: !!input.browserResume,
         ...(normalizedModel ? { model: normalizedModel } : {}),
-        ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
+        ...(typeof launchServiceTier === "string" ? { serviceTier: launchServiceTier } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(resumeThreadId ? { resumeThreadId } : {}),
         runtimeMode: input.runtimeMode ?? DEFAULT_RUNTIME_MODE,
@@ -1271,11 +1502,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (resumeThreadId) {
         try {
           threadOpenMethod = "thread/resume";
-          threadOpenResponse = await this.sendRequest(
-            context,
-            "thread/resume",
-            threadOpenParams.resume!,
-          );
+          try {
+            threadOpenResponse = await this.sendRequest(
+              context,
+              "thread/resume",
+              threadOpenParams.resume!,
+            );
+          } catch (error) {
+            if (!isArchivedThreadResumeError(error)) throw error;
+            // An archived session keeps its history; unarchive it and resume again.
+            await this.sendRequest(context, "thread/unarchive", { threadId: resumeThreadId });
+            threadOpenResponse = await this.sendRequest(
+              context,
+              "thread/resume",
+              threadOpenParams.resume!,
+            );
+          }
         } catch (error) {
           if (!isRecoverableThreadResumeError(error)) {
             this.emitErrorEvent(
@@ -1288,6 +1530,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
               requestedRuntimeMode: input.runtimeMode,
               resumeThreadId,
               recoverable: false,
+              providerMessage: error instanceof CodexJsonRpcError ? error.rawMessage : undefined,
               cause: error instanceof Error ? error.message : String(error),
             }).pipe(this.runPromise);
             throw error;
@@ -1325,11 +1568,30 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadOpenMethod,
         threadOpenResponse,
       );
+      context.browserResumeRegistered =
+        threadOpenMethod === "thread/start"
+          ? !!threadOpenParams.start.dynamicTools
+          : asObject(input.resumeCursor)?.f5BrowserResume === true;
 
       this.updateSession(context, {
         status: "ready",
-        resumeCursor: { ...asObject(input.resumeCursor), threadId: providerThreadId },
+        resumeCursor: codexBrowserResumeCursor(
+          asObject(input.resumeCursor),
+          providerThreadId,
+          context.browserResumeRegistered,
+        ),
       });
+      if (supportsCodexRelease5(context.cliVersion) && context.readState === undefined) {
+        void this.sendRequest(
+          context,
+          "thread/read",
+          {
+            threadId: providerThreadId,
+            includeTurns: false,
+          },
+          2000,
+        ).catch(() => undefined);
+      }
       // Only skip replaying restored context when Codex actually reopened the
       // original provider thread. Fallback thread/start still needs that
       // context on the first follow-up turn.
@@ -1351,11 +1613,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           : [],
       );
       context.requestedRuntime = { model: input.model, serviceTier: input.serviceTier };
+      context.serviceTierApplied = typeof launchServiceTier === "string";
       this.emitSessionConfigured(context, {
         ...(normalizedModel ? { model: normalizedModel } : {}),
         ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
         ...(resolvedCwd ? { cwd: resolvedCwd } : {}),
-        ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
+        ...(launchServiceTier !== undefined ? { serviceTier: launchServiceTier } : {}),
         [INSTRUCTION_PROFILE_CONFIG_KEY]: buildInstructionProfile({ provider: "codex" }),
       });
       this.emitLifecycleEvent(
@@ -1375,16 +1638,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return { ...context.session };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to start Codex session.";
-      if (context) {
+      if (context && this.sessions.get(threadId) === context) {
         this.updateSession(context, {
           status: "error",
           lastError: message,
         });
         this.emitErrorEvent(context, "session/startFailed", message);
         this.stopSession(threadId);
-      } else {
+      } else if (!context) {
         this.emitEvent({
-          id: EventId.makeUnsafe(randomUUID()),
+          id: EventId.makeUnsafe(timeOrderedUuid()),
           kind: "error",
           provider: "codex",
           threadId,
@@ -1394,6 +1657,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         });
       }
       throw new Error(message, { cause: error });
+    } finally {
+      removeStartupAbort?.();
     }
   }
 
@@ -1402,7 +1667,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     const providerThreadId = readResumeCursorThreadId(context.session.resumeCursor);
     if (!providerThreadId) throw new Error("Session is missing provider resume thread id.");
-    const turnStartParams = buildCodexTurnStartParams(input, {
+    // `null` only undoes a tier F5 applied; otherwise the thread keeps
+    // whatever tier the user's config chose.
+    const { serviceTier: _requestedTier, ...inputWithoutTier } = input;
+    const turnInput =
+      input.serviceTier === null && !context.serviceTierApplied ? inputWithoutTier : input;
+    const turnStartParams = buildCodexTurnStartParams(turnInput, {
       providerThreadId,
       model: context.session.model,
       account: context.account,
@@ -1432,6 +1702,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return { threadId: input.threadId, turnId: input.expectedTurnId };
     }
     const response = await this.sendRequest(context, "turn/start", turnStartParams);
+    context.lastAdditionalContext = turnStartParams.additionalContext;
 
     const turn = this.readObject(this.readObject(response), "turn");
     const turnIdRaw = this.readString(turn, "id");
@@ -1445,7 +1716,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     this.updateSession(context, {
       status: "running",
       ...(nextConfiguredModel !== undefined ? { model: nextConfiguredModel } : {}),
-      activeTurnId: turnId,
+      // A queued follow-up has its own id, but interrupt requires the running turn.
+      activeTurnId:
+        context.session.status === "running" ? (context.session.activeTurnId ?? turnId) : turnId,
       ...(context.session.resumeCursor !== undefined
         ? { resumeCursor: context.session.resumeCursor }
         : {}),
@@ -1455,6 +1728,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       effort: input.effort,
       serviceTier: input.serviceTier,
     };
+    if (turnStartParams.serviceTier !== undefined) {
+      context.serviceTierApplied = typeof turnStartParams.serviceTier === "string";
+    }
     if (nextConfiguredModel !== undefined) {
       const modelContextWindowTokens = lookupModelContextWindowTokens({
         provider: "codex",
@@ -1471,7 +1747,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...configuredBase,
         model: nextConfiguredModel,
         ...(turnStartParams.effort ? { effort: turnStartParams.effort } : {}),
-        ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+        ...(turnStartParams.serviceTier ? { serviceTier: turnStartParams.serviceTier } : {}),
         ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
       });
     }
@@ -1497,7 +1773,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     readonly cwd?: string;
     readonly model?: string;
     readonly effort?: string | undefined;
-    readonly serviceTier?: "fast" | null;
+    readonly serviceTier?: "fast" | "default" | null;
     readonly runtimeMode?: RuntimeMode;
     readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
     readonly timeoutMs?: number;
@@ -1628,7 +1904,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       await this.sendTurn({
         threadId,
         input: input.prompt,
-        ...(input.effort !== undefined ? { effort: input.effort } : {}),
+        // Background prompts keep a cheap effort unless the caller picks one.
+        effort: input.effort ?? "medium",
         ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
       });
       await completion;
@@ -1715,11 +1992,28 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       ...(model ? { model } : {}),
       cwd: resolvedCwd,
       runtimeMode: input.runtimeMode,
+      ...(context.cliVersion !== undefined ? { cliVersion: context.cliVersion } : {}),
+      browserResume: !!context.browserResume,
     });
     const response = await this.sendRequest(context, "thread/start", params.start);
     const providerThreadId = this.readThreadOpenProviderThreadId("thread/start", response);
+    const previousThreadId = readResumeCursorThreadId(context.session.resumeCursor);
+    if (previousThreadId) {
+      context.retiredMcpThreads ??= new Set();
+      context.retiredMcpThreads.add(previousThreadId);
+    }
+    context.mcpCalls?.clear();
+    context.mcpCallOwners?.clear();
+    context.browserResumeRegistered = !!params.start.dynamicTools;
     context.instructionContext = buildCodexInstructionContext(
-      { threadId, runtimeMode: input.runtimeMode },
+      {
+        threadId,
+        runtimeMode: input.runtimeMode,
+        // Integrations belong to the session, not the provider thread.
+        ...(context.instructionContext?.integrationInstructions
+          ? { integrationInstructions: context.instructionContext.integrationInstructions }
+          : {}),
+      },
       resolvedCwd,
     );
     context.resumedContextSent = false;
@@ -1765,9 +2059,88 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context.lastProviderTitle = title;
   }
 
+  async readChildThreadItems(
+    threadId: ThreadId,
+    childId: string,
+    cursor: string | null,
+    limit: number,
+  ): Promise<{ data: unknown[]; nextCursor: string | null } | "unsupported-provider" | null> {
+    const context = this.sessions.get(threadId);
+    if (!context || context.session.status === "closed" || context.phase === "draining")
+      return null;
+    if (!context.childThreadIds?.has(childId)) return null;
+    try {
+      const response = asObject(
+        await this.sendRequest(context, "thread/items/list", {
+          threadId: childId,
+          cursor,
+          limit,
+          sortDirection: "asc",
+        }),
+      );
+      if (!Array.isArray(response?.data) || response.data.length > limit)
+        throw new Error("Invalid child transcript page.");
+      return {
+        data: response.data,
+        nextCursor: typeof response.nextCursor === "string" ? response.nextCursor : null,
+      };
+    } catch (error) {
+      if (error instanceof CodexJsonRpcError && error.code === -32601)
+        return "unsupported-provider";
+      throw error;
+    }
+  }
+
+  private cacheReadState(context: CodexSessionContext, value: unknown): void {
+    if (value === null) {
+      context.readState = null;
+      return;
+    }
+    const state = asObject(value);
+    if (typeof state?.revision === "string" && "firstUnread" in state)
+      context.readState = { revision: state.revision, firstUnread: state.firstUnread };
+  }
+
+  async markNativeThreadRead(threadId: ThreadId): Promise<void> {
+    const context = this.sessions.get(threadId);
+    if (
+      !context ||
+      !this.isLiveContext(context) ||
+      !supportsCodexRelease5(context.cliVersion) ||
+      context.readMarkInFlight ||
+      !context.readState ||
+      context.readState.firstUnread === null
+    )
+      return;
+    context.readMarkInFlight = true;
+    try {
+      await this.sendRequest(
+        context,
+        "thread/readState/update",
+        buildCodexReadMarkParams(this.nativeThreadId(context), context.readState.revision),
+      );
+    } catch (error) {
+      const data = error instanceof CodexJsonRpcError ? asObject(error.data) : undefined;
+      if (data?.reason === "readStateConflict") this.cacheReadState(context, data.readState);
+      else await Effect.logDebug("Codex read mark failed", { threadId }).pipe(this.runPromise);
+    } finally {
+      context.readMarkInFlight = false;
+    }
+  }
+
   async inspectNativeOperation(input: NativeOperationInspectInput): Promise<unknown> {
     const context = this.requireSession(input.threadId);
     const threadId = this.nativeThreadId(context);
+    if (input.kind === "memory") {
+      if (!supportsCodexRelease5(context.cliVersion))
+        throw new Error("Memory requires Codex 0.166.0 or later.");
+      return this.sendRequest(context, "thread/memory/read", buildCodexMemoryReadParams(threadId));
+    }
+    if (input.kind === "usage") {
+      if (!supportsCodexNativeOperations(context.cliVersion))
+        throw new Error("Usage requires Codex 0.162.0 or later.");
+      return this.sendRequest(context, "account/usage/read", buildCodexUsageReadParams(threadId));
+    }
     if (input.kind === "goal") return this.sendRequest(context, "thread/goal/get", { threadId });
     if (input.kind === "attachments") {
       const response = asObject(
@@ -1831,7 +2204,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (!dispatched)
         throw Object.assign(
           new Error(cause instanceof Error ? cause.message : String(cause), { cause }),
-          { deliveryCertainty: "not_sent" as const },
+          {
+            deliveryCertainty: "not_sent" as const,
+            ...(asObject(cause)?.nativeOperationCancelled === true
+              ? { nativeOperationCancelled: true }
+              : {}),
+          },
         );
       throw cause;
     }
@@ -1850,10 +2228,103 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (!["thread/read", "thread/goal/get"].includes(method)) onDispatch();
       return this.sendRequest(context, method, params);
     };
+    if (command.kind === "aside") {
+      if (!supportsCodexRelease5(context.cliVersion) || context.session.activeTurnId)
+        throw new Error("Ask aside requires an idle Codex 0.166.0 session.");
+      context.samplePreparing = true;
+      context.sampleCancelled = false;
+      let history: Record<string, unknown> | undefined;
+      const assertNotCancelled = () => {
+        if (signal?.aborted || context.sampleCancelled)
+          throw Object.assign(new Error("Aside cancelled."), { nativeOperationCancelled: true });
+      };
+      try {
+        await onReceipt?.({ nativeThreadId: threadId });
+        assertNotCancelled();
+        history = asObject(
+          await this.sendRequest(context, "thread/turns/list", {
+            threadId,
+            limit: 1,
+            sortDirection: "desc",
+          }),
+        );
+        assertNotCancelled();
+      } finally {
+        context.samplePreparing = false;
+      }
+      const latest = Array.isArray(history?.data) ? asObject(history.data[0]) : undefined;
+      if (
+        !latest ||
+        typeof latest.id !== "string" ||
+        typeof latest.status !== "string" ||
+        !["completed", "failed", "interrupted"].includes(latest.status)
+      )
+        throw new Error("Ask aside requires a settled native turn.");
+      const requestId = context.nextRequestId;
+      const sampleModel = context.session.model ?? null;
+      context.sampleRequestId = requestId;
+      const cancel = () => {
+        void this.cancelSample(context).catch(() => undefined);
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
+      try {
+        context.sampleCompletion = request(
+          "thread/sample",
+          buildCodexSampleParams(
+            threadId,
+            latest.id,
+            command.question,
+            typeof context.requestedRuntime?.effort === "string"
+              ? context.requestedRuntime.effort
+              : undefined,
+          ),
+        );
+        const result = asObject(await context.sampleCompletion);
+        if (context.sampleCancelled) throw new Error("Aside cancelled.");
+        const aside = {
+          question: command.question,
+          text:
+            typeof result?.text === "string"
+              ? Buffer.byteLength(result.text, "utf8") > 32000
+                ? new TextDecoder().decode(Buffer.from(result.text, "utf8").subarray(0, 32000), {
+                    stream: true,
+                  }) + "\n[Answer truncated]"
+                : result.text
+              : null,
+          inputTokens: result?.inputTokens,
+          cachedInputTokens: result?.cachedInputTokens,
+          outputTokens: result?.outputTokens,
+          model: sampleModel,
+        };
+        this.emitEvent({
+          ...context.mcpEventIdentity,
+          id: EventId.makeUnsafe(timeOrderedUuid()),
+          kind: "notification",
+          provider: "codex",
+          threadId: input.threadId,
+          createdAt: new Date().toISOString(),
+          method: "f5/aside/completed",
+          payload: aside,
+        });
+        return aside;
+      } catch (cause) {
+        if (context.sampleCancelled)
+          throw Object.assign(new Error("Aside cancelled.", { cause }), {
+            nativeOperationCancelled: true,
+          });
+        throw cause;
+      } finally {
+        delete context.sampleRequestId;
+        delete context.sampleCompletion;
+        delete context.sampleCancellation;
+        signal?.removeEventListener("abort", cancel);
+      }
+    }
     await onReceipt?.({ nativeThreadId: threadId });
     if (command.kind === "goalPause")
-      return request("thread/goal/set", { threadId, status: "paused" });
-    if (command.kind === "goalClear") return request("thread/goal/clear", { threadId });
+      return request("thread/goal/set", buildCodexGoalPauseParams(threadId, "user"));
+    if (command.kind === "goalClear")
+      return request("thread/goal/clear", buildCodexGoalClearParams(threadId));
     if (command.kind === "goalSet") {
       let running = false;
       let terminal: unknown;
@@ -1898,6 +2369,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           objective: command.objective,
           tokenBudget: command.tokenBudget,
           status: "active",
+          origin: "user",
         });
         // The operation reservation owns every continuation until the goal settles.
         const result = await completion;
@@ -1930,7 +2402,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         expectedRemainingTurnIds: history.turns.slice(0, boundary).map((turn) => turn.id),
       });
       const response = asObject(
-        await request("thread/fork", { ...forkParams, deferGoalContinuation: true }),
+        await this.forkWithArchivedRecovery(
+          context,
+          { ...forkParams, deferGoalContinuation: true },
+          request,
+        ),
       );
       const forkId = asObject(response?.thread)?.id;
       if (typeof forkId !== "string" || forkId === threadId)
@@ -2119,7 +2595,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const response = asObject(await this.sendRequest(context, "thread/goal/get", { threadId }));
       const goal = asObject(response?.goal);
       if (goal?.status === "active" && !context.nativeGoalActive) {
-        await this.sendRequest(context, "thread/goal/set", { threadId, status: "paused" });
+        await this.sendRequest(context, "thread/goal/set", {
+          threadId,
+          status: "paused",
+          origin: "automatic",
+        });
         const read = asObject(
           await this.sendRequest(context, "thread/read", { threadId, includeTurns: false }),
         );
@@ -2152,13 +2632,55 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return { state: "indeterminate" };
   }
 
+  private cancelSample(context: CodexSessionContext): Promise<void> {
+    if (context.sampleCancellation) return context.sampleCancellation;
+    if (context.sampleRequestId === undefined) return Promise.resolve();
+    const requestId = context.sampleRequestId;
+    context.sampleCancelled = true;
+    const completion = context.sampleCompletion;
+    context.sampleCancellation = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await this.sendRequest(context, "thread/sample/cancel", { requestId });
+        if (completion)
+          await Promise.race([
+            completion.catch(() => undefined),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error("Codex did not settle the cancelled sample.")),
+                5000,
+              );
+            }),
+          ]);
+      } catch (cause) {
+        // A cancellation acknowledgement alone is insufficient: end the process
+        // if work cannot be confirmed settled before releasing its reservation.
+        this.stopSession(context.session.threadId);
+        if (completion) await completion.catch(() => undefined);
+        throw cause;
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+    return context.sampleCancellation;
+  }
+
   async interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void> {
     const context = this.requireSession(threadId);
+    if (context.samplePreparing) {
+      context.sampleCancelled = true;
+      return;
+    }
+    if (context.sampleRequestId !== undefined) {
+      await this.cancelSample(context);
+      return;
+    }
     if (context.nativeGoalActive) {
       try {
         await this.sendRequest(context, "thread/goal/set", {
           threadId: this.nativeThreadId(context),
           status: "paused",
+          origin: "automatic",
         });
       } catch (cause) {
         this.stopSession(threadId);
@@ -2183,6 +2705,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       threadId: providerThreadId,
       turnId: effectiveTurnId,
     });
+    this.retireMcpCalls(context, providerThreadId, effectiveTurnId);
   }
 
   async readThread(threadId: ThreadId): Promise<CodexThreadSnapshot> {
@@ -2269,7 +2792,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       cursor = page.nextCursor;
       cursors.add(cursor);
     } while (cursor !== undefined);
-    return { threadId: providerThreadId, turns };
+    return { threadId: providerThreadId, turns, historyCoverage: "complete" };
   }
 
   /**
@@ -2417,10 +2940,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     try {
       let response: unknown;
       try {
-        response = await this.sendRequest(context, "thread/fork", forkParams);
+        response = await this.forkWithArchivedRecovery(
+          context,
+          forkParams,
+          async (method, params) => {
+            try {
+              return await this.sendRequest(context, method, params);
+            } catch (error) {
+              if (method === "thread/fork" && !(error instanceof CodexJsonRpcError)) {
+                context.unsettledFork = true;
+              }
+              throw error;
+            }
+          },
+        );
       } catch (error) {
-        if (!(error instanceof CodexJsonRpcError)) {
-          context.unsettledFork = true;
+        if (context.unsettledFork) {
           await this.runPromise(
             Effect.logWarning("Codex rewind fork response lost; possible orphan", {
               threadId,
@@ -2539,9 +3074,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
     this.markNativeRequestResolvedLocally(context, correlation);
     context.pendingApprovals.delete(requestId);
+    // Only an explicit session answer allows the kind. An "always" answer is an execpolicy rule
+    // for one command prefix and must not widen into every command.
+    if (decision === "acceptForSession")
+      pendingRequest.sessionAllowance?.add(pendingRequest.requestKind);
 
     this.emitEvent({
-      id: EventId.makeUnsafe(randomUUID()),
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -2555,6 +3095,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         requestId: pendingRequest.requestId,
         requestKind: pendingRequest.requestKind,
         requestMethod: pendingRequest.method,
+        ...(pendingRequest.requestedPermissions
+          ? { requestedPermissions: pendingRequest.requestedPermissions }
+          : {}),
         decision,
       },
     });
@@ -2600,7 +3143,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context.pendingUserInputs.delete(requestId);
 
     this.emitEvent({
-      id: EventId.makeUnsafe(randomUUID()),
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -2693,7 +3237,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       resolvedLocally: false,
     });
     this.emitEvent({
-      id: EventId.makeUnsafe(randomUUID()),
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "request",
       provider: "codex",
       threadId: context.session.threadId,
@@ -2722,7 +3267,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     receipt: ElicitationTerminalReceipt,
   ): void {
     this.emitEvent({
-      id: EventId.makeUnsafe(randomUUID()),
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -2747,29 +3293,207 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     threadId: ThreadId,
   ): Promise<ReadonlyArray<Record<string, unknown>> | undefined> {
     const context = this.requireSession(threadId);
+    context.mcpStartupStatuses?.clear();
+    context.mcpObservationContext = {};
     await this.sendRequest<Record<string, never>>(context, "config/mcpServer/reload", undefined);
     try {
-      const statuses: Record<string, unknown>[] = [];
-      let cursor: string | undefined;
-      for (let page = 0; page < 10; page += 1) {
-        const result = asObject(
-          await this.sendRequest<unknown>(context, "mcpServerStatus/list", {
-            limit: 100,
-            ...(cursor ? { cursor } : {}),
-          }),
-        );
-        const data = Array.isArray(result?.data) ? result.data : [];
-        for (const entry of data) {
-          const status = asObject(entry);
-          if (status) statuses.push(status);
-        }
-        cursor = asString(result?.nextCursor);
-        if (!cursor) break;
-      }
-      return statuses;
+      const listing = await this.getMcpServerStatuses(threadId);
+      return listing.complete ? listing.entries.map((entry) => ({ ...entry })) : undefined;
     } catch {
       return undefined;
     }
+  }
+
+  browserResumeAvailable(threadId: ThreadId): boolean {
+    return this.sessions.get(threadId)?.browserResumeRegistered === true;
+  }
+
+  async waitForMcpIdle(
+    threadId: ThreadId,
+    deadline: number,
+    check: () => Promise<void>,
+  ): Promise<void> {
+    const context = this.requireSession(threadId);
+    await waitForControl(
+      () => !context.mcpCalls?.size,
+      deadline,
+      async () => {
+        if (!this.isLiveContext(context)) throw new Error("The Codex session ended.");
+        await check();
+      },
+      () => "An MCP call is still running; retry browser_resume once it finishes.",
+    );
+  }
+
+  private readonly mcpAppIdentities = new WeakMap<object, string>();
+  getMcpAppSessionIdentity(threadId: ThreadId): string {
+    const context = this.requireSession(threadId);
+    if (!this.isLiveContext(context) || !["ready", "running"].includes(context.session.status))
+      throw new Error("Send a message to reconnect.");
+    const observation = this.getMcpObservationContext(threadId);
+    let identity = this.mcpAppIdentities.get(observation);
+    if (!identity) {
+      identity = randomUUID();
+      this.mcpAppIdentities.set(observation, identity);
+    }
+    return identity;
+  }
+
+  /** App calls use the already-running session and never start or recover one. */
+  async callMcpAppTool(
+    threadId: ThreadId,
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+    expectedIdentity: string,
+    approved: boolean,
+  ): Promise<unknown> {
+    const context = this.requireSession(threadId);
+    if (!this.isLiveContext(context) || !["ready", "running"].includes(context.session.status))
+      throw new Error("Send a message to reconnect.");
+    if (
+      !server.trim() ||
+      server.length > 256 ||
+      !tool.trim() ||
+      tool.length > 256 ||
+      stringifyWithinBytes(args, 65536) === undefined
+    )
+      throw new Error("Invalid MCP app tool request.");
+    const generation = this.getMcpObservationContext(threadId);
+    if (this.getMcpAppSessionIdentity(threadId) !== expectedIdentity)
+      throw new Error("The MCP app session changed before approval was used.");
+    const listing = await this.getMcpServerStatuses(threadId, { deadline: Date.now() + 10000 });
+    const policy = findMcpAppToolPolicy(
+      Object.values(listing.entries.find((entry) => entry.name === server)?.tools ?? {}),
+      tool,
+    );
+    if (!listing.complete || !policy || (!approved && !policy.readOnlyHint))
+      throw new Error("The MCP app tool needs approval or is unavailable.");
+    if (
+      !this.isLiveContext(context) ||
+      generation !== this.getMcpObservationContext(threadId) ||
+      this.getMcpAppSessionIdentity(threadId) !== expectedIdentity
+    )
+      throw new Error("The MCP app session changed before dispatch.");
+    const result = await this.sendRequest(
+      context,
+      "mcpServer/tool/call",
+      { threadId: this.nativeThreadId(context), server, tool, arguments: args },
+      30000,
+    );
+    if (!this.isLiveContext(context) || generation !== this.getMcpObservationContext(threadId))
+      throw new Error(
+        "The MCP app session changed; the tool outcome is unknown. Do not retry automatically.",
+      );
+    return result;
+  }
+
+  /** The live session's `codex app-server` process id, the parent of its stdio MCP servers. */
+  codexProcessId(threadId: ThreadId): number | undefined {
+    const context = this.sessions.get(threadId);
+    return context && this.isLiveContext(context) ? context.child.pid : undefined;
+  }
+
+  /** Codex's own thread id for the session (its turn metadata's `session_id`). */
+  providerThreadId(threadId: ThreadId): string | undefined {
+    const context = this.sessions.get(threadId);
+    return context ? readResumeCursorThreadId(context.session.resumeCursor) : undefined;
+  }
+
+  /**
+   * F5's own call to one of the session's MCP tools, outside the model's turn. Codex only
+   * allows tools in the server's `enabled_tools`; `meta` becomes the call's `_meta`.
+   */
+  async callMcpServerTool(
+    threadId: ThreadId,
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+    meta: Record<string, unknown>,
+    timeoutMs = 10_000,
+  ): Promise<unknown> {
+    const context = this.requireSession(threadId);
+    if (!this.isLiveContext(context)) throw new Error("The session isn't running.");
+    return this.sendRequest(
+      context,
+      "mcpServer/tool/call",
+      {
+        threadId: this.nativeThreadId(context),
+        server,
+        tool,
+        arguments: args,
+        ...(Object.keys(meta).length ? { _meta: meta } : {}),
+      },
+      timeoutMs,
+    );
+  }
+
+  async readMcpAppResource(
+    threadId: ThreadId,
+    server: string,
+    uri: string,
+    expectedIdentity?: string,
+  ): Promise<unknown> {
+    const context = this.requireSession(threadId);
+    if (!this.isLiveContext(context) || !["ready", "running"].includes(context.session.status))
+      throw new Error("Send a message to reconnect.");
+    if (!server.trim() || server.length > 256 || !uri.trim() || uri.length > 4096)
+      throw new Error("Invalid MCP app resource request.");
+    const generation = this.getMcpObservationContext(threadId);
+    if (
+      expectedIdentity !== undefined &&
+      this.getMcpAppSessionIdentity(threadId) !== expectedIdentity
+    )
+      throw new Error("The MCP app session changed before capture.");
+    const result = await this.sendRequest(
+      context,
+      "mcpServer/resource/read",
+      { threadId: this.nativeThreadId(context), server, uri },
+      10000,
+    );
+    if (!this.isLiveContext(context) || generation !== this.getMcpObservationContext(threadId))
+      throw new Error("The MCP app session changed.");
+    return result;
+  }
+
+  getMcpObservationContext(threadId: ThreadId): object {
+    const context = this.requireSession(threadId);
+    return (context.mcpObservationContext ??= {});
+  }
+
+  async getMcpServerStatuses(
+    threadId: ThreadId,
+    options: { signal?: AbortSignal; deadline?: number } = {},
+  ) {
+    const context = this.requireSession(threadId);
+    const observationContext = this.getMcpObservationContext(threadId);
+    const result = await readBoundedPages<CodexControlMcpServerStatus>({
+      label: "mcpServerStatus/list",
+      allowMissingCursor: true,
+      maxItems: 1000,
+      maxPageItems: 100,
+      initialFailureIsPartial: true,
+      ...options,
+      request: (cursor, remaining) =>
+        this.sendRequest(
+          context,
+          "mcpServerStatus/list",
+          { limit: 100, ...(cursor ? { cursor } : {}) },
+          Math.min(10_000, remaining),
+        ),
+      decode: decodeCodexMcpServerStatus,
+    });
+    if (
+      !this.isLiveContext(context) ||
+      observationContext !== this.getMcpObservationContext(threadId)
+    )
+      throw new Error("The MCP observation was superseded.");
+    return {
+      ...result,
+      entries: mergeCodexMcpStartupStatuses(result.entries, [
+        ...(context.mcpStartupStatuses?.values() ?? []),
+      ]),
+    };
   }
 
   stopSession(threadId: ThreadId): void {
@@ -2785,41 +3509,35 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     context.stopping = true;
 
-    for (const pending of context.pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(new Error("Session stopped before request completed."));
-    }
-    context.pending.clear();
-    context.pendingApprovals.clear();
-    context.pendingUserInputs.clear();
+    const error = new Error("Session stopped before request completed.");
+    this.failPendingRequests(context, error);
     this.abortElicitations(context);
-    context.nativeRequestCorrelations.clear();
-    this.clearInitialSkillsRetry(context);
-
-    context.output.close();
-    context.writer.close();
+    context.writer.close(error);
+    context.beginDrain?.(error, "session/closed", "Session stopped");
 
     if (!context.child.killed) {
       killChildTree(context.child);
     }
 
-    this.updateSession(context, {
-      status: "closed",
-      activeTurnId: undefined,
-    });
-    this.emitLifecycleEvent(context, "session/closed", "Session stopped");
-    this.sessions.delete(threadId);
+    if (!context.beginDrain) {
+      context.output.close();
+      if (this.sessions.get(threadId) === context) this.sessions.delete(threadId);
+    }
   }
 
   /** Thread sessions only; one-off app-servers are internal and never bound to a thread. */
   listSessions(): ProviderSession[] {
     return Array.from(this.sessions.values())
-      .filter(({ session }) => !isSyntheticOneOffThreadId(session.threadId))
+      .filter(
+        ({ session, phase }) =>
+          phase !== "draining" && !isSyntheticOneOffThreadId(session.threadId),
+      )
       .map(({ session }) => ({ ...session }));
   }
 
   hasSession(threadId: ThreadId): boolean {
-    return this.sessions.has(threadId);
+    const context = this.sessions.get(threadId);
+    return context !== undefined && context.phase !== "draining";
   }
 
   /** Native discovery state: the skills catalog is Codex's session command catalog. */
@@ -2843,67 +3561,213 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
   }
 
+  async shutdown(deadline = Date.now() + 1_800): Promise<void> {
+    this.shutdownDeadline = deadline;
+    this.stopAll();
+    const timer = setTimeout(
+      () => {
+        for (const finish of this.sourceDrains.values()) finish();
+      },
+      Math.max(0, deadline - Date.now()),
+    );
+    try {
+      await Promise.all([...this.sourceDrains.keys()]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private requireSession(threadId: ThreadId): CodexSessionContext {
     const context = this.sessions.get(threadId);
     if (!context) {
       throw new Error(`Unknown session for thread: ${threadId}`);
     }
 
-    if (context.session.status === "closed") {
+    if (context.session.status === "closed" || context.phase === "draining") {
       throw new Error(`Session is closed for thread: ${threadId}`);
     }
 
     return context;
   }
 
-  private attachProcessListeners(context: CodexSessionContext): void {
-    context.output.on("line", (line) => {
-      this.handleStdoutLine(context, line);
-    });
-
-    context.child.stderr.on("data", (chunk: Buffer) => {
-      const raw = chunk.toString();
-      const lines = raw.split(/\r?\n/g);
-      for (const rawLine of lines) {
-        const classified = classifyCodexStderrLine(rawLine);
-        if (!classified) {
-          continue;
-        }
-
-        this.emitErrorEvent(context, "process/stderr", classified.message);
-      }
-    });
-
-    context.child.on("error", (error) => {
-      context.writer.close(error);
-      const message = error.message || "codex app-server process errored.";
-      this.updateSession(context, {
-        status: "error",
-        lastError: message,
-      });
-      this.emitErrorEvent(context, "process/error", message);
-    });
-
-    context.child.on("exit", (code, signal) => {
-      context.writer.close(
-        new Error(`codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`),
+  private failPendingRequests(context: CodexSessionContext, error: Error): void {
+    for (const pending of context.pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(
+        new JsonRpcDeliveryError(
+          error.message,
+          pending.wasWritten === false ? "not_sent" : "unknown",
+        ),
       );
-      if (context.stopping) {
-        return;
-      }
-      this.abortElicitations(context);
+      pending.cancelWrite?.();
+    }
+    context.pending.clear();
+    context.pendingApprovals.clear();
+    context.pendingUserInputs.clear();
+    context.nativeRequestCorrelations.clear();
+    this.clearInitialSkillsRetry(context);
+  }
 
-      const message = `codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
-      this.updateSession(context, {
-        status: "closed",
-        activeTurnId: undefined,
-        lastError: code === 0 ? context.session.lastError : message,
-      });
-      this.emitLifecycleEvent(context, "session/exited", message);
-      if (this.sessions.get(context.session.threadId) === context) {
-        this.sessions.delete(context.session.threadId);
+  private attachProcessListeners(context: CodexSessionContext): void {
+    const drained = Promise.withResolvers<void>();
+    const stderr = new Utf8Lines(1024 * 1024, "truncate");
+    const stderrDecoder = new StringDecoder("utf8");
+    let stderrTail = "";
+    let exitMessage: string | undefined;
+    let processExitTerminal = false;
+    const withStderr = (message: string) => {
+      const excerpt = stderrExcerpt(stderrTail);
+      return excerpt ? `${message} ${excerpt}` : message;
+    };
+    let stdoutClosed = false;
+    let stderrClosed = false;
+    let finishing = false;
+    let terminal: { method: string; message: string } | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let exitStatusGrace: ReturnType<typeof setTimeout> | undefined;
+    let endedByStdoutClose = false;
+    const isCurrent = () => this.sessions.get(context.session.threadId) === context;
+    const acceptsOutput = () => context.phase !== "closed";
+    const emitStderr = (line: string) => {
+      if (!acceptsOutput()) return;
+      const classified = classifyCodexStderrLine(line);
+      if (classified) this.emitErrorEvent(context, "process/stderr", classified.message);
+    };
+    const onStderr = (chunk: Buffer) => {
+      stderrTail = appendStderrTail(stderrTail, stderrDecoder.write(chunk));
+      for (const line of stderr.push(chunk)) emitStderr(line);
+    };
+    const onLine = (line: string) => {
+      if (acceptsOutput()) this.handleStdoutLine(context, line);
+    };
+    const finish = () => {
+      if (!terminal || context.phase === "closed" || finishing) return;
+      finishing = true;
+      if (deadline) clearTimeout(deadline);
+      if (exitStatusGrace) clearTimeout(exitStatusGrace);
+      // A descendant can hold stdout open after the provider exits. Finish
+      // bytes already received while the context still accepts notifications.
+      context.output.finish();
+      for (const line of stderr.finish()) emitStderr(line);
+      stderrTail = appendStderrTail(stderrTail, stderrDecoder.end());
+      if (exitMessage && processExitTerminal) {
+        const previousMessage = terminal.message;
+        terminal.message = withStderr(exitMessage);
+        if (context.session.lastError === previousMessage && isCurrent())
+          this.updateSession(context, { lastError: terminal.message });
       }
-    });
+      context.phase = "closed";
+      this.sourceDrains.delete(drained.promise);
+      drained.resolve();
+      context.output.off("line", onLine);
+      context.output.off("overflow", onOutputOverflow);
+      context.output.off("close", onStdoutClose);
+      context.child.stderr.off("data", onStderr);
+      context.child.stderr.off("end", onStderrClose);
+      context.child.stderr.off("close", onStderrClose);
+      context.child.off("exit", onExit);
+      context.child.off("close", onClose);
+      context.child.off("error", onError);
+      const retiredTurnId = context.session.activeTurnId;
+      this.updateSession(context, { status: "closed", activeTurnId: undefined });
+      this.emitLifecycleEvent(context, terminal.method, terminal.message, retiredTurnId);
+      if (isCurrent()) this.sessions.delete(context.session.threadId);
+      context.output.close();
+      // Descendants can inherit pipes after the provider exits. At EOF/the
+      // deadline, release those handles instead of keeping shutdown alive.
+      context.child.stdout?.destroy?.();
+      context.child.stderr.destroy?.();
+      context.child.stdin?.destroy?.();
+    };
+    this.sourceDrains.set(drained.promise, finish);
+    const maybeFinish = () => {
+      if (stdoutClosed && stderrClosed) finish();
+    };
+    const onStdoutClose = () => {
+      stdoutClosed = true;
+      if (!terminal && context.phase !== "closed" && !exitStatusGrace) {
+        // Node ends stdout before it reports the exit of a crashed process, so
+        // wait briefly for the exit status. stdout can also close while the
+        // process keeps running; no response can arrive then, so end the session.
+        exitStatusGrace = setTimeout(() => {
+          if (terminal || context.phase === "closed") return;
+          endedByStdoutClose = true;
+          beginDrain(
+            new Error(CODEX_STDOUT_ENDED_MESSAGE),
+            "session/exited",
+            CODEX_STDOUT_ENDED_MESSAGE,
+          );
+          if (!context.child.killed) killChildTree(context.child);
+        }, CODEX_EXIT_STATUS_GRACE_MS);
+        exitStatusGrace.unref?.();
+      }
+      maybeFinish();
+    };
+    const onStderrClose = () => {
+      stderrClosed = true;
+      maybeFinish();
+    };
+    const beginDrain = (error: Error, method: string, message: string) => {
+      // Written RPCs reject immediately on exit, even if a response remains in
+      // the pipe. Notifications keep draining until EOF or the shared budget.
+      if (exitStatusGrace) clearTimeout(exitStatusGrace);
+      this.failPendingRequests(context, error);
+      this.abortElicitations(context);
+      context.writer.close(error);
+      if (terminal || context.phase === "closed") return;
+      terminal = { method, message };
+      context.phase = "draining";
+      deadline = setTimeout(
+        finish,
+        Math.max(0, (this.shutdownDeadline ?? Date.now() + 1_800) - Date.now()),
+      );
+      deadline.unref?.();
+      maybeFinish();
+    };
+    const onError = (error: Error) => {
+      if (!terminal && isCurrent()) {
+        this.updateSession(context, { status: "error", lastError: error.message });
+        this.emitErrorEvent(context, "process/error", error.message);
+      }
+      beginDrain(error, "session/exited", error.message);
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      exitMessage = `codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
+      const message = withStderr(exitMessage);
+      if (!terminal || (endedByStdoutClose && !finishing && signal === null))
+        processExitTerminal = true;
+      // An exit code that arrives after the stdout grace period still describes
+      // how the process ended. A signal is usually the kill that followed.
+      if (endedByStdoutClose && !finishing && signal === null) {
+        endedByStdoutClose = false;
+        terminal = { method: "session/exited", message };
+        if (code !== 0 && isCurrent()) this.updateSession(context, { lastError: message });
+      }
+      if (!terminal && code !== 0 && isCurrent())
+        this.updateSession(context, { lastError: message });
+      beginDrain(new Error(message), "session/exited", message);
+    };
+    const onClose = () => {
+      stdoutClosed = stderrClosed = true;
+      finish();
+      context.child.off("error", onError);
+    };
+    // The reader stops at the cap; the session cannot resynchronize mid-message, so it ends.
+    const onOutputOverflow = () => {
+      const message = `codex app-server sent a message larger than ${CODEX_MAX_INCOMING_MESSAGE_BYTES} bytes; the session was ended.`;
+      onError(new Error(message));
+      if (!context.child.killed) killChildTree(context.child);
+    };
+    context.beginDrain = beginDrain;
+    context.output.on("overflow", onOutputOverflow);
+    context.output.on("line", onLine);
+    context.output.on("close", onStdoutClose);
+    context.child.stderr.on("data", onStderr);
+    context.child.stderr.on("end", onStderrClose);
+    context.child.stderr.on("close", onStderrClose);
+    context.child.on("error", onError);
+    context.child.on("exit", onExit);
+    context.child.on("close", onClose);
   }
 
   private handleStdoutLine(context: CodexSessionContext, line: string): void {
@@ -2955,10 +3819,104 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     );
   }
 
+  /**
+   * Compaction rebuilds history from user messages and Codex's own context,
+   * which drops F5's `additionalContext` messages. Codex resends an entry only
+   * when its value changes, so without this the F5 contract would stay lost
+   * for the rest of the session. The one-time resumed context is not restored.
+   */
+  private restoreAdditionalContext(context: CodexSessionContext, providerThreadId: string): void {
+    const entries = Object.entries(context.lastAdditionalContext ?? {}).filter(
+      ([key]) => !key.startsWith(CODEX_RESUMED_CONTEXT_KEY),
+    );
+    if (entries.length === 0 || !this.isLiveContext(context)) return;
+    void this.sendRequest(context, "thread/inject_items", {
+      threadId: providerThreadId,
+      items: entries.map(([key, entry]) => ({
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: `<${key}>${entry.value}</${key}>` }],
+      })),
+    }).catch((cause: unknown) =>
+      Effect.logWarning("failed to restore Codex additional context after compaction", {
+        threadId: context.session.threadId,
+        cause: cause instanceof Error ? cause.message : String(cause),
+      }).pipe(this.runPromise),
+    );
+  }
+
+  private retireMcpCalls(context: CodexSessionContext, threadId: string, turnId: string): void {
+    const key = JSON.stringify([threadId, turnId]);
+    context.retiredMcpTurns ??= new Set();
+    context.retiredMcpTurns.add(key);
+    if (context.retiredMcpTurns.size > 256)
+      context.retiredMcpTurns.delete(context.retiredMcpTurns.values().next().value!);
+    for (const [id, owner] of context.mcpCallOwners ?? []) {
+      if (owner.threadId === threadId && owner.turnId === turnId) {
+        context.mcpCalls?.delete(id);
+        context.mcpCallOwners?.delete(id);
+      }
+    }
+  }
+
   private handleServerNotification(
     context: CodexSessionContext,
     notification: JsonRpcNotification,
   ): void {
+    if (notification.method === "item/started" || notification.method === "item/completed") {
+      const params = asObject(notification.params);
+      const item = asObject(params?.item);
+      if (item?.type === "mcpToolCall" && typeof item.id === "string") {
+        const threadId =
+          readNotificationProviderThreadId(notification.params) ??
+          readResumeCursorThreadId(context.session.resumeCursor);
+        const turnId =
+          this.readRouteFields(notification.params).turnId ?? context.session.activeTurnId;
+        context.mcpCalls ??= new Set();
+        context.mcpCallOwners ??= new Map();
+        if (
+          notification.method === "item/started" &&
+          threadId &&
+          turnId &&
+          !context.retiredMcpThreads?.has(threadId) &&
+          !context.retiredMcpTurns?.has(JSON.stringify([threadId, turnId]))
+        ) {
+          context.mcpCalls.add(item.id);
+          context.mcpCallOwners.set(item.id, { threadId, turnId });
+        } else if (notification.method === "item/completed") {
+          context.mcpCalls.delete(item.id);
+          context.mcpCallOwners.delete(item.id);
+        }
+      }
+    }
+    if (notification.method === "turn/completed") {
+      const threadId =
+        readNotificationProviderThreadId(notification.params) ??
+        readResumeCursorThreadId(context.session.resumeCursor);
+      const turnId =
+        this.readRouteFields(notification.params).turnId ?? context.session.activeTurnId;
+      if (threadId && turnId) this.retireMcpCalls(context, threadId, turnId);
+    }
+    if (notification.method === "mcpServer/startupStatus/updated") {
+      const params = asObject(notification.params);
+      const name = asString(params?.name) ?? asString(params?.server);
+      const status = asString(params?.status);
+      if (
+        name &&
+        (status === "starting" ||
+          status === "ready" ||
+          status === "failed" ||
+          status === "cancelled" ||
+          status === "needs-auth")
+      ) {
+        context.mcpStartupStatuses ??= new Map();
+        context.mcpStartupStatuses.set(name, {
+          name,
+          startupStatus: status,
+          ...(asString(params?.error) ? { error: asString(params?.error)! } : {}),
+        });
+      }
+    }
     if (notification.method === "serverRequest/resolved") {
       const params = asObject(notification.params);
       const nativeRequestIdValue = params?.requestId;
@@ -2981,6 +3939,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           this.settleElicitation(context, correlation.requestId, "completed");
           return;
         }
+        const requestedPermissions = context.pendingApprovals.get(
+          correlation.requestId,
+        )?.requestedPermissions;
         if (correlation.responseChannel === "approval") {
           context.pendingApprovals.delete(correlation.requestId);
         } else {
@@ -2995,7 +3956,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         }
 
         this.emitEvent({
-          id: EventId.makeUnsafe(randomUUID()),
+          ...context.mcpEventIdentity,
+          id: EventId.makeUnsafe(timeOrderedUuid()),
           kind: "notification",
           provider: "codex",
           threadId: context.session.threadId,
@@ -3012,6 +3974,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
               ...(correlation.requestKind ? { kind: correlation.requestKind } : {}),
             },
             resolutionSource: "server",
+            ...(requestedPermissions ? { requestedPermissions } : {}),
           },
         });
         return;
@@ -3074,10 +4037,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return;
     }
 
+    if (notification.method === "thread/readState/changed")
+      this.cacheReadState(context, asObject(notification.params)?.readState);
     if (notification.method === "thread/goal/updated") {
       const goal = asObject(asObject(notification.params)?.goal);
       if (goal && goal.status !== "active") context.nativeGoalActive = false;
       if (
+        this.isLiveContext(context) &&
         goal?.status === "active" &&
         (!context.nativeGoalActive ||
           (context.nativeGoalBudget !== undefined &&
@@ -3089,8 +4055,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         void this.sendRequest(context, "thread/goal/set", {
           threadId: this.nativeThreadId(context),
           status: "paused",
+          origin: "automatic",
         })
           .catch(() => {
+            if (!this.isLiveContext(context)) return;
             this.emitLifecycleEvent(
               context,
               "session/goalPauseFailed",
@@ -3109,20 +4077,48 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (typeof title === "string") context.lastProviderTitle = title;
     }
     const item = asObject(asObject(notification.params)?.item);
+    if (
+      notification.method === "item/completed" &&
+      item?.type === "contextCompaction" &&
+      notificationProviderThreadId !== undefined &&
+      notificationProviderThreadId === primaryProviderThreadId
+    ) {
+      this.restoreAdditionalContext(context, notificationProviderThreadId);
+    }
     if (context.reviewOperationActive && item?.type === "enteredReviewMode") {
       const reviewTurnId = asObject(notification.params)?.turnId;
       if (typeof reviewTurnId === "string") context.nativeReviewTurnId = reviewTurnId;
     }
-    if (item && (item.type === "collabAgentToolCall" || item.type === "collab_agent_tool_call")) {
-      const previousSize = context.childThreadIds?.size ?? 0;
-      const children = item.receiverThreadIds;
+    const itemType = normalizeCodexThreadItemType(item?.type ?? item?.kind);
+    // The adapter may display unscoped activity, but it cannot grant access:
+    // only an explicit primary-thread envelope establishes child ownership.
+    const activityChildId =
+      itemType === "subagent_activity" &&
+      primaryProviderThreadId !== undefined &&
+      notificationProviderThreadId === primaryProviderThreadId &&
+      Schema.is(SubagentActivityKind)(item?.kind) &&
+      asString(item?.agentPath ?? item?.agent_path)?.trim()
+        ? asString(item?.agentThreadId ?? item?.agent_thread_id)?.trim()
+        : undefined;
+    const isCollabCall =
+      item?.type === "collabAgentToolCall" || item?.type === "collab_agent_tool_call";
+    if (item && (isCollabCall || activityChildId)) {
+      let childrenChanged = false;
+      // Newer Codex runtimes publish subAgentActivity without a collab call.
+      // Register only children explicitly reported by this parent, keeping
+      // transcript reads fenced by the same persisted session allowlist.
+      const children = activityChildId ? [activityChildId] : item.receiverThreadIds;
       if (Array.isArray(children))
         for (const child of children)
           if (typeof child === "string") {
             const ids = (context.childThreadIds ??= new Set());
-            if (ids.size < 512) ids.add(child);
+            if (!ids.has(child)) {
+              ids.add(child);
+              if (ids.size > 512) ids.delete(ids.values().next().value!);
+              childrenChanged = true;
+            }
           }
-      if (context.childThreadIds && context.childThreadIds.size !== previousSize)
+      if (context.childThreadIds && childrenChanged)
         this.updateSession(context, {
           resumeCursor: {
             ...asObject(context.session.resumeCursor),
@@ -3141,7 +4137,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         : undefined;
 
     this.emitEvent({
-      id: EventId.makeUnsafe(randomUUID()),
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3159,7 +4156,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
                 id: context.nativeReviewTurnId,
               },
             }
-          : notification.params,
+          : notification.method === "mcpServer/startupStatus/updated"
+            ? { ...asObject(notification.params), ...context.mcpEventIdentity }
+            : notification.params,
     });
 
     if (notification.method === "thread/started") {
@@ -3191,6 +4190,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
 
     if (notification.method === "account/login/completed") {
+      if (!this.isLiveContext(context)) return;
       const login = asObject(notification.params);
       if (login?.success !== true) {
         context.account = {
@@ -3263,12 +4263,56 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       this.updateSession(context, {
         status: willRetry ? "running" : "error",
+        ...(!willRetry ? { activeTurnId: undefined } : {}),
         lastError: message ?? context.session.lastError,
       });
     }
   }
 
   private handleServerRequest(context: CodexSessionContext, request: JsonRpcRequest): void {
+    if (!this.isLiveContext(context)) return;
+    if (
+      request.method === "item/tool/call" &&
+      asObject(request.params)?.tool === "browser_resume"
+    ) {
+      const params = asObject(request.params)!;
+      const turnId = context.session.activeTurnId;
+      const valid =
+        validBrowserResumeArguments(params.arguments) &&
+        params.namespace == null &&
+        params.threadId === readResumeCursorThreadId(context.session.resumeCursor) &&
+        typeof params.callId === "string" &&
+        !!turnId &&
+        params.turnId === turnId;
+      void (async () => {
+        let success = false;
+        let value: unknown;
+        try {
+          if (context.session.runtimeMode !== "full-access")
+            throw new Error("browser_resume requires Full access.");
+          if (!context.browserResumeRegistered || !context.browserResume)
+            throw new Error(
+              "browser_resume is not registered on this provider thread. Chrome can restart with the next message.",
+            );
+          if (!valid)
+            throw new Error(
+              "Invalid or stale browser_resume request; supply a nonempty reason during the active turn.",
+            );
+          value = await context.browserResume!();
+          if (!this.isLiveContext(context) || context.session.activeTurnId !== turnId)
+            throw new Error("The turn ended before Chrome resumed.");
+          success = true;
+        } catch (error) {
+          value = { error: error instanceof Error ? error.message : String(error) };
+        }
+        if (this.isLiveContext(context))
+          this.writeServerRequestResponse(context, {
+            id: request.id,
+            result: { success, contentItems: [{ type: "inputText", text: JSON.stringify(value) }] },
+          });
+      })();
+      return;
+    }
     const route = this.readRouteFields(request.params);
     if (
       request.method === "mcpServer/elicitation/request" &&
@@ -3281,6 +4325,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
     const approvalRequest = this.approvalRequestForMethod(request.method);
     const requestKind = approvalRequest?.requestKind;
+    const sessionAllowance =
+      requestKind === "command" || requestKind === "file-change"
+        ? this.sessionAllowance(context)
+        : undefined;
+    if (approvalRequest && requestKind && sessionAllowance?.has(requestKind)) {
+      const allowed = codexSessionAllowedResponse(
+        approvalRequest.responseKind,
+        approvalRequest.method === "item/commandExecution/requestApproval"
+          ? readCodexCommandApprovalOffer(request.params)
+          : undefined,
+      );
+      if (allowed) {
+        this.writeServerRequestResponse(context, { id: request.id, result: allowed });
+        return;
+      }
+    }
     let requestId: ApprovalRequestId | undefined;
     let responseChannel: NativeRequestCorrelation["responseChannel"] | undefined;
     if (approvalRequest) {
@@ -3304,6 +4364,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           ? { commandOffer: readCodexCommandApprovalOffer(request.params) }
           : {}),
         ...(requestedPermissions !== undefined ? { requestedPermissions } : {}),
+        ...(sessionAllowance ? { sessionAllowance } : {}),
         threadId: context.session.threadId,
         ...(route.turnId ? { turnId: route.turnId } : {}),
         ...(route.itemId ? { itemId: route.itemId } : {}),
@@ -3336,7 +4397,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       });
 
       this.emitEvent({
-        id: EventId.makeUnsafe(randomUUID()),
+        ...context.mcpEventIdentity,
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         kind: "request",
         provider: "codex",
         threadId: context.session.threadId,
@@ -3469,7 +4531,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     message: string,
   ): void {
     this.emitEvent({
-      id: EventId.makeUnsafe(randomUUID()),
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3494,13 +4557,53 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     if (response.error) {
       const providerMessage = formatCodexUnsupportedModelError(
-        response.error.message ?? "Unknown JSON-RPC error",
+        response.error.code === -32600 &&
+          response.error.message?.includes("already has an active writer")
+          ? "This conversation is open in another Codex client. Codex lets one client write to a conversation at a time. Quit the other Codex app, CLI, or IDE extension, then send your message again."
+          : (response.error.message ?? "Unknown JSON-RPC error"),
+        asObject(response.error.data)?.codexErrorInfo,
       );
-      pending.reject(new CodexJsonRpcError(pending.method, response.error.code, providerMessage));
+      if (
+        response.error.code === -32600 &&
+        asObject(response.error.data)?.reason === "serverShuttingDown"
+      ) {
+        context.beginDrain?.(
+          new Error("Codex is shutting down; reconnect on the next turn."),
+          "session/exited",
+          "Codex is shutting down.",
+        );
+      }
+      pending.reject(
+        new CodexJsonRpcError(
+          pending.method,
+          response.error.code,
+          providerMessage,
+          response.error.data,
+          response.error.message ?? "Unknown JSON-RPC error",
+        ),
+      );
       return;
     }
 
+    if (["thread/read", "thread/readState/update"].includes(pending.method)) {
+      this.cacheReadState(context, asObject(response.result)?.readState);
+    }
     pending.resolve(response.result);
+  }
+
+  private async forkWithArchivedRecovery(
+    context: CodexSessionContext,
+    params: Record<string, unknown>,
+    request = (method: string, input: Record<string, unknown>): Promise<unknown> =>
+      this.sendRequest(context, method, input),
+  ): Promise<unknown> {
+    try {
+      return await request("thread/fork", params);
+    } catch (error) {
+      if (!isArchivedThreadResumeError(error)) throw error;
+      await request("thread/unarchive", { threadId: params.threadId });
+      return request("thread/fork", params);
+    }
   }
 
   private async sendRequest<TResponse>(
@@ -3513,23 +4616,41 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context.nextRequestId += 1;
 
     const result = await new Promise<unknown>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        context.pending.delete(String(id));
-        reject(new Error(`Timed out waiting for ${method}.`));
-      }, timeoutMs);
-
-      context.pending.set(String(id), {
+      const controller = new AbortController();
+      const pending: PendingRequest = {
         method,
-        timeout,
         resolve,
         reject,
-      });
-      void this.writeMessage(context, {
-        method,
-        id,
-        params,
-      }).catch((error) => {
-        clearTimeout(timeout);
+        wasWritten: false,
+        cancelWrite: () => controller.abort(),
+        timeout:
+          timeoutMs === 0
+            ? undefined
+            : setTimeout(() => {
+                context.pending.delete(String(id));
+                controller.abort();
+                reject(
+                  new JsonRpcDeliveryError(
+                    `Timed out waiting for ${method}.`,
+                    pending.wasWritten ? "unknown" : "not_sent",
+                  ),
+                );
+              }, timeoutMs),
+      };
+      context.pending.set(String(id), pending);
+      void this.writeMessage(
+        context,
+        { method, id, params },
+        {
+          signal: controller.signal,
+          deadline: Date.now() + (timeoutMs || CODEX_JSON_RPC_TIMEOUT_MS),
+          lane: jsonRpcWriteLane({ method }),
+          onWrite: () => {
+            pending.wasWritten = true;
+          },
+        },
+      ).catch((error) => {
+        clearTimeout(pending.timeout);
         context.pending.delete(String(id));
         reject(error);
       });
@@ -3538,8 +4659,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return result as TResponse;
   }
 
-  private async writeMessage(context: CodexSessionContext, message: unknown): Promise<void> {
-    await context.writer.write(message);
+  private async writeMessage(
+    context: CodexSessionContext,
+    message: unknown,
+    options?: JsonRpcWriteOptions,
+  ): Promise<void> {
+    await context.writer.write(message, { lane: jsonRpcWriteLane(message), ...options });
   }
 
   private emitSessionConfigured(
@@ -3550,12 +4675,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const configuredPayload = context.skillsLoaded
       ? {
           ...config,
-          slashCommands: [...context.availableSkills],
+          slashCommands: [
+            ...context.availableSkills,
+            ...(supportsCodexRelease5(context.cliVersion) &&
+            !context.availableSkills.some((skill) => skill.name === "aside")
+              ? [CODEX_NATIVE_ASIDE_COMMAND]
+              : []),
+          ],
         }
       : config;
 
     this.emitEvent({
-      id: EventId.makeUnsafe(randomUUID()),
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "session",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3570,12 +4702,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     });
   }
 
-  private emitLifecycleEvent(context: CodexSessionContext, method: string, message: string): void {
+  private emitLifecycleEvent(
+    context: CodexSessionContext,
+    method: string,
+    message: string,
+    turnId?: TurnId,
+  ): void {
     this.emitEvent({
-      id: EventId.makeUnsafe(randomUUID()),
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "session",
       provider: "codex",
       threadId: context.session.threadId,
+      ...(turnId ? { turnId } : {}),
       createdAt: new Date().toISOString(),
       method,
       message,
@@ -3601,7 +4740,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     payload?: unknown,
   ): void {
     this.emitEvent({
-      id: EventId.makeUnsafe(randomUUID()),
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "error",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3739,7 +4879,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   }
 
   private isLiveContext(context: CodexSessionContext): boolean {
-    return !context.stopping && this.sessions.get(context.session.threadId) === context;
+    return (
+      !context.stopping &&
+      context.phase !== "draining" &&
+      context.phase !== "closed" &&
+      this.sessions.get(context.session.threadId) === context
+    );
   }
 
   private assertSupportedCodexCliVersion(input: {
@@ -3747,16 +4892,34 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     readonly binaryPath: string;
     readonly cwd: string;
     readonly homePath?: string;
-  }): string | null {
+    readonly signal?: AbortSignal;
+  }): Promise<string | null> {
     return assertSupportedCodexCliVersion(input);
   }
 
   private updateSession(context: CodexSessionContext, updates: Partial<ProviderSession>): void {
+    if (updates.resumeCursor)
+      updates = {
+        ...updates,
+        resumeCursor: codexBrowserResumeCursor(
+          asObject(updates.resumeCursor),
+          readResumeCursorThreadId(updates.resumeCursor),
+          context.browserResumeRegistered === true,
+        ),
+      };
     context.session = {
       ...context.session,
       ...updates,
       updatedAt: new Date().toISOString(),
     };
+  }
+
+  /** The kinds allowed for the session in its current runtime mode. */
+  private sessionAllowance(context: CodexSessionContext): Set<ProviderRequestKind> {
+    const runtimeMode = context.session.runtimeMode;
+    if (context.sessionApprovals?.runtimeMode !== runtimeMode)
+      context.sessionApprovals = { runtimeMode, kinds: new Set() };
+    return context.sessionApprovals.kinds;
   }
 
   private approvalRequestForMethod(method: string):
@@ -3956,63 +5119,9 @@ function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
   };
 }
 
-export function assertSupportedCodexCliVersion(input: {
-  readonly processEnvironment: NodeJS.ProcessEnv;
-  readonly binaryPath: string;
-  readonly cwd: string;
-  readonly homePath?: string;
-}): string | null {
-  const codexHomePath = resolveCodexHome(input);
-  const environment = buildProviderChildProcessEnv(
-    input.processEnvironment,
-    codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
-  );
-  const invocation = resolveInvocation(
-    input.binaryPath,
-    prependCodexCliTelemetryDisabledConfig(["--version"], {
-      managedCredentials: environment.F5_PROFILE_ISOLATED === "1",
-    }),
-    environment,
-    { cwd: input.cwd },
-  );
-  const result = spawnSync(invocation.file, [...invocation.args], {
-    cwd: input.cwd,
-    env: environment,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: CODEX_VERSION_CHECK_TIMEOUT_MS,
-    maxBuffer: 1024 * 1024,
-  });
+export const assertSupportedCodexCliVersion = probeCodexCliVersion;
 
-  if (result.error) {
-    const lower = result.error.message.toLowerCase();
-    if (
-      lower.includes("enoent") ||
-      lower.includes("command not found") ||
-      lower.includes("not found")
-    ) {
-      throw new Error(`Codex CLI (${input.binaryPath}) is not installed or not executable.`);
-    }
-    throw new Error(
-      `Failed to execute Codex CLI version check: ${result.error.message || String(result.error)}`,
-    );
-  }
-
-  const stdout = result.stdout ?? "";
-  const stderr = result.stderr ?? "";
-  if (result.status !== 0) {
-    const detail = stderr.trim() || stdout.trim() || `Command exited with code ${result.status}.`;
-    throw new Error(`Codex CLI version check failed. ${detail}`);
-  }
-
-  const parsedVersion = parseCodexCliVersion(`${stdout}\n${stderr}`);
-  if (parsedVersion && !isCodexCliVersionSupported(parsedVersion)) {
-    throw new Error(formatCodexCliUpgradeMessage(parsedVersion));
-  }
-  return parsedVersion;
-}
-
-function readResumeCursorThreadId(resumeCursor: unknown): string | undefined {
+export function readResumeCursorThreadId(resumeCursor: unknown): string | undefined {
   if (!resumeCursor || typeof resumeCursor !== "object" || Array.isArray(resumeCursor)) {
     return undefined;
   }

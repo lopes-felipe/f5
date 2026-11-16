@@ -53,9 +53,16 @@ describe("countDesignTokenViolations", () => {
           "text-[11px] text-[0.8rem] text-[var(--x)]",
           "text-muted-foreground/70 text-foreground/50 text-muted-foreground/0",
           "rounded-[10px] rounded-t-[4px] rounded-[inherit]",
+          "dark:bg-input/32 not-dark:bg-clip-padding before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)] border-input",
         ].join(" "),
       ),
-    ).toEqual({ palette: 3, arbitraryText: 2, fadedText: 2, pxRadius: 2 });
+    ).toEqual({
+      palette: 3,
+      arbitraryText: 2,
+      fadedText: 2,
+      pxRadius: 2,
+      legacyControlChrome: 4,
+    });
   });
 
   it("ignores semantic tokens", () => {

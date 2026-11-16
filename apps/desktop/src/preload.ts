@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { DesktopBridge } from "@t3tools/contracts";
+import { createFileActionGesture } from "./fileActionGesture";
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
@@ -11,10 +12,14 @@ const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
 const OPEN_THREAD_WINDOW_CHANNEL = "desktop:open-thread-window";
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
+const TRACKPAD_SCROLL_CHANNEL = "desktop:trackpad-scroll";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
+const UPDATE_CHECK_CHANNEL = "desktop:update-check";
+const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
+const UPDATE_CLAIM_RECENT_INSTALL_CHANNEL = "desktop:update-claim-recent-install";
 const PREVIEW_GET_CONFIG_CHANNEL = "desktop-preview:get-config";
 const PREVIEW_CREATE_TAB_CHANNEL = "desktop-preview:create-tab";
 const PREVIEW_CLOSE_TAB_CHANNEL = "desktop-preview:close-tab";
@@ -55,13 +60,113 @@ const wsUrl: string | null = ipcRenderer.sendSync("desktop:get-ws-url") ?? null;
 const profileId = argument("f5-profile-id");
 const systemLocale = argument("f5-system-locale");
 
+// The isolated preload observes actual DOM gestures; renderer-supplied booleans are ignored.
+let computerGestureAt = -Infinity;
+let browserOpenGestureAt = -Infinity;
+// A separate grant captures trusted mouseup before Base UI's synthetic
+// drag-to-select click, without replenishing a consumed grant on the later click.
+const takeKeepAwakeGesture = createFileActionGesture(window);
+const takeFileActionGesture = createFileActionGesture(window);
+for (const eventName of ["click", "keydown"] as const) {
+  window.addEventListener(
+    eventName,
+    (event) => {
+      if (event.isTrusted) {
+        computerGestureAt = performance.now();
+        browserOpenGestureAt = computerGestureAt;
+      }
+    },
+    true,
+  );
+}
 contextBridge.exposeInMainWorld("desktopBridge", {
+  keepAwake: {
+    getState: () => ipcRenderer.invoke("desktop:keep-awake-get"),
+    setPreferences: (input) =>
+      ipcRenderer.invoke(
+        "desktop:keep-awake-set",
+        input,
+        (input.mode !== undefined && input.mode !== "off") ||
+          input.closedLid === true ||
+          input.keepDisplayOn === true
+          ? takeKeepAwakeGesture()
+          : false,
+      ),
+    installLidPermission: () =>
+      ipcRenderer.invoke("desktop:keep-awake-install", takeKeepAwakeGesture()),
+    removeLidPermission: () =>
+      ipcRenderer.invoke("desktop:keep-awake-remove", takeKeepAwakeGesture()),
+    onState: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) =>
+        listener(state);
+      ipcRenderer.on("desktop:keep-awake-state", handler);
+      return () => ipcRenderer.removeListener("desktop:keep-awake-state", handler);
+    },
+  },
+  htmlPreview: (input) => ipcRenderer.invoke("desktop:html-preview", input),
+  browserOpen: {
+    current: () => ipcRenderer.invoke("desktop:browser-open-current"),
+    onRequested: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        request: Parameters<typeof listener>[0],
+      ) => listener(request);
+      ipcRenderer.on("desktop:browser-open-requested", handler);
+      return () => ipcRenderer.removeListener("desktop:browser-open-requested", handler);
+    },
+    onSettled: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, requestId: string) => listener(requestId);
+      ipcRenderer.on("desktop:browser-open-settled", handler);
+      return () => ipcRenderer.removeListener("desktop:browser-open-settled", handler);
+    },
+    acknowledge: (requestId) => ipcRenderer.invoke("desktop:browser-open-shown", requestId),
+    answer: (requestId, choice) => {
+      const trusted = performance.now() - browserOpenGestureAt < 1000;
+      browserOpenGestureAt = -Infinity;
+      return ipcRenderer.invoke("desktop:browser-open-answer", requestId, choice, trusted);
+    },
+  },
+  cliCommand: {
+    state: () => ipcRenderer.invoke("desktop:cli-command-state"),
+    install: () => ipcRenderer.invoke("desktop:cli-command-install"),
+  },
   computerAutomation: {
     status: () => ipcRenderer.invoke("desktop-computer:status"),
+    requestPermission: (kind) => ipcRenderer.invoke("desktop-computer:request-permission", kind),
+    openPermissionSettings: (kind) => ipcRenderer.invoke("desktop-computer:open-permissions", kind),
+    retryHelper: () => ipcRenderer.invoke("desktop-computer:retry"),
+    answerAccess: (answer) => {
+      const trusted = performance.now() - computerGestureAt < 1000;
+      computerGestureAt = -Infinity;
+      return ipcRenderer.invoke("desktop-computer:answer", answer, trusted);
+    },
+    setPaused: (threadId, paused) => {
+      const trusted = performance.now() - computerGestureAt < 1000;
+      if (!paused) computerGestureAt = -Infinity;
+      return ipcRenderer.invoke("desktop-computer:pause", threadId, paused, trusted);
+    },
+    stopHolder: (token) => {
+      const trusted = performance.now() - computerGestureAt < 1000;
+      computerGestureAt = -Infinity;
+      return ipcRenderer.invoke("desktop-computer:stop-holder", token, trusted);
+    },
+    onStatus: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: Parameters<typeof listener>[0]) =>
+        listener(status);
+      ipcRenderer.on("desktop-computer:status-changed", handler);
+      return () => ipcRenderer.removeListener("desktop-computer:status-changed", handler);
+    },
+    integrationConsents: () => ipcRenderer.invoke("desktop-computer:integration-consents"),
+    rememberedComputerConsents: () => ipcRenderer.invoke("desktop-computer:remembered-consents"),
+    revokeRememberedComputerConsent: (consent) =>
+      ipcRenderer.invoke("desktop-computer:revoke-remembered-consent", consent),
+    revokeIntegrationConsent: (integration) =>
+      ipcRenderer.invoke("desktop-computer:revoke-integration-consent", integration),
   },
   getSystemLocale: () => systemLocale,
   setQuitShortcutMode: (mode) => ipcRenderer.invoke("desktop:quit-mode", mode),
   setAttentionBadge: (count) => ipcRenderer.invoke("desktop:attention-badge", count),
+  markStartup: (marker) => ipcRenderer.send("desktop:startup-marker", marker),
   onQuitShortcut: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, hint: Parameters<typeof listener>[0]) =>
       listener(hint);
@@ -79,6 +184,37 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener("desktop:profiles-changed", wrapped);
     };
   },
+  takePromptLinks: () => ipcRenderer.invoke("desktop:take-prompt-links"),
+  resolveActivationPaths: (values) =>
+    ipcRenderer.invoke("desktop:resolve-activation-paths", values),
+  takeAppActivations: () => ipcRenderer.invoke("desktop:take-app-activations"),
+  isAppActivationPending: (id) => ipcRenderer.invoke("desktop:is-app-activation-pending", id),
+  completeAppActivation: (id, error) =>
+    ipcRenderer.invoke("desktop:complete-app-activation", id, error),
+  onAppActivationsAvailable: (listener) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("desktop:app-activations-available", wrapped);
+    return () => ipcRenderer.removeListener("desktop:app-activations-available", wrapped);
+  },
+  onPromptLinksAvailable: (listener) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("desktop:prompt-links-available", wrapped);
+    return () => {
+      ipcRenderer.removeListener("desktop:prompt-links-available", wrapped);
+    };
+  },
+  notifications: {
+    show: (input) => ipcRenderer.invoke("desktop:notification-show", input),
+    takeActivations: () => ipcRenderer.invoke("desktop:take-notification-activations"),
+    onActivationsAvailable: (listener) => {
+      const wrapped = () => listener();
+      ipcRenderer.on("desktop:notification-activations-available", wrapped);
+      return () => {
+        ipcRenderer.removeListener("desktop:notification-activations-available", wrapped);
+      };
+    },
+  },
+  revealWindow: () => ipcRenderer.invoke("desktop:reveal-window"),
   getPathForFile: (file) => {
     const resolvedPath = webUtils.getPathForFile(file);
     return resolvedPath.length > 0 ? resolvedPath : null;
@@ -86,11 +222,25 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   pickFolder: () => ipcRenderer.invoke(PICK_FOLDER_CHANNEL),
   confirm: (message) => ipcRenderer.invoke(CONFIRM_CHANNEL, message),
   setTheme: (theme) => ipcRenderer.invoke(SET_THEME_CHANNEL, theme),
-  showContextMenu: (items, position) => ipcRenderer.invoke(CONTEXT_MENU_CHANNEL, items, position),
+  showContextMenu: (items, position, fileAction) =>
+    ipcRenderer.invoke(CONTEXT_MENU_CHANNEL, items, position, fileAction),
   readClipboardText: (source) => ipcRenderer.invoke(READ_CLIPBOARD_TEXT_CHANNEL, source),
   copyImage: (pngBytes) => ipcRenderer.invoke(COPY_IMAGE_CHANNEL, pngBytes),
   downloadImage: (bytes, filename) => ipcRenderer.invoke(DOWNLOAD_IMAGE_CHANNEL, bytes, filename),
   openExternal: (url: string) => ipcRenderer.invoke(OPEN_EXTERNAL_CHANNEL, url),
+  prepareEditorOpen: (targetPath?: string) =>
+    ipcRenderer.invoke("desktop:prepare-editor-open", targetPath, takeFileActionGesture()),
+  releaseEditorOpen: (authorization: string) =>
+    ipcRenderer.invoke("desktop:release-editor-open", authorization),
+  openInVSCode: (targetPath: string, authorization?: string) =>
+    ipcRenderer.invoke(
+      "desktop:open-in-vscode",
+      targetPath,
+      takeFileActionGesture(),
+      authorization,
+    ),
+  revealFile: (filePath: string) =>
+    ipcRenderer.invoke("desktop:reveal-file", filePath, takeFileActionGesture()),
   openThreadInNewWindow: (threadId: string) =>
     ipcRenderer.invoke(OPEN_THREAD_WINDOW_CHANNEL, threadId),
   onMenuAction: (listener) => {
@@ -104,6 +254,22 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(MENU_ACTION_CHANNEL, wrappedListener);
     };
   },
+  onTrackpadScroll: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, event: unknown) => {
+      if (typeof event !== "object" || event === null) return;
+      const { phase, precise } = event as { phase?: unknown; precise?: unknown };
+      if (phase === "end") listener({ phase });
+      else if (phase === "begin")
+        listener(typeof precise === "boolean" ? { phase, precise } : { phase });
+    };
+    ipcRenderer.on(TRACKPAD_SCROLL_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(TRACKPAD_SCROLL_CHANNEL, wrappedListener);
+    };
+  },
+  checkForUpdates: () => ipcRenderer.invoke(UPDATE_CHECK_CHANNEL),
+  setUpdateChannel: (channel) => ipcRenderer.invoke(UPDATE_SET_CHANNEL_CHANNEL, channel),
+  claimRecentUpdateInstall: () => ipcRenderer.invoke(UPDATE_CLAIM_RECENT_INSTALL_CHANNEL),
   getUpdateState: () => ipcRenderer.invoke(UPDATE_GET_STATE_CHANNEL),
   downloadUpdate: () => ipcRenderer.invoke(UPDATE_DOWNLOAD_CHANNEL),
   installUpdate: () => ipcRenderer.invoke(UPDATE_INSTALL_CHANNEL),

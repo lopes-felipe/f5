@@ -1,5 +1,6 @@
+import { getDrainableWorkerSnapshots } from "@t3tools/shared/DrainableWorker";
 import { RotatingFileSink } from "@t3tools/shared/logging";
-import { Duration, Effect, Exit, Metric } from "effect";
+import { Clock, Duration, Effect, Exit, Metric, ServiceMap, Tracer } from "effect";
 import { dual } from "effect/Function";
 
 import {
@@ -50,6 +51,10 @@ export const providerSessionContextResetsTotal = Metric.counter(
     description: "Total provider session replacements that reset conversation context.",
   },
 );
+
+export const providerContextHandoffsTotal = Metric.counter("t3_provider_context_handoffs_total", {
+  description: "Total conversation handoffs delivered to a provider after a provider switch.",
+});
 
 export const providerTurnsTotal = Metric.counter("t3_provider_turns_total", {
   description: "Total provider turn lifecycle operations.",
@@ -134,6 +139,145 @@ export const previewRecordingFramesDroppedTotal = Metric.counter(
     description: "Total preview recording frames dropped under renderer backpressure.",
   },
 );
+
+export const wsSlowClientClosesTotal = Metric.counter("f5_ws_slow_client_closes_total", {
+  description: "Outbound clients closed after send failure or backlog overflow.",
+});
+export const wsCoalescedPushesReplacedTotal = Metric.counter(
+  "f5_ws_coalesced_pushes_replaced_total",
+  {
+    description: "Pending latest-state pushes replaced or subsumed by another invalidation.",
+  },
+);
+export const wsPushFrameBytes = Metric.histogram("f5_ws_push_frame_bytes", {
+  description: "Encoded push frame bytes before compression.",
+  boundaries: Metric.exponentialBoundaries({ start: 128, factor: 2, count: 20 }),
+});
+export const wsPushQueueDepth = Metric.gauge("f5_ws_push_queue_depth", {
+  description: "Push bus queue entries, sampled every 250 milliseconds.",
+});
+
+export const eventLoopDelay = Metric.timer("t3_event_loop_delay", {
+  // One sample per 250 ms sleep, so a short stall between samples can be missed. Its
+  // percentiles are not comparable with the perf harness's monitorEventLoopDelay p99.
+  description: "Lateness of a 250 ms sleep, sampling event-loop blocking.",
+});
+
+export const sqlExecutionDuration = Metric.timer("t3_sql_execution_duration", {
+  description: "Synchronous SQLite statement execution time on the application connection.",
+});
+
+export const sqlConnectionWaitDuration = Metric.timer("t3_sql_connection_wait_duration", {
+  description: "Time spent waiting for the application SQLite connection or a transaction.",
+});
+
+export const deliveryOutboxRowsDecoded = Metric.histogram("t3_delivery_outbox_rows_decoded", {
+  description: "Provider delivery outbox rows read and decoded by one actionable scan.",
+  boundaries: Metric.exponentialBoundaries({ start: 1, factor: 2, count: 14 }),
+});
+
+export const deliveryAttemptsActive = Metric.gauge("t3_delivery_attempts_active", {
+  description: "Claimed provider delivery attempts whose outcome is still being settled.",
+});
+
+export const deliveryAmbiguousTotal = Metric.counter("t3_delivery_ambiguous_total", {
+  description: "Provider deliveries recorded as ambiguous (sent with unknown outcome).",
+});
+
+const retainedEventLoopStalls: Array<{ recordedAt: string; durationMs: number }> = [];
+export const recentEventLoopStalls = () => retainedEventLoopStalls.map((entry) => ({ ...entry }));
+
+/** Independent root spans measure the stall itself, not the cost of reporting it. */
+export const recordEventLoopStall = (durationMs: number) =>
+  Effect.gen(function* () {
+    if (!Number.isFinite(durationMs) || durationMs < 50) return;
+    retainedEventLoopStalls.push({ recordedAt: new Date().toISOString(), durationMs });
+    if (retainedEventLoopStalls.length > 128) retainedEventLoopStalls.shift();
+    const clock = yield* Clock.Clock;
+    const tracer = yield* Tracer.Tracer;
+    const end = clock.currentTimeNanosUnsafe();
+    const span = tracer.span({
+      name: "event-loop.stall",
+      parent: undefined,
+      annotations: ServiceMap.empty(),
+      links: [],
+      startTime: end - BigInt(Math.round(durationMs * 1_000_000)),
+      kind: "internal",
+      root: true,
+      sampled: true,
+    });
+    span.attribute("event_loop.delay_ms", durationMs);
+    span.end(end, Exit.void);
+  });
+export const workerQueueEntries = Metric.gauge("f5_worker_queue_entries");
+export const workerQueueBytes = Metric.gauge("f5_worker_queue_bytes");
+export const workerQueueOldestAgeMs = Metric.gauge("f5_worker_queue_oldest_age_ms");
+export const workerFailures = Metric.gauge("f5_worker_failures");
+
+type QueueResources = { entries: number; bytes: number; oldestAgeMs: number };
+const notificationQueues = new Set<() => QueueResources>();
+const runtimeFanouts = new Set<() => Effect.Effect<number>>();
+export const providerRuntimeFanoutBacklog = Metric.gauge("f5_provider_runtime_fanout_backlog");
+export const providerNotificationOverflows = Metric.counter(
+  "f5_provider_notification_overflows_total",
+);
+export function registerProviderRuntimeFanout(read: () => Effect.Effect<number>) {
+  runtimeFanouts.add(read);
+  return () => {
+    runtimeFanouts.delete(read);
+  };
+}
+/** Static family only; instance/thread identities never become metric labels. */
+export function registerNotificationQueueResources(read: () => QueueResources) {
+  notificationQueues.add(read);
+  return () => {
+    notificationQueues.delete(read);
+  };
+}
+
+const EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS = 250;
+
+/**
+ * Records how late a fixed sleep wakes up. Runs until interrupted; fork it in the
+ * scope that owns metric collection.
+ */
+export const sampleEventLoopDelay = Effect.gen(function* () {
+  const startedAt = performance.now();
+  yield* Effect.sleep(Duration.millis(EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS));
+  const lateness = performance.now() - startedAt - EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS;
+  yield* Metric.update(eventLoopDelay, Duration.millis(Math.max(0, lateness)));
+  yield* recordEventLoopStall(lateness);
+  let fanoutBacklog = 0;
+  for (const read of runtimeFanouts) {
+    const result = yield* Effect.exit(read());
+    if (Exit.isSuccess(result)) fanoutBacklog += result.value;
+  }
+  yield* Metric.update(providerRuntimeFanoutBacklog, fanoutBacklog);
+  const resources = [...notificationQueues].map((read) => read());
+  const notificationAttributes = { worker: "codex-notifications" };
+  yield* Metric.update(
+    Metric.withAttributes(workerQueueEntries, notificationAttributes),
+    resources.reduce((sum, resource) => sum + resource.entries, 0),
+  );
+  yield* Metric.update(
+    Metric.withAttributes(workerQueueBytes, notificationAttributes),
+    resources.reduce((sum, resource) => sum + resource.bytes, 0),
+  );
+  yield* Metric.update(
+    Metric.withAttributes(workerQueueOldestAgeMs, notificationAttributes),
+    Math.max(0, ...resources.map((resource) => resource.oldestAgeMs)),
+  );
+  for (const worker of getDrainableWorkerSnapshots()) {
+    const attributes = { worker: worker.name };
+    yield* Metric.update(Metric.withAttributes(workerQueueEntries, attributes), worker.entries);
+    yield* Metric.update(Metric.withAttributes(workerQueueBytes, attributes), worker.bytes);
+    yield* Metric.update(
+      Metric.withAttributes(workerQueueOldestAgeMs, attributes),
+      worker.oldestAgeMs,
+    );
+    yield* Metric.update(Metric.withAttributes(workerFailures, attributes), worker.failures);
+  }
+}).pipe(Effect.forever, Effect.withTracerEnabled(false));
 
 export const metricAttributes = (attributes: Readonly<Record<string, unknown>>): MetricAttributes =>
   compactMetricAttributes(attributes);
@@ -332,7 +476,7 @@ export function serializeMetricSnapshot(
     type: "metric-snapshot",
     recordedAt,
     metrics: snapshots
-      .filter((snapshot) => snapshot.id.startsWith("t3_"))
+      .filter((snapshot) => snapshot.id.startsWith("t3_") || snapshot.id.startsWith("f5_"))
       .map(snapshotToRecord)
       .filter((record): record is LocalMetricRecord => record !== null)
       .toSorted((left, right) => {
@@ -391,3 +535,68 @@ export const makeMetricSnapshotWriter = Effect.fn("makeMetricSnapshotWriter")(fu
     close: () => flush,
   } satisfies MetricSnapshotWriter;
 });
+
+export const rpcBusyTotal = Metric.counter("f5_rpc_busy_total", {
+  description: "RPCs rejected before execution because their lane or byte budget is full.",
+});
+export const rpcServerStartingTotal = Metric.counter("f5_rpc_server_starting_total", {
+  description: "Runtime-dependent RPCs rejected before admission while the runtime starts.",
+});
+export const terminalSnapshotsTotal = Metric.counter("f5_terminal_snapshots_total", {
+  description: "Read-only terminal recovery snapshots.",
+});
+export const terminalStateChangesTotal = Metric.counter("f5_terminal_state_changes_total", {
+  description: "Published terminal state revisions.",
+});
+
+export const scheduledRunTransitionsTotal = Metric.counter("f5_scheduled_run_transitions_total", {
+  description: "Scheduled execution transitions, grouped by bounded outcome and reason.",
+});
+export const snapshotReadDuration = Metric.timer("f5_snapshot_read_duration", {
+  description: "Consistent snapshot transaction duration, including admission.",
+});
+export const computerToolDuration = Metric.timer("f5_computer_tool_duration", {
+  description: "Computer tool execution duration, grouped by operation and outcome.",
+});
+export const snapshotReadOverruns = Metric.counter("f5_snapshot_read_overruns_total", {
+  description: "Snapshot reads exceeding their cooperative deadline.",
+});
+
+/** Optional deterministic-harness hook; production does no stage timing work when absent. */
+export const PerformanceStageProbe = ServiceMap.Reference<
+  ((stage: string, durationMs: number) => void) | null
+>("t3/observability/PerformanceStageProbe", { defaultValue: () => null });
+export const measurePerformanceStage = <A, E, R>(
+  probe: ((stage: string, durationMs: number) => void) | null,
+  stage: string,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> =>
+  probe === null
+    ? effect
+    : Effect.suspend(() => {
+        const started = performance.now();
+        return effect.pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              try {
+                probe(stage, performance.now() - started);
+              } catch {
+                // Diagnostics must never alter execution or its finalization.
+              }
+            }),
+          ),
+        );
+      });
+
+export const terminalReceiptExhaustedTotal = Metric.counter(
+  "f5_terminal_receipts_exhausted_total",
+  {
+    description: "Terminal receipts retained for explicit repair after bounded retries.",
+  },
+);
+export const terminalReceiptOldestPendingMs = Metric.gauge(
+  "f5_terminal_receipt_oldest_pending_ms",
+  {
+    description: "Age of the oldest terminal receipt eligible for automatic retry.",
+  },
+);

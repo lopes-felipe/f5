@@ -1,0 +1,33 @@
+{
+  "reportVersion": 1,
+  "scope": "hosted-software-checks-only",
+  "repositoryCommit": "910d42e18b8de8794a570f2ae4ca64aa569c0617",
+  "runUrl": "https://github.com/lopes-felipe/f5/actions/runs/38431500143",
+  "state": "passed",
+  "jobs": [
+    {
+      "name": "Quality and full test suite",
+      "state": "passed",
+      "completedAt": "2026-10-13T16:46:01Z"
+    },
+    {
+      "name": "macOS profile storage and lifecycle checks",
+      "state": "passed",
+      "completedAt": "2026-10-13T16:35:29Z"
+    },
+    {
+      "name": "Windows build and integration suite",
+      "state": "passed",
+      "completedAt": "2026-10-13T16:50:08Z"
+    }
+  ],
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Hosted tests do not establish genuine app consent, real desktop input/capture isolation or stop latency",
+    "The Windows fixture protocol check opened no windows and posted no input",
+    "No signed installed candidate, TCC attribution or notarization evidence",
+    "CodeRabbit skipped the large review; no focused security review is credited",
+    "These results belong to the recorded commit and do not transfer to later executable changes"
+  ]
+}

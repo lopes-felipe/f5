@@ -8,6 +8,7 @@ import * as Path from "node:path";
 import { describe, it, expect } from "vitest";
 import { Schema } from "effect";
 import { ServerSettings, ProviderInstanceId, CodexSettings } from "@t3tools/contracts";
+import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { ProfileRegistryStore } from "./ProfileRegistryStore";
 import { acquireInstanceLock } from "./InstanceLock";
 
@@ -270,6 +271,44 @@ it("recovers provisioning interrupted after the settings write", async () => {
     expect((await store.list("")).profiles.some((p) => p.id === record.id)).toBe(false);
     const trash = await FS.readdir(Path.join(store.root, ".trash"));
     expect(trash.some((name) => name.startsWith(record.id))).toBe(true);
+  } finally {
+    await FS.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("refuses to remove a profile whose Claude in Chrome setup still owns the real home", async () => {
+  const { root, store } = await fixture();
+  try {
+    await store.init();
+    const work = await store.create({ name: "Work" });
+    const dir = profileStateDir(store.defaultStateDir, work);
+    const wrapper = Path.join(dir, "provider-homes", "claude", ".claude", "chrome", "host");
+    const manifest = Path.join(root, "home", "NativeMessagingHosts", "host.json");
+    await FS.mkdir(Path.dirname(manifest), { recursive: true });
+    const journal = Path.join(dir, "claude-chrome", "transactions");
+    await FS.mkdir(journal, { recursive: true });
+    await FS.writeFile(
+      Path.join(journal, "t.json"),
+      JSON.stringify({
+        state: "launched",
+        targetPath: wrapper,
+        slots: [{ kind: "manifest", browser: "chrome", location: manifest }],
+      }),
+    );
+    const registration = (path: string) =>
+      JSON.stringify({
+        name: "host",
+        type: "stdio",
+        path,
+        allowed_origins: ["chrome-extension://x/"],
+      });
+    await FS.writeFile(manifest, registration(wrapper));
+    await expect(store.remove(work.id)).rejects.toThrow(/Restore it in this profile's Settings/);
+    expect(await FS.stat(dir)).toBeTruthy();
+    // Once another owner (or a restore) has it, the profile may go.
+    await FS.writeFile(manifest, registration("/Users/me/.claude/chrome/host"));
+    await store.remove(work.id);
+    expect(await FS.stat(dir).catch(() => null)).toBeNull();
   } finally {
     await FS.rm(root, { recursive: true, force: true });
   }

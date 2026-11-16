@@ -42,7 +42,7 @@ beforeEach(() => {
   settingsStore.updateSettings = vi.fn(async () => {});
   status = { available: true, state: "idle" };
   openExternal = vi.fn(async () => {});
-  // Accounts imported from GitHub CLI are reported by later status checks, like the server.
+  // Saved and imported accounts are reported by later status checks, like the server.
   const imported = new Map<string, string>();
   api = {
     githubStatus: vi.fn(async ({ host }: { host: string }) => ({
@@ -62,8 +62,13 @@ beforeEach(() => {
     githubLoginCancel: vi.fn(async () => {
       status = { available: true, state: "cancelled", handle: "attempt" };
     }),
-    githubSet: vi.fn(async () => ({ login: "personal-user" })),
-    githubRemove: vi.fn(async () => {}),
+    githubSet: vi.fn(async ({ host }: { host: string }) => {
+      imported.set(host, "personal-user");
+      return { login: "personal-user" };
+    }),
+    githubRemove: vi.fn(async ({ host }: { host: string }) => {
+      imported.delete(host);
+    }),
     githubCliCandidates: vi.fn(async () => ({
       ghAvailable: true,
       accounts: [

@@ -59,6 +59,7 @@ describe("CodexOAuthCallbackPreflight", () => {
     expect(callbackUrl?.toString()).toBe("http://127.0.0.1:3118/callback");
   });
 
+  // Real socket success cases use production deadlines; 5ms races Windows event delivery.
   it("succeeds when a loopback callback listener is reachable", async () => {
     const port = await listenOnLoopback();
 
@@ -66,8 +67,6 @@ describe("CodexOAuthCallbackPreflight", () => {
       preflightCodexOAuthCallback({
         authorizationUrl: "https://auth.example.test/login",
         mcpOAuthCallbackPort: port,
-        timeoutMs: 20,
-        retryIntervalMs: 5,
       }),
     ).resolves.toBeUndefined();
   });
@@ -80,8 +79,6 @@ describe("CodexOAuthCallbackPreflight", () => {
         authorizationUrl: `https://auth.example.test/login?redirect_uri=${encodeURIComponent(
           `http://localhost:${port}/callback`,
         )}`,
-        timeoutMs: 20,
-        retryIntervalMs: 5,
       }),
     ).resolves.toBeUndefined();
   });
@@ -102,8 +99,6 @@ describe("CodexOAuthCallbackPreflight", () => {
         authorizationUrl: `https://auth.example.test/login?redirect_uri=${encodeURIComponent(
           `http://[::1]:${port}/callback`,
         )}`,
-        timeoutMs: 20,
-        retryIntervalMs: 5,
       }),
     ).resolves.toBeUndefined();
   });
@@ -115,8 +110,6 @@ describe("CodexOAuthCallbackPreflight", () => {
       preflightCodexOAuthCallback({
         authorizationUrl: "https://auth.example.test/login",
         mcpOAuthCallbackUrl: `http://127.0.0.1:${port}/callback`,
-        timeoutMs: 20,
-        retryIntervalMs: 5,
       }),
     ).resolves.toBeUndefined();
   });

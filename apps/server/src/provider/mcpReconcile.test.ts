@@ -58,12 +58,18 @@ describe("reconcileClaudeMcpServers", () => {
       (name) => ({ name, status: "connected", source: "dynamic" }),
     );
 
+    const beforeSetServers = vi.fn((names: ReadonlySet<string>) => {
+      expect(fake.setMcpServers).not.toHaveBeenCalled();
+      expect([...names]).toEqual(["old-f5", "new-f5"]);
+    });
     const outcome = await reconcileClaudeMcpServers({
       query: fake.query,
       desired: { "new-f5": { type: "stdio", command: "x" }, "plugin-server": { type: "stdio" } },
       owned: new Set(["old-f5"]),
+      beforeSetServers,
     });
 
+    expect(beforeSetServers).toHaveBeenCalledOnce();
     expect(fake.setMcpServers).toHaveBeenCalledWith({ "new-f5": { type: "stdio", command: "x" } });
     expect([...outcome.owned]).toEqual(["new-f5"]);
     // The name conflict is visible but does not block convergence.
@@ -216,7 +222,7 @@ describe("reconcileClaudeMcpServers", () => {
       owned: new Set(),
     });
     expect(rejected.result.restartRequired).toBe(true);
-    expect(rejected.owned.size).toBe(0);
+    expect([...rejected.owned]).toEqual(["a"]);
   });
 });
 
@@ -252,8 +258,37 @@ describe("summarizeMcpReload", () => {
     expect(codexObservedMcpStatus({ startupStatus: "starting" })).toBe("pending");
     expect(codexObservedMcpStatus({ authStatus: "notLoggedIn" })).toBe("needs-auth");
     expect(codexObservedMcpStatus({ error: "boom" })).toBe("failed");
+    expect(codexObservedMcpStatus({ startupStatus: "failed", error: "boom" })).toBe("failed");
+    // Codex reports missing or expired OAuth tokens as failed startups.
+    expect(
+      codexObservedMcpStatus({
+        startupStatus: "failed",
+        error: "MCP server `Glean` requires OAuth reauthentication. Run `codex mcp login Glean`.",
+      }),
+    ).toBe("needs-auth");
+    expect(
+      codexObservedMcpStatus({
+        error: "MCP server `slack` is not logged in. Run `codex mcp login slack`.",
+      }),
+    ).toBe("needs-auth");
+    // A wrapped CLI's own login error is a real failure that Codex OAuth cannot fix.
+    expect(codexObservedMcpStatus({ startupStatus: "failed", error: "gh is not logged in" })).toBe(
+      "failed",
+    );
+    expect(
+      codexObservedMcpStatus({ error: "User is not logged in to Jira; requires OAuth login" }),
+    ).toBe("failed");
     expect(codexObservedMcpStatus({})).toBe("unknown");
     // Live 0.160.1 lists servers without startupStatus; tools prove the connection.
     expect(codexObservedMcpStatus({ authStatus: "unsupported", hasTools: true })).toBe("connected");
   });
+});
+
+it("does not treat an external same-name server as applied", () => {
+  const result = summarizeMcpReload({
+    desired: ["docs"],
+    observed: [{ name: "docs", status: "connected", ownership: "external" }],
+  });
+  expect(result.converged).toBe(false);
+  expect(result.servers[0]?.owned).toBe(false);
 });

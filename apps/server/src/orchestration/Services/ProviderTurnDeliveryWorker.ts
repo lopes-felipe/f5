@@ -7,13 +7,15 @@ export interface ProviderTurnDeliveryOutcome {
   readonly deliveryId: CommandId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
-  readonly state: "accepted" | "rejected" | "ambiguous";
+  /** `abandoned`: a scheduled run was fenced after claim; nothing was sent and nothing failed. */
+  readonly state: "accepted" | "rejected" | "ambiguous" | "abandoned";
   readonly detail: string | null;
   readonly occurredAt?: string | undefined;
   readonly usageLimit?: OrchestrationUsageLimit | undefined;
 }
 
 export interface ProviderTurnDeliveryWorkerShape {
+  readonly wakeScheduled?: (threadId: ThreadId) => Effect.Effect<void>;
   readonly start: Effect.Effect<void, never, Scope.Scope>;
   readonly drain: Effect.Effect<void>;
   readonly outcomes: Stream.Stream<ProviderTurnDeliveryOutcome>;
@@ -27,6 +29,17 @@ export interface ProviderTurnDeliveryWorkerShape {
     threadId: ThreadId,
     deliveryId?: CommandId,
   ) => Effect.Effect<ProviderTurnDelivery | null, Error>;
+  /**
+   * `recheck`, plus why provider history could not be read when that left the
+   * delivery unresolved, so a person can see why nothing changed.
+   */
+  readonly recheckWithReason: (
+    threadId: ThreadId,
+    deliveryId?: CommandId,
+  ) => Effect.Effect<
+    { readonly delivery: ProviderTurnDelivery | null; readonly historyError?: string },
+    Error
+  >;
   /** Targets `deliveryId` when given, otherwise the thread's unresolved delivery. */
   readonly retry: (input: {
     readonly threadId: ThreadId;

@@ -1,3 +1,4 @@
+import type { WorkerAdmissionError } from "@t3tools/shared/DrainableWorker";
 import type {
   CommandId,
   NextTurnQueueSnapshot,
@@ -34,7 +35,7 @@ export interface NextTurnQueueDispatcherShape {
 
   readonly start: Effect.Effect<void, never, Scope.Scope>;
   readonly notify: (threadId: ThreadId) => Effect.Effect<void>;
-  readonly drain: Effect.Effect<void>;
+  readonly drain: Effect.Effect<void, WorkerAdmissionError>;
   readonly submitAndSettle: (input: {
     readonly threadId: ThreadId;
     readonly itemId: CommandId;

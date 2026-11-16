@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'"
+    />
+    <title>Chromium Computer Control Fixture</title>
+    <style>
+      body {
+        font: 18px system-ui;
+        padding: 24px;
+        background: white;
+        color: black;
+      }
+      #marker {
+        width: 400px;
+        height: 24px;
+        background: blue;
+      }
+      input {
+        display: block;
+        width: 400px;
+        margin: 16px 0;
+        padding: 5px;
+      }
+      button {
+        padding: 8px;
+        margin-right: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="marker" role="img" aria-label="Rehearsal capture marker"></div>
+    <input id="input" aria-label="Rehearsal input" autocomplete="off" />
+    <input
+      id="secure"
+      type="password"
+      aria-label="Rehearsal secure field"
+      value="SYNTHETIC_SECURE_SENTINEL"
+      autocomplete="off"
+    />
+    <button id="press">Rehearsal press</button>
+    <button id="focus-secure">Focus secure</button>
+    <p id="counter" aria-live="polite">presses: 0</p>
+  </body>
+</html>

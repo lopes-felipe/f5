@@ -1,13 +1,28 @@
+import {
+  editorDraftRecoveryAvailable,
+  editorDrafts,
+  editorBranch,
+  editorFileKey,
+  type EditorDraft,
+} from "../editorDrafts";
+import { useProfileState } from "../profileState";
+import {
+  isWsInteractionBlocked,
+  useWsConnectionState,
+  useServerMutationsAvailable,
+} from "../wsConnectionState";
 import { FileBreadcrumbs } from "./FileBreadcrumbs";
 import { WorkspaceMediaView, workspaceMediaKind } from "./WorkspaceMediaView";
 import ChatMarkdown from "./ChatMarkdown";
 import { File as FileViewer } from "@pierre/diffs/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { ThreadId } from "@t3tools/contracts";
+import { type EditorId, type ResolvedKeybindingsConfig, ThreadId } from "@t3tools/contracts";
 import {
   AlertTriangleIcon,
   ExternalLinkIcon,
+  CodeXmlIcon,
+  FolderOpenIcon,
   PencilIcon,
   RefreshCwIcon,
   SaveIcon,
@@ -15,13 +30,17 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { openInPreferredEditor } from "../editorPreferences";
+import { usePreferredEditor } from "../editorPreferences";
+import { openFileInEditor } from "../lib/openFileInEditor";
+import { serverConfigQueryOptions } from "../lib/serverReactQuery";
+import { revealFile } from "../lib/revealFile";
 import { clearFileViewSearchParams, parseDiffRouteSearch } from "../diffRouteSearch";
 import { useDiffWordWrap } from "../appSettings";
 import { useTheme } from "../hooks/useTheme";
-import { resolveDiffThemeName } from "../lib/diffRendering";
-import { looksLikeAbsoluteFilePath } from "../lib/normalizeFilePathForDiff";
+import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "../lib/diffRendering";
+import { isExternalTextPreviewPath, resolveFilePreviewTarget } from "../lib/filePreviewTarget";
 import { fileContentQueryOptions, providerQueryKeys } from "../lib/providerReactQuery";
+import { useWatchedWorkspacePaths } from "../lib/workspaceWatch";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { readNativeApi } from "../nativeApi";
 import { type RightPanelSurface, useRightPanelStore } from "../rightPanelStore";
@@ -33,11 +52,14 @@ import { Textarea } from "./ui/textarea";
 import { DIFF_PANEL_UNSAFE_CSS } from "./DiffPanel";
 import { insertFileMentionIntoComposer } from "./composerFileMentionInsertion";
 import { showFileEntryContextMenu } from "./fileEntryActions";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { useOpenFavoriteEditorShortcut } from "./chat/useOpenFavoriteEditorShortcut";
 
 interface FileViewPanelProps {
   mode: DiffPanelMode;
   surface?: Extract<RightPanelSurface, { kind: "file" }> | undefined;
   onClose?: (() => void) | undefined;
+  openInShortcutEnabled?: boolean;
 }
 
 function fileNameFromPath(filePath: string): string {
@@ -61,6 +83,9 @@ export function formatPositionBadge(params: {
   }
   return `L${params.line}`;
 }
+
+const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
+const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
 export function resolveEditorTarget(input: {
   filePath: string;
@@ -87,7 +112,12 @@ export function reconcileDraftContents(input: {
   return input.incomingContents;
 }
 
-export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelProps) {
+export default function FileViewPanel({
+  mode,
+  surface,
+  onClose,
+  openInShortcutEnabled = true,
+}: FileViewPanelProps) {
   const wordWrap = useDiffWordWrap();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -110,14 +140,16 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
   const activeProject = useStore((store) =>
     activeProjectId ? store.projects.find((project) => project.id === activeProjectId) : undefined,
   );
-  const workspaceRoot =
-    activeThread?.worktreePath ?? draftThread?.worktreePath ?? activeProject?.cwd;
+  const workspaceRoot = threadWorkspaceCwd(activeThread ?? draftThread, activeProject);
   const filePath = surface?.relativePath ?? fileSearch.fileViewPath;
   const fileLine = surface?.line ?? fileSearch.fileLine;
   const fileEndLine = surface?.endLine ?? fileSearch.fileEndLine;
   const fileColumn = surface?.column ?? fileSearch.fileColumn;
-  const canDisplayFileInPanel =
-    typeof filePath === "string" && !looksLikeAbsoluteFilePath(filePath);
+  const previewTarget = resolveFilePreviewTarget(filePath, workspaceRoot);
+  const canDisplayFileInPanel = Boolean(
+    previewTarget && (!previewTarget.readOnly || isExternalTextPreviewPath(filePath ?? "")),
+  );
+  const readOnly = previewTarget?.readOnly ?? false;
   const positionBadge = useMemo(
     () => formatPositionBadge({ line: fileLine, endLine: fileEndLine, column: fileColumn }),
     [fileColumn, fileEndLine, fileLine],
@@ -127,26 +159,50 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     [fileEndLine, fileLine],
   );
   const [showSource, setShowSource] = useState(false);
-  const mediaKind = filePath ? workspaceMediaKind(filePath) : null;
+  const mediaKind = filePath && !readOnly ? workspaceMediaKind(filePath) : null;
   const renderedMarkdown = Boolean(
     filePath && /\.(?:md|mdown|markdown)$/iu.test(filePath) && !showSource,
   );
+  const watchedFilePath =
+    canDisplayFileInPanel && (!mediaKind || showSource) ? previewTarget?.relativePath : undefined;
   const fileQuery = useQuery(
-    fileContentQueryOptions({
-      cwd: workspaceRoot,
-      relativePath: canDisplayFileInPanel && (!mediaKind || showSource) ? filePath : undefined,
-    }),
+    fileContentQueryOptions({ cwd: previewTarget?.cwd, relativePath: watchedFilePath }),
+  );
+  const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  // External edits refetch the file; a dirty draft turns into a conflict below.
+  useWatchedWorkspacePaths(
+    workspaceRoot,
+    watchedFilePath && !readOnly ? [watchedFilePath] : [],
+    [],
   );
   const [editing, setEditing] = useState(false);
   const [draftContents, setDraftContents] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveConflict, setSaveConflict] = useState(false);
+  const profileId = useProfileState((state) => state.active?.id ?? "default");
+  const mutationsAvailable = useServerMutationsAvailable();
+  const wsConnectionState = useWsConnectionState();
+  const [draftRecoveryError, setDraftRecoveryError] = useState<string | null>(null);
+  const [recoverableDrafts, setRecoverableDrafts] = useState<EditorDraft[]>([]);
+  const [draftReady, setDraftReady] = useState(false);
+  const draftRevisionRef = useRef(0);
+  const durableDraftRef = useRef<EditorDraft | null>(null);
+  const draftBranchRef = useRef<string | null>(null);
+  const durableFileKey = editorFileKey(
+    profileId,
+    fileQuery.data?.workspaceIdentity ?? workspaceRoot ?? "",
+    fileQuery.data?.fileIdentity ?? filePath ?? "",
+  );
+  const durableKeyRef = useRef(durableFileKey);
+  durableKeyRef.current = durableFileKey;
+
   const canEditFile =
+    !readOnly &&
     Boolean(workspaceRoot && filePath && canDisplayFileInPanel) &&
     Boolean(fileQuery.data?.contentSha256) &&
     fileQuery.data?.truncated === false;
-  const fileKey = JSON.stringify([workspaceRoot, filePath]);
+  const fileKey = JSON.stringify([profileId, workspaceRoot, filePath]);
   const fileScopeRef = useRef({ key: fileKey });
   if (fileScopeRef.current.key !== fileKey) fileScopeRef.current = { key: fileKey };
   const fileScope = fileScopeRef.current;
@@ -198,9 +254,94 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     }
   }, [fileQuery.data?.truncated]);
 
+  useEffect(() => {
+    let disposed = false;
+    durableDraftRef.current = null;
+    draftBranchRef.current = null;
+    setDraftReady(false);
+    setRecoverableDrafts([]);
+    if (!workspaceRoot || !filePath || readOnly) return;
+    void editorBranch(profileId)
+      .then(async (branchId) => {
+        const drafts = await editorDrafts.list(durableFileKey, true);
+        if (disposed) return;
+        draftBranchRef.current = branchId;
+        if (!editorDraftRecoveryAvailable())
+          setDraftRecoveryError(
+            "Persistent draft recovery is unavailable. These drafts are only held in this window.",
+          );
+        // Every stored branch is offered explicitly. Even this window's branch
+        // may be based on an older version of the file after reload.
+        draftRevisionRef.current = Math.max(
+          0,
+          ...drafts.filter((draft) => draft.branchId === branchId).map((draft) => draft.revision),
+        );
+        setRecoverableDrafts(drafts.filter((draft) => draft.saveStatus !== "saved"));
+        setDraftReady(true);
+      })
+      .catch(() => {
+        if (!disposed) {
+          setDraftRecoveryError(
+            "Draft recovery is unavailable. Keep this window open or copy your edits before closing it.",
+          );
+          setDraftReady(true);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [durableFileKey, profileId, workspaceRoot, filePath, readOnly]);
+
+  useEffect(() => {
+    if (readOnly) return;
+    const discover = (event: Event) => {
+      const detail = (event as CustomEvent<{ fileKey: string; branch: string }>).detail;
+      if (detail.fileKey !== durableFileKey || detail.branch === draftBranchRef.current) return;
+      void editorDrafts
+        .list(durableFileKey)
+        .then((drafts) => {
+          if (durableKeyRef.current === durableFileKey)
+            setRecoverableDrafts(
+              drafts.filter((draft) => draft.branchId !== draftBranchRef.current),
+            );
+        })
+        .catch(() => setDraftRecoveryError("Concurrent draft discovery is unavailable."));
+    };
+    window.addEventListener("f5-editor-draft", discover);
+    return () => window.removeEventListener("f5-editor-draft", discover);
+  }, [durableFileKey, readOnly]);
+
+  const editDraft = (text: string) => {
+    setDraftContents(text);
+    const base = draftBaseRef.current;
+    if (!base?.hash) return;
+    const branchId = draftBranchRef.current ?? crypto.randomUUID();
+    draftBranchRef.current = branchId;
+    const record: EditorDraft = {
+      key: JSON.stringify([durableFileKey, branchId]),
+      fileKey: durableFileKey,
+      branchId,
+      revision: ++draftRevisionRef.current,
+      text,
+      baseHash: base.hash,
+      baseContents: base.contents,
+      saveStatus: "dirty",
+      updatedAt: Date.now(),
+    };
+    durableDraftRef.current = record;
+    void editorDrafts
+      .put(record)
+      .catch(() =>
+        setDraftRecoveryError(
+          "Draft recovery is unavailable. Your edits remain in this window; copy them before closing it.",
+        ),
+      );
+  };
+
   const saveDraft = useCallback(async () => {
     if (
       !mountedRef.current ||
+      !canEditFile ||
       fileScopeRef.current !== fileScope ||
       !workspaceRoot ||
       !filePath ||
@@ -209,7 +350,8 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
       fileQuery.data.truncated ||
       !dirty ||
       saving ||
-      saveConflict
+      saveConflict ||
+      !mutationsAvailable
     ) {
       return;
     }
@@ -221,6 +363,8 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     }
 
     const savedContents = draftContents;
+    const savedDraft = durableDraftRef.current;
+    const savedDraftFileKey = durableFileKey;
     const base = draftBaseRef.current;
     if (base?.key !== fileKey || !base.hash) return;
     if (base.hash !== fileQuery.data.contentSha256) {
@@ -240,8 +384,27 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         cwd: workspaceRoot,
         relativePath: requestedFilePath,
         contents: savedContents,
-        expectedContentSha256,
+        condition: { type: "match", contentSha256: expectedContentSha256! },
       });
+      if ("conflict" in result)
+        throw new Error(
+          `Workspace file changed before save. Current hash: ${result.currentContentSha256 ?? "unavailable"}`,
+        );
+      if (savedDraft) {
+        await editorDrafts.acknowledge(savedDraft, result.contentSha256).catch(() => {
+          setDraftRecoveryError("The file was saved, but its recovery draft could not be cleared.");
+        });
+        if (durableKeyRef.current === savedDraftFileKey && durableDraftRef.current) {
+          if (durableDraftRef.current.revision === savedDraft.revision)
+            durableDraftRef.current = null;
+          else
+            durableDraftRef.current = {
+              ...durableDraftRef.current,
+              baseContents: savedContents,
+              baseHash: result.contentSha256,
+            };
+        }
+      }
       if (!mountedRef.current || fileScopeRef.current !== fileScope) {
         // The RPC may already have reached disk. Refresh its cache without installing
         // an obsolete response into a new visit to the same file.
@@ -262,6 +425,8 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         setSaveConflict(false);
       }
       const savedData = {
+        workspaceIdentity: fileQuery.data?.workspaceIdentity,
+        fileIdentity: fileQuery.data?.fileIdentity,
         relativePath: result.relativePath,
         contents: savedContents,
         byteLength: result.byteLength,
@@ -289,7 +454,9 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
       if (mountedRef.current && fileScopeRef.current === fileScope) setSaving(false);
     }
   }, [
+    canEditFile,
     dirty,
+    durableFileKey,
     draftContents,
     fileKey,
     fileScope,
@@ -297,6 +464,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     fileQuery.data,
     queryClient,
     saveConflict,
+    mutationsAvailable,
     saving,
     workspaceRoot,
   ]);
@@ -346,13 +514,33 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     };
   }, [fileLine, fileQuery.data]);
 
+  const hasPreviewTarget = previewTarget !== undefined;
+  const revealInFileManager = useMemo(
+    () =>
+      filePath && hasPreviewTarget && activeProjectId && activeThreadId
+        ? () =>
+            revealFile(filePath, workspaceRoot, {
+              projectId: activeProjectId,
+              threadId: activeThreadId,
+            })
+        : null,
+    [activeProjectId, activeThreadId, filePath, hasPreviewTarget, workspaceRoot],
+  );
+
+  // The file manager would hand the file to its default app, so a preferred file
+  // manager reveals it instead. Decide before any await: desktop file actions
+  // spend the click's one-shot gesture on their first native call.
+  const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
+  const [preferredEditor] = usePreferredEditor(availableEditors);
+  const preferredEditorReveals = preferredEditor === "file-manager";
+  const canOpenInEditor = Boolean(filePath) && (!preferredEditorReveals || !!revealInFileManager);
+
   const openInEditor = useCallback(() => {
     if (!filePath) {
       return;
     }
-    const api = readNativeApi();
-    if (!api) {
-      console.warn("Native API not found. Unable to open file in editor.");
+    if (preferredEditorReveals) {
+      void revealInFileManager?.();
       return;
     }
     const targetPath = resolveEditorTarget({
@@ -361,14 +549,27 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
       line: fileLine,
       column: fileColumn,
     });
-    void openInPreferredEditor(api, targetPath).catch((error) => {
-      console.warn("Failed to open file in editor.", error);
-    });
-  }, [fileColumn, fileLine, filePath, workspaceRoot]);
+    void openFileInEditor(targetPath);
+  }, [fileColumn, fileLine, filePath, preferredEditorReveals, revealInFileManager, workspaceRoot]);
+
+  const openInVSCode = () => {
+    if (filePath)
+      void openFileInEditor(
+        resolveEditorTarget({ filePath, workspaceRoot, line: fileLine, column: fileColumn }),
+        "vscode",
+      );
+  };
+
+  useOpenFavoriteEditorShortcut({
+    enabled:
+      openInShortcutEnabled && !isWsInteractionBlocked(wsConnectionState.phase) && canOpenInEditor,
+    keybindings: serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS,
+    onOpen: openInEditor,
+  });
 
   const showFileContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
-      if (!filePath || !workspaceRoot || !activeThreadId || !activeProjectId) return;
+      if (!filePath || !workspaceRoot || !activeThreadId || !activeProjectId || readOnly) return;
       event.preventDefault();
       event.stopPropagation();
       const api = readNativeApi();
@@ -383,7 +584,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         onAddToChat: (relativePath) => insertFileMentionIntoComposer(activeThreadId, relativePath),
       });
     },
-    [activeProjectId, activeThreadId, filePath, workspaceRoot],
+    [activeProjectId, activeThreadId, filePath, workspaceRoot, readOnly],
   );
 
   const closeFileView = useCallback(() => {
@@ -423,12 +624,14 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         {filePath ? (
           <FileBreadcrumbs
             path={filePath}
-            {...(activeThreadId ? { threadId: activeThreadId } : {})}
+            {...(activeThreadId && !readOnly ? { threadId: activeThreadId } : {})}
           />
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        {(mediaKind === "html" || /\.(?:md|mdown|markdown)$/iu.test(filePath ?? "")) && (
+        {(mediaKind === "html" ||
+          mediaKind === "table" ||
+          /\.(?:md|mdown|markdown)$/iu.test(filePath ?? "")) && (
           <Button
             size="xs"
             variant="outline"
@@ -440,7 +643,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
             {showSource ? "Rendered" : "Source"}
           </Button>
         )}
-        {fileQuery.data?.truncated ? (
+        {readOnly || fileQuery.data?.truncated ? (
           <span className="rounded-md border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-2xs font-medium text-warning-foreground">
             Read-only preview
           </span>
@@ -449,7 +652,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
           size="icon-xs"
           variant={editing ? "secondary" : "outline"}
           onClick={() => setEditing((current) => !current)}
-          disabled={!canEditFile}
+          disabled={!canEditFile || !draftReady}
           aria-label={editing ? "View rendered file" : "Edit file"}
         >
           <PencilIcon className="size-3.5" />
@@ -459,7 +662,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
             size="icon-xs"
             variant="outline"
             onClick={() => void saveDraft()}
-            disabled={!dirty || saving || saveConflict}
+            disabled={!dirty || saving || saveConflict || !mutationsAvailable}
             aria-label="Save file"
           >
             {saving ? (
@@ -473,10 +676,31 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
           size="icon-xs"
           variant="outline"
           onClick={openInEditor}
-          disabled={!filePath}
-          aria-label="Open file in editor"
+          disabled={!canOpenInEditor}
+          aria-label="Open in preferred editor"
+          title="Open in preferred editor"
         >
           <ExternalLinkIcon className="size-3.5" />
+        </Button>
+        <Button
+          size="icon-xs"
+          variant="outline"
+          onClick={openInVSCode}
+          disabled={!filePath}
+          aria-label="Open in VS Code"
+          title="Open in VS Code"
+        >
+          <CodeXmlIcon className="size-3.5" />
+        </Button>
+        <Button
+          size="icon-xs"
+          variant="outline"
+          onClick={() => void revealInFileManager?.()}
+          disabled={!revealInFileManager}
+          aria-label="Reveal in file manager"
+          title="Reveal in Finder / file manager"
+        >
+          <FolderOpenIcon className="size-3.5" />
         </Button>
         <Button size="icon-xs" variant="ghost" onClick={closeFileView} aria-label="Close file view">
           <XIcon className="size-3.5" />
@@ -496,17 +720,24 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
           <div className="rounded-md border border-border/60 bg-card/40 p-3">
             <p className="text-sm font-medium text-foreground">Unable to display file</p>
             <p className="mt-2 text-sm text-muted-foreground">
-              Files outside the current workspace can only be opened in your editor.
+              This path cannot be previewed as a local file: {filePath}
             </p>
             <div className="mt-4 flex items-center gap-2">
-              <Button size="xs" variant="outline" onClick={openInEditor}>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={openInEditor}
+                disabled={!canOpenInEditor}
+              >
                 <ExternalLinkIcon className="size-3.5" />
-                Open in editor
+                Open in preferred editor
               </Button>
             </div>
           </div>
         </div>
-      ) : (mediaKind ||
+      ) : !readOnly &&
+        (mediaKind ||
+          fileQuery.data?.truncated ||
           (fileQuery.isError &&
             /Binary file cannot be displayed/iu.test(String(fileQuery.error)))) &&
         !showSource &&
@@ -522,9 +753,9 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
           <ChatMarkdown
             text={fileQuery.data.contents}
             cwd={
-              workspaceRoot && filePath?.includes("/")
-                ? `${workspaceRoot}/${filePath.slice(0, filePath.lastIndexOf("/"))}`
-                : workspaceRoot
+              previewTarget?.cwd && previewTarget.relativePath.includes("/")
+                ? `${previewTarget.cwd}/${previewTarget.relativePath.slice(0, previewTarget.relativePath.lastIndexOf("/"))}`
+                : previewTarget?.cwd
             }
           />
         </div>
@@ -534,17 +765,39 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         <div className="flex min-h-0 flex-1 flex-col p-3">
           <div className="rounded-md border border-border/60 bg-card/40 p-3">
             <p className="text-sm font-medium text-foreground">Unable to display file</p>
-            <p className="mt-2 text-sm text-muted-foreground">
+            <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{filePath}</p>
+            <p role="alert" className="mt-2 text-sm text-muted-foreground">
               {fileQuery.error instanceof Error ? fileQuery.error.message : "Failed to load file."}
             </p>
+            {/* A wrong link usually means a wrong path, so show which path was tried and where. */}
+            {watchedFilePath ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Attempted path{" "}
+                <code className="break-all font-mono text-foreground select-all">
+                  {watchedFilePath}
+                </code>
+                {previewTarget?.cwd ? (
+                  <>
+                    {" "}
+                    {readOnly ? "in folder " : "in workspace folder "}
+                    <code className="break-all font-mono select-all">{previewTarget.cwd}</code>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
             <div className="mt-4 flex items-center gap-2">
               <Button size="xs" variant="outline" onClick={() => void fileQuery.refetch()}>
                 <RefreshCwIcon className="size-3.5" />
                 Retry
               </Button>
-              <Button size="xs" variant="outline" onClick={openInEditor}>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={openInEditor}
+                disabled={!canOpenInEditor}
+              >
                 <ExternalLinkIcon className="size-3.5" />
-                Open in editor
+                Open in preferred editor
               </Button>
             </div>
           </div>
@@ -565,6 +818,83 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
                   {fileQuery.data.byteLength.toLocaleString()} bytes. Editing is disabled.
                 </p>
               </div>
+            </div>
+          ) : null}
+          {draftRecoveryError ? (
+            <p role="alert" className="mb-2 text-xs text-destructive">
+              {draftRecoveryError}
+            </p>
+          ) : null}
+          {recoverableDrafts.length > 0 ? (
+            <div className="mb-2 space-y-2 rounded border border-warning/30 p-2 text-xs">
+              <p>Recoverable editor drafts. Other windows may still be editing these branches.</p>
+              {recoverableDrafts.map((draft) => (
+                <div key={draft.key} className="flex items-center gap-2">
+                  <span>
+                    Revision {draft.revision} · {new Date(draft.updatedAt).toLocaleString()}
+                  </span>
+                  <Button
+                    size="xs"
+                    onClick={() => {
+                      // Recover into this window's branch; preserve the source branch.
+                      const branchId =
+                        durableDraftRef.current && durableDraftRef.current.text !== draft.text
+                          ? crypto.randomUUID()
+                          : (draftBranchRef.current ?? crypto.randomUUID());
+                      draftBranchRef.current = branchId;
+                      const recovered = {
+                        ...draft,
+                        branchId,
+                        key: JSON.stringify([durableFileKey, branchId]),
+                        revision:
+                          Math.max(
+                            draftRevisionRef.current,
+                            durableDraftRef.current?.revision ?? 0,
+                            draft.revision,
+                          ) + 1,
+                      };
+                      draftRevisionRef.current = recovered.revision;
+                      durableDraftRef.current = recovered;
+                      draftBaseRef.current = {
+                        key: fileKey,
+                        hash: draft.baseHash,
+                        contents: draft.baseContents,
+                      };
+                      setDraftContents(draft.text);
+                      setEditing(true);
+                      const conflict = fileQuery.data?.contentSha256 !== draft.baseHash;
+                      setSaveConflict(conflict);
+                      setSaveError(
+                        conflict
+                          ? "The file changed since this draft was saved. Your base and draft are preserved."
+                          : null,
+                      );
+                      setRecoverableDrafts([]);
+                      void editorDrafts
+                        .put(recovered)
+                        .catch(() => setDraftRecoveryError("Draft recovery is unavailable."));
+                    }}
+                  >
+                    Recover
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => {
+                      void editorDrafts
+                        .discard(draft.key, draft.revision)
+                        .then(() =>
+                          setRecoverableDrafts((all) =>
+                            all.filter((entry) => entry.key !== draft.key),
+                          ),
+                        )
+                        .catch(() => setDraftRecoveryError("Could not discard the draft."));
+                    }}
+                  >
+                    Discard
+                  </Button>
+                </div>
+              ))}
             </div>
           ) : null}
           {saveError ? (
@@ -602,7 +932,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
                 unstyled
                 spellCheck={false}
                 value={draftContents}
-                onChange={(event) => setDraftContents(event.currentTarget.value)}
+                onChange={(event) => editDraft(event.currentTarget.value)}
                 className="min-h-0 flex-1 rounded-none border-0 bg-background/40 shadow-none [&_[data-slot=textarea]]:h-full [&_[data-slot=textarea]]:min-h-0 [&_[data-slot=textarea]]:resize-none [&_[data-slot=textarea]]:font-mono [&_[data-slot=textarea]]:text-xs [&_[data-slot=textarea]]:leading-5"
                 aria-label="File source editor"
               />
@@ -616,6 +946,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
                     disableFileHeader: true,
                     overflow: wordWrap ? "wrap" : "scroll",
                     theme: resolveDiffThemeName(resolvedTheme),
+                    preferredHighlighter: PREFERRED_HIGHLIGHTER,
                     themeType: resolvedTheme,
                     unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
                   }}

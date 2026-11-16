@@ -1,854 +1,96 @@
+import { PR_WATCH_CHANGED_CHANNEL, PullRequestWatchChanged } from "./pullRequestWatch";
+import { HTML_RENDER_REQUEST_CHANNEL, HtmlPreviewHostRequest } from "./threadTools";
+import { Schema } from "effect";
 import {
-  NATIVE_OPERATION_WS_METHODS,
-  NativeOperationInput,
-  NativeOperationResolutionInput,
-  NativeOperationListInput,
-  NativeOperationInspectInput,
-  NativeForkInput,
-} from "./nativeOperation";
+  FilesystemPath,
+  IsoDateTime,
+  NonNegativeInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas";
 import {
-  ForgeAccountInput,
-  ForgeAccountRouting,
-  ForgeOperationInput,
-  ForgePrepareOperationInput,
-  PrHubPeekInput,
-  PrHubSetViewedFileInput,
-  PrHubStackInput,
-  PrHubThreadLinksInput,
-  PrHubThreadsForPrInput,
-  PrHubViewedFilesInput,
-} from "./prHubExtensions";
-import { AttachmentUploadsInput, AttachmentCloneToUploadInput } from "./attachmentUpload";
-import { ServerBootstrap } from "./protocol";
+  ComputerAccessRequested,
+  ComputerConsentPersistence,
+  ComputerActivity,
+  ComputerBackendKind,
+  ComputerBlocker,
+  ComputerDelivery,
+  ComputerExecutionState,
+  ComputerGrant,
+  ComputerPauseCause,
+  ComputerHostMetadata,
+} from "./computerAutomation";
 import {
-  GithubAccountInput,
-  GithubLoginHandleInput,
-  GithubAccountHostInput,
-  GithubCliImportInput,
-  ProfileSummary,
-  ProfileRegistryDiagnostic,
-  ProfileCreateInput,
-  ProfileUpdateInput,
-  ProfileDeleteInput,
   ProfileListResult,
-  ProviderAccountStartInput,
-  ProviderAccountLoginStartInput,
-  ProviderAccountHandleInput,
-  ProviderAccountInput,
+  ProfileRegistryDiagnostic,
+  ProfileSummary,
   ProviderAccountEvent,
 } from "./profile";
-import { PrHubTrackInput } from "./prHub";
-import { PrHubReplyInput, PrHubSaveReplyDraftInput, PrHubRecoverReplyInput } from "./prHub";
-import { PrHubThreadsInput, PrHubThreadStateInput } from "./prHub";
-import {
-  PrHubPrepareReviewInput,
-  PrHubPrepareQuickReviewInput,
-  PrHubPrepareCommentInput,
-  PrHubCommentOperationInput,
-  PrHubCommentReadInput,
-  PrHubRecoverCommentInput,
-  PrHubReviewOperationInput,
-  PrHubRecoverReviewInput,
-} from "./prHub";
-import { PrHubSaveReviewDraftInput } from "./prHub";
-import { Schema, Struct, Tuple } from "effect";
-import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
+import { ServerBootstrap } from "./protocol";
 
+import { AGENT_BRIDGE_WS_CHANNELS, AgentBridgeStateChanged } from "./agentBridge";
+import { AGENTS_WS_CHANNELS, AgentsSnapshot } from "./backgroundWork";
+import { GitActionProgressEvent, GitCheckoutConflict, GitStatusInvalidatedPayload } from "./git";
+import { McpStatusUpdatedPayload } from "./mcp";
+import { ScheduledTasksChanged } from "./scheduledTasks";
+import { NextTurnQueueSnapshot, NextTurnQueueSummary } from "./nextTurnQueue";
+import { ORCHESTRATION_WS_CHANNELS, OrchestrationEvent } from "./orchestration";
+import { DiscoveredLocalServerList, PreviewEvent } from "./preview";
 import {
-  OrchestrationArchiveInvestigationWorkflowInput,
-  OrchestrationArchiveCodeReviewWorkflowInput,
-  OrchestrationArchiveWorkflowInput,
-  ClientOrchestrationCommand,
-  OrchestrationCreateInvestigationWorkflowInput,
-  OrchestrationCreateWorkflowInput,
-  OrchestrationCreateCodeReviewWorkflowInput,
-  OrchestrationDeleteInvestigationWorkflowInput,
-  OrchestrationDeleteWorkflowInput,
-  OrchestrationDeleteCodeReviewWorkflowInput,
-  OrchestrationEvent,
-  ORCHESTRATION_WS_CHANNELS,
-  OrchestrationGetFullThreadDiffInput,
-  OrchestrationGetThreadCommandExecutionInput,
-  OrchestrationGetThreadFileChangeInput,
-  OrchestrationGetThreadFileChangesInput,
-  OrchestrationGetThreadCommandExecutionsInput,
-  OrchestrationGetThreadHistoryPageInput,
-  OrchestrationGetThreadDetailsInput,
-  ORCHESTRATION_WS_METHODS,
-  OrchestrationGetSnapshotInput,
-  OrchestrationGetStartupSnapshotInput,
-  OrchestrationGetThreadTailDetailsInput,
-  OrchestrationGetRewindDraftsInput,
-  OrchestrationGetTurnDiffInput,
-  OrchestrationRetryWorkflowInput,
-  OrchestrationRetryInvestigationWorkflowInput,
-  OrchestrationRetryCodeReviewWorkflowInput,
-  OrchestrationStartImplementationInput,
-  OrchestrationUnarchiveInvestigationWorkflowInput,
-  OrchestrationUnarchiveCodeReviewWorkflowInput,
-  OrchestrationUnarchiveWorkflowInput,
-  OrchestrationSkipDocumentReaderPassInput,
-} from "./orchestration";
-import {
-  McpApplyToLiveSessionsRequest,
-  McpGetCommonConfigRequest,
-  McpGetLoginStatusRequest,
-  McpGetProviderStatusRequest,
-  McpGetCodexStatusRequest,
-  McpGetEffectiveConfigRequest,
-  McpGetProjectConfigRequest,
-  McpGetServerStatusesRequest,
-  McpOauthLoginStatusRequest,
-  McpReloadProjectRequest,
-  McpReplaceCommonConfigRequest,
-  McpReplaceProjectConfigRequest,
-  McpStartLoginRequest,
-  McpStartOauthLoginRequest,
-  McpStatusUpdatedPayload,
-} from "./mcp";
-import {
-  GitActionProgressEvent,
-  GitCheckoutInput,
-  GitCheckoutConflict,
-  GitCreateBranchInput,
-  GitPreparePullRequestThreadInput,
-  GitCreateWorktreeInput,
-  GitPrepareWorktreeInput,
-  GitInitInput,
-  GitListBranchesInput,
-  GitPullInput,
-  GitPullRequestRefInput,
-  GitRemoveWorktreeInput,
-  GitRunStackedActionInput,
-  GitStatusInvalidatedPayload,
-  GitStatusInput,
-} from "./git";
-import {
-  TerminalClearInput,
-  TerminalCloseInput,
-  TerminalEvent,
-  TerminalOpenInput,
-  TerminalResizeInput,
-  TerminalRestartInput,
-  TerminalWriteInput,
-} from "./terminal";
-import { KeybindingRule } from "./keybindings";
-import {
-  ProjectCancelContentSearchInput,
-  ProjectAuthorizeEntryInput,
-  ProjectListEntriesInput,
-  ProjectCloneInput,
-  ProjectCloneCancelInput,
-  ProjectListDirectoryInput,
-  ProjectReadFileInput,
-  ProjectIssueAssetUrlInput,
-  ProjectOpenHtmlPreviewInput,
-  ProjectSearchEntriesInput,
-  ProjectSearchContentsInput,
-  ProjectWriteFileInput,
-} from "./project";
-import {
-  DiscoveredLocalServerList,
-  PreviewCloseInput,
-  PreviewEvent,
-  PreviewListInput,
-  PreviewListLocalServersInput,
-  PreviewNavigateInput,
-  PreviewOpenInput,
-  PreviewRefreshInput,
-  PreviewRecordingMetricsInput,
-  PreviewReportStatusInput,
-} from "./preview";
-import {
-  PreviewAutomationClearOwnerInput,
-  PreviewAutomationOwner,
   PreviewAutomationOwnerReleased,
   PreviewAutomationOwnerRequested,
   PreviewAutomationPauseChanged,
   PreviewAutomationRequest,
-  PreviewAutomationResponse,
-  PreviewAutomationSetPausedInput,
 } from "./previewAutomation";
-import { FilesystemBrowseInput } from "./filesystem";
-import { OpenInEditorInput, RevealInFileManagerInput } from "./editor";
-import {
-  ServerProviderAdvisoriesUpdatedPayload,
-  ServerAddKeybindingInput,
-  ServerConfigUpdatedPayload,
-  ServerRemoveKeybindingInput,
-  ServerResetKeybindingsInput,
-  ServerUpdateKeybindingInput,
-  ServerValidateHarnessesInput,
-} from "./server";
-import { MigrateClientSettingInput, ServerSettingsPatch } from "./settings";
-import { ServerGetProviderInventoryInput } from "./providerInventory";
-import {
-  DiskSpaceStatus,
-  StorageAutomationAuditInput,
-  StorageAutomationDryRunInput,
-  StorageCancelCleanupRequest,
-  StorageCleanupProgressPayload,
-  StorageCleanupRequest,
-  StorageGetDiskSpaceRequest,
-  StorageGetUsageRequest,
-  StorageInvalidatedPayload,
-} from "./storage";
-import {
-  PR_HUB_WS_CHANNELS,
-  PR_HUB_WS_METHODS,
-  PrHubAdvisoriesChanged,
-  PrHubAnalyzeAdvisoriesInput,
-  PrHubChangeReviewersInput,
-  PrHubClearDataInput,
-  PrHubCommentInput,
-  PrHubClaimNotificationsInput,
-  PrHubAcknowledgeNotificationsInput,
-  PrHubDetailInput,
-  PrHubFilesInput,
-  PrHubGetAdvisoriesInput,
-  PrHubIgnoreInput,
-  PrHubLocalCandidatesInput,
-  PrHubResolveCheckoutInput,
-  PrHubMarkNotifiedInput,
-  PrHubMarkReadyInput,
-  PrHubMarkSeenInput,
-  PrHubAcknowledgeAttentionInput,
-  PrHubMergeInput,
-  PrHubRefreshInput,
-  PrHubRequestChangesInput,
-  PrHubReRequestInput,
-  PrHubReviewInput,
-  PrHubChanged,
-  PrHubOverviewInput,
-  PrHubListInput,
-  PrHubSetReactionInput,
-  PrHubSnoozeInput,
-  PrHubTimelineInput,
-  PrHubUnsnoozeInput,
-  PrHubUpdateBranchInput,
-  PrHubUpdateCommentInput,
-} from "./prHub";
-import {
-  NextTurnQueueCancelInput,
-  NextTurnQueueClearInput,
-  NextTurnQueueDuplicateInput,
-  NextTurnQueueListInput,
-  NextTurnQueuePromoteInput,
-  NextTurnQueueSteerInput,
-  NextTurnQueueRefreshGateInput,
-  NextTurnQueueReorderInput,
-  NextTurnQueueRestoreInput,
-  NextTurnQueueRecheckDeliveryInput,
-  NextTurnQueueRetryDeliveryInput,
-  NextTurnQueueDiscardDeliveryInput,
-  NextTurnQueueRetryInput,
-  NextTurnQueueSetPausedInput,
-  NextTurnQueueScheduleUsageLimitResumeInput,
-  NextTurnQueueCancelUsageLimitResumeInput,
-  NextTurnQueueRefreshUsageLimitResumeInput,
-  NextTurnQueueSnapshot,
-  NextTurnQueueSubmitInput,
-  NextTurnQueueSummary,
-  NextTurnQueueSummaryInput,
-  NextTurnQueueUpdateInput,
-} from "./nextTurnQueue";
-import { GlobalSearchQueryInput } from "./globalSearch";
-import { WorktreeSetupThreadInput, WorktreeSetupUpdatedPayload } from "./worktreeSetup";
-import {
-  AGENTS_WS_CHANNELS,
-  AGENTS_WS_METHODS,
-  AgentsDismissInput,
-  AgentsGetSnapshotInput,
-  AgentsSnapshot,
-} from "./backgroundWork";
-import {
-  USAGE_WS_METHODS,
-  UsageConsumeResetCreditInput,
-  UsageGetAccountsInput,
-  UsageGetSummaryInput,
-} from "./usage";
-import { ELICITATION_WS_METHODS, ElicitationSubmitInput } from "./elicitation";
-import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
-import { ReviewPreviewDiffInput } from "./review";
-import {
-  WorkflowPlatformCreateRunInput,
-  WorkflowPlatformInspectRunInput,
-} from "./workflowPlatform";
+import { PR_HUB_WS_CHANNELS, PrHubAdvisoriesChanged, PrHubChanged } from "./prHub";
+import { UPSTREAM_PORTS_WS_CHANNELS, UpstreamPortsChanged } from "./upstreamPortsWire";
+import { ProjectWatchedPathsChangedPayload } from "./project";
+import { ServerConfigUpdatedPayload, ServerProviderAdvisoriesUpdatedPayload } from "./server";
+import { DiskSpaceStatus, StorageStatus, StorageInvalidatedPayload } from "./storage";
+import { TerminalEvent } from "./terminal";
+import { WorktreeSetupUpdatedPayload } from "./worktreeSetup";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
-export const WS_METHODS = {
-  githubLoginStart: "githubAccount.loginStart",
-  githubLoginStatus: "githubAccount.loginStatus",
-  githubLoginCancel: "githubAccount.loginCancel",
-  githubAccountSet: "githubAccount.set",
-  githubAccountRemove: "githubAccount.remove",
-  githubAccountStatus: "githubAccount.status",
-  githubAccountCliCandidates: "githubAccount.cliCandidates",
-  githubAccountCliImport: "githubAccount.cliImport",
-  profilesList: "profiles.list",
-  profilesCreate: "profiles.create",
-  profilesUpdate: "profiles.update",
-  profilesDelete: "profiles.delete",
-  providerAccountLoginStart: "providerAccount.loginStart",
-  providerAccountInput: "providerAccount.input",
-  providerAccountCancel: "providerAccount.cancel",
-  providerAccountLogout: "providerAccount.logout",
-  providerAccountStatus: "providerAccount.status",
-  // Project registry methods
-  projectsList: "projects.list",
-  projectsAdd: "projects.add",
-  projectsRemove: "projects.remove",
-  projectsListEntries: "projects.listEntries",
-  projectsClone: "projects.clone",
-  projectsCloneList: "projects.cloneList",
-  projectsCloneCancel: "projects.cloneCancel",
-  projectsListDirectory: "projects.listDirectory",
-  projectsSearchEntries: "projects.searchEntries",
-  projectsSearchContents: "projects.searchContents",
-  projectsCancelContentSearch: "projects.cancelContentSearch",
-  projectsWriteFile: "projects.writeFile",
-  attachmentsCloneToUpload: "attachments.cloneToUpload",
-  attachmentsGetUploads: "attachments.getUploads",
-  attachmentsReleaseUploads: "attachments.releaseUploads",
-  projectsReadFile: "projects.readFile",
-  projectsOpenHtmlPreview: "projects.openHtmlPreview",
-  projectsIssueAssetUrl: "projects.issueAssetUrl",
-  projectsAuthorizeEntry: "projects.authorizeEntry",
-  projectsGetCheckedInConfig: "projects.getCheckedInConfig",
-
-  // Filesystem methods
-  filesystemBrowse: "filesystem.browse",
-
-  // Shell methods
-  shellOpenInEditor: "shell.openInEditor",
-  shellRevealInFileManager: "shell.revealInFileManager",
-
-  // Git methods
-  gitPull: "git.pull",
-  gitStatus: "git.status",
-  gitRunStackedAction: "git.runStackedAction",
-  gitListBranches: "git.listBranches",
-  gitCreateWorktree: "git.createWorktree",
-  gitPrepareWorktree: "git.prepareWorktree",
-  gitRemoveWorktree: "git.removeWorktree",
-  gitCreateBranch: "git.createBranch",
-  gitCheckout: "git.checkout",
-  gitInit: "git.init",
-  gitResolvePullRequest: "git.resolvePullRequest",
-  gitPreparePullRequestThread: "git.preparePullRequestThread",
-  reviewPreviewDiff: "review.previewDiff",
-
-  // Terminal methods
-  terminalOpen: "terminal.open",
-  terminalWrite: "terminal.write",
-  terminalResize: "terminal.resize",
-  terminalClear: "terminal.clear",
-  terminalRestart: "terminal.restart",
-  terminalClose: "terminal.close",
-
-  // Preview methods
-  previewOpen: "preview.open",
-  previewNavigate: "preview.navigate",
-  previewReportStatus: "preview.reportStatus",
-  previewReportRecordingMetrics: "preview.reportRecordingMetrics",
-  previewRefresh: "preview.refresh",
-  previewClose: "preview.close",
-  previewList: "preview.list",
-  previewListLocalServers: "preview.listLocalServers",
-  previewAutomationRespond: "preview.automation.respond",
-  previewAutomationReportOwner: "preview.automation.reportOwner",
-  previewAutomationClearOwner: "preview.automation.clearOwner",
-  previewAutomationSetPaused: "preview.automation.setPaused",
-
-  // Server meta
-  serverProbe: "server.probe",
-  serverGetClaudeTranscriptRepair: "server.getClaudeTranscriptRepair",
-  serverRepairClaudeTranscript: "server.repairClaudeTranscript",
-  serverUndoClaudeTranscriptRepair: "server.undoClaudeTranscriptRepair",
-  serverGetConfig: "server.getConfig",
-  serverUpdateSettings: "server.updateSettings",
-  serverGetProjectSettings: "server.getProjectSettings",
-  serverMigrateClientSetting: "server.migrateClientSetting",
-  serverRefreshProviders: "server.refreshProviders",
-  serverValidateHarnesses: "server.validateHarnesses",
-  serverGetProviderInventory: "server.getProviderInventory",
-  serverUpsertKeybinding: "server.upsertKeybinding",
-  serverAddKeybinding: "server.addKeybinding",
-  serverUpdateKeybinding: "server.updateKeybinding",
-  serverRemoveKeybinding: "server.removeKeybinding",
-  serverResetKeybindings: "server.resetKeybindings",
-
-  // Storage maintenance
-  storageGetUsage: "storage.getUsage",
-  storageCleanup: "storage.cleanup",
-  storageCancelCleanup: "storage.cancelCleanup",
-  // Automatic cleanup and auto-pull: read-only preview and the audit trail
-  storageAutomationDryRun: "storage.automationDryRun",
-  storageAutomationAudit: "storage.automationAudit",
-  // Free disk space on the volumes F5 and its providers write to
-  storageGetDiskSpace: "storage.getDiskSpace",
-
-  // Durable per-thread next-turn queue
-  nextTurnQueueList: "nextTurnQueue.list",
-  nextTurnQueueSubmit: "nextTurnQueue.submit",
-  nextTurnQueueSummary: "nextTurnQueue.summary",
-  nextTurnQueueUpdate: "nextTurnQueue.update",
-  nextTurnQueueCancel: "nextTurnQueue.cancel",
-  nextTurnQueueReorder: "nextTurnQueue.reorder",
-  nextTurnQueueRetry: "nextTurnQueue.retry",
-  nextTurnQueuePromote: "nextTurnQueue.promote",
-  nextTurnQueueSteer: "nextTurnQueue.steer",
-  nextTurnQueueSetPaused: "nextTurnQueue.setPaused",
-  nextTurnQueueScheduleUsageLimitResume: "nextTurnQueue.scheduleUsageLimitResume",
-  nextTurnQueueCancelUsageLimitResume: "nextTurnQueue.cancelUsageLimitResume",
-  nextTurnQueueRefreshUsageLimitResume: "nextTurnQueue.refreshUsageLimitResume",
-  nextTurnQueueDuplicate: "nextTurnQueue.duplicate",
-  nextTurnQueueRefreshGate: "nextTurnQueue.refreshGate",
-  nextTurnQueueClear: "nextTurnQueue.clear",
-  nextTurnQueueRestore: "nextTurnQueue.restore",
-  nextTurnQueueRecheckDelivery: "nextTurnQueue.recheckDelivery",
-  nextTurnQueueRetryDelivery: "nextTurnQueue.retryDelivery",
-  nextTurnQueueDiscardDelivery: "nextTurnQueue.discardDelivery",
-
-  // Background worktree setup for a new thread's first send
-  worktreeSetupSubscribe: "worktreeSetup.subscribe",
-  worktreeSetupCancel: "worktreeSetup.cancel",
-  worktreeSetupRetry: "worktreeSetup.retry",
-  worktreeSetupWorkLocally: "worktreeSetup.workLocally",
-
-  // Cross-project full-text search
-  globalSearchQuery: "globalSearch.query",
-
-  // Versioned declarative workflow platform
-  workflowPlatformListTemplates: "workflowPlatform.listTemplates",
-  workflowPlatformCreateRun: "workflowPlatform.createRun",
-  workflowPlatformInspectRun: "workflowPlatform.inspectRun",
-
-  mcpGetCommonConfig: "mcp.getCommonConfig",
-  mcpReplaceCommonConfig: "mcp.replaceCommonConfig",
-  mcpGetProjectConfig: "mcp.getProjectConfig",
-  mcpReplaceProjectConfig: "mcp.replaceProjectConfig",
-  mcpGetEffectiveConfig: "mcp.getEffectiveConfig",
-  mcpGetProviderStatus: "mcp.getProviderStatus",
-  mcpGetServerStatuses: "mcp.getServerStatuses",
-  mcpStartLogin: "mcp.startLogin",
-  mcpGetLoginStatus: "mcp.getLoginStatus",
-  mcpGetCodexStatus: "mcp.getCodexStatus",
-  mcpReloadProject: "mcp.reloadProject",
-  mcpApplyToLiveSessions: "mcp.applyToLiveSessions",
-  mcpStartOAuthLogin: "mcp.startOAuthLogin",
-  mcpGetOAuthStatus: "mcp.getOAuthStatus",
-} as const;
-
-// ── Push Event Channels ──────────────────────────────────────────────
+export { WS_METHODS } from "./wsMethods";
+export { WebSocketRequest } from "./wsRequests";
 
 export const WS_CHANNELS = {
+  scheduledTasksChanged: "scheduledTasks.changed",
   profilesUpdated: "profiles.updated",
   providerAccountEvent: "providerAccount.event",
   gitActionProgress: "git.actionProgress",
   gitStatusInvalidated: "git.status.invalidate",
+  projectsWatchedPathsChanged: "projects.watchedPathsChanged",
   terminalEvent: "terminal.event",
   previewEvent: "preview.event",
   previewLocalServersUpdated: "preview.localServersUpdated",
   previewAutomationRequest: "preview.automation.request",
+  htmlRenderRequest: HTML_RENDER_REQUEST_CHANNEL,
+  pullRequestWatchesChanged: PR_WATCH_CHANGED_CHANNEL,
   previewAutomationOwnerRequested: "preview.automation.ownerRequested",
   previewAutomationOwnerReleased: "preview.automation.ownerReleased",
   previewAutomationPauseChanged: "preview.automation.pauseChanged",
   agentComputerUseChanged: "agent.computerUseChanged",
+  computerAccessRequested: "computer.access.requested",
+  computerAccessSettled: "computer.access.settled",
+  computerAccessGrantsChanged: "computer.access.grantsChanged",
+  computerActivity: "computer.activity",
+  computerObservationsInvalidated: "computer.observations.invalidated",
   serverWelcome: "server.welcome",
+  serverRuntimeReadiness: "server.runtimeReadiness",
   serverConfigUpdated: "server.configUpdated",
+  serverDatabaseDamaged: "server.databaseDamaged",
   providerAdvisoriesUpdated: "provider.advisoriesUpdated",
   mcpStatusUpdated: "mcp.statusUpdated",
   storageInvalidated: "storage.invalidated",
-  storageCleanupProgress: "storage.cleanupProgress",
+  storageStatusUpdated: "storage.statusUpdated",
   storageDiskSpaceUpdated: "storage.diskSpaceUpdated",
   nextTurnQueueUpdated: "nextTurnQueue.updated",
   nextTurnQueueSummaryUpdated: "nextTurnQueue.summaryUpdated",
   worktreeSetupUpdated: "worktreeSetup.updated",
 } as const;
-
-// -- Tagged Union of all request body schemas ─────────────────────────
-
-const tagRequestBody = <const Tag extends string, const Fields extends Schema.Struct.Fields>(
-  tag: Tag,
-  schema: Schema.Struct<Fields>,
-) =>
-  schema.mapFields(
-    Struct.assign({ _tag: Schema.tag(tag) }),
-    // PreserveChecks is safe here. No existing schema should have checks depending on the tag
-    { unsafePreserveChecks: true },
-  );
-
-// All account-owned PR reads and writes require the incarnation the caller saw.
-// Older PR clients must reload before they can issue a mutation.
-const tagPrHubRequestBody = <const Tag extends string, const Fields extends Schema.Struct.Fields>(
-  tag: Tag,
-  schema: Schema.Struct<Fields>,
-) => tagRequestBody(tag, schema.mapFields(Struct.assign({ accountGeneration: Schema.String })));
-
-// Wire callers identify an account, never its executable or credential directory.
-// Internal MCP services retain resolved path fields, but receiving them over WS is an error.
-const tagMcpAccountRequestBody = <
-  const Tag extends string,
-  const Fields extends Schema.Struct.Fields,
->(
-  tag: Tag,
-  schema: Schema.Struct<Fields>,
-) =>
-  tagRequestBody(
-    tag,
-    schema.mapFields(
-      Struct.assign({
-        binaryPath: Schema.optional(Schema.Never),
-        homePath: Schema.optional(Schema.Never),
-      }),
-    ),
-  );
-
-const WebSocketRequestBody = Schema.Union([
-  tagRequestBody(WS_METHODS.githubLoginStart, GithubLoginHandleInput),
-  tagRequestBody(WS_METHODS.githubLoginStatus, GithubLoginHandleInput),
-  tagRequestBody(WS_METHODS.githubLoginCancel, GithubLoginHandleInput),
-  tagRequestBody(WS_METHODS.githubAccountSet, GithubAccountInput),
-  tagRequestBody(WS_METHODS.githubAccountRemove, GithubAccountHostInput),
-  tagRequestBody(WS_METHODS.githubAccountStatus, GithubAccountHostInput),
-  tagRequestBody(WS_METHODS.githubAccountCliCandidates, Schema.Struct({})),
-  tagRequestBody(WS_METHODS.githubAccountCliImport, GithubCliImportInput),
-  tagRequestBody(WS_METHODS.profilesList, Schema.Struct({})),
-  tagRequestBody(WS_METHODS.profilesCreate, ProfileCreateInput),
-  tagRequestBody(WS_METHODS.profilesUpdate, ProfileUpdateInput),
-  tagRequestBody(WS_METHODS.profilesDelete, ProfileDeleteInput),
-  tagRequestBody(WS_METHODS.providerAccountLoginStart, ProviderAccountLoginStartInput),
-  tagRequestBody(WS_METHODS.providerAccountInput, ProviderAccountInput),
-  tagRequestBody(WS_METHODS.providerAccountCancel, ProviderAccountHandleInput),
-  tagRequestBody(WS_METHODS.providerAccountLogout, ProviderAccountStartInput),
-  tagRequestBody(WS_METHODS.providerAccountStatus, ProviderAccountStartInput),
-  tagRequestBody(AGENTS_WS_METHODS.getSnapshot, AgentsGetSnapshotInput),
-  tagRequestBody(AGENTS_WS_METHODS.dismiss, AgentsDismissInput),
-  tagRequestBody(USAGE_WS_METHODS.consumeResetCredit, UsageConsumeResetCreditInput),
-  tagRequestBody(USAGE_WS_METHODS.getAccounts, UsageGetAccountsInput),
-  tagRequestBody(USAGE_WS_METHODS.getSummary, UsageGetSummaryInput),
-  tagRequestBody(NATIVE_OPERATION_WS_METHODS.resolve, NativeOperationResolutionInput),
-  tagRequestBody(NATIVE_OPERATION_WS_METHODS.fork, NativeForkInput),
-  tagRequestBody(NATIVE_OPERATION_WS_METHODS.execute, NativeOperationInput),
-  tagRequestBody(NATIVE_OPERATION_WS_METHODS.list, NativeOperationListInput),
-  tagRequestBody(NATIVE_OPERATION_WS_METHODS.inspect, NativeOperationInspectInput),
-  tagRequestBody(ELICITATION_WS_METHODS.submit, ElicitationSubmitInput),
-  // Orchestration methods
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.dispatchCommand,
-    Schema.Struct({ command: ClientOrchestrationCommand }),
-  ),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.getSnapshot, OrchestrationGetSnapshotInput),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.getStartupSnapshot, OrchestrationGetStartupSnapshotInput),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.getThreadTailDetails,
-    OrchestrationGetThreadTailDetailsInput,
-  ),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.getRewindDrafts, OrchestrationGetRewindDraftsInput),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.getThreadHistoryPage,
-    OrchestrationGetThreadHistoryPageInput,
-  ),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.getThreadDetails, OrchestrationGetThreadDetailsInput),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.getTurnDiff, OrchestrationGetTurnDiffInput),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.getFullThreadDiff, OrchestrationGetFullThreadDiffInput),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.getThreadCommandExecutions,
-    OrchestrationGetThreadCommandExecutionsInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.getThreadCommandExecution,
-    OrchestrationGetThreadCommandExecutionInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.getThreadFileChanges,
-    OrchestrationGetThreadFileChangesInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.getThreadFileChange,
-    OrchestrationGetThreadFileChangeInput,
-  ),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.createWorkflow, OrchestrationCreateWorkflowInput),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.archiveWorkflow, OrchestrationArchiveWorkflowInput),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.unarchiveWorkflow, OrchestrationUnarchiveWorkflowInput),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.createCodeReviewWorkflow,
-    OrchestrationCreateCodeReviewWorkflowInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.createInvestigationWorkflow,
-    OrchestrationCreateInvestigationWorkflowInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.archiveCodeReviewWorkflow,
-    OrchestrationArchiveCodeReviewWorkflowInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.archiveInvestigationWorkflow,
-    OrchestrationArchiveInvestigationWorkflowInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.unarchiveCodeReviewWorkflow,
-    OrchestrationUnarchiveCodeReviewWorkflowInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.unarchiveInvestigationWorkflow,
-    OrchestrationUnarchiveInvestigationWorkflowInput,
-  ),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.deleteWorkflow, OrchestrationDeleteWorkflowInput),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.deleteCodeReviewWorkflow,
-    OrchestrationDeleteCodeReviewWorkflowInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow,
-    OrchestrationDeleteInvestigationWorkflowInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.skipDocumentReaderPass,
-    OrchestrationSkipDocumentReaderPassInput,
-  ),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.retryWorkflow, OrchestrationRetryWorkflowInput),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow,
-    OrchestrationRetryCodeReviewWorkflowInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow,
-    OrchestrationRetryInvestigationWorkflowInput,
-  ),
-  tagRequestBody(
-    ORCHESTRATION_WS_METHODS.startImplementation,
-    OrchestrationStartImplementationInput,
-  ),
-
-  // Project Search
-  tagRequestBody(WS_METHODS.projectsGetCheckedInConfig, ProjectGetCheckedInConfigInput),
-  tagRequestBody(WS_METHODS.projectsListEntries, ProjectListEntriesInput),
-  tagRequestBody(WS_METHODS.projectsClone, ProjectCloneInput),
-  tagRequestBody(WS_METHODS.projectsCloneCancel, ProjectCloneCancelInput),
-  tagRequestBody(WS_METHODS.projectsCloneList, Schema.Struct({})),
-  tagRequestBody(WS_METHODS.projectsListDirectory, ProjectListDirectoryInput),
-  tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
-  tagRequestBody(WS_METHODS.projectsSearchContents, ProjectSearchContentsInput),
-  tagRequestBody(WS_METHODS.projectsCancelContentSearch, ProjectCancelContentSearchInput),
-  tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
-  tagRequestBody(WS_METHODS.attachmentsCloneToUpload, AttachmentCloneToUploadInput),
-  tagRequestBody(WS_METHODS.attachmentsGetUploads, AttachmentUploadsInput),
-  tagRequestBody(WS_METHODS.attachmentsReleaseUploads, AttachmentUploadsInput),
-  tagRequestBody(WS_METHODS.projectsReadFile, ProjectReadFileInput),
-  tagRequestBody(WS_METHODS.projectsOpenHtmlPreview, ProjectOpenHtmlPreviewInput),
-  tagRequestBody(WS_METHODS.projectsIssueAssetUrl, ProjectIssueAssetUrlInput),
-  tagRequestBody(WS_METHODS.projectsAuthorizeEntry, ProjectAuthorizeEntryInput),
-
-  // Filesystem methods
-  tagRequestBody(WS_METHODS.filesystemBrowse, FilesystemBrowseInput),
-
-  // Shell methods
-  tagRequestBody(WS_METHODS.shellOpenInEditor, OpenInEditorInput),
-  tagRequestBody(WS_METHODS.shellRevealInFileManager, RevealInFileManagerInput),
-
-  // Git methods
-  tagRequestBody(WS_METHODS.gitPull, GitPullInput),
-  tagRequestBody(WS_METHODS.gitStatus, GitStatusInput),
-  tagRequestBody(WS_METHODS.gitRunStackedAction, GitRunStackedActionInput),
-  tagRequestBody(WS_METHODS.gitListBranches, GitListBranchesInput),
-  tagRequestBody(WS_METHODS.gitCreateWorktree, GitCreateWorktreeInput),
-  tagRequestBody(WS_METHODS.gitPrepareWorktree, GitPrepareWorktreeInput),
-  tagRequestBody(WS_METHODS.gitRemoveWorktree, GitRemoveWorktreeInput),
-  tagRequestBody(WS_METHODS.gitCreateBranch, GitCreateBranchInput),
-  tagRequestBody(WS_METHODS.gitCheckout, GitCheckoutInput),
-  tagRequestBody(WS_METHODS.gitInit, GitInitInput),
-  tagRequestBody(WS_METHODS.gitResolvePullRequest, GitPullRequestRefInput),
-  tagRequestBody(WS_METHODS.gitPreparePullRequestThread, GitPreparePullRequestThreadInput),
-  tagRequestBody(WS_METHODS.reviewPreviewDiff, ReviewPreviewDiffInput),
-
-  // Terminal methods
-  tagRequestBody(WS_METHODS.terminalOpen, TerminalOpenInput),
-  tagRequestBody(WS_METHODS.terminalWrite, TerminalWriteInput),
-  tagRequestBody(WS_METHODS.terminalResize, TerminalResizeInput),
-  tagRequestBody(WS_METHODS.terminalClear, TerminalClearInput),
-  tagRequestBody(WS_METHODS.terminalRestart, TerminalRestartInput),
-  tagRequestBody(WS_METHODS.terminalClose, TerminalCloseInput),
-
-  // Preview methods
-  tagRequestBody(WS_METHODS.previewOpen, PreviewOpenInput),
-  tagRequestBody(WS_METHODS.previewNavigate, PreviewNavigateInput),
-  tagRequestBody(WS_METHODS.previewReportStatus, PreviewReportStatusInput),
-  tagRequestBody(WS_METHODS.previewReportRecordingMetrics, PreviewRecordingMetricsInput),
-  tagRequestBody(WS_METHODS.previewRefresh, PreviewRefreshInput),
-  tagRequestBody(WS_METHODS.previewClose, PreviewCloseInput),
-  tagRequestBody(WS_METHODS.previewList, PreviewListInput),
-  tagRequestBody(WS_METHODS.previewListLocalServers, PreviewListLocalServersInput),
-  tagRequestBody(WS_METHODS.previewAutomationRespond, PreviewAutomationResponse),
-  tagRequestBody(WS_METHODS.previewAutomationReportOwner, PreviewAutomationOwner),
-  tagRequestBody(WS_METHODS.previewAutomationClearOwner, PreviewAutomationClearOwnerInput),
-  tagRequestBody(WS_METHODS.previewAutomationSetPaused, PreviewAutomationSetPausedInput),
-
-  // Server meta
-  tagRequestBody(WS_METHODS.serverProbe, Schema.Struct({})),
-  tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
-  tagRequestBody(WS_METHODS.serverUpdateSettings, ServerSettingsPatch),
-  tagRequestBody(WS_METHODS.serverGetProjectSettings, Schema.Struct({ projectId: ProjectId })),
-  tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[0]),
-  tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[1]),
-  tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
-  tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
-  tagRequestBody(WS_METHODS.serverGetProviderInventory, ServerGetProviderInventoryInput),
-  tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
-  tagRequestBody(WS_METHODS.serverAddKeybinding, ServerAddKeybindingInput),
-  tagRequestBody(WS_METHODS.serverUpdateKeybinding, ServerUpdateKeybindingInput),
-  tagRequestBody(WS_METHODS.serverRemoveKeybinding, ServerRemoveKeybindingInput),
-  tagRequestBody(WS_METHODS.serverResetKeybindings, ServerResetKeybindingsInput),
-  tagRequestBody(WS_METHODS.storageGetUsage, StorageGetUsageRequest),
-  tagRequestBody(WS_METHODS.storageCleanup, StorageCleanupRequest),
-  tagRequestBody(WS_METHODS.storageCancelCleanup, StorageCancelCleanupRequest),
-  tagRequestBody(WS_METHODS.storageAutomationDryRun, StorageAutomationDryRunInput),
-  tagRequestBody(WS_METHODS.storageAutomationAudit, StorageAutomationAuditInput),
-  tagRequestBody(WS_METHODS.storageGetDiskSpace, StorageGetDiskSpaceRequest),
-  tagRequestBody(WS_METHODS.nextTurnQueueList, NextTurnQueueListInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueSubmit, NextTurnQueueSubmitInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueSummary, NextTurnQueueSummaryInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueUpdate, NextTurnQueueUpdateInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueCancel, NextTurnQueueCancelInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueReorder, NextTurnQueueReorderInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueRetry, NextTurnQueueRetryInput),
-  tagRequestBody(WS_METHODS.nextTurnQueuePromote, NextTurnQueuePromoteInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueSteer, NextTurnQueueSteerInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueSetPaused, NextTurnQueueSetPausedInput),
-  tagRequestBody(
-    WS_METHODS.nextTurnQueueScheduleUsageLimitResume,
-    NextTurnQueueScheduleUsageLimitResumeInput,
-  ),
-  tagRequestBody(
-    WS_METHODS.nextTurnQueueCancelUsageLimitResume,
-    NextTurnQueueCancelUsageLimitResumeInput,
-  ),
-  tagRequestBody(
-    WS_METHODS.nextTurnQueueRefreshUsageLimitResume,
-    NextTurnQueueRefreshUsageLimitResumeInput,
-  ),
-  tagRequestBody(WS_METHODS.nextTurnQueueDuplicate, NextTurnQueueDuplicateInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueRefreshGate, NextTurnQueueRefreshGateInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueClear, NextTurnQueueClearInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueRestore, NextTurnQueueRestoreInput),
-  tagRequestBody(WS_METHODS.serverGetClaudeTranscriptRepair, Schema.Struct({ threadId: ThreadId })),
-  tagRequestBody(WS_METHODS.serverRepairClaudeTranscript, Schema.Struct({ threadId: ThreadId })),
-  tagRequestBody(
-    WS_METHODS.serverUndoClaudeTranscriptRepair,
-    Schema.Struct({ threadId: ThreadId, backupId: TrimmedNonEmptyString }),
-  ),
-  tagRequestBody(WS_METHODS.nextTurnQueueRecheckDelivery, NextTurnQueueRecheckDeliveryInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueRetryDelivery, NextTurnQueueRetryDeliveryInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueDiscardDelivery, NextTurnQueueDiscardDeliveryInput),
-  tagRequestBody(WS_METHODS.worktreeSetupSubscribe, WorktreeSetupThreadInput),
-  tagRequestBody(WS_METHODS.worktreeSetupCancel, WorktreeSetupThreadInput),
-  tagRequestBody(WS_METHODS.worktreeSetupRetry, WorktreeSetupThreadInput),
-  tagRequestBody(WS_METHODS.worktreeSetupWorkLocally, WorktreeSetupThreadInput),
-  tagRequestBody(WS_METHODS.globalSearchQuery, GlobalSearchQueryInput),
-  tagRequestBody(WS_METHODS.workflowPlatformListTemplates, Schema.Struct({})),
-  WorkflowPlatformCreateRunInput.mapMembers(
-    Tuple.map(Schema.fieldsAssign({ _tag: Schema.tag(WS_METHODS.workflowPlatformCreateRun) })),
-  ),
-  tagRequestBody(WS_METHODS.workflowPlatformInspectRun, WorkflowPlatformInspectRunInput),
-  tagRequestBody(WS_METHODS.mcpGetCommonConfig, McpGetCommonConfigRequest),
-  tagRequestBody(WS_METHODS.mcpReplaceCommonConfig, McpReplaceCommonConfigRequest),
-  tagRequestBody(WS_METHODS.mcpGetProjectConfig, McpGetProjectConfigRequest),
-  tagRequestBody(WS_METHODS.mcpReplaceProjectConfig, McpReplaceProjectConfigRequest),
-  tagRequestBody(WS_METHODS.mcpGetEffectiveConfig, McpGetEffectiveConfigRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpGetProviderStatus, McpGetProviderStatusRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpGetServerStatuses, McpGetServerStatusesRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpStartLogin, McpStartLoginRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpGetLoginStatus, McpGetLoginStatusRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpGetCodexStatus, McpGetCodexStatusRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpReloadProject, McpReloadProjectRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpApplyToLiveSessions, McpApplyToLiveSessionsRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpStartOAuthLogin, McpStartOauthLoginRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpGetOAuthStatus, McpOauthLoginStatusRequest),
-
-  // PR Hub methods
-  tagRequestBody(PR_HUB_WS_METHODS.listAccounts, Schema.Struct({})),
-  tagRequestBody(PR_HUB_WS_METHODS.saveAccount, ForgeAccountInput),
-  tagRequestBody(PR_HUB_WS_METHODS.removeAccount, Schema.Struct({ accountId: Schema.String })),
-  tagRequestBody(PR_HUB_WS_METHODS.listAccountRouting, Schema.Struct({})),
-  tagRequestBody(PR_HUB_WS_METHODS.setAccountRouting, ForgeAccountRouting),
-  tagRequestBody(PR_HUB_WS_METHODS.removeAccountRouting, ForgeAccountRouting),
-  tagRequestBody(PR_HUB_WS_METHODS.peek, PrHubPeekInput),
-  tagRequestBody(PR_HUB_WS_METHODS.getStack, PrHubStackInput),
-  tagRequestBody(PR_HUB_WS_METHODS.getViewedFiles, PrHubViewedFilesInput),
-  tagRequestBody(PR_HUB_WS_METHODS.setViewedFile, PrHubSetViewedFileInput),
-  tagRequestBody(PR_HUB_WS_METHODS.getThreadLinks, PrHubThreadLinksInput),
-  tagRequestBody(PR_HUB_WS_METHODS.getThreadsForPr, PrHubThreadsForPrInput),
-  tagRequestBody(PR_HUB_WS_METHODS.prepareOperation, ForgePrepareOperationInput),
-  tagRequestBody(PR_HUB_WS_METHODS.submitOperation, ForgeOperationInput),
-  tagRequestBody(PR_HUB_WS_METHODS.getOperation, ForgeOperationInput),
-  tagRequestBody(PR_HUB_WS_METHODS.recoverOperation, ForgeOperationInput),
-  tagRequestBody(PR_HUB_WS_METHODS.cancelOperation, ForgeOperationInput),
-  tagRequestBody(PR_HUB_WS_METHODS.listReviewerCandidates, PrHubStackInput),
-
-  tagRequestBody(PR_HUB_WS_METHODS.getOverview, PrHubOverviewInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.claimNotifications, PrHubClaimNotificationsInput),
-  tagPrHubRequestBody(
-    PR_HUB_WS_METHODS.acknowledgeNotifications,
-    PrHubAcknowledgeNotificationsInput,
-  ),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.listPullRequests, PrHubListInput),
-  tagRequestBody(PR_HUB_WS_METHODS.refresh, PrHubRefreshInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.approve, PrHubReviewInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.requestChanges, PrHubRequestChangesInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.comment, PrHubCommentInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.merge, PrHubMergeInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.markReady, PrHubMarkReadyInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.reRequestReview, PrHubReRequestInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.snooze, PrHubSnoozeInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.unsnooze, PrHubUnsnoozeInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.ignore, PrHubIgnoreInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.markSeen, PrHubMarkSeenInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.acknowledgeAttention, PrHubAcknowledgeAttentionInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.markNotified, PrHubMarkNotifiedInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.analyzeAdvisories, PrHubAnalyzeAdvisoriesInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getAdvisories, PrHubGetAdvisoriesInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, PrHubLocalCandidatesInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.resolveLocalCheckout, PrHubResolveCheckoutInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getDetail, PrHubDetailInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getTimeline, PrHubTimelineInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getFiles, PrHubFilesInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getReviewDraft, PrHubDetailInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getReviewThreads, PrHubThreadsInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getReplyOperation, PrHubThreadsInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getReplyDraft, PrHubThreadsInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.saveReplyDraft, PrHubSaveReplyDraftInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.recoverReply, PrHubRecoverReplyInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.replyReviewThread, PrHubReplyInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.setReviewThreadState, PrHubThreadStateInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.prepareReview, PrHubPrepareReviewInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.prepareQuickReview, PrHubPrepareQuickReviewInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.prepareComment, PrHubPrepareCommentInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.submitComment, PrHubCommentOperationInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getCommentOperation, PrHubCommentReadInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.recoverComment, PrHubRecoverCommentInput),
-
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.track, PrHubTrackInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.recoverReview, PrHubRecoverReviewInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.submitReview, PrHubReviewOperationInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getReviewOperation, PrHubDetailInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.cancelReviewPreparation, PrHubReviewOperationInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.saveReviewDraft, PrHubSaveReviewDraftInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.getUnresolvedThreads, PrHubDetailInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.updateComment, PrHubUpdateCommentInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.setReaction, PrHubSetReactionInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.changeReviewers, PrHubChangeReviewersInput),
-  tagPrHubRequestBody(PR_HUB_WS_METHODS.updateBranch, PrHubUpdateBranchInput),
-  tagRequestBody(PR_HUB_WS_METHODS.clearData, PrHubClearDataInput),
-]);
-
-export const WebSocketRequest = Schema.Struct({
-  id: TrimmedNonEmptyString,
-  body: WebSocketRequestBody,
-});
-export type WebSocketRequest = typeof WebSocketRequest.Type;
 
 export const WebSocketResponse = Schema.Struct({
   id: TrimmedNonEmptyString,
@@ -857,6 +99,8 @@ export const WebSocketResponse = Schema.Struct({
     Schema.Struct({
       message: Schema.String,
       code: Schema.optional(Schema.String),
+      retryable: Schema.optional(Schema.Boolean),
+      retryAfterMs: Schema.optional(NonNegativeInt),
       checkoutConflict: Schema.optional(GitCheckoutConflict),
     }),
   ),
@@ -866,12 +110,61 @@ export type WebSocketResponse = typeof WebSocketResponse.Type;
 export const WsPushSequence = NonNegativeInt;
 export type WsPushSequence = typeof WsPushSequence.Type;
 
+/**
+ * Whether routes that need the orchestration runtime can run. `revision`
+ * increases on every change within one backend incarnation.
+ */
+export const ServerRuntimeReadiness = Schema.Struct({
+  state: Schema.Literals(["starting", "ready", "failed"]),
+  revision: NonNegativeInt,
+  phase: Schema.optional(Schema.String),
+  /** Why startup failed; present only when `state` is `failed`. */
+  message: Schema.optional(Schema.String),
+});
+export type ServerRuntimeReadiness = typeof ServerRuntimeReadiness.Type;
+
+export const ServerRuntimeReadinessPayload = Schema.Struct({
+  ...ServerRuntimeReadiness.fields,
+  backendIncarnation: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerRuntimeReadinessPayload = typeof ServerRuntimeReadinessPayload.Type;
+
+/**
+ * The profile database reported corruption. The backend keeps serving its
+ * in-memory state; quitting would lose whatever the recovery file missed.
+ */
+export const DatabaseDamage = Schema.Struct({
+  detectedAt: IsoDateTime,
+  /** Primary SQLite result code: 11 (SQLITE_CORRUPT) or 26 (SQLITE_NOTADB). */
+  errorCode: NonNegativeInt,
+  message: Schema.String,
+  databasePath: FilesystemPath,
+  /** In-memory read model written for recovery, once the write finishes. */
+  recoveryFile: Schema.NullOr(FilesystemPath),
+  /** Why the recovery copy could not be written, after every retry failed. */
+  recoveryError: Schema.NullOr(Schema.String),
+  /** Newest automatic database snapshot, if any. */
+  latestSnapshot: Schema.NullOr(FilesystemPath),
+  /**
+   * Damage recorded by an earlier backend run. The in-memory state was then
+   * loaded from the damaged file, so it is not a better copy than the file.
+   */
+  fromPreviousRun: Schema.Boolean,
+  /** Marker file that keeps maintenance paused across restarts until removed. */
+  markerPath: FilesystemPath,
+});
+export type DatabaseDamage = typeof DatabaseDamage.Type;
+
 export const WsWelcomePayload = Schema.Struct({
+  // Legacy welcomes remain decodable so the protocol check can request an upgrade.
+  backendIncarnation: Schema.optional(TrimmedNonEmptyString),
+  runtime: Schema.optional(ServerRuntimeReadiness),
   // Optional only to decode legacy welcomes and explicitly close them as upgrade-required.
   bootstrap: Schema.optional(ServerBootstrap),
   profile: Schema.optional(ProfileSummary),
   profileDiagnostic: Schema.optional(ProfileRegistryDiagnostic),
-  cwd: TrimmedNonEmptyString,
+  databaseDamage: Schema.optional(DatabaseDamage),
+  cwd: FilesystemPath,
   projectName: TrimmedNonEmptyString,
   bootstrapProjectId: Schema.optional(ProjectId),
   bootstrapThreadId: Schema.optional(ThreadId),
@@ -879,32 +172,45 @@ export const WsWelcomePayload = Schema.Struct({
 export type WsWelcomePayload = typeof WsWelcomePayload.Type;
 
 export interface WsPushPayloadByChannel {
+  readonly [PR_WATCH_CHANGED_CHANNEL]: typeof PullRequestWatchChanged.Type;
   readonly [WS_CHANNELS.profilesUpdated]: typeof ProfileListResult.Type;
   readonly [WS_CHANNELS.providerAccountEvent]: typeof ProviderAccountEvent.Type;
   readonly [AGENTS_WS_CHANNELS.snapshotUpdated]: typeof AgentsSnapshot.Type;
+  readonly [AGENT_BRIDGE_WS_CHANNELS.stateChanged]: typeof AgentBridgeStateChanged.Type;
   readonly [WS_CHANNELS.serverWelcome]: WsWelcomePayload;
+  readonly [WS_CHANNELS.serverRuntimeReadiness]: ServerRuntimeReadinessPayload;
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
+  readonly [WS_CHANNELS.serverDatabaseDamaged]: DatabaseDamage;
   readonly [WS_CHANNELS.providerAdvisoriesUpdated]: typeof ServerProviderAdvisoriesUpdatedPayload.Type;
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
   readonly [WS_CHANNELS.gitStatusInvalidated]: typeof GitStatusInvalidatedPayload.Type;
+  readonly [WS_CHANNELS.projectsWatchedPathsChanged]: ProjectWatchedPathsChangedPayload;
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
   readonly [WS_CHANNELS.previewEvent]: PreviewEvent;
   readonly [WS_CHANNELS.previewLocalServersUpdated]: DiscoveredLocalServerList;
+  readonly [WS_CHANNELS.htmlRenderRequest]: typeof HtmlPreviewHostRequest.Type;
   readonly [WS_CHANNELS.previewAutomationRequest]: typeof PreviewAutomationRequest.Type;
   readonly [WS_CHANNELS.previewAutomationOwnerRequested]: typeof PreviewAutomationOwnerRequested.Type;
   readonly [WS_CHANNELS.previewAutomationOwnerReleased]: typeof PreviewAutomationOwnerReleased.Type;
   readonly [WS_CHANNELS.previewAutomationPauseChanged]: typeof PreviewAutomationPauseChanged.Type;
   readonly [WS_CHANNELS.agentComputerUseChanged]: typeof AgentComputerUseChanged.Type;
+  readonly [WS_CHANNELS.computerAccessRequested]: typeof ComputerAccessPush.Type;
+  readonly [WS_CHANNELS.computerAccessSettled]: typeof ComputerAccessSettled.Type;
+  readonly [WS_CHANNELS.computerAccessGrantsChanged]: typeof ComputerGrantsChanged.Type;
+  readonly [WS_CHANNELS.computerObservationsInvalidated]: { readonly threadId: string };
+  readonly [WS_CHANNELS.computerActivity]: typeof ComputerActivity.Type;
   readonly [WS_CHANNELS.mcpStatusUpdated]: McpStatusUpdatedPayload;
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
-  readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
+  readonly [WS_CHANNELS.storageStatusUpdated]: StorageStatus;
   readonly [WS_CHANNELS.storageDiskSpaceUpdated]: typeof DiskSpaceStatus.Type;
+  readonly [WS_CHANNELS.scheduledTasksChanged]: typeof ScheduledTasksChanged.Type;
   readonly [WS_CHANNELS.nextTurnQueueUpdated]: typeof NextTurnQueueSnapshot.Type;
   readonly [WS_CHANNELS.nextTurnQueueSummaryUpdated]: typeof NextTurnQueueSummary.Type;
   readonly [WS_CHANNELS.worktreeSetupUpdated]: WorktreeSetupUpdatedPayload;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
   readonly [PR_HUB_WS_CHANNELS.changed]: typeof PrHubChanged.Type;
   readonly [PR_HUB_WS_CHANNELS.advisoriesUpdated]: typeof PrHubAdvisoriesChanged.Type;
+  readonly [UPSTREAM_PORTS_WS_CHANNELS.changed]: typeof UpstreamPortsChanged.Type;
 }
 
 export type WsPushChannel = keyof WsPushPayloadByChannel;
@@ -930,9 +236,21 @@ export const WsPushProviderAccountEvent = makeWsPushSchema(
   ProviderAccountEvent,
 );
 export const WsPushServerWelcome = makeWsPushSchema(WS_CHANNELS.serverWelcome, WsWelcomePayload);
+export const WsPushServerRuntimeReadiness = makeWsPushSchema(
+  WS_CHANNELS.serverRuntimeReadiness,
+  ServerRuntimeReadinessPayload,
+);
+export const WsPushServerDatabaseDamaged = makeWsPushSchema(
+  WS_CHANNELS.serverDatabaseDamaged,
+  DatabaseDamage,
+);
 export const WsPushAgentsSnapshotUpdated = makeWsPushSchema(
   AGENTS_WS_CHANNELS.snapshotUpdated,
   AgentsSnapshot,
+);
+export const WsPushAgentBridgeStateChanged = makeWsPushSchema(
+  AGENT_BRIDGE_WS_CHANNELS.stateChanged,
+  AgentBridgeStateChanged,
 );
 export const WsPushServerConfigUpdated = makeWsPushSchema(
   WS_CHANNELS.serverConfigUpdated,
@@ -950,11 +268,23 @@ export const WsPushGitStatusInvalidated = makeWsPushSchema(
   WS_CHANNELS.gitStatusInvalidated,
   GitStatusInvalidatedPayload,
 );
+export const WsPushProjectsWatchedPathsChanged = makeWsPushSchema(
+  WS_CHANNELS.projectsWatchedPathsChanged,
+  ProjectWatchedPathsChangedPayload,
+);
 export const WsPushTerminalEvent = makeWsPushSchema(WS_CHANNELS.terminalEvent, TerminalEvent);
 export const WsPushPreviewEvent = makeWsPushSchema(WS_CHANNELS.previewEvent, PreviewEvent);
 export const WsPushPreviewLocalServersUpdated = makeWsPushSchema(
   WS_CHANNELS.previewLocalServersUpdated,
   DiscoveredLocalServerList,
+);
+export const WsPushPullRequestWatchesChanged = makeWsPushSchema(
+  PR_WATCH_CHANGED_CHANNEL,
+  PullRequestWatchChanged,
+);
+export const WsPushHtmlRenderRequest = makeWsPushSchema(
+  WS_CHANNELS.htmlRenderRequest,
+  HtmlPreviewHostRequest,
 );
 export const WsPushPreviewAutomationRequest = makeWsPushSchema(
   WS_CHANNELS.previewAutomationRequest,
@@ -972,13 +302,84 @@ export const WsPushPreviewAutomationPauseChanged = makeWsPushSchema(
   WS_CHANNELS.previewAutomationPauseChanged,
   PreviewAutomationPauseChanged,
 );
-/** Which thread, if any, currently controls this computer's screen, mouse, and keyboard. */
+export const AgentComputerUseHolder = Schema.Struct({
+  /** False for retained pause/recovery summaries after authoritative release. */
+  leaseHeld: Schema.optional(Schema.Boolean),
+  threadId: ThreadId,
+  /** Absent for browser-integration (Chrome) holders. */
+  backend: Schema.optional(ComputerBackendKind),
+  delivery: ComputerDelivery,
+  appId: Schema.optional(Schema.String),
+  appName: Schema.optional(Schema.String),
+  state: ComputerExecutionState,
+  pauseCause: Schema.optional(ComputerPauseCause),
+  /**
+   * Set on every Chrome holder, and only there: whether a browser call is running. A
+   * Chrome lease lasts the browser runtime's life, so holding it doesn't mean Chrome is in
+   * use. "unknown" when the session doesn't report its calls.
+   */
+  browser: Schema.optional(Schema.Literals(["idle", "working", "unknown"])),
+  /** `waiting-agent` only: who this thread waits for, as main described it. */
+  blockedBy: Schema.optional(ComputerBlocker),
+});
+export type AgentComputerUseHolder = typeof AgentComputerUseHolder.Type;
+/**
+ * Which threads in this profile control apps on this computer. Foreground holders own the
+ * screen, mouse and keyboard; background holders act inside one app each.
+ */
 export const AgentComputerUseChanged = Schema.Struct({
-  threadId: Schema.NullOr(ThreadId),
+  ...ComputerHostMetadata.fields,
+  holders: Schema.Array(AgentComputerUseHolder),
+  pendingTakeover: Schema.optional(
+    Schema.Struct({
+      threadId: ThreadId,
+      appId: Schema.String,
+      appName: Schema.optional(Schema.String),
+      state: ComputerExecutionState,
+    }),
+  ),
+  otherProfile: Schema.optional(Schema.Boolean),
 });
 export const WsPushAgentComputerUseChanged = makeWsPushSchema(
   WS_CHANNELS.agentComputerUseChanged,
   AgentComputerUseChanged,
+);
+export const ComputerAccessPush = Schema.Struct({
+  expiresAtMs: Schema.optionalKey(Schema.Number),
+  ...ComputerAccessRequested.fields,
+  backendIncarnation: Schema.String,
+});
+export const ComputerAccessSettled = Schema.Struct({
+  requestId: Schema.String,
+  threadId: Schema.String,
+  allowed: Schema.Boolean,
+  persistence: Schema.optionalKey(ComputerConsentPersistence),
+  persistenceReason: Schema.optionalKey(Schema.String),
+});
+export const ComputerGrantsChanged = Schema.Struct({
+  threadId: Schema.String,
+  grants: Schema.Array(ComputerGrant),
+  grantVersion: Schema.Int,
+});
+export const WsPushComputerAccessRequested = makeWsPushSchema(
+  WS_CHANNELS.computerAccessRequested,
+  ComputerAccessPush,
+);
+export const WsPushComputerAccessSettled = makeWsPushSchema(
+  WS_CHANNELS.computerAccessSettled,
+  ComputerAccessSettled,
+);
+export const WsPushComputerGrantsChanged = makeWsPushSchema(
+  WS_CHANNELS.computerAccessGrantsChanged,
+  ComputerGrantsChanged,
+);
+export const WsPushComputerObservationsInvalidated = makeWsPushSchema(
+  WS_CHANNELS.computerObservationsInvalidated,
+  Schema.Struct({ threadId: Schema.String }),
+);
+export const WsPushComputerActivity = makeWsPushSchema(
+  WS_CHANNELS.computerActivity,
+  ComputerActivity,
 );
 export const WsPushMcpStatusUpdated = makeWsPushSchema(
   WS_CHANNELS.mcpStatusUpdated,
@@ -988,13 +389,17 @@ export const WsPushStorageInvalidated = makeWsPushSchema(
   WS_CHANNELS.storageInvalidated,
   StorageInvalidatedPayload,
 );
-export const WsPushStorageCleanupProgress = makeWsPushSchema(
-  WS_CHANNELS.storageCleanupProgress,
-  StorageCleanupProgressPayload,
+export const WsPushStorageStatusUpdated = makeWsPushSchema(
+  WS_CHANNELS.storageStatusUpdated,
+  StorageStatus,
 );
 export const WsPushStorageDiskSpaceUpdated = makeWsPushSchema(
   WS_CHANNELS.storageDiskSpaceUpdated,
   DiskSpaceStatus,
+);
+export const WsPushScheduledTasksChanged = makeWsPushSchema(
+  WS_CHANNELS.scheduledTasksChanged,
+  ScheduledTasksChanged,
 );
 export const WsPushNextTurnQueueUpdated = makeWsPushSchema(
   WS_CHANNELS.nextTurnQueueUpdated,
@@ -1017,34 +422,51 @@ export const WsPushPrHubAdvisoriesUpdated = makeWsPushSchema(
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
   PrHubAdvisoriesChanged,
 );
+export const WsPushUpstreamPortsChanged = makeWsPushSchema(
+  UPSTREAM_PORTS_WS_CHANNELS.changed,
+  UpstreamPortsChanged,
+);
 
 export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.profilesUpdated,
   WS_CHANNELS.providerAccountEvent,
   AGENTS_WS_CHANNELS.snapshotUpdated,
+  AGENT_BRIDGE_WS_CHANNELS.stateChanged,
   WS_CHANNELS.gitActionProgress,
   WS_CHANNELS.gitStatusInvalidated,
+  WS_CHANNELS.projectsWatchedPathsChanged,
   WS_CHANNELS.serverWelcome,
   WS_CHANNELS.serverConfigUpdated,
+  WS_CHANNELS.serverDatabaseDamaged,
   WS_CHANNELS.providerAdvisoriesUpdated,
   WS_CHANNELS.terminalEvent,
   WS_CHANNELS.previewEvent,
   WS_CHANNELS.previewLocalServersUpdated,
   WS_CHANNELS.previewAutomationRequest,
+  WS_CHANNELS.htmlRenderRequest,
+  PR_WATCH_CHANGED_CHANNEL,
   WS_CHANNELS.previewAutomationOwnerRequested,
   WS_CHANNELS.previewAutomationOwnerReleased,
   WS_CHANNELS.previewAutomationPauseChanged,
   WS_CHANNELS.agentComputerUseChanged,
+  WS_CHANNELS.computerAccessRequested,
+  WS_CHANNELS.computerAccessSettled,
+  WS_CHANNELS.computerAccessGrantsChanged,
+  WS_CHANNELS.computerActivity,
+  WS_CHANNELS.computerObservationsInvalidated,
   WS_CHANNELS.mcpStatusUpdated,
   WS_CHANNELS.storageInvalidated,
-  WS_CHANNELS.storageCleanupProgress,
+  WS_CHANNELS.storageStatusUpdated,
   WS_CHANNELS.storageDiskSpaceUpdated,
+  WS_CHANNELS.scheduledTasksChanged,
   WS_CHANNELS.nextTurnQueueUpdated,
   WS_CHANNELS.nextTurnQueueSummaryUpdated,
   WS_CHANNELS.worktreeSetupUpdated,
+  WS_CHANNELS.serverRuntimeReadiness,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   PR_HUB_WS_CHANNELS.changed,
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
+  UPSTREAM_PORTS_WS_CHANNELS.changed,
 ]);
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 
@@ -1052,29 +474,42 @@ export const WsPush = Schema.Union([
   WsPushProfilesUpdated,
   WsPushProviderAccountEvent,
   WsPushAgentsSnapshotUpdated,
+  WsPushAgentBridgeStateChanged,
   WsPushServerWelcome,
+  WsPushServerRuntimeReadiness,
+  WsPushServerDatabaseDamaged,
   WsPushServerConfigUpdated,
   WsPushProviderAdvisoriesUpdated,
   WsPushGitActionProgress,
   WsPushGitStatusInvalidated,
+  WsPushProjectsWatchedPathsChanged,
   WsPushTerminalEvent,
   WsPushPreviewEvent,
   WsPushPreviewLocalServersUpdated,
   WsPushPreviewAutomationRequest,
+  WsPushHtmlRenderRequest,
+  WsPushPullRequestWatchesChanged,
   WsPushPreviewAutomationOwnerRequested,
   WsPushPreviewAutomationOwnerReleased,
   WsPushPreviewAutomationPauseChanged,
   WsPushAgentComputerUseChanged,
+  WsPushComputerAccessRequested,
+  WsPushComputerAccessSettled,
+  WsPushComputerGrantsChanged,
+  WsPushComputerActivity,
+  WsPushComputerObservationsInvalidated,
   WsPushMcpStatusUpdated,
   WsPushStorageInvalidated,
-  WsPushStorageCleanupProgress,
+  WsPushStorageStatusUpdated,
   WsPushStorageDiskSpaceUpdated,
+  WsPushScheduledTasksChanged,
   WsPushNextTurnQueueUpdated,
   WsPushNextTurnQueueSummaryUpdated,
   WsPushWorktreeSetupUpdated,
   WsPushOrchestrationDomainEvent,
   WsPushPrHubChanged,
   WsPushPrHubAdvisoriesUpdated,
+  WsPushUpstreamPortsChanged,
 ]);
 export type WsPush = typeof WsPush.Type;
 

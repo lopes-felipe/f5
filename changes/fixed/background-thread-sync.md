@@ -1,0 +1,1 @@
+- Background thread sync batches updates and backs off failed loads. Its desktop-only switch is disabled when using F5 in a browser.

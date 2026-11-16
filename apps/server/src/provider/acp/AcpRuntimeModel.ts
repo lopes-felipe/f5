@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
 import type { ToolLifecycleItemType } from "@t3tools/contracts";
@@ -42,6 +43,7 @@ export interface AcpPermissionRequest {
 }
 
 export type AcpParsedSessionEvent =
+  | { readonly _tag: "TransportTerminated"; readonly message: string }
   | {
       readonly _tag: "SlashCommandsUpdated";
       readonly commands: ReadonlyArray<{
@@ -90,15 +92,33 @@ type AcpToolCallUpdate = Extract<
   { readonly sessionUpdate: "tool_call" | "tool_call_update" }
 >;
 
+type AcpSelectConfigOption = Extract<
+  EffectAcpSchema.SessionConfigOption,
+  { readonly type: "select" }
+>;
+
+/**
+ * The one config option that lists and selects models. Discovery, current
+ * selection and startup writes must all use it, or a model offered in the
+ * picker can be written to a different option and fail validation. ACP
+ * resolves options in the same category by array order; an uncategorized
+ * `model` select is the fallback for agents that omit the category.
+ */
+export function findModelConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): AcpSelectConfigOption | undefined {
+  const selects = (configOptions ?? []).filter(
+    (option): option is AcpSelectConfigOption =>
+      option.type === "select" && option.id.trim().length > 0,
+  );
+  return (
+    selects.find((option) => option.category === "model") ??
+    selects.find((option) => option.id.trim() === "model")
+  );
+}
+
 export function extractModelConfigId(sessionResponse: AcpSessionSetupResponse): string | undefined {
-  const configOptions = sessionResponse.configOptions;
-  if (!configOptions) return undefined;
-  for (const opt of configOptions) {
-    if (opt.category === "model" && opt.id.trim().length > 0) {
-      return opt.id.trim();
-    }
-  }
-  return undefined;
+  return findModelConfigOption(sessionResponse.configOptions)?.id.trim();
 }
 
 export function findSessionConfigOption(
@@ -182,6 +202,7 @@ function normalizeToolCallStatus(
     case "completed":
       return "completed";
     case "failed":
+    case "cancelled":
       return "failed";
     default:
       return fallback;
@@ -353,6 +374,7 @@ function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecyc
   }
 }
 
+/** Retain native tool fields separately from the display presentation used by timeline rows. */
 function makeToolCallState(
   input: {
     readonly toolCallId: string;
@@ -381,6 +403,7 @@ function makeToolCallState(
       ? title
       : undefined;
   const data: Record<string, unknown> = { toolCallId };
+  if (title) data.title = title;
   const kind = normalizeToolKind(input.kind);
   if (kind) {
     data.kind = kind;
@@ -477,8 +500,8 @@ export function mergeToolCallState(
 // can still shift its bounded tail window on nearly every notification, which would emit
 // a runtime event per redraw. Coalesce those: only emit early when the tool call's detail
 // has grown meaningfully since the last emission, otherwise batch up to a small number of
-// skipped updates before emitting anyway, so the UI still gets periodic progress and the
-// final (completed/failed) state is always emitted immediately.
+// skipped updates before emitting anyway. Argument-only progress uses the same batch
+// limit. Lifecycle, title and structured output changes always emit immediately.
 const TOOL_CALL_UPDATE_MIN_DETAIL_GROWTH_CHARS = 256;
 const TOOL_CALL_UPDATE_COALESCE_LIMIT = 10;
 
@@ -494,6 +517,35 @@ export interface AcpToolCallEmitDecision {
   readonly skippedSinceEmit: number;
 }
 
+function hasToolCallValue(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (isRecord(value)) return Object.keys(value).length > 0;
+  return value !== undefined && value !== null;
+}
+
+const GENERIC_TOOL_CALL_TITLES = new Set(
+  ["execute", "read", "edit", "search", "other"].map((kind) =>
+    deriveToolActivityPresentation({
+      itemType: canonicalItemTypeFromAcpToolKind(kind),
+      data: { kind },
+    }).summary.toLowerCase(),
+  ),
+);
+
+function isEmptyToolPlaceholder(state: AcpToolCallState): boolean {
+  if (
+    state.detail ||
+    state.command ||
+    [state.data.rawInput, state.data.rawOutput, state.data.content, state.data.locations].some(
+      hasToolCallValue,
+    )
+  )
+    return false;
+  const title = state.title?.trim().toLowerCase();
+  return !title || GENERIC_TOOL_CALL_TITLES.has(title) || title === "tool call";
+}
+
 export function decideToolCallUpdateEmission(
   input: AcpToolCallEmitDecisionInput,
 ): AcpToolCallEmitDecision {
@@ -501,25 +553,27 @@ export function decideToolCallUpdateEmission(
   if (next.status === "completed" || next.status === "failed") {
     return { emit: true, skippedSinceEmit: 0 };
   }
-  // Background-task starts carry lifecycle metadata without printable output.
-  // Never coalesce the first such notification into a later progress update.
-  const nextOutput = next.data.rawOutput;
-  const previousOutput = previous?.data.rawOutput;
+  // Empty native placeholders stay hidden until useful metadata or completion.
+  if (isEmptyToolPlaceholder(next)) return { emit: false, skippedSinceEmit };
+  // Lifecycle and structured output must stay live even without printable detail.
+  // Native JSON snapshots often clone unchanged objects, so compare their values.
   if (
-    isRecord(nextOutput) &&
-    nextOutput.type === "BackgroundTaskStarted" &&
-    (!isRecord(previousOutput) || previousOutput.type !== nextOutput.type)
+    previous === undefined ||
+    previous.status !== next.status ||
+    previous.title !== next.title ||
+    !isDeepStrictEqual(previous.data.rawOutput, next.data.rawOutput)
   ) {
     return { emit: true, skippedSinceEmit: 0 };
   }
-  if (!next.detail) {
-    return { emit: false, skippedSinceEmit };
-  }
-  if (previous === undefined || previous.title !== next.title) {
-    return { emit: true, skippedSinceEmit: 0 };
-  }
-  if (previous.detail === next.detail) {
-    return { emit: false, skippedSinceEmit };
+  if (!next.detail || previous.detail === next.detail) {
+    if (isDeepStrictEqual(previous.data, next.data)) {
+      return { emit: false, skippedSinceEmit };
+    }
+    // File arguments and diffs can grow while the displayed detail stays fixed.
+    // Keep a periodic snapshot without persisting every native argument chunk.
+    return skippedSinceEmit + 1 >= TOOL_CALL_UPDATE_COALESCE_LIMIT
+      ? { emit: true, skippedSinceEmit: 0 }
+      : { emit: false, skippedSinceEmit: skippedSinceEmit + 1 };
   }
   const grewMeaningfully =
     lastEmittedDetailLength === undefined ||
@@ -529,6 +583,29 @@ export function decideToolCallUpdateEmission(
     return { emit: true, skippedSinceEmit: 0 };
   }
   return { emit: false, skippedSinceEmit: skippedSinceEmit + 1 };
+}
+
+/** Omitted fields may be supplied by the tracked call; explicit nulls stay cleared. */
+export function withTrackedPermissionToolCall(
+  params: EffectAcpSchema.RequestPermissionRequest,
+  tracked: AcpToolCallState | undefined,
+): EffectAcpSchema.RequestPermissionRequest {
+  if (!tracked) return params;
+  return {
+    ...params,
+    toolCall: {
+      ...params.toolCall,
+      ...(params.toolCall.title === undefined && typeof tracked.data.title === "string"
+        ? { title: tracked.data.title }
+        : {}),
+      ...(params.toolCall.kind === undefined && tracked.kind === "execute"
+        ? { kind: "execute" as const }
+        : {}),
+      ...(params.toolCall.rawInput === undefined && tracked.data.rawInput !== undefined
+        ? { rawInput: tracked.data.rawInput }
+        : {}),
+    },
+  };
 }
 
 export function parsePermissionRequest(
@@ -548,8 +625,12 @@ export function parsePermissionRequest(
     { fallbackStatus: "pending" },
   );
   const kind = normalizeToolKind(params.toolCall.kind) ?? "unknown";
+  const nativeTitle = params.toolCall.title?.trim();
   const detail =
     toolCall?.command ??
+    (nativeTitle && !["terminal", "tool call"].includes(nativeTitle.toLowerCase())
+      ? nativeTitle
+      : undefined) ??
     toolCall?.title ??
     toolCall?.detail ??
     (typeof params.sessionId === "string" ? `Session ${params.sessionId}` : undefined);

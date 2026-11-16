@@ -1,5 +1,9 @@
 # Upstream performance baseline
 
+> Contributors: the performance harness, baseline and the budgets changes must meet.
+
+**Contents:** [Run server measurements](#run-server-measurements) · [Workloads and limits](#workloads-and-limits) · [Browser, transport and retained memory](#browser-transport-and-retained-memory) · [Reproducing the pinned baseline](#reproducing-the-pinned-baseline) · [Server performance and storage (roadmap 5.4)](#server-performance-and-storage-roadmap-54)
+
 The Phase 0 harness collects server component measurements and a production-browser,
 WebSocket and native-terminal soak. Both reports are required. The pinned original
 baseline is `290d261c9c9daa0c469b312d7f62dfd4ea9b9698`; use its runtime code and
@@ -128,6 +132,19 @@ heap. The separate soak measures retained heap.
 
 ## Reproducing the pinned baseline
 
+The SQLite checkpoint gate can also run independently:
+
+```sh
+bun run perf:server sqlite-checkpoint --output=/tmp/f5-checkpoint-report.json
+```
+
+It uses five warmups and thirty measured repetitions. Each repetition prepares a
+40 MiB WAL before timing, then measures event-loop delay while the production
+Node checkpoint worker drains it. Every measured p99 must be below 50 ms. The
+report records fixture, harness, dependency and machine metadata. This is an
+absolute checkpoint-latency gate; it does not establish comparative CPU gains or
+replace the other server, browser or retained-memory gates.
+
 Create a detached disposable checkout without changing its production source:
 
 ```sh
@@ -160,3 +177,408 @@ Coverage validation checks required scenarios, sample counts, fixed resource lim
 matching source/environment metadata and the complete memory duration. It reports
 measured failures separately: complete coverage is not a passing performance gate.
 Use both comparisons; neither report alone establishes complete Phase 0d coverage.
+
+## Server performance and storage (roadmap 5.4)
+
+The assistant-stream scenario sends bounded bursts of 32 concurrent deltas per
+stream and measures each delta through its projected text. Waiting for each delta
+before publishing the next would prevent a batching implementation from being
+measured. The fixture still uses four streams, 500 deltas each, 2,000 seeded
+messages per thread, and tool/command interruptions every 50 deltas.
+
+For a paired coalescing comparison on the same code and hardware:
+
+```sh
+F5_PERF_STREAM_COALESCE=0 bun run perf:server --output=.performance/stream-before.json
+bun run perf:server --output=.performance/stream-after.json
+bun run perf:compare .performance/stream-before.json .performance/stream-after.json orchestration.assistant-stream
+```
+
+`F5_PERF_STREAM_COALESCE` is a benchmark-only override of the driver allowlist;
+it does not configure the application. Production coalescing is allowed only for
+Codex, whose assistant item completion includes the full final text. Claude and
+other drivers retain their existing delivery behavior. Batches flush at 40 ms or
+2 KiB, before other events on that thread, on controls, and during scope close.
+Retries preserve the first event’s command ID and immutable text. After three
+failed attempts, or a permanent rejection, the batch is dropped and logged. Later
+deltas for that message wait for its authoritative completion so the stored text
+stays a valid prefix. Other events and other threads continue. Set
+`F5_COALESCE_STREAMING_DELTAS=false` before startup to disable batching independently.
+
+Non-handling projector skipping now runs within the existing command transaction;
+each projector cursor advances once at the final sequence. SQLite helper ownership
+and pragma tuning remain measurement-gated. `synchronous = NORMAL` is not enabled.
+
+The storage gate can run the same ingestion workload while each repetition
+exports a backup and a separate SQLite process holds a read transaction:
+
+```sh
+F5_PERF_STREAM_STORAGE_GATE=1 bun run perf:server --smoke --output=.performance/storage-gate-smoke.json
+F5_PERF_STREAM_STORAGE_GATE=1 bun run perf:server --output=.performance/storage-gate.json
+```
+
+This reports the longest application SQL execution as well as event-loop p99,
+and asserts that every concurrent export completed. Child archive/reader CPU is
+not included in the parent process CPU measurement. The normal paired P2
+comparison runs without this additional workload.
+
+### Section 5.4 validation
+
+Results are recorded in [reviews/server-performance-storage-validation.md](reviews/server-performance-storage-validation.md).
+
+## Stability instrumentation
+
+The Node SQLite adapter records successful and failed execution durations on both
+row and positional result paths. Statements taking more than 100 ms log a warning
+containing the duration and at most 160 characters of the source SQL; bound
+parameters and expanded SQL are never logged. Unit tests inject elapsed time into
+a recursive CTE check, rather than asserting a machine-dependent execution time.
+
+The push bus records encoded frame bytes, replaced/subsumed coalesced pushes and
+slow-client closures. Frame/replacement labels contain only static channel
+families, never workspace paths, thread IDs or MCP identities. Queue depth is
+sampled every 250 ms, at the same cadence as the existing event-loop-delay sampler.
+Repeated callbacks from an already closed client do not count another close.
+
+The four-stream workload includes an uncoalesced `claudeAgent` variant beside
+Codex. Delta latency ends at the production push bus's send callback. Report-only
+`diagnostics` contain queue entries/bytes, SQLite page growth/WAL bytes, event-loop
+percentiles, SQL admission/execution times, ingestion lookup, in-memory projection,
+per-projector time/counts and push admission. Snapshot transactions, worker entries,
+bytes/age/failures and shutdown phase durations also have production metrics. Worker
+bytes are measured only for workers with a byte ceiling (keyed or rejecting jobs);
+lossless ingestion workers are bounded by entry count and report each entry as one
+unit, so admission never stringifies provider events on the main thread. The
+optional stage probe is disabled in normal execution and never records SQL parameters.
+
+The 2026-10-19 smoke used one warmup/two repetitions: Codex delta-to-push p95 was
+68.46 ms; uncoalesced Claude was 538.43 ms, with 80,264 SQL statements in its busiest
+repetition. This validates the C0 harness and identifies a projection workload to
+measure; a smoke run certifies no performance improvement. Browser operation
+inventories and full before/after qualification remain required.
+
+### Baseline qualification status, 2026-10-19
+
+The server foundation baseline is pinned at commit
+`3bdf4bf66cf1287453c8a94e71c63f767eab4b50` (tree
+`d2ec874d0f02bc3982702f9db1c9da77ab5091a5`). It was collected in a clean,
+isolated checkout with Node 24.13.1, Bun 1.3.11, five warmups and thirty
+repetitions, without concurrent builds or tests. The complete local report is
+`.performance/stability-c0-foundation-full-20261019.json`; preserve that report
+as a CI artifact when publishing this change. Earlier smoke reports remain
+exploratory and cannot qualify improvements.
+
+Reproduce with `git worktree add --detach /tmp/f5-stability-c0
+3bdf4bf66cf1287453c8a94e71c63f767eab4b50`, install the frozen lockfile, then run
+`bun run perf:server --output=.performance/baseline.json` in that checkout.
+Collect candidates sequentially on the same host and runtime and use
+`bun run perf:compare`; incompatible metadata never qualifies a comparison.
+
+All existing server resource checks passed. Codex delta-to-push p95 was 79.66 ms;
+uncoalesced Claude was 823.50 ms. Claude's arrival-sampled command queue p95 was
+one entry and event-loop delay p99 was 28.95 ms. Retained read-model heap was
+51,800,456 bytes. These measurements justify measuring the append projection
+optimization; they do not enable Claude coalescing, a SQLite worker, or read-model
+slimming. Browser and desktop qualification remain separate.
+
+The interactive fixture now answers `worktrees.getTransition` and
+`worktrees.threadState`; missing responses previously crashed the production chat
+route. Local smoke diagnostics ran, but full interactive qualification failed
+because the production process-table probe returned `spawn EPERM`. Full runs now
+check that capability before allocating the fixture or starting the soak. Rerun
+qualification on a host permitting that probe and retain its complete report.
+
+## Nightly performance reports
+
+`perf-nightly.yml` runs the full server component harness at 04:17 UTC and on
+manual dispatch. It runs separately from `CI result` and does not open
+`ci-main-red` issues or gate merges. Each report uses five warmups and thirty
+measured repetitions. Candidates and diagnostics are retained as workflow artifacts.
+
+The latest retained `perf-baseline` from a successful main run of this repository's
+nightly workflow supplies the comparison; fork heads and other workflows are excluded. A missing
+baseline, the dispatch's `reset-baseline` option, or incompatible fixture, harness,
+hardware, OS, Git, browser or runtime metadata records a new baseline, with the
+reason in the step summary. Incompatibility and missing artifacts both emit a workflow warning: no
+performance comparison was made, and the previous baseline remains in the candidate
+diagnostics artifact. Re-baselining does not qualify performance acceptance.
+Compatible reports run `bun run perf:compare`;
+regressions fail that workflow and appear in its summary. Feature-branch dispatches
+can compare reports but cannot replace main's baseline. Every successful comparison
+re-uploads the unchanged comparison baseline to refresh its 90-day artifact retention;
+the anchor changes only on explicit reset, incompatibility, or a missing artifact.
+Failed comparisons never promote candidates or refresh retention. If a long failure
+streak expires the artifact, initialization explicitly warns that comparison was
+skipped and the new baseline does not establish performance qualification. This report covers server
+components; interactive qualification still requires the production-browser report.
+
+The deleted-thread memory fixture can be run independently with
+`F5_PERF_READ_MODEL=1 F5_PERF_DELETED_MEMORY_REPORT=/absolute/new-report.json bun run --cwd apps/server test:file --config vitest.performance.config.ts`.
+It seeds 500 threads with 300 messages each, marks exactly 5% deleted, and takes
+the median of three fresh-process hydrations. Use the same fixture on both pinned
+source trees for a comparison; the ordinary all-live foundation fixture is unchanged.
+
+Streaming reducer tests count structural timeline and row derivations independently
+of content updates, verify one private thread-array copy per batch, and preserve
+unchanged-row identity. Markdown state exposes parsed/validated character counts;
+revision-based plain-paragraph and fenced-code tests verify linear growth without
+a whole-prefix validation. These deterministic invariants do not establish the
+production browser composer-latency gate.
+
+The 2026-10-19 deleted-thread measurement used clean local source snapshots
+`ebe292b4c85957f824621591224d30a0de23ce77` (foundation plus the matching harness)
+and `1f405a6f0787efd92eb098ce8fbdd9fed222948d` (candidate). Both recorded the
+same fixture and harness digests. The baseline retained 7,500 deleted-thread
+messages; the candidate retained zero. Median retained heap was 51,804,104 versus
+49,419,472 bytes; RSS was 304,611,328 versus 295,223,296 bytes. Reports are
+`.performance/stability-{baseline,candidate}-deleted-memory-20261019-37.json`.
+This is a three-process memory comparison, not a streaming or browser latency gate.
+
+The next controlled full comparison used baseline
+`ebe292b4c85957f824621591224d30a0de23ce77` and candidate
+`4089fda501eda0adf0715c29616a0ded6b7e7099`, five warmups and thirty repetitions.
+All latency and resource bounds passed, including terminal persistence and replay.
+For uncoalesced Claude, median wall time changed from 7,569.44 to 6,369.71 ms,
+median CPU from 6,494.09 to 5,876.95 ms, and SQL statements from 80,266 to 37,022.
+However CPU p95 changed only from 7,870.84 to 7,535.64 ms, so the required 20%
+CPU improvement failed. This candidate is not performance-qualified. Reports are
+`.performance/stability-baseline-full-20261019-37.json` and
+`.performance/stability-candidate-full-20261019-45.json`; do not substitute median
+improvements for the documented p95 comparison gate.
+
+The follow-up candidate `f4d4fd0fb30306452d1501819c572b868a1fb036` passes the
+same full comparison against that baseline, including the 20% CPU p95 gate.
+Uncoalesced Claude wall p95 was 6,184.10 ms and CPU p95 was 5,264.97 ms, versus
+9,474.05 and 7,870.84 ms in the baseline. Median wall/CPU were 4,975.99/4,738.49 ms;
+SQL statements were 29,034. All other latency and resource bounds passed.
+The candidate report is `.performance/stability-candidate-full-20261019-53.json`.
+This qualifies the guarded append, token-estimate and cursor updates in that
+pinned source tree; subsequent lifecycle changes still need correctness checks.
+
+The production-browser runner opts into report-only work counters before app startup:
+row renders (a bounded 2,048-row sample), structural/content timeline derivations,
+markdown parsed/validated characters, highlight jobs/bytes, and resource samples for
+hydration buffers, retained messages, WebSocket listeners/timers and pending RPCs.
+Before/after streaming snapshots remain in the browser artifact; numeric final
+samples also enter the interactive report. Ordinary application sessions do not
+collect these counters. This changes the harness digest; older reports remain valid
+for their pinned comparison, but new comparisons require a matching harness baseline.
+
+The clean-source production-browser smoke at
+`3d89c5d5dbb488549372d94e99a564f17b397f72` recorded composer input p95
+32.10 ms and streaming input p95 32.40 ms in
+`.performance/stability-interactive-smoke-20261019-88.json` (one warmup, two
+repetitions). It is a smoke result, not the full 50 ms qualification. The subsequent
+full run failed its native process-table preflight with `spawn EPERM`, before the
+soak started. Electron smoke also fails before opening the application on this host.
+
+`F5_PERF_LIFECYCLE=1 bun run perf:interactive --smoke --output=.performance/lifecycle-smoke.json`
+adds correctness checks after the measurements: the renderer reconnects, switches
+threads and loads older history while streaming, then sends stop and approval controls while the production admission queue holds 1,024 ordinary
+entries, then displays a provider crash with an editable preserved draft. The wire
+provider is scripted; engine/reactor/writer saturation remains covered by their
+separate tests. This optional phase does not replace full desktop qualification.
+The lifecycle phase also verifies the captured reading row's offset after a prepend;
+it waits for the virtual list's initial scroll to settle before generating wheel input.
+Resource collection, the bounded row sample and history-anchor diagnostics are installed by the browser runner;
+ordinary app sessions retain only the opt-in recording calls.
+
+The follow-up clean-source lifecycle smoke at
+`02ae8d4dfe8f758f0cf2a4c9f6537bd71bc07f84` passed all optional lifecycle
+checks, including history prepend anchor preservation, thread switching during
+streaming, reserved stop/approval admission and provider-crash draft recovery.
+Composer input p95 was 32.4 ms both idle and streaming; the report is
+`.performance/stability-lifecycle-smoke-20261020-155.json`, with detailed checks
+in its `.browser.json` companion. It uses one warmup/two repetitions and does not
+qualify the full 50 ms gate or memory soak. The rebuilt desktop smoke still fails
+before opening a window; Playwright records `kill EPERM` during launch cleanup.
+
+Client diagnostics reporting loads separately from stream subscription setup.
+Router counters accumulate immediately; the reporter reads those accumulated values
+when it starts. Disposal before its module loads creates no timers or listeners,
+and a reporting-module failure does not prevent synchronization. With the subsequent
+main changes included, the initial web JavaScript is 1,506,835 bytes, below the
+unchanged 1,507,108-byte budget.
+
+### Largest atomic compaction group
+
+`apps/server/scripts/performance/compaction.ts` measures one file-backed group of
+50,000 message events using the streaming fixture's maximum 64-character ASCII
+delta (3,199,936 folded characters), with an ordinary writer admitted at the first rewrite.
+Fixture reset is outside timing; five warmups precede thirty measured repetitions.
+The normal server report includes this scenario and its writer/transaction maxima.
+To run it alone from this revision:
+
+```sh
+F5_PERF_COMPACTION=1 F5_PERF_REPORT=/tmp/f5-compaction.json bun run --cwd apps/server test:file --config vitest.performance.config.ts
+```
+
+A clean-source macOS arm64 / Node 24.13.1 / SQLite 3.51.2 run on 2026-10-20 at
+`e6fd4d92ae8eacb8c844725bc063c297ecd8d018` measured 355.33 ms median and
+390.89 ms p95 total compaction wall time, 349.35 ms median CPU, 302.56 ms maximum
+transaction duration and 298.14 ms maximum ordinary-writer wait. Percentiles use
+`percentile95` from the existing report harness. This measures the event-count
+ceiling; larger payloads can hold the writer longer. It is not a baseline
+comparison or a Windows result.
+Atomicity preserves replay equivalence; yielding between delete statements does
+not release the writer lease. The 2,000-event target still packs complete small
+groups, while a group up to the 50,000-event ceiling runs alone. Time budgets are
+checked between groups. Large-group write stalls remain an explicit tradeoff;
+observe production statement/event-loop data before starting the gated SQLite
+worker track. A deterministic interruption test verifies the writer remains
+blocked until rollback and then resumes.
+
+## October diagnostics
+
+General settings includes a Diagnostics card for OTLP trace/metric destinations
+and collector headers. Restart F5 after editing these fields. Header values live
+in the profile secret store, and reads expose only their names and redaction
+markers. Explicit signal settings override `OTEL_EXPORTER_OTLP_*_ENDPOINT`, then
+`OTEL_EXPORTER_OTLP_ENDPOINT` with `/v1/traces` or `/v1/metrics` appended. JSON
+and protobuf HTTP protocols are supported. `OTEL_SDK_DISABLED=true` disables
+observability, and `OTEL_TRACES_EXPORTER=none` / `OTEL_METRICS_EXPORTER=none`
+disable external export per signal. Export is inactive without a destination.
+
+The Server health card below it needs no collector. `server.getHealth` returns
+what `observability/serverHealth.ts` has counted since the server process
+started: RPC routes that took 1 s or longer, SQL statements slower than 100 ms
+(statement text with placeholders, never bound values), each with a count, total
+and worst time, plus memory use and event-loop delay. Each list keeps at most 200
+distinct entries and reports the 20 with the largest total. These are the same
+events the server log records as `slow rpc route` and `slow sql statement`;
+nothing is persisted, so a restart clears them.
+
+Three things the card leaves out or adjusts:
+
+- Routes on the long lane (`long(...)` in `rpcScheduling.ts`: sign-ins, provider
+  updates, worktree preparation) are logged and not ranked, because they are
+  slow by design and would outrank everything else.
+- Statements are timed by the Node SQLite driver. Under Bun (`bun run dev`)
+  neither the log line nor the card has them, and the card says so.
+- Event-loop delay is sampled from when the server is created, so time blocked
+  while the database opens and migrates is not in it. Node's histogram includes
+  its 20 ms sampling interval, which is subtracted; Bun's does not.
+
+Statements are grouped by their whole text with whitespace collapsed and
+placeholder lists of any length written `(?, …)`; the card shows the first 240
+characters.
+
+Trace export retains at most 4,096 records and 4 MiB, including an in-flight
+batch. It sends one request at a time, bounds individual exports and requests,
+and drops failed batches with backoff. Metrics snapshots export serially. The
+local disk writer retains its independent queue and failure isolation. Collector
+headers and URL query strings are omitted from public diagnostic source metadata.
+
+`f5 trace summarize [--file <trace.ndjson>]` reads a trace incrementally and
+prints the twenty slowest spans, failure and event-loop stall counts. Without a
+file it resolves the selected profile's trace path. While local diagnostics is
+enabled, `SIGUSR2` explicitly writes a heap snapshot under the profile's
+`logs/observability` directory (except Windows). A heap snapshot pauses the
+process and can contain application data; it is never taken automatically.
+
+## Retained-activities index, 2026-10-30
+
+The `ProjectionThreadActivitiesRankIndex` migration adds
+`idx_projection_thread_activities_thread_rank` so the retained-activities
+query ranks rows from index keys and reads payloads only for the rows it keeps. Measured on a
+4.1 GB backup of a Work profile database with 344K activities: the index built in 0.56 s
+(the gate is under 60 s) and grew the file by 38 MB. The retained-activities query fell from
+2.24 s (cold) to 0.38 s and returned the same 82,485 rows. The migration logs its build
+duration, so production builds report their own timing.
+
+## Startup scans and archived-thread activities, 2026-11-12
+
+Measured on APFS clones of a 5.9 GB Personal profile database (2,086 threads, 2,056 of them
+archived) with an engine-only harness: migrations, read-model hydrate, the worktree-setup
+startup query and the delivery sweep. The full server was not run against the clone, so
+`orchestration.runtime.start` is not measured end to end. Two cold samples (fresh clone) per
+side, same machine. The "before" value of the delivery sweep comes from the production log.
+
+| Measurement                             | Before        | After         |
+| --------------------------------------- | ------------- | ------------- |
+| Read-model hydrate, cold                | 11.7 – 12.0 s | 3.56 – 3.59 s |
+| Read-model hydrate, warm                | 3.0 – 3.3 s   | 1.0 s         |
+| Retained-activities query, cold         | 8.0 – 8.2 s   | under 0.25 s  |
+| Worktree-setup startup query, cold      | 7.8 – 7.9 s   | 2 – 3 ms      |
+| Delivery sweep (`listCandidateIds`)     | about 200 ms  | about 1 ms    |
+| Heap after GC                           | 416 MB        | 163 MB        |
+| `heapUsedDeltaBytes` in the hydrate log | 840 – 920 MB  | 275 – 285 MB  |
+| Activities held in memory               | 132,370       | 2,035         |
+
+Two partial indexes remove the scans: `idx_projection_thread_activities_worktree_setup`
+(`WHERE kind = 'worktree-setup'`) and `idx_provider_turn_deliveries_pending_thread`
+(`WHERE state = 'pending'`). SQLite uses a partial index only when the statement repeats the
+predicate as a literal, so both statements inline it; the delivery sweep also names its index
+with `INDEXED BY`, because the planner otherwise keeps the older thread index.
+On this database the first start after the upgrade pays once: 14.4 s to build the activities
+index and 5.4 s for `PRAGMA optimize`.
+
+Threads that are already archived when the server starts load without their activity history
+(`coldThreadActivities.ts`); only the `worktree-setup` activity is kept, and the thread is
+flagged `activitiesOmitted`. The engine loads the rest from SQL, and keeps it, when an event
+reaches the thread or when a reader asks through `ensureThreadActivities` (6 – 56 ms per thread
+here). Messages, plans and checkpoints of archived threads stay in memory: workflow services
+and the Codex history reconciliation read them without checking the archive state. They are
+what remains of the hydrate time (messages query about 1.85 s cold) and of the heap.
+
+The heap figure is from the harness, where nothing touches an archived thread after startup.
+In the full server every load is logged as `loaded activities of threads archived before
+startup` with its reason (`event`, `replay` or `on-demand`) and the number of threads still
+cold, next to `coldThreads` in the `orchestration read model hydrated` line. Compare the two
+to see how much of the saving a running server keeps.
+
+## Stall after a database snapshot, 2026-11-12
+
+**Symptom.** Since hourly snapshots were retained, every hourly stall of 3 s or more in
+`logs/server.log` (4.3 – 9.1 s, on varying statements, reads and writes) starts 4 – 178 s
+after a snapshot was published.
+
+**Cause.** The first write to `state.sqlite` after it has been cloned. APFS makes the clone in
+about 4 ms and defers the bookkeeping to the first write into either file. That one `pwrite`
+took 1.7 – 1.9 s on the 5.9 GB file, with no SQLite involved; the next 200 writes took 2 ms
+together and `fsync` 13 ms. In F5 the first write is the checkpoint worker's next passive
+checkpoint, which runs once about 1,000 WAL frames have accumulated; that is the delay after
+the snapshot. While the write is in the kernel, every read of the same file that misses the
+page cache waits for it. The checkpoint runs in a worker, but the statements on the main
+connection that need an uncached page block the event loop for its duration. Statements served
+from the page cache are not delayed (3 ms at most in every trial).
+
+**Evidence.** All on scratch clones, never the live profile. Twelve-second windows with small
+scattered writes and reads on the main connection and a worker checkpointing every 400 writes,
+three repetitions:
+
+| Window                      | Longest checkpoint | Longest uncached statement |
+| --------------------------- | ------------------ | -------------------------- |
+| Nothing before it           | 30 – 142 ms        | up to 0.6 s                |
+| After a clone               | 1.6 – 2.7 s        | same as the checkpoint     |
+| After removing an old clone | 46 – 105 ms        | up to 1.2 s                |
+| After a clone and a removal | 2.8 – 7.1 s        | same as the checkpoint     |
+
+- `checkpoint_fullfsync` is not the cause: with it off the clone windows measure 1.8 – 2.3 s
+  and 2.2 – 7.1 s. Neither is `fsync`: with `synchronous = OFF` in the worker the checkpoint
+  after a clone still takes 1.7 – 5.5 s.
+- Removing old clones alone does not stall, but a removal next to a clone makes the first
+  write longer.
+- The cost follows the number of extents, not the file size. A sequentially written 1 GiB file
+  pays 30 ms on its first write after a clone; after 60,000 scattered page rewrites made while
+  a clone existed it pays about 200 ms. The profile database has 300,000 – 350,000 extents
+  averaging 18 – 21 KiB, close to the 16 KiB copy-on-write unit. Snapshots cause this
+  themselves: every page written while a clone exists gets a new extent, so the stall grows
+  with the age of the file.
+
+**Follow-up plan** (nothing below is implemented):
+
+1. Report the checkpoint duration from the worker and log it above 250 ms together with the
+   time since the last snapshot, so production confirms the mechanism and its size.
+2. Take the first write inside the snapshot step. `runDatabaseSnapshot` already holds the
+   writer in an async transaction while it clones; other SQL waits without blocking the event
+   loop. After the two clones and before the commit, ask the checkpoint worker for a passive
+   checkpoint and wait for it. The cost stays, but it becomes a wait for SQL work at a known
+   moment, not an event-loop stall up to three minutes later. To verify first: that the
+   checkpoint always has a frame to write, and that no statement runs on the main connection
+   during the transaction.
+3. Measure whether rewriting the file (`VACUUM`, or a full copy during storage maintenance)
+   brings the extent count and the first-write cost down, and for how long.
+4. If stalls remain after 2 and 3, take fewer snapshots or take them only while no turn is
+   running. Moving reads off the main thread (the gated SQLite worker track) removes the
+   event-loop stall for every cause, including this one.

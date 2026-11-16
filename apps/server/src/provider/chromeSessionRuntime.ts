@@ -1,0 +1,888 @@
+import { randomUUID } from "node:crypto";
+import { realpath as fsRealpath } from "node:fs/promises";
+import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
+import type { ChromeLeaseHolder, ChromeSharedRegistration } from "@t3tools/contracts";
+import {
+  claudeChromeSupportsSharedNativeHost,
+  type ClaudeChromeRecord,
+} from "@t3tools/shared/providerIntegrationCertification";
+import {
+  CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE,
+  ComputerControlError,
+  isChromeNativeWait,
+} from "@t3tools/shared/computerControl";
+import { ChromeArtifactCache } from "./chromeArtifactCache";
+import {
+  chromeLaunchDecision,
+  chromeServerHasUncertifiedTools,
+  type ChromeLaunchDecision,
+  type ChromeNativeHostDescriptor,
+  type ChromeServerStatus,
+} from "./chromeNativeHost";
+import {
+  ChromeLaunchTimeout,
+  ChromeNativeHostTransactions,
+  type ChromeNativeHostTransaction,
+} from "./chromeNativeHostJournal";
+import type { PersistentChromeNativeHostStorage } from "./chromeNativeHostStorage";
+import {
+  ChromeProjectionConflict,
+  clearProjectionSources,
+  projectClaudeRegistrations,
+  projectionIo,
+  type ClaudeRegistrationProjection,
+  type ProjectionIo,
+} from "./chromeRegistrationProjection";
+import {
+  CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+  CLAUDE_IN_CHROME_START_FAILED,
+  CLAUDE_IN_CHROME_TOOLS_CHANGED,
+  classifyClaudeChromeTool,
+  type ClaudeChromeToolClass,
+} from "./Layers/claudeAgentBrowser";
+
+export interface ChromeRuntimeSession {
+  readonly threadId: string;
+  readonly generation: string;
+  readonly providerHome: string;
+  readonly providerInstanceId: string;
+}
+
+/** One Chrome tool call, as both the hook and the permission callback see it. */
+export interface ChromeInvocation {
+  readonly toolName: string;
+  readonly input: unknown;
+  /** The SDK's reported server provenance, when present. */
+  readonly provenance?: { readonly name: string; readonly source: string } | undefined;
+  readonly toolUseId?: string | undefined;
+  readonly signal?: AbortSignal | undefined;
+  readonly generation: string;
+  /** After an approval wait: never reuse an earlier inspection. */
+  readonly fresh?: boolean;
+}
+
+export type ChromeBindingState =
+  | "preparing"
+  | "pending"
+  | "connected"
+  | "failed"
+  | "external-cli-conflict"
+  | "retiring";
+
+interface Binding {
+  readonly session: ChromeRuntimeSession;
+  readonly holder: ChromeLeaseHolder;
+  transaction?: ChromeNativeHostTransaction;
+  decision: ChromeLaunchDecision;
+  state: ChromeBindingState;
+  detail?: string;
+  /** Advances on every verification change; tool-use reuse is keyed by it. */
+  epoch: number;
+  readonly inspected: Map<string, number>;
+  leaseHeld: boolean;
+  /** Acquired as shared (see `ChromeRuntimeDeps.shared`). */
+  shared: boolean;
+  /** Holds main's shared launch lock (`ChromeRuntimeDeps.launchLock`). */
+  launchLocked?: boolean;
+  /**
+   * A shared session's conflict that came from a registration no peer had vouched for yet.
+   * It clears on its own once the registration matches again (a peer's arrives late).
+   */
+  peerConflict?: boolean;
+  /** Isolated profiles: cancels an in-flight copy when the session goes away. */
+  projectionAbort?: AbortController;
+  /** The in-flight copy; finalize waits for it before reconciling and releasing. */
+  projecting?: Promise<unknown>;
+}
+
+/** Covers a settings read and one IPC round trip to main under load; still fails closed. */
+export const CHROME_ADMISSION_DEADLINE_MS = 1_000;
+/** How long a Chrome call waits for another agent's native control before it is refused. */
+export const CHROME_NATIVE_WAIT_MS = 20_000;
+/** Pause between admission attempts while another agent's native control blocks Chrome. */
+export const CHROME_NATIVE_RETRY_MS = 250;
+
+export interface ChromeRuntimeDeps {
+  readonly descriptor: ChromeNativeHostDescriptor;
+  readonly record: ClaudeChromeRecord;
+  /** The bundled SDK version the session runs (at or above the record's floor). */
+  readonly sdkVersion?: string;
+  readonly storage: PersistentChromeNativeHostStorage;
+  readonly profileId: string;
+  readonly userHome: string;
+  readonly executableRealpath: string;
+  /** With `shared`, main may let the session hold Chrome beside other certified sessions. */
+  readonly acquire: (holder: ChromeLeaseHolder, shared: boolean) => Promise<void>;
+  /**
+   * Whether this session may share Chrome: its record claims `shared-native-host` and main
+   * negotiated sharing. Shared sessions report their verified registration and accept a
+   * peer's (`sharedRegistrations`) in place of their own.
+   */
+  readonly shared?: () => boolean;
+  /** A shared session's launch verified: main relays its registration to its peers. */
+  readonly registrationVerified?: (
+    holder: ChromeLeaseHolder,
+    registration: ChromeSharedRegistration,
+  ) => void;
+  /** Peers' verified registrations, as main relays them. */
+  readonly sharedRegistrations?: () => ReadonlyArray<ChromeSharedRegistration>;
+  /**
+   * Main's shared launch lock, held from inspection until the launch is recorded so shared
+   * launches never overlap. Answers whether it was taken; without it the launch goes ahead.
+   */
+  readonly launchLock?: (holder: ChromeLeaseHolder) => Promise<boolean>;
+  readonly launchUnlock?: (holder: ChromeLeaseHolder) => void;
+  /** Another profile's shared session holds the launch lock: its rewrite is waited out. */
+  readonly peerLaunching?: () => boolean;
+  readonly release: (holder: ChromeLeaseHolder) => void;
+  /** With `callId`, main also admits that Chrome call: it counts as running from here on. */
+  readonly validate: (holder: ChromeLeaseHolder, callId?: string) => Promise<void>;
+  /** An admitted call (see `validate`) was refused afterwards and never ran. */
+  readonly callEnded?: (holder: ChromeLeaseHolder, callId: string) => void;
+  /** Main admits named calls at validation (see `admitsCalls`). */
+  readonly callAdmission?: () => boolean;
+  /** Overrides `CHROME_NATIVE_WAIT_MS` (tests). */
+  readonly nativeWaitMs?: number;
+  readonly consent: (
+    session: ChromeRuntimeSession,
+    decision: Extract<ChromeLaunchDecision, { kind: "needs-consent" }>,
+  ) => Promise<boolean>;
+  readonly paused: (threadId: string) => boolean;
+  /** Live per-thread policy (project overrides included). */
+  readonly policyEnabled: (threadId: string) => Promise<boolean>;
+  /** The broker's current session generation for the thread. */
+  readonly currentGeneration: (threadId: string) => string | undefined;
+  readonly cache?: ChromeArtifactCache;
+  readonly realpath?: (path: string) => Promise<string>;
+  readonly launchTimeoutMs?: number;
+  /**
+   * Isolated profiles: the CLI writes under the profile's HOME and F5 copies the
+   * registration to `userHome` (Chrome's) before the launch is recorded.
+   */
+  readonly projection?: ClaudeRegistrationProjection;
+  readonly projectionIo?: ProjectionIo;
+  /** Diagnostics that never reach the user, such as why a copy was refused. */
+  readonly log?: (message: string) => void;
+}
+
+const withDeadline = <A>(promise: Promise<A>, ms: number, fallback: A): Promise<A> =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+
+/**
+ * A certified launch uses this flow rather than invoking journal primitives directly.
+ * Consent, registration drift, ownership and restoration remain host-owned; Chrome tools
+ * fail closed until the server and registration are verified.
+ */
+export class ChromeSessionRuntime {
+  private readonly sessions = new Map<string, Binding>();
+  private readonly transactions: ChromeNativeHostTransactions;
+  private readonly cache: ChromeArtifactCache;
+  private readonly realpath: (path: string) => Promise<string>;
+  constructor(private readonly deps: ChromeRuntimeDeps) {
+    this.transactions = new ChromeNativeHostTransactions(deps.storage);
+    this.cache = deps.cache ?? new ChromeArtifactCache();
+    this.realpath = deps.realpath ?? fsRealpath;
+  }
+  get toolNames(): ReadonlyArray<string> {
+    return this.deps.record.toolNames ?? [];
+  }
+
+  private current(threadId: string, generation: string): Binding | undefined {
+    const binding = this.sessions.get(threadId);
+    return binding?.session.generation === generation ? binding : undefined;
+  }
+
+  async prepare(session: ChromeRuntimeSession): Promise<ChromeLaunchDecision> {
+    // Never let a late finalizer or prepare overwrite a replacement session.
+    if (this.sessions.has(session.threadId)) throw new Error("Chrome session already exists.");
+    const holder: ChromeLeaseHolder = {
+      profileId: this.deps.profileId,
+      threadId: session.threadId,
+      sessionGeneration: session.generation,
+      provider: this.deps.descriptor.provider,
+    };
+    const binding: Binding = {
+      session,
+      holder,
+      decision: { kind: "off" },
+      state: "preparing",
+      epoch: 0,
+      inspected: new Map(),
+      leaseHeld: false,
+      shared: this.deps.shared?.() === true,
+    };
+    this.sessions.set(session.threadId, binding);
+    const live = () => this.sessions.get(session.threadId) === binding;
+    try {
+      await this.deps.acquire(holder, binding.shared);
+      binding.leaseHeld = true;
+      await this.deps.validate(holder);
+      if (!live()) throw new Error("Chrome setup interrupted.");
+      // From inspection to the recorded launch, no other shared launch may rewrite the
+      // registration under this one.
+      await this.lockLaunch(binding);
+      if (!live()) throw new Error("Chrome setup interrupted.");
+      const observed = await this.deps.storage.inspect();
+      const targetPath = this.deps.descriptor.expectedTarget(session.providerHome);
+      const accepted = (await this.deps.storage.listTransactions(this.deps.descriptor.provider))
+        .filter(
+          (entry) =>
+            entry.profileId === this.deps.profileId &&
+            entry.providerInstanceId === session.providerInstanceId &&
+            entry.state === "launched" &&
+            entry.launchVerified === true &&
+            entry.targetPath === targetPath,
+        )
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      let decision = chromeLaunchDecision({
+        enabled: true,
+        certified: true,
+        descriptor: this.deps.descriptor,
+        providerHome: session.providerHome,
+        profileId: this.deps.profileId,
+        providerInstanceId: session.providerInstanceId,
+        registrations: observed,
+        ...(accepted
+          ? {
+              accepted: {
+                profileId: accepted.profileId,
+                providerInstanceId: accepted.providerInstanceId,
+                targetPath: accepted.targetPath,
+                acceptedForeign: accepted.acceptedForeign,
+              },
+            }
+          : {}),
+      });
+      let acceptedForeign = accepted?.acceptedForeign ?? [];
+      if (decision.kind === "needs-consent") {
+        // Peers don't wait on a person: the lock is let go for the dialog and taken again.
+        // A launch that lands meanwhile changes the setup, and approval then refuses it.
+        this.unlockLaunch(binding);
+        const approved = await this.deps.consent(session, decision);
+        if (approved && live()) await this.lockLaunch(binding);
+        if (!live() || !approved) decision = { kind: "off", detail: "Chrome setup was declined." };
+        else {
+          acceptedForeign = observed
+            .filter(
+              (entry) => !entry.shadowed && entry.state === "ok" && entry.targetPath !== targetPath,
+            )
+            .map((entry) => ({ location: entry.location, sha256: entry.sha256! }));
+          decision = { kind: "launch", targetPath };
+        }
+      }
+      if (decision.kind !== "launch") {
+        binding.decision = decision;
+        binding.state = "failed";
+        this.releaseLease(binding);
+        return decision;
+      }
+      // Admission is re-checked after consent and immediately before the spawn: turning
+      // the toggle off while the dialog was open cancels setup.
+      if (
+        !live() ||
+        this.deps.paused(session.threadId) ||
+        !(await this.deps.policyEnabled(session.threadId))
+      )
+        throw new Error("Chrome setup interrupted.");
+      binding.transaction = await this.transactions.approve({
+        provider: this.deps.descriptor.provider,
+        profileId: this.deps.profileId,
+        providerInstanceId: session.providerInstanceId,
+        recordId: this.deps.record.id,
+        ...(this.deps.record.evidenceId ? { evidenceId: this.deps.record.evidenceId } : {}),
+        ...(this.deps.sdkVersion ? { sdkVersion: this.deps.sdkVersion } : {}),
+        executablePath: this.deps.executableRealpath,
+        providerHome: session.providerHome,
+        userHome: this.deps.userHome,
+        targetPath,
+        wrapperLocation: targetPath,
+        observed,
+        acceptedForeign,
+      });
+      if (!live() || !(await this.deps.policyEnabled(session.threadId)))
+        throw new Error("Chrome setup interrupted.");
+      // The copy must only ever see what this launch's CLI writes, never an older run's.
+      if (this.deps.projection) await clearProjectionSources(this.deps.projection);
+      binding.decision = { kind: "launch", targetPath };
+      binding.state = "pending";
+      return binding.decision;
+    } catch (error) {
+      binding.state = "failed";
+      this.releaseLease(binding);
+      throw error;
+    }
+  }
+
+  /**
+   * The CLI reported `claude-in-chrome` connected: verify server provenance, then wait
+   * for the registrations to land. Chrome tools stay denied until both succeed.
+   */
+  async connected(
+    threadId: string,
+    generation: string,
+    status: ChromeServerStatus | undefined,
+  ): Promise<boolean> {
+    const binding = this.current(threadId, generation);
+    if (!binding || !binding.transaction) return false;
+    if (binding.state === "connected") {
+      // Live re-check: any provenance mismatch invalidates immediately.
+      const check = await this.verifyServerWithReason(status);
+      if (check.ok) return true;
+      this.invalidate(
+        threadId,
+        generation,
+        "failed",
+        check.toolsChanged
+          ? CLAUDE_IN_CHROME_TOOLS_CHANGED
+          : "Claude in Chrome's connection changed. Reconnect it in F5.",
+      );
+      return false;
+    }
+    // Failed and conflicted sessions return only through an explicit reconnect.
+    if (binding.state !== "pending") return false;
+    const check = await this.verifyServerWithReason(status);
+    if (this.current(threadId, generation) !== binding) return false;
+    if (!check.ok) {
+      this.invalidate(
+        threadId,
+        generation,
+        "failed",
+        check.toolsChanged
+          ? CLAUDE_IN_CHROME_TOOLS_CHANGED
+          : "F5 could not verify the Chrome server's provenance.",
+      );
+      return false;
+    }
+    const verifyWrapper = (bytes: string) =>
+      this.deps.descriptor.verifyWrapper?.(bytes, this.deps.executableRealpath, this.realpath) ??
+      Promise.resolve(false);
+    if (this.deps.projection) {
+      const transaction = binding.transaction;
+      const abort = new AbortController();
+      binding.projectionAbort = abort;
+      // Writes only while this exact binding is still waiting on its launch.
+      const live = () =>
+        !abort.signal.aborted &&
+        this.current(threadId, generation) === binding &&
+        binding.state === "pending";
+      const io = this.deps.projectionIo ?? projectionIo;
+      const copy = projectClaudeRegistrations(
+        {
+          projection: this.deps.projection,
+          targetPath: transaction.targetPath,
+          allowedOrigins: this.deps.descriptor.allowedOrigins,
+          verifyWrapper,
+          signal: abort.signal,
+          ...(this.deps.launchTimeoutMs !== undefined
+            ? { timeoutMs: this.deps.launchTimeoutMs }
+            : {}),
+          commit: (writes) =>
+            this.transactions.commitProjection(transaction, writes, {
+              live,
+              write: (location, bytes) => io.writeAtomic(location, bytes),
+            }),
+        },
+        io,
+      );
+      binding.projecting = copy.catch(() => undefined);
+      try {
+        await copy;
+      } catch (error) {
+        this.deps.log?.(
+          `Claude in Chrome registration copy refused: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (this.current(threadId, generation) !== binding) return false;
+        // Copies already written are journaled destinations: reconcile settles them.
+        if (error instanceof ChromeProjectionConflict) {
+          this.invalidate(
+            threadId,
+            generation,
+            "external-cli-conflict",
+            CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+          );
+          binding.transaction = await this.transactions
+            .reconcile(transaction)
+            .catch(() => transaction);
+        } else await this.startupFailed(threadId, generation);
+        return false;
+      } finally {
+        if (binding.projectionAbort === abort) delete binding.projectionAbort;
+      }
+      if (!live()) return false;
+    }
+    try {
+      binding.transaction = await this.transactions.recordLaunch(binding.transaction, {
+        verifyWrapper,
+        allowedOrigins: this.deps.descriptor.allowedOrigins,
+        ...(this.deps.launchTimeoutMs !== undefined
+          ? { timeoutMs: this.deps.launchTimeoutMs }
+          : {}),
+      });
+    } catch (error) {
+      if (error instanceof ChromeLaunchTimeout) binding.transaction = error.transaction;
+      this.invalidate(threadId, generation, "failed", CLAUDE_IN_CHROME_START_FAILED);
+      return false;
+    }
+    // The registration is verified now, whatever becomes of this binding: peers learn it
+    // before the lock goes (one ordered channel), so they never see the rewrite unvouched.
+    if (binding.shared) {
+      const registration = sharedRegistrationOf(binding.transaction);
+      if (registration) this.deps.registrationVerified?.(binding.holder, registration);
+    }
+    this.unlockLaunch(binding);
+    if (this.current(threadId, generation) !== binding || binding.state !== "pending") return false;
+    binding.state = "connected";
+    binding.epoch += 1;
+    return true;
+  }
+
+  /** Live status re-check; any mismatch invalidates verification immediately. */
+  /**
+   * Verification, and whether a failure is only a tools change: the server lists an
+   * uncertified tool and its provenance passes without the tool list. A command or path
+   * mismatch is never blamed on new tools. One await, so invalidation isn't delayed.
+   */
+  private async verifyServerWithReason(
+    status: ChromeServerStatus | undefined,
+  ): Promise<{ ok: boolean; toolsChanged: boolean }> {
+    const uncertified =
+      status !== undefined && chromeServerHasUncertifiedTools(status, this.toolNames);
+    const { tools: _tools, ...withoutTools } = status ?? {};
+    const [ok, provenanceOk] = await Promise.all([
+      this.verifyServer(status),
+      uncertified ? this.verifyServer(withoutTools as ChromeServerStatus) : false,
+    ]);
+    return { ok, toolsChanged: !ok && uncertified && provenanceOk };
+  }
+
+  verifyServer(status: ChromeServerStatus | undefined): Promise<boolean> {
+    return (
+      this.deps.descriptor.verifyServer?.(status, {
+        executableRealpath: this.deps.executableRealpath,
+        toolNames: this.toolNames,
+        realpath: this.realpath,
+      }) ?? Promise.resolve(false)
+    );
+  }
+
+  /** Startup never connected (or a later check failed): reconcile and keep restorable. */
+  async startupFailed(
+    threadId: string,
+    generation: string,
+    detail = CLAUDE_IN_CHROME_START_FAILED,
+  ): Promise<void> {
+    const binding = this.current(threadId, generation);
+    if (!binding) return;
+    this.invalidate(threadId, generation, "failed", detail);
+    const transaction = binding.transaction;
+    if (transaction)
+      binding.transaction = await this.transactions.reconcile(transaction).catch(() => transaction);
+  }
+
+  invalidate(
+    threadId: string,
+    generation: string,
+    state: "failed" | "external-cli-conflict",
+    detail: string,
+  ): void {
+    const binding = this.current(threadId, generation);
+    if (!binding || binding.state === "retiring") return;
+    binding.projectionAbort?.abort();
+    binding.state = state;
+    binding.detail = detail;
+    binding.epoch += 1;
+    binding.inspected.clear();
+    binding.peerConflict = false;
+    this.unlockLaunch(binding);
+  }
+
+  /** Explicit user reconnect: back to pending; nothing is trusted until re-verified. */
+  reconnecting(threadId: string, generation: string): void {
+    const binding = this.current(threadId, generation);
+    if (!binding || binding.state === "retiring" || !binding.transaction) return;
+    binding.state = "pending";
+    delete binding.detail;
+    binding.epoch += 1;
+    binding.inspected.clear();
+    binding.peerConflict = false;
+    this.cache.invalidate();
+  }
+
+  status(
+    threadId: string,
+    generation: string,
+  ): { state: ChromeBindingState; detail?: string } | undefined {
+    const binding = this.current(threadId, generation);
+    return binding
+      ? { state: binding.state, ...(binding.detail ? { detail: binding.detail } : {}) }
+      : undefined;
+  }
+
+  classify(
+    invocation: Pick<ChromeInvocation, "toolName" | "input" | "provenance">,
+    trusted: boolean,
+  ): ClaudeChromeToolClass {
+    const provenanceOk =
+      !invocation.provenance ||
+      (invocation.provenance.name === this.deps.record.identity.mcpServerName &&
+        invocation.provenance.source === "dynamic");
+    return classifyClaudeChromeTool({
+      toolName: invocation.toolName,
+      toolInput: invocation.input,
+      trusted: trusted && provenanceOk,
+      toolNames: this.toolNames,
+    });
+  }
+
+  /**
+   * Registration snapshot unchanged since the verified launch; zero reads when unchanged.
+   * A shared session also accepts a peer's verified registration in the manifests' place:
+   * every manifest matches that registration and the wrapper it names is unchanged. This
+   * session's own wrapper must always still match.
+   */
+  private async registrationUnchanged(binding: Binding): Promise<boolean> {
+    const transaction = binding.transaction!;
+    const wrapper = transaction.slots.find((slot) => slot.kind === "wrapper");
+    if (wrapper) {
+      const current = await this.cache.read(wrapper.location);
+      if (!current.sha256 || current.sha256 !== wrapper.postLaunchHash) return false;
+    }
+    const manifests = (transaction.launchSnapshot ?? []).filter((entry) => !entry.shadowed);
+    const current = new Map<string, string | undefined>();
+    for (const entry of manifests)
+      current.set(entry.location, (await this.cache.read(entry.location)).sha256 ?? undefined);
+    if (manifests.every((entry) => current.get(entry.location) === entry.sha256)) return true;
+    if (!binding.shared) return false;
+    for (const peer of this.deps.sharedRegistrations?.() ?? []) {
+      const expected = new Map(peer.manifests.map((entry) => [entry.location, entry.sha256]));
+      if (!manifests.every((entry) => expected.get(entry.location) === current.get(entry.location)))
+        continue;
+      const peerWrapper = await this.cache.read(peer.wrapper.location);
+      if (peerWrapper.sha256 === peer.wrapper.sha256) return true;
+    }
+    return false;
+  }
+
+  /**
+   * A shared session's registration conflict ends once the registration matches again: a
+   * peer's verified copy arrived after its rewrite, or the peer launched again and verified.
+   * Other conflicts (a projection refusal, unshared sessions) still need a reconnect.
+   */
+  private async recoverPeerConflict(binding: Binding): Promise<boolean> {
+    if (!binding.shared || !binding.peerConflict || !binding.transaction?.launchVerified)
+      return false;
+    if (!(await this.registrationUnchanged(binding))) return false;
+    if (binding.state !== "external-cli-conflict" || !binding.peerConflict) return false;
+    binding.state = "connected";
+    binding.peerConflict = false;
+    delete binding.detail;
+    binding.epoch += 1;
+    binding.inspected.clear();
+    return true;
+  }
+
+  /** Whether this generation holds Chrome as a shared session (see `ChromeRuntimeDeps.shared`). */
+  shared(threadId: string, generation: string): boolean {
+    const binding = this.current(threadId, generation);
+    return binding !== undefined && binding.shared && binding.leaseHeld;
+  }
+
+  /**
+   * Whether main admits each named call (`toolUseId`) at validation and counts it running
+   * until its end is reported. Callers then mark the call started only once admitted, so a
+   * call waiting for another agent never reads as running.
+   */
+  admitsCalls(): boolean {
+    return this.deps.callAdmission?.() ?? false;
+  }
+
+  /**
+   * Per-call admission: live policy, the current non-retiring generation, a verified
+   * server and registration, healthy desktop ownership, an unchanged registration
+   * snapshot and a recognized operation. Each attempt fails closed at a 1 s deadline.
+   * While another agent's native control blocks Chrome, attempts repeat for up to
+   * `CHROME_NATIVE_WAIT_MS` before the refusal reaches the agent.
+   */
+  async admit(invocation: ChromeInvocation, threadId: string): Promise<string | undefined> {
+    const waitUntil = performance.now() + (this.deps.nativeWaitMs ?? CHROME_NATIVE_WAIT_MS);
+    for (;;) {
+      const denial = await this.admitOnce(invocation, threadId);
+      if (
+        denial === undefined ||
+        !isChromeNativeWait(denial) ||
+        invocation.signal?.aborted ||
+        performance.now() + CHROME_NATIVE_RETRY_MS >= waitUntil
+      )
+        return denial;
+      await new Promise((resolve) => setTimeout(resolve, CHROME_NATIVE_RETRY_MS));
+    }
+  }
+  private admitOnce(invocation: ChromeInvocation, threadId: string): Promise<string | undefined> {
+    // Main counts a call it admitted as running until it ends. One refused after admission,
+    // or abandoned at the deadline, never runs, so its end is reported here. Without a
+    // tool-use id nothing could report the call's end, so main isn't asked to admit it.
+    const callId = invocation.toolUseId;
+    let admittedBy: ChromeLeaseHolder | undefined;
+    let abandoned = false;
+    const ended = () => {
+      if (admittedBy && callId !== undefined) this.deps.callEnded?.(admittedBy, callId);
+      admittedBy = undefined;
+    };
+    const work = this.admitNow(invocation, threadId, callId, (holder) => {
+      admittedBy = holder;
+    }).then(
+      (denial) => {
+        if (denial !== undefined || abandoned) ended();
+        return denial;
+      },
+      (error: unknown) => {
+        ended();
+        throw error;
+      },
+    );
+    const timedOut = Symbol("timed-out");
+    // A timeout resolves with its own message; only a thrown check maps to "changed".
+    return withDeadline<string | undefined | typeof timedOut>(
+      work,
+      CHROME_ADMISSION_DEADLINE_MS,
+      timedOut,
+    ).then(
+      (result) => {
+        if (result !== timedOut) return result;
+        abandoned = true;
+        return "Chrome control could not be verified in time. Try again.";
+      },
+      () => "Chrome setup changed or failed verification. Reconnect Chrome before using it.",
+    );
+  }
+  private async admitNow(
+    invocation: ChromeInvocation,
+    threadId: string,
+    callId: string | undefined,
+    admitted: (holder: ChromeLeaseHolder) => void,
+  ): Promise<string | undefined> {
+    if (invocation.signal?.aborted) return "Chrome call was cancelled.";
+    if (!(await this.deps.policyEnabled(threadId)))
+      return "Claude in Chrome is turned off for this project in F5 settings.";
+    if (this.deps.paused(threadId)) return "Computer control is paused. Ask the user to resume.";
+    const binding = this.current(threadId, invocation.generation);
+    if (!binding || this.deps.currentGeneration(threadId) !== invocation.generation)
+      return "Chrome integration is unavailable for this session.";
+    if (binding.state === "external-cli-conflict" && !(await this.recoverPeerConflict(binding)))
+      return binding.peerConflict && this.deps.peerLaunching?.()
+        ? CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE
+        : CLAUDE_IN_CHROME_EXTERNAL_CONFLICT;
+    if (binding.state !== "connected" || !binding.transaction?.launchVerified)
+      return binding.detail ?? "Claude in Chrome isn't connected yet.";
+    const classified = this.classify(invocation, true);
+    if (classified.kind === "protocol-drift") {
+      this.invalidate(
+        threadId,
+        invocation.generation,
+        "failed",
+        "Claude in Chrome changed its tool protocol. Update F5.",
+      );
+      return "Claude in Chrome changed its tool protocol. Update F5.";
+    }
+    if (classified.kind === "untrusted")
+      return "This Chrome tool isn't from Claude's verified Chrome connection.";
+    if (classified.kind === "unsupported")
+      return "This Chrome action isn't supported in F5 (unsupported-operation).";
+    try {
+      await this.deps.validate(binding.holder, callId);
+      admitted(binding.holder);
+    } catch (error) {
+      if (error instanceof ComputerControlError && error.error._tag === "Interrupted")
+        return "Chrome control was interrupted. Ask the user to resume.";
+      if (error instanceof ComputerControlError && error.error._tag === "Execution")
+        return error.error.message;
+      return "Chrome control isn't available from the desktop right now.";
+    }
+    const key = invocation.toolUseId;
+    const reuse =
+      !invocation.fresh && key !== undefined && binding.inspected.get(key) === binding.epoch;
+    if (!reuse) {
+      if (!(await this.registrationUnchanged(binding))) {
+        // Another profile is launching: its CLI rewrote the registration and its verified
+        // copy is on the way. Waited out like any other agent's work, never a conflict.
+        if (binding.shared && this.deps.peerLaunching?.())
+          return CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE;
+        this.invalidate(
+          threadId,
+          invocation.generation,
+          "external-cli-conflict",
+          CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+        );
+        if (binding.shared) binding.peerConflict = true;
+        return CLAUDE_IN_CHROME_EXTERNAL_CONFLICT;
+      }
+      if (key !== undefined) {
+        if (binding.inspected.size > 256) binding.inspected.clear();
+        binding.inspected.set(key, binding.epoch);
+      }
+    }
+    // Pause, policy and generation are re-checked after the awaits above.
+    if (this.current(threadId, invocation.generation) !== binding || this.deps.paused(threadId))
+      return "Chrome session was interrupted.";
+    if (binding.state !== "connected")
+      return binding.detail ?? "Chrome integration is unavailable.";
+    return undefined;
+  }
+
+  /**
+   * Launch configuration only. Health (`pending`, `connected`, `failed`, conflicts) is
+   * reported live through the session's configured event and never restarts it: a failed
+   * startup keeps the session running until the user reconnects.
+   */
+  fingerprint(threadId: string): string {
+    const decision = this.sessions.get(threadId)?.decision;
+    return JSON.stringify({
+      kind: decision?.kind ?? "off",
+      target: decision?.kind === "launch" ? decision.targetPath : undefined,
+    });
+  }
+
+  /** Only shared sessions lock; one main refused sharing launches as before. */
+  private async lockLaunch(binding: Binding): Promise<void> {
+    if (!binding.shared || binding.launchLocked || !this.deps.launchLock) return;
+    binding.launchLocked = await this.deps.launchLock(binding.holder);
+  }
+
+  private unlockLaunch(binding: Binding): void {
+    if (!binding.launchLocked) return;
+    binding.launchLocked = false;
+    this.deps.launchUnlock?.(binding.holder);
+  }
+
+  private releaseLease(binding: Binding): void {
+    this.unlockLaunch(binding);
+    if (!binding.leaseHeld) return;
+    binding.leaseHeld = false;
+    this.deps.release(binding.holder);
+  }
+
+  /**
+   * Idempotent finalizer: reconciles partial setup writes and settles ownership even
+   * when earlier cleanup threw. Main keeps the lease until it observes the CLI exit.
+   */
+  async finalize(threadId: string, generation: string): Promise<void> {
+    const binding = this.current(threadId, generation);
+    if (!binding) return;
+    binding.state = "retiring";
+    this.sessions.delete(threadId);
+    binding.projectionAbort?.abort();
+    try {
+      // A copy still writing must stop before reconcile reads it and the lease goes.
+      await binding.projecting;
+      if (binding.transaction) await this.transactions.reconcile(binding.transaction);
+    } finally {
+      this.releaseLease(binding);
+    }
+  }
+
+  dispose(): void {
+    this.cache.dispose();
+  }
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+/**
+ * What a verified launch left in place, for shared peers: its manifests and wrapper. None
+ * without a verified launch, a wrapper hash, or more manifests than main relays.
+ */
+export function sharedRegistrationOf(
+  transaction: ChromeNativeHostTransaction,
+): ChromeSharedRegistration | undefined {
+  if (!transaction.launchVerified) return undefined;
+  const wrapper = transaction.slots.find((slot) => slot.kind === "wrapper");
+  if (!wrapper?.postLaunchHash || !SHA256_HEX.test(wrapper.postLaunchHash)) return undefined;
+  const manifests = (transaction.launchSnapshot ?? []).filter((entry) => !entry.shadowed);
+  if (!manifests.length || manifests.length > 32) return undefined;
+  if (!manifests.every((entry) => entry.sha256 && SHA256_HEX.test(entry.sha256))) return undefined;
+  return {
+    manifests: manifests.map((entry) => ({ location: entry.location, sha256: entry.sha256! })),
+    wrapper: { location: wrapper.location, sha256: wrapper.postLaunchHash },
+  };
+}
+
+export function chromeRuntimeHost(input: {
+  broker: ComputerAutomationBrokerRuntime;
+  descriptor: ChromeNativeHostDescriptor;
+  record: ClaudeChromeRecord;
+  sdkVersion?: string;
+  storage: PersistentChromeNativeHostStorage;
+  userHome: string;
+  executableRealpath: string;
+  policyEnabled: (threadId: string) => Promise<boolean>;
+  projection?: ClaudeRegistrationProjection;
+  log?: (message: string) => void;
+}) {
+  const { broker } = input;
+  return new ChromeSessionRuntime({
+    descriptor: input.descriptor,
+    record: input.record,
+    ...(input.sdkVersion ? { sdkVersion: input.sdkVersion } : {}),
+    ...(input.projection ? { projection: input.projection } : {}),
+    storage: input.storage,
+    userHome: input.userHome,
+    executableRealpath: input.executableRealpath,
+    policyEnabled: input.policyEnabled,
+    ...(input.log ? { log: input.log } : {}),
+    profileId: broker.host.profileId,
+    currentGeneration: (threadId) => broker.generation(threadId),
+    // An idle Chrome holder in this profile gives way; a working one is named in the refusal.
+    acquire: (holder, shared) => broker.acquireChromeLease(holder, 5000, shared),
+    // Only a record whose live run proved one native host serves several CLIs.
+    shared: () =>
+      input.descriptor.provider === "claude" &&
+      claudeChromeSupportsSharedNativeHost(input.record) &&
+      broker.host.chromeSharedCapable(),
+    registrationVerified: (holder, registration) =>
+      broker.reportChromeRegistration(holder, registration),
+    sharedRegistrations: () => broker.sharedChromeRegistrations(),
+    launchLock: (holder) => broker.lockChromeLaunch(holder),
+    launchUnlock: (holder) => broker.unlockChromeLaunch(holder),
+    peerLaunching: () => broker.chromePeerLaunchInProgress(),
+    release: (holder) =>
+      broker.host.send({ type: "chromeLeaseRelease", requestId: randomUUID(), holder }),
+    validate: async (holder, callId) => {
+      if (broker.chromeRecoveryRequired())
+        throw new ComputerControlError({
+          _tag: "Execution",
+          message: "Browser control from an earlier session hasn't stopped yet.",
+        });
+      await broker.host.correlated(
+        {
+          type: "chromeLeaseValidate",
+          requestId: randomUUID(),
+          holder,
+          ...(callId !== undefined && broker.host.chromeCallAdmissionCapable() ? { callId } : {}),
+        },
+        5000,
+        false,
+      );
+    },
+    callAdmission: () => broker.host.chromeCallAdmissionCapable(),
+    callEnded: (holder, callId) =>
+      broker.reportChromeCallEnded(holder.threadId, holder.sessionGeneration, callId),
+    paused: (threadId) => broker.pause.has(threadId),
+    consent: (session, decision) =>
+      broker.requestChromeSetup(session.threadId, session.generation, {
+        provider: input.descriptor.provider,
+        previousTargets: decision.previousTargets,
+        targetPath: decision.targetPath,
+      }),
+  });
+}

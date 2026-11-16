@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import * as NodePath from "node:path";
 
 export interface ProcessTreeChild {
@@ -93,4 +93,61 @@ export function killProcessTree(
   }
 
   return directKill(child, signal);
+}
+
+export interface KillProcessTreeAsyncOptions extends Omit<KillProcessTreeOptions, "spawnTaskkill"> {
+  readonly timeoutMs?: number;
+  readonly spawnTaskkill?: (file: string, args: ReadonlyArray<string>) => ChildProcess;
+}
+
+/**
+ * Like killProcessTree, but never blocks the calling thread. Electron's main
+ * process must use this: a `taskkill /T` that does not finish would otherwise
+ * freeze every window, and spawnSync's timeout has been seen not to fire there.
+ */
+export function killProcessTreeAsync(
+  child: ProcessTreeChild,
+  options: KillProcessTreeAsyncOptions,
+): Promise<KillProcessTreeResult> {
+  const platform = options.platform ?? process.platform;
+  const signal = options.signal ?? (options.graceful === false ? "SIGKILL" : "SIGTERM");
+  const pid = child.pid;
+  if (platform !== "win32" || pid === undefined) {
+    const { spawnTaskkill: _unused, timeoutMs: _timeout, ...rest } = options;
+    return Promise.resolve(killProcessTree(child, rest));
+  }
+
+  const environment = options.environment ?? process.env;
+  const systemRoot = environment.SystemRoot ?? environment.SYSTEMROOT ?? "C:\\Windows";
+  const taskkillPath = NodePath.win32.join(systemRoot, "System32", "taskkill.exe");
+  return new Promise((resolve) => {
+    let settled = false;
+    let taskkill: ChildProcess | undefined;
+    const finish = (status: number | null, error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(
+        !error && status === 0
+          ? { terminated: true, usedFallback: false, taskkillStatus: status }
+          : directKill(child, signal, error, status),
+      );
+    };
+    const timer = setTimeout(() => {
+      taskkill?.kill();
+      finish(null, new Error("taskkill timed out"));
+    }, options.timeoutMs ?? 2_000);
+    try {
+      const args = ["/pid", String(pid), "/T", "/F"];
+      taskkill =
+        options.spawnTaskkill?.(taskkillPath, args) ??
+        spawn(taskkillPath, args, { stdio: "ignore", windowsHide: true });
+      taskkill.once("error", (error) => finish(null, error));
+      taskkill.once("exit", (code) => finish(code));
+      // Never keep a quitting process alive for taskkill.
+      taskkill.unref();
+    } catch (error) {
+      finish(null, error);
+    }
+  });
 }

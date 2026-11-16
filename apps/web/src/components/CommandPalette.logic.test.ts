@@ -1,14 +1,95 @@
 import { describe, expect, it, vi } from "vitest";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
-import type { Thread } from "../types";
+import type { Project, Thread } from "../types";
 import {
+  buildCommandPaletteRows,
   buildFileSearchActionItems,
+  buildNestedSearchItems,
+  buildNewThreadInProjectItems,
   buildThreadActionItems,
   filterCommandPaletteGroups,
+  findHighlightedCommandPaletteItem,
+  type CommandPaletteActionItem,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
 
 const PROJECT_ID = ProjectId.makeUnsafe("project-1");
+
+describe("buildNewThreadInProjectItems", () => {
+  const project = (name: string, kind?: Project["kind"]): Project => ({
+    id: ProjectId.makeUnsafe(name),
+    name,
+    kind,
+    cwd: "/" + name,
+    model: "gpt-5",
+    createdAt: "2026-03-01T00:00:00.000Z",
+    expanded: true,
+    scripts: [],
+    memories: [],
+  });
+  const first = project("first");
+  const current = project("current");
+  const last = project("last");
+  const scratch = project("scratch", "scratch");
+
+  function build(projects: Project[], currentProjectId: Project["id"] | null) {
+    const runProject = vi.fn(async (_project: Project) => undefined);
+    const runScratch = vi.fn(async () => undefined);
+    const items = buildNewThreadInProjectItems({
+      projects,
+      currentProjectId,
+      noProjectItem: {
+        kind: "action",
+        value: "new-thread-in:no-project",
+        title: "No project",
+        searchTerms: ["scratch"],
+        icon: null,
+        run: runScratch,
+      },
+      icon: () => null,
+      runProject,
+    });
+    return { items, runProject, runScratch };
+  }
+
+  it("puts the current project first, labels it, and runs it on selection", async () => {
+    const projects = [first, current, last, scratch];
+    const { items, runProject } = build(projects, current.id);
+    expect(items.map((item) => item.title)).toEqual(["current", "No project", "first", "last"]);
+    expect(items.map((item) => item.description)).toEqual([
+      "Current · /current",
+      undefined,
+      "/first",
+      "/last",
+    ]);
+    await items[0]!.run();
+    expect(runProject).toHaveBeenCalledExactlyOnceWith(current);
+    expect(projects).toEqual([first, current, last, scratch]);
+  });
+
+  it("keeps the current scratch target first and labels it", async () => {
+    const { items, runScratch } = build([first, scratch, last], scratch.id);
+    expect(items.map((item) => item.title)).toEqual(["No project", "first", "last"]);
+    expect(items[0]?.description).toBe("Current");
+    await items[0]!.run();
+    expect(runScratch).toHaveBeenCalledOnce();
+  });
+
+  it.each([null, ProjectId.makeUnsafe("missing")])(
+    "keeps No project as the default without a current project (%s)",
+    async (id) => {
+      const { items, runScratch } = build([first, last, scratch], id);
+      expect(items.map((item) => item.title)).toEqual(["No project", "first", "last"]);
+      expect(items.every((item) => !item.description?.includes("Current"))).toBe(true);
+      await items[0]!.run();
+      expect(runScratch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("offers scratch when there are no real projects", () => {
+    expect(build([], null).items.map((item) => item.title)).toEqual(["No project"]);
+  });
+});
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -169,6 +250,78 @@ describe("buildThreadActionItems", () => {
   });
 });
 
+describe("buildNestedSearchItems", () => {
+  const action = (value: string, title: string): CommandPaletteActionItem => ({
+    kind: "action",
+    value,
+    searchTerms: [title, `/path/${title}`],
+    title,
+    icon: null,
+    run: async () => undefined,
+  });
+  const projects = [action("new-thread-in:f5", "f5"), action("new-thread-in:web", "web")];
+  const newThreadIn = {
+    kind: "submenu" as const,
+    value: "action:new-thread-in",
+    searchTerms: ["new thread"],
+    title: "New thread in...",
+    icon: null,
+    addonIcon: null,
+    groups: [{ value: "projects", label: "Projects", items: projects }],
+  };
+  const themes = {
+    kind: "submenu" as const,
+    value: "action:theme-picker",
+    searchTerms: ["theme"],
+    title: "Choose theme",
+    icon: null,
+    addonIcon: null,
+    groups: [
+      {
+        value: "themes",
+        label: "Themes",
+        items: ["Dracula", "Nord", "Solarized", "Monokai"].map((name) =>
+          action(`theme:${name}`, name),
+        ),
+      },
+    ],
+  };
+  const addProject = action("action:add-project", "Add project");
+  const rootItems = [newThreadIn, themes, addProject];
+  const rootGroups: CommandPaletteGroup[] = [
+    { value: "actions", label: "Actions", items: rootItems },
+  ];
+  const search = (query: string, isInSubmenu: boolean) =>
+    filterCommandPaletteGroups({
+      activeGroups: isInSubmenu ? newThreadIn.groups : rootGroups,
+      query,
+      isInSubmenu,
+      allOptions: { rootGroups, nestedItems: buildNestedSearchItems(rootItems, query) },
+      projectSearchItems: [],
+      threadSearchItems: [],
+    }).map((group) => [group.label, group.items.map((item) => item.title)]);
+
+  it("joins submenu options to the root search with their parent's name", () => {
+    expect(search("new thread in f5", false)).toEqual([["Suggestions", ["New thread in f5"]]]);
+    expect(search("dracula", false)).toEqual([["Suggestions", ["Choose theme: Dracula"]]]);
+  });
+
+  it("leaves the submenu row alone when the query only names it", () => {
+    expect(search("new thread", false)).toEqual([["Actions", ["New thread in..."]]]);
+  });
+
+  it("matches only the combined title and shows at most three", () => {
+    expect(search("/path/", false).map(([label]) => label)).toEqual(["Actions"]);
+    expect(search("choose theme:", false)[0]?.[1]).toHaveLength(3);
+  });
+
+  it("falls back to the full search from a submenu with no match", () => {
+    expect(search("f5", true)).toEqual([["Projects", ["f5"]]]);
+    expect(search("add project", true)).toEqual([["Actions", ["Add project"]]]);
+    expect(search("", true)).toEqual([["Projects", ["f5", "web"]]]);
+  });
+});
+
 describe("buildFileSearchActionItems", () => {
   it("builds file actions, skips directories, and preserves backend order", async () => {
     const runFile = vi.fn(async (_relativePath: string) => undefined);
@@ -264,5 +417,41 @@ describe("buildFileSearchActionItems", () => {
     expect(groups[0]?.items.map((item) => item.value)).toEqual([
       "file:apps/web/src/components/CommandPalette.tsx",
     ]);
+  });
+});
+
+describe("virtualized command palette rows", () => {
+  const action = (value: string): CommandPaletteActionItem => ({
+    kind: "action",
+    value,
+    searchTerms: [],
+    title: value,
+    icon: null,
+    run: async () => {},
+  });
+  const groups: CommandPaletteGroup[] = [
+    { value: "actions", label: "Actions", items: [action("new-thread")] },
+    { value: "threads", label: "Threads", items: [action("thread-a"), action("thread-b")] },
+  ];
+
+  it("keeps group order and headings while indexing every item", () => {
+    const { rows, itemValues, rowIndexByItemIndex } = buildCommandPaletteRows(groups);
+
+    expect(rows.map((row) => (row.kind === "label" ? `# ${row.label}` : row.key))).toEqual([
+      "# Actions",
+      "actions:new-thread",
+      "# Threads",
+      "threads:thread-a",
+      "threads:thread-b",
+    ]);
+    expect(itemValues).toEqual(["new-thread", "thread-a", "thread-b"]);
+    expect(rowIndexByItemIndex).toEqual([1, 3, 4]);
+    expect(rows.flatMap((row) => (row.kind === "item" ? [row.itemIndex] : []))).toEqual([0, 1, 2]);
+  });
+
+  it("resolves Enter to the highlighted item without needing its row mounted", () => {
+    expect(findHighlightedCommandPaletteItem(groups, "thread-b")?.value).toBe("thread-b");
+    expect(findHighlightedCommandPaletteItem(groups, "missing")).toBeNull();
+    expect(findHighlightedCommandPaletteItem(groups, null)).toBeNull();
   });
 });

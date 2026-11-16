@@ -885,3 +885,54 @@ describe("tool completion envelopes", () => {
     expect(compacted.completion).toBeUndefined();
   });
 });
+
+it("retires older and unstamped MCP entries once a stamped generation exists", async () => {
+  const { latestMcpStatusActivities } = await import("./orchestrationActivityPayload");
+  const rows = [
+    { kind: "mcp.status.updated", payload: { name: "legacy", status: "ready" } },
+    {
+      kind: "mcp.status.updated",
+      payload: { name: "old", status: "failed", sessionGeneration: 1 },
+    },
+    {
+      kind: "mcp.status.updated",
+      payload: {
+        name: "docs",
+        status: "needs-auth",
+        sessionGeneration: 2,
+        providerInstanceId: "work",
+        toolCount: 0,
+      },
+    },
+    { kind: "mcp.status.updated", payload: { name: "legacy-late", status: "ready" } },
+    {
+      kind: "mcp.status.updated",
+      payload: {
+        name: "docs",
+        status: "ready",
+        sessionGeneration: 2,
+        providerInstanceId: "work",
+        toolCount: 3,
+      },
+    },
+  ];
+  const latest = latestMcpStatusActivities(rows);
+  expect([...latest.keys()]).toEqual(["docs"]);
+  expect(latest.get("docs")).toMatchObject({
+    status: "ready",
+    toolCount: 3,
+    providerInstanceId: "work",
+    sessionGeneration: 2,
+  });
+});
+
+it("preserves a Claude skill's name when compacting generic tool history", () => {
+  const payload = {
+    itemType: "dynamic_tool_call",
+    title: "Tool call",
+    data: { toolName: "Skill", input: { skill: "team:review", args: "check the patch" } },
+  };
+  expect(readToolActivityPayload(payload)?.title).toBe("Skill: team:review");
+  const compact = compactThreadActivityPayload({ kind: "tool.updated", payload });
+  expect(readToolActivityPayload(compact)?.title).toBe("Skill: team:review");
+});

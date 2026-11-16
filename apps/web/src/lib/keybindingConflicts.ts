@@ -160,8 +160,14 @@ export function formatKeybindingCommandLabel(
 
   const staticCommand = command as StaticKeybindingCommand;
   switch (staticCommand) {
+    case "workspace.focusNext":
+      return "Focus next workspace area";
+    case "workspace.focusPrevious":
+      return "Focus previous workspace area";
     case "thread.stop":
       return "Stop active turn";
+    case "thread.toggleSettled":
+      return "Toggle thread settlement";
     case "thread.togglePin":
       return "Pin or unpin thread";
     case "thread.copyReference":
@@ -178,8 +184,18 @@ export function formatKeybindingCommandLabel(
       return "Page chat down";
     case "chat.newBackground":
       return "Send new thread in background";
+    case "chat.sendAndNew":
+      return "Send and open a new thread";
+    case "rightPanel.tabMenu":
+      return "Switch right panel tab";
+    case "rightPanel.reopenClosed":
+      return "Reopen closed right panel tab";
     case "rightPanel.closeTab":
       return "Close active right panel tab";
+    case "composer.effortUp":
+      return "Increase reasoning effort";
+    case "composer.effortDown":
+      return "Decrease reasoning effort";
     case "composer.effort":
       return "Choose effort";
     case "composer.runtimeMode":
@@ -196,6 +212,48 @@ export function formatKeybindingCommandLabel(
       return "Next provider";
     case "prHub.copyNumber":
       return "Copy PR number";
+    case "upstream.next":
+      return "Next upstream topic";
+    case "upstream.previous":
+      return "Previous upstream topic";
+    case "upstream.toggleSelect":
+      return "Select upstream topic";
+    case "upstream.selectAll":
+      return "Select all upstream topics";
+    case "upstream.acceptSuggestion":
+      return "Accept triage suggestion";
+    case "upstream.port":
+      return "Mark ready to port";
+    case "upstream.skip":
+      return "Skip topic";
+    case "upstream.watch":
+      return "Watch topic";
+    case "upstream.decline":
+      return "Decline topic";
+    case "upstream.reopen":
+      return "Reopen topic";
+    case "upstream.openDetail":
+      return "Open topic details";
+    case "upstream.openUpstreamPr":
+      return "Open upstream PR";
+    case "upstream.startPort":
+      return "Start port";
+    case "upstream.equivalent":
+      return "Record topic as already in f5";
+    case "upstream.extendNext":
+      return "Extend selection down";
+    case "upstream.extendPrevious":
+      return "Extend selection up";
+    case "upstream.clearSelection":
+      return "Clear upstream selection";
+    case "upstream.nextList":
+      return "Next upstream list";
+    case "upstream.previousList":
+      return "Previous upstream list";
+    case "upstream.focusSearch":
+      return "Search upstream topics";
+    case "upstream.undo":
+      return "Undo upstream decision";
 
     case "sidebar.toggle":
       return "Toggle main sidebar";
@@ -213,10 +271,14 @@ export function formatKeybindingCommandLabel(
       return "New thread";
     case "chat.newLocal":
       return "Reuse project draft";
+    case "chat.newScratch":
+      return "New thread without a project";
     case "workflow.new":
       return "New workflow";
     case "chat.scrollToBottom":
       return "Scroll to bottom";
+    case "chat.find":
+      return "Find in thread";
     case "chat.queueTurn":
       return "Queue turn at end";
     case "chat.queueTurnNext":
@@ -233,8 +295,36 @@ export function formatKeybindingCommandLabel(
       return "Previous recent thread";
     case "model.switchRecent":
       return "Switch recent model";
+    case "model.favorite.next":
+      return "Next favorite model";
+    case "model.favorite.previous":
+      return "Previous favorite model";
+    case "model.favorite.1":
+      return "Use favorite model 1";
+    case "model.favorite.2":
+      return "Use favorite model 2";
+    case "model.favorite.3":
+      return "Use favorite model 3";
+    case "model.favorite.4":
+      return "Use favorite model 4";
+    case "model.favorite.5":
+      return "Use favorite model 5";
+    case "model.favorite.6":
+      return "Use favorite model 6";
+    case "model.favorite.7":
+      return "Use favorite model 7";
+    case "model.favorite.8":
+      return "Use favorite model 8";
+    case "model.favorite.9":
+      return "Use favorite model 9";
+    case "model.favorite.saveCurrent":
+      return "Save current model and effort as favorite";
     case "prHub.open":
       return "Open Pull Requests";
+    case "home.open":
+      return "Open Home";
+    case "notifications.toggle":
+      return "Show notifications";
     case "palette.files":
       return "Search project files";
     case "projectContentSearch.toggle":
@@ -263,6 +353,26 @@ export function formatKeybindingCommandLabel(
       return "Steer the active turn";
     case "composer.pasteAsText":
       return "Paste as text without folding";
+    case "usage.open":
+      return "Open Usage";
+    case "usage.tokens":
+      return "Usage: show tokens";
+    case "usage.cost":
+      return "Usage: show cost";
+    case "usage.turns":
+      return "Usage: show recorded turns";
+    case "usage.limits":
+      return "Usage: show limits";
+    case "usage.pricing":
+      return "Usage: show pricing";
+    case "usage.period.day":
+      return "Usage: past 24 hours";
+    case "usage.period.week":
+      return "Usage: past 7 days";
+    case "usage.period.month":
+      return "Usage: past 30 days";
+    case "usage.period.quarter":
+      return "Usage: past 90 days";
     case "commandPalette.toggle":
       return "Toggle command palette";
     case "help.shortcuts":

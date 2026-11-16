@@ -1,0 +1,444 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-codex-session-actions",
+  "state": "passed",
+  "repositoryCommit": "cd8c79d9b4454fd7aed7d4eaa66a9be125f181f0",
+  "workingTreeDirty": false,
+  "recordedAt": "2026-10-13T23:10:00.735Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "provider": "codex",
+  "runtimeMode": "approval-required",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "a4bdc0c5022c09bc98e13e3cbd526b1f2ded4ef0c235a627cf4926613813d629",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "c7675b2d36443756deb1fb666cf4be2eb3c1815f38181013e8e2481d70643393",
+    "observerSource": "ddd40b9d63aa138433bd80f3cbbe34cac95ca01373728291ad7f8ede5a66658e",
+    "transportObserverSource": "88da9c9eefcdfee6767c5f7a8695de27b726ef2d41a7542b16be268f2d5eb10b",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "26dea6aed6480fa4e3c93b2f51fc8ecf4216f7d78d69b070c42ddfc4d4cb26fc",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "17281f635c4f653e13d7dcbeb52e8570e6930a32e93414c0de713437e5abe95d",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "sessionActionsInitiallyEmpty": true,
+    "sessionActionsTrustedAppConsent": true,
+    "sessionActionsAppConsentNoInput": true,
+    "sessionActionsTrustedDenial": true,
+    "sessionActionsDeniedWithoutInput": true,
+    "sessionActionsTrustedApproval": true,
+    "sessionActionsApprovedActivation": true,
+    "sessionActionsSurvivedTurn": true,
+    "sessionActionsGrantsCleared": true,
+    "sessionActionsCompleteNativeTrace": true,
+    "sessionActionsApprovalModeVerified": true,
+    "sessionActionsFinishAcknowledged": true,
+    "approvalModeActuallySubmitted": true,
+    "sessionActionsProviderTailObserved": true,
+    "sessionActionsOnlyExpectedDenial": true,
+    "sessionActionsCleanup": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "submittedRuntimeModes": [
+    "approval-required",
+    "approval-required",
+    "approval-required",
+    "approval-required"
+  ],
+  "composerSubmissions": 4,
+  "approvalModeVerifiedTurns": 4,
+  "providerActivityCounts": {
+    "observed": true,
+    "boundedOrMalformed": false,
+    "turns": [
+      {
+        "turnOrdinal": 1,
+        "toolStarted": 0,
+        "toolCompleted": 0,
+        "toolFailed": 0,
+        "toolDeclined": 0,
+        "approvalsRequested": 0,
+        "approvalsResolved": 0,
+        "approvalsAccepted": 0,
+        "approvalsDeclined": 0,
+        "approvalsCancelled": 0,
+        "approvalsUnknown": 0,
+        "userInputsRequested": 0,
+        "userInputsResolved": 0,
+        "other": 14
+      },
+      {
+        "turnOrdinal": 2,
+        "toolStarted": 2,
+        "toolCompleted": 2,
+        "toolFailed": 0,
+        "toolDeclined": 0,
+        "approvalsRequested": 1,
+        "approvalsResolved": 1,
+        "approvalsAccepted": 1,
+        "approvalsDeclined": 0,
+        "approvalsCancelled": 0,
+        "approvalsUnknown": 0,
+        "userInputsRequested": 0,
+        "userInputsResolved": 0,
+        "other": 1
+      },
+      {
+        "turnOrdinal": 3,
+        "toolStarted": 1,
+        "toolCompleted": 1,
+        "toolFailed": 1,
+        "toolDeclined": 0,
+        "approvalsRequested": 1,
+        "approvalsResolved": 1,
+        "approvalsAccepted": 1,
+        "approvalsDeclined": 0,
+        "approvalsCancelled": 0,
+        "approvalsUnknown": 0,
+        "userInputsRequested": 0,
+        "userInputsResolved": 0,
+        "other": 1
+      },
+      {
+        "turnOrdinal": 4,
+        "toolStarted": 1,
+        "toolCompleted": 1,
+        "toolFailed": 0,
+        "toolDeclined": 0,
+        "approvalsRequested": 1,
+        "approvalsResolved": 1,
+        "approvalsAccepted": 1,
+        "approvalsDeclined": 0,
+        "approvalsCancelled": 0,
+        "approvalsUnknown": 0,
+        "userInputsRequested": 0,
+        "userInputsResolved": 0,
+        "other": 1
+      },
+      {
+        "turnOrdinal": 5,
+        "toolStarted": 2,
+        "toolCompleted": 2,
+        "toolFailed": 0,
+        "toolDeclined": 0,
+        "approvalsRequested": 1,
+        "approvalsResolved": 1,
+        "approvalsAccepted": 1,
+        "approvalsDeclined": 0,
+        "approvalsCancelled": 0,
+        "approvalsUnknown": 0,
+        "userInputsRequested": 0,
+        "userInputsResolved": 0,
+        "other": 1
+      }
+    ]
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": true,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": true,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 1,
+    "activityMessages": 4,
+    "activityThumbnails": 1,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "pendingResponses": 0,
+    "accessRequests": 3,
+    "accessAnswersForwarded": 3,
+    "accessAnswerSummaries": [
+      {
+        "kind": "apps",
+        "appCount": 1,
+        "allowed": 1,
+        "remembered": 0
+      },
+      {
+        "kind": "session-actions",
+        "appCount": 0,
+        "allowed": 0,
+        "remembered": 0,
+        "allowSessionActions": false
+      },
+      {
+        "kind": "session-actions",
+        "appCount": 0,
+        "allowed": 0,
+        "remembered": 0,
+        "allowSessionActions": true
+      }
+    ],
+    "sessionGenerationsObserved": 1,
+    "requestSessions": [
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "activateApp",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "elementAction",
+        "sessionOrdinal": 1
+      }
+    ],
+    "backendRestarts": [],
+    "backendLifecycle": [],
+    "mcpTransport": [
+      {
+        "method": "initialize",
+        "sessionHeader": false,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "notification",
+        "sessionHeader": true,
+        "status": 202,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": false,
+        "completed": true,
+        "outcome": "accepted"
+      },
+      {
+        "method": "other",
+        "sessionHeader": true,
+        "status": 405,
+        "bounded": true,
+        "requestDecoded": false,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "http-error"
+      },
+      {
+        "method": "tools/list",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "NotGranted"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "other",
+        "sessionHeader": true,
+        "status": 405,
+        "bounded": true,
+        "requestDecoded": false,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "http-error"
+      }
+    ],
+    "mcpTransportOverflow": false,
+    "grantChanges": 12,
+    "lastGrantCount": 0,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "activateApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": true
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok",
+        "action": "press"
+      }
+    ]
+  },
+  "fixtureObservation": {
+    "presses": 1,
+    "expectedSyntheticTextReceived": false,
+    "humanFinishAcknowledged": true
+  },
+  "providerVersion": "0.162.1",
+  "admission": {
+    "version": 1,
+    "suiteId": "50176e4b-cd8f-4d9f-8f6e-800915c81370",
+    "scenario": "session-actions.codex",
+    "attempt": 1,
+    "identityHash": "c4d4135a995e74791d07226dde5bf15a1036b3d81194f50a99b641246b21473b",
+    "state": "passed",
+    "evidenceKind": "provider-desktop",
+    "startedAt": "2026-10-13T23:08:05.231Z",
+    "finishedAt": "2026-10-13T23:10:00.749Z",
+    "checks": {
+      "realElectronPermissionsAvailable": true,
+      "sessionActionsInitiallyEmpty": true,
+      "sessionActionsTrustedAppConsent": true,
+      "sessionActionsAppConsentNoInput": true,
+      "sessionActionsTrustedDenial": true,
+      "sessionActionsDeniedWithoutInput": true,
+      "sessionActionsTrustedApproval": true,
+      "sessionActionsApprovedActivation": true,
+      "sessionActionsSurvivedTurn": true,
+      "sessionActionsGrantsCleared": true,
+      "sessionActionsCompleteNativeTrace": true,
+      "sessionActionsApprovalModeVerified": true,
+      "sessionActionsFinishAcknowledged": true,
+      "approvalModeActuallySubmitted": true,
+      "sessionActionsProviderTailObserved": true,
+      "sessionActionsOnlyExpectedDenial": true,
+      "sessionActionsCleanup": true,
+      "sessionActionsReceiptsComplete": true
+    },
+    "measurements": {},
+    "cleanup": "confirmed",
+    "evidenceSha256": "f48df2535e4106c0c145fd73ee3e1d7a2ee04b51bc711001bb73db97d2af5960"
+  },
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Unsigned real Electron development run; not signed installed certification",
+    "Genuine Codex approvals and F5 native app/session consent; no decision was auto-answered",
+    "Four approval-required composer turns in one provider session; denial caused no input, allow produced one activation/capture and next turn one independently observed semantic press",
+    "Prior failed attempts remain immutable and are not replaced by this passing attempt",
+    "Other privacy, recovery, display and signed-platform release requirements remain pending"
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-13T08:15:07.179Z",
+  "repositoryCommit": "528b75ac0e17147a4d3eb51b348325bb525a5ff6",
+  "workingTreeDirty": false,
+  "sourceHashes": {
+    "rehearsal": "77dadffa7c2a5fa9f5197178e1256fa2efc99d232798a110dec27d9b2be9d5cc",
+    "protection": "c350be5f78f1ec035a12fac5dcc96a916ee27bc57519d775f9711f3e3b23da61",
+    "apps": "61f56c0ef57d1b3531ddde075d23abcf20c3b7059f7de7bef7e3a0e3f2742c54",
+    "pixels": "3a0bb0b4cc9099b662dc09b141283edecb822d310dc767180c6a3ddfc66ef151",
+    "excludedFixture": "e97f80924e3bdfeefdda90940653cc368fc323bb535991ac4f1fbcb61889bf15",
+    "chromeExecutable": "428dccc1a45819d23c5db4fb37388883f8d9ba64611cbd6c42395eac4a18b6a4",
+    "helper": "a11ef2e783c9d344372f9b12a86e0a1a67ec40ddecaafc1e0f5a27cfcd8d7c9e"
+  },
+  "chromeVersion": "155.0.8059.40",
+  "displayGeometry": [
+    {
+      "displayId": "1",
+      "geometryGeneration": "1:0.0:0.0:1728.0:1117.0:3456:2234:0.0",
+      "primary": true,
+      "nativeBounds": {
+        "x": 0,
+        "y": 0,
+        "width": 1728,
+        "height": 1117
+      },
+      "pixelSize": {
+        "width": 3456,
+        "height": 2234
+      },
+      "rotation": 0,
+      "modelSize": {
+        "width": 1333,
+        "height": 862
+      }
+    }
+  ],
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "scope": "unsigned-native-helper-terminal-and-isolated-chrome-protection",
+  "signed": false,
+  "certified": false,
+  "state": "failed",
+  "failureStage": "isolated-browser-setup",
+  "physicalInterruption": true,
+  "retainedTerminal": true,
+  "retainedChrome": true,
+  "checks": [
+    {
+      "name": "Terminal and Chrome initially closed",
+      "state": "passed",
+      "elapsedMs": 271
+    },
+    {
+      "name": "Granted click-tier Terminal opens and is inspectable",
+      "state": "passed",
+      "elapsedMs": 665
+    },
+    {
+      "name": "Terminal without typing grant rejects keyboard input",
+      "state": "passed",
+      "elapsedMs": 17
+    },
+    {
+      "name": "Terminal without typing grant rejects semantic setValue",
+      "state": "passed",
+      "elapsedMs": 43
+    }
+  ],
+  "limitations": [
+    "Scripted native-helper grants and permit; no F5 renderer consent, provider transport, overlay or cross-profile proof",
+    "Fresh local Chrome fixture/profile only; no signed-in sites, extensions, popups or arbitrary browser/app trees tested",
+    "Single display, fixed app windows; no moving-window, multi-display, system-surface or complete capture privacy matrix",
+    "Terminal typing remains disabled; no command, chord or allow-typing workflow tested",
+    "Unsigned development helper only; signed installed-build attribution, Windows runtime and all release gates remain pending"
+  ]
+}

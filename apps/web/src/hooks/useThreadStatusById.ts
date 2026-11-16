@@ -2,6 +2,7 @@ import type { ThreadId } from "@t3tools/contracts";
 import { useMemo } from "react";
 
 import { resolveThreadStatusForThread, type ThreadStatus } from "../threadStatus";
+import type { ThreadSummary } from "../threadSelectors";
 import type { Thread } from "../types";
 
 export type ThreadStatusById = ReadonlyMap<ThreadId, ThreadStatus>;
@@ -21,4 +22,12 @@ export function buildThreadStatusById(threads: ReadonlyArray<Thread>): ThreadSta
  */
 export function useThreadStatusById(threads: ReadonlyArray<Thread>): ThreadStatusById {
   return useMemo(() => buildThreadStatusById(threads), [threads]);
+}
+
+/** The same map, read from summaries that already carry their status. */
+export function useSummaryStatusById(summaries: ReadonlyArray<ThreadSummary>): ThreadStatusById {
+  return useMemo(
+    () => new Map(summaries.map((summary) => [summary.id, summary.status] as const)),
+    [summaries],
+  );
 }

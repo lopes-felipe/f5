@@ -1,0 +1,26 @@
+{
+  "at": "2026-10-18T14:41:30.486Z",
+  "provider": "cursor",
+  "previewEnabled": false,
+  "status": "failed",
+  "stages": [
+    {
+      "method": "initialize",
+      "status": "started"
+    },
+    {
+      "method": "initialize",
+      "status": "succeeded"
+    },
+    {
+      "method": "authenticate",
+      "status": "started"
+    },
+    {
+      "method": "authenticate",
+      "status": "failed"
+    }
+  ],
+  "eventCount": 0,
+  "flagEligible": false
+}

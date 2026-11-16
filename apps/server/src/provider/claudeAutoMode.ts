@@ -1,5 +1,6 @@
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { RuntimeMode } from "@t3tools/contracts";
+import type { ClaudeBypassAvailability } from "./claudeBypassAvailability.ts";
 
 /**
  * Claude `auto` permission mode fails closed: it is used only when the model
@@ -12,6 +13,7 @@ export const CLAUDE_AUTO_UNAVAILABLE_WARNING =
 export function claudeRuntimePermissionMode(
   runtimeMode: RuntimeMode,
   supportsAutoMode: boolean | undefined,
+  availability?: ClaudeBypassAvailability,
 ): { readonly mode: PermissionMode; readonly autoUnavailable: boolean } {
   switch (runtimeMode) {
     case "approval-required":
@@ -23,12 +25,17 @@ export function claudeRuntimePermissionMode(
         ? { mode: "auto", autoUnavailable: false }
         : { mode: "default", autoUnavailable: true };
     case "full-access":
+      if (availability?.bypassDisabled)
+        return {
+          mode: !availability.autoDisabled && supportsAutoMode === true ? "auto" : "default",
+          autoUnavailable: false,
+        };
       return { mode: "bypassPermissions", autoUnavailable: false };
   }
 }
 
 /**
- * Re-checks auto support after a live model change. Returns undefined when
+ * Re-checks discovered auto support unless this model's CLI rejected it. Returns undefined when
  * nothing changes. In plan or workflow sessions only the base mode moves
  * (`setLive` is undefined) so the live plan mode is never left early.
  */
@@ -38,6 +45,7 @@ export function claudeAutoModeRecheck(input: {
   readonly supportsAutoMode: boolean | undefined;
   readonly livePlan: boolean;
   readonly workflow: boolean;
+  readonly autoRejected: boolean;
 }):
   | {
       readonly base: PermissionMode;
@@ -45,8 +53,8 @@ export function claudeAutoModeRecheck(input: {
       readonly downgraded: boolean;
     }
   | undefined {
-  // A workflow's base is plan; its runtime mode never becomes live.
-  if (!input.autoRequested || input.workflow) return undefined;
+  // Discovery may arrive after launch, but cannot override a CLI rejection.
+  if (!input.autoRequested || input.workflow || input.autoRejected) return undefined;
   const next: PermissionMode = input.supportsAutoMode === true ? "auto" : "default";
   if (next === input.base) return undefined;
   return {

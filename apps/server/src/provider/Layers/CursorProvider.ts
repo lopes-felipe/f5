@@ -30,6 +30,7 @@ import {
   type CommandResult,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { findModelConfigOption } from "../acp/AcpRuntimeModel.ts";
 import { AcpSessionRuntime } from "../acp/AcpSessionRuntime.ts";
 
 const PROVIDER = ProviderDriverKind.make("cursor");
@@ -163,10 +164,11 @@ function normalizeCursorReasoningValue(value: string | null | undefined): string
   }
 }
 
+// Probe the same option that runtime.setModel writes at session start.
 function findCursorModelConfigOption(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
 ): EffectAcpSchema.SessionConfigOption | undefined {
-  return configOptions.find((option) => option.category === "model");
+  return findModelConfigOption(configOptions);
 }
 
 function getCursorConfigOptionCategory(option: EffectAcpSchema.SessionConfigOption): string {

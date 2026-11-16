@@ -6,8 +6,10 @@ import { ProjectId } from "@t3tools/contracts";
 
 import {
   type WorkspaceAssetAuthorizer,
+  type WorkspaceAssetReader,
   WorkspaceAssetAuthorizationError,
   WORKSPACE_FAVICON_MAX_BYTES,
+  WORKSPACE_ICNS_FAVICON_MAX_BYTES,
 } from "./WorkspaceAssetAuthorizer";
 import type { CheckedInProjectFileService } from "./project/CheckedInProjectFileService";
 
@@ -34,6 +36,8 @@ const FAVICON_CANDIDATES = [
   "assets/icon.png",
   "assets/logo.svg",
   "assets/logo.png",
+  "Resources/AppIcon.icns",
+  "AppIcon.icns",
 ] as const;
 
 const ICON_SOURCE_FILES = [
@@ -113,6 +117,12 @@ function resolveIconHref(href: string): string[] {
   return [`public/${clean}`, clean];
 }
 
+function faviconMaxBytes(relativePath: string): number {
+  return relativePath.toLowerCase().endsWith(".icns")
+    ? WORKSPACE_ICNS_FAVICON_MAX_BYTES
+    : WORKSPACE_FAVICON_MAX_BYTES;
+}
+
 function sendFallbackFavicon(res: http.ServerResponse): void {
   res.writeHead(200, {
     "Cache-Control": "private, max-age=3600",
@@ -139,21 +149,123 @@ function sendAssetError(res: http.ServerResponse, error: unknown): void {
   res.end(statusCode === 404 ? "Not Found" : "Invalid workspace asset");
 }
 
-async function findFaviconRelativePath(
+// Share the read budget across projects: a sidebar can request many favicons at once.
+const MAX_CONCURRENT_FAVICON_PROBES = 32;
+let activeFaviconProbes = 0;
+const waitingFaviconProbes: Array<() => void> = [];
+
+async function withFaviconProbe<A>(probe: () => Promise<A>): Promise<A> {
+  if (activeFaviconProbes < MAX_CONCURRENT_FAVICON_PROBES) {
+    activeFaviconProbes++;
+  } else {
+    await new Promise<void>((resolve) => waitingFaviconProbes.push(resolve));
+  }
+  try {
+    return await probe();
+  } finally {
+    const next = waitingFaviconProbes.shift();
+    if (next) next();
+    else activeFaviconProbes--;
+  }
+}
+
+// Probe concurrently within the shared budget, preserve rank, and return without
+// waiting on lower-ranked filesystem operations. Each probe handles its rejection.
+async function firstFaviconInOrder<A>(
+  items: readonly A[],
+  probe: (item: A) => Promise<string | null>,
+): Promise<string | null> {
+  let foundMatch = false;
+  const probes = items.map((item) =>
+    withFaviconProbe(() => (foundMatch ? Promise.resolve(null) : probe(item))),
+  );
+  for (const pending of probes) {
+    const found = await pending;
+    if (found) {
+      foundMatch = true;
+      return found;
+    }
+  }
+  return null;
+}
+
+export async function findFaviconRelativePath(
   authorizer: WorkspaceAssetAuthorizer,
   projectId: string,
 ): Promise<string | null> {
   const reader = await authorizer.forProject(projectId);
-  for (const relativePath of FAVICON_CANDIDATES) {
+  let cache = faviconCaches.get(authorizer);
+  if (!cache) {
+    cache = new Map();
+    faviconCaches.set(authorizer, cache);
+  }
+  const key = JSON.stringify([projectId, reader.rootRealPath]);
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    const relativePath = await cached.result;
+    if (relativePath === null) {
+      if (cache.get(key) === cached) {
+        cache.delete(key);
+        cache.set(key, cached);
+      }
+      return null;
+    }
     try {
-      await reader.readImage({ relativePath, maxBytes: WORKSPACE_FAVICON_MAX_BYTES });
+      // Reauthorize and validate the image, so removal, root changes, and
+      // symlink replacements never serve a stale or unauthorized icon.
+      await withFaviconProbe(() =>
+        reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) }),
+      );
+      if (cache.get(key) === cached) {
+        cache.delete(key);
+        cache.set(key, cached);
+      }
+      return relativePath;
+    } catch {
+      if (cache.get(key) === cached) cache.delete(key);
+    }
+  }
+  const entry: FaviconCacheEntry = {
+    // Let later requests retry a stalled filesystem lookup without letting its
+    // eventual completion replace a newer cache entry.
+    expiresAt: Date.now() + 30_000,
+    result: findFaviconWithReader(reader),
+  };
+  cache.delete(key);
+  cache.set(key, entry);
+  if (cache.size > 512) cache.delete(cache.keys().next().value!);
+  try {
+    const result = await entry.result;
+    entry.expiresAt = Date.now() + (result === null ? 60_000 : 600_000);
+    return result;
+  } catch (error) {
+    if (cache.get(key) === entry) cache.delete(key);
+    throw error;
+  }
+}
+
+interface FaviconCacheEntry {
+  readonly result: Promise<string | null>;
+  expiresAt: number;
+}
+
+// Scope cached discovery to the server's authorizer, never cache asset handles
+// or bytes. Pending lookups share the same bounded cache as settled results.
+const faviconCaches = new WeakMap<WorkspaceAssetAuthorizer, Map<string, FaviconCacheEntry>>();
+
+async function findFaviconWithReader(reader: WorkspaceAssetReader): Promise<string | null> {
+  const known = await firstFaviconInOrder(FAVICON_CANDIDATES, async (relativePath) => {
+    try {
+      await reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) });
       return relativePath;
     } catch {
       // Missing, oversized, escaped, and spoofed candidates all fall through.
+      return null;
     }
-  }
+  });
+  if (known) return known;
 
-  for (const sourcePath of ICON_SOURCE_FILES) {
+  return firstFaviconInOrder(ICON_SOURCE_FILES, async (sourcePath) => {
     let source: string;
     try {
       source = await reader.readText({
@@ -161,20 +273,20 @@ async function findFaviconRelativePath(
         maxBytes: ICON_SOURCE_FILE_MAX_BYTES,
       });
     } catch {
-      continue;
+      return null;
     }
     const href = extractIconHref(source);
-    if (!href) continue;
+    if (!href) return null;
     for (const relativePath of resolveIconHref(href)) {
       try {
-        await reader.readImage({ relativePath, maxBytes: WORKSPACE_FAVICON_MAX_BYTES });
+        await reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) });
         return relativePath;
       } catch {
         // Continue looking for an authorized favicon candidate.
       }
     }
-  }
-  return null;
+    return null;
+  });
 }
 
 export async function tryHandleProjectFaviconRequest(
@@ -183,6 +295,7 @@ export async function tryHandleProjectFaviconRequest(
   authorizer: WorkspaceAssetAuthorizer,
   checkedInProjectFileService: CheckedInProjectFileService,
   req?: http.IncomingMessage,
+  requestOrigin: (request: http.IncomingMessage) => string | null = externalRequestOrigin,
 ): Promise<boolean> {
   if (url.pathname.startsWith(WORKSPACE_ASSET_ROUTE_PREFIX)) {
     if (req && req.method !== "GET" && req.method !== "HEAD") {
@@ -211,7 +324,7 @@ export async function tryHandleProjectFaviconRequest(
         if (opened) {
           // CSP must name the origin the browser actually used; `url` carries a
           // synthetic localhost base. An unusable Host leaves passive loads at 'none'.
-          const origin = externalRequestOrigin(req);
+          const origin = requestOrigin(req);
           await serveAsset(req, res, opened.file, opened.name, {
             htmlPrefix:
               opened.grant === "html-document" && origin
@@ -254,7 +367,14 @@ export async function tryHandleProjectFaviconRequest(
 
   try {
     const config = await checkedInProjectFileService.load(ProjectId.makeUnsafe(projectId));
-    const relativePath = config.iconPath ?? (await findFaviconRelativePath(authorizer, projectId));
+    const requestedIconPath = url.searchParams.get("iconPath")?.trim();
+    if (requestedIconPath !== undefined && (!requestedIconPath || requestedIconPath.length > 512)) {
+      throw new WorkspaceAssetAuthorizationError("invalid_path", "Invalid project icon path");
+    }
+    const relativePath =
+      requestedIconPath ??
+      config.iconPath ??
+      (await findFaviconRelativePath(authorizer, projectId));
     if (!relativePath) {
       sendFallbackFavicon(res);
       return true;
@@ -262,8 +382,8 @@ export async function tryHandleProjectFaviconRequest(
     const reader = await authorizer.forProject(projectId);
     const issued = reader.issueImageHandle({
       relativePath,
-      maxBytes: WORKSPACE_FAVICON_MAX_BYTES,
-      rejectSymlink: config.iconPath === relativePath,
+      maxBytes: faviconMaxBytes(relativePath),
+      rejectSymlink: requestedIconPath !== undefined || config.iconPath === relativePath,
     });
     res.writeHead(302, {
       "Cache-Control": "private, no-store",

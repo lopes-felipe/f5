@@ -22,10 +22,13 @@ export const CLAUDE_CODE_EFFORT_OPTIONS = [
 export type ClaudeCodeEffort = (typeof CLAUDE_CODE_EFFORT_OPTIONS)[number];
 export const CURSOR_REASONING_OPTIONS = ["low", "medium", "high", "max", "xhigh"] as const;
 export type CursorReasoningOption = (typeof CURSOR_REASONING_OPTIONS)[number];
+export const MUSE_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;
+export type MuseReasoningEffort = (typeof MUSE_REASONING_EFFORT_OPTIONS)[number];
 export type ProviderReasoningEffort =
   | CodexReasoningEffort
   | ClaudeCodeEffort
-  | CursorReasoningOption;
+  | CursorReasoningOption
+  | MuseReasoningEffort;
 
 export const CodexModelOptions = Schema.Struct({
   reasoningEffort: Schema.optional(Schema.Literals(CODEX_REASONING_EFFORT_OPTIONS)),
@@ -55,6 +58,25 @@ export const OpenCodeModelOptions = Schema.Struct({
 });
 export type OpenCodeModelOptions = typeof OpenCodeModelOptions.Type;
 
+export const MuseModelOptions = Schema.Struct({
+  reasoningEffort: Schema.optional(Schema.Literals(MUSE_REASONING_EFFORT_OPTIONS)),
+});
+export type MuseModelOptions = typeof MuseModelOptions.Type;
+
+export const PI_THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export const PiModelOptions = Schema.Struct({
+  thinking: Schema.optional(Schema.Literals(PI_THINKING_LEVELS)),
+});
+export type PiModelOptions = typeof PiModelOptions.Type;
+
 export const ProviderModelOptions = Schema.Struct({
   codex: Schema.optional(CodexModelOptions),
   claudeAgent: Schema.optional(ClaudeModelOptions),
@@ -62,6 +84,9 @@ export const ProviderModelOptions = Schema.Struct({
   opencode: Schema.optional(OpenCodeModelOptions),
   grok: Schema.optional(Schema.Struct({})),
   antigravity: Schema.optional(Schema.Struct({})),
+  muse: Schema.optional(MuseModelOptions),
+  acp: Schema.optional(Schema.Struct({})),
+  pi: Schema.optional(PiModelOptions),
 });
 export type ProviderModelOptions = typeof ProviderModelOptions.Type;
 
@@ -202,6 +227,8 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     // NOTE: first codex entry must equal DEFAULT_MODEL_BY_PROVIDER.codex.
     { slug: "gpt-6.1-sol", name: "GPT-6.1 Sol" },
     { slug: "gpt-6-astra", name: "GPT-6 Astra" },
+    { slug: "gpt-6-sol", name: "GPT-6 Sol" },
+    { slug: "gpt-6-luna", name: "GPT-6 Luna" },
     { slug: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
     { slug: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
     { slug: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
@@ -217,14 +244,17 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     // NOTE: first claudeAgent entry must equal DEFAULT_MODEL_BY_PROVIDER.claudeAgent.
     { slug: "claude-opus-5-5", name: "Claude Opus 5.5" },
     { slug: "claude-opus-5", name: "Claude Opus 5" },
+    { slug: "claude-fable-5-2", name: "Claude Fable 5.2" },
     { slug: "claude-fable-5-1", name: "Claude Fable 5.1" },
     { slug: "claude-fable-5", name: "Claude Fable 5" },
+    { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+    { slug: "claude-sonnet-5", name: "Claude Sonnet 5" },
     { slug: "claude-opus-4-8", name: "Claude Opus 4.8" },
     { slug: "claude-opus-4-7", name: "Claude Opus 4.7" },
     { slug: "claude-opus-4-6", name: "Claude Opus 4.6" },
     { slug: "claude-opus-4-5", name: "Claude Opus 4.5" },
-    { slug: "claude-sonnet-5", name: "Claude Sonnet 5" },
     { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+    { slug: "claude-haiku-5-5", name: "Claude Haiku 5.5" },
     { slug: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
   ],
   cursor: [
@@ -238,6 +268,9 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
   opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
   grok: [{ slug: "grok-build", name: "Grok Build" }],
   antigravity: [{ slug: "antigravity-default", name: "Antigravity Default" }],
+  muse: [{ slug: "muse-spark-1.3", name: "Muse Spark 1.3" }],
+  acp: [{ slug: "acp-default", name: "Agent default" }],
+  pi: [{ slug: "default", name: "Pi default" }],
 } as const satisfies Record<ProviderKind, readonly ModelOption[]>;
 export type ModelOptionsByProvider = typeof MODEL_OPTIONS_BY_PROVIDER;
 export type ClaudeBuiltInModelSlug = ModelOptionsByProvider["claudeAgent"][number]["slug"];
@@ -252,34 +285,46 @@ export const DEFAULT_MODEL_BY_PROVIDER = {
   opencode: "openai/gpt-5",
   grok: "grok-build",
   antigravity: "antigravity-default",
+  muse: "muse-spark-1.3",
+  acp: "acp-default",
+  pi: "default",
 } as const satisfies Record<ProviderKind, ModelSlug>;
 
 export const DEFAULT_MODEL = DEFAULT_MODEL_BY_PROVIDER.codex;
 
-export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini" as const;
+export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-6-luna" as const;
 
 export const DEFAULT_PR_ADVISORY_MODEL = "gpt-5.6-sol" as const;
 
 export const DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER = {
   codex: DEFAULT_GIT_TEXT_GENERATION_MODEL,
-  claudeAgent: "claude-sonnet-4-6",
+  claudeAgent: "claude-haiku-5-5",
   cursor: "composer-2",
   opencode: "openai/gpt-5",
   grok: "grok-build",
   antigravity: "antigravity-default",
+  muse: "muse-spark-1.3",
+  acp: "acp-default",
+  pi: "default",
 } as const satisfies Record<ProviderKind, ModelSlug>;
 
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER = {
   codex: DEFAULT_GIT_TEXT_GENERATION_MODEL,
-  claudeAgent: "claude-haiku-4-5",
+  claudeAgent: "claude-haiku-5-5",
   cursor: "composer-2",
   opencode: "openai/gpt-5",
   grok: "grok-build",
   antigravity: "antigravity-default",
+  muse: "muse-spark-1.3",
+  acp: "acp-default",
+  pi: "default",
 } as const satisfies Record<ProviderKind, ModelSlug>;
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
   codex: {
+    "6": "gpt-6-sol",
+    "gpt-6": "gpt-6-sol",
+    "6-luna": "gpt-6-luna",
     "6.1": "gpt-6.1-sol",
     "gpt-6.1": "gpt-6.1-sol",
     "5.6": "gpt-5.6-sol",
@@ -294,12 +339,15 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
     "gpt-5.3-spark": "gpt-5.3-codex-spark",
   },
   claudeAgent: {
-    fable: "claude-fable-5-1",
+    fable: "claude-fable-5-2",
+    "fable-5.2": "claude-fable-5-2",
+    "fable-5-2": "claude-fable-5-2",
+    "claude-fable-5.2": "claude-fable-5-2",
     "fable-5.1": "claude-fable-5-1",
     "fable-5-1": "claude-fable-5-1",
     "claude-fable-5.1": "claude-fable-5-1",
     "fable-5": "claude-fable-5",
-    "claude-fable": "claude-fable-5-1",
+    "claude-fable": "claude-fable-5-2",
     opus: "claude-opus-5-5",
     "opus-5.5": "claude-opus-5-5",
     "opus-5-5": "claude-opus-5-5",
@@ -318,14 +366,20 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
     "opus-4.5": "claude-opus-4-5",
     "claude-opus-4.5": "claude-opus-4-5",
     "claude-opus-4-5": "claude-opus-4-5",
-    sonnet: "claude-sonnet-5",
+    sonnet: "claude-sonnet-5-5",
+    "sonnet-5.5": "claude-sonnet-5-5",
+    "sonnet-5-5": "claude-sonnet-5-5",
+    "claude-sonnet-5.5": "claude-sonnet-5-5",
     "sonnet-5": "claude-sonnet-5",
     "claude-sonnet-5.0": "claude-sonnet-5",
     "claude-sonnet-5-0": "claude-sonnet-5",
     "sonnet-4.6": "claude-sonnet-4-6",
     "claude-sonnet-4.6": "claude-sonnet-4-6",
     "claude-sonnet-4-6-20251117": "claude-sonnet-4-6",
-    haiku: "claude-haiku-4-5",
+    haiku: "claude-haiku-5-5",
+    "haiku-5.5": "claude-haiku-5-5",
+    "haiku-5-5": "claude-haiku-5-5",
+    "claude-haiku-5.5": "claude-haiku-5-5",
     "haiku-4.5": "claude-haiku-4-5",
     "claude-haiku-4.5": "claude-haiku-4-5",
     "claude-haiku-4-5-20251001": "claude-haiku-4-5",
@@ -344,6 +398,9 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
   opencode: {},
   grok: {},
   antigravity: {},
+  muse: {},
+  acp: {},
+  pi: {},
 } as const satisfies Record<ProviderKind, Record<string, ModelSlug>>;
 
 export const PROVIDER_DISPLAY_NAMES = {
@@ -353,6 +410,9 @@ export const PROVIDER_DISPLAY_NAMES = {
   opencode: "OpenCode",
   grok: "Grok",
   antigravity: "Antigravity",
+  muse: "Muse Code",
+  acp: "Custom ACP agent",
+  pi: "Pi",
 } as const satisfies Record<ProviderKind, string>;
 
 export const REASONING_EFFORT_OPTIONS_BY_PROVIDER = {
@@ -362,6 +422,9 @@ export const REASONING_EFFORT_OPTIONS_BY_PROVIDER = {
   opencode: [],
   grok: [],
   antigravity: [],
+  muse: MUSE_REASONING_EFFORT_OPTIONS,
+  acp: [],
+  pi: [],
 } as const satisfies Record<ProviderKind, readonly ProviderReasoningEffort[]>;
 
 export const DEFAULT_REASONING_EFFORT_BY_PROVIDER = {
@@ -371,4 +434,7 @@ export const DEFAULT_REASONING_EFFORT_BY_PROVIDER = {
   opencode: "high",
   grok: "high",
   antigravity: "high",
+  muse: "high",
+  acp: "high",
+  pi: "high",
 } as const satisfies Record<ProviderKind, ProviderReasoningEffort>;

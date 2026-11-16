@@ -23,12 +23,36 @@ describe("GitHub PR patch rendering", () => {
       if (parsed?.kind !== "files") throw new Error("Expected a renderable patch");
       expect(parsed.files[0]?.name).toBe(path);
       expect(parsed.files[0]?.prevName).toBe("old name.ts");
+      expect(parsed.files[0]?.type).toBe("rename-changed");
       expect(parsed.files[0]?.hunks[0]?.additionStart).toBe(5);
       expect(parsed.files[0]?.hunks[0]?.deletionStart).toBe(5);
       expect(file.patch).toBe(original);
       expect(isPrReviewAnchorInPatch({ path, side: "RIGHT", line: 5 }, file.patch!)).toBe(true);
     },
   );
+  it.each([
+    null,
+    "diff --git a/old b/new\nsimilarity index 100%\nrename from old\nrename to new\n",
+  ])("renders pure renames without requiring a text hunk (%s)", (patch) => {
+    const file = fileFixture({
+      filename: "new name.ts",
+      previous_filename: "old name.ts",
+      sha: "blob",
+      status: "renamed",
+      additions: 0,
+      deletions: 0,
+      patch: "",
+    });
+    const parsed = getRenderablePrFilePatch(file, patch, "test");
+    expect(parsed?.kind).toBe("files");
+    if (parsed?.kind !== "files") throw new Error("Expected a rename");
+    expect(parsed.files[0]).toMatchObject({
+      type: "rename-pure",
+      name: "new name.ts",
+      prevName: "old name.ts",
+      hunks: [],
+    });
+  });
   it.each(["added", "removed"])("preserves %s file rendering", (status) => {
     const added = status === "added";
     const file = fileFixture({

@@ -1,9 +1,50 @@
+import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { resolveCodexCommand } from "../codexExecutable.ts";
+import {
+  normalizeCodexThreadItemType,
+  itemTitle,
+  itemDetail,
+  itemLifecycleStatus,
+} from "../codexItemPresentation.ts";
+export { normalizeCodexThreadItemType } from "../codexItemPresentation.ts";
+import { CodexGeneratedImages } from "../codexGeneratedImages.ts";
+import { CodexTurnUsage } from "../codexTurnUsage.ts";
+import { makeCodexGeneratedImageStore } from "../codexGeneratedImageStore.ts";
+import { readMcpAppToolResult } from "@t3tools/shared/mcpApp";
+import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import {
+  registerNotificationQueueResources,
+  providerNotificationOverflows,
+} from "../../observability/Metrics.ts";
+import {
+  NotificationAdmission,
+  type AdmissionLease,
+  type NotificationAdmissionLimits,
+} from "../notificationAdmission.ts";
+import { ServerShutdown } from "../../shutdown.ts";
+import { observeCodexMcpServers } from "../codexMcpObservation.ts";
+import { mcpProviderReads, mcpContextKey } from "../../mcp/McpReadCoordinator.ts";
+import {
+  assertMcpRuntimeConfig,
+  mcpConfigErrorMessage,
+  assertMcpServerLimit,
+  MCP_RUNTIME_SERVER_LIMIT,
+} from "@t3tools/shared/mcpValidation";
+import type { ModelCapabilities } from "@t3tools/contracts";
+import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
+import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeEvent";
+import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
+import { resolveAgentBrowserPolicy } from "../../mcp/browserAccess";
+import { resolveComputerBackendSelection } from "../../computer/computerBackendPolicy";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import {
   formatCodexUsageError,
   detectCodexUsageLimit,
   mergeCodexLimitSnapshot,
+  resolveCodexCompletionErrorInfo,
   type CodexLimitSnapshot,
+  type CodexTerminalFailureEvidence,
 } from "../codexErrors.ts";
 import {
   codexCommandApprovalOptions,
@@ -21,7 +62,10 @@ import { describeMcpElicitation } from "../../codex/mcpElicitation.ts";
 import {
   type CanonicalItemType,
   type CanonicalRequestType,
+  type ModelSelection,
   type ProviderEvent,
+  type ProviderSession,
+  type ProviderModelOptions,
   type ProviderStartOptions,
   type ProviderRuntimeEvent,
   type ProviderUserInputAnswers,
@@ -32,33 +76,49 @@ import {
   RuntimeTaskId,
   SubagentActivityKind,
   ProviderApprovalDecision,
+  ProviderInstanceId,
   ProviderItemId,
   ThreadId,
   TurnId,
+  type McpServerDefinition,
 } from "@t3tools/contracts";
 import { validateProposedPlanOutput } from "@t3tools/shared/proposedPlan";
 import {
   getModelSelectionStringOptionValue,
   getProviderOptionBooleanSelectionValue,
+  resolveCodexFastMode,
 } from "@t3tools/shared/model";
 import {
   filterEnabledMcpServers,
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
-import { codexServerNamesMatch } from "../../codex/codexMcpServerStatus.ts";
 import {
-  codexObservedMcpStatus,
+  codexServerNamesMatch,
+  decodeCodexMcpServerStatus,
+} from "../../codex/codexMcpServerStatus.ts";
+import {
+  isCodexMcpLoginRequiredError,
   restartRequiredMcpReload,
   stableMcpConfigKey,
   summarizeMcpReload,
 } from "../mcpReconcile.ts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
+import { codexNotificationDisposition } from "@t3tools/shared/codexProtocolManifest";
 import {
-  codexNotificationDisposition,
-  codexThreadItemDisposition,
-} from "@t3tools/shared/codexProtocolManifest";
-import { Effect, Layer, Queue, Schema, ServiceMap, Stream } from "effect";
+  Cause,
+  Effect,
+  FileSystem,
+  Layer,
+  Metric,
+  Option,
+  Path,
+  Queue,
+  Schema,
+  Semaphore,
+  ServiceMap,
+  Stream,
+} from "effect";
 
 import {
   ProviderAdapterProcessError,
@@ -83,17 +143,76 @@ import type {
   PreviewMcpHttpServerShape,
   PreviewMcpSessionConfig,
 } from "../../mcp/PreviewMcpHttpServer.ts";
-import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import {
+  writeProviderEventLog,
+  type EventNdjsonLogger,
+  makeEventNdjsonLogger,
+} from "./EventNdjsonLogger.ts";
 import { appendProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
+import { randomUUID } from "node:crypto";
+import { userInfo } from "node:os";
+import { resolveCodexHome } from "../../os-jank.ts";
+import type { AgentCapabilityState } from "./claudeAgentBrowser.ts";
+import {
+  CODEX_CHROME_SERVER_NAME,
+  codexChromeEligibility,
+  codexChromeFingerprint,
+  codexChromeMcpServer,
+  codexChromeReadyDetail,
+  effectiveCodexHome,
+  inspectCodexBinary,
+} from "../codexChromeIntegration.ts";
+import { CodexChromeSession } from "../codexChromeSession.ts";
+import { codexChromeInstructions } from "../../computer/codexNativeIntegrations.ts";
 
 const PROVIDER = "codex" as const;
 
-function codexServiceTierOptions(fastMode: boolean | undefined): { readonly serviceTier?: "fast" } {
-  return fastMode ? { serviceTier: "fast" } : {};
+function codexServiceTierOptions(
+  fastMode: boolean | undefined,
+  inheritedFastMode = false,
+): { readonly serviceTier?: "fast" | "default" } {
+  return fastMode === true
+    ? { serviceTier: "fast" }
+    : fastMode === false && inheritedFastMode
+      ? { serviceTier: "default" }
+      : {};
+}
+
+/**
+ * A selection bound to this instance is authoritative: an option it omits is
+ * off/default, never a stale `modelOptions` value (same precedence as Claude).
+ * Selections for another instance fall back to `modelOptions.codex`.
+ */
+export function resolveCodexSelectionOptions(input: {
+  readonly modelOptions?: ProviderModelOptions | undefined;
+  readonly modelSelection?: ModelSelection | undefined;
+  readonly boundInstanceId: ProviderInstanceId;
+}): { readonly reasoningEffort?: string; readonly fastMode?: boolean } {
+  if (input.modelSelection && input.modelSelection.instanceId === input.boundInstanceId) {
+    const reasoningEffort = getModelSelectionStringOptionValue(
+      input.modelSelection,
+      "reasoningEffort",
+    );
+    const fastMode = getProviderOptionBooleanSelectionValue(
+      input.modelSelection.options,
+      "fastMode",
+    );
+    return {
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
+    };
+  }
+  const codex = input.modelOptions?.codex;
+  return {
+    ...(codex?.reasoningEffort !== undefined ? { reasoningEffort: codex.reasoningEffort } : {}),
+    ...(codex?.fastMode !== undefined ? { fastMode: codex.fastMode } : {}),
+  };
 }
 
 export interface CodexAdapterLiveOptions {
+  readonly getEffectiveModelCapabilities?: () => ReadonlyMap<string, ModelCapabilities>;
   readonly manager?: CodexAppServerManager;
+  readonly notificationLimits?: NotificationAdmissionLimits;
   readonly makeManager?: (services?: ServiceMap.ServiceMap<never>) => CodexAppServerManager;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
@@ -102,8 +221,11 @@ export interface CodexAdapterLiveOptions {
    * browser policy on each tool call, so settings apply without a restart.
    */
   readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
+  readonly computerAutomationBroker?: ComputerAutomationBrokerRuntime;
   readonly defaultProviderOptions?: ProviderStartOptions;
   readonly processEnvironment?: NodeJS.ProcessEnv;
+  /** The provider instance this adapter serves; defaults to `codex`. */
+  readonly instanceId?: ProviderInstanceId;
 }
 
 function mergeCodexProviderOptions(
@@ -150,7 +272,11 @@ function toSessionError(
       cause,
     });
   }
-  if (normalized.includes("session is closed")) {
+  if (
+    normalized.includes("session is closed") ||
+    (asObject(cause)?.code === -32600 &&
+      asObject(asObject(cause)?.data)?.reason === "serverShuttingDown")
+  ) {
     return new ProviderAdapterSessionClosedError({
       provider: PROVIDER,
       threadId,
@@ -169,6 +295,13 @@ function toRequestError(threadId: ThreadId, method: string, cause: unknown): Pro
     provider: PROVIDER,
     method,
     detail: toMessage(cause, `${method} failed`),
+    ...(asObject(cause)?.deliveryCertainty === "not_sent" ||
+    asObject(cause)?.deliveryCertainty === "unknown"
+      ? {
+          deliveryCertainty: asObject(cause)!.deliveryCertainty as "not_sent" | "unknown",
+          deliveryRetryable: asObject(cause)?.deliveryRetryable === true,
+        }
+      : {}),
     ...(method === "turn/start"
       ? (() => {
           const usageLimit = detectCodexUsageLimit({
@@ -221,13 +354,37 @@ function codexThreadTokenUsageSnapshot(payload: Record<string, unknown> | undefi
   };
 }
 
+/**
+ * Reasoning tokens spent since the previous usage frame. Codex can repeat a
+ * frame (rate-limit refreshes), so the cumulative total is diffed against the
+ * last seen total. Without a baseline, only `last` counts, so a resumed
+ * thread's history is never attributed to one message.
+ */
+export function codexReasoningTokensSinceBaseline(
+  payload: Record<string, unknown> | undefined,
+  baseline: number | undefined,
+): { readonly tokens: number; readonly baseline: number | undefined } | undefined {
+  const tokenUsage = asObject(payload?.tokenUsage);
+  const total = asNonNegativeInteger(asObject(tokenUsage?.total)?.reasoningOutputTokens);
+  const last = asNonNegativeInteger(asObject(tokenUsage?.last)?.reasoningOutputTokens);
+  if (total === undefined) {
+    // Keep a missing baseline missing, so a later `total` is never diffed against 0.
+    return last === undefined ? undefined : { tokens: last, baseline };
+  }
+  if (baseline === undefined || total < baseline) {
+    return { tokens: last ?? 0, baseline: total };
+  }
+  return { tokens: total - baseline, baseline: total };
+}
+
 function asMcpStartupStatus(
   value: unknown,
-): "starting" | "ready" | "failed" | "cancelled" | undefined {
+): "starting" | "ready" | "failed" | "cancelled" | "needs-auth" | undefined {
   switch (value) {
     case "starting":
     case "ready":
     case "failed":
+    case "needs-auth":
     case "cancelled":
       return value;
     default:
@@ -299,186 +456,21 @@ function toTurnStatus(value: unknown): "completed" | "failed" | "cancelled" | "i
   }
 }
 
-function normalizeItemType(raw: unknown): string {
-  const type = asString(raw);
-  if (!type) return "item";
-  return type
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[._/-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+function permissionRequestType(permissions: Record<string, unknown>): CanonicalRequestType {
+  const fileSystem = asObject(permissions.fileSystem);
+  const entries = Array.isArray(fileSystem?.entries) ? fileSystem.entries : [];
+  const requests = (access: "read" | "write") =>
+    (Array.isArray(fileSystem?.[access]) && fileSystem[access].length > 0) ||
+    entries.some((entry) => asObject(entry)?.access === access);
+  if (requests("write")) return "file_change_approval";
+  if (requests("read")) return "file_read_approval";
+  return "permissions_approval";
 }
 
-type NormalizedCodexItemType = CanonicalItemType | "hook_prompt" | "subagent_activity";
-
-/**
- * Exact aliases observed in current app-server items and historical persisted
- * events. Deliberately avoid substring matching: for example, imageGeneration
- * must never fall through to image_view.
- */
-const CODEX_ITEM_TYPE_ALIASES: Readonly<Record<string, NormalizedCodexItemType>> = {
-  user: "user_message",
-  "user message": "user_message",
-  assistant: "assistant_message",
-  "assistant message": "assistant_message",
-  "agent message": "assistant_message",
-  reasoning: "reasoning",
-  thought: "reasoning",
-  plan: "plan",
-  todo: "plan",
-  command: "command_execution",
-  "shell command": "command_execution",
-  "command execution": "command_execution",
-  patch: "file_change",
-  edit: "file_change",
-  "file edit": "file_change",
-  "file change": "file_change",
-  "patch apply begin": "file_change",
-  "patch apply end": "file_change",
-  "mcp call": "mcp_tool_call",
-  "mcp tool call": "mcp_tool_call",
-  "dynamic tool": "dynamic_tool_call",
-  "dynamic tool call": "dynamic_tool_call",
-  "collab agent": "collab_agent_tool_call",
-  "collab agent tool call": "collab_agent_tool_call",
-  "sub agent activity": "subagent_activity",
-  search: "web_search",
-  "web search": "web_search",
-  "image view": "image_view",
-  "image generation": "image_generation",
-  sleep: "sleep",
-  "review entered": "review_entered",
-  "entered review mode": "review_entered",
-  "review exited": "review_exited",
-  "exited review mode": "review_exited",
-  compact: "context_compaction",
-  "context compaction": "context_compaction",
-  error: "error",
-  "hook prompt": "hook_prompt",
-};
-
-export function normalizeCodexThreadItemType(raw: unknown): NormalizedCodexItemType {
-  const rawType = asString(raw);
-  if (rawType && codexThreadItemDisposition(rawType) === "internal-duplicate") {
-    return "hook_prompt";
-  }
-  return CODEX_ITEM_TYPE_ALIASES[normalizeItemType(raw)] ?? "unknown";
-}
-
-function itemTitle(itemType: CanonicalItemType): string | undefined {
-  switch (itemType) {
-    case "assistant_message":
-      return "Assistant message";
-    case "user_message":
-      return "User message";
-    case "reasoning":
-      return "Reasoning";
-    case "plan":
-      return "Plan";
-    case "command_execution":
-      return "Ran command";
-    case "file_change":
-      return "File change";
-    case "mcp_tool_call":
-      return "MCP tool call";
-    case "dynamic_tool_call":
-      return "Tool call";
-    case "web_search":
-      return "Web search";
-    case "image_view":
-      return "Image view";
-    case "image_generation":
-      return "Generated image";
-    case "sleep":
-      return "Waited";
-    case "error":
-      return "Error";
-    default:
-      return undefined;
-  }
-}
-
-function itemDetail(
-  itemType: CanonicalItemType,
-  item: Record<string, unknown>,
-  payload: Record<string, unknown>,
-): string | undefined {
-  const nestedResult = asObject(item.result);
-  const durationMs = asNumber(item.durationMs ?? item.duration_ms);
-  const action = asObject(item.action);
-  const actionQueries = Array.isArray(action?.queries)
-    ? action.queries.map(asString).filter((value): value is string => value !== undefined)
-    : [];
-  const candidates = [
-    ...(itemType === "web_search"
-      ? [
-          asString(item.query),
-          asString(action?.query),
-          ...actionQueries,
-          asString(action?.pattern),
-          asString(action?.url),
-        ]
-      : []),
-    asString(item.command),
-    asString(item.title),
-    asString(item.summary),
-    asString(item.text),
-    asString(item.path),
-    asString(item.prompt),
-    asString(item.savedPath),
-    asString(item.saved_path),
-    asString(item.revisedPrompt),
-    asString(item.revised_prompt),
-    asString(item.result),
-    asString(nestedResult?.command),
-    asString(payload.command),
-    asString(payload.message),
-    asString(payload.prompt),
-  ];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const trimmed = candidate.trim();
-    if (trimmed.length === 0) continue;
-    return trimmed;
-  }
-  if (durationMs !== undefined) {
-    if (durationMs >= 1_000) {
-      const seconds = Math.round((durationMs / 1_000) * 100) / 100;
-      return `${seconds}s`;
-    }
-    return `${durationMs}ms`;
-  }
-  return undefined;
-}
-
-function itemLifecycleStatus(
-  source: Record<string, unknown>,
-  lifecycle: "item.started" | "item.updated" | "item.completed",
-): "inProgress" | "completed" | "failed" | "declined" | undefined {
-  if (lifecycle === "item.started") {
-    return "inProgress";
-  }
-  switch (source.status) {
-    case "inProgress":
-    case "in_progress":
-    case "running":
-      return "inProgress";
-    case "failed":
-    case "error":
-      return "failed";
-    case "declined":
-    case "denied":
-      return "declined";
-    case "completed":
-    case "success":
-      return "completed";
-    default:
-      return lifecycle === "item.completed" ? "completed" : undefined;
-  }
-}
-
-function toRequestTypeFromMethod(method: string): CanonicalRequestType {
+function toRequestTypeFromMethod(
+  method: string,
+  requestedPermissions?: unknown,
+): CanonicalRequestType {
   switch (method) {
     case "item/commandExecution/requestApproval":
       return "command_execution_approval";
@@ -493,7 +485,7 @@ function toRequestTypeFromMethod(method: string): CanonicalRequestType {
     case "mcpServer/elicitation/request":
       return "mcp_elicitation_approval";
     case "item/permissions/requestApproval":
-      return "permissions_approval";
+      return permissionRequestType(asObject(requestedPermissions) ?? {});
     case "item/tool/requestUserInput":
       return "tool_user_input";
     case "item/tool/call":
@@ -528,7 +520,7 @@ function toRequestTypeFromResolvedPayload(
   const request = asObject(payload?.request);
   const method = asString(request?.method) ?? asString(payload?.method);
   if (method) {
-    return toRequestTypeFromMethod(method);
+    return toRequestTypeFromMethod(method, payload?.requestedPermissions);
   }
   const requestKind = asString(request?.kind) ?? asString(payload?.requestKind);
   if (requestKind) {
@@ -662,6 +654,76 @@ function contentStreamKindFromMethod(
     default:
       return "assistant_text";
   }
+}
+
+const CONTENT_DELTA_METHODS: ReadonlySet<string> = new Set([
+  "item/agentMessage/delta",
+  "item/commandExecution/outputDelta",
+  "item/fileChange/outputDelta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/textDelta",
+]);
+
+/** Text one queued notification may hold after waiting deltas merge into it. */
+const MAX_MERGED_DELTA_BYTES = 64 * 1024;
+
+/** Ordered preparation, admission quotas and delta merging are scoped per context. */
+function notificationContextKey(event: ProviderEvent): string {
+  return `${event.threadId}:${event.providerInstanceId ?? "legacy"}:${event.sessionGeneration ?? 0}`;
+}
+
+/**
+ * Content deltas of one item that are still waiting for preparation can merge
+ * into one queued notification. The identity covers everything the mapped
+ * runtime event depends on, so merging only ever concatenates text.
+ */
+function mergeableContentDelta(
+  event: ProviderEvent,
+): { readonly identity: string; readonly delta: string } | undefined {
+  if (
+    event.kind !== "notification" ||
+    !CONTENT_DELTA_METHODS.has(event.method) ||
+    event.turnId === undefined ||
+    event.itemId === undefined
+  )
+    return undefined;
+  const payload = asObject(event.payload);
+  const delta = asString(payload?.delta);
+  if (!delta) return undefined;
+  if (event.textDelta !== undefined && event.textDelta !== delta) return undefined;
+  return {
+    identity: JSON.stringify([
+      event.method,
+      event.turnId,
+      event.itemId,
+      payload?.contentIndex ?? "",
+      payload?.summaryIndex ?? "",
+      event.textDelta !== undefined,
+    ]),
+    delta,
+  };
+}
+
+/** A waiting delta notification that later deltas of the same item may join. */
+interface PendingDeltaSlot {
+  readonly first: ProviderEvent;
+  readonly parts: string[];
+  textBytes: number;
+  readonly lease: AdmissionLease;
+  next?: Promise<void>;
+  /** The last native delta merged in, recorded in the native log. */
+  last?: { readonly id: string; readonly createdAt: string };
+}
+
+/** The first delta's identity and timestamp, carrying every merged part in order. */
+function mergeContentDeltas(first: ProviderEvent, parts: ReadonlyArray<string>): ProviderEvent {
+  if (parts.length === 1) return first;
+  const delta = parts.join("");
+  return {
+    ...first,
+    payload: { ...asObject(first.payload), delta },
+    ...(first.textDelta !== undefined ? { textDelta: delta } : {}),
+  };
 }
 
 function asRuntimeItemId(itemId: ProviderItemId): RuntimeItemId {
@@ -864,6 +926,9 @@ function mapSubagentActivity(
       agentThreadId,
       agentPath,
       ...(asString(source.model)?.trim() ? { model: asString(source.model)!.trim() } : {}),
+      ...(asString(source.reasoningEffort)?.trim()
+        ? { reasoningEffort: asString(source.reasoningEffort)!.trim() }
+        : {}),
     },
   };
 }
@@ -1082,11 +1147,50 @@ function describePatchApproval(payload: Record<string, unknown> | undefined): st
  * F5 configures Codex's preview server itself, with a per-session credential, so its
  * provenance holds by construction: there is no SDK check to wait for.
  */
+/**
+ * Feeds Codex Chrome's supervision from the session's own events, in order: `node_repl`'s
+ * startup (adoption) and turn completion (drain, then the idle stop).
+ */
+export function observeCodexChrome(
+  session: Pick<CodexChromeSession, "startupStatus" | "turnEnded">,
+  event: Pick<ProviderEvent, "method" | "payload" | "turnId">,
+): void {
+  const payload = asObject(event.payload);
+  if (event.method === "mcpServer/startupStatus/updated") {
+    // The manager reads either key; so does this.
+    if ((asString(payload?.name) ?? asString(payload?.server)) !== CODEX_CHROME_SERVER_NAME) return;
+    const status = asString(payload?.status);
+    const error = asString(payload?.error);
+    if (status) session.startupStatus(status, error);
+    return;
+  }
+  if (event.method === "turn/completed" && event.turnId) session.turnEnded(event.turnId);
+}
+
+/**
+ * Tracks the model's `node_repl` calls (running, not idle) as Codex reports them, ahead
+ * of the session's ordered output preparation: an interrupt reads them while earlier
+ * output (an MCP app capture) can still hold that queue. Calls without an id are ignored.
+ */
+export function trackCodexChromeCall(
+  session: Pick<CodexChromeSession, "toolCall">,
+  event: Pick<ProviderEvent, "method" | "payload">,
+): void {
+  if (event.method !== "item/started" && event.method !== "item/completed") return;
+  const item = asObject(asObject(event.payload)?.item);
+  const id = asString(item?.id);
+  if (item?.type === "mcpToolCall" && item.server === CODEX_CHROME_SERVER_NAME && id)
+    session.toolCall(id, event.method === "item/started");
+}
+
 export function withAgentBrowserPreview(
   events: ReadonlyArray<ProviderRuntimeEvent>,
   previewServerName: string | undefined,
+  computerServerName?: string,
+  decision?: Effect.Success<ReturnType<typeof resolveComputerBackendSelection>>,
+  chrome?: { readonly state: AgentCapabilityState; readonly detail?: string },
 ): ReadonlyArray<ProviderRuntimeEvent> {
-  if (!previewServerName) return events;
+  if (!previewServerName && !computerServerName && !decision && !chrome) return events;
   return events.map((runtimeEvent) =>
     runtimeEvent.type === "session.configured"
       ? {
@@ -1096,7 +1200,45 @@ export function withAgentBrowserPreview(
             config: {
               ...runtimeEvent.payload.config,
               agentBrowser: {
-                preview: { serverName: previewServerName, installed: true, verified: true },
+                ...(previewServerName
+                  ? { preview: { serverName: previewServerName, installed: true, verified: true } }
+                  : {}),
+                ...(chrome
+                  ? {
+                      chrome: {
+                        state: chrome.state,
+                        ...(chrome.detail ? { detail: chrome.detail } : {}),
+                      },
+                    }
+                  : {}),
+                ...(computerServerName
+                  ? {
+                      computer: { serverName: computerServerName, installed: true, verified: true },
+                      computerUse: {
+                        state: decision && !decision.status.available ? "unavailable" : "connected",
+                        backend: "native",
+                        ...(decision && !decision.status.available
+                          ? { detail: decision.status.detail ?? decision.status.reason }
+                          : decision?.selection?.fallbackFrom
+                            ? { detail: decision.selection.fallbackFrom.reason }
+                            : {}),
+                      },
+                    }
+                  : decision
+                    ? {
+                        computerUse: {
+                          state:
+                            !decision.status.available && decision.status.reason === "disabled"
+                              ? "off"
+                              : "unavailable",
+                          backend: decision.selection?.kind ?? "native",
+                          ...(!decision.status.available ? { detail: decision.status.reason } : {}),
+                          ...(decision.selection?.fallbackFrom
+                            ? { detail: decision.selection.fallbackFrom.reason }
+                            : {}),
+                        },
+                      }
+                    : {}),
               },
             },
           },
@@ -1111,6 +1253,7 @@ function mapToRuntimeEvents(
   limits?: CodexLimitSnapshot,
   snapshots?: ReadonlyArray<{ snapshot: CodexLimitSnapshot; observedAt: string }>,
   snapshotNotBefore?: string,
+  previousFailure?: CodexTerminalFailureEvidence,
 ): ReadonlyArray<ProviderRuntimeEvent> {
   const payload = asObject(event.payload);
   const turn = asObject(payload?.turn);
@@ -1169,7 +1312,7 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         type: "request.opened",
         payload: {
-          requestType: toRequestTypeFromMethod(event.method),
+          requestType: toRequestTypeFromMethod(event.method, requestedPermissions),
           ...(event.method === "mcpServer/elicitation/request"
             ? describeMcpElicitation(payload)
             : {}),
@@ -1186,7 +1329,7 @@ function mapToRuntimeEvents(
     const decision = Schema.decodeUnknownSync(ProviderApprovalDecision)(payload?.decision);
     const requestMethod = asString(payload?.requestMethod);
     const requestType = requestMethod
-      ? toRequestTypeFromMethod(requestMethod)
+      ? toRequestTypeFromMethod(requestMethod, payload?.requestedPermissions)
       : event.requestKind !== undefined
         ? toRequestTypeFromKind(event.requestKind)
         : toRequestTypeFromMethod(event.method);
@@ -1317,6 +1460,15 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "f5/aside/completed") {
+    return [
+      {
+        type: "thread.metadata.updated",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: { metadata: { nativeAside: payload } },
+      },
+    ];
+  }
   if (
     ["thread/attachment/updated", "thread/goal/updated", "thread/goal/cleared"].includes(
       event.method ?? "",
@@ -1394,11 +1546,16 @@ function mapToRuntimeEvents(
 
   if (event.method === "turn/completed") {
     const rawErrorMessage = asString(asObject(turn?.error)?.message);
+    const errorInfo = resolveCodexCompletionErrorInfo({
+      message: rawErrorMessage,
+      errorInfo: asObject(turn?.error)?.codexErrorInfo,
+      previous: previousFailure,
+    });
     const usageLimit =
       toTurnStatus(turn?.status) === "failed"
         ? detectCodexUsageLimit({
-            message: rawErrorMessage ?? "",
-            errorInfo: asObject(turn?.error)?.codexErrorInfo,
+            message: rawErrorMessage ?? previousFailure?.message ?? "",
+            errorInfo,
             snapshots: snapshots ?? (limits ? [limits] : []),
             ...(snapshotNotBefore ? { snapshotNotBefore } : {}),
             at: event.createdAt,
@@ -1406,12 +1563,7 @@ function mapToRuntimeEvents(
           })
         : null;
     const errorMessage = rawErrorMessage
-      ? formatCodexUsageError(
-          rawErrorMessage,
-          limits,
-          event.createdAt,
-          asObject(turn?.error)?.codexErrorInfo,
-        )
+      ? formatCodexUsageError(rawErrorMessage, limits, event.createdAt, errorInfo)
       : undefined;
     return [
       {
@@ -1613,13 +1765,7 @@ function mapToRuntimeEvents(
     ];
   }
 
-  if (
-    event.method === "item/agentMessage/delta" ||
-    event.method === "item/commandExecution/outputDelta" ||
-    event.method === "item/fileChange/outputDelta" ||
-    event.method === "item/reasoning/summaryTextDelta" ||
-    event.method === "item/reasoning/textDelta"
-  ) {
+  if (CONTENT_DELTA_METHODS.has(event.method)) {
     const delta =
       event.textDelta ??
       asString(payload?.delta) ??
@@ -2071,10 +2217,15 @@ function mapToRuntimeEvents(
 
   if (event.method === "mcpServer/startupStatus/updated") {
     const name = asString(payload?.name);
-    const status = asMcpStartupStatus(payload?.status);
-    if (!name || !status) {
+    const startupStatus = asMcpStartupStatus(payload?.status);
+    if (!name || !startupStatus) {
       return [];
     }
+    // Codex reports a missing or expired OAuth token as a failed startup.
+    const status =
+      startupStatus === "failed" && isCodexMcpLoginRequiredError(asString(payload?.error))
+        ? "needs-auth"
+        : startupStatus;
 
     return [
       {
@@ -2084,6 +2235,16 @@ function mapToRuntimeEvents(
           status: {
             name,
             status,
+            ...(typeof payload?.sessionGeneration === "number"
+              ? { sessionGeneration: payload.sessionGeneration }
+              : {}),
+            ...(asString(payload?.providerInstanceId)
+              ? {
+                  providerInstanceId: ProviderInstanceId.makeUnsafe(
+                    asString(payload?.providerInstanceId)!,
+                  ),
+                }
+              : {}),
             ...(asString(payload?.error) ? { error: asString(payload?.error) } : {}),
           },
         },
@@ -2336,6 +2497,8 @@ function mapToRuntimeEvents(
 export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
   Effect.gen(function* () {
     const serverConfig = yield* Effect.service(ServerConfig);
+    const shutdown = yield* Effect.serviceOption(ServerShutdown);
+    const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make(PROVIDER);
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
@@ -2361,7 +2524,55 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }
         }),
     );
+    const inheritsFastMode = (model: string | undefined) =>
+      resolveCodexFastMode(
+        undefined,
+        model ? options?.getEffectiveModelCapabilities?.().get(model) : undefined,
+      );
+    const computerDecisions = new Map<
+      ThreadId,
+      Effect.Success<ReturnType<typeof resolveComputerBackendSelection>>
+    >();
+    const computerSessionFields = (threadId: ThreadId): Partial<ProviderSession> => {
+      const decision = computerDecisions.get(threadId);
+      const chromeFingerprint = chromeFingerprints.get(threadId);
+      return {
+        ...(decision
+          ? {
+              computerConfigurationFingerprint: decision.fingerprint,
+              ...(decision.selection ? { computerBackendSelection: decision.selection } : {}),
+              computerToolsInstalled: computerMcpSessions.has(threadId),
+            }
+          : {}),
+        ...(chromeFingerprint ? { chromeConfigurationFingerprint: chromeFingerprint } : {}),
+      };
+    };
+    /** Interactive desktop sessions only: a toggle change restarts before the next turn. */
+    const chromeFingerprints = new Map<ThreadId, string>();
+    /** Codex Chrome per session: Codex's `node_repl` entry, its supervision and its state. */
+    const chromeSessions = new Map<
+      ThreadId,
+      {
+        state: { state: AgentCapabilityState; detail?: string };
+        serverDefinition?: McpServerDefinition;
+        session?: CodexChromeSession;
+        /** Set when Chrome bound the broker session itself (no computer catalog). */
+        boundGeneration?: string;
+      }
+    >();
+    const disposeChromeSession = (threadId: ThreadId) => {
+      const chrome = chromeSessions.get(threadId);
+      if (!chrome) return;
+      chromeSessions.delete(threadId);
+      // Main stops the adopted `node_repl`; it would otherwise outlive the session.
+      chrome.session?.dispose();
+      if (chrome.boundGeneration)
+        options?.computerAutomationBroker?.releaseSession(threadId, chrome.boundGeneration);
+    };
+    const computerMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
     const previewMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
+    const threadMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
+    const automationGenerations = new Map<ThreadId, number | undefined>();
     // Sessions pin F5's MCP servers with `-c mcp_servers=...` at launch, so a
     // reload cannot change that set; a different desired set needs a restart.
     const launchedMcpConfigKeys = new Map<ThreadId, string>();
@@ -2371,6 +2582,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           session.dispose();
         }
         previewMcpSessions.clear();
+        for (const threadId of [...chromeSessions.keys()]) disposeChromeSession(threadId);
+        chromeFingerprints.clear();
+        for (const session of threadMcpSessions.values()) session.dispose();
+        threadMcpSessions.clear();
+        for (const session of computerMcpSessions.values()) session.dispose();
+        computerMcpSessions.clear();
+        computerDecisions.clear();
       }),
     );
 
@@ -2385,8 +2603,16 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         );
       }
 
+      let computerMcpSession: PreviewMcpSessionConfig | undefined;
       let previewMcpSession: PreviewMcpSessionConfig | undefined;
+      let threadMcpSession: PreviewMcpSessionConfig | undefined;
       const disposePreviewMcpSession = () => {
+        disposeChromeSession(input.threadId);
+        computerMcpSession?.dispose();
+        computerMcpSessions.delete(input.threadId);
+        computerDecisions.delete(input.threadId);
+        threadMcpSession?.dispose();
+        threadMcpSessions.delete(input.threadId);
         previewMcpSession?.dispose();
         previewMcpSessions.delete(input.threadId);
       };
@@ -2397,6 +2623,19 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           input.providerOptions,
         );
         const baseProviderMcpServers = providerOptions?.mcpServers;
+        yield* Effect.try({
+          try: () => {
+            assertMcpRuntimeConfig(input.providerOptions?.mcpServers, PROVIDER);
+            assertMcpRuntimeConfig(providerOptions?.mcpServers, PROVIDER);
+            readCodexMcpOAuthCallbackConfig(providerOptions?.mcpServers);
+          },
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: mcpConfigErrorMessage(cause),
+            }),
+        });
         previewMcpSessions.get(input.threadId)?.dispose();
         previewMcpSessions.delete(input.threadId);
         previewMcpSession =
@@ -2411,12 +2650,236 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             : undefined;
         // Registered before launch so `session/configured` can report the installed server.
         if (previewMcpSession) previewMcpSessions.set(input.threadId, previewMcpSession);
-        const providerMcpServers = previewMcpSession
-          ? {
-              ...baseProviderMcpServers,
-              [previewMcpSession.serverName]: previewMcpSession.serverDefinition,
+        // Retire the old event producer before disposing its computer provenance.
+        if (computerMcpSessions.has(input.threadId) && manager.hasSession(input.threadId))
+          manager.stopSession(input.threadId);
+        computerMcpSessions.get(input.threadId)?.dispose();
+        computerMcpSessions.delete(input.threadId);
+        computerDecisions.delete(input.threadId);
+        const computerPolicy = yield* resolveAgentBrowserPolicy(input.threadId);
+        const computerDecision = yield* resolveComputerBackendSelection({
+          provider: "codex",
+          enabled: serverConfig.mode === "desktop" && computerPolicy.computerUse,
+          fullAccess: input.runtimeMode === "full-access",
+          nativeStatus: options?.computerAutomationBroker?.host.status() ?? {
+            available: false,
+            reason: "no-host",
+          },
+        });
+        computerDecisions.set(input.threadId, computerDecision);
+        computerMcpSession =
+          serverConfig.mode === "desktop" &&
+          !input.workflowExecutionProfile &&
+          !isSyntheticOneOffThreadId(input.threadId) &&
+          computerPolicy.computerUse &&
+          computerDecision.selection?.kind === "native"
+            ? options?.previewMcpHttpServer?.createSessionConfig({
+                threadId: input.threadId,
+                catalog: "computer",
+                existingServerNames: new Set([
+                  ...Object.keys(baseProviderMcpServers ?? {}),
+                  ...(previewMcpSession ? [previewMcpSession.serverName] : []),
+                ]),
+              })
+            : undefined;
+        if (computerMcpSession) {
+          computerMcpSessions.set(input.threadId, computerMcpSession);
+          automationEventSanitizer.register(input.threadId, {
+            serverName: computerMcpSession.serverName,
+            verified: true,
+            kind: "f5-computer",
+          });
+        }
+        // Codex Chrome: Codex starts ChatGPT's `node_repl` and F5 supervises it. Only
+        // interactive desktop sessions with the toggle on do any Chrome I/O; workflow and
+        // synthetic sessions never do.
+        disposeChromeSession(input.threadId);
+        chromeFingerprints.delete(input.threadId);
+        const chromeBroker = options?.computerAutomationBroker;
+        let chromeInstructions: string | undefined;
+        const chromeInteractive =
+          serverConfig.mode === "desktop" &&
+          !input.workflowExecutionProfile &&
+          !isSyntheticOneOffThreadId(input.threadId);
+        // A session an automation starts gets no Chrome (consent needs a person); its
+        // fingerprint says so, and the next person's turn restarts it with Chrome.
+        if (chromeInteractive)
+          chromeFingerprints.set(
+            input.threadId,
+            codexChromeFingerprint(computerPolicy.codexChrome && !input.unattended),
+          );
+        if (computerPolicy.codexChrome && chromeInteractive && chromeBroker) {
+          const entry: NonNullable<ReturnType<typeof chromeSessions.get>> = {
+            state: { state: "unavailable" },
+          };
+          chromeSessions.set(input.threadId, entry);
+          if (input.unattended)
+            entry.state = {
+              state: "unavailable",
+              detail:
+                "Not started for a scheduled run. Chrome control starts with your next message.",
+            };
+          else if (baseProviderMcpServers?.[CODEX_CHROME_SERVER_NAME])
+            entry.state = {
+              state: "unavailable",
+              detail: `An MCP server named "${CODEX_CHROME_SERVER_NAME}" is configured. Rename it to use Codex Chrome control.`,
+            };
+          else {
+            const userHome = userInfo().homedir;
+            const processEnvironment = options?.processEnvironment ?? process.env;
+            const codexHomePath = resolveCodexHome({ homePath: providerOptions?.codex?.homePath });
+            const binaryPath = yield* Effect.try({
+              try: () => resolveCodexCommand(providerOptions?.codex?.binaryPath),
+              catch: (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: toMessage(cause, "Bundled Codex is unavailable."),
+                  cause,
+                }),
+            });
+            const codex = yield* Effect.promise(() =>
+              inspectCodexBinary({
+                binaryPath,
+                processEnvironment,
+                cwd: input.cwd ?? process.cwd(),
+                ...(codexHomePath ? { homePath: codexHomePath } : {}),
+              }),
+            );
+            const eligibility = yield* Effect.promise(() =>
+              codexChromeEligibility({
+                codexHome: effectiveCodexHome(codexHomePath, processEnvironment),
+                userHome,
+                runtimeMode: input.runtimeMode,
+                codex,
+              }),
+            );
+            if (!eligibility.eligible)
+              entry.state = { state: "unavailable", detail: eligibility.reason };
+            else {
+              let generation = chromeBroker.generation(input.threadId);
+              if (!computerMcpSession || !generation) {
+                generation = randomUUID();
+                chromeBroker.bindSession(input.threadId, generation, "codex");
+                entry.boundGeneration = generation;
+              }
+              const threadId = input.threadId;
+              // Codex starts `node_repl` with the session and asks nothing per call, so the
+              // user consents before the MCP config that starts it is built.
+              const allowed = yield* Effect.promise(() =>
+                chromeBroker.requestChromeSession(threadId, generation, "codex-chrome"),
+              );
+              if (!allowed)
+                entry.state = {
+                  state: "unavailable",
+                  detail: "Chrome control wasn't allowed for this session.",
+                };
+              else {
+                const services = yield* Effect.services<never>();
+                entry.serverDefinition = codexChromeMcpServer(eligibility, processEnvironment);
+                entry.session = new CodexChromeSession({
+                  threadId,
+                  generation,
+                  installation: eligibility.installation,
+                  userHome,
+                  broker: chromeBroker,
+                  codex: {
+                    pid: () => manager.codexProcessId(threadId),
+                    providerThreadId: () => manager.providerThreadId(threadId),
+                    listServer: async () => {
+                      const listing = await manager.getMcpServerStatuses(threadId, {
+                        deadline: Date.now() + 10_000,
+                      });
+                      return listing.complete
+                        ? listing.entries.find((row) => row.name === CODEX_CHROME_SERVER_NAME)
+                        : undefined;
+                    },
+                    reload: async () => {
+                      await manager.reloadMcpConfig(threadId);
+                    },
+                    callTool: (tool, args, meta) =>
+                      manager.callMcpServerTool(
+                        threadId,
+                        CODEX_CHROME_SERVER_NAME,
+                        tool,
+                        args,
+                        meta,
+                      ),
+                  },
+                  supportsBrowserResume: () => manager.browserResumeAvailable(threadId),
+                  waitForMcpIdle: (deadline, check) =>
+                    manager.waitForMcpIdle(threadId, deadline, check),
+                  policyEnabled: () =>
+                    Effect.runPromise(
+                      resolveAgentBrowserPolicy(threadId).pipe(
+                        Effect.map((policy) => policy.codexChrome),
+                        Effect.provide(services),
+                      ),
+                    ),
+                  stateChanged: (state, detail) => {
+                    if (chromeSessions.get(threadId) === entry)
+                      entry.state = { state, ...(detail ? { detail } : {}) };
+                  },
+                });
+                chromeInstructions = codexChromeInstructions(eligibility.installation);
+                // JavaScript source and page output have no safe field-level structure.
+                automationEventSanitizer.mask(threadId, CODEX_CHROME_SERVER_NAME);
+              }
             }
-          : baseProviderMcpServers;
+          }
+        }
+        const chromeServer = chromeSessions.get(input.threadId)?.serverDefinition;
+        threadMcpSessions.get(input.threadId)?.dispose();
+        threadMcpSessions.delete(input.threadId);
+        threadMcpSession =
+          options?.previewMcpHttpServer?.supportsThreadCatalog &&
+          !isSyntheticOneOffThreadId(input.threadId)
+            ? options.previewMcpHttpServer.createSessionConfig({
+                threadId: input.threadId,
+                catalog: "thread",
+                // Read-only workflow stages may still read the threads their request references.
+                threadAccess: input.workflowExecutionProfile ? "read-only" : "full",
+                ...(input.providerInstanceId
+                  ? { providerInstanceId: input.providerInstanceId }
+                  : {}),
+                existingServerNames: new Set([
+                  ...Object.keys(baseProviderMcpServers ?? {}),
+                  ...(previewMcpSession ? [previewMcpSession.serverName] : []),
+                  ...(computerMcpSession ? [computerMcpSession.serverName] : []),
+                  ...(chromeServer ? [CODEX_CHROME_SERVER_NAME] : []),
+                ]),
+              })
+            : undefined;
+        if (threadMcpSession) threadMcpSessions.set(input.threadId, threadMcpSession);
+        const providerMcpServers =
+          previewMcpSession || computerMcpSession || threadMcpSession || chromeServer
+            ? {
+                ...baseProviderMcpServers,
+                ...(threadMcpSession
+                  ? { [threadMcpSession.serverName]: threadMcpSession.serverDefinition }
+                  : {}),
+                ...(previewMcpSession
+                  ? { [previewMcpSession.serverName]: previewMcpSession.serverDefinition }
+                  : {}),
+                ...(computerMcpSession
+                  ? { [computerMcpSession.serverName]: computerMcpSession.serverDefinition }
+                  : {}),
+                ...(chromeServer ? { [CODEX_CHROME_SERVER_NAME]: chromeServer } : {}),
+              }
+            : baseProviderMcpServers;
+        yield* Effect.try({
+          try: () =>
+            assertMcpServerLimit(
+              filterEnabledMcpServers(providerMcpServers),
+              MCP_RUNTIME_SERVER_LIMIT,
+            ),
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: mcpConfigErrorMessage(cause),
+            }),
+        });
         const mcpOAuthCallbackConfig = providerMcpServers
           ? yield* Effect.try({
               try: () => readCodexMcpOAuthCallbackConfig(providerMcpServers),
@@ -2429,7 +2892,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 }),
             })
           : {};
+        const chromeGeneration = chromeBroker?.generation(input.threadId);
         const managerInput: CodexAppServerStartSessionInput = {
+          ...(chromeServer && chromeBroker && chromeGeneration
+            ? {
+                browserResume: () =>
+                  chromeBroker.resumeCodexBrowser(input.threadId, chromeGeneration),
+              }
+            : {}),
+          ...(input.mcpEventIdentity ? { mcpEventIdentity: input.mcpEventIdentity } : {}),
           threadId: input.threadId,
           provider: "codex",
           ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
@@ -2461,13 +2932,32 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ...(options?.processEnvironment !== undefined
             ? { processEnvironment: options.processEnvironment }
             : {}),
+          ...(options?.getEffectiveModelCapabilities
+            ? { effectiveModelCapabilities: options.getEffectiveModelCapabilities() }
+            : {}),
           runtimeMode: input.runtimeMode,
           ...(input.model !== undefined ? { model: input.model } : {}),
-          ...codexServiceTierOptions(input.modelOptions?.codex?.fastMode),
+          ...codexServiceTierOptions(
+            resolveCodexSelectionOptions({
+              modelOptions: input.modelOptions,
+              modelSelection: input.modelSelection,
+              boundInstanceId,
+            }).fastMode,
+            inheritsFastMode(input.model ?? input.modelSelection?.model),
+          ),
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
             : {}),
-          ...(previewMcpSession ? { mcpEnvironment: previewMcpSession.env } : {}),
+          ...(previewMcpSession || computerMcpSession || threadMcpSession
+            ? {
+                mcpEnvironment: {
+                  ...previewMcpSession?.env,
+                  ...computerMcpSession?.env,
+                  ...threadMcpSession?.env,
+                },
+              }
+            : {}),
+          ...(chromeInstructions ? { integrationInstructions: [chromeInstructions] } : {}),
           ...(mcpOAuthCallbackConfig.port
             ? { mcpOAuthCallbackPort: mcpOAuthCallbackConfig.port }
             : {}),
@@ -2477,7 +2967,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         };
 
         return yield* Effect.tryPromise({
-          try: () => manager.startSession(managerInput),
+          try: (signal) => {
+            automationGenerations.set(input.threadId, input.mcpEventIdentity?.sessionGeneration);
+            return manager.startSession(managerInput, signal);
+          },
           catch: (cause) =>
             new ProviderAdapterProcessError({
               provider: PROVIDER,
@@ -2486,6 +2979,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               cause,
             }),
         }).pipe(
+          Effect.map((session) => ({ ...session, ...computerSessionFields(input.threadId) })),
           Effect.tap(() =>
             Effect.sync(() => {
               launchedMcpConfigKeys.set(
@@ -2500,6 +2994,14 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
     const sendTurn: CodexAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
+        if (incompleteThreads.has(input.threadId))
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/start",
+            detail: "Provider output is incomplete. Reconcile native history before continuing.",
+            deliveryCertainty: "not_sent",
+            deliveryRetryable: false,
+          });
         const codexAttachments = yield* Effect.forEach(
           (input.attachments ?? []).filter((attachment) => attachment.type === "image"),
           (attachment) =>
@@ -2528,27 +3030,66 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           { concurrency: 1 },
         );
         const providerInput = appendProviderAttachmentRuntimeContext(
-          input.input,
+          input.mcpAppContext ? `${input.input ?? ""}${input.mcpAppContext}` : input.input,
           input.resolvedAttachments ?? [],
         );
 
+        const selectionOptions = resolveCodexSelectionOptions({
+          modelOptions: input.modelOptions,
+          modelSelection: input.modelSelection,
+          boundInstanceId,
+        });
+        const model =
+          input.model ??
+          (input.modelSelection?.instanceId === boundInstanceId
+            ? input.modelSelection.model
+            : undefined);
+        const inheritedFastMode = inheritsFastMode(model);
+        // Only a turn that states Codex options can turn fast mode off; turns
+        // without any (some internal callers) keep the thread's tier.
+        const statesCodexOptions =
+          input.modelSelection?.instanceId === boundInstanceId ||
+          input.modelOptions?.codex !== undefined;
+
         return yield* Effect.tryPromise({
-          try: () => {
+          try: async () => {
+            // A new turn restarts Chrome's runtime if it was stopped while idle or paused,
+            // and waits (bounded) until main supervises it; one that isn't supervised by
+            // then is stopped, so the model never reaches an unsupervised runtime.
+            // Steering joins a turn that already has it.
+            const chrome = input.expectedTurnId
+              ? undefined
+              : chromeSessions.get(input.threadId)?.session;
+            await chrome?.beforeTurn();
             const managerInput = {
               threadId: input.threadId,
               ...(input.expectedTurnId ? { expectedTurnId: input.expectedTurnId } : {}),
               ...(providerInput !== undefined ? { input: providerInput } : {}),
               ...(input.model !== undefined ? { model: input.model } : {}),
-              ...(input.modelOptions?.codex?.reasoningEffort !== undefined
-                ? { effort: input.modelOptions.codex.reasoningEffort }
+              ...(selectionOptions.reasoningEffort !== undefined
+                ? { effort: selectionOptions.reasoningEffort }
                 : {}),
-              ...codexServiceTierOptions(input.modelOptions?.codex?.fastMode),
+              // Cached global config is display-only. Null asks the manager to undo
+              // F5's previous override; otherwise it omits the native tier entirely.
+              ...(selectionOptions.fastMode === true
+                ? { serviceTier: "fast" as const }
+                : selectionOptions.fastMode === false && inheritedFastMode
+                  ? { serviceTier: "default" as const }
+                  : statesCodexOptions
+                    ? { serviceTier: null }
+                    : {}),
               ...(input.interactionMode !== undefined
                 ? { interactionMode: input.interactionMode }
                 : {}),
               ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
             };
-            return manager.sendTurn(managerInput);
+            try {
+              return await manager.sendTurn(managerInput);
+            } catch (error) {
+              // No turn started, so none will end: let the idle stop run again.
+              chrome?.turnAborted();
+              throw error;
+            }
           },
           catch: (cause) => toRequestError(input.threadId, "turn/start", cause),
         }).pipe(
@@ -2559,9 +3100,22 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         );
       });
 
+    const generatedImages = new CodexGeneratedImages();
     const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.tryPromise({
-        try: () => manager.interruptTurn(threadId, turnId),
+        try: async () => {
+          generatedImages.cancel(threadId, turnId);
+          const chrome = chromeSessions.get(threadId)?.session;
+          // Read before Codex reports the interrupted call completed.
+          const callRunning = chrome?.callRunning ?? false;
+          // A call still driving Chrome stops with its runtime now, whether or not the
+          // interrupt then succeeds; otherwise the interrupted turn drains through the
+          // runtime's own hook.
+          if (callRunning) chrome?.turnInterrupted(turnId, true);
+          const result = await manager.interruptTurn(threadId, turnId);
+          if (!callRunning) chromeSessions.get(threadId)?.session?.turnInterrupted(turnId, false);
+          return result;
+        },
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
       });
 
@@ -2573,6 +3127,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         Effect.map((snapshot) => ({
           threadId,
           turns: snapshot.turns,
+          history: {
+            identity: snapshot.threadId,
+            provenance: "provider-persisted" as const,
+            coverage: snapshot.historyCoverage ?? "partial",
+            boundary: snapshot.turns.at(0)?.id ?? null,
+            runtimeId: null,
+          },
         })),
       );
 
@@ -2626,19 +3187,20 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             prompt: input.prompt,
             ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
             ...(input.modelSelection
-              ? {
-                  model: input.modelSelection.model,
-                  effort: getModelSelectionStringOptionValue(
-                    input.modelSelection,
-                    "reasoningEffort",
-                  ),
-                  ...codexServiceTierOptions(
-                    getProviderOptionBooleanSelectionValue(
-                      input.modelSelection.options,
-                      "fastMode",
+              ? (() => {
+                  const selectionOptions = resolveCodexSelectionOptions({
+                    modelSelection: input.modelSelection,
+                    boundInstanceId: input.modelSelection.instanceId,
+                  });
+                  return {
+                    model: input.modelSelection.model,
+                    effort: selectionOptions.reasoningEffort,
+                    ...codexServiceTierOptions(
+                      selectionOptions.fastMode,
+                      inheritsFastMode(input.modelSelection.model),
                     ),
-                  ),
-                }
+                  };
+                })()
               : input.model !== undefined
                 ? { model: input.model }
                 : {}),
@@ -2691,14 +3253,25 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
     const stopSession: CodexAdapterShape["stopSession"] = (threadId) =>
       Effect.sync(() => {
+        threadMcpSessions.get(threadId)?.dispose();
+        threadMcpSessions.delete(threadId);
         previewMcpSessions.get(threadId)?.dispose();
         previewMcpSessions.delete(threadId);
+        disposeChromeSession(threadId);
+        chromeFingerprints.delete(threadId);
+        computerMcpSessions.get(threadId)?.dispose();
+        computerMcpSessions.delete(threadId);
+        computerDecisions.delete(threadId);
         launchedMcpConfigKeys.delete(threadId);
         manager.stopSession(threadId);
       });
 
     const listSessions: CodexAdapterShape["listSessions"] = () =>
-      Effect.sync(() => manager.listSessions());
+      Effect.sync(() =>
+        manager
+          .listSessions()
+          .map((session) => ({ ...session, ...computerSessionFields(session.threadId) })),
+      );
 
     const hasSession: CodexAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => manager.hasSession(threadId));
@@ -2706,124 +3279,663 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const getSessionDiscovery: NonNullable<CodexAdapterShape["getSessionDiscovery"]> = (threadId) =>
       Effect.sync(() => manager.getSessionDiscovery?.(threadId));
 
-    const reloadMcpConfig: CodexAdapterShape["reloadMcpConfig"] = ({ threadId, mcpServers }) =>
-      Effect.tryPromise({
-        try: () => manager.reloadMcpConfig(threadId),
-        catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
-      }).pipe(
-        Effect.map((statuses) => {
-          const launched = launchedMcpConfigKeys.get(threadId);
-          if (
-            launched !== undefined &&
-            launched !== stableMcpConfigKey(translateMcpForCodex(mcpServers) ?? {})
-          ) {
-            return restartRequiredMcpReload("Codex fixes its MCP servers when the session starts.");
-          }
-          return summarizeMcpReload({
-            desired: Object.keys(filterEnabledMcpServers(mcpServers)),
-            observed: statuses?.flatMap((status) => {
-              const name = typeof status.name === "string" ? status.name : undefined;
-              if (!name) return [];
-              const text = (value: unknown) => (typeof value === "string" ? value : undefined);
-              const error = text(status.error);
-              return [
-                {
-                  name,
-                  status: codexObservedMcpStatus({
-                    ...(text(status.startupStatus)
-                      ? { startupStatus: text(status.startupStatus)! }
-                      : {}),
-                    ...(text(status.authStatus) ? { authStatus: text(status.authStatus)! } : {}),
-                    ...(error ? { error } : {}),
-                    hasTools:
-                      status.tools !== null &&
-                      typeof status.tools === "object" &&
-                      Object.keys(status.tools).length > 0,
-                  }),
-                  ...(error ? { error } : {}),
-                },
-              ];
-            }),
-            sameName: codexServerNamesMatch,
-          });
-        }),
+    const builtInMcpServerNames = (threadId: ThreadId) =>
+      new Set(
+        [
+          previewMcpSessions.get(threadId)?.serverName,
+          computerMcpSessions.get(threadId)?.serverName,
+          chromeSessions.get(threadId)?.serverDefinition ? CODEX_CHROME_SERVER_NAME : undefined,
+        ].filter((name): name is string => Boolean(name)),
       );
 
+    const getMcpServerStatuses: NonNullable<CodexAdapterShape["getMcpServerStatuses"]> = (
+      threadId,
+    ) =>
+      Effect.tryPromise({
+        try: () =>
+          mcpProviderReads.read(
+            JSON.stringify([
+              "codex",
+              mcpContextKey(manager.getMcpObservationContext(threadId)),
+              threadId,
+            ]),
+            async (signal, deadline) => {
+              const pages = await manager.getMcpServerStatuses(threadId, { signal, deadline });
+              const launched = launchedMcpConfigKeys.get(threadId);
+              const owned = new Set<string>(
+                launched ? Object.keys(JSON.parse(launched) as object) : [],
+              );
+              const builtIns = builtInMcpServerNames(threadId);
+              return {
+                servers: observeCodexMcpServers(pages.entries, owned, builtIns),
+                complete: pages.complete,
+                ...(pages.anomaly ? { omissions: [pages.anomaly] } : {}),
+                capabilities: { tools: true, inputSchemas: true, resources: true },
+              };
+            },
+          ),
+        catch: (cause) => toRequestError(threadId, "mcpServerStatus/list", cause),
+      });
+
+    const reloadMcpConfig: CodexAdapterShape["reloadMcpConfig"] = ({ threadId, mcpServers }) =>
+      Effect.gen(function* () {
+        yield* Effect.try({
+          try: () => {
+            assertMcpRuntimeConfig(mcpServers, PROVIDER);
+            readCodexMcpOAuthCallbackConfig(mcpServers);
+          },
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "reloadMcpConfig",
+              issue: mcpConfigErrorMessage(cause),
+            }),
+        });
+        const launched = launchedMcpConfigKeys.get(threadId);
+        if (
+          launched !== undefined &&
+          launched !== stableMcpConfigKey(translateMcpForCodex(mcpServers) ?? {})
+        ) {
+          // This also applies after login: never reload a launch config that differs
+          // from the saved snapshot. Credentials take effect at the safe restart boundary.
+          return restartRequiredMcpReload("Codex fixes its MCP servers when the session starts.");
+        }
+        const statuses = yield* Effect.tryPromise({
+          try: () => manager.reloadMcpConfig(threadId),
+          catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
+        });
+        return summarizeMcpReload({
+          desired: Object.keys(filterEnabledMcpServers(mcpServers)),
+          observed:
+            statuses === undefined
+              ? undefined
+              : observeCodexMcpServers(
+                  statuses.flatMap((status) => {
+                    const decoded = decodeCodexMcpServerStatus(status);
+                    return decoded ? [decoded] : [];
+                  }),
+                  new Set(Object.keys(filterEnabledMcpServers(mcpServers))),
+                  builtInMcpServerNames(threadId),
+                ),
+          sameName: codexServerNamesMatch,
+        });
+      });
+
     const stopAll: CodexAdapterShape["stopAll"] = () =>
-      Effect.sync(() => {
+      Effect.promise(async () => {
         for (const session of previewMcpSessions.values()) {
           session.dispose();
         }
         previewMcpSessions.clear();
+        for (const threadId of [...chromeSessions.keys()]) disposeChromeSession(threadId);
+        chromeFingerprints.clear();
+        for (const session of threadMcpSessions.values()) session.dispose();
+        threadMcpSessions.clear();
+        for (const session of computerMcpSessions.values()) session.dispose();
+        computerMcpSessions.clear();
+        computerDecisions.clear();
         launchedMcpConfigKeys.clear();
-        manager.stopAll();
+        const deadline = Option.getOrUndefined(shutdown)?.deadline ?? Date.now() + 1_800;
+        if (typeof manager.shutdown === "function") await manager.shutdown(deadline);
+        else manager.stopAll();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            Promise.all([...eventPreparation.values()]),
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+        if (preparationControllers.size) {
+          const pending = preparationControllers.size;
+          for (const controller of preparationControllers) controller.abort();
+          throw new Error(
+            `Codex shutdown left ${pending} admitted event preparation(s) incomplete.`,
+          );
+        }
       });
 
-    const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
-    const turnStartedAtByThread = new Map<ThreadId, string>();
+    const appSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+    const appFs = yield* Effect.serviceOption(FileSystem.FileSystem);
+    const appPath = yield* Effect.serviceOption(Path.Path);
+    const appCaptures = new Map<ThreadId, number>();
+    const capturePermit = yield* Semaphore.make(2);
+    let captureCount = 0;
+    const runtimeEventQueue = yield* Queue.bounded<{
+      event: ProviderRuntimeEvent;
+      units: number;
+      lease: symbol;
+      bytes: number;
+    }>(1024);
+    const runtimeEventBudget = yield* Semaphore.make(512);
+    const canonicalQueueResources = new Map<symbol, { bytes: number; admittedAt: number }>();
+    const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
+      Effect.gen(function* () {
+        const bytes = Buffer.byteLength(JSON.stringify(event));
+        const units = Math.min(512, Math.max(1, Math.ceil(bytes / (64 * 1024))));
+        const lease = Symbol();
+        let transferred = false;
+        yield* Effect.acquireUseRelease(
+          runtimeEventBudget.take(units),
+          () =>
+            Effect.sync(() =>
+              canonicalQueueResources.set(lease, { bytes, admittedAt: Date.now() }),
+            ).pipe(
+              Effect.andThen(Queue.offer(runtimeEventQueue, { event, units, lease, bytes })),
+              Effect.tap((accepted) =>
+                Effect.sync(() => {
+                  transferred = accepted;
+                }),
+              ),
+            ),
+          () =>
+            transferred
+              ? Effect.void
+              : Effect.sync(() => canonicalQueueResources.delete(lease)).pipe(
+                  Effect.andThen(runtimeEventBudget.release(units)),
+                ),
+        );
+      });
+    const notificationAdmission = new NotificationAdmission(options?.notificationLimits);
+    const incompleteThreads = new Map<ThreadId, { eventId: string; contextKey: string }>();
+    const incompleteContexts = new Set<string>();
+    const unregisterQueueResources = registerNotificationQueueResources(() => {
+      const native = notificationAdmission.snapshot();
+      const canonical = [...canonicalQueueResources.values()];
+      return {
+        entries: native.entries + native.controls + canonical.length,
+        bytes: native.bytes + canonical.reduce((sum, entry) => sum + entry.bytes, 0),
+        oldestAgeMs: Math.max(
+          native.oldestAgeMs,
+          ...canonical.map((entry) => Date.now() - entry.admittedAt),
+        ),
+      };
+    });
+    yield* Effect.addFinalizer(() => Effect.sync(unregisterQueueResources));
+    const prepareRuntimeEvent = yield* makeAutomationRuntimeEventPreparer;
+    const importGeneratedImage = yield* makeCodexGeneratedImageStore;
+
+    const eventPreparation = new Map<string, Promise<void>>();
+    const preparationControllers = new Set<AbortController>();
+    const turnStartedAtByThread = new Map<string, string>();
+    const reasoningTokenBaselineByThread = new Map<string, number>();
+    const turnUsage = new CodexTurnUsage();
+    const terminalFailureByThread = new Map<
+      string,
+      { readonly turnId: string; readonly evidence: CodexTerminalFailureEvidence }
+    >();
     const limitsByThread = new Map<
-      ThreadId,
+      string,
       Map<string, { snapshot: CodexLimitSnapshot; observedAt: string }>
     >();
 
     yield* Effect.acquireRelease(
       Effect.gen(function* () {
-        const writeNativeEvent = (event: ProviderEvent) =>
+        const writeNativeEvent = (event: ProviderEvent, merged?: PendingDeltaSlot) =>
           Effect.gen(function* () {
             if (!nativeEventLogger) {
               return;
             }
-            yield* nativeEventLogger.write(event, event.threadId);
+            const sanitized = automationEventSanitizer.sanitize(event.threadId, event);
+            // A merged notification names how many native deltas it carries and the last
+            // one, so a log taken during a burst still shows the real notification sequence.
+            yield* writeProviderEventLog(
+              nativeEventLogger,
+              merged && merged.parts.length > 1
+                ? {
+                    ...(sanitized as Record<string, unknown>),
+                    coalesced: {
+                      count: merged.parts.length,
+                      lastEventId: merged.last?.id,
+                      lastCreatedAt: merged.last?.createdAt,
+                    },
+                  }
+                : sanitized,
+              event.threadId,
+            );
           });
 
         const services = yield* Effect.services<never>();
-        const listener = (event: ProviderEvent) =>
-          Effect.gen(function* () {
-            if (isSyntheticOneOffThreadId(event.threadId)) {
-              return;
-            }
-            yield* writeNativeEvent(event);
-            if (event.method === "turn/started")
-              turnStartedAtByThread.set(event.threadId, event.createdAt);
-            if (event.method === "account/rateLimits/updated") {
-              const snapshot = asObject(asObject(event.payload)?.rateLimits);
-              if (snapshot) {
-                const buckets = limitsByThread.get(event.threadId) ?? new Map();
-                const key = typeof snapshot.limitId === "string" ? snapshot.limitId : "codex";
-                const merged = mergeCodexLimitSnapshot(
-                  buckets.get(key)?.snapshot,
-                  snapshot as CodexLimitSnapshot,
-                );
-                if (merged) buckets.set(key, { snapshot: merged, observedAt: event.createdAt });
-                limitsByThread.set(event.threadId, buckets);
-              }
-            }
-            const previewServerName = previewMcpSessions.get(event.threadId)?.serverName;
-            const runtimeEvents = withAgentBrowserPreview(
-              mapToRuntimeEvents(
-                event,
+        // Per context, the one waiting (unprepared) notification of each item
+        // that later deltas of the same item may still merge into.
+        const openDeltaSlots = new Map<string, Map<string, PendingDeltaSlot>>();
+        const markIncomplete = (event: ProviderEvent) => {
+          const key = notificationContextKey(event);
+          openDeltaSlots.delete(key);
+          if (incompleteContexts.has(key)) return;
+          incompleteContexts.add(key);
+          Effect.runSync(Metric.update(providerNotificationOverflows, 1));
+          const eventId = `incomplete:${event.id}`;
+          const liveGeneration = automationGenerations.get(event.threadId);
+          const ownsCurrent =
+            liveGeneration === undefined ||
+            event.sessionGeneration === undefined ||
+            liveGeneration === event.sessionGeneration;
+          if (ownsCurrent) {
+            incompleteThreads.set(event.threadId, { eventId, contextKey: key });
+            // A retired context must never interrupt its replacement.
+            void manager
+              .interruptTurn(
                 event.threadId,
-                limitsByThread.get(event.threadId)?.get("codex")?.snapshot,
-                [...(limitsByThread.get(event.threadId)?.values() ?? [])],
-                turnStartedAtByThread.get(event.threadId),
-              ),
-              previewServerName,
-            );
-            if (event.method === "session/exited" || event.method === "session/closed") {
-              limitsByThread.delete(event.threadId);
-              turnStartedAtByThread.delete(event.threadId);
-            }
-            if (runtimeEvents.length === 0) {
-              yield* Effect.logDebug("ignoring unhandled Codex provider event", {
-                method: event.method,
+                event.turnId ? TurnId.makeUnsafe(String(event.turnId)) : undefined,
+              )
+              .catch(() => {});
+          }
+          const previous = eventPreparation.get(key) ?? Promise.resolve();
+          const reportController = new AbortController();
+          preparationControllers.add(reportController);
+          const report = () =>
+            Effect.runPromiseWith(services)(
+              offerRuntimeEvent({
+                type: "runtime.error",
+                eventId: EventId.makeUnsafe(eventId),
+                provider: PROVIDER,
                 threadId: event.threadId,
-                turnId: event.turnId,
-                itemId: event.itemId,
-              });
-              return;
+                createdAt: event.createdAt,
+                ...(event.turnId ? { turnId: TurnId.makeUnsafe(String(event.turnId)) } : {}),
+                ...(event.providerInstanceId !== undefined
+                  ? { providerInstanceId: event.providerInstanceId }
+                  : {}),
+                ...(event.sessionGeneration !== undefined
+                  ? { sessionGeneration: event.sessionGeneration }
+                  : {}),
+                payload: {
+                  class: "transport_error",
+                  historyReconciliationRequired: true,
+                  message:
+                    "Provider output is incomplete because notification admission was exhausted. Native history must be reconciled before continuing.",
+                },
+              }),
+              { signal: reportController.signal },
+            );
+          const next = previous.then(report, report);
+          eventPreparation.set(key, next);
+          void next
+            .finally(() => {
+              preparationControllers.delete(reportController);
+              if (eventPreparation.get(key) === next) eventPreparation.delete(key);
+            })
+            .catch(() => {});
+        };
+        const listener = (event: ProviderEvent) => {
+          if (automationGenerations.get(event.threadId) === event.sessionGeneration) {
+            const chromeSession = chromeSessions.get(event.threadId)?.session;
+            if (chromeSession) trackCodexChromeCall(chromeSession, event);
+          }
+          const control =
+            event.kind === "session" ||
+            event.kind === "error" ||
+            /(?:completed|closed|exited|started|requestApproval|requestUserInput)$/.test(
+              event.method,
+            );
+          const key = notificationContextKey(event);
+          if (incompleteContexts.has(key) && !control) return;
+          const bytes = Buffer.byteLength(JSON.stringify(event));
+          const mergeable = mergeableContentDelta(event);
+          const contextSlots = openDeltaSlots.get(key);
+          if (mergeable) {
+            // A delta joins its item's notification while that one still waits.
+            // Only deltas of other items can pass it; anything else seals it.
+            const slot = contextSlots?.get(mergeable.identity);
+            if (slot) {
+              const deltaBytes = Buffer.byteLength(mergeable.delta);
+              // Only the text is kept, so only the text is charged: the event envelope
+              // (hundreds of bytes per tiny chunk) is dropped when it merges.
+              if (
+                slot.textBytes + deltaBytes <= MAX_MERGED_DELTA_BYTES &&
+                slot.lease.extend(deltaBytes)
+              ) {
+                slot.parts.push(mergeable.delta);
+                slot.textBytes += deltaBytes;
+                slot.last = { id: event.id, createdAt: event.createdAt };
+                return slot.next;
+              }
+              contextSlots!.delete(mergeable.identity);
             }
-            yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
-          }).pipe(Effect.runPromiseWith(services));
+          } else {
+            openDeltaSlots.delete(key);
+          }
+          const lease = notificationAdmission.reserve(key, bytes, control);
+          if (!lease) {
+            markIncomplete(event);
+            return;
+          }
+          const slot: PendingDeltaSlot | undefined = mergeable
+            ? {
+                first: event,
+                parts: [mergeable.delta],
+                textBytes: Buffer.byteLength(mergeable.delta),
+                lease,
+              }
+            : undefined;
+          if (slot && mergeable) {
+            const slots = openDeltaSlots.get(key) ?? new Map();
+            slots.set(mergeable.identity, slot);
+            openDeltaSlots.set(key, slots);
+          }
+          // Retain synchronously at admission: asynchronous logging/image storage
+          // can still be running when a replacement retires this provider process.
+          const nativeItem =
+            event.method === "item/completed" ? asObject(asObject(event.payload)?.item) : undefined;
+          const appUri =
+            asString(asObject(nativeItem?.mcpAppUi)?.resourceUri) ??
+            asString(nativeItem?.mcpAppResourceUri);
+          const eligibleApp =
+            nativeItem?.type === "mcpToolCall" &&
+            nativeItem.status === "completed" &&
+            nativeItem.error == null &&
+            captureCount < 8 &&
+            (appCaptures.get(event.threadId) ?? 0) < 4;
+          const initialResult =
+            eligibleApp && appUri?.startsWith("ui://") && appUri.length <= 4096
+              ? readMcpAppToolResult(nativeItem?.result)
+              : undefined;
+          const initialJson =
+            nativeItem && initialResult
+              ? stringifyWithinBytes(
+                  { arguments: asObject(nativeItem.arguments) ?? {}, result: initialResult },
+                  192 * 1024,
+                )
+              : undefined;
+          const appBootstrap = initialJson
+            ? (JSON.parse(initialJson) as Record<string, unknown>)
+            : undefined;
+          const appCapture = eligibleApp && appBootstrap !== undefined;
+          let appIdentity: string | undefined;
+          if (appCapture) {
+            try {
+              appIdentity = manager.getMcpAppSessionIdentity(event.threadId);
+            } catch {
+              /* Ordinary tool fallback. */
+            }
+          }
+          let releaseAppCapture: (() => void) | undefined;
+          if (appCapture) {
+            // Captures run inside this session's ordered preparation, so later
+            // output waits behind them; the caps bound how long that can be.
+            captureCount++;
+            appCaptures.set(event.threadId, (appCaptures.get(event.threadId) ?? 0) + 1);
+            releaseAppCapture = () => {
+              captureCount--;
+              const pending = (appCaptures.get(event.threadId) ?? 1) - 1;
+              if (pending > 0) appCaptures.set(event.threadId, pending);
+              else appCaptures.delete(event.threadId);
+            };
+          }
+          const releaseProvenance = automationEventSanitizer.retain(event.threadId);
+          const controller = new AbortController();
+          preparationControllers.add(controller);
+          const previous = eventPreparation.get(key) ?? Promise.resolve();
+          // `event` is shadowed so the body prepares the merged notification.
+          const prepareEvent = (event: ProviderEvent) =>
+            Effect.gen(function* () {
+              if (isSyntheticOneOffThreadId(event.threadId)) {
+                return;
+              }
+              yield* writeNativeEvent(event, slot);
+              const completedUsage = turnUsage.observe(event);
+              if (event.method === "turn/started") {
+                turnStartedAtByThread.set(key, event.createdAt);
+                terminalFailureByThread.delete(key);
+              }
+              const eventPayload = asObject(event.payload);
+              if (event.method === "error" && event.turnId && eventPayload?.willRetry !== true) {
+                const error = asObject(eventPayload?.error);
+                terminalFailureByThread.set(key, {
+                  turnId: event.turnId,
+                  evidence: {
+                    message: asString(error?.message) ?? event.message ?? "",
+                    errorInfo: error?.codexErrorInfo,
+                  },
+                });
+              }
+              const cachedFailure = terminalFailureByThread.get(key);
+              const previousFailure =
+                event.method === "turn/completed" &&
+                cachedFailure !== undefined &&
+                cachedFailure.turnId === event.turnId
+                  ? cachedFailure.evidence
+                  : undefined;
+              if (event.method === "turn/completed") terminalFailureByThread.delete(key);
+              if (event.method === "account/rateLimits/updated") {
+                const snapshot = asObject(asObject(event.payload)?.rateLimits);
+                if (snapshot) {
+                  const buckets = limitsByThread.get(key) ?? new Map();
+                  const limitKey =
+                    typeof snapshot.limitId === "string" ? snapshot.limitId : "codex";
+                  const merged = mergeCodexLimitSnapshot(
+                    buckets.get(limitKey)?.snapshot,
+                    snapshot as CodexLimitSnapshot,
+                  );
+                  if (merged)
+                    buckets.set(limitKey, { snapshot: merged, observedAt: event.createdAt });
+                  limitsByThread.set(key, buckets);
+                }
+              }
+              const ownsAutomation =
+                automationGenerations.get(event.threadId) === event.sessionGeneration;
+              const previewServerName = ownsAutomation
+                ? previewMcpSessions.get(event.threadId)?.serverName
+                : undefined;
+              if (ownsAutomation && event.method === "turn/completed" && event.turnId)
+                computerMcpSessions.get(event.threadId)?.endTurn?.(event.turnId);
+              const chromeSession = ownsAutomation
+                ? chromeSessions.get(event.threadId)?.session
+                : undefined;
+              if (chromeSession) observeCodexChrome(chromeSession, event);
+              const imageEvent = yield* importGeneratedImage(event);
+              let runtimeEvents = withAgentBrowserPreview(
+                generatedImages
+                  .project(imageEvent)
+                  .flatMap((projected) =>
+                    mapToRuntimeEvents(
+                      projected,
+                      event.threadId,
+                      limitsByThread.get(key)?.get("codex")?.snapshot,
+                      [...(limitsByThread.get(key)?.values() ?? [])],
+                      turnStartedAtByThread.get(key),
+                      previousFailure,
+                    ),
+                  ),
+                previewServerName,
+                ownsAutomation ? computerMcpSessions.get(event.threadId)?.serverName : undefined,
+                ownsAutomation ? computerDecisions.get(event.threadId) : undefined,
+                ownsAutomation ? chromeSessions.get(event.threadId)?.state : undefined,
+              );
+              if (completedUsage !== undefined) {
+                runtimeEvents = runtimeEvents.map((runtimeEvent) =>
+                  runtimeEvent.type === "turn.completed" && runtimeEvent.payload.usage === undefined
+                    ? {
+                        ...runtimeEvent,
+                        payload: { ...runtimeEvent.payload, usage: completedUsage },
+                      }
+                    : runtimeEvent,
+                );
+              }
+              if (event.method === "thread/tokenUsage/updated") {
+                const reasoning = codexReasoningTokensSinceBaseline(
+                  asObject(event.payload),
+                  reasoningTokenBaselineByThread.get(key),
+                );
+                if (reasoning) {
+                  if (reasoning.baseline !== undefined)
+                    reasoningTokenBaselineByThread.set(key, reasoning.baseline);
+                  if (reasoning.tokens > 0 && event.turnId) {
+                    runtimeEvents = [
+                      ...runtimeEvents,
+                      {
+                        ...runtimeEventBase(event, event.threadId),
+                        eventId: EventId.make(`${event.id}:reasoning-tokens`),
+                        turnId: event.turnId,
+                        type: "turn.reasoning-tokens.reported",
+                        payload: { tokens: reasoning.tokens, estimated: false },
+                      },
+                    ];
+                  }
+                }
+              }
+              if (
+                appCapture &&
+                nativeItem &&
+                appUri &&
+                appIdentity &&
+                Option.isSome(appSql) &&
+                Option.isSome(appFs) &&
+                Option.isSome(appPath)
+              ) {
+                const server = asString(nativeItem.server),
+                  tool = asString(nativeItem.tool);
+                if (server && tool) {
+                  const reference = yield* capturePermit
+                    .withPermits(1)(
+                      Effect.tryPromise({
+                        try: () =>
+                          manager.readMcpAppResource(event.threadId, server, appUri, appIdentity),
+                        catch: (cause) =>
+                          toRequestError(event.threadId, "mcpServer/resource/read", cause),
+                      }).pipe(
+                        Effect.flatMap((response) =>
+                          snapshotMcpApp({
+                            attachmentsDir: serverConfig.attachmentsDir,
+                            threadId: event.threadId,
+                            activityId: `${event.id}:mcp-app`,
+                            itemKey: `mcp-app:${String(nativeItem.id)}`,
+                            server,
+                            tool,
+                            resourceUri: appUri,
+                            response,
+                            provider: "codex",
+                          }),
+                        ),
+                        Effect.provideService(SqlClient.SqlClient, appSql.value),
+                        Effect.provideService(FileSystem.FileSystem, appFs.value),
+                        Effect.provideService(Path.Path, appPath.value),
+                      ),
+                    )
+                    .pipe(
+                      Effect.timeout("10 seconds"),
+                      Effect.catchCause((cause) =>
+                        Cause.hasInterruptsOnly(cause)
+                          ? Effect.interrupt
+                          : Effect.succeed(undefined),
+                      ),
+                    );
+                  if (reference)
+                    runtimeEvents = runtimeEvents.map((item) =>
+                      item.type === "item.completed"
+                        ? {
+                            ...item,
+                            payload: {
+                              ...item.payload,
+                              data: {
+                                ...asObject(item.payload.data),
+                                mcpApp: reference,
+                                mcpAppBootstrap: appBootstrap,
+                              },
+                            },
+                          }
+                        : item,
+                    );
+                }
+              }
+              // Redact at admission, before lifecycle cleanup removes provenance.
+              const safeRuntimeEvents = yield* Effect.forEach(runtimeEvents, (runtimeEvent) =>
+                prepareRuntimeEvent({
+                  ...runtimeEvent,
+                  ...(event.providerInstanceId !== undefined
+                    ? { providerInstanceId: event.providerInstanceId }
+                    : {}),
+                  ...(event.sessionGeneration !== undefined
+                    ? { sessionGeneration: event.sessionGeneration }
+                    : {}),
+                }),
+              );
+              if (event.method === "session/exited" || event.method === "session/closed") {
+                if (ownsAutomation) {
+                  disposeChromeSession(event.threadId);
+                  computerMcpSessions.get(event.threadId)?.dispose();
+                  computerMcpSessions.delete(event.threadId);
+                  computerDecisions.delete(event.threadId);
+                  automationGenerations.delete(event.threadId);
+                }
+                incompleteContexts.delete(key);
+                limitsByThread.delete(key);
+                turnStartedAtByThread.delete(key);
+                reasoningTokenBaselineByThread.delete(key);
+                terminalFailureByThread.delete(key);
+              }
+              if (runtimeEvents.length === 0) {
+                yield* Effect.logDebug("ignoring unhandled Codex provider event", {
+                  method: event.method,
+                  threadId: event.threadId,
+                  turnId: event.turnId,
+                  itemId: event.itemId,
+                });
+                return;
+              }
+              yield* Effect.forEach(safeRuntimeEvents, offerRuntimeEvent, {
+                concurrency: 1,
+                discard: true,
+              });
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.interrupt
+                  : Effect.gen(function* () {
+                      yield* Effect.logError(
+                        "Codex event preparation failed; history reconciliation required",
+                        { threadId: event.threadId, eventId: event.id, cause },
+                      );
+                      markIncomplete(event);
+                      yield* offerRuntimeEvent({
+                        type: "runtime.error",
+                        eventId: EventId.makeUnsafe(`prepare:${event.id}`),
+                        provider: PROVIDER,
+                        threadId: event.threadId,
+                        createdAt: event.createdAt,
+                        ...(event.providerInstanceId !== undefined
+                          ? { providerInstanceId: event.providerInstanceId }
+                          : {}),
+                        ...(event.sessionGeneration !== undefined
+                          ? { sessionGeneration: event.sessionGeneration }
+                          : {}),
+                        payload: {
+                          class: "transport_error",
+                          message:
+                            "Provider output could not be prepared. Reconcile history before continuing.",
+                        },
+                      });
+                    }),
+              ),
+              (effect) => Effect.runPromiseWith(services)(effect, { signal: controller.signal }),
+            );
+          const prepare = () => {
+            if (!slot) return prepareEvent(event);
+            // Seal at preparation start: later deltas form a new notification.
+            const slots = openDeltaSlots.get(key);
+            if (slots && mergeable && slots.get(mergeable.identity) === slot) {
+              slots.delete(mergeable.identity);
+              if (slots.size === 0) openDeltaSlots.delete(key);
+            }
+            return prepareEvent(mergeContentDeltas(slot.first, slot.parts));
+          };
+          const next = previous.then(prepare, prepare);
+          if (slot) slot.next = next;
+          eventPreparation.set(key, next);
+          void next
+            .finally(() => {
+              lease.release();
+              releaseProvenance();
+              releaseAppCapture?.();
+              preparationControllers.delete(controller);
+              if (eventPreparation.get(key) === next) eventPreparation.delete(key);
+            })
+            .catch(() => {});
+          return next;
+        };
         manager.on("event", listener);
         return listener;
       }),
@@ -2832,9 +3944,70 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           yield* Effect.sync(() => {
             manager.off("event", listener);
           });
+          yield* Effect.promise(() => Promise.allSettled([...eventPreparation.values()])).pipe(
+            Effect.timeoutOption(
+              Math.max(
+                0,
+                (Option.getOrUndefined(shutdown)?.deadline ?? Date.now() + 1_800) - Date.now(),
+              ),
+            ),
+          );
+          if (preparationControllers.size > 0) {
+            yield* Effect.logWarning("Codex event preparation did not drain before shutdown", {
+              pending: preparationControllers.size,
+            });
+            for (const controller of preparationControllers) controller.abort();
+            yield* Effect.promise(() => Promise.allSettled([...eventPreparation.values()]));
+          }
           yield* Queue.shutdown(runtimeEventQueue);
         }),
     );
+
+    /** Read-only preflight: never spawns, writes, or reads Codex config or credentials. */
+    const getChromeReadiness: NonNullable<CodexAdapterShape["getChromeReadiness"]> = () =>
+      Effect.promise(async () => {
+        if (options?.computerAutomationBroker?.chromeRecoveryRequired())
+          return {
+            eligibility: "recovery-required" as const,
+            reason: "Browser control from an earlier session hasn't stopped yet.",
+          };
+        let binaryPath: string;
+        try {
+          binaryPath = resolveCodexCommand(options?.defaultProviderOptions?.codex?.binaryPath);
+        } catch (cause) {
+          return {
+            eligibility: "unavailable" as const,
+            reason: cause instanceof Error ? cause.message : "Bundled Codex is unavailable.",
+          };
+        }
+        const processEnvironment = options?.processEnvironment ?? process.env;
+        const eligibility = await codexChromeEligibility({
+          codexHome: effectiveCodexHome(
+            resolveCodexHome({ homePath: options?.defaultProviderOptions?.codex?.homePath }),
+            processEnvironment,
+          ),
+          userHome: userInfo().homedir,
+          runtimeMode: "preflight",
+          // The binary's path and signature only: the preflight never runs Codex.
+          codex: await inspectCodexBinary({
+            binaryPath,
+            processEnvironment,
+            cwd: process.cwd(),
+            probeVersion: false,
+          }),
+        });
+        return eligibility.eligible
+          ? {
+              eligibility: "ready" as const,
+              reason: codexChromeReadyDetail(eligibility.installation),
+              recordId: eligibility.installation.record.id,
+            }
+          : {
+              eligibility: "unavailable" as const,
+              reason: eligibility.reason,
+              ...(eligibility.recordId ? { recordId: eligibility.recordId } : {}),
+            };
+      });
 
     return {
       provider: PROVIDER,
@@ -2842,10 +4015,18 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
+      getChromeReadiness,
       executeNativeOperation: (input, onReceipt) =>
         Effect.tryPromise({
           try: (signal) => manager.executeNativeOperation(input, onReceipt, signal),
           catch: (cause) => {
+            if (
+              input.command.kind === "aside" &&
+              asObject(cause)?.nativeOperationCancelled === true
+            )
+              return Object.assign(toRequestError(input.threadId, input.command.kind, cause), {
+                nativeOperationCancelled: true,
+              });
             const error = toRequestError(input.threadId, input.command.kind, cause);
             if (
               cause &&
@@ -2860,11 +4041,24 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               });
             return error;
           },
-        }),
+        }).pipe(
+          Effect.onInterrupt(() =>
+            input.command.kind === "aside"
+              ? Effect.promise(() => manager.interruptTurn(input.threadId).catch(() => undefined))
+              : Effect.void,
+          ),
+        ),
+      markNativeThreadRead: (threadId) =>
+        Effect.promise(() => manager.markNativeThreadRead(threadId)),
       inspectNativeOperation: (input) =>
         Effect.tryPromise({
           try: () => manager.inspectNativeOperation(input),
           catch: (cause) => toRequestError(input.threadId, "inspect", cause),
+        }),
+      readChildThreadItems: (threadId, childId, cursor, limit) =>
+        Effect.tryPromise({
+          try: () => manager.readChildThreadItems(threadId, childId, cursor, limit),
+          catch: (cause) => toRequestError(threadId, "thread/items/list", cause),
         }),
       reconcileNativeOperation: (record) =>
         Effect.tryPromise({
@@ -2876,6 +4070,37 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           try: () => manager.renameThread(threadId, title),
           catch: (cause) => toRequestError(threadId, "thread/name/set", cause),
         }),
+      mcpApps: {
+        identity: (threadId) =>
+          Effect.try({
+            try: () => manager.getMcpAppSessionIdentity(threadId),
+            catch: (cause) => toRequestError(threadId, "mcpApps.identity", cause),
+          }),
+        listTools: ({ threadId, server }) =>
+          Effect.tryPromise({
+            try: async () => {
+              const listing = await manager.getMcpServerStatuses(threadId, {
+                deadline: Date.now() + 10000,
+              });
+              if (!listing.complete) throw new Error("MCP tool inventory is incomplete.");
+              return Object.values(
+                listing.entries.find((entry) => entry.name === server)?.tools ?? {},
+              );
+            },
+            catch: (cause) => toRequestError(threadId, "mcpServerStatus/list", cause),
+          }),
+        callTool: ({ threadId, server, tool, arguments: args, sessionIdentity, approved }) =>
+          Effect.tryPromise({
+            try: () =>
+              manager.callMcpAppTool(threadId, server, tool, args, sessionIdentity, approved),
+            catch: (cause) => toRequestError(threadId, "mcpServer/tool/call", cause),
+          }),
+        readResource: ({ threadId, server, uri }) =>
+          Effect.tryPromise({
+            try: () => manager.readMcpAppResource(threadId, server, uri),
+            catch: (cause) => toRequestError(threadId, "mcpServer/resource/read", cause),
+          }),
+      },
       startSession,
       sendTurn,
       steerTurn: sendTurn,
@@ -2891,8 +4116,28 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       hasSession,
       getSessionDiscovery,
       reloadMcpConfig,
+      getMcpServerStatuses,
+      getOwnedMcpServerNames: (threadId) =>
+        Effect.sync(() =>
+          Object.keys(JSON.parse(launchedMcpConfigKeys.get(threadId) ?? "{}") as object),
+        ),
       stopAll,
-      streamEvents: Stream.fromQueue(runtimeEventQueue),
+      acknowledgeHistoryReconciliation: (threadId, markerId) =>
+        Effect.sync(() => {
+          const marker = incompleteThreads.get(threadId);
+          if (marker?.eventId === markerId) {
+            incompleteContexts.delete(marker.contextKey);
+            incompleteThreads.delete(threadId);
+          }
+        }),
+      streamEvents: Stream.fromQueue(runtimeEventQueue).pipe(
+        Stream.mapEffect(({ event, units, lease }) =>
+          Effect.sync(() => canonicalQueueResources.delete(lease)).pipe(
+            Effect.andThen(runtimeEventBudget.release(units)),
+            Effect.as(event),
+          ),
+        ),
+      ),
     } satisfies CodexAdapterShape;
   });
 

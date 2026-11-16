@@ -1,5 +1,7 @@
+import { makeCodexCatalogCache } from "../codexCatalogCache";
+import { saveCodexFeedback } from "../codexFeedback";
+import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { UsageConsumeResetCreditResult } from "@t3tools/contracts";
 import { CodexControlClient } from "../../codex/CodexControlClient.ts";
 import { makeCodexAccountUsage } from "../../usage/codexAccountUsage.ts";
@@ -17,8 +19,10 @@ import {
   type ModelCapabilities,
   type ProviderStartOptions,
   type ServerProvider,
+  type ServerProviderSkill,
+  type ServerProviderModel,
 } from "@t3tools/contracts";
-import { Duration, Effect, FileSystem, Path, Ref, Schema, Semaphore, Stream } from "effect";
+import { Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeCodexTextGeneration } from "../../git/Layers/CodexTextGeneration.ts";
@@ -33,10 +37,12 @@ import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 import { fingerprintableProviderEnvironment } from "../sensitiveFingerprint.ts";
 import {
   codexContinuationIdentity,
+  codexResetCreditIdentity,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
@@ -48,8 +54,7 @@ import { readCodexInventory } from "../codexInventory.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
-const CODEX_CATALOG_FAILURE_BACKOFF_MS = 30 * 60 * 1000;
-
+export { CODEX_CATALOG_TTL_MS, decideCodexCatalogProbe } from "../codexCatalogCache";
 export type CodexDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
@@ -118,6 +123,7 @@ const toSnapshot = (input: {
   readonly checkedAt?: string;
   readonly status?: ProviderPreflightStatus;
   readonly catalog?: CodexInstanceCatalog;
+  readonly skills?: ReadonlyArray<ServerProviderSkill>;
 }): ServerProvider => {
   const status = input.status;
   const enabled = input.settings.enabled;
@@ -147,10 +153,26 @@ const toSnapshot = (input: {
             : (status?.message ?? "Codex CLI is unavailable."),
         }
       : { availability: "available" as const }),
-    models: mergeReportedProviderModels(codexModels(input.settings), input.catalog?.models),
+    models: mergeReportedProviderModels(
+      codexModels(input.settings),
+      input.catalog?.models,
+      input.catalog,
+    ),
+    ...(status
+      ? {
+          modelCatalog: input.catalog
+            ? {
+                status: input.catalog.complete ? ("complete" as const) : ("partial" as const),
+                ...(input.catalog.complete
+                  ? { lastSuccessAt: input.catalog.fetchedAt }
+                  : { firstPartialAt: input.catalog.fetchedAt }),
+              }
+            : { status: "failed" as const },
+        }
+      : {}),
     slashCommands: [],
     // Instance-private skills (CODEX_HOME, system, admin); repo skills are project-shared.
-    skills: input.catalog?.skills ?? [],
+    skills: input.skills ?? input.catalog?.skills ?? [],
   };
 };
 
@@ -169,6 +191,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const path = yield* Path.Path;
       const eventLoggers = yield* ProviderEventLoggers;
       const previewMcpHttpServer = yield* PreviewMcpHttpServer;
+      const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
       const serverConfig = yield* ServerConfig;
       yield* Effect.tryPromise({
         try: () => validateManagedHome(serverConfig, config.homePath),
@@ -180,9 +203,17 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
             cause,
           }),
       });
+      const processEnvironment = buildAccountExecutionEnvironment({
+        purpose: "provider",
+        profile: serverConfig.profile,
+        stateDir: serverConfig.stateDir,
+        baseEnv: process.env,
+        instance: environment,
+      });
       const homeLayout = yield* resolveCodexHomeLayout(
         config,
         serverConfig.profile?.isDefault === false,
+        processEnvironment.CODEX_HOME,
       );
       yield* materializeCodexShadowHome(homeLayout).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -203,13 +234,6 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         enabled,
         homePath: homeLayout.effectiveHomePath ?? config.homePath,
       } satisfies CodexSettings;
-      const processEnvironment = buildAccountExecutionEnvironment({
-        purpose: "provider",
-        profile: serverConfig.profile,
-        stateDir: serverConfig.stateDir,
-        baseEnv: process.env,
-        instance: environment,
-      });
       yield* Effect.tryPromise({
         try: () =>
           validateProviderCompatibility(
@@ -255,11 +279,22 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         "instanceId" | "driverKind" | "displayName" | "accentColor"
       >;
 
+      let effectiveModels: ReadonlyArray<ServerProviderModel> = [];
       const adapter = yield* makeCodexAdapter({
+        getEffectiveModelCapabilities: () =>
+          new Map(
+            effectiveModels.flatMap((model) =>
+              model.capabilities ? [[model.slug, model.capabilities] as const] : [],
+            ),
+          ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         previewMcpHttpServer,
+        ...(computerAutomationBroker._tag === "Some"
+          ? { computerAutomationBroker: computerAutomationBroker.value }
+          : {}),
         defaultProviderOptions,
         processEnvironment,
+        instanceId,
       });
       const consumeResetCredit = (idempotencyKey: string) =>
         Effect.gen(function* () {
@@ -312,8 +347,14 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
             ),
           );
         }).pipe(Effect.scoped);
+      // Shared by reset-credit idempotency and persisted account history.
+      const resetCreditIdentity = codexResetCreditIdentity(
+        effectiveConfig.homePath.trim()
+          ? effectiveConfig.homePath
+          : processEnvironment.CODEX_HOME || homeLayout.sharedHomePath,
+      );
       const accountUsage = yield* makeCodexAccountUsage(
-        { instanceId, displayName: displayName ?? "Codex", enabled },
+        { instanceId, displayName: displayName ?? "Codex", enabled, identity: resetCreditIdentity },
         {
           cwd: serverConfig.cwd,
           processEnvironment,
@@ -328,35 +369,17 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
             : {}),
         },
       );
-      const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnvironment);
-      // One catalog probe per instance and CLI version: models change with the
-      // executable, not with the five-minute status refresh.
-      const instanceCatalog = yield* Ref.make<{
-        readonly version: string;
-        readonly catalog: CodexInstanceCatalog;
-      } | null>(null);
-      // A failed probe is not retried for the same CLI version until the
-      // backoff elapses, so refreshes do not respawn the app-server each time.
-      const catalogFailure = yield* Ref.make<{
-        readonly version: string;
-        readonly failedAt: number;
-      } | null>(null);
-      // Concurrent refreshes share one probe instead of spawning several.
-      const catalogProbeLock = yield* Semaphore.make(1);
-      const catalogFor = (status: ProviderPreflightStatus) =>
-        Effect.gen(function* () {
-          if (!enabled || !status.available || !status.version) return undefined;
-          const cached = yield* Ref.get(instanceCatalog);
-          if (cached?.version === status.version) return cached.catalog;
-          const failure = yield* Ref.get(catalogFailure);
-          if (
-            failure?.version === status.version &&
-            Date.now() - failure.failedAt < CODEX_CATALOG_FAILURE_BACKOFF_MS
-          )
-            return cached?.catalog;
-          const probed = yield* Effect.tryPromise({
-            try: () =>
-              probeCodexInstanceCatalog({
+      const textGeneration = yield* makeCodexTextGeneration(
+        effectiveConfig,
+        processEnvironment,
+        (model) =>
+          Effect.sync(() => effectiveModels.find((row) => row.slug === model)?.capabilities),
+      );
+      const catalogCache = yield* makeCodexCatalogCache(() =>
+        Effect.tryPromise({
+          try: (signal) =>
+            probeCodexInstanceCatalog(
+              {
                 binaryPath: effectiveConfig.binaryPath,
                 homePath: effectiveConfig.homePath,
                 ...(defaultProviderOptions.codex?.launchArgs
@@ -364,31 +387,31 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
                   : {}),
                 cwd: serverConfig.cwd,
                 processEnvironment,
-              }),
-            catch: (cause) =>
-              new ProviderDriverError({
-                driver: DRIVER_KIND,
-                instanceId,
-                detail: cause instanceof Error ? cause.message : String(cause),
-                cause,
-              }),
-          }).pipe(
-            Effect.tapError((error) =>
-              Effect.logWarning("codex catalog probe failed; using built-in models", {
-                instanceId,
-                cause: error.detail,
-              }),
+              },
+              undefined,
+              signal,
             ),
-            Effect.option,
-          );
-          if (probed._tag === "None") {
-            yield* Ref.set(catalogFailure, { version: status.version, failedAt: Date.now() });
-            return cached?.catalog;
-          }
-          yield* Ref.set(catalogFailure, null);
-          yield* Ref.set(instanceCatalog, { version: status.version, catalog: probed.value });
-          return probed.value;
-        }).pipe(catalogProbeLock.withPermits(1));
+          catch: (cause) =>
+            new ProviderDriverError({
+              driver: DRIVER_KIND,
+              instanceId,
+              detail: cause instanceof Error ? cause.message : String(cause),
+              cause,
+            }),
+        }).pipe(
+          Effect.tap((catalog) =>
+            catalog.anomaly
+              ? Effect.logWarning("codex model catalog is partial", {
+                  instanceId,
+                  anomaly: catalog.anomaly,
+                })
+              : Effect.void,
+          ),
+          Effect.tapError((error) =>
+            Effect.logWarning("codex catalog probe failed", { instanceId, cause: error.detail }),
+          ),
+        ),
+      );
       const checkProvider = checkCodexProviderPreflight({
         providerOptions: defaultProviderOptions,
         processEnvironment,
@@ -402,13 +425,18 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
               rawStatus,
               serverConfig.profile?.isDefault === false,
             );
-            const catalog = yield* catalogFor(status);
+            const catalog =
+              enabled && status.available && status.version
+                ? yield* catalogCache.read(status.version)
+                : undefined;
+            const skills = yield* catalogCache.readSkills(status.version);
             return toSnapshot({
               instance: instanceIdentity,
               settings: effectiveConfig,
               continuationKey: homeLayout.continuationKey,
               status,
               ...(catalog ? { catalog } : {}),
+              skills,
             });
           }),
         ),
@@ -438,9 +466,25 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         ),
       );
 
+      const controlEnvironment = {
+        binaryPath: effectiveConfig.binaryPath,
+        homePath: effectiveConfig.homePath,
+        ...(defaultProviderOptions.codex?.launchArgs
+          ? { launchArgs: defaultProviderOptions.codex.launchArgs }
+          : {}),
+        cwd: serverConfig.cwd,
+        processEnvironment,
+      };
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          driver: DRIVER_KIND,
+          binaryPath: effectiveConfig.binaryPath,
+          resolutionEnvironment: processEnvironment,
+          instanceEnvironment: environment,
+          instanceId,
+        }),
         continuationIdentity: codexContinuationIdentity(homeLayout),
         launchIdentity,
         displayName,
@@ -449,38 +493,28 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         adapter: protectProfileAdapter(adapter, serverConfig, effectiveConfig),
         textGeneration,
-        resetCreditIdentity: `codex-home:${createHash("sha256")
-          .update(
-            (() => {
-              const home =
-                effectiveConfig.homePath.trim() ||
-                processEnvironment.CODEX_HOME ||
-                homeLayout.sharedHomePath;
-              try {
-                return realpathSync(home);
-              } catch {
-                return home;
-              }
-            })(),
-          )
-          .digest("hex")}`,
+        updateModelCatalog: (models) =>
+          Effect.sync(() => {
+            effectiveModels = models;
+          }),
+        invalidateModelCatalog: catalogCache.invalidate,
+        resetCreditIdentity,
         consumeResetCredit,
         accountUsage,
+        saveFeedback: () =>
+          Effect.tryPromise({
+            try: () => saveCodexFeedback(controlEnvironment, serverConfig.stateDir, instanceId),
+            catch: (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: cause instanceof Error ? cause.message : "Could not save Codex feedback.",
+                cause,
+              }),
+          }),
         inventory: ({ projectRoot }) =>
           Effect.tryPromise({
-            try: () =>
-              readCodexInventory(
-                {
-                  binaryPath: effectiveConfig.binaryPath,
-                  homePath: effectiveConfig.homePath,
-                  ...(defaultProviderOptions.codex?.launchArgs
-                    ? { launchArgs: defaultProviderOptions.codex.launchArgs }
-                    : {}),
-                  cwd: serverConfig.cwd,
-                  processEnvironment,
-                },
-                { projectRoot },
-              ),
+            try: () => readCodexInventory(controlEnvironment, { projectRoot }),
             catch: (cause) =>
               new ProviderDriverError({
                 driver: DRIVER_KIND,

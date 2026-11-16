@@ -1,3 +1,5 @@
+import { filterPickerVisibleModels } from "./providerIconUtils";
+import { isKeyboardEventComposing } from "../../lib/keyboardComposition";
 import {
   type ModelSlug,
   type ProviderKind,
@@ -20,7 +22,7 @@ import { Combobox, ComboboxEmpty, ComboboxInput, ComboboxListVirtualized } from 
 import { TooltipProvider } from "../ui/tooltip";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
-import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
+import { rankModelPickerSearch } from "./modelPickerSearch";
 import {
   type ModelPickerModelOption,
   findProviderStatus,
@@ -35,6 +37,7 @@ type ModelPickerItem = ModelPickerModelOption & {
 };
 
 const EMPTY_MODEL_JUMP_LABELS = new Map<string, string>();
+const MODEL_LIST_ESTIMATED_ITEM_SIZE = 58;
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
 function toModelKey(providerKind: ProviderKind, modelId: string): string {
@@ -76,6 +79,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
   const modelListRef = useRef<LegendListRef | null>(null);
+  const pickerContentRef = useRef<HTMLDivElement>(null);
   const keybindings = props.keybindings ?? EMPTY_KEYBINDINGS;
   const [selectedProvider, setSelectedProvider] = useState<ProviderKind | "favorites">(() => {
     if (props.lockedProvider !== null) {
@@ -131,62 +135,31 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const flatModels = useMemo<ModelPickerItem[]>(
     () =>
       Object.entries(props.modelOptionsByProvider).flatMap(([providerKind, models]) =>
-        models.map((model) => ({
+        filterPickerVisibleModels(
+          models,
+          new Set(providerKind === props.provider ? [props.model] : []),
+        ).map((model) => ({
           ...model,
           providerKind: providerKind as ProviderKind,
         })),
       ),
-    [props.modelOptionsByProvider],
+    [props.modelOptionsByProvider, props.provider, props.model],
   );
 
   const filteredModels = useMemo(() => {
     if (searchQuery.trim()) {
-      return flatModels
-        .map((model) => {
-          const key = toModelKey(model.providerKind, model.slug);
-          const score = scoreModelPickerSearch(
-            {
-              providerKind: model.providerKind,
-              modelId: model.slug,
-              name: model.name,
-              shortName: model.shortName,
-              subProvider: model.subProvider,
-              isFavorite: favoriteKeySet.has(key),
-            },
-            searchQuery,
-          );
-          return score === null
-            ? null
-            : {
-                model,
-                score,
-                tieBreaker: buildModelPickerSearchText({
-                  providerKind: model.providerKind,
-                  modelId: model.slug,
-                  name: model.name,
-                  shortName: model.shortName,
-                  subProvider: model.subProvider,
-                }),
-              };
-        })
-        .filter(
-          (
-            entry,
-          ): entry is {
-            model: ModelPickerItem;
-            score: number;
-            tieBreaker: string;
-          } => entry !== null,
-        )
-        .filter((entry) =>
-          props.lockedProvider === null ? true : entry.model.providerKind === props.lockedProvider,
-        )
-        .toSorted((left, right) => {
-          const scoreDelta = left.score - right.score;
-          if (scoreDelta !== 0) return scoreDelta;
-          return left.tieBreaker.localeCompare(right.tieBreaker);
-        })
-        .map((entry) => entry.model);
+      const searchableModels =
+        props.lockedProvider === null
+          ? flatModels
+          : flatModels.filter((model) => model.providerKind === props.lockedProvider);
+      return rankModelPickerSearch(searchableModels, searchQuery, (model) => ({
+        providerKind: model.providerKind,
+        modelId: model.slug,
+        name: model.name,
+        shortName: model.shortName,
+        subProvider: model.subProvider,
+        isFavorite: favoriteKeySet.has(toModelKey(model.providerKind, model.slug)),
+      }));
     }
 
     const providerFilteredModels =
@@ -269,6 +242,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const isLocked = props.lockedProvider !== null;
   const isSearching = searchQuery.trim().length > 0;
   const showSidebar = !isLocked && !isSearching;
+  const [modelListContentSize, setModelListContentSize] = useState(
+    () => filteredModelKeys.length * MODEL_LIST_ESTIMATED_ITEM_SIZE,
+  );
+  const [searchHeight, setSearchHeight] = useState(0);
+  useLayoutEffect(
+    () => modelListRef.current?.getState().listen("totalSize", setModelListContentSize),
+    [],
+  );
+  // Fit the list to its rows plus the LegendList `py-1`, so a short list leaves no empty space.
+  const modelListHeight =
+    filteredModelKeys.length === 0 ? 0 : `calc(${modelListContentSize}px + var(--spacing) * 2)`;
   const lockedProviderIcon =
     props.lockedProvider !== null ? PROVIDER_ICON_BY_PROVIDER[props.lockedProvider] : null;
   const modelJumpCommandByKey = useMemo(() => {
@@ -317,7 +301,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   useEffect(() => {
     const onWindowKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat) {
+      if (event.defaultPrevented || event.repeat || isKeyboardEventComposing(event)) {
         return;
       }
       if (event.target === searchInputRef.current) {
@@ -353,10 +337,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   return (
     <TooltipProvider delay={0}>
       <div
+        ref={pickerContentRef}
         className={cn(
-          "relative flex h-screen max-h-96 w-screen max-w-100 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg/5",
+          "relative flex max-h-[min(24rem,var(--available-height))] w-screen max-w-100 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg/5",
           isLocked ? "flex-col" : "flex-row",
         )}
+        // Hold the height from when the search started; results scroll instead of resizing.
+        style={isSearching ? { height: searchHeight } : undefined}
+        data-model-picker-content="true"
       >
         {isLocked && lockedProviderIcon && props.lockedProvider ? (
           <div className="flex items-center gap-2 border-b px-4 py-3">
@@ -421,8 +409,18 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 showTrigger={false}
                 startAddon={<SearchIcon className="size-4 shrink-0 text-muted-foreground" />}
                 value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
+                onChange={(event) => {
+                  if (!isSearching) setSearchHeight(pickerContentRef.current?.offsetHeight ?? 0);
+                  setSearchQuery(event.target.value);
+                }}
                 onKeyDown={(event) => {
+                  if (isKeyboardEventComposing(event.nativeEvent)) {
+                    (
+                      event as typeof event & { preventBaseUIHandler?: () => void }
+                    ).preventBaseUIHandler?.();
+                    event.stopPropagation();
+                    return;
+                  }
                   if (event.key === "Escape") {
                     event.preventDefault();
                     event.stopPropagation();
@@ -449,7 +447,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               />
             </div>
 
-            <div className="relative min-h-0 flex-1 overflow-hidden before:pointer-events-none before:absolute before:inset-0 before:bg-muted/40">
+            <div
+              className="relative min-h-0 overflow-hidden before:pointer-events-none before:absolute before:inset-0 before:bg-muted/40"
+              style={{ height: modelListHeight }}
+            >
               <ComboboxListVirtualized className="model-picker-list size-full p-0">
                 <LegendList<string>
                   ref={modelListRef}
@@ -483,7 +484,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                       />
                     );
                   }}
-                  estimatedItemSize={58}
+                  estimatedItemSize={MODEL_LIST_ESTIMATED_ITEM_SIZE}
                   drawDistance={464}
                   recycleItems
                   className="size-full overflow-x-hidden px-2 py-1"
@@ -493,6 +494,26 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
               No models found
             </ComboboxEmpty>
+            {selectedProvider !== "favorites" &&
+              props.providers
+                ?.filter((provider) => provider.driver === selectedProvider)
+                .flatMap((provider) =>
+                  (provider.updateRequiredModels ?? [])
+                    .filter((model) =>
+                      (model.name + " " + model.slug)
+                        .toLowerCase()
+                        .includes(searchQuery.trim().toLowerCase()),
+                    )
+                    .map((model) => (
+                      <p
+                        key={provider.instanceId + ":" + model.slug}
+                        className="px-3 py-1 text-xs text-muted-foreground"
+                      >
+                        Update {provider.driver === "claudeAgent" ? "Claude Code" : "Codex"} to v
+                        {model.minVersion} or newer to use {model.name}.
+                      </p>
+                    )),
+                )}
           </div>
         </Combobox>
       </div>

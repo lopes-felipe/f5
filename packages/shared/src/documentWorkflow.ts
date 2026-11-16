@@ -1,6 +1,6 @@
 import {
   DOCUMENT_WORKFLOW_TEMPLATE_ID,
-  type PlanningWorkflow,
+  type PlanningWorkflowSummary as PlanningWorkflow,
   type ThreadId,
   type WorkflowDocumentType,
   type WorkflowModelSlot,
@@ -237,10 +237,10 @@ export function planningWorkflowDocumentType(
 export function isDocumentWorkflow(workflow: DocumentIdentity): boolean {
   return planningWorkflowDocumentType(workflow) !== null;
 }
-export function documentWorkflowForThread(
-  workflows: ReadonlyArray<PlanningWorkflow>,
+export function documentWorkflowForThread<T extends PlanningWorkflow>(
+  workflows: ReadonlyArray<T>,
   threadId: ThreadId,
-): PlanningWorkflow | null {
+): T | null {
   return (
     workflows.find(
       (workflow) =>

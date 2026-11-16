@@ -1,5 +1,6 @@
+import { raceWithAbort } from "@t3tools/shared/abortSignal";
+import { canHydrateThreadTail } from "../orchestration/detailCoverage";
 import type {
-  OrchestrationCommandExecution,
   OrchestrationCommandExecutionId,
   OrchestrationCommandExecutionSummary,
   OrchestrationEvent,
@@ -26,6 +27,7 @@ import {
 } from "./threadOpenTrace";
 import { ensureNativeApi } from "../nativeApi";
 import { useStore } from "../store";
+import { retainThreadDetail } from "./threadDetailRetention";
 import { ensureThreadHistoryState } from "./threadHistory";
 import type { ThreadHistoryState } from "../types";
 
@@ -86,6 +88,71 @@ const inFlightThreadCommandExecutionDetailRequests = new Map<
   string,
   Promise<OrchestrationGetThreadCommandExecutionResult>
 >();
+
+type CommandDetailEvent = Extract<
+  OrchestrationEvent,
+  { type: "thread.command-execution-recorded" | "thread.command-execution-output-appended" }
+>;
+interface CommandDetailRead {
+  readonly events: CommandDetailEvent[];
+  chars: number;
+  needsRefresh: boolean;
+}
+const commandDetailReads = new WeakMap<QueryClient, Map<string, CommandDetailRead>>();
+
+async function fetchCommandDetailWithEvents(
+  client: QueryClient,
+  input: { threadId: ThreadId; commandExecutionId: OrchestrationCommandExecutionId },
+  signal: AbortSignal,
+): Promise<OrchestrationGetThreadCommandExecutionResult> {
+  const key = `${input.threadId}:${input.commandExecutionId}`;
+  const queryKey = orchestrationQueryKeys.threadCommandExecution(
+    input.threadId,
+    input.commandExecutionId,
+  );
+  const reads = commandDetailReads.get(client) ?? new Map<string, CommandDetailRead>();
+  commandDetailReads.set(client, reads);
+  const read: CommandDetailRead = {
+    events: [],
+    chars: 0,
+    needsRefresh: inFlightThreadCommandExecutionDetailRequests.has(key),
+  };
+  reads.set(key, read);
+  const baseline = client.getQueryData<OrchestrationGetThreadCommandExecutionResult>(queryKey);
+  let succeeded = false;
+  try {
+    let result = await fetchThreadCommandExecutionRpc(input, signal);
+    // A previously loaded complete transcript is also a valid baseline. Never
+    // replace it with an older snapshot, even if another caller began that RPC.
+    if (
+      baseline?.commandExecution &&
+      (!result.commandExecution ||
+        baseline.commandExecution.lastUpdatedSequence > result.commandExecution.lastUpdatedSequence)
+    ) {
+      result = baseline;
+    }
+    for (const event of read.events) {
+      result =
+        (event.type === "thread.command-execution-recorded"
+          ? mergeThreadCommandExecutionRecordedDetailResult(result, event, null)
+          : mergeThreadCommandExecutionOutputAppendedDetailResult(result, event, null)) ?? result;
+    }
+    if (!result.commandExecution && read.events.length) read.needsRefresh = true;
+    succeeded = true;
+    return result;
+  } finally {
+    if (reads.get(key) === read) reads.delete(key);
+    if (succeeded && read.needsRefresh && !signal.aborted) {
+      // Reconcile/overflow needs one authoritative follow-up after this query
+      // commits. Ordinary streaming events are replayed above, without refetching.
+      setTimeout(() => {
+        if (!signal.aborted && client.getQueryState(queryKey)) {
+          void client.invalidateQueries({ queryKey });
+        }
+      }, 0);
+    }
+  }
+}
 const inFlightThreadFileChangeRequests = new Map<
   string,
   Promise<OrchestrationGetThreadFileChangesResult>
@@ -133,15 +200,7 @@ export function isProvisionalThreadDetail(
   return details.detailSequence === 0;
 }
 
-function waitForAbort(signal: AbortSignal): Promise<never> {
-  if (signal.aborted) {
-    return Promise.reject(makeAbortError());
-  }
-
-  return new Promise((_, reject) => {
-    signal.addEventListener("abort", () => reject(makeAbortError()), { once: true });
-  });
-}
+export { raceWithAbort } from "@t3tools/shared/abortSignal";
 
 function getAuxRequestKey(threadId: ThreadId, afterSequenceExclusive?: number): string {
   return `${threadId}:${afterSequenceExclusive ?? "full"}`;
@@ -194,11 +253,17 @@ function getOrStartInFlightRequest<T>(
     return existing;
   }
 
-  const request = create().finally(() => {
-    if (map.get(key) === request) {
-      map.delete(key);
-    }
-  });
+  const generation = useStore.getState().backendGeneration;
+  const request = create()
+    .then((value) => {
+      if (generation !== useStore.getState().backendGeneration) throw makeAbortError();
+      return value;
+    })
+    .finally(() => {
+      if (map.get(key) === request) {
+        map.delete(key);
+      }
+    });
   map.set(key, request);
   return request;
 }
@@ -206,29 +271,48 @@ function getOrStartInFlightRequest<T>(
 async function fetchThreadTailDetailsRpc(
   threadId: ThreadId,
   signal?: AbortSignal,
+  priority: "interactive" | "background" = "interactive",
 ): Promise<OrchestrationThreadTailDetails> {
+  const generation = useStore.getState().backendGeneration;
+  const historyGeneration = useStore.getState().threads.find((thread) => thread.id === threadId)
+    ?.history?.generation;
   const api = ensureNativeApi();
-  const request = getOrStartInFlightRequest(
-    inFlightThreadDetailRequests,
-    getThreadTailRequestKey(threadId),
-    () => api.orchestration.getThreadTailDetails({ threadId }),
-  );
-  const details = signal ? await Promise.race([request, waitForAbort(signal)]) : await request;
-  if (signal?.aborted) {
-    throw makeAbortError();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // Interactive hydration never joins a background warm: that request may
+    // wait behind interactive reads or be shed.
+    const request = getOrStartInFlightRequest(
+      inFlightThreadDetailRequests,
+      `${getThreadTailRequestKey(threadId)}${priority === "background" ? ":background" : ""}`,
+      () => api.orchestration.getThreadTailDetails({ threadId }, { priority }),
+    );
+    const details = await raceWithAbort(request, signal);
+    if (
+      signal?.aborted ||
+      generation !== useStore.getState().backendGeneration ||
+      historyGeneration !==
+        useStore.getState().threads.find((thread) => thread.id === threadId)?.history?.generation
+    ) {
+      throw makeAbortError();
+    }
+    if (!canHydrateThreadTail(useStore.getState(), threadId, details)) {
+      if (attempt === 0) continue;
+      throw new Error("Thread details changed during hydration; retry required.");
+    }
+    return {
+      ...details,
+      activities: details.activities ?? [],
+      hasOlderActivities: details.hasOlderActivities ?? false,
+      oldestLoadedActivityCursor: details.oldestLoadedActivityCursor ?? null,
+    };
   }
-  return {
-    ...details,
-    activities: details.activities ?? [],
-    hasOlderActivities: details.hasOlderActivities ?? false,
-    oldestLoadedActivityCursor: details.oldestLoadedActivityCursor ?? null,
-  };
+  throw new Error("Thread details could not be refreshed.");
 }
 
 async function fetchThreadHistoryPageRpc(
   input: OrchestrationGetThreadHistoryPageInput,
   signal?: AbortSignal,
 ): Promise<OrchestrationThreadHistoryPage> {
+  const generation = useStore.getState().backendGeneration;
   const api = ensureNativeApi();
   const request = getOrStartInFlightRequest(
     inFlightThreadHistoryPageRequests,
@@ -241,8 +325,8 @@ async function fetchThreadHistoryPageRpc(
     }),
     () => api.orchestration.getThreadHistoryPage(input),
   );
-  const page = signal ? await Promise.race([request, waitForAbort(signal)]) : await request;
-  if (signal?.aborted) {
+  const page = await raceWithAbort(request, signal);
+  if (signal?.aborted || generation !== useStore.getState().backendGeneration) {
     throw makeAbortError();
   }
   return {
@@ -272,7 +356,7 @@ async function fetchThreadCommandExecutionRpc(
     return request;
   }
 
-  const result = await Promise.race([request, waitForAbort(signal)]);
+  const result = await raceWithAbort(request, signal);
   if (signal.aborted) {
     throw makeAbortError();
   }
@@ -287,24 +371,6 @@ function buildThreadCommandExecutionSummaryFromRecordedEvent(
     threadId: event.payload.threadId,
     startedSequence: event.sequence,
     lastUpdatedSequence: event.sequence,
-  };
-}
-
-function buildThreadCommandExecutionDetailFromSummary(
-  summary: OrchestrationCommandExecutionSummary,
-  options?: {
-    output?: string;
-    outputTruncated?: boolean;
-    updatedAt?: string;
-    lastUpdatedSequence?: number;
-  },
-): OrchestrationCommandExecution {
-  return {
-    ...summary,
-    output: options?.output ?? "",
-    outputTruncated: options?.outputTruncated ?? false,
-    updatedAt: options?.updatedAt ?? summary.updatedAt,
-    lastUpdatedSequence: options?.lastUpdatedSequence ?? summary.lastUpdatedSequence,
   };
 }
 
@@ -332,15 +398,14 @@ export function mergeThreadCommandExecutionRecordedDetailResult(
 
   const nextSummary = summary ?? buildThreadCommandExecutionSummaryFromRecordedEvent(event);
   if (!existing) {
-    return {
-      commandExecution: buildThreadCommandExecutionDetailFromSummary(nextSummary),
-    };
+    return current;
   }
 
   return {
     commandExecution: {
       ...existing,
       ...nextSummary,
+      startedSequence: existing.startedSequence,
       output: existing.output,
       outputTruncated: existing.outputTruncated,
     },
@@ -350,7 +415,7 @@ export function mergeThreadCommandExecutionRecordedDetailResult(
 export function mergeThreadCommandExecutionOutputAppendedDetailResult(
   current: OrchestrationGetThreadCommandExecutionResult | undefined,
   event: Extract<OrchestrationEvent, { type: "thread.command-execution-output-appended" }>,
-  summary: OrchestrationCommandExecutionSummary | null,
+  _summary: OrchestrationCommandExecutionSummary | null,
 ): OrchestrationGetThreadCommandExecutionResult | undefined {
   if (current === undefined) {
     return current;
@@ -362,16 +427,7 @@ export function mergeThreadCommandExecutionOutputAppendedDetailResult(
   }
 
   if (!existing) {
-    if (!summary) {
-      return current;
-    }
-    return {
-      commandExecution: buildThreadCommandExecutionDetailFromSummary(summary, {
-        output: event.payload.chunk,
-        updatedAt: event.payload.updatedAt,
-        lastUpdatedSequence: event.sequence,
-      }),
-    };
+    return current;
   }
 
   return {
@@ -392,8 +448,47 @@ export function applyThreadCommandExecutionEventToQueryCache(
     | { type: "thread.reverted" }
     | { type: "thread.command-execution-recorded" }
     | { type: "thread.command-execution-output-appended" }
+    | { type: "thread.command-execution-output-reconciled" }
   >,
 ): void {
+  if (
+    event.type === "thread.command-execution-recorded" ||
+    event.type === "thread.command-execution-output-appended" ||
+    event.type === "thread.command-execution-output-reconciled"
+  ) {
+    const commandExecutionId =
+      event.type === "thread.command-execution-recorded"
+        ? event.payload.commandExecution.id
+        : event.payload.commandExecutionId;
+    const queryKey = orchestrationQueryKeys.threadCommandExecution(
+      event.payload.threadId,
+      commandExecutionId,
+    );
+    const state = queryClient.getQueryState<OrchestrationGetThreadCommandExecutionResult>(queryKey);
+    const read = commandDetailReads
+      .get(queryClient)
+      ?.get(`${event.payload.threadId}:${commandExecutionId}`);
+    if (read) {
+      if (event.type === "thread.command-execution-output-reconciled") read.needsRefresh = true;
+      else {
+        const chars =
+          event.type === "thread.command-execution-output-appended"
+            ? event.payload.chunk.length
+            : 0;
+        if (read.events.length >= 512 || read.chars + chars > 1024 * 1024) read.needsRefresh = true;
+        else {
+          read.events.push(event);
+          read.chars += chars;
+        }
+      }
+    } else if (
+      state &&
+      (event.type === "thread.command-execution-output-reconciled" || !state.data?.commandExecution)
+    ) {
+      void queryClient.invalidateQueries({ queryKey });
+      return;
+    }
+  }
   switch (event.type) {
     case "thread.deleted":
     case "thread.reverted": {
@@ -441,6 +536,11 @@ export function applyThreadCommandExecutionEventToQueryCache(
       queryClient.setQueryData<OrchestrationGetThreadCommandExecutionResult>(queryKey, (current) =>
         mergeThreadCommandExecutionOutputAppendedDetailResult(current, event, summary),
       );
+      return;
+    }
+
+    case "thread.command-execution-output-reconciled": {
+      return;
     }
   }
 }
@@ -462,7 +562,7 @@ async function fetchThreadFileChangesRpc(
     return request;
   }
 
-  const result = await Promise.race([request, waitForAbort(signal)]);
+  const result = await raceWithAbort(request, signal);
   if (signal.aborted) {
     throw makeAbortError();
   }
@@ -472,10 +572,10 @@ async function fetchThreadFileChangesRpc(
 async function fetchThreadDetailInternal(
   queryClient: QueryClient,
   threadId: ThreadId,
-  options?: { force?: boolean; signal?: AbortSignal },
+  options?: { force?: boolean; signal?: AbortSignal; priority?: "interactive" | "background" },
 ): Promise<OrchestrationThreadTailDetails> {
-  if (options?.signal) {
-    return fetchThreadTailDetailsRpc(threadId, options.signal);
+  if (options?.signal || options?.priority === "background") {
+    return fetchThreadTailDetailsRpc(threadId, options.signal, options.priority);
   }
 
   return queryClient.fetchQuery({
@@ -487,7 +587,12 @@ async function fetchThreadDetailInternal(
 export async function fetchAndSyncThreadDetail(
   queryClient: QueryClient,
   threadId: ThreadId,
-  options?: { force?: boolean; signal?: AbortSignal; captureLiveEvents?: boolean },
+  options?: {
+    force?: boolean;
+    signal?: AbortSignal;
+    captureLiveEvents?: boolean;
+    priority?: "interactive" | "background";
+  },
 ): Promise<OrchestrationThreadTailDetails | null> {
   const stateBeforeFetch = useStore.getState();
   const lastAppliedSequenceBeforeFetch = stateBeforeFetch.lastAppliedSequence;
@@ -502,22 +607,19 @@ export async function fetchAndSyncThreadDetail(
   if (!options?.force && thread.detailsLoaded) {
     return null;
   }
-  if (captureLiveEvents && !thread.detailsLoaded) {
+  const acquiredLiveRetainer = captureLiveEvents && !thread.detailsLoaded;
+  if (acquiredLiveRetainer) {
     stateBeforeFetch.beginThreadDetailLoad(threadId);
   }
 
   try {
     const details = await fetchThreadDetailInternal(queryClient, threadId, options);
     if (options?.signal?.aborted) {
-      if (captureLiveEvents) {
-        useStore.getState().clearThreadDetailBuffer(threadId);
-      }
       return null;
     }
     const nextStore = useStore.getState();
-    nextStore.syncThreadTailDetails(threadId, details, {
-      advanceLastAppliedSequence: captureLiveEvents,
-    });
+    if (nextStore.backendGeneration !== stateBeforeFetch.backendGeneration) return null;
+    nextStore.syncThreadTailDetails(threadId, details);
     const shouldCacheDetails =
       hasDetailBufferForFetch || details.detailSequence >= lastAppliedSequenceBeforeFetch;
     if (shouldCacheDetails) {
@@ -525,13 +627,22 @@ export async function fetchAndSyncThreadDetail(
     }
     return details;
   } catch (error) {
-    if (captureLiveEvents) {
-      useStore.getState().clearThreadDetailBuffer(threadId);
-    }
     if (isAbortError(error)) {
       return null;
     }
     throw error;
+  } finally {
+    const state = useStore.getState();
+    if (
+      acquiredLiveRetainer &&
+      state.backendGeneration === stateBeforeFetch.backendGeneration &&
+      state.threads.find((entry) => entry.id === threadId)?.history?.generation ===
+        thread.history?.generation
+    ) {
+      // Accepted hydration already dropped the buffer; rejected hydration must
+      // release this fetch's retainer without releasing another consumer's.
+      state.clearThreadDetailBuffer(threadId);
+    }
   }
 }
 
@@ -552,12 +663,14 @@ export function scheduleThreadDetailRefreshIfProvisional(
 
   let refreshPromise: Promise<void> | undefined;
   refreshPromise = (async () => {
+    const generation = useStore.getState().backendGeneration;
     let latestDetails: OrchestrationThreadTailDetails | null = details;
     for (const delayMs of PROVISIONAL_THREAD_DETAIL_REFRESH_DELAYS_MS) {
       if (!latestDetails || !isProvisionalThreadDetail(latestDetails)) {
         return;
       }
       await waitForDelay(delayMs, options?.signal);
+      if (generation !== useStore.getState().backendGeneration) return;
       latestDetails = await fetchAndSyncThreadDetail(queryClient, threadId, {
         force: true,
         ...(options?.signal ? { signal: options.signal } : {}),
@@ -701,6 +814,7 @@ export async function ensureThreadHistoryBackfill(
   })().finally(() => {
     if (inFlightThreadHistoryBackfills.get(backfillKey) === backfillPromise) {
       inFlightThreadHistoryBackfills.delete(backfillKey);
+      useStore.getState().cancelThreadHistoryBackfill(threadId, expectedGeneration);
     }
   });
 
@@ -780,9 +894,17 @@ export async function loadThreadHistoryAroundMessage(
       ? page.messages.some((message) => message.id === anchorId)
       : page.activities.some((activity) => activity.id === anchorId);
   if (!anchorPresent) {
-    throw new Error("The requested timeline item is no longer available.");
+    throw new TimelineAnchorUnavailableError();
   }
   useStore.getState().mergeAnchoredThreadHistoryPage(threadId, page, history.generation);
+}
+
+/** The anchor a history load was asked for is gone (deleted or reverted), unlike a transport failure. */
+export class TimelineAnchorUnavailableError extends Error {
+  constructor() {
+    super("The requested timeline item is no longer available.");
+    this.name = "TimelineAnchorUnavailableError";
+  }
 }
 
 export async function loadNewerThreadHistoryPage(
@@ -825,6 +947,7 @@ export async function loadNewerThreadHistoryPage(
 }
 
 export function clearInFlightOrchestrationRpcRequests(): void {
+  provisionalThreadDetailRefreshes.clear();
   inFlightThreadDetailRequests.clear();
   inFlightThreadHistoryPageRequests.clear();
   inFlightThreadHistoryBackfills.clear();
@@ -842,14 +965,16 @@ export function useThreadDetail(threadId: ThreadId | null | undefined) {
   const clearThreadDetailBuffer = useStore((store) => store.clearThreadDetailBuffer);
   const syncThreadTailDetails = useStore((store) => store.syncThreadTailDetails);
   const detailsLoaded = thread?.detailsLoaded ?? false;
+  const threadExists = thread !== undefined;
+  const backendGeneration = useStore((store) => store.backendGeneration);
 
   useLayoutEffect(() => {
-    if (!threadId || detailsLoaded) {
+    if (!threadId || !threadExists || detailsLoaded) {
       return;
     }
     startThreadOpenTrace(threadId, "route");
     beginThreadDetailLoad(threadId);
-  }, [beginThreadDetailLoad, detailsLoaded, threadId]);
+  }, [beginThreadDetailLoad, detailsLoaded, threadId, threadExists, backendGeneration]);
 
   useEffect(() => {
     if (!threadId) {
@@ -857,9 +982,13 @@ export function useThreadDetail(threadId: ThreadId | null | undefined) {
     }
     return () => {
       finishThreadOpenTrace(threadId, "route-unmounted");
-      clearThreadDetailBuffer(threadId);
+      if (useStore.getState().backendGeneration === backendGeneration)
+        clearThreadDetailBuffer(threadId);
     };
-  }, [clearThreadDetailBuffer, threadId]);
+  }, [clearThreadDetailBuffer, threadId, backendGeneration]);
+
+  // Shown details stay hydrated; detail retention evicts only inactive threads.
+  useEffect(() => (threadId ? retainThreadDetail(threadId) : undefined), [threadId]);
 
   const query = useQuery<OrchestrationThreadTailDetails>({
     queryKey: threadId
@@ -888,7 +1017,17 @@ export function useThreadDetail(threadId: ThreadId | null | undefined) {
     },
     enabled: Boolean(threadId) && !detailsLoaded,
     gcTime: 30_000,
-    staleTime: Infinity,
+    // Revalidate cached absence when navigating back to an unlisted thread.
+    staleTime: threadExists ? Infinity : 0,
+    // A tail older than the shell cannot seed missing metadata safely.
+    // Retry until a current tail arrives, without polling listed threads.
+    refetchInterval: (query) =>
+      !threadExists &&
+      query.state.data?.thread &&
+      !query.state.data.thread.deletedAt &&
+      !query.state.data.thread.archivedAt
+        ? 1_000
+        : false,
   });
 
   useEffect(() => {
@@ -949,11 +1088,12 @@ export function threadCommandExecutionQueryOptions(input: {
       input.threadId && input.commandExecutionId
         ? orchestrationQueryKeys.threadCommandExecution(input.threadId, input.commandExecutionId)
         : ([...orchestrationQueryKeys.all, "threadCommandExecution", "disabled"] as const),
-    queryFn: async ({ signal }) => {
+    queryFn: async ({ signal, client }) => {
       if (!input.threadId || !input.commandExecutionId) {
         return { commandExecution: null } satisfies OrchestrationGetThreadCommandExecutionResult;
       }
-      return fetchThreadCommandExecutionRpc(
+      return fetchCommandDetailWithEvents(
+        client,
         {
           threadId: input.threadId,
           commandExecutionId: input.commandExecutionId,
@@ -1022,7 +1162,10 @@ export async function scheduleThreadCommandExecutionRefreshIfMissing(
         if (latest === undefined || latest.commandExecution !== null) {
           return;
         }
-        const refreshed = await fetchThreadCommandExecutionRpc(input, options?.signal);
+        const refreshed = await queryClient.fetchQuery({
+          ...threadCommandExecutionQueryOptions(input),
+          staleTime: 0,
+        });
         if (options?.signal?.aborted) {
           return;
         }

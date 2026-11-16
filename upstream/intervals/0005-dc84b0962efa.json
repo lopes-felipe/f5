@@ -1,0 +1,892 @@
+{
+  "baseSha": "7d3208cbea86b91574366bb6e87d05f93c975127",
+  "commits": [
+    {
+      "pr": 25758,
+      "sha": "dc84b0962efa4f4e05ef392c08986a9cd7c994d1",
+      "subject": "feat(mobile): add One UI navigation preference on Android (#25758)",
+      "topic": "pr-25758"
+    },
+    {
+      "pr": 25675,
+      "sha": "36d4d711b79c73eb33131944f73ea4a8c6156484",
+      "subject": "fix(server): bound hung delegated stop effects so later runs can start (#25675)",
+      "topic": "pr-25675"
+    },
+    {
+      "pr": 25857,
+      "sha": "e9236274a3a6e0c731a7df4092db1e686f039068",
+      "subject": "refactor(mobile): showcase capture runs as an app service, not a chain of effects (#25857)",
+      "topic": "pr-25857"
+    },
+    {
+      "pr": 25859,
+      "sha": "a8edf13f9998192073ad6184c916d879c5d4120a",
+      "subject": "fix(mobile): the Add environment form shows only its own pairing errors (#25859)",
+      "topic": "pr-25859"
+    },
+    {
+      "pr": 25912,
+      "sha": "319c572c966b19ac1e89a0114a40fb924695bd58",
+      "subject": "refactor(mobile): git action results buzz from where they are reported (#25912)",
+      "topic": "pr-25912"
+    },
+    {
+      "pr": 25913,
+      "sha": "6dc4842523217b7b724c23a1c64016791fe76b56",
+      "subject": "refactor(web): file tree drag mentions use React drag handlers (#25913)",
+      "topic": "pr-25908"
+    },
+    {
+      "pr": 25928,
+      "sha": "f41518f3bc2672c419871c02a3c6728d0f627142",
+      "subject": "ci(release): desktop builds that cannot open no longer publish (#25928)",
+      "topic": "pr-25929"
+    },
+    {
+      "pr": 25929,
+      "sha": "30f4d6374a0f746812a1f049f43949794f983f77",
+      "subject": "ci(web): releases fail when the built web app cannot boot (#25929)",
+      "topic": "pr-25929"
+    },
+    {
+      "pr": 25903,
+      "sha": "3087e60fa49b518cf3efb1000be727cc19085516",
+      "subject": "fix(desktop): a broken release opens an error window instead of hanging (#25903)",
+      "topic": "pr-25903"
+    },
+    {
+      "pr": 25910,
+      "sha": "0d88fcf3d541ed986a856a5e4eabdff433ad156b",
+      "subject": "perf(mobile): worktree setup updates commit the thread screen once (#25910)",
+      "topic": "pr-25910"
+    },
+    {
+      "pr": 25916,
+      "sha": "2083a22919549f7d0648de3c9c19f550c4d1ce93",
+      "subject": "fix(web): PR Code tab no longer requests the diff of a commit the PR dropped (#25916)",
+      "topic": "pr-25916"
+    },
+    {
+      "pr": 25920,
+      "sha": "067db24e00f266ee9e2cca2b59a79062e0497401",
+      "subject": "refactor(web): preview element picker drops its unmount guard (#25920)",
+      "topic": "pr-25920"
+    },
+    {
+      "pr": 25908,
+      "sha": "3e61886a243bf8775e2331f558340074ea5f89f0",
+      "subject": "refactor(web): file browser records the right-click position on its own panel (#25908)",
+      "topic": "pr-25908"
+    },
+    {
+      "pr": 25915,
+      "sha": "a4fe62ecfb595d2f40134bcd804bc6660b83d0b2",
+      "subject": "refactor(web): composer overlay re-measures from one layout effect (#25915)",
+      "topic": "pr-25915"
+    },
+    {
+      "pr": 25909,
+      "sha": "c39a115a14c1ddf01241ce2a44e65288490e1070",
+      "subject": "refactor(web): composer clears scroll-collapse in render, not after paint (#25909)",
+      "topic": "pr-25909"
+    },
+    {
+      "pr": 25868,
+      "sha": "7873f53ada4e9b94090cc8a84c005db3aa364fb8",
+      "subject": "fix(web): the Add ChatGPT account dialog animates closed once the account connects (#25868)",
+      "topic": "pr-25524"
+    },
+    {
+      "pr": 25900,
+      "sha": "1152e9171a9ce6ede20e0cc1f16ed0dbe103da9b",
+      "subject": "fix(desktop): run the packaged bundle self-check on macOS artifacts (#25900)",
+      "topic": "pr-25900"
+    },
+    {
+      "pr": 25895,
+      "sha": "58c31f293d9ca52aded8dcfbceb4f63c704a1b72",
+      "subject": "refactor(mobile): settings permission and update checks without sync effects (#25895)",
+      "topic": "pr-25895"
+    },
+    {
+      "pr": 25813,
+      "sha": "79f6cd30c7ed4772d5989d08ce26f64f161dfe49",
+      "subject": "refactor(mobile): workspace tabs, home filters and connection status derive instead of syncing (#25813)",
+      "topic": "pr-25813"
+    },
+    {
+      "pr": 25856,
+      "sha": "790ba13d0c839d3cd1b4c45f6d3c252b9286dc99",
+      "subject": "refactor(mobile): app update checks start with the app (#25856)",
+      "topic": "pr-25856"
+    },
+    {
+      "pr": 25854,
+      "sha": "edf5a24b568371b27f23cc5fff92b4a225df3276",
+      "subject": "refactor(mobile): subagent timers share the visible second clock (#25854)",
+      "topic": "pr-25854"
+    },
+    {
+      "sha": "9db3401bdc4ed216bdc1450ac141085954d1a503",
+      "subject": "chore(mobile): e2e runner on agent-device 0.21.32, side-rail aware tab checks",
+      "topic": "c-9db3401bdc4e"
+    },
+    {
+      "pr": 25841,
+      "sha": "7c3b3b3605efa695e9948051b569937fc1482c0f",
+      "subject": "fix(desktop): packaged server ships zod for @cursor/sdk 1.0.38 (#25841)",
+      "topic": "pr-21074"
+    },
+    {
+      "pr": 25632,
+      "sha": "a452c2dfdc54c0ee9bae5191610725c88bd9f367",
+      "subject": "fix(mobile): opening a new thread before it is created no longer marks it unavailable (#25632)",
+      "topic": "pr-25632"
+    },
+    {
+      "pr": 25839,
+      "sha": "00c636e4b02a84c18fe7fcb1b709847e9cbb7541",
+      "subject": "fix(mobile): picking a project on two machines starts on the connected one (#25839)",
+      "topic": "pr-25839"
+    },
+    {
+      "pr": 25882,
+      "sha": "63bc022f646e7b7591645998f1c67840a725b59c",
+      "subject": "fix(web): clicking the device screen no longer draws a focus ring (#25882)",
+      "topic": "pr-25882"
+    },
+    {
+      "pr": 25812,
+      "sha": "e109dc8d89419ae8120110ab28a4c94c5a4f600b",
+      "subject": "refactor(mobile): each new-task draft route keeps its own flow state (#25812)",
+      "topic": "pr-25812"
+    },
+    {
+      "pr": 25860,
+      "sha": "a86c05f977ef0e86b064c452d2c8b583a8ea73c1",
+      "subject": "fix(desktop): Cmd/Ctrl+W closes sidebar tabs, never the window (#25860)",
+      "topic": "pr-25860"
+    },
+    {
+      "pr": 25837,
+      "sha": "ad068d7c93744f11a0ca1e816897b8e3128292ef",
+      "subject": "fix(web): Steer no longer does nothing while a compaction runs (#25837)",
+      "topic": "pr-25837"
+    },
+    {
+      "pr": 25820,
+      "sha": "52925f9e9895f0155f54a43087c15dc486fa182b",
+      "subject": "refactor(mobile): prompt links resolve when the link is parsed, not from screen effects (#25820)",
+      "topic": "pr-25820"
+    },
+    {
+      "pr": 25817,
+      "sha": "28286d523fc34582cbe2b5fd0bcf2947a97ed89f",
+      "subject": "refactor(mobile): opening Review or Files shows the inspector in the first commit (#25817)",
+      "topic": "pr-25817"
+    },
+    {
+      "pr": 25819,
+      "sha": "737eab244dc1e30067a1aa8acf9f671fc1c25eea",
+      "subject": "fix(mobile): Add project path survives its host dropping out and returning (#25819)",
+      "topic": "pr-25819"
+    },
+    {
+      "pr": 25846,
+      "sha": "92e645032c35bf4b186809e6e04ac1c7c9c99755",
+      "subject": "fix(web,mobile): queued messages get a simpler Send now row, no reordering (#25846)",
+      "topic": "pr-25846"
+    },
+    {
+      "pr": 25768,
+      "sha": "4cb29a56f6cf1f4f4ff06daee5323017c858ddf3",
+      "subject": "fix(web): switching a file between markdown and the editor no longer saves a draft twice (#25768)",
+      "topic": "pr-25768"
+    },
+    {
+      "pr": 25809,
+      "sha": "03be432a5d8de7201cf46ca94100b45f4893278c",
+      "subject": "fix(mobile): a held thread move retires when a snooze wakes, even with no list open (#25809)",
+      "topic": "pr-25809"
+    },
+    {
+      "pr": 25816,
+      "sha": "a24b109bc394bc00567c2a6ebe745e75a7c0f897",
+      "subject": "refactor(mobile): showcase capture readiness is a tested pure model (#25816)",
+      "topic": "pr-25816"
+    },
+    {
+      "pr": 24204,
+      "sha": "1ebbc205f6d99edd09882341ba1a420732287495",
+      "subject": "chore(review): CodeRabbit reviews tests against docs/internals/testing.md (#24204)",
+      "topic": "pr-24204"
+    },
+    {
+      "pr": 24205,
+      "sha": "56695ae3ec2aad931030af1e7e43852f741b9eef",
+      "subject": "feat: model labels show the name you'd say out loud (#24205)",
+      "topic": "pr-24205"
+    },
+    {
+      "pr": 25824,
+      "sha": "e5f2e5dbbc5c7864aefdeccaca18284d023edc37",
+      "subject": "fix(client-runtime): iOS resume keeps live sockets and drops dead ones 4x faster (#25824)",
+      "topic": "pr-25824"
+    },
+    {
+      "pr": 25666,
+      "sha": "d033768ec73d728a1d10a75c53cf2ab195d1c867",
+      "subject": "fix(server): preserve completed runs when accepting child deliveries (#25666)",
+      "topic": "pr-25672"
+    },
+    {
+      "pr": 25825,
+      "sha": "c175e5737eddeef1b7376a6761f29da926f53ea3",
+      "subject": "fix(build): TEMPORARY workaround so linux-arm64 builds run on 16/64 KiB page kernels (#25825)",
+      "topic": "pr-25825"
+    },
+    {
+      "pr": 25793,
+      "sha": "d2ab13b09537faa003621b52ce2a31fc13ae650e",
+      "subject": "refactor(mobile): share imports run outside the new-task screen (#25793)",
+      "topic": "pr-25793"
+    },
+    {
+      "pr": 25830,
+      "sha": "f3b058cd6a737e51894bc265927560b23742f0f0",
+      "subject": "fix(web,mobile): stopped runs no longer look like errors (#25830)",
+      "topic": "pr-25830"
+    },
+    {
+      "pr": 25829,
+      "sha": "1702d55214bdbae12278462e572b35e7c0eb4a46",
+      "subject": "fix(web,mobile): bot approvals are visible on the PR summary (#25829)",
+      "topic": "pr-25829"
+    },
+    {
+      "pr": 25695,
+      "sha": "bc8d02ffd51b5004a5b11f553977ac2049d54b8a",
+      "subject": "fix(server): preserve interrupted Claude context after revert (#25695)",
+      "topic": "pr-25695"
+    },
+    {
+      "pr": 25818,
+      "sha": "b333c175baf9d396e3161f7f1d0f2999a487e883",
+      "subject": "fix(web): compact toggle shows the token count again (#25818)",
+      "topic": "pr-25818"
+    },
+    {
+      "pr": 25804,
+      "sha": "f81c4cd79f9afb4beef535d5453c280b831caf31",
+      "subject": "fix(web,mobile): markdown previews no longer show YAML frontmatter as a giant heading (#25804)",
+      "topic": "pr-25804"
+    },
+    {
+      "pr": 25802,
+      "sha": "1a4f3c4a3c29d5cb4fb34308dc2e959b6de347c1",
+      "subject": "fix(mobile): Windows image paths and non-ASCII file links open like desktop (#25802)",
+      "topic": "pr-25802"
+    },
+    {
+      "pr": 25805,
+      "sha": "2202787df02471c5177f95174bd4ef6bf95b785a",
+      "subject": "fix(web): onboarding import no longer hangs when the project never arrives (#25805)",
+      "topic": "pr-13935"
+    },
+    {
+      "pr": 25815,
+      "sha": "6bbb2d85080d1c824e8c39a883f0f96122304b9a",
+      "subject": "fix(server): Macs without Android no longer show avdmanager discovery warnings (#25815)",
+      "topic": "pr-25815"
+    },
+    {
+      "pr": 25389,
+      "sha": "70eccd48e47398cc66d422d47de9c2af8e1c30e5",
+      "subject": "fix(web): keep right panel maximize available in narrow windows (#25389)",
+      "topic": "pr-25389"
+    },
+    {
+      "pr": 24298,
+      "sha": "6f0f1a9851318ad7cf573ebb06bd368022c7a039",
+      "subject": "feat(mobile): split wide Android Settings into two panes (#24298)",
+      "topic": "pr-24298"
+    },
+    {
+      "pr": 18547,
+      "sha": "b84e121226f595f6d3fe42e0d75a09f5e72afd66",
+      "subject": "fix(mobile): round shared Android sheets and Chat settings (#18547)",
+      "topic": "pr-18547"
+    },
+    {
+      "pr": 24741,
+      "sha": "c976a09df0c8ae738a7018182aee4f713e94a1eb",
+      "subject": "feat(mobile): add a \"Use last project\" preference for new threads (#24741)",
+      "topic": "pr-24741"
+    },
+    {
+      "pr": 25778,
+      "sha": "96fc7b955196637605cbf3b415152ce4dd0e2294",
+      "subject": "refactor(web): the new design is the only design, with no toggle (#25778)",
+      "topic": "pr-25778"
+    },
+    {
+      "pr": 25790,
+      "sha": "bc813670d9c428fa42707a0d78c01e03177016ba",
+      "subject": "fix(server): all MCP tools now send compact schemas, cutting tool context by 23% (#25790)",
+      "topic": "pr-25790"
+    },
+    {
+      "pr": 25795,
+      "sha": "278fdce1af7eb821c34ee416c441952df250ac63",
+      "subject": "test(server): data regression test now fails when recent fetch savings regress (#25795)",
+      "topic": "pr-25782"
+    },
+    {
+      "pr": 25769,
+      "sha": "0b02b21e5a451fa7e488a8596cedbeb0ddd9d63c",
+      "subject": "refactor(mobile): notifications, quick actions and Connect onboarding navigate through the root ref (#25769)",
+      "topic": "pr-25769"
+    },
+    {
+      "sha": "401b01747c1f7b331fb00b573e405a38f646fde8",
+      "subject": "chore(release): prepare v0.1.3",
+      "topic": "c-401b01747c1f"
+    },
+    {
+      "pr": 25787,
+      "sha": "6f6c6c14b76e72d7abd43b8e6ebffff17eadc89e",
+      "subject": "refactor(web): drop the unreachable paint-only thread timeline path (#25787)",
+      "topic": "pr-25782"
+    },
+    {
+      "pr": 25744,
+      "sha": "2ad853ab211935a414cdf3c2f5004db635ae04bc",
+      "subject": "refactor(mobile): the share inbox is a module store, presented from navigation state (#25744)",
+      "topic": "pr-25744"
+    },
+    {
+      "pr": 25767,
+      "sha": "bea2e9d62fdc2440c2db4d670b8741425b526969",
+      "subject": "refactor(mobile): theme preferences reach the native runtime without a layout effect (#25767)",
+      "topic": "pr-25767"
+    },
+    {
+      "pr": 25785,
+      "sha": "394929af7687886084234ccb92b744f51ede271b",
+      "subject": "test(server): CI fails when agent context grows past main (#25785)",
+      "topic": "pr-25782"
+    },
+    {
+      "pr": 25782,
+      "sha": "a9b513b50cc967cc715228b38cb922d1aaaa3a8b",
+      "subject": "chore(evals): store eval cases as .ndjson so review tools skip them (#25782)",
+      "topic": "pr-25782"
+    },
+    {
+      "pr": 24942,
+      "sha": "5522180329c70c7050852ae0d948400d845f55da",
+      "subject": "fix(mobile): align the iPad composer with workspace navigation (#24942)",
+      "topic": "pr-24942"
+    },
+    {
+      "pr": 25672,
+      "sha": "32bf48f428200efc95295ed109526f7b88d9d68a",
+      "subject": "fix(server): preserve settled runs during delegated acknowledgements (#25672)",
+      "topic": "pr-25672"
+    },
+    {
+      "pr": 25660,
+      "sha": "fe867b86c89eacf876a27a15874e6089ab33fc9d",
+      "subject": "fix(server): Claude MCP timeouts preserve the native session (#25660)",
+      "topic": "pr-25660"
+    },
+    {
+      "pr": 25776,
+      "sha": "c294d63b2135771dd74f0a2b57af5b501043a74b",
+      "subject": "fix(server): Sonnet also answers trend and comparison data with inline charts (#25776)",
+      "topic": "pr-25766"
+    },
+    {
+      "pr": 21074,
+      "sha": "850d1e7a6c5ffd894c48e9182169cf8e25097db5",
+      "subject": "fix(provider-cursor): bump @cursor/sdk to 1.0.38 so long-context tiers send Max Mode (#21074)",
+      "topic": "pr-21074"
+    },
+    {
+      "pr": 25765,
+      "sha": "44dae856886342c684e437174138233cae57c38d",
+      "subject": "fix(mobile): lists end at the search field, and HTML previews start below the header (#25765)",
+      "topic": "pr-25765"
+    },
+    {
+      "pr": 25774,
+      "sha": "b1619f3a74cb228356a3ea3f58573f88da270817",
+      "subject": "fix(web): cancelling update everything no longer flashes the update button's focus ring and tooltip (#25774)",
+      "topic": "pr-25774"
+    },
+    {
+      "pr": 25729,
+      "sha": "e689dad42c842d03f311ee0a7c29db25896abd6a",
+      "subject": "fix(mobile): keep segmented controls readable on cards and screens (#25729)",
+      "topic": "pr-25729"
+    },
+    {
+      "pr": 25759,
+      "sha": "83838af7ba7dcc539311640d09b6338372beb148",
+      "subject": "fix(mobile): finished subagents stay reachable from the Agents pill (#25759)",
+      "topic": "pr-25759"
+    },
+    {
+      "pr": 24270,
+      "sha": "689763a603a72f38c451f1b9409e187216932386",
+      "subject": "fix(mobile): isolate file tree state by workspace (#24270)",
+      "topic": "pr-24270"
+    },
+    {
+      "pr": 25766,
+      "sha": "d2c440312e5f39d59827ed466838a623516454d6",
+      "subject": "fix(server): agents show trends and comparisons as inline charts again (#25766)",
+      "topic": "pr-25766"
+    },
+    {
+      "pr": 23989,
+      "sha": "e0d068cc9f20239629fdb505cbfe4995df9651e9",
+      "subject": "fix(mobile): restore Android chat content corners (#23989)",
+      "topic": "pr-23989"
+    },
+    {
+      "pr": 25733,
+      "sha": "5d91ab1117ad51ef1288a94717d85c70e7af09fe",
+      "subject": "refactor(web): command palette state lives in a store, git and branch pickers drop timer and sync effects (#25733)",
+      "topic": "pr-25733"
+    },
+    {
+      "pr": 25703,
+      "sha": "8e86eb2b4d631aee43db6846256f5df6aab090c2",
+      "subject": "fix(client-runtime): searches and refreshes no longer wait on an unreachable environment (#25703)",
+      "topic": "pr-25703"
+    },
+    {
+      "pr": 25740,
+      "sha": "5811d5c846e8fae712da46a741870e620717a234",
+      "subject": "refactor(mobile): app-lifetime services install once, and the usage widget stops re-rendering on every presentation change (#25740)",
+      "topic": "pr-25740"
+    },
+    {
+      "pr": 25753,
+      "sha": "3425671a9539418d2ea404526120c6c872e3c435",
+      "subject": "feat(web): Add provider leads with first-class providers (#25753)",
+      "topic": "pr-25753"
+    },
+    {
+      "pr": 25732,
+      "sha": "f6a9315d19284422e2f2718e487c16acda4ba24e",
+      "subject": "refactor(web): diff and file reveals are requests, and workspace edits refetch by construction (#25732)",
+      "topic": "pr-25732"
+    },
+    {
+      "pr": 25731,
+      "sha": "65b4a6940794b5f3b7af5d19d9ddef0957b14fe5",
+      "subject": "fix(web): thread details popover closes when the card moves inline (#25731)",
+      "topic": "pr-25731"
+    },
+    {
+      "pr": 25712,
+      "sha": "d145077b4f7dc9e476bacf346e3f2c04cc141d6d",
+      "subject": "fix(mobile): a draft route's branch checkout runs once, even across a reconnect (#25712)",
+      "topic": "pr-25712"
+    },
+    {
+      "pr": 21383,
+      "sha": "417bc79711123cd83f647a078232e08c975fd988",
+      "subject": "fix(mobile): usage chart bars round at the top instead of the bottom (#21383)",
+      "topic": "pr-21383"
+    },
+    {
+      "pr": 18277,
+      "sha": "6df241d23a8b82ff786fe3253dfb08645933db26",
+      "subject": "feat(provider): add Vercel fx as a provider (#18277)",
+      "topic": "pr-18277"
+    },
+    {
+      "pr": 25706,
+      "sha": "3b48b523267617cd9cff8950e4e1cf82b45cfff4",
+      "subject": "refactor(mobile): new-task branch defaults are derived, not written after render (#25706)",
+      "topic": "pr-25706"
+    },
+    {
+      "pr": 25668,
+      "sha": "5127de8c29ede39fc567337cebc4726fbaa16b63",
+      "subject": "fix(mobile): scale and align thread list icons (#25668)",
+      "topic": "pr-25668"
+    },
+    {
+      "pr": 25704,
+      "sha": "323d9611ff49521357fdc205f667614602ec46b6",
+      "subject": "feat(acp): ACP session notices show as notices, not reply text (#25704)",
+      "topic": "pr-25704"
+    },
+    {
+      "pr": 25710,
+      "sha": "71ba6b374c0b0181130c0cc3b3d5aaa3387ada67",
+      "subject": "refactor(web): optimistic chat messages leave without a timer (#25710)",
+      "topic": "pr-25710"
+    },
+    {
+      "pr": 25714,
+      "sha": "10a82e86ed29e03821056a7a8f19ee49943595ec",
+      "subject": "fix(web): devices agents open in background threads now show up (#25714)",
+      "topic": "pr-25714"
+    },
+    {
+      "pr": 24587,
+      "sha": "daa720a986ca40e59b063206bb03ccef87f008de",
+      "subject": "fix(workflows): keep completed workflows reachable (#24587)",
+      "topic": "pr-24587"
+    },
+    {
+      "pr": 25713,
+      "sha": "354f6c86ddb0a431351e59fa38a5d5d16b1bb81f",
+      "subject": "fix(mobile): pull request rows refresh their diff stats after a new push (#25713)",
+      "topic": "pr-25713"
+    },
+    {
+      "pr": 25423,
+      "sha": "ed44f251d89d4dae2f8dcf11c24fb3dec9dda4c7",
+      "subject": "feat(server): cut T3's MCP tool schemas by a third and merge 18 tools into action tools (#25423)",
+      "topic": "pr-25423"
+    },
+    {
+      "pr": 25702,
+      "sha": "becf853defb6127dbe4447860383777d69346b6f",
+      "subject": "fix(web): PDF search finds phrases that wrap across lines (#25702)",
+      "topic": "pr-25699"
+    },
+    {
+      "pr": 25614,
+      "sha": "68339a084644540f176ce83d97dd4c768b65b52e",
+      "subject": "refactor(mobile): pull request list, filters and viewed files without synchronizing effects (#25614)",
+      "topic": "pr-25614"
+    },
+    {
+      "pr": 25682,
+      "sha": "a2398c2ce33c4b964b4d9814644ac6b83521da60",
+      "subject": "refactor(mobile): thread inspector mode is derived, not synced (#25682)",
+      "topic": "pr-25682"
+    },
+    {
+      "pr": 25686,
+      "sha": "9bc0c334383a43af5390283e9b10f999acc021b8",
+      "subject": "refactor(mobile): settings use web's pages and groups (#25686)",
+      "topic": "pr-25686"
+    },
+    {
+      "pr": 25615,
+      "sha": "5432d8e723c7ae28945ae5474435ac9f33de436a",
+      "subject": "refactor(web): drafts promote from the draft store, not from route effects (#25615)",
+      "topic": "pr-25615"
+    },
+    {
+      "pr": 25401,
+      "sha": "bd3287b640a717513a44b1d23e362aed446a263f",
+      "subject": "feat(web): thread state lives at the end of the timeline, not stacked on the composer (#25401)",
+      "topic": "pr-25401"
+    },
+    {
+      "pr": 25684,
+      "sha": "0623d09aeed210c77b6b149359f630983d90fe05",
+      "subject": "refactor(mobile): drop the unreachable pending-task editor from new-task drafts (#25684)",
+      "topic": "pr-25684"
+    },
+    {
+      "pr": 25699,
+      "sha": "08bd2ec09c29996a5b3015f4a4cc4a93541eed42",
+      "subject": "test(web): PDF viewer behavior is covered by fast tests (#25699)",
+      "topic": "pr-25699"
+    },
+    {
+      "pr": 25678,
+      "sha": "a7caea34abc09a48d11d00f9957586a7cf3d628f",
+      "subject": "fix(mobile): queued messages are delivered by an app service, not a render loop (#25678)",
+      "topic": "pr-25678"
+    },
+    {
+      "pr": 25667,
+      "sha": "0b0417a56b2091c87760470833b337eaa0b9a304",
+      "subject": "refactor(web): Cmd+O presses the Open in editor button instead of a per-picker listener (#25667)",
+      "topic": "pr-25667"
+    },
+    {
+      "pr": 24635,
+      "sha": "82dc892c5a8b4879783444595c3e49f8ba8de64c",
+      "subject": "feat(evals): shared evals package and an eval for T3 tool-use mistakes (#24635)",
+      "topic": "pr-24635"
+    },
+    {
+      "pr": 25664,
+      "sha": "d73fd1279a9cbf3ef4677b88b4ad82f0a55583c7",
+      "subject": "test(web): attachment preview Word and large-text tests no longer flake on CI (#25664)",
+      "topic": "pr-25664"
+    },
+    {
+      "pr": 25681,
+      "sha": "78e93fd9d15ccecb2009804ee308fce2bd7b21dc",
+      "subject": "fix(mobile): a caret move in one composer no longer moves another draft's insert point (#25681)",
+      "topic": "pr-25681"
+    },
+    {
+      "pr": 25474,
+      "sha": "576a40fa530d0883068377aec83332ffbfb42629",
+      "subject": "fix(server): telemetry keeps a failed batch for 30 minutes, not 1.5 (#25474)",
+      "topic": "pr-25474"
+    },
+    {
+      "pr": 25651,
+      "sha": "9db433f4bab5dcc923672ef2e6f31f377d39705e",
+      "subject": "refactor(web): settings group by concern, with General split into focused pages (#25651)",
+      "topic": "pr-25651"
+    },
+    {
+      "pr": 25671,
+      "sha": "abf8f43f2a84f1655f2b2ca4dcd4b2c4d9e576f7",
+      "subject": "fix(mobile): keep floating status within the composer width (#25671)",
+      "topic": "pr-25671"
+    },
+    {
+      "pr": 25373,
+      "sha": "977a18823cf8e067476193e29947e2d3950a25f2",
+      "subject": "refactor(mobile): pull request list records answers where they land (#25373)",
+      "topic": "pr-25373"
+    },
+    {
+      "pr": 18359,
+      "sha": "0604547a3ae7bca2e5cad1c17b40be5de17dd2cc",
+      "subject": "fix(server): a thread whose worktree was deleted recovers on the next message (#18359)",
+      "topic": "pr-18359"
+    },
+    {
+      "pr": 25612,
+      "sha": "a4fbea86537af2afc7405417e63701555f267b07",
+      "subject": "refactor(mobile): thread rows share one clock and cache SVGs instead of per-row effects (#25612)",
+      "topic": "pr-25612"
+    },
+    {
+      "pr": 25526,
+      "sha": "024e593a635670a01187da6607508eceb88c0da0",
+      "subject": "fix(client-runtime): a slow host no longer shows settings as read-only (#25526)",
+      "topic": "pr-25526"
+    },
+    {
+      "pr": 23780,
+      "sha": "6838e31b9c2942fa395fc05e27276776cd33dde5",
+      "subject": "fix(web): screen readers can wrap to the first and last message of a long thread (#23780)",
+      "topic": "pr-23780"
+    },
+    {
+      "pr": 25631,
+      "sha": "3de3eee0d1b72365bee293e9e5742a0503979417",
+      "subject": "refactor(mobile): voice input session owns recording, metering and keep-awake (#25631)",
+      "topic": "pr-25631"
+    },
+    {
+      "pr": 25630,
+      "sha": "0c901edf578f43aed615b8fdad713919c4ca3ead",
+      "subject": "refactor(web): video previews attach listeners on their element and share one visibility observer (#25630)",
+      "topic": "pr-25630"
+    },
+    {
+      "pr": 25653,
+      "sha": "e2d3ded436f7b32c07aeb9bf7b4738bfef58156d",
+      "subject": "fix(infra): task-cache telemetry no longer strands an event queued during a flush (#25653)",
+      "topic": "pr-25653"
+    },
+    {
+      "pr": 25627,
+      "sha": "a54ba53a5c9d76c599e613ca4ae8a8149709a24d",
+      "subject": "fix(mobile): open threads from the local cache instead of \"Thread unavailable\" (#25627)",
+      "topic": "pr-25627"
+    },
+    {
+      "pr": 25636,
+      "sha": "5effca10b3ebfe0f917a5e549007ed46662fa497",
+      "subject": "fix(web): thread jump hints wait for their delay on every hold (#25636)",
+      "topic": "pr-25636"
+    },
+    {
+      "pr": 25613,
+      "sha": "4034b5f6b52a3fe2bc1dbb13ccfc276234222cbf",
+      "subject": "fix(web): simplify the created pull request success row (#25613)",
+      "topic": "pr-25613"
+    },
+    {
+      "pr": 25616,
+      "sha": "451bb459f11479ce8953f9931f7c7f742e04a5c5",
+      "subject": "refactor(web): running timers share one clock instead of an interval each (#25616)",
+      "topic": "pr-25616"
+    },
+    {
+      "pr": 25609,
+      "sha": "0790e3891b7470d5a33292dedc4d4ae62d02ff29",
+      "subject": "fix(server): expire new-model badges after seven days (#25609)",
+      "topic": "pr-25609"
+    },
+    {
+      "pr": 25475,
+      "sha": "560ddb14d90eba7652da4f7846e4b18d4d802aa4",
+      "subject": "feat(web): warn before adding a second Claude or Codex account (#25475)",
+      "topic": "pr-25475"
+    },
+    {
+      "pr": 25451,
+      "sha": "0899305765de0827f42ae5562b27a76c8c6e0a00",
+      "subject": "docs: add an FAQ that answers what people ask every day (#25451)",
+      "topic": "pr-25451"
+    },
+    {
+      "pr": 25593,
+      "sha": "fe507c5a1e064c82e7b49a002e5f9520cfaeaaac",
+      "subject": "fix(clients): queued messages can't be edited while a question is open (#25593)",
+      "topic": "pr-25593"
+    },
+    {
+      "pr": 25366,
+      "sha": "dd5b5401e1f240f4314af29edf431369d182f386",
+      "subject": "refactor(web): chat route shortcuts register once instead of rebuilding on every store change (#25366)",
+      "topic": "pr-25366"
+    },
+    {
+      "pr": 25432,
+      "sha": "278588a61a3a3c0cd7f18760ebed1bbd75e64acf",
+      "subject": "fix(web): skill chips in chat open the same details popover as the composer (#25432)",
+      "topic": "pr-25432"
+    },
+    {
+      "pr": 25572,
+      "sha": "b6994c549977dd194d38f95902fcfac0445d8fa1",
+      "subject": "fix(shared): pin T3 Connect cloudflared to 2026.10.4, which drops the compromised eMudhra intermediates (#25572)",
+      "topic": "pr-25572"
+    },
+    {
+      "pr": 25527,
+      "sha": "220eb73524ca7882d53b6a12c824ccbcd97ad279",
+      "subject": "refactor(mobile): media previews share file leases and close on blur in one place (#25527)",
+      "topic": "pr-25527"
+    },
+    {
+      "pr": 25581,
+      "sha": "4e42eaf4293c51c5b9eac601b7ab346aa19d08af",
+      "subject": "fix(mobile): label the pull request toast action View (#25581)",
+      "topic": "pr-25581"
+    },
+    {
+      "pr": 25525,
+      "sha": "c4d59502684f8b712617ecf4f2a4e31fa104dd4b",
+      "subject": "refactor(mobile): pull request screens use a file-jump store and handler work (#25525)",
+      "topic": "pr-25525"
+    },
+    {
+      "pr": 25562,
+      "sha": "8e1bb0376ce8859d954776c65fae67fd15341a74",
+      "subject": "test(web): attachment preview omission cases check the prepared document instead of rendering each one (#25562)",
+      "topic": "pr-25562"
+    },
+    {
+      "pr": 25524,
+      "sha": "374e57d90bf9a646c16df654abbbdff1c988bfa4",
+      "subject": "refactor(web): provider settings and Codex setup run as explicit flows (#25524)",
+      "topic": "pr-25524"
+    },
+    {
+      "pr": 25575,
+      "sha": "e762f09e265b31607261ead2b4517c467ff59c28",
+      "subject": "fix(mobile): drop the unused useLayoutEffect import that fails lint on main (#25575)",
+      "topic": "pr-25575"
+    },
+    {
+      "pr": 25285,
+      "sha": "1c1050eb7fddeedb80cc624dcd834e2a04377b1c",
+      "subject": "fix(server): release completed PR sync sweep data from the read cache (#25285)",
+      "topic": "pr-25285"
+    },
+    {
+      "pr": 25396,
+      "sha": "210b2e7c6a8be11441b7afc94742ce3c76860111",
+      "subject": "fix(mobile): keep expanding composer text above its toolbar (#25396)",
+      "topic": "pr-25396"
+    },
+    {
+      "pr": 25530,
+      "sha": "b424c6e429f189067897de45d7445d900feadc6a",
+      "subject": "fix(web): an armed pull request confirm no longer outlives its button (#25530)",
+      "topic": "pr-25530"
+    },
+    {
+      "pr": 25523,
+      "sha": "e6ec114128122832098fbe0d3793423dc141aa9e",
+      "subject": "refactor(web): pull request page reacts to turns and sweep Escape without effects (#25523)",
+      "topic": "pr-25523"
+    },
+    {
+      "pr": 25521,
+      "sha": "3f9448747bb8848050dc2cacf83affa6f94a66a1",
+      "subject": "fix(web): switching back to a thread no longer restores its tab's older title (#25521)",
+      "topic": "pr-25491"
+    },
+    {
+      "pr": 25491,
+      "sha": "7c6e85cfdaadca358125b2c6ae909eaed3dbe54b",
+      "subject": "fix(web): browser history and titles show up again (#25491)",
+      "topic": "pr-25491"
+    },
+    {
+      "pr": 25516,
+      "sha": "87ea18cad91fa246f66e65acd00fe99aa733c14e",
+      "subject": "fix(mobile): describe when composer view commands can reject (#25516)",
+      "topic": "pr-25516"
+    },
+    {
+      "pr": 25515,
+      "sha": "d81757eea9b70c7b11b5de08725044a12c30e1e0",
+      "subject": "test(web): attachment preview omission tests no longer time out on CI (#25515)",
+      "topic": "pr-25515"
+    },
+    {
+      "pr": 25462,
+      "sha": "f05c38f1667fcf36970affd09574a234c85e3bff",
+      "subject": "fix(web): browser viewport resizes work without an open preview panel (#25462)",
+      "topic": "pr-25462"
+    },
+    {
+      "pr": 25503,
+      "sha": "d6fb62ac3f2ab54a100202f5aea1428cfda977cd",
+      "subject": "fix(mobile): editing a queued message while a question is open no longer throws (#25503)",
+      "topic": "pr-25503"
+    },
+    {
+      "pr": 25461,
+      "sha": "a936f05a6a18c975443bff28fd6c4ae48e8181df",
+      "subject": "refactor(web): root theme, toast and chrome sync start with the app (#25461)",
+      "topic": "pr-25461"
+    },
+    {
+      "pr": 25461,
+      "sha": "148d2fdc0ee0ccf2b909c10b13001a61cf19b281",
+      "subject": "refactor(web): root theme, toast and chrome sync start with the app (#25461)",
+      "topic": "pr-25461"
+    },
+    {
+      "pr": 25468,
+      "sha": "e5ea25d1292e5342db8508bf48ded67b88b82b82",
+      "subject": "fix(mobile): queued edits end when their run starts, wherever you are (#25468)",
+      "topic": "pr-25468"
+    }
+  ],
+  "count": 147,
+  "createdAt": "2026-10-27T16:29:26.968Z",
+  "digest": "e1fc927db76238bdf7b453c43793e12ffbef894b934e11074f98b045b0d19d56",
+  "interval": 5,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "dc84b0962efa4f4e05ef392c08986a9cd7c994d1"
+}

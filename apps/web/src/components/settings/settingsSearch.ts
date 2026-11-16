@@ -1,5 +1,11 @@
 import type { SettingsCategory } from "./settingsCategories";
 
+/**
+ * Which settings scope renders the item: the global pages, the project-scope
+ * pages, or both. Search only offers items that the current scope renders.
+ */
+export type SettingsItemScope = "global" | "project" | "both";
+
 export interface SettingsItemDescriptor {
   readonly id: string;
   readonly category: SettingsCategory;
@@ -7,7 +13,16 @@ export interface SettingsItemDescriptor {
   readonly description: string;
   readonly keywords: ReadonlyArray<string>;
   readonly targetSelector: string;
-  readonly projectScoped?: boolean;
+  /** Defaults to "global". */
+  readonly scope?: SettingsItemScope;
+}
+
+export function settingsItemVisibleInScope(
+  descriptor: Pick<SettingsItemDescriptor, "scope">,
+  scope: "global" | "project",
+): boolean {
+  const itemScope = descriptor.scope ?? "global";
+  return itemScope === "both" || itemScope === scope;
 }
 
 function normalizeSearchText(value: string): string {

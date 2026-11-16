@@ -1,6 +1,7 @@
 import {
   type OrchestrationThreadActivity,
   type ThreadId,
+  type WorktreeSetupSubscribeResult,
   WorktreeSetupSnapshot,
   worktreeSetupActivityId,
 } from "@t3tools/contracts";
@@ -17,7 +18,7 @@ export function isNewerWorktreeSetup(
   next: WorktreeSetupSnapshot | null,
 ): boolean {
   if (next === null || current === null) return true;
-  if (next.operationId !== current.operationId) return next.startedAt >= current.startedAt;
+  if (next.generation !== current.generation) return next.generation > current.generation;
   return next.sequence > current.sequence;
 }
 
@@ -48,6 +49,8 @@ export function useWorktreeSetup(
   const [live, setLive] = useState<{
     readonly threadId: ThreadId;
     readonly snapshot: WorktreeSetupSnapshot | null;
+    readonly generation: number;
+    readonly sequence: number;
   } | null>(null);
 
   useEffect(() => {
@@ -55,16 +58,20 @@ export function useWorktreeSetup(
     const api = readNativeApi();
     if (!api) return;
     let disposed = false;
-    const accept = (snapshot: WorktreeSetupSnapshot | null) => {
+    const accept = (next: WorktreeSetupSubscribeResult) => {
       if (disposed) return;
-      setLive((current) =>
-        current?.threadId === threadId && !isNewerWorktreeSetup(current.snapshot, snapshot)
-          ? current
-          : { threadId, snapshot },
-      );
+      setLive((current) => {
+        if (
+          current?.threadId === threadId &&
+          (current.generation > next.generation ||
+            (current.generation === next.generation && current.sequence >= next.sequence))
+        )
+          return current;
+        return { threadId, ...next };
+      });
     };
     const unsubscribe = api.worktreeSetup.onUpdated((payload) => {
-      if (payload.threadId === threadId) accept(payload.snapshot);
+      if (payload.threadId === threadId) accept(payload);
     });
     void api.worktreeSetup
       .subscribe({ threadId })
@@ -76,7 +83,12 @@ export function useWorktreeSetup(
     };
   }, [threadId]);
 
-  const liveSnapshot = live?.threadId === threadId ? live.snapshot : undefined;
-  if (liveSnapshot === undefined) return persisted;
-  return isNewerWorktreeSetup(persisted, liveSnapshot) ? liveSnapshot : persisted;
+  if (live?.threadId !== threadId) return persisted;
+  if (
+    persisted &&
+    (persisted.generation > live.generation ||
+      (persisted.generation === live.generation && persisted.sequence > live.sequence))
+  )
+    return persisted;
+  return live.snapshot;
 }

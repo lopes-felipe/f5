@@ -40,6 +40,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
       sql`
             INSERT INTO projection_projects (
               project_id,
+              kind,
               title,
               workspace_root,
               default_model,
@@ -53,6 +54,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
             )
             VALUES (
               ${row.projectId},
+              ${row.kind ?? "standard"},
               ${row.title},
               ${row.workspaceRoot},
               ${row.defaultModel},
@@ -86,6 +88,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
       sql`
         SELECT
           project_id AS "projectId",
+          kind,
           title,
           workspace_root AS "workspaceRoot",
           default_model AS "defaultModel",
@@ -108,6 +111,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
       sql`
         SELECT
           project_id AS "projectId",
+          kind,
           title,
           workspace_root AS "workspaceRoot",
           default_model AS "defaultModel",

@@ -1,0 +1,148 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-12T19:25:09.769Z",
+  "scope": "unsigned-real-electron-codex-human-consent-and-actions",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "repositoryCommit": "073e4ccb608fdc48d652882b6a086fd0becae62d",
+  "workingTreeDirty": false,
+  "helperSha256": "27eff7abd0c3019bf76a5331f182bb722eb4a9bfaee3d033a39302c75c3f9a17",
+  "buildHashes": {
+    "desktopMain": "00be6a7775962be08651bca6b2d57b6c5c2d506dcee2c0b01d1e603f91408bf9",
+    "serverBundle": "477016e0ef5c7a8f72e617ae79a6f3edee5842e54a1f307029fe7d0e1a958516",
+    "rendererIndex": "8c717b61a6755e60ae26924f0c686456f7b0458a6fff44de03656109df8626f4",
+    "rehearsalSource": "91e60c215880124b9a1c7e1469e9a2facf90c3e9dd2e16435c6fabbfcb311c39",
+    "observerSource": "24304f64421f5557b29e216fa8fa333b6b2571230486407ce32e6fafea929d16",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8"
+  },
+  "signed": false,
+  "certified": false,
+  "provider": "codex",
+  "runtimeMode": "full-access",
+  "state": "failed",
+  "interrupted": false,
+  "failureStage": "first-action-turn",
+  "permissionStatus": {
+    "available": true,
+    "displays": [
+      {
+        "displayId": "1",
+        "geometryGeneration": "1:0.0:0.0:1728.0:1117.0:3456:2234:0.0",
+        "primary": true,
+        "nativeBounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1728,
+          "height": 1117
+        },
+        "pixelSize": {
+          "width": 3456,
+          "height": 2234
+        },
+        "rotation": 0,
+        "modelSize": {
+          "width": 1333,
+          "height": 862
+        }
+      }
+    ]
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": true,
+      "nativeInspectionSucceeded": true,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": true,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 1,
+    "inspectionResponses": 1,
+    "activityMessages": 2,
+    "activityThumbnails": 0,
+    "traceComplete": true,
+    "accessRequests": 1,
+    "accessAnswersForwarded": 1,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "activateApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": false
+      },
+      {
+        "op": "screenshot",
+        "outcome": "ok",
+        "validCapture": true
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 13
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      }
+    ]
+  },
+  "threadObservation": {
+    "found": true,
+    "runtimeMode": "full-access",
+    "sessionRuntimeMode": "full-access",
+    "interactionMode": "default",
+    "turnState": "completed",
+    "pendingUserInputs": 0
+  },
+  "consentObservation": {
+    "requested": true,
+    "trustedClick": true,
+    "settled": true,
+    "allowed": true,
+    "fixtureGranted": true,
+    "cardHasError": false,
+    "dialogPresentInDom": true
+  },
+  "providerErrorCodes": [],
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "realConsentDialogVisible": true,
+    "realConsentSettledAllowed": true,
+    "humanTrustedConsent": true,
+    "consentTurnEmittedNoInput": true,
+    "realLeaseBannerVisible": true,
+    "firstTurnNativeResponses": false,
+    "fixtureReceivedOnePressAndUnicode": false
+  },
+  "actionsOnly": true,
+  "limitations": [
+    "One real provider and one synthetic AppKit app, on the current display only",
+    "Human app consent; Pause/Resume is excluded from this actions-only run",
+    "No session-actions consent in full-access mode",
+    "No installed-build TCC attribution, signed packaging, real-app or multi-profile/display certification",
+    "Overlay capture exclusion, hung-renderer/host stop latency, Stop interruption and Windows runtime remain pending",
+    "Provider built-in and Chrome gates remain closed; no image bytes, typed values, accessibility content or raw errors retained"
+  ]
+}

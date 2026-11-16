@@ -50,6 +50,7 @@ export interface TerminalSessionState {
   unsubscribeExit: (() => void) | null;
   hasRunningSubprocess: boolean;
   runtimeEnv: Record<string, string> | null;
+  stopOnSettle: boolean;
 }
 
 export interface ShellCandidate {
@@ -72,6 +73,10 @@ export const terminalOwnerKey = (owner: TerminalOwner) =>
   owner.kind === "thread" ? `thread:${owner.threadId}` : `account:${owner.instanceId}`;
 
 export interface TerminalManagerShape {
+  readonly snapshot: (
+    input: import("@t3tools/contracts").TerminalSnapshotInput,
+  ) => Effect.Effect<TerminalSessionSnapshot | null, TerminalError>;
+
   /** Internal account PTYs never enter thread history or logging queues. */
   readonly createAccountProcess?: (
     input: import("./PTY").PtySpawnInput,
@@ -116,6 +121,9 @@ export interface TerminalManagerShape {
    * When `terminalId` is omitted, closes all sessions for the thread.
    */
   readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
+  /** Fresh process probe; preserves active processes, new input and terminal history. */
+  readonly closeIdleForThread?: (threadId: string) => Effect.Effect<void, TerminalError>;
+  readonly closeOnSettleForThread?: (threadId: string) => Effect.Effect<void, TerminalError>;
 
   /**
    * Live terminal sessions with their working directory. Worktree cleanup and

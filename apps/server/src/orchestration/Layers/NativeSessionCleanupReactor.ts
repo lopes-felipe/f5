@@ -1,3 +1,4 @@
+import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
 /**
  * Deletes a Claude session's local transcript once its F5 thread is deleted.
  *
@@ -6,8 +7,10 @@
  * storage maintenance purges `provider_session_runtime` for deleted threads
  * shortly after. The transcript is removed from the bound instance's own
  * config dir, and skipped when any other live F5 thread still binds the same
- * Claude session id (a fork or import that resumes it). Every failure is
- * logged and swallowed: cleanup never blocks or fails the deletion.
+ * Claude session id (a fork or import that resumes it). Claude sessions parked
+ * by a provider switch, or discarded by one without being resumed, are cleaned
+ * up the same way, one job per session. Every
+ * failure is logged and swallowed: cleanup never blocks or fails the deletion.
  *
  * @module NativeSessionCleanupReactor
  */
@@ -17,11 +20,17 @@ import {
   type ProviderInstanceId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
-import { Cause, Effect, Layer, Option, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Scope, Stream } from "effect";
 
 import { readClaudeResumeState } from "../../provider/claudeResumeState.ts";
+import { deletePdfDocumentBudgets } from "../../provider/pdfDocuments.ts";
+import { ServerConfig } from "../../config";
+import {
+  ProviderHandoffStateRepository,
+  type ProviderHandoffState,
+} from "../../persistence/Services/ProviderHandoffState.ts";
 import { ProviderInstanceRegistry } from "../../provider/Services/ProviderInstanceRegistry.ts";
 import {
   ProviderSessionDirectory,
@@ -49,26 +58,64 @@ export function claudeSessionIdOfBinding(
   return readClaudeResumeState(binding.resumeCursor)?.resume;
 }
 
+/**
+ * The thread's active Claude session plus every Claude session a provider switch
+ * parked, or discarded without resuming it.
+ */
+export function claudeSessionsForThread(
+  binding: Pick<ProviderRuntimeBinding, "provider" | "resumeCursor" | "providerInstanceId"> | null,
+  handoffState:
+    | (Pick<ProviderHandoffState, "parked"> & Partial<Pick<ProviderHandoffState, "retired">>)
+    | null,
+): ReadonlyArray<{ readonly sessionId: string; readonly instanceId: ProviderInstanceId }> {
+  const sessions = new Map<string, ProviderInstanceId>();
+  const active = binding ? claudeSessionIdOfBinding(binding) : undefined;
+  if (binding && active)
+    sessions.set(active, binding.providerInstanceId ?? defaultInstanceIdForDriver(CLAUDE_DRIVER));
+  for (const parked of [
+    ...Object.values(handoffState?.parked ?? {}),
+    ...(handoffState?.retired ?? []),
+  ]) {
+    if (parked.provider !== "claudeAgent") continue;
+    const sessionId = readClaudeResumeState(parked.resumeCursor)?.resume;
+    if (sessionId && !sessions.has(sessionId)) sessions.set(sessionId, parked.providerInstanceId);
+  }
+  return [...sessions].map(([sessionId, instanceId]) => ({ sessionId, instanceId }));
+}
+
 export const makeNativeSessionCleanupReactor = Effect.gen(function* () {
+  const sources = yield* makeShutdownSourceScope("native-session-cleanup-sources");
   const orchestrationEngine = yield* OrchestrationEngineService;
   const directory = yield* ProviderSessionDirectory;
   const instances = yield* ProviderInstanceRegistry;
+  const handoffStates = yield* Effect.serviceOption(ProviderHandoffStateRepository);
 
   const isSharedWithLiveThread = (job: CleanupJob) =>
     Effect.gen(function* () {
-      const [bindings, readModel] = yield* Effect.all([
+      const [bindings, readModel, parkedStates] = yield* Effect.all([
         directory.listBindings(),
         orchestrationEngine.getReadModel(),
+        Option.isSome(handoffStates) ? handoffStates.value.listAll : Effect.succeed([]),
       ]);
       const deleted = new Set(
         readModel.threads.filter((thread) => thread.deletedAt !== null).map((thread) => thread.id),
       );
       // A binding whose thread is missing from the read model counts as live.
-      return bindings.some(
-        (binding) =>
-          binding.threadId !== job.threadId &&
-          !deleted.has(binding.threadId) &&
-          claudeSessionIdOfBinding(binding) === job.sessionId,
+      return (
+        bindings.some(
+          (binding) =>
+            binding.threadId !== job.threadId &&
+            !deleted.has(binding.threadId) &&
+            claudeSessionIdOfBinding(binding) === job.sessionId,
+        ) ||
+        parkedStates.some(
+          (state) =>
+            state.threadId !== job.threadId &&
+            !deleted.has(state.threadId) &&
+            claudeSessionsForThread(null, state).some(
+              (session) => session.sessionId === job.sessionId,
+            ),
+        )
       );
     });
 
@@ -122,43 +169,62 @@ export const makeNativeSessionCleanupReactor = Effect.gen(function* () {
       ),
     );
 
-  const worker = yield* makeDrainableWorker(cleanup);
+  const worker = yield* makeBackgroundWorker(cleanup, { name: "NativeSessionCleanupReactor" });
 
-  /** Captures the job synchronously with the event, before storage purges the binding. */
-  const captureJob = (threadId: ThreadId) =>
-    directory.getBinding(threadId).pipe(
-      Effect.map(
-        Option.flatMap((binding) => {
-          const sessionId = claudeSessionIdOfBinding(binding);
-          if (!sessionId || !providerRuntimeCapabilities(CLAUDE_DRIVER).nativeSessionCleanup) {
-            return Option.none();
-          }
-          return Option.some<CleanupJob>({
-            threadId,
-            sessionId,
-            instanceId: binding.providerInstanceId ?? defaultInstanceIdForDriver(CLAUDE_DRIVER),
-          });
-        }),
-      ),
+  /** Captures the jobs synchronously with the event, before storage purges the binding. */
+  const captureJobs = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      if (!providerRuntimeCapabilities(CLAUDE_DRIVER).nativeSessionCleanup) return [];
+      const binding = Option.getOrNull(yield* directory.getBinding(threadId));
+      const handoffState = Option.isSome(handoffStates)
+        ? yield* handoffStates.value.get(threadId)
+        : null;
+      return claudeSessionsForThread(binding, handoffState).map(
+        (session): CleanupJob => ({ threadId, ...session }),
+      );
+    }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("native session cleanup could not read the thread binding", {
           threadId,
           cause: Cause.pretty(cause),
-        }).pipe(Effect.as(Option.none<CleanupJob>())),
+        }).pipe(Effect.as<ReadonlyArray<CleanupJob>>([])),
       ),
     );
 
-  const start: NativeSessionCleanupReactorShape["start"] = Stream.runForEach(
-    orchestrationEngine.streamDomainEvents,
-    (event) =>
+  const config = yield* Effect.serviceOption(ServerConfig);
+  const start: NativeSessionCleanupReactorShape["start"] = Effect.gen(function* () {
+    if (sources.stopped) return;
+    yield* Effect.addFinalizer(() => sources.stop);
+    yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
       event.type === "thread.deleted"
-        ? captureJob(event.payload.threadId).pipe(
-            Effect.flatMap(
-              Option.match({ onNone: () => Effect.void, onSome: (job) => worker.enqueue(job) }),
+        ? captureJobs(event.payload.threadId).pipe(
+            Effect.tap(() =>
+              Option.isSome(config)
+                ? Effect.tryPromise(() =>
+                    deletePdfDocumentBudgets(config.value.stateDir, event.payload.threadId),
+                  ).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning("document budget cleanup failed", {
+                        cause: Cause.pretty(cause),
+                      }),
+                    ),
+                  )
+                : Effect.void,
             ),
+            Effect.flatMap((jobs) => Effect.forEach(jobs, worker.enqueue, { discard: true })),
           )
         : Effect.void,
-  ).pipe(Effect.forkScoped, Effect.asVoid);
+    ).pipe(
+      Scope.provide(sources.scope),
+      Effect.forkIn(sources.scope, { startImmediately: true }),
+      Effect.asVoid,
+    );
+  });
+
+  yield* registerShutdown("native-session-cleanup", "drain", () => worker.drain, [
+    "provider-ingestion",
+  ]);
+  yield* Effect.addFinalizer(() => sources.stop);
 
   return { start, drain: worker.drain } satisfies NativeSessionCleanupReactorShape;
 });

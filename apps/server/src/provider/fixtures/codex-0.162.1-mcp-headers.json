@@ -1,0 +1,94 @@
+{
+  "version": "codex-cli 0.162.1",
+  "note": "Captured with an empty CODEX_HOME; mcp list only reads configuration and does not connect. Recheck when updating the bundled Codex baseline.",
+  "cases": [
+    {
+      "field": "http_headers",
+      "args": [
+        "-c",
+        "mcp_servers={\"fixture\"={\"url\"=\"https://example.invalid/mcp\",\"http_headers\"={\"X-Fixture\"=\"fixture-value\"}}}",
+        "mcp",
+        "list",
+        "--json"
+      ],
+      "servers": [
+        {
+          "name": "fixture",
+          "enabled": true,
+          "disabled_reason": null,
+          "transport": {
+            "type": "streamable_http",
+            "url": "https://example.invalid/mcp",
+            "bearer_token_env_var": null,
+            "http_headers": {
+              "X-Fixture": "fixture-value"
+            },
+            "env_http_headers": null,
+            "http_headers_helper": null
+          },
+          "startup_timeout_sec": null,
+          "tool_timeout_sec": null,
+          "auth_status": "unknown"
+        }
+      ]
+    },
+    {
+      "field": "env_http_headers",
+      "args": [
+        "-c",
+        "mcp_servers={\"fixture\"={\"url\"=\"https://example.invalid/mcp\",\"env_http_headers\"={\"X-Fixture\"=\"fixture-value\"}}}",
+        "mcp",
+        "list",
+        "--json"
+      ],
+      "servers": [
+        {
+          "name": "fixture",
+          "enabled": true,
+          "disabled_reason": null,
+          "transport": {
+            "type": "streamable_http",
+            "url": "https://example.invalid/mcp",
+            "bearer_token_env_var": null,
+            "http_headers": null,
+            "env_http_headers": {
+              "X-Fixture": "fixture-value"
+            },
+            "http_headers_helper": null
+          },
+          "startup_timeout_sec": null,
+          "tool_timeout_sec": null,
+          "auth_status": "unknown"
+        }
+      ]
+    },
+    {
+      "field": "headers",
+      "args": [
+        "-c",
+        "mcp_servers={\"fixture\"={\"url\"=\"https://example.invalid/mcp\",\"headers\"={\"X-Fixture\"=\"fixture-value\"}}}",
+        "mcp",
+        "list",
+        "--json"
+      ],
+      "servers": [
+        {
+          "name": "fixture",
+          "enabled": true,
+          "disabled_reason": null,
+          "transport": {
+            "type": "streamable_http",
+            "url": "https://example.invalid/mcp",
+            "bearer_token_env_var": null,
+            "http_headers": null,
+            "env_http_headers": null,
+            "http_headers_helper": null
+          },
+          "startup_timeout_sec": null,
+          "tool_timeout_sec": null,
+          "auth_status": "unknown"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,417 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-codex-profile-readiness",
+  "state": "passed",
+  "repositoryCommit": "6b8b42a786036f0c3a256ff01939eabf72a01aed",
+  "workingTreeDirty": false,
+  "recordedAt": "2026-10-14T16:10:12.933Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "provider": "codex",
+  "runtimeMode": "full-access",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "a4bdc0c5022c09bc98e13e3cbd526b1f2ded4ef0c235a627cf4926613813d629",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "83b0fd59e7c4a1f87971dfe99b58e377a6f7f4d0579b5ca85a48f1866a4ccfb6",
+    "observerSource": "fe40d37a2ee7ddbbefb8a60564ff1216097a26c33cc85a65e871a8c02dc39575",
+    "transportObserverSource": "88da9c9eefcdfee6767c5f7a8695de27b726ef2d41a7542b16be268f2d5eb10b",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "a3b8c3d877aa24fd44168bc82fa39208f54e5358e197264ca0470861680baa49",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "17281f635c4f653e13d7dcbeb52e8570e6930a32e93414c0de713437e5abe95d",
+    "profileIsolationSource": "adb398603d60af03452e1ccf7e648b430d2cae4f93f6446ee19060c6b3f6b059",
+    "profileIsolationObserverSource": "41912a1a67a85b5fc2d12eee295cc0adad89aaa23244ec52f458739381fa50fa",
+    "profileIsolationEvidenceSource": "7b71c49eea792eae7a7ec07f83d6fe50d5d832f0712e1376aa25de00dfe5ebbb",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "07ee3fb76cdb4b55566bf0ff5b76f052bc72da6e1a4de1b9d86a20673f147b3b",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "two-real-profiles": true,
+    "no-grant-lease-or-input": true,
+    "credential-files-unchanged": true,
+    "sessions-stopped": true,
+    "cleanup": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "profileIsolationObservation": {
+    "readinessOnly": true,
+    "channels": {
+      "configured": true,
+      "traceComplete": true,
+      "profiles": [
+        {
+          "held": false,
+          "anonymousBanners": 0,
+          "ownBanners": 0,
+          "ownActivities": 0,
+          "ownImages": 0,
+          "busy": 0,
+          "grants": 1,
+          "ownWsActivities": 0,
+          "ownWsImages": 0,
+          "foreignActivity": false,
+          "foreignImages": false,
+          "foreignGrants": false,
+          "foreignIdentity": false,
+          "invalidBanner": false,
+          "busyWhileForeignHeld": false,
+          "native": {
+            "responses": {
+              "nativeCaptureSucceeded": false,
+              "nativeInspectionSucceeded": false,
+              "nativeInputSucceeded": false
+            },
+            "held": false,
+            "leaseObserved": false,
+            "pauseObserved": false,
+            "resumeObserved": false,
+            "captureResponses": 0,
+            "inspectionResponses": 0,
+            "activityMessages": 0,
+            "activityThumbnails": 0,
+            "toolOutcomeErrors": [],
+            "traceComplete": true,
+            "pendingResponses": 0,
+            "accessRequests": 0,
+            "accessAnswersForwarded": 0,
+            "accessAnswerSummaries": [],
+            "sessionGenerationsObserved": 1,
+            "requestSessions": [
+              {
+                "op": "listApps",
+                "sessionOrdinal": 1
+              }
+            ],
+            "backendRestarts": [],
+            "backendLifecycle": [],
+            "mcpTransport": [],
+            "mcpTransportOverflow": false,
+            "grantChanges": 2,
+            "lastGrantCount": 0,
+            "operations": [
+              {
+                "op": "listApps",
+                "outcome": "ok",
+                "validApps": true
+              }
+            ]
+          }
+        },
+        {
+          "held": false,
+          "anonymousBanners": 0,
+          "ownBanners": 0,
+          "ownActivities": 0,
+          "ownImages": 0,
+          "busy": 0,
+          "grants": 0,
+          "ownWsActivities": 0,
+          "ownWsImages": 0,
+          "foreignActivity": false,
+          "foreignImages": false,
+          "foreignGrants": false,
+          "foreignIdentity": false,
+          "invalidBanner": false,
+          "busyWhileForeignHeld": false,
+          "native": {
+            "responses": {
+              "nativeCaptureSucceeded": false,
+              "nativeInspectionSucceeded": false,
+              "nativeInputSucceeded": false
+            },
+            "hostStatus": {
+              "available": true
+            },
+            "held": false,
+            "leaseObserved": false,
+            "pauseObserved": false,
+            "resumeObserved": false,
+            "captureResponses": 0,
+            "inspectionResponses": 0,
+            "activityMessages": 0,
+            "activityThumbnails": 0,
+            "toolOutcomeErrors": [],
+            "traceComplete": true,
+            "pendingResponses": 0,
+            "accessRequests": 0,
+            "accessAnswersForwarded": 0,
+            "accessAnswerSummaries": [],
+            "sessionGenerationsObserved": 1,
+            "requestSessions": [
+              {
+                "op": "listApps",
+                "sessionOrdinal": 1
+              }
+            ],
+            "backendRestarts": [],
+            "backendLifecycle": [],
+            "mcpTransport": [],
+            "mcpTransportOverflow": false,
+            "grantChanges": 2,
+            "lastGrantCount": 0,
+            "operations": [
+              {
+                "op": "listApps",
+                "outcome": "ok",
+                "validApps": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "distinctRendererProfiles": true,
+    "distinctBackendProcesses": true,
+    "isolatedProviderHomes": true,
+    "sourceCredentialsUnchanged": true,
+    "isolatedCredentialsUnchanged": true,
+    "profileSnapshotsPrivate": true,
+    "bothSessionsStopped": true,
+    "bothChatSurfacesReady": true,
+    "ownerPollingReadOnlyChecked": true
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": false,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "activityMessages": 0,
+    "activityThumbnails": 0,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "pendingResponses": 0,
+    "accessRequests": 0,
+    "accessAnswersForwarded": 0,
+    "accessAnswerSummaries": [],
+    "sessionGenerationsObserved": 2,
+    "requestSessions": [
+      {
+        "op": "listApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "listApps",
+        "sessionOrdinal": 2
+      }
+    ],
+    "backendRestarts": [],
+    "backendLifecycle": [],
+    "mcpTransport": [
+      {
+        "method": "initialize",
+        "sessionHeader": false,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "notification",
+        "sessionHeader": true,
+        "status": 202,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": false,
+        "completed": true,
+        "outcome": "accepted"
+      },
+      {
+        "method": "other",
+        "sessionHeader": true,
+        "status": 405,
+        "bounded": true,
+        "requestDecoded": false,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "http-error"
+      },
+      {
+        "method": "tools/list",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "initialize",
+        "sessionHeader": false,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "notification",
+        "sessionHeader": true,
+        "status": 202,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": false,
+        "completed": true,
+        "outcome": "accepted"
+      },
+      {
+        "method": "other",
+        "sessionHeader": true,
+        "status": 405,
+        "bounded": true,
+        "requestDecoded": false,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "http-error"
+      },
+      {
+        "method": "tools/list",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "other",
+        "sessionHeader": true,
+        "status": 405,
+        "bounded": true,
+        "requestDecoded": false,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "http-error"
+      },
+      {
+        "method": "other",
+        "sessionHeader": true,
+        "status": 405,
+        "bounded": true,
+        "requestDecoded": false,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "http-error"
+      }
+    ],
+    "mcpTransportOverflow": false,
+    "grantChanges": 4,
+    "lastGrantCount": 0,
+    "operations": [
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      }
+    ]
+  },
+  "admission": {
+    "version": 1,
+    "suiteId": "5ead2bd1-666c-4513-be38-aa87dfa9c66b",
+    "scenario": "profile-readiness",
+    "attempt": 1,
+    "identityHash": "862a72a7df05ff540b2a24e7f1aaab8dd9064521eb11731886180d594e7ff1cc",
+    "state": "passed",
+    "evidenceKind": "provider-desktop",
+    "startedAt": "2026-10-14T16:09:44.784Z",
+    "finishedAt": "2026-10-14T16:10:12.955Z",
+    "checks": {
+      "realElectronPermissionsAvailable": true,
+      "two-real-profiles": true,
+      "no-grant-lease-or-input": true,
+      "credential-files-unchanged": true,
+      "sessions-stopped": true,
+      "cleanup": true,
+      "receipt.two-real-profiles": true,
+      "receipt.no-grant-lease-or-input": true,
+      "receipt.credential-files-unchanged": true,
+      "receipt.sessions-stopped": true,
+      "receipt.cleanup": true
+    },
+    "measurements": {},
+    "cleanup": "confirmed",
+    "evidenceSha256": "249b4ce5ac8bb36680d0c43fc3f13925eea3ad76b8b68f4c37cb1047ae7359d3"
+  },
+  "providerVersion": "0.162.1",
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Real metadata turns in two isolated profiles submitted concurrently; exact one successful app-list reply per profile",
+    "Bundled owner-polling path exercised while metadata turns run and against completed turns; no consent, lease, capture, inspection or input",
+    "Private snapshots and unchanged credential files; sessions stopped and cleanup confirmed",
+    "Does not reproduce the unclassified fixture-inspection failure or establish its cause",
+    "No contention, image isolation, signed installed-build or Windows certification credit"
+  ]
+}

@@ -12,6 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
+import { useRightPanelStore } from "../rightPanelStore";
+
 import FileBrowserPanel from "./FileBrowserPanel";
 import { registerComposerFileMentionInserter } from "./composerFileMentionInsertion";
 import {
@@ -59,7 +61,9 @@ function listResult(entries: ProjectEntry[] = TREE_ENTRIES): ProjectListEntriesR
   };
 }
 
-async function renderPanel(options: { cwd?: string | null; entryLimit?: number } = {}) {
+async function renderPanel(
+  options: { cwd?: string | null; entryLimit?: number; heightPx?: number } = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -67,7 +71,7 @@ async function renderPanel(options: { cwd?: string | null; entryLimit?: number }
   });
   const onOpenFile = vi.fn();
   const cwd = options.cwd === undefined ? "/repo/project" : options.cwd;
-  const screen = await render(
+  const panel = (
     <QueryClientProvider client={queryClient}>
       <FileBrowserPanel
         cwd={cwd}
@@ -78,7 +82,16 @@ async function renderPanel(options: { cwd?: string | null; entryLimit?: number }
         entryLimit={options.entryLimit ?? 5_000}
         onOpenFile={onOpenFile}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
+  );
+  const screen = await render(
+    options.heightPx === undefined ? (
+      panel
+    ) : (
+      <div style={{ height: options.heightPx, display: "flex", flexDirection: "column" }}>
+        {panel}
+      </div>
+    ),
   );
   return {
     queryClient,
@@ -199,6 +212,31 @@ describe("FileBrowserPanel", () => {
       await page.getByRole("button", { name: "Collapse folder" }).first().click();
       await page.getByText("README.md", { exact: true }).click();
       expect(mounted.onOpenFile).toHaveBeenCalledWith("README.md");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps stale root and expanded listings usable after refresh failure, with a local retry", async () => {
+    const mounted = await renderPanel();
+    try {
+      await expect.element(page.getByText("README.md", { exact: true })).toBeInTheDocument();
+      listDirectory.mockRejectedValue(
+        new Error("Permission denied: workspace temporarily unavailable"),
+      );
+      await page.getByRole("button", { name: "Refresh workspace files" }).click();
+      await expect.element(page.getByText("README.md", { exact: true })).toBeInTheDocument();
+      await expect
+        .element(page.getByRole("alert").first())
+        .toHaveTextContent("Permission denied reading workspace root");
+      await expect
+        .element(page.getByRole("alert").first())
+        .toHaveTextContent("last successful listing");
+      await page.getByText("README.md", { exact: true }).click();
+      expect(mounted.onOpenFile).toHaveBeenCalledWith("README.md");
+      listDirectory.mockResolvedValue(listResult());
+      await page.getByRole("button", { name: "Retry folder" }).first().click();
+      await expect.element(page.getByText("README.md", { exact: true })).toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }
@@ -334,6 +372,7 @@ describe("FileBrowserPanel", () => {
           expect.objectContaining({ id: "reveal-in-file-manager" }),
         ]),
         { x: 16, y: 24 },
+        { editorTarget: "/repo/project/README.md" },
       );
     } finally {
       unregister();
@@ -473,6 +512,30 @@ describe("FileBrowserPanel", () => {
         );
       });
       await expect.element(page.getByText("FileBrowserPanel.tsx")).toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("virtualizes 100,000 entries and reveals a row far below the viewport", async () => {
+    const entries: ProjectEntry[] = Array.from({ length: 100_000 }, (_, index) => ({
+      path: `file-${String(index).padStart(6, "0")}.ts`,
+      kind: "file" as const,
+    }));
+    listDirectory.mockImplementation(async ({ relativePath }: { relativePath: string }) =>
+      listResult(relativePath === "" ? entries : []),
+    );
+    const mounted = await renderPanel({ entryLimit: 100_000, heightPx: 400 });
+    try {
+      await expect.element(page.getByText("file-000000.ts")).toBeInTheDocument();
+      const renderedRows = document.querySelectorAll("[data-file-browser-path]").length;
+      expect(renderedRows).toBeGreaterThan(0);
+      expect(renderedRows).toBeLessThan(200);
+      expect(document.body.textContent).not.toContain("Show more entries");
+
+      useRightPanelStore.getState().openDirectory(THREAD_ID, "file-090000.ts");
+      await expect.element(page.getByText("file-090000.ts")).toBeInTheDocument();
+      expect(document.querySelector('[data-file-browser-path="file-000000.ts"]')).toBeNull();
     } finally {
       await mounted.cleanup();
     }

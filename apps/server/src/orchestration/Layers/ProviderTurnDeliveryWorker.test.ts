@@ -1,3 +1,4 @@
+import { ServerShutdown, ShutdownRegistry } from "../../shutdown.ts";
 import { ProviderAdapterRequestError, ProviderTurnDeliveryError } from "../../provider/Errors.ts";
 import {
   CommandId,
@@ -5,14 +6,21 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
+  ScheduledTaskRunId,
   type RuntimeUsageLimit,
   type OrchestrationUsageLimit,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Fiber, Layer, Option, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, Metric, Option, Stream } from "effect";
 
+import {
+  deliveryAmbiguousTotal,
+  deliveryAttemptsActive,
+  deliveryOutboxRowsDecoded,
+} from "../../observability/Metrics.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 
+import { DeliveryAttemptContext } from "../../provider/deliveryAttemptContext";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -23,6 +31,11 @@ import {
 } from "../Services/ProviderTurnDeliveryRepository.ts";
 import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWorker.ts";
 import { ProviderTurnDeliveryWorkerLive } from "./ProviderTurnDeliveryWorker.ts";
+import {
+  setup as scheduledSetup,
+  testLayer as scheduledTestLayer,
+} from "../../scheduledTasks/testing.ts";
+import { userScheduleActor } from "../../scheduledTasks/Service.ts";
 
 const deliveryId = CommandId.makeUnsafe("delivery-unknown-outcome");
 const commandId = CommandId.makeUnsafe("command-unknown-outcome");
@@ -41,6 +54,10 @@ let providerReadFails = false;
 let pendingBarrier = true;
 let reconciliationCount = 0;
 let acceptSend = false;
+let unavailableDispatchSnapshot = false;
+let supersededByStop = false;
+let pendingControl: Effect.Effect<void> | undefined;
+let beforePrepared: Effect.Effect<void> | undefined;
 let methodNotFound = false;
 let reconciliationFails = false;
 let extraReplayDelivery: ProviderTurnDelivery | null = null;
@@ -83,6 +100,10 @@ function resetDelivery() {
   pendingBarrier = true;
   reconciliationCount = 0;
   acceptSend = false;
+  unavailableDispatchSnapshot = false;
+  supersededByStop = false;
+  pendingControl = undefined;
+  beforePrepared = undefined;
   methodNotFound = false;
   reconciliationFails = false;
   extraReplayDelivery = null;
@@ -92,7 +113,41 @@ function resetDelivery() {
   abandonApplies = true;
   pendingTurnStartMessageId = null;
   pendingTurnStartDeletes = 0;
+  activeAttemptsDuringDelivery = null;
 }
+
+let activeAttemptsDuringDelivery: number | null = null;
+
+const deliverTurnStartOutcome = (): Effect.Effect<
+  { readonly turnId: TurnId },
+  | ProviderAdapterRequestError
+  | ProviderTurnDeliveryError
+  | Error
+  | { readonly cause: { readonly cause: { readonly code: number; readonly message: string } } }
+> =>
+  usageRejection && usageRequestMethod
+    ? Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: usageRequestMethod,
+          detail: "Usage limit reached",
+          usageLimit: usageRejection,
+        }),
+      )
+    : usageRejection
+      ? Effect.fail(
+          new ProviderTurnDeliveryError({
+            certainty: "not_sent",
+            retryable: true,
+            detail: "Usage limit reached",
+            usageLimit: usageRejection,
+          }),
+        )
+      : methodNotFound
+        ? Effect.fail({ cause: { cause: { code: -32601, message: "Method not found" } } })
+        : acceptSend
+          ? Effect.succeed({ turnId: TurnId.makeUnsafe("existing-turn") })
+          : Effect.fail(new Error("session not found after request write"));
 
 const reconcile = (target: ThreadId) =>
   Effect.gen(function* () {
@@ -104,6 +159,20 @@ const reconcile = (target: ThreadId) =>
   });
 
 const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
+  recordDispatchIntent: (input: {
+    preSendTurnIds: TurnId[];
+    historyEvidence: ProviderTurnDelivery["historyEvidence"];
+  }) =>
+    Effect.sync(() => {
+      state = {
+        ...state,
+        preSendTurnIds: input.preSendTurnIds,
+        historyEvidence: input.historyEvidence,
+      };
+      return true;
+    }),
+  listCandidateIds: () =>
+    Effect.sync(() => (state.state === "pending" ? [{ deliveryId, threadId }] : [])),
   listActionable: Effect.sync(() => (state.state === "pending" ? [state] : [])),
   listSending: Effect.sync(() => (state.state === "sending" ? [state] : [])),
   listUnprojectedTerminal: Effect.sync(() =>
@@ -124,6 +193,7 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
         ...state,
         state: "sending",
         attempt: state.attempt + 1,
+        attemptId: "test-attempt",
         preSendTurnIds,
       };
       return state;
@@ -131,6 +201,7 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
   markAccepted: (input: { readonly providerTurnId: TurnId }) =>
     Effect.sync(() => {
       state = { ...state, state: "accepted", providerTurnId: input.providerTurnId };
+      return true;
     }),
   markRejected: (input: {
     readonly errorCode: string;
@@ -148,6 +219,7 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
         certainty: input.certainty,
         ...(input.usageLimit ? { usageLimit: input.usageLimit } : {}),
       };
+      return true;
     }),
   requeue: () =>
     Effect.sync(() => {
@@ -181,29 +253,21 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
   Layer.provideMerge(
     Layer.succeed(ProviderCommandReactor, {
       deliverTurnStart: () =>
-        usageRejection && usageRequestMethod
-          ? Effect.fail(
-              new ProviderAdapterRequestError({
-                provider: "codex",
-                method: usageRequestMethod,
-                detail: "Usage limit reached",
-                usageLimit: usageRejection,
-              }),
-            )
-          : usageRejection
-            ? Effect.fail(
-                new ProviderTurnDeliveryError({
-                  certainty: "not_sent",
-                  retryable: true,
-                  detail: "Usage limit reached",
-                  usageLimit: usageRejection,
-                }),
-              )
-            : methodNotFound
-              ? Effect.fail({ cause: { cause: { code: -32601, message: "Method not found" } } })
-              : acceptSend
-                ? Effect.succeed({ turnId: TurnId.makeUnsafe("existing-turn") })
-                : Effect.fail(new Error("session not found after request write")),
+        Metric.value(deliveryAttemptsActive).pipe(
+          Effect.tap((gauge) =>
+            Effect.sync(() => {
+              activeAttemptsDuringDelivery = gauge.value;
+            }),
+          ),
+          Effect.andThen(
+            Effect.gen(function* () {
+              const context = yield* DeliveryAttemptContext;
+              if (beforePrepared) yield* beforePrepared;
+              if (unavailableDispatchSnapshot && context) yield* context.prepared(null);
+              return yield* Effect.suspend(deliverTurnStartOutcome);
+            }),
+          ),
+        ),
       recordTurnStartFailure: () =>
         Effect.sync(() => {
           failureProjectionCount += 1;
@@ -238,6 +302,8 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
   Layer.provideMerge(
     Layer.succeed(OrchestrationEngineService, {
       streamDomainEvents: Stream.empty,
+      isTurnStartSuperseded: () => supersededByStop,
+      waitForControlProgress: () => pendingControl ?? Effect.void,
       getReadModel: () =>
         Effect.succeed({
           threads: [
@@ -251,8 +317,112 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
   ),
 );
 
+const setupScheduledDelivery = Effect.gen(function* () {
+  resetDelivery();
+  const { create, service, store } = yield* scheduledSetup;
+  const { task } = yield* create();
+  const run = yield* service.runNow(
+    {
+      taskId: task.id,
+      runId: ScheduledTaskRunId.makeUnsafe(crypto.randomUUID()),
+      requestedAt: new Date(0).toISOString(),
+    },
+    userScheduleActor,
+  );
+  yield* service.reserve((yield* store.run(run.id))!);
+  const current = (yield* store.run(run.id))!;
+  state = {
+    ...state,
+    commandId: current.command!.commandId,
+    threadId: current.command!.threadId,
+    messageId: current.command!.message.messageId,
+    event: { ...state.event, commandId: current.command!.commandId },
+  };
+  const { sql } = store;
+  yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES(${task.projectId},'Project','/repo','[]',${createdAt},${createdAt})`;
+  yield* sql`INSERT INTO projection_threads(thread_id,project_id,title,model,created_at,last_interaction_at,updated_at) VALUES(${state.threadId},${task.projectId},'Scheduled','model-a',${createdAt},${createdAt},${createdAt})`;
+  yield* sql`INSERT INTO provider_turn_deliveries(delivery_id,thread_id,command_id,message_id,state,event_json,created_at,updated_at) VALUES(${state.deliveryId},${state.threadId},${state.commandId},${state.messageId},'pending','{}',${createdAt},${createdAt})`;
+  return { service, store, run };
+});
+
 it.effect(
-  "ProviderTurnDeliveryWorker recovers an accepted turn beyond the first history page",
+  "fences canceled scheduled deliveries before claiming, even with a distinct delivery ID",
+  () =>
+    Effect.gen(function* () {
+      const { store, service, run } = yield* setupScheduledDelivery;
+      yield* store.sql`UPDATE scheduled_task_runs SET canceled=1 WHERE id=${run.id}`;
+      const worker = yield* ProviderTurnDeliveryWorker;
+      yield* worker.start;
+      yield* worker.drain;
+      const rows = yield* store.sql<{
+        state: string;
+        certainty: string;
+      }>`SELECT state,certainty FROM provider_turn_deliveries WHERE command_id=${state.commandId}`;
+      assert.equal(rows[0]!.state, "abandoned");
+      assert.equal(rows[0]!.certainty, "not_sent");
+      assert.equal(state.attempt, 0);
+      yield* service.reconcile;
+      assert.equal((yield* store.run(run.id))!.capacity, false);
+      assert.equal((yield* store.run(run.id))!.owner, false);
+    }).pipe(Effect.provide(testLayer.pipe(Layer.provideMerge(scheduledTestLayer)))),
+);
+
+it.effect("wakes a scheduled delivery after its capacity gate opens", () =>
+  Effect.gen(function* () {
+    const { store } = yield* setupScheduledDelivery;
+    acceptSend = true;
+    const worker = yield* ProviderTurnDeliveryWorker;
+    yield* worker.start;
+    yield* worker.drain;
+    assert.equal(state.attempt, 0);
+    yield* store.sql`UPDATE scheduled_control SET ready=1 WHERE id=1`;
+    yield* worker.wakeScheduled!(state.threadId);
+    yield* worker.drain;
+    assert.equal(state.state, "accepted");
+    assert.equal(state.attempt, 1);
+  }).pipe(Effect.provide(testLayer.pipe(Layer.provideMerge(scheduledTestLayer)))),
+);
+
+it.effect(
+  "rechecks scheduled cancellation after asynchronous preparation before provider handoff",
+  () =>
+    Effect.gen(function* () {
+      const { store, service, run } = yield* setupScheduledDelivery;
+      yield* store.sql`UPDATE scheduled_control SET ready=1 WHERE id=1`;
+      acceptSend = true;
+      unavailableDispatchSnapshot = true;
+      beforePrepared = store.sql`UPDATE scheduled_task_runs SET canceled=1 WHERE id=${run.id}`.pipe(
+        Effect.asVoid,
+        Effect.orDie,
+      );
+      const worker = yield* ProviderTurnDeliveryWorker;
+      const outcomeFiber = yield* Effect.forkScoped(Stream.runHead(worker.outcomes));
+      yield* Effect.yieldNow;
+      yield* worker.start;
+      yield* worker.drain;
+      assert.equal(state.attempt, 1);
+      assert.equal(state.certainty, "not_sent");
+      assert.equal(state.providerTurnId, null);
+      assert.deepStrictEqual(acceptedTurnIds, []);
+      // A late cancellation retires only the scheduled submission: it is never a
+      // rejection that pauses the conversation's queue or reports a failed run.
+      assert.equal(state.state, "abandoned");
+      assert.equal(state.errorCode, "scheduled_run_canceled");
+      assert.equal(Option.getOrThrow(yield* Fiber.join(outcomeFiber)).state, "abandoned");
+      yield* service.reconcile;
+      const settled = (yield* store.run(run.id))!;
+      assert.equal(settled.run.status, "skipped");
+      assert.equal(settled.run.reason, "canceled");
+      assert.equal(settled.capacity, false);
+      assert.deepStrictEqual(
+        yield* store.sql`SELECT id FROM scheduled_notifications WHERE run_id=${run.id}`,
+        [],
+      );
+    }).pipe(Effect.provide(testLayer.pipe(Layer.provideMerge(scheduledTestLayer)))),
+);
+
+it.effect(
+  "ProviderTurnDeliveryWorker keeps uncorrelated history ambiguous beyond the first page",
   () =>
     Effect.gen(function* () {
       resetDelivery();
@@ -268,8 +438,8 @@ it.effect(
       const worker = yield* ProviderTurnDeliveryWorker;
       yield* worker.start;
       yield* worker.drain;
-      assert.equal(state.state, "accepted");
-      assert.equal(state.providerTurnId, "turn-50");
+      assert.equal(state.state, "ambiguous");
+      assert.equal(state.providerTurnId, null);
       assert.equal(requeueCount, 0);
     }).pipe(Effect.provide(testLayer)),
 );
@@ -281,6 +451,12 @@ it.effect(
       resetDelivery();
       const worker = yield* ProviderTurnDeliveryWorker;
 
+      const ambiguousBefore = (yield* Metric.value(deliveryAmbiguousTotal)).count;
+      const claimScans = Metric.withAttributes(deliveryOutboxRowsDecoded, { source: "claim" });
+      const sweepScans = Metric.withAttributes(deliveryOutboxRowsDecoded, { source: "sweep" });
+      const claimBefore = yield* Metric.value(claimScans);
+      const sweepBefore = yield* Metric.value(sweepScans);
+
       // First run has no outcome subscriber, modeling a crash after the
       // terminal SQLite update but before the queue observes the PubSub frame.
       yield* worker.start;
@@ -289,6 +465,18 @@ it.effect(
       assert.equal(state.certainty, "unknown");
       assert.equal(requeueCount, 0);
       assert.equal(outcomeProjected, false);
+      assert.equal((yield* Metric.value(deliveryAmbiguousTotal)).count - ambiguousBefore, 1);
+      // The attempt is counted while the provider send is in flight, then released.
+      assert.equal(activeAttemptsDuringDelivery, 1);
+      assert.equal((yield* Metric.value(deliveryAttemptsActive)).value, 0);
+      // The startup sweep and the claim each decode the one pending delivery. The
+      // forked safety sweep may also run, but finds nothing pending by then.
+      const claimAfter = yield* Metric.value(claimScans);
+      const sweepAfter = yield* Metric.value(sweepScans);
+      assert.equal(claimAfter.count - claimBefore.count, 1);
+      assert.equal(claimAfter.sum - claimBefore.sum, 1);
+      assert.isAtLeast(sweepAfter.count - sweepBefore.count, 1);
+      assert.equal(sweepAfter.sum - sweepBefore.sum, 1);
 
       const replayFiber = yield* Effect.forkScoped(Stream.runHead(worker.outcomes));
       yield* Effect.yieldNow;
@@ -397,7 +585,7 @@ it.effect("replays later threads even when the first thread cleanup fails", () =
   }).pipe(Effect.provide(testLayer)),
 );
 
-it.effect("returns accepted from Recheck even when cleanup fails", () =>
+it.effect("does not infer acceptance from an unrelated new turn during Recheck", () =>
   Effect.gen(function* () {
     resetDelivery();
     state = { ...state, state: "ambiguous", certainty: "unknown" };
@@ -405,9 +593,28 @@ it.effect("returns accepted from Recheck even when cleanup fails", () =>
     providerTurns = [{ id: TurnId.makeUnsafe("rechecked-turn"), items: [] }];
     const worker = yield* ProviderTurnDeliveryWorker;
     const delivery = yield* worker.recheck(threadId);
-    assert.equal(delivery?.state, "accepted");
-    assert.equal(state.state, "accepted");
+    assert.equal(delivery?.state, "ambiguous");
+    assert.equal(state.state, "ambiguous");
     assert.equal(pendingBarrier, true);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("Recheck reports why provider history could not be read", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    providerReadFails = true;
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const unreadable = yield* worker.recheckWithReason(threadId);
+    assert.equal(unreadable.delivery?.state, "ambiguous");
+    assert.equal(
+      "historyError" in unreadable ? unreadable.historyError : undefined,
+      "provider unavailable",
+    );
+
+    providerReadFails = false;
+    const readable = yield* worker.recheckWithReason(threadId);
+    assert.isFalse("historyError" in readable);
   }).pipe(Effect.provide(testLayer)),
 );
 
@@ -566,7 +773,7 @@ it.effect("Recheck never credits an older delivery with a newer in-flight send's
   }).pipe(Effect.provide(testLayer)),
 );
 
-it.effect("Recheck accepts a superseded delivery's turn that predates the newer send", () =>
+it.effect("Recheck keeps a superseded delivery ambiguous without a correlated receipt", () =>
   Effect.gen(function* () {
     resetDelivery();
     state = { ...state, state: "ambiguous", certainty: "unknown" };
@@ -577,8 +784,8 @@ it.effect("Recheck accepts a superseded delivery's turn that predates the newer 
     ];
     const worker = yield* ProviderTurnDeliveryWorker;
     const delivery = yield* worker.recheck(threadId, deliveryId);
-    assert.equal(delivery?.state, "accepted");
-    assert.equal(state.providerTurnId, "older-turn");
+    assert.equal(delivery?.state, "ambiguous");
+    assert.equal(state.providerTurnId, null);
   }).pipe(Effect.provide(testLayer)),
 );
 
@@ -606,4 +813,102 @@ it.effect("Discard keeps a newer send's pending turn start and fails if abandon 
     assert.match(error.message, /can no longer be discarded/u);
     assert.equal(pendingTurnStartDeletes, 0);
   }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("retains the claimed baseline if the final dispatch read is unavailable", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    providerTurns = [{ id: TurnId.makeUnsafe("existing-turn"), items: [] }];
+    acceptSend = true;
+    unavailableDispatchSnapshot = true;
+    const worker = yield* ProviderTurnDeliveryWorker;
+    yield* worker.start;
+    yield* worker.drain;
+    assert.equal(state.state, "ambiguous");
+    assert.deepEqual(state.preSendTurnIds, [TurnId.makeUnsafe("existing-turn")]);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a stop fences a claimed start before dispatch intent and never retries it", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    acceptSend = true;
+    unavailableDispatchSnapshot = true;
+    supersededByStop = true;
+    const worker = yield* ProviderTurnDeliveryWorker;
+    yield* worker.start;
+    yield* worker.drain;
+    assert.equal(state.state, "rejected");
+    assert.equal(state.certainty, "not_sent");
+    assert.equal(requeueCount, 0);
+    assert.include(state.errorDetail!, "stopped before");
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each(["finish", "stop"] as const)(
+  "waits for admitted controls before claiming a new turn (%s)",
+  (outcome) =>
+    Effect.gen(function* () {
+      resetDelivery();
+      const entered = yield* Deferred.make<void>(),
+        release = yield* Deferred.make<void>();
+      pendingControl = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      acceptSend = true;
+      const worker = yield* ProviderTurnDeliveryWorker;
+      yield* worker.start;
+      yield* Deferred.await(entered);
+      assert.equal(state.state, "pending");
+      assert.equal(state.attempt, 0);
+      assert.equal(activeAttemptsDuringDelivery, null);
+      if (outcome === "stop") state = { ...state, state: "rejected", certainty: "not_sent" };
+      yield* Deferred.succeed(release, undefined);
+      yield* worker.drain;
+      assert.equal(state.state, outcome === "stop" ? "rejected" : "accepted");
+      assert.equal(state.attempt, outcome === "stop" ? 0 : 1);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.live(
+  "shutdown preserves unsent deliveries and fences an admitted preparation before native dispatch",
+  () =>
+    Effect.gen(function* () {
+      resetDelivery();
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const admissionStopped = yield* Deferred.make<void>();
+      beforePrepared = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      unavailableDispatchSnapshot = true;
+      acceptSend = true;
+      const shutdown = new ShutdownRegistry();
+      shutdown.register({
+        name: "test-admission-barrier",
+        phase: "flush",
+        run: () => Effect.runPromise(Deferred.succeed(admissionStopped, undefined)),
+      });
+      yield* Effect.gen(function* () {
+        const worker = yield* ProviderTurnDeliveryWorker;
+        yield* worker.start;
+        yield* Deferred.await(entered);
+        const closing = shutdown.run();
+        yield* Deferred.await(admissionStopped);
+        yield* Deferred.succeed(release, undefined);
+        const results = yield* Effect.promise(() => closing);
+        assert.equal(
+          results.every((result) => result.outcome === "complete"),
+          true,
+        );
+        assert.equal(state.state, "pending");
+        assert.equal(state.providerTurnId, null);
+        assert.equal(requeueCount, 1);
+        yield* worker.start;
+        yield* worker.drain;
+        assert.equal(state.attempt, 1);
+      }).pipe(
+        Effect.provide(testLayer.pipe(Layer.provide(Layer.succeed(ServerShutdown, shutdown)))),
+      );
+    }).pipe(Effect.scoped),
 );

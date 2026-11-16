@@ -2,9 +2,11 @@ import {
   ProjectSettingsOverrides,
   CheckedInProjectIconPath,
   ThreadEnvMode,
+  UpstreamProjectConfig,
   type CheckedInProjectConfigDiagnostic,
   type CheckedInProjectIconPath as CheckedInProjectIconPathType,
   type ThreadEnvMode as ThreadEnvModeType,
+  type UpstreamProjectConfig as UpstreamProjectConfigType,
 } from "@t3tools/contracts";
 import { Exit, Schema } from "effect";
 
@@ -14,18 +16,20 @@ export interface ParsedCheckedInProjectFile {
   readonly settings?: ProjectSettingsOverrides;
   readonly defaultThreadEnvMode: ThreadEnvModeType | null;
   readonly iconPath: CheckedInProjectIconPathType | null;
+  readonly upstream: UpstreamProjectConfigType | null;
   readonly diagnostics: ReadonlyArray<CheckedInProjectConfigDiagnostic>;
 }
 
 const decodeUnknownJson = Schema.decodeUnknownExit(fromLenientJson(Schema.Unknown));
 const decodeThreadEnvMode = Schema.decodeUnknownExit(ThreadEnvMode);
 const decodeIconPath = Schema.decodeUnknownExit(CheckedInProjectIconPath);
+const decodeUpstream = Schema.decodeUnknownExit(UpstreamProjectConfig);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasSafeRelativePathShape(value: string): boolean {
+export function hasSafeRelativePathShape(value: string): boolean {
   const normalized = value.replaceAll("\\", "/");
   if (normalized.startsWith("/") || /^[a-z]:/iu.test(normalized) || normalized.includes("\0")) {
     return false;
@@ -39,6 +43,7 @@ export function parseCheckedInProjectFile(raw: string): ParsedCheckedInProjectFi
     return {
       defaultThreadEnvMode: null,
       iconPath: null,
+      upstream: null,
       diagnostics: [
         { field: "file", message: "Project configuration is not a valid JSON object." },
       ],
@@ -48,6 +53,7 @@ export function parseCheckedInProjectFile(raw: string): ParsedCheckedInProjectFi
   const diagnostics: CheckedInProjectConfigDiagnostic[] = [];
   let defaultThreadEnvMode: ThreadEnvModeType | null = null;
   let iconPath: CheckedInProjectIconPathType | null = null;
+  let upstream: UpstreamProjectConfigType | null = null;
 
   if (
     decoded.value.$schema !== undefined &&
@@ -83,6 +89,19 @@ export function parseCheckedInProjectFile(raw: string): ParsedCheckedInProjectFi
     }
   }
 
+  if (decoded.value.upstream !== undefined) {
+    const field = decodeUpstream(decoded.value.upstream);
+    if (Exit.isSuccess(field) && hasSafeRelativePathShape(field.value.ledgerDir)) {
+      upstream = field.value;
+    } else {
+      diagnostics.push({
+        field: "upstream",
+        message:
+          "upstream needs a https://github.com/<owner>/<repo> repository, a plain remote name, a plain branch name, and a normalized workspace-relative ledgerDir.",
+      });
+    }
+  }
+
   if (decoded.value.scripts !== undefined) {
     diagnostics.push({
       field: "scripts",
@@ -107,5 +126,5 @@ export function parseCheckedInProjectFile(raw: string): ParsedCheckedInProjectFi
     else if (key !== "defaultThreadEnvMode")
       diagnostics.push({ field: "settings", message: `Invalid value for ${key}.` });
   }
-  return { defaultThreadEnvMode, iconPath, diagnostics, settings };
+  return { defaultThreadEnvMode, iconPath, upstream, diagnostics, settings };
 }

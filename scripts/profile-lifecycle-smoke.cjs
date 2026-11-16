@@ -6,6 +6,8 @@ const net = require("node:net");
 const { spawn, execFileSync } = require("node:child_process");
 const { once } = require("node:events");
 const { createRequire } = require("node:module");
+const { writeDiagnostics } = require("./lib/ci-diagnostics.cjs");
+const artifactDirectory = process.env.F5_CI_ARTIFACT_DIR;
 const WebSocket = createRequire(path.join(process.cwd(), "apps/server/package.json"))("ws");
 (async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "f5-real-profiles-"));
@@ -14,6 +16,7 @@ const WebSocket = createRequire(path.join(process.cwd(), "apps/server/package.js
   const sockets = [];
   const authToken = require("node:crypto").randomBytes(24).toString("hex");
   const cookies = new Map();
+  let failure = "";
   const cookieHeader = () => [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
   const env = {
     ...process.env,
@@ -22,6 +25,7 @@ const WebSocket = createRequire(path.join(process.cwd(), "apps/server/package.js
     USERPROFILE: root,
     CODEX_HOME: path.join(root, ".codex"),
   };
+  delete env.F5_CI_ARTIFACT_DIR;
   for (const key of Object.keys(env))
     if (/TOKEN|API_KEY|AUTH_TOKEN|F5_PROFILE|T3CODE_PORT|F5_STATE_DIR|T3CODE_STATE_DIR/i.test(key))
       delete env[key];
@@ -299,10 +303,27 @@ else { console.error("Unexpected fixture command"); process.exitCode = 2; }
     console.log(
       "PASS: independent same-host authentication cookies and logout, configured author through real managed Git RPC, simultaneous isolated backends, occupied-port exit 78 without scan, duplicate-instance exit 78, live-delete exclusion, trash removal, explicit corrupt selection failure, Default diagnostic fallback, mutation refusal with byte-identical corrupt registry",
     );
+  } catch (error) {
+    failure = String(error?.stack ?? error);
+    throw error;
   } finally {
     for (const ws of sockets) ws.terminate();
     for (const child of children) await stop(child).catch(() => child.kill("SIGKILL"));
-    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    try {
+      writeDiagnostics(artifactDirectory, "profile-lifecycle", {
+        logs: children
+          .map(
+            (child, index) =>
+              `Child ${index}: exit=${child.exitCode} signal=${child.signalCode}\n${child.output}`,
+          )
+          .join("\n"),
+        failure,
+        secrets: [authToken, ...cookies.values()],
+        paths: [root, process.cwd(), process.env.HOME, process.env.USERPROFILE],
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    }
   }
 })().catch((error) => {
   console.error(error);

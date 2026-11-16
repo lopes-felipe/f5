@@ -7,10 +7,21 @@
  * Usage:
  *   F5_STATE_DIR=/tmp/f5-demo/state bun run apps/server/scripts/seed-demo.ts
  *
+ * Normally invoked by `scripts/run-demo.ts` or `scripts/capture-screenshots.ts`,
+ * which create a fresh sandbox root with an isolated HOME and environment.
+ *
+ * Every `thread.turn.start` dispatched here makes the engine insert a pending
+ * `provider_turn_deliveries` row, and the delivery worker replays pending or
+ * unprojected rows on server startup regardless of restart settings. The seed
+ * therefore marks each seeded delivery as accepted and projected, and fails if
+ * any replayable delivery or restart marker remains, so booting the seeded
+ * database can never send a turn to a real provider.
+ *
  * Refuses to run if F5_STATE_DIR/T3CODE_STATE_DIR is unset OR points inside
  * the user's real F5 or legacy T3 state roots — guard against accidentally
  * writing to the real database.
  */
+import { createHash } from "node:crypto";
 import * as FS from "node:fs";
 import * as Path from "node:path";
 
@@ -28,6 +39,7 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
+  type ChatAttachment,
   type CodeReviewWorkflow,
   type OrchestrationCheckpointFile,
   type PlanningWorkflow,
@@ -36,8 +48,11 @@ import {
   type WorkflowModelSlot,
 } from "@t3tools/contracts";
 import { isProtectedAppStateDir } from "@t3tools/shared/appStatePaths";
+import { inferProviderForModel } from "@t3tools/shared/model";
 import { Effect, Layer, Logger, ManagedRuntime } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { resolveAttachmentPath } from "../src/attachmentStore.ts";
 import { ServerConfig } from "../src/config.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
@@ -130,9 +145,9 @@ const THREAD_RSS_INTERRUPTED = ThreadId.makeUnsafe("thread-rss-interrupted");
 // "Running" demo thread — the assistant is actively producing a response
 // right now: the turn has been started, partial deltas have streamed in, a
 // command is mid-execution, but no `assistant.complete`/`turn.diff.complete`
-// has fired yet. The session row carries `status: "running"`. Safe because
-// the reactor only reacts to dispatched commands, not persisted session
-// status — it will not try to resume the dangling turn on desktop boot.
+// has fired yet. The session row carries `status: "running"`. Its delivery row
+// is marked accepted and projected like every other seeded turn, and
+// `resumeActiveTurnsAfterRestart` defaults to off, so boot never re-sends it.
 const THREAD_TODO_RUNNING = ThreadId.makeUnsafe("thread-todo-running");
 
 const PLANNING_WORKFLOW_ID = PlanningWorkflowId.makeUnsafe("workflow-rss-parallel-refresh");
@@ -152,6 +167,132 @@ const isoDaysAgo = (days: number): string => isoMinutesAgo(days * 60 * 24);
 let commandCounter = 0;
 const cmd = (label: string): typeof CommandId.Type =>
   CommandId.makeUnsafe(`server:seed:${++commandCounter}:${label}`);
+
+// ---------------------------------------------------------------------------
+// Attachment contents for the OPML thread. SVG keeps the seed dependency-free.
+// ---------------------------------------------------------------------------
+
+const OPML_MOCKUP_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <rect width="640" height="360" rx="14" fill="#0f1115"/>
+  <rect x="24" y="24" width="592" height="312" rx="10" fill="#171a21" stroke="#2a2f3a"/>
+  <circle cx="48" cy="48" r="6" fill="#ff5f57"/><circle cx="68" cy="48" r="6" fill="#febc2e"/><circle cx="88" cy="48" r="6" fill="#28c840"/>
+  <text x="48" y="96" fill="#9aa4b2" font-family="Menlo, monospace" font-size="15">$ rss import opml feeds.opml --dry-run</text>
+  <text x="48" y="136" fill="#e6e9ef" font-family="Menlo, monospace" font-size="15">Imported 42 feeds into 6 categories</text>
+  <text x="48" y="166" fill="#7ee787" font-family="Menlo, monospace" font-size="15">  + Tech/Rust       12 feeds</text>
+  <text x="48" y="192" fill="#7ee787" font-family="Menlo, monospace" font-size="15">  + Tech/Web         9 feeds</text>
+  <text x="48" y="218" fill="#7ee787" font-family="Menlo, monospace" font-size="15">  + News             8 feeds</text>
+  <text x="48" y="244" fill="#f2cc60" font-family="Menlo, monospace" font-size="15">  ! 3 feeds already exist, skipped</text>
+  <text x="48" y="292" fill="#9aa4b2" font-family="Menlo, monospace" font-size="15">Dry run: nothing was written.</text>
+</svg>
+`;
+
+const OPML_NOTES_MARKDOWN = `# OPML edge cases
+
+- Nested outlines: join category titles with \`/\`.
+- Missing \`xmlUrl\`: treat as a category, not a feed.
+- Duplicate URLs inside one file: import once, warn once.
+- HTML entities in titles: decode at display time.
+`;
+
+// Checked-in project defaults for todo-cli, so Project settings shows values
+// sourced from `f5.json`.
+const TODO_CLI_PROJECT_CONFIG = {
+  defaultRuntimeMode: "approval-required",
+  defaultThreadEnvMode: "worktree",
+  worktreeSubmodules: "shallow",
+  prHubDefaultMergeMethod: "squash",
+};
+
+// ---------------------------------------------------------------------------
+// Usage facts — a week of deterministic token and cost history so the Usage
+// page has a populated chart, metric cards and project/thread breakdown.
+// ---------------------------------------------------------------------------
+
+interface DemoUsageFact {
+  readonly threadId: typeof ThreadId.Type;
+  readonly projectId: typeof ProjectId.Type;
+  readonly provider: "codex" | "claudeAgent";
+  readonly model: string;
+  readonly completedAt: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly costUsd: number | null;
+}
+
+const USAGE_THREADS: ReadonlyArray<
+  Pick<DemoUsageFact, "threadId" | "projectId" | "provider" | "model">
+> = [
+  {
+    threadId: THREAD_SNIPPET_PG,
+    projectId: PROJECT_SNIPPET,
+    provider: "codex",
+    model: "gpt-6.1-sol",
+  },
+  {
+    threadId: THREAD_RSS_OPML,
+    projectId: PROJECT_RSS,
+    provider: "claudeAgent",
+    model: "claude-sonnet-5-5",
+  },
+  {
+    threadId: THREAD_TODO_DUE,
+    projectId: PROJECT_TODO,
+    provider: "codex",
+    model: "gpt-6.1-sol",
+  },
+  {
+    threadId: THREAD_SNIPPET_RACE,
+    projectId: PROJECT_SNIPPET,
+    provider: "claudeAgent",
+    model: "claude-sonnet-5-5",
+  },
+  {
+    threadId: THREAD_RSS_INTERRUPTED,
+    projectId: PROJECT_RSS,
+    provider: "codex",
+    model: "gpt-6.1-sol",
+  },
+];
+
+const USAGE_FACT_COUNT = 36;
+
+/**
+ * Deterministic usage history. Each fact completes between its thread's
+ * creation and now, so no thread reports usage from before it existed.
+ */
+const demoUsageFacts = (
+  threadCreatedAt: (threadId: typeof ThreadId.Type) => string,
+): ReadonlyArray<DemoUsageFact> => {
+  // Small LCG so every seed produces the same history.
+  let state = 0x5eed;
+  const next = () => {
+    state = (state * 1_103_515_245 + 12_345) % 2_147_483_648;
+    return state / 2_147_483_648;
+  };
+  const facts: DemoUsageFact[] = [];
+  for (let index = 0; index < USAGE_FACT_COUNT; index++) {
+    const thread = USAGE_THREADS[Math.floor(next() * USAGE_THREADS.length)]!;
+    const createdMs = Date.parse(threadCreatedAt(thread.threadId));
+    const completedMs = createdMs + next() * (now.getTime() - createdMs);
+    const inputTokens = 8_000 + Math.floor(next() * 60_000);
+    const outputTokens = 1_200 + Math.floor(next() * 9_000);
+    const cacheReadTokens = Math.floor(inputTokens * (0.4 + next() * 0.4));
+    facts.push({
+      ...thread,
+      completedAt: new Date(completedMs).toISOString(),
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      // Codex reports no cost, so the Usage page shows it as unpriced.
+      costUsd:
+        thread.provider === "claudeAgent"
+          ? Math.round(((inputTokens - cacheReadTokens) * 3 + outputTokens * 15) / 10_000) / 100
+          : null,
+    });
+  }
+  return facts;
+};
 
 // ---------------------------------------------------------------------------
 // Hand-written demo conversations. No proprietary references.
@@ -180,16 +321,38 @@ interface DemoFileChange {
   readonly completedAt: string;
 }
 
+interface DemoAttachment {
+  readonly type: "image" | "file";
+  /** Must match the server's `<thread-segment>-<uuid>` attachment id format. */
+  readonly id: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly content: string;
+}
+
+const toChatAttachment = (attachment: DemoAttachment): ChatAttachment => {
+  const fields = {
+    id: attachment.id,
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    sizeBytes: Buffer.byteLength(attachment.content),
+  };
+  return attachment.type === "image"
+    ? { type: "image" as const, ...fields }
+    : { type: "file" as const, ...fields };
+};
+
 interface DemoChat {
   readonly threadId: typeof ThreadId.Type;
   readonly projectId: typeof ProjectId.Type;
   readonly title: string;
   readonly model: string;
-  readonly worktreePath: string;
   readonly createdAt: string;
   readonly userMessage: string;
   readonly assistantMessage: string;
   readonly turnCompletedAt: string;
+  /** Files written to the attachments dir and referenced by the user message. */
+  readonly attachments?: ReadonlyArray<DemoAttachment>;
   /**
    * Defaults to `"default"` (the conversational mode). Use `"plan"` for
    * plan-mode threads — combined with a non-implemented `proposedPlan`,
@@ -215,6 +378,8 @@ interface DemoChat {
     readonly id: string;
     readonly planMarkdown: string;
     readonly upsertedAt: string;
+    readonly implementedAt?: string;
+    readonly implementationThreadId?: typeof ThreadId.Type;
   };
   /**
    * When true, leaves the turn dangling: no `assistant.complete`, no
@@ -225,11 +390,12 @@ interface DemoChat {
    * status untouched — pass `status: "running"` to show a streaming command
    * with no exit code yet.
    *
-   * Safe because the reactor only reacts to dispatched commands, not
-   * persisted session state — it will not try to resume the dangling turn
-   * on desktop boot.
+   * The delivery row is still neutralized (accepted + projected), so the
+   * delivery worker has nothing to replay for the dangling turn on boot.
    */
   readonly inProgress?: boolean;
+  /** Git branch shown on the thread. Defaults to none. */
+  readonly branch?: string;
 }
 
 const DEMO_CHATS: ReadonlyArray<DemoChat> = [
@@ -237,8 +403,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
     threadId: THREAD_SNIPPET_PG,
     projectId: PROJECT_SNIPPET,
     title: "Add Postgres backend support",
-    model: "gpt-5-codex",
-    worktreePath: project1Dir,
+    model: "gpt-6.1-sol",
     createdAt: isoHoursAgo(6),
     userMessage:
       "Right now SnippetStore only supports SQLite. I want to add a Postgres adapter behind the same `StorageAdapter` interface. The adapter should support both `pg` and `postgres.js` clients via a small driver shim, and the migration tool should pick the right dialect from the connection URL.",
@@ -396,8 +561,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
     threadId: THREAD_SNIPPET_RACE,
     projectId: PROJECT_SNIPPET,
     title: "Fix race condition in concurrent writes",
-    model: "claude-sonnet-4-5",
-    worktreePath: project1Dir,
+    model: "claude-sonnet-5-5",
     createdAt: isoDaysAgo(1),
     userMessage:
       "I'm seeing intermittent test failures in `concurrent-writes.test.ts`. Looks like two `put` calls with the same key sometimes both think they won. Stack trace below — can you find the race?\n\n```\nAssertionError: expected 'value-2' to equal 'value-1'\n  at concurrent-writes.test.ts:42\n```",
@@ -527,11 +691,26 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
     threadId: THREAD_RSS_OPML,
     projectId: PROJECT_RSS,
     title: "OPML import",
-    model: "claude-sonnet-4-5",
-    worktreePath: project2Dir,
+    model: "claude-sonnet-5-5",
     createdAt: isoHoursAgo(36),
     userMessage:
-      "Can we add OPML import to the CLI? Should accept a file path or stdin and add each feed to the store with its category. If a feed already exists by URL, skip it but log a warning. Bonus: a `--dry-run` flag.",
+      "Can we add OPML import to the CLI? Should accept a file path or stdin and add each feed to the store with its category. If a feed already exists by URL, skip it but log a warning. Bonus: a `--dry-run` flag. I attached a mockup of the summary output and my notes on edge cases.",
+    attachments: [
+      {
+        type: "image",
+        id: "thread-rss-opml-6f1c2a4e-0d3b-4c1a-9a51-3e2f8b7c9d01",
+        name: "import-summary-mockup.svg",
+        mimeType: "image/svg+xml",
+        content: OPML_MOCKUP_SVG,
+      },
+      {
+        type: "file",
+        id: "thread-rss-opml-0b9e7d3c-5a2f-4e61-8c4d-7f1a2b3c4d02",
+        name: "opml-edge-cases.md",
+        mimeType: "text/markdown",
+        content: OPML_NOTES_MARKDOWN,
+      },
+    ],
     assistantMessage: [
       "Adding `cargo run -- import opml <path>` and `cat feeds.opml | cargo run -- import opml -`.",
       "",
@@ -680,8 +859,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
     threadId: THREAD_TODO_DUE,
     projectId: PROJECT_TODO,
     title: "Add due dates",
-    model: "gpt-5-codex",
-    worktreePath: project3Dir,
+    model: "gpt-6.1-sol",
     createdAt: isoMinutesAgo(90),
     userMessage:
       "Let's add optional due dates to todos. Storage is currently a single JSON file. CLI should accept `--due tomorrow`, `--due 2026-05-01`, or `--due 'next monday'`. Listing shows overdue items in red.",
@@ -859,8 +1037,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
     threadId: THREAD_SNIPPET_PLAN_READY,
     projectId: PROJECT_SNIPPET,
     title: "Index cold-start optimization",
-    model: "claude-sonnet-4-5",
-    worktreePath: project1Dir,
+    model: "claude-sonnet-5-5",
     createdAt: isoMinutesAgo(25),
     interactionMode: "plan",
     userMessage:
@@ -922,8 +1099,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
     threadId: THREAD_RSS_PLAN_READY,
     projectId: PROJECT_RSS,
     title: "Switch HTTP client to reqwest::Client pool",
-    model: "gpt-5-codex",
-    worktreePath: project2Dir,
+    model: "gpt-6.1-sol",
     createdAt: isoMinutesAgo(50),
     interactionMode: "plan",
     userMessage:
@@ -976,8 +1152,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
     threadId: THREAD_RSS_INTERRUPTED,
     projectId: PROJECT_RSS,
     title: "Migrate config to TOML",
-    model: "gpt-5-codex",
-    worktreePath: project2Dir,
+    model: "gpt-6.1-sol",
     createdAt: isoMinutesAgo(8),
     userMessage:
       "Let's move the user config from JSON to TOML. The current `~/.config/rss-reader/config.json` should be auto-migrated on first run, then deleted. Don't forget the schema docs.",
@@ -1002,8 +1177,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
     threadId: THREAD_TODO_RUNNING,
     projectId: PROJECT_TODO,
     title: "Add JSON export to the list command",
-    model: "claude-sonnet-4-5",
-    worktreePath: project3Dir,
+    model: "claude-sonnet-5-5",
     createdAt: isoMinutesAgo(2),
     userMessage:
       "Add a `--json` flag to the `list` command that emits each todo as a JSON Lines record on stdout. Should still respect the existing filters (`--all`, `--tag`). Make sure dates are ISO-8601, not the human-friendly format.",
@@ -1050,6 +1224,115 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
 ];
 
 // ---------------------------------------------------------------------------
+// Workflow stage threads with real turns. The workflow views read their
+// output from these threads: the planning merge through
+// `merge.approvedPlanId`, the code review through the pinned turn and
+// assistant message ids, which must match what `seedChat` generates
+// (`turn-${threadId}` and `msg-assistant-${threadId}`).
+// ---------------------------------------------------------------------------
+
+const WORKFLOW_STAGE_CHATS: ReadonlyArray<DemoChat> = [
+  {
+    threadId: THREAD_RSS_MERGE,
+    projectId: PROJECT_RSS,
+    title: "Merge: Parallelize feed refresh",
+    model: "claude-opus-5-5",
+    createdAt: isoHoursAgo(3),
+    userMessage:
+      "Merge the two revised plans for parallel feed refresh into one implementation plan. Keep the strongest parts of each and resolve any disagreements explicitly.",
+    assistantMessage:
+      "Merged plan below: Plan A's per-host semaphore design with Plan B's bounded retry and progress reporting.",
+    turnCompletedAt: isoMinutesAgo(75),
+    proposedPlan: {
+      id: "plan-rss-parallelize-feed-refresh-merged",
+      planMarkdown: [
+        "# Parallel feed refresh with per-host limits",
+        "",
+        "## Summary",
+        "Refresh all feeds through a shared worker pool. A per-host semaphore caps concurrency at 4 requests per host, and each feed runs in its own task so one failure never stops the batch.",
+        "",
+        "## Changes",
+        "1. **`src/refresh/pool.rs` (new).** `RefreshPool` owns a `tokio::task::JoinSet` and a `HashMap<Host, Arc<Semaphore>>` with 4 permits per host. Global concurrency is capped at 32.",
+        "2. **`src/refresh/mod.rs`.** `refresh_all` groups feeds by host, spawns one task per feed and collects a `RefreshReport` of successes, failures and skipped feeds.",
+        "3. **Failure isolation.** Each task catches its own error and records it in the report. Panics are caught at the `JoinSet` boundary and reported as failures.",
+        "4. **Retries.** Up to 2 retries with jittered backoff for timeouts and 5xx responses. 4xx responses are not retried.",
+        "5. **Progress.** With `--verbose`, print one line per finished feed and a summary line with counts and total time.",
+        "6. **Config.** New `refresh.max_per_host` (default 4) and `refresh.max_total` (default 32) keys in the config file.",
+        "",
+        "## Tests",
+        "- Unit: the semaphore never allows more than 4 in-flight requests for one host (`wiremock` with an artificial delay).",
+        "- Unit: a feed that returns 500 three times is reported as failed and the rest of the batch completes.",
+        "- Unit: a panicking parser is reported as a failure, not a crash.",
+        "- Integration: 200 feeds across 10 hosts finish under the old sequential time divided by 4.",
+        "",
+        "## Out of scope",
+        "- Conditional requests (`ETag`, `If-Modified-Since`).",
+        "- Persisting refresh history.",
+      ].join("\n"),
+      upsertedAt: isoMinutesAgo(75),
+      implementedAt: isoMinutesAgo(70),
+      implementationThreadId: THREAD_RSS_IMPLEMENTATION,
+    },
+  },
+  {
+    threadId: THREAD_TODO_REVIEWER_A,
+    projectId: PROJECT_TODO,
+    title: "Reviewer A: Kanban board view",
+    model: "claude-sonnet-5-5",
+    branch: "feat/kanban-view",
+    createdAt: isoHoursAgo(1),
+    userMessage:
+      "Review the Kanban view on `feat/kanban-view` for correctness, idiomatic Rust and keyboard accessibility.",
+    assistantMessage: [
+      "## Findings",
+      "",
+      "1. **High.** `src/views/kanban.rs:142`: `KanbanState::new` divides the terminal width by `columns.len()` before checking for an empty board, so a project with no statuses panics.",
+      "2. **Medium.** `src/views/kanban.rs:218`: column resize clamps to `min_width` but never to the remaining width, so the last column can render off screen on narrow terminals.",
+      "3. **Low.** `src/views/kanban.rs:301`: the focus ring uses `Color::DarkGray` on the default background, which is hard to see in most themes. Use the theme accent color.",
+    ].join("\n"),
+    turnCompletedAt: isoMinutesAgo(15),
+  },
+  {
+    threadId: THREAD_TODO_REVIEWER_B,
+    projectId: PROJECT_TODO,
+    title: "Reviewer B: Kanban board view",
+    model: "gpt-6.1-sol",
+    branch: "feat/kanban-view",
+    createdAt: isoHoursAgo(1),
+    userMessage:
+      "Review the Kanban view on `feat/kanban-view` for correctness, idiomatic Rust and keyboard accessibility.",
+    assistantMessage: [
+      "## Findings",
+      "",
+      "1. **High.** `src/views/kanban.rs:142`: an empty `columns` vector reaches the width division in `KanbanState::new`. Return early with an empty-state view instead.",
+      "2. **Medium.** `src/views/kanban.rs:187`: `move_card_right` updates the card's column but not `selected_column`, so keyboard focus stays on the old column after a move.",
+      "3. **Low.** `src/views/kanban.rs:96`: `columns.iter().map(|c| c.clone()).collect()` can be `columns.to_vec()`.",
+    ].join("\n"),
+    turnCompletedAt: isoMinutesAgo(12),
+  },
+  {
+    threadId: THREAD_TODO_CONSOLIDATION,
+    projectId: PROJECT_TODO,
+    title: "Consolidation: Kanban board view",
+    model: "claude-opus-5-5",
+    branch: "feat/kanban-view",
+    createdAt: isoHoursAgo(1),
+    userMessage: "Consolidate both reviews into one ranked list of findings and a verdict.",
+    assistantMessage: [
+      "## Findings",
+      "",
+      "1. **High** (A, B). `src/views/kanban.rs:142`: empty boards panic on the width division in `KanbanState::new`. Both reviewers flagged it. Return an empty-state view before dividing.",
+      "2. **Medium** (B). `src/views/kanban.rs:187`: moving a card leaves keyboard focus on the old column. Update `selected_column` together with the card.",
+      "3. **Medium** (A). `src/views/kanban.rs:218`: resize does not clamp to the remaining width, so the last column can overflow narrow terminals.",
+      "4. **Low** (A). `src/views/kanban.rs:301`: the focus ring has poor contrast. Use the theme accent color.",
+      "",
+      "**Consolidated verdict:** request changes. Fix the empty-board panic and the focus bug before merging; the rest can follow.",
+    ].join("\n"),
+    turnCompletedAt: isoMinutesAgo(8),
+  },
+];
+
+// ---------------------------------------------------------------------------
 // Workflow helpers
 // ---------------------------------------------------------------------------
 
@@ -1080,7 +1363,7 @@ const PLANNING_WORKFLOW: PlanningWorkflow = {
   selfReviewEnabled: true,
   branchA: {
     branchId: "a",
-    authorSlot: slot("claudeAgent", "claude-sonnet-4-5"),
+    authorSlot: slot("claudeAgent", "claude-sonnet-5-5"),
     authorThreadId: THREAD_RSS_AUTHOR_A,
     planFilePath: ".plans/parallelize-feed-refresh/branch-a.md",
     planTurnId: "turn-rss-author-a-plan",
@@ -1116,7 +1399,7 @@ const PLANNING_WORKFLOW: PlanningWorkflow = {
   },
   branchB: {
     branchId: "b",
-    authorSlot: slot("codex", "gpt-5-codex"),
+    authorSlot: slot("codex", "gpt-6.1-sol"),
     authorThreadId: THREAD_RSS_AUTHOR_B,
     planFilePath: ".plans/parallelize-feed-refresh/branch-b.md",
     planTurnId: "turn-rss-author-b-plan",
@@ -1151,17 +1434,17 @@ const PLANNING_WORKFLOW: PlanningWorkflow = {
     updatedAt: isoMinutesAgo(90),
   },
   merge: {
-    mergeSlot: slot("claudeAgent", "claude-opus-4"),
+    mergeSlot: slot("claudeAgent", "claude-opus-5-5"),
     threadId: THREAD_RSS_MERGE,
     outputFilePath: ".plans/parallelize-feed-refresh/merged.md",
-    turnId: "turn-rss-merge",
+    turnId: "turn-thread-rss-merge",
     approvedPlanId: "plan-rss-parallelize-feed-refresh-merged",
     status: "merged",
     error: null,
     updatedAt: isoMinutesAgo(75),
   },
   implementation: {
-    implementationSlot: slot("claudeAgent", "claude-sonnet-4-5"),
+    implementationSlot: slot("claudeAgent", "claude-sonnet-5-5"),
     threadId: THREAD_RSS_IMPLEMENTATION,
     implementationTurnId: "turn-rss-implementation",
     revisionTurnId: "turn-rss-implementation-revision",
@@ -1169,7 +1452,7 @@ const PLANNING_WORKFLOW: PlanningWorkflow = {
     codeReviews: [
       {
         reviewerLabel: "Claude review",
-        reviewerSlot: slot("claudeAgent", "claude-sonnet-4-5"),
+        reviewerSlot: slot("claudeAgent", "claude-sonnet-5-5"),
         threadId: THREAD_RSS_IMPL_REVIEWER_A,
         status: "completed",
         error: null,
@@ -1179,7 +1462,7 @@ const PLANNING_WORKFLOW: PlanningWorkflow = {
       },
       {
         reviewerLabel: "Codex review",
-        reviewerSlot: slot("codex", "gpt-5-codex"),
+        reviewerSlot: slot("codex", "gpt-6.1-sol"),
         threadId: THREAD_RSS_IMPL_REVIEWER_B,
         status: "completed",
         error: null,
@@ -1210,36 +1493,36 @@ const CODE_REVIEW_WORKFLOW: CodeReviewWorkflow = {
     "Review the Kanban view implementation in `src/views/kanban.rs` for correctness, idiomatic Rust, and accessibility of keyboard navigation. Pay particular attention to the column-resize logic, the focus ring contrast, and whether the new `KanbanState` struct can ever observe a column count of zero.",
   branch: "feat/kanban-view",
   reviewerA: {
-    label: "Claude Sonnet review",
-    slot: slot("claudeAgent", "claude-sonnet-4-5"),
+    label: "Claude Sonnet 5.5 review",
+    slot: slot("claudeAgent", "claude-sonnet-5-5"),
     threadId: THREAD_TODO_REVIEWER_A,
     status: "completed",
-    pinnedTurnId: "turn-todo-reviewer-a",
-    pinnedAssistantMessageId: "msg-todo-reviewer-a-final",
+    pinnedTurnId: "turn-thread-todo-reviewer-a",
+    pinnedAssistantMessageId: "msg-assistant-thread-todo-reviewer-a",
     error: null,
     updatedAt: isoMinutesAgo(15),
   },
   reviewerB: {
-    label: "Codex review",
-    slot: slot("codex", "gpt-5-codex"),
+    label: "GPT-6.1 Sol review",
+    slot: slot("codex", "gpt-6.1-sol"),
     threadId: THREAD_TODO_REVIEWER_B,
-    status: "running",
-    pinnedTurnId: null,
-    pinnedAssistantMessageId: null,
+    status: "completed",
+    pinnedTurnId: "turn-thread-todo-reviewer-b",
+    pinnedAssistantMessageId: "msg-assistant-thread-todo-reviewer-b",
     error: null,
-    updatedAt: isoMinutesAgo(2),
+    updatedAt: isoMinutesAgo(12),
   },
   consolidation: {
-    slot: slot("claudeAgent", "claude-opus-4"),
+    slot: slot("claudeAgent", "claude-opus-5-5"),
     threadId: THREAD_TODO_CONSOLIDATION,
-    status: "not_started",
-    pinnedTurnId: null,
-    pinnedAssistantMessageId: null,
+    status: "completed",
+    pinnedTurnId: "turn-thread-todo-consolidation",
+    pinnedAssistantMessageId: "msg-assistant-thread-todo-consolidation",
     error: null,
-    updatedAt: isoMinutesAgo(2),
+    updatedAt: isoMinutesAgo(8),
   },
   createdAt: isoHoursAgo(1),
-  updatedAt: isoMinutesAgo(2),
+  updatedAt: isoMinutesAgo(8),
   archivedAt: null,
   deletedAt: null,
 };
@@ -1248,8 +1531,31 @@ const CODE_REVIEW_WORKFLOW: CodeReviewWorkflow = {
 // Seed program
 // ---------------------------------------------------------------------------
 
+const attachmentsDir = Path.join(normalized, "attachments");
+FS.mkdirSync(attachmentsDir, { recursive: true });
+const attachmentFinalPath = (attachment: DemoAttachment): string => {
+  const finalPath = resolveAttachmentPath({
+    attachmentsDir,
+    attachment: toChatAttachment(attachment),
+  });
+  if (!finalPath) {
+    throw new Error(`[seed-demo] invalid attachment id: ${attachment.id}`);
+  }
+  return finalPath;
+};
+for (const chat of DEMO_CHATS) {
+  for (const attachment of chat.attachments ?? []) {
+    FS.writeFileSync(attachmentFinalPath(attachment), attachment.content);
+  }
+}
+FS.writeFileSync(
+  Path.join(project3Dir, "f5.json"),
+  `${JSON.stringify(TODO_CLI_PROJECT_CONFIG, null, 2)}\n`,
+);
+
 const seedProgram = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
+  const sql = yield* SqlClient.SqlClient;
 
   // 1. Projects
   yield* engine.dispatch({
@@ -1258,7 +1564,7 @@ const seedProgram = Effect.gen(function* () {
     projectId: PROJECT_SNIPPET,
     title: "snippet-store",
     workspaceRoot: project1Dir,
-    defaultModel: "gpt-5-codex",
+    defaultModel: "gpt-6.1-sol",
     createdAt: isoDaysAgo(7),
   });
   yield* engine.dispatch({
@@ -1267,7 +1573,7 @@ const seedProgram = Effect.gen(function* () {
     projectId: PROJECT_RSS,
     title: "rss-reader",
     workspaceRoot: project2Dir,
-    defaultModel: "claude-sonnet-4-5",
+    defaultModel: "claude-sonnet-5-5",
     createdAt: isoDaysAgo(5),
   });
   yield* engine.dispatch({
@@ -1276,139 +1582,127 @@ const seedProgram = Effect.gen(function* () {
     projectId: PROJECT_TODO,
     title: "todo-cli",
     workspaceRoot: project3Dir,
-    defaultModel: "gpt-5-codex",
+    defaultModel: "gpt-6.1-sol",
     createdAt: isoDaysAgo(2),
   });
 
   // 2. Chat threads with one realistic turn each. After dispatching
   //    `thread.turn.start`, we close out the turn with the assistant message
-  //    and a `thread.turn.diff.complete` so the reactor on next desktop boot
-  //    will not see any pending turn to resume (which would otherwise try to
-  //    spin up a real provider session and surface auth flows).
-  for (const chat of DEMO_CHATS) {
-    const interactionMode = chat.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
-    yield* engine.dispatch({
-      type: "thread.create",
-      commandId: cmd(`thread-create-${chat.threadId}`),
-      threadId: chat.threadId,
-      projectId: chat.projectId,
-      title: chat.title,
-      model: chat.model,
-      runtimeMode: "approval-required",
-      interactionMode,
-      branch: null,
-      worktreePath: chat.worktreePath,
-      createdAt: chat.createdAt,
-    });
-
-    const turnId = TurnId.makeUnsafe(`turn-${chat.threadId}`);
-    const userMessageId = MessageId.makeUnsafe(`msg-user-${chat.threadId}`);
-    const assistantMessageId = MessageId.makeUnsafe(`msg-assistant-${chat.threadId}`);
-
-    yield* engine.dispatch({
-      type: "thread.turn.start",
-      commandId: cmd(`turn-start-${chat.threadId}`),
-      threadId: chat.threadId,
-      message: {
-        messageId: userMessageId,
-        role: "user",
-        text: chat.userMessage,
-        attachments: [],
-      },
-      runtimeMode: "approval-required",
-      interactionMode,
-      createdAt: chat.createdAt,
-    });
-
-    // Session set with status="running" + activeTurnId=turnId promotes the
-    // pending turn (created above by `thread.turn.start`) into a real running
-    // turn keyed on `turnId`. Without this, the projection layer would carry
-    // a phantom "pending" turn row alongside the completed one, which the
-    // desktop renders as a never-ending "thinking…" spinner.
-    yield* engine.dispatch({
-      type: "thread.session.set",
-      commandId: cmd(`session-running-${chat.threadId}`),
-      threadId: chat.threadId,
-      session: {
-        threadId: chat.threadId,
-        status: "running",
-        providerName: chat.model,
-        runtimeMode: "approval-required",
-        activeTurnId: turnId,
-        lastError: null,
-        updatedAt: chat.createdAt,
-      },
-      createdAt: chat.createdAt,
-    });
-
-    yield* engine.dispatch({
-      type: "thread.message.assistant.delta",
-      commandId: cmd(`assistant-delta-${chat.threadId}`),
-      threadId: chat.threadId,
-      messageId: assistantMessageId,
-      delta: chat.assistantMessage,
-      turnId,
-      createdAt: chat.createdAt,
-    });
-
-    // Optional: a TaskItem checklist (the chat-level todo list the assistant
-    // maintains as it works). Renders as a small task tracker in the timeline.
-    if (chat.tasks && chat.tasks.length > 0) {
+  //    and a `thread.turn.diff.complete`, then mark the turn's provider
+  //    delivery as accepted and projected so the delivery worker has nothing
+  //    to replay on the next server boot (which would otherwise try to spin
+  //    up a real provider session and surface auth flows).
+  const seedChat = (chat: DemoChat) =>
+    Effect.gen(function* () {
+      const interactionMode = chat.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
       yield* engine.dispatch({
-        type: "thread.tasks.update",
-        commandId: cmd(`tasks-${chat.threadId}`),
+        type: "thread.create",
+        commandId: cmd(`thread-create-${chat.threadId}`),
         threadId: chat.threadId,
-        tasks: chat.tasks,
-        turnId,
+        projectId: chat.projectId,
+        title: chat.title,
+        model: chat.model,
+        runtimeMode: "approval-required",
+        interactionMode,
+        branch: chat.branch ?? null,
+        // Every demo thread works in its project root, i.e. a local thread. A
+        // recorded worktree path makes `thread.turn.start` verify Git worktree
+        // identity, which the seed's engine (no GitCore) cannot do, and makes
+        // startup cleanup check it against the real repository.
+        worktreePath: null,
         createdAt: chat.createdAt,
       });
-    }
 
-    // Optional: command-execution transcripts (e.g. a `cargo test` run with
-    // its stdout). Each transcript fires the lifecycle the runtime layer
-    // would: an initial `record` (status=running), one or more output chunks,
-    // then a final `record` (status=completed, with exitCode).
-    for (const transcript of chat.commandTranscripts ?? []) {
-      const executionId = OrchestrationCommandExecutionId.makeUnsafe(transcript.id);
+      const turnId = TurnId.makeUnsafe(`turn-${chat.threadId}`);
+      const userMessageId = MessageId.makeUnsafe(`msg-user-${chat.threadId}`);
+      const assistantMessageId = MessageId.makeUnsafe(`msg-assistant-${chat.threadId}`);
+
+      // Register attachment files as uploaded and ready; message ownership rows
+      // reference them by foreign key.
+      for (const attachment of chat.attachments ?? []) {
+        const contentHash = createHash("sha256").update(attachment.content).digest("hex");
+        yield* sql`
+          INSERT INTO attachments (
+            attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash,
+            staging_path, final_path, lifecycle, created_at, updated_at
+          ) VALUES (
+            ${attachment.id}, ${chat.threadId}, ${attachment.type}, ${attachment.name},
+            ${attachment.mimeType}, ${Buffer.byteLength(attachment.content)}, ${contentHash},
+            ${null}, ${attachmentFinalPath(attachment)}, 'ready', ${chat.createdAt}, ${chat.createdAt}
+          )
+        `;
+      }
+
       yield* engine.dispatch({
-        type: "thread.command-execution.record",
-        commandId: cmd(`exec-start-${transcript.id}`),
+        type: "thread.turn.start",
+        commandId: cmd(`turn-start-${chat.threadId}`),
         threadId: chat.threadId,
-        commandExecution: {
-          id: executionId,
-          turnId,
-          providerItemId: null,
-          command: transcript.command,
-          cwd: transcript.cwd,
-          title: transcript.title,
-          status: "running",
-          detail: null,
-          exitCode: null,
-          startedAt: transcript.startedAt,
-          completedAt: null,
-          updatedAt: transcript.startedAt,
+        message: {
+          messageId: userMessageId,
+          role: "user",
+          text: chat.userMessage,
+          attachments: (chat.attachments ?? []).map(toChatAttachment),
         },
-        createdAt: transcript.startedAt,
+        runtimeMode: "approval-required",
+        interactionMode,
+        createdAt: chat.createdAt,
       });
-      for (let i = 0; i < transcript.chunks.length; i++) {
-        const chunk = transcript.chunks[i] ?? "";
-        yield* engine.dispatch({
-          type: "thread.command-execution.output.append",
-          commandId: cmd(`exec-out-${transcript.id}-${i}`),
+
+      // Session set with status="running" + activeTurnId=turnId promotes the
+      // pending turn (created above by `thread.turn.start`) into a real running
+      // turn keyed on `turnId`. Without this, the projection layer would carry
+      // a phantom "pending" turn row alongside the completed one, which the
+      // desktop renders as a never-ending "thinking…" spinner.
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: cmd(`session-running-${chat.threadId}`),
+        threadId: chat.threadId,
+        session: {
           threadId: chat.threadId,
-          commandExecutionId: executionId,
-          chunk,
-          updatedAt: transcript.completedAt,
-          createdAt: transcript.completedAt,
+          status: "running",
+          providerName: inferProviderForModel(chat.model),
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: chat.createdAt,
+        },
+        createdAt: chat.createdAt,
+      });
+
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: cmd(`assistant-delta-${chat.threadId}`),
+        threadId: chat.threadId,
+        messageId: assistantMessageId,
+        delta: chat.assistantMessage,
+        turnId,
+        // One second after the user message, so the timeline never orders the
+        // reply above the request when timestamps tie.
+        createdAt: new Date(Date.parse(chat.createdAt) + 1000).toISOString(),
+      });
+
+      // Optional: a TaskItem checklist (the chat-level todo list the assistant
+      // maintains as it works). Renders as a small task tracker in the timeline.
+      if (chat.tasks && chat.tasks.length > 0) {
+        yield* engine.dispatch({
+          type: "thread.tasks.update",
+          commandId: cmd(`tasks-${chat.threadId}`),
+          threadId: chat.threadId,
+          tasks: chat.tasks,
+          turnId,
+          createdAt: chat.createdAt,
         });
       }
-      // For an in-progress chat we leave the transcript in `running` state
-      // (no second `record` event with a final status) — the desktop renders
-      // the live-streaming command-output UI.
-      if (!chat.inProgress) {
+
+      // Optional: command-execution transcripts (e.g. a `cargo test` run with
+      // its stdout). Each transcript fires the lifecycle the runtime layer
+      // would: an initial `record` (status=running), one or more output chunks,
+      // then a final `record` (status=completed, with exitCode).
+      for (const transcript of chat.commandTranscripts ?? []) {
+        const executionId = OrchestrationCommandExecutionId.makeUnsafe(transcript.id);
         yield* engine.dispatch({
           type: "thread.command-execution.record",
-          commandId: cmd(`exec-complete-${transcript.id}`),
+          commandId: cmd(`exec-start-${transcript.id}`),
           threadId: chat.threadId,
           commandExecution: {
             id: executionId,
@@ -1417,168 +1711,220 @@ const seedProgram = Effect.gen(function* () {
             command: transcript.command,
             cwd: transcript.cwd,
             title: transcript.title,
-            status: transcript.status,
+            status: "running",
             detail: null,
-            exitCode: transcript.exitCode,
+            exitCode: null,
             startedAt: transcript.startedAt,
-            completedAt: transcript.completedAt,
-            updatedAt: transcript.completedAt,
+            completedAt: null,
+            updatedAt: transcript.startedAt,
           },
-          createdAt: transcript.completedAt,
+          createdAt: transcript.startedAt,
+        });
+        for (let i = 0; i < transcript.chunks.length; i++) {
+          const chunk = transcript.chunks[i] ?? "";
+          yield* engine.dispatch({
+            type: "thread.command-execution.output.append",
+            commandId: cmd(`exec-out-${transcript.id}-${i}`),
+            threadId: chat.threadId,
+            commandExecutionId: executionId,
+            chunk,
+            updatedAt: transcript.completedAt,
+            createdAt: transcript.completedAt,
+          });
+        }
+        // For an in-progress chat we leave the transcript in `running` state
+        // (no second `record` event with a final status) — the desktop renders
+        // the live-streaming command-output UI.
+        if (!chat.inProgress) {
+          yield* engine.dispatch({
+            type: "thread.command-execution.record",
+            commandId: cmd(`exec-complete-${transcript.id}`),
+            threadId: chat.threadId,
+            commandExecution: {
+              id: executionId,
+              turnId,
+              providerItemId: null,
+              command: transcript.command,
+              cwd: transcript.cwd,
+              title: transcript.title,
+              status: transcript.status,
+              detail: null,
+              exitCode: transcript.exitCode,
+              startedAt: transcript.startedAt,
+              completedAt: transcript.completedAt,
+              updatedAt: transcript.completedAt,
+            },
+            createdAt: transcript.completedAt,
+          });
+        }
+      }
+
+      // Optional: file-change records, each carrying a unified-diff `patch` so
+      // the desktop renders the inline FileDiff component with the actual diff
+      // hunks visible. Two events per change:
+      //
+      //   1. `thread.file-change.record` — populates the file-change projection
+      //      (visible in the turn header's "changed files" tree).
+      //   2. `thread.activity.append` (kind=tool.completed, itemType=file_change,
+      //      with matching fileChangeId) — surfaces the inline "File change"
+      //      card in the chat timeline with the "Hide diff" toggle, which is
+      //      what `apps/web/src/session-logic.ts::deriveWorkLogEntries` looks
+      //      for. Without this activity, the diff exists in the projection but
+      //      no card renders inline next to the assistant message.
+      for (const fileChange of chat.fileChanges ?? []) {
+        const fileChangeId = OrchestrationFileChangeId.makeUnsafe(fileChange.id);
+        yield* engine.dispatch({
+          type: "thread.file-change.record",
+          commandId: cmd(`file-change-${fileChange.id}`),
+          threadId: chat.threadId,
+          fileChange: {
+            id: fileChangeId,
+            turnId,
+            providerItemId: null,
+            title: fileChange.title,
+            detail: fileChange.detail,
+            status: "completed",
+            changedFiles: fileChange.changedFiles,
+            startedAt: fileChange.startedAt,
+            completedAt: fileChange.completedAt,
+            updatedAt: fileChange.completedAt,
+            patch: fileChange.patch,
+          },
+          createdAt: fileChange.completedAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.activity.append",
+          commandId: cmd(`file-change-activity-${fileChange.id}`),
+          threadId: chat.threadId,
+          activity: {
+            id: EventId.makeUnsafe(`activity-${fileChange.id}`),
+            tone: "tool",
+            kind: "tool.completed",
+            summary: fileChange.title,
+            payload: {
+              itemType: "file_change",
+              status: "completed",
+              title: fileChange.title,
+              changedFiles: fileChange.changedFiles,
+              fileChangeId: fileChange.id,
+            },
+            turnId,
+            createdAt: fileChange.completedAt,
+          },
+          createdAt: fileChange.completedAt,
         });
       }
-    }
 
-    // Optional: file-change records, each carrying a unified-diff `patch` so
-    // the desktop renders the inline FileDiff component with the actual diff
-    // hunks visible. Two events per change:
-    //
-    //   1. `thread.file-change.record` — populates the file-change projection
-    //      (visible in the turn header's "changed files" tree).
-    //   2. `thread.activity.append` (kind=tool.completed, itemType=file_change,
-    //      with matching fileChangeId) — surfaces the inline "File change"
-    //      card in the chat timeline with the "Hide diff" toggle, which is
-    //      what `apps/web/src/session-logic.ts::deriveWorkLogEntries` looks
-    //      for. Without this activity, the diff exists in the projection but
-    //      no card renders inline next to the assistant message.
-    for (const fileChange of chat.fileChanges ?? []) {
-      const fileChangeId = OrchestrationFileChangeId.makeUnsafe(fileChange.id);
-      yield* engine.dispatch({
-        type: "thread.file-change.record",
-        commandId: cmd(`file-change-${fileChange.id}`),
-        threadId: chat.threadId,
-        fileChange: {
-          id: fileChangeId,
+      // For in-progress chats we deliberately skip both `assistant.complete`
+      // and `turn.diff.complete`. The turn stays open, the assistant message
+      // stays unfinished, and the session row carries `status: "running"`
+      // afterwards — together driving the "thinking..." typing indicator.
+      if (!chat.inProgress) {
+        yield* engine.dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: cmd(`assistant-complete-${chat.threadId}`),
+          threadId: chat.threadId,
+          messageId: assistantMessageId,
           turnId,
-          providerItemId: null,
-          title: fileChange.title,
-          detail: fileChange.detail,
-          status: "completed",
-          changedFiles: fileChange.changedFiles,
-          startedAt: fileChange.startedAt,
-          completedAt: fileChange.completedAt,
-          updatedAt: fileChange.completedAt,
-          patch: fileChange.patch,
-        },
-        createdAt: fileChange.completedAt,
-      });
-      yield* engine.dispatch({
-        type: "thread.activity.append",
-        commandId: cmd(`file-change-activity-${fileChange.id}`),
-        threadId: chat.threadId,
-        activity: {
-          id: EventId.makeUnsafe(`activity-${fileChange.id}`),
-          tone: "tool",
-          kind: "tool.completed",
-          summary: fileChange.title,
-          payload: {
-            itemType: "file_change",
-            status: "completed",
-            title: fileChange.title,
-            changedFiles: fileChange.changedFiles,
-            fileChangeId: fileChange.id,
+          createdAt: chat.turnCompletedAt,
+        });
+
+        // Carry the file-change metadata (path, kind, additions, deletions) onto
+        // the checkpoint summary so the turn header shows the changed-files tree.
+        const checkpointFiles: ReadonlyArray<OrchestrationCheckpointFile> = (
+          chat.fileChanges ?? []
+        ).map((change) => change.checkpointFile);
+
+        yield* engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: cmd(`turn-diff-complete-${chat.threadId}`),
+          threadId: chat.threadId,
+          turnId,
+          completedAt: chat.turnCompletedAt,
+          checkpointRef: CheckpointRef.makeUnsafe(`demo-checkpoint-${chat.threadId}`),
+          status: "ready",
+          files: checkpointFiles,
+          assistantMessageId,
+          checkpointTurnCount: 1,
+          createdAt: chat.turnCompletedAt,
+        });
+      }
+
+      // Optional: a proposed plan attached to this turn. Surfaces the
+      // "plan ready — accept or revise" affordance in the desktop UI.
+      if (chat.proposedPlan) {
+        yield* engine.dispatch({
+          type: "thread.proposed-plan.upsert",
+          commandId: cmd(`plan-upsert-${chat.threadId}`),
+          threadId: chat.threadId,
+          proposedPlan: {
+            id: chat.proposedPlan.id,
+            turnId,
+            planMarkdown: chat.proposedPlan.planMarkdown,
+            implementedAt: chat.proposedPlan.implementedAt ?? null,
+            implementationThreadId: chat.proposedPlan.implementationThreadId ?? null,
+            createdAt: chat.proposedPlan.upsertedAt,
+            updatedAt: chat.proposedPlan.upsertedAt,
           },
-          turnId,
-          createdAt: fileChange.completedAt,
-        },
-        createdAt: fileChange.completedAt,
-      });
-    }
-
-    // For in-progress chats we deliberately skip both `assistant.complete`
-    // and `turn.diff.complete`. The turn stays open, the assistant message
-    // stays unfinished, and the session row carries `status: "running"`
-    // afterwards — together driving the "thinking..." typing indicator.
-    if (!chat.inProgress) {
-      yield* engine.dispatch({
-        type: "thread.message.assistant.complete",
-        commandId: cmd(`assistant-complete-${chat.threadId}`),
-        threadId: chat.threadId,
-        messageId: assistantMessageId,
-        turnId,
-        createdAt: chat.turnCompletedAt,
-      });
-
-      // Carry the file-change metadata (path, kind, additions, deletions) onto
-      // the checkpoint summary so the turn header shows the changed-files tree.
-      const checkpointFiles: ReadonlyArray<OrchestrationCheckpointFile> = (
-        chat.fileChanges ?? []
-      ).map((change) => change.checkpointFile);
-
-      yield* engine.dispatch({
-        type: "thread.turn.diff.complete",
-        commandId: cmd(`turn-diff-complete-${chat.threadId}`),
-        threadId: chat.threadId,
-        turnId,
-        completedAt: chat.turnCompletedAt,
-        checkpointRef: CheckpointRef.makeUnsafe(`demo-checkpoint-${chat.threadId}`),
-        status: "ready",
-        files: checkpointFiles,
-        assistantMessageId,
-        checkpointTurnCount: 1,
-        createdAt: chat.turnCompletedAt,
-      });
-    }
-
-    // Optional: a proposed plan attached to this turn. Surfaces the
-    // "plan ready — accept or revise" affordance in the desktop UI.
-    if (chat.proposedPlan) {
-      yield* engine.dispatch({
-        type: "thread.proposed-plan.upsert",
-        commandId: cmd(`plan-upsert-${chat.threadId}`),
-        threadId: chat.threadId,
-        proposedPlan: {
-          id: chat.proposedPlan.id,
-          turnId,
-          planMarkdown: chat.proposedPlan.planMarkdown,
-          implementedAt: null,
-          implementationThreadId: null,
           createdAt: chat.proposedPlan.upsertedAt,
-          updatedAt: chat.proposedPlan.upsertedAt,
-        },
-        createdAt: chat.proposedPlan.upsertedAt,
-      });
-    }
+        });
+      }
 
-    // Final session state. Defaults to `ready` (idle) so the desktop never
-    // shows a "session running" badge. Overridable per-chat:
-    //   - `finalSessionStatus: "interrupted"` → "user stopped me" surface
-    //   - `inProgress: true` → keep `status: "running"` with active turn id,
-    //     surfacing the typing indicator and live-output UI
-    const finalStatus: "ready" | "interrupted" | "running" = chat.inProgress
-      ? "running"
-      : (chat.finalSessionStatus ?? "ready");
-    yield* engine.dispatch({
-      type: "thread.session.set",
-      commandId: cmd(`session-final-${chat.threadId}`),
-      threadId: chat.threadId,
-      session: {
+      // Final session state. Defaults to `ready` (idle) so the desktop never
+      // shows a "session running" badge. Overridable per-chat:
+      //   - `finalSessionStatus: "interrupted"` → "user stopped me" surface
+      //   - `inProgress: true` → keep `status: "running"` with active turn id,
+      //     surfacing the typing indicator and live-output UI
+      const finalStatus: "ready" | "interrupted" | "running" = chat.inProgress
+        ? "running"
+        : (chat.finalSessionStatus ?? "ready");
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: cmd(`session-final-${chat.threadId}`),
         threadId: chat.threadId,
-        status: finalStatus,
-        providerName: chat.model,
-        runtimeMode: "approval-required",
-        activeTurnId: chat.inProgress ? turnId : null,
-        lastError:
-          finalStatus === "interrupted" ? "Interrupted by user before the turn completed." : null,
-        updatedAt: chat.turnCompletedAt,
-      },
-      createdAt: chat.turnCompletedAt,
+        session: {
+          threadId: chat.threadId,
+          status: finalStatus,
+          providerName: inferProviderForModel(chat.model),
+          runtimeMode: "approval-required",
+          activeTurnId: chat.inProgress ? turnId : null,
+          lastError:
+            finalStatus === "interrupted" ? "Interrupted by user before the turn completed." : null,
+          updatedAt: chat.turnCompletedAt,
+        },
+        createdAt: chat.turnCompletedAt,
+      });
+
+      // Neutralize the delivery row `thread.turn.start` inserted, so startup
+      // replay treats the seeded turn as delivered and already projected.
+      yield* sql`
+      UPDATE provider_turn_deliveries
+      SET state = 'accepted',
+          provider_turn_id = ${turnId},
+          outcome_projected_at = ${chat.turnCompletedAt},
+          updated_at = ${chat.turnCompletedAt}
+      WHERE thread_id = ${chat.threadId} AND state = 'pending'
+    `;
     });
+
+  for (const chat of DEMO_CHATS) {
+    yield* seedChat(chat);
   }
 
-  // 3. Planning workflow — create the three supporting threads, then create
-  //    the workflow, then upsert the rich state we want screenshotted.
+  // 3. Planning workflow: create the supporting threads, then create the
+  //    workflow, then upsert the rich state we want screenshotted. The merge
+  //    thread gets a real turn carrying the approved merged plan.
   yield* engine.dispatch({
     type: "thread.create",
     commandId: cmd("planning-author-a"),
     threadId: THREAD_RSS_AUTHOR_A,
     projectId: PROJECT_RSS,
     title: "Plan A — Parallelize feed refresh",
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-5-5",
     runtimeMode: "approval-required",
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: null,
-    worktreePath: project2Dir,
+    worktreePath: null,
     createdAt: isoHoursAgo(3),
   });
   yield* engine.dispatch({
@@ -1587,24 +1933,11 @@ const seedProgram = Effect.gen(function* () {
     threadId: THREAD_RSS_AUTHOR_B,
     projectId: PROJECT_RSS,
     title: "Plan B — Parallelize feed refresh",
-    model: "gpt-5-codex",
+    model: "gpt-6.1-sol",
     runtimeMode: "approval-required",
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: null,
-    worktreePath: project2Dir,
-    createdAt: isoHoursAgo(3),
-  });
-  yield* engine.dispatch({
-    type: "thread.create",
-    commandId: cmd("planning-merge"),
-    threadId: THREAD_RSS_MERGE,
-    projectId: PROJECT_RSS,
-    title: "Merge — Parallelize feed refresh",
-    model: "claude-opus-4",
-    runtimeMode: "approval-required",
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-    branch: null,
-    worktreePath: project2Dir,
+    worktreePath: null,
     createdAt: isoHoursAgo(3),
   });
   // Implementation phase: an implementer thread plus two code-review threads.
@@ -1616,11 +1949,11 @@ const seedProgram = Effect.gen(function* () {
     threadId: THREAD_RSS_IMPLEMENTATION,
     projectId: PROJECT_RSS,
     title: "Implementation — Parallelize feed refresh",
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-5-5",
     runtimeMode: "approval-required",
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: "feat/parallel-feed-refresh",
-    worktreePath: project2Dir,
+    worktreePath: null,
     createdAt: isoMinutesAgo(70),
   });
   yield* engine.dispatch({
@@ -1629,11 +1962,11 @@ const seedProgram = Effect.gen(function* () {
     threadId: THREAD_RSS_IMPL_REVIEWER_A,
     projectId: PROJECT_RSS,
     title: "Code review (Claude) — Parallelize feed refresh",
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-5-5",
     runtimeMode: "approval-required",
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: "feat/parallel-feed-refresh",
-    worktreePath: project2Dir,
+    worktreePath: null,
     createdAt: isoMinutesAgo(45),
   });
   yield* engine.dispatch({
@@ -1642,13 +1975,19 @@ const seedProgram = Effect.gen(function* () {
     threadId: THREAD_RSS_IMPL_REVIEWER_B,
     projectId: PROJECT_RSS,
     title: "Code review (Codex) — Parallelize feed refresh",
-    model: "gpt-5-codex",
+    model: "gpt-6.1-sol",
     runtimeMode: "approval-required",
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: "feat/parallel-feed-refresh",
-    worktreePath: project2Dir,
+    worktreePath: null,
     createdAt: isoMinutesAgo(45),
   });
+
+  // Merge thread (planning) plus the code review's reviewer and consolidation
+  // threads, each with a completed turn the workflow views pin to.
+  for (const chat of WORKFLOW_STAGE_CHATS) {
+    yield* seedChat(chat);
+  }
 
   yield* engine.dispatch({
     type: "project.workflow.create",
@@ -1675,47 +2014,7 @@ const seedProgram = Effect.gen(function* () {
     createdAt: PLANNING_WORKFLOW.updatedAt,
   });
 
-  // 4. Code review workflow.
-  yield* engine.dispatch({
-    type: "thread.create",
-    commandId: cmd("review-reviewer-a"),
-    threadId: THREAD_TODO_REVIEWER_A,
-    projectId: PROJECT_TODO,
-    title: "Reviewer A — Kanban board view",
-    model: "claude-sonnet-4-5",
-    runtimeMode: "approval-required",
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-    branch: "feat/kanban-view",
-    worktreePath: project3Dir,
-    createdAt: isoHoursAgo(1),
-  });
-  yield* engine.dispatch({
-    type: "thread.create",
-    commandId: cmd("review-reviewer-b"),
-    threadId: THREAD_TODO_REVIEWER_B,
-    projectId: PROJECT_TODO,
-    title: "Reviewer B — Kanban board view",
-    model: "gpt-5-codex",
-    runtimeMode: "approval-required",
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-    branch: "feat/kanban-view",
-    worktreePath: project3Dir,
-    createdAt: isoHoursAgo(1),
-  });
-  yield* engine.dispatch({
-    type: "thread.create",
-    commandId: cmd("review-consolidation"),
-    threadId: THREAD_TODO_CONSOLIDATION,
-    projectId: PROJECT_TODO,
-    title: "Consolidation — Kanban board view",
-    model: "claude-opus-4",
-    runtimeMode: "approval-required",
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-    branch: "feat/kanban-view",
-    worktreePath: project3Dir,
-    createdAt: isoHoursAgo(1),
-  });
-
+  // 4. Code review workflow. Its stage threads were seeded above.
   yield* engine.dispatch({
     type: "project.code-review-workflow.create",
     commandId: cmd("review-create"),
@@ -1740,6 +2039,57 @@ const seedProgram = Effect.gen(function* () {
     updatedAt: CODE_REVIEW_WORKFLOW.updatedAt,
   });
 
+  // 5. Usage history for the Usage page.
+  const chatCreatedAt = (threadId: typeof ThreadId.Type): string => {
+    const chat = DEMO_CHATS.find((entry) => entry.threadId === threadId);
+    if (!chat) throw new Error(`[seed-demo] usage thread ${threadId} is not a demo chat`);
+    return chat.createdAt;
+  };
+  for (const [index, fact] of demoUsageFacts(chatCreatedAt).entries()) {
+    const completedAt = fact.completedAt;
+    yield* engine.dispatch({
+      type: "thread.usage.record",
+      commandId: cmd(`usage-${index}`),
+      threadId: fact.threadId,
+      usageFact: {
+        turnId: TurnId.makeUnsafe(`usage-turn-${index}`),
+        threadId: fact.threadId,
+        projectId: fact.projectId,
+        provider: fact.provider,
+        providerInstanceId: null,
+        model: fact.model,
+        inputTokens: fact.inputTokens,
+        outputTokens: fact.outputTokens,
+        cacheReadTokens: fact.cacheReadTokens,
+        cacheWriteTokens: 0,
+        totalTokens: fact.inputTokens + fact.outputTokens,
+        providerReportedCostUsd: fact.costUsd,
+        tokenProvenance: "provider-reported",
+        costProvenance: fact.costUsd === null ? "unreported" : "provider-reported",
+        completedAt,
+        sourceEventId: `seed-usage-${index}`,
+      },
+      createdAt: completedAt,
+    });
+  }
+
+  // 6. Invariant: nothing the delivery worker or restart recovery could
+  //    replay against a real provider on the next boot.
+  const [replayable] = yield* sql<{ readonly count: number }>`
+    SELECT COUNT(*) AS count FROM provider_turn_deliveries
+    WHERE state <> 'accepted' OR outcome_projected_at IS NULL
+  `;
+  const [markers] = yield* sql<{ readonly count: number }>`
+    SELECT COUNT(*) AS count FROM restart_turn_markers
+  `;
+  if ((replayable?.count ?? 0) > 0 || (markers?.count ?? 0) > 0) {
+    return yield* Effect.fail(
+      new Error(
+        `[seed-demo] replayable provider deliveries remain (deliveries=${replayable?.count ?? 0}, restart markers=${markers?.count ?? 0})`,
+      ),
+    );
+  }
+
   yield* Effect.log("[seed-demo] dispatched all commands successfully");
 });
 
@@ -1760,7 +2110,7 @@ const orchestrationLayer = OrchestrationEngineLive.pipe(
 );
 
 const layer = orchestrationLayer.pipe(
-  Layer.provide(persistenceLayer),
+  Layer.provideMerge(persistenceLayer),
   Layer.provideMerge(ServerConfig.layerTest(workspacesDir, normalized)),
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(Logger.layer([Logger.consolePretty()])),

@@ -1,3 +1,6 @@
+import { Option } from "effect";
+import { PreviewMcpHttpServer } from "../../mcp/PreviewMcpHttpServer";
+import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { makeProviderLimits } from "../../usage/providerLimits.ts";
 /**
  * CursorDriver — `ProviderDriver` for the Cursor Agent (`agent`) runtime.
@@ -87,8 +90,14 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
       });
       const effectiveConfig = { ...config, enabled } satisfies CursorSettings;
 
+      const previewMcp = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
+      const computerBroker = Option.getOrUndefined(
+        yield* Effect.serviceOption(ComputerAutomationBroker),
+      );
       const adapter = yield* makeCursorAdapter(effectiveConfig, {
         environment: processEnv,
+        ...(previewMcp ? { previewMcpHttpServer: previewMcp } : {}),
+        ...(computerBroker ? { computerAutomationBroker: computerBroker } : {}),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
       });

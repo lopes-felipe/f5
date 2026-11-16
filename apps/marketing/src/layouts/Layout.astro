@@ -1,4 +1,6 @@
 ---
+import { REPOSITORY_URL } from "../lib/releases";
+
 interface Props {
   title?: string;
   description?: string;
@@ -34,7 +36,7 @@ const {
           <img src="/icon.png" alt="F5" class="nav-icon" />
         </a>
         <a
-          href="https://github.com/pingdotgg/t3code"
+          href={REPOSITORY_URL}
           target="_blank"
           rel="noopener noreferrer"
           class="nav-github"
@@ -51,7 +53,7 @@ const {
       <footer class="footer">
         <span class="footer-copy">&copy; {new Date().getFullYear()} F5</span>
         <div class="footer-links">
-          <a href="https://github.com/pingdotgg/t3code" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href={REPOSITORY_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
           <a href="https://discord.gg/jn4EGJjrvv" target="_blank" rel="noopener noreferrer">Discord</a>
         </div>
       </footer>

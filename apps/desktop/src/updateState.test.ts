@@ -9,6 +9,7 @@ import {
 } from "./updateState";
 
 const baseState: DesktopUpdateState = {
+  channel: "stable",
   enabled: true,
   status: "idle",
   currentVersion: "1.0.0",
@@ -63,6 +64,18 @@ describe("shouldBroadcastDownloadProgress", () => {
 });
 
 describe("getAutoUpdateDisabledReason", () => {
+  it.each([true, false])("only enables a non-AppImage Linux install marked as deb: %s", (deb) => {
+    const reason = getAutoUpdateDisabledReason({
+      isDevelopment: false,
+      isPackaged: true,
+      platform: "linux",
+      isDebPackage: deb,
+      disabledByEnv: false,
+      hasUpdateFeed: true,
+    });
+    expect(reason === null).toBe(deb);
+  });
+
   it("reports development builds as disabled", () => {
     expect(
       getAutoUpdateDisabledReason({
@@ -142,4 +155,26 @@ describe("getCanRetryAfterDownloadFailure", () => {
       }),
     ).toBe(false);
   });
+});
+
+it("explains missing feeds and read-only locations with location taking precedence", () => {
+  const args = {
+    isDevelopment: false,
+    isPackaged: true,
+    platform: "darwin" as const,
+    disabledByEnv: false,
+  };
+  expect(getAutoUpdateDisabledReason({ ...args, hasUpdateFeed: false })).toContain(
+    "no update feed",
+  );
+  expect(
+    getAutoUpdateDisabledReason({
+      ...args,
+      hasUpdateFeed: false,
+      runningFromReadOnlyLocation: true,
+    }),
+  ).toContain("Applications folder");
+  expect(
+    getAutoUpdateDisabledReason({ ...args, isDevelopment: true, hasUpdateFeed: false }),
+  ).toContain("production builds");
 });

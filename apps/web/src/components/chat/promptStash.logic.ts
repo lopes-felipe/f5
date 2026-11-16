@@ -1,3 +1,4 @@
+import { pickPreferredModel } from "@t3tools/shared/model";
 import {
   type ProviderInstanceId,
   type ProviderKind,
@@ -68,8 +69,7 @@ export function resolvePromptStashSelection(input: {
     input.fallback.providerInstanceId === providerInstanceId ? input.fallback.model : null;
   const model =
     (requestedModel && availableModelSlugs.has(requestedModel) ? requestedModel : null) ??
-    (fallbackModel && availableModelSlugs.has(fallbackModel) ? fallbackModel : null) ??
-    resolvedProvider.models[0]?.slug ??
+    pickPreferredModel(resolvedProvider.models, fallbackModel ? [fallbackModel] : [])?.slug ??
     getDefaultModel(provider);
   const exactModelRetained = requestedModel === null || model === requestedModel;
   if (requestedModel !== null && !exactModelRetained) {

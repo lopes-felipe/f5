@@ -3,9 +3,14 @@ import {
   formatInlineTerminalContextLabel,
   type TerminalContextDraft,
 } from "./lib/terminalContext";
+import { pullRequestReferenceMatches } from "./lib/pullRequestReference";
+import type { SourceControlPullRequestRef } from "@t3tools/contracts";
+import { threadReferenceMatches } from "@t3tools/shared/threadReferences";
 import { randomUUID } from "./lib/utils";
 
 export type ComposerPromptSegment =
+  | { type: "pull-request"; raw: string; url: string; ref: SourceControlPullRequestRef }
+  | { type: "thread-reference"; raw: string; threadId: string; label: string }
   | {
       type: "text";
       text: string;
@@ -51,7 +56,7 @@ export function materializeComposerPrompt(
       });
       text += segment.raw;
     } else {
-      text += segment.text;
+      text += segment.type === "text" ? segment.text : segment.raw;
     }
   }
   const start = text.length - text.trimStart().length;
@@ -258,13 +263,16 @@ export function doesSelectionTouchInlineToken(
       : [selectionEnd, selectionStart];
   if (start === end) return false;
 
-  for (const match of normalizeComposerMentions(prompt, mentions)) {
-    if (rangesTouch(start, end, match.start, match.end)) return true;
-  }
-
-  for (let index = 0; index < prompt.length; index += 1) {
-    if (prompt[index] !== INLINE_TERMINAL_CONTEXT_PLACEHOLDER) continue;
-    if (rangesTouch(start, end, index, index + 1)) return true;
+  let offset = 0;
+  for (const segment of splitPromptIntoComposerSegments(prompt, [], mentions)) {
+    const length =
+      segment.type === "text"
+        ? segment.text.length
+        : segment.type === "terminal-context"
+          ? 1
+          : segment.raw.length;
+    if (segment.type !== "text" && rangesTouch(start, end, offset, offset + length)) return true;
+    offset += length;
   }
 
   return false;
@@ -337,7 +345,60 @@ export function splitPromptIntoComposerSegments(
     pushTextSegment(segments, prompt.slice(textCursor));
   }
 
-  return segments;
+  return REFERENCE_MATCHERS.reduce(
+    (current, matcher) => current.flatMap((segment) => splitTextSegment(segment, matcher)),
+    segments,
+  );
+}
+
+type ReferenceSegment = Extract<
+  ComposerPromptSegment,
+  { type: "pull-request" | "thread-reference" }
+>;
+type ReferenceMatcher = (text: string) => ReadonlyArray<{
+  readonly start: number;
+  readonly end: number;
+  readonly segment: ReferenceSegment;
+}>;
+
+// Applied in order to the text left by earlier matchers, so a match never spans two references.
+const REFERENCE_MATCHERS: readonly ReferenceMatcher[] = [
+  (text) =>
+    pullRequestReferenceMatches(text).map((match) => ({
+      start: match.start,
+      end: match.end,
+      segment: { type: "pull-request", raw: match.raw, url: match.url, ref: match.ref },
+    })),
+  (text) =>
+    threadReferenceMatches(text).map((match) => ({
+      start: match.start,
+      end: match.end,
+      segment: {
+        type: "thread-reference",
+        raw: match.raw,
+        threadId: match.threadId,
+        label: match.label,
+      },
+    })),
+];
+
+function splitTextSegment(
+  segment: ComposerPromptSegment,
+  matcher: ReferenceMatcher,
+): ComposerPromptSegment[] {
+  if (segment.type !== "text") return [segment];
+  const references = matcher(segment.text);
+  if (!references.length) return [segment];
+  const result: ComposerPromptSegment[] = [];
+  let cursor = 0;
+  for (const match of references) {
+    if (match.start > cursor)
+      result.push({ type: "text", text: segment.text.slice(cursor, match.start) });
+    result.push(match.segment);
+    cursor = match.end;
+  }
+  if (cursor < segment.text.length) result.push({ type: "text", text: segment.text.slice(cursor) });
+  return result;
 }
 
 export function collectComposerMentionPaths(
@@ -368,7 +429,7 @@ export function filterComposerTerminalPlaceholders(
       });
       text += segment.raw;
     } else {
-      text += segment.text;
+      text += segment.type === "text" ? segment.text : segment.raw;
     }
   }
   return { prompt: text, mentions: nextMentions };

@@ -1,3 +1,5 @@
+import { useWorkflowDetails, WorkflowDetailsStatus } from "../../hooks/useWorkflowDetails";
+import type { ThreadId } from "@t3tools/contracts";
 import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -5,6 +7,8 @@ import { useThreadDetail } from "../../lib/orchestrationReactQuery";
 import { WORKFLOW_TYPE_DIALOG_LABEL } from "../../lib/workflowType";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
+import { useThreadsByIds } from "../../threadSelectors";
+import { threadIdsForInvestigationWorkflow } from "./investigationWorkflowUtils";
 import type { ChatMessage } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
@@ -17,7 +21,7 @@ import {
   statusLabel,
 } from "./investigationWorkflowView.logic";
 import { deriveInvestigationTimelinePhases } from "./investigationWorkflowSidebarTimeline";
-import { WorkflowPageLayout, WorkflowPageNotFound } from "./WorkflowPageLayout";
+import { WorkflowPageLayout } from "./WorkflowPageLayout";
 import { WorkflowRunInspector } from "./WorkflowRunInspector";
 import { WorkflowArtifactSection, WorkflowInputSection } from "./WorkflowSections";
 import { overallStateFromPhases } from "./workflowTimelineTypes";
@@ -46,13 +50,19 @@ function combinedAssistantFeedback(
   return `${text}\n\n## RCA reasoning\n\n${reasoning}`;
 }
 
+const EMPTY_WORKFLOW_THREAD_IDS: readonly ThreadId[] = [];
+
 export function InvestigationWorkflowView(props: { workflowId: string }) {
   const navigate = useNavigate();
   const [busy, setBusy] = useState<"retry" | "delete" | null>(null);
-  const workflow = useStore((store) =>
-    store.investigationWorkflows.find((entry) => entry.id === props.workflowId),
+  const detail = useWorkflowDetails("investigation", props.workflowId);
+  const workflow = detail.workflow;
+  // Only this workflow's threads: unrelated streaming does not re-render the view.
+  const workflowThreadIds = useMemo(
+    () => (workflow ? threadIdsForInvestigationWorkflow(workflow) : EMPTY_WORKFLOW_THREAD_IDS),
+    [workflow],
   );
-  const threads = useStore((store) => store.threads);
+  const threads = useThreadsByIds(workflowThreadIds);
   const project = useStore((store) =>
     workflow ? (store.projects.find((entry) => entry.id === workflow.projectId) ?? null) : null,
   );
@@ -68,7 +78,9 @@ export function InvestigationWorkflowView(props: { workflowId: string }) {
   );
 
   if (!workflow) {
-    return <WorkflowPageNotFound />;
+    return (
+      <WorkflowDetailsStatus missing={detail.missing} error={detail.error} retry={detail.retry} />
+    );
   }
 
   const synthesisThread = synthesisThreadId ? threadById.get(synthesisThreadId) : null;

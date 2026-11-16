@@ -2,6 +2,7 @@ import {
   ProjectId,
   type ProjectSkill,
   type ProjectSkillScope,
+  type ProjectSkillScanWarning,
   type ProviderKind,
   type ServerProviderSkill,
 } from "@t3tools/contracts";
@@ -12,12 +13,7 @@ export const RESERVED_PROJECT_SKILL_COMMAND_NAMES = ["model", "plan", "default"]
 
 type ReservedProjectSkillCommandName = (typeof RESERVED_PROJECT_SKILL_COMMAND_NAMES)[number];
 
-export interface ProjectSkillScanWarning {
-  readonly scope: ProjectSkillScope;
-  readonly commandName: string;
-  readonly path: string;
-  readonly reason: string;
-}
+export type { ProjectSkillScanWarning } from "@t3tools/contracts";
 
 interface ParsedClaudeSkillDocument {
   readonly displayName: string | null;
@@ -240,9 +236,20 @@ const scanSkillScope = Effect.fn(function* (input: {
   const warnings: Array<ProjectSkillScanWarning> = [];
   const candidates: Array<ProjectSkillCandidate> = [];
 
-  const claudeDirInfo = yield* fs
-    .stat(input.claudeDirPath)
-    .pipe(Effect.catch(() => Effect.succeed(null)));
+  const statDirectory = (directory: string) =>
+    fs.stat(directory).pipe(
+      Effect.catch((error) => {
+        if (error.reason._tag !== "NotFound")
+          warnings.push({
+            scope: input.scope,
+            commandName: "",
+            path: directory,
+            reason: `Cannot inspect skill directory: ${String(error)}`,
+          });
+        return Effect.succeed(null);
+      }),
+    );
+  const claudeDirInfo = yield* statDirectory(input.claudeDirPath);
   if (!claudeDirInfo || claudeDirInfo.type !== "Directory") {
     let ancestor = path.dirname(input.claudeDirPath);
     while (ancestor !== input.workspaceParentPath && ancestor !== path.dirname(ancestor)) {
@@ -265,9 +272,7 @@ const scanSkillScope = Effect.fn(function* (input: {
 
   watchPaths.add(input.claudeDirPath);
 
-  const skillsDirInfo = yield* fs
-    .stat(input.skillsDirPath)
-    .pipe(Effect.catch(() => Effect.succeed(null)));
+  const skillsDirInfo = yield* statDirectory(input.skillsDirPath);
   if (!skillsDirInfo || skillsDirInfo.type !== "Directory") {
     return {
       candidates,
@@ -280,7 +285,17 @@ const scanSkillScope = Effect.fn(function* (input: {
 
   const skillDirectoryNames = yield* fs
     .readDirectory(input.skillsDirPath, { recursive: false })
-    .pipe(Effect.catch(() => Effect.succeed([] as Array<string>)));
+    .pipe(
+      Effect.catch((error) => {
+        warnings.push({
+          scope: input.scope,
+          commandName: "",
+          path: input.skillsDirPath,
+          reason: `Cannot list skills: ${String(error)}`,
+        });
+        return Effect.succeed([] as Array<string>);
+      }),
+    );
 
   for (const directoryName of skillDirectoryNames.toSorted((left, right) =>
     left.localeCompare(right),

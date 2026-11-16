@@ -12,7 +12,11 @@ layer("061_TurnDurabilitySchemaRepair", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* sql`CREATE TABLE projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE projection_threads (
+        thread_id TEXT PRIMARY KEY,
+        branch TEXT,
+        worktree_path TEXT
+      )`;
       yield* sql`INSERT INTO projection_threads (thread_id) VALUES ('thread-1')`;
       yield* sql`
         CREATE TABLE projection_turns (

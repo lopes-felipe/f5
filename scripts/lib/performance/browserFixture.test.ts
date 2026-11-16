@@ -1,5 +1,33 @@
 import { expect, it } from "vitest";
 import { createBrowserFixture } from "./browserFixture";
+import {
+  WorktreesGetTransitionResult,
+  WorktreesThreadStateResult,
+  PullRequestWatchEntry,
+} from "@t3tools/contracts";
+import { Schema } from "effect";
+
+it("answers current worktree and PR-watch reads with valid idle responses", () => {
+  const fixture = createBrowserFixture();
+  expect(
+    Schema.is(WorktreesGetTransitionResult)(
+      fixture.rpc({ _tag: "worktrees.getTransition", threadId: "perf-small" }),
+    ),
+  ).toBe(true);
+  expect(
+    Schema.is(WorktreesThreadStateResult)(
+      fixture.rpc({ _tag: "worktrees.threadState", threadId: "perf-small" }),
+    ),
+  ).toBe(true);
+  expect(
+    Schema.is(Schema.Array(PullRequestWatchEntry))(
+      fixture.rpc({ _tag: "pullRequestWatches.list", threadId: "perf-small" }),
+    ),
+  ).toBe(true);
+  expect([...fixture.unknownMethods]).toEqual([]);
+  fixture.rpc({ _tag: "unsupported.fixture.method" });
+  expect([...fixture.unknownMethods]).toEqual(["unsupported.fixture.method"]);
+});
 
 it("uses the tested build's protocol without changing the benchmark workload", () => {
   const current = createBrowserFixture(42);
@@ -25,7 +53,11 @@ it("answers project settings polling without silently skipping a renderer query"
 
 it("answers worktree setup subscriptions without adding setup work", () => {
   const fixture = createBrowserFixture();
-  expect(fixture.rpc({ _tag: "worktreeSetup.subscribe", threadId: "perf-small" })).toBeNull();
+  expect(fixture.rpc({ _tag: "worktreeSetup.subscribe", threadId: "perf-small" })).toEqual({
+    snapshot: null,
+    generation: 0,
+    sequence: 0,
+  });
   expect([...fixture.unknownMethods]).toEqual([]);
 });
 
@@ -58,4 +90,33 @@ it("keeps the offered streaming workload bounded under real client delta semanti
   expect(client.size).toBe(10);
   expect(deltas).toBe(1900);
   expect(replacements).toBe(100);
+});
+
+it("answers current workspace recovery reads without creating a transition", () => {
+  const fixture = createBrowserFixture();
+  expect(fixture.rpc({ _tag: "worktrees.getTransition", threadId: "perf-small" })).toBeNull();
+  const state = fixture.rpc({ _tag: "worktrees.threadState", threadId: "perf-small" });
+  expect(Schema.is(WorktreesThreadStateResult)(state)).toBe(true);
+  expect([...fixture.unknownMethods]).toEqual([]);
+});
+
+it("answers reconciliation probes at the same head and incarnation as its snapshot", () => {
+  const fixture = createBrowserFixture(30);
+  for (let index = 0; index < 3; index++) {
+    const snapshot = fixture.rpc({ _tag: "orchestration.getSnapshot" }) as {
+      snapshotSequence: number;
+    };
+    expect(fixture.rpc({ _tag: "orchestration.getLatestSequence" })).toEqual({
+      latestSequence: snapshot.snapshotSequence,
+      backendIncarnation: fixture.welcome.backendIncarnation,
+    });
+    fixture.nextEvents();
+  }
+  expect(fixture.welcome.backendIncarnation).toBe("performance-fixture");
+  expect([...fixture.unknownMethods]).toEqual([]);
+});
+it("acknowledges page diagnostics without injecting benchmark work", () => {
+  const fixture = createBrowserFixture();
+  expect(fixture.rpc({ _tag: "server.reportClientDiagnostics" })).toBeNull();
+  expect([...fixture.unknownMethods]).toEqual([]);
 });

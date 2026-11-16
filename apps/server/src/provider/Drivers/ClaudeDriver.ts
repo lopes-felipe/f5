@@ -1,3 +1,5 @@
+import { ThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
+import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import * as NodeOS from "node:os";
 import {
   validateManagedHome,
@@ -25,8 +27,15 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
-import { Duration, Effect, FileSystem, Path, Ref, Schema, Stream } from "effect";
-import { makeClaudeInstanceProbes } from "./ClaudeProbeCache.ts";
+import { Duration, Effect, FileSystem, Option, Path, Ref, Schema, Stream } from "effect";
+import { makeClaudeInstanceProbes, makeClaudeSignOutInvalidation } from "./ClaudeProbeCache.ts";
+import {
+  makeClaudeConsumeResetCredit,
+  makeClaudeLimitResetAccess,
+} from "./ClaudeLimitResetAccess.ts";
+
+/** How long a usage refresh waits for limit resets before using the last read. */
+const LIMIT_RESET_STATUS_WAIT = Duration.seconds(4);
 import {
   emptyAccountSection,
   makeAccountUsageCapability,
@@ -37,13 +46,19 @@ import { makeClaudeTextGeneration } from "../../git/Layers/ClaudeTextGeneration.
 import { ServerConfig } from "../../config.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import { makeClaudeAdapter, resolveClaudeConfigDir } from "../Layers/ClaudeAdapter.ts";
+import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
 import { readClaudeInventory, resolveClaudeUserStatePath } from "../claudeInventory.ts";
 import {
   deleteClaudeSessionTranscript,
   resolveClaudeTranscriptCleanupDir,
 } from "../claudeSessionCleanup.ts";
-import { checkClaudeProviderStatus, makePendingClaudeProvider } from "../Layers/ClaudeProvider.ts";
+import {
+  analyzeClaudeUsage,
+  getClaudeModelCapabilities,
+  checkClaudeProviderStatus,
+  makePendingClaudeProvider,
+} from "../Layers/ClaudeProvider.ts";
+import { makeClaudeUsageAnalyzer } from "./ClaudeUsageAnalysis.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -51,9 +66,15 @@ import {
   type ProviderDriver,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
-import { makeClaudeContinuationGroupKey, makeClaudeEnvironment } from "./ClaudeHome.ts";
+import {
+  claudeAccountUsageIdentity,
+  makeClaudeContinuationGroupKey,
+  makeClaudeProcessEnvironment,
+  resolveClaudeConfigDir,
+} from "./ClaudeHome.ts";
 import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 
 export const resolveClaudeOneOffLaunchArgs = Effect.fn("resolveClaudeOneOffLaunchArgs")(function* (
@@ -108,6 +129,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const path = yield* Path.Path;
+      const fileSystem = yield* FileSystem.FileSystem;
       const serverConfig = yield* ServerConfig;
       yield* Effect.tryPromise({
         try: () => validateManagedHome(serverConfig, config.homePath),
@@ -121,13 +143,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       });
       const serverCwd = serverConfig.cwd;
       const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = buildAccountExecutionEnvironment({
+      const accountEnvironment = buildAccountExecutionEnvironment({
         purpose: "provider",
         profile: serverConfig.profile,
         stateDir: serverConfig.stateDir,
         baseEnv: process.env,
         instance: environment,
       });
+      const processEnv = yield* makeClaudeProcessEnvironment(
+        config,
+        accountEnvironment,
+        environment,
+      );
       yield* Effect.tryPromise({
         try: () =>
           validateProviderCompatibility(serverConfig, DRIVER_KIND, config.binaryPath, processEnv),
@@ -157,11 +184,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         instanceId,
       );
       const previewAutomationBroker = yield* PreviewAutomationBroker;
+      const threadMcpBroker = yield* Effect.serviceOption(ThreadMcpBroker);
+      const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
       // Latest probed models, so launches use the capabilities the CLI reported
       // (the same ones the composer shows) instead of only F5's static table.
       const probedModels = yield* Ref.make<ReadonlyArray<ServerProviderModel>>([]);
       // The CLI child's environment; every instance-private path resolves from it.
-      const claudeProcessEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
+      const claudeProcessEnvironment = processEnv;
       const adapter = yield* makeClaudeAdapter({
         reportedModelCapabilities: (model) =>
           Ref.get(probedModels).pipe(
@@ -173,6 +202,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         previewAutomationBroker,
+        ...(threadMcpBroker._tag === "Some" ? { threadMcpBroker: threadMcpBroker.value } : {}),
+        ...(computerAutomationBroker._tag === "Some"
+          ? { computerAutomationBroker: computerAutomationBroker.value }
+          : {}),
         oneOffProviderOptions: {
           autoCompactWindow: effectiveConfig.autoCompactWindow,
           resumeCompactionPrompt: effectiveConfig.resumeCompactionPrompt,
@@ -185,17 +218,38 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ...(effectiveConfig.nativeCompaction !== undefined
             ? { nativeCompaction: effectiveConfig.nativeCompaction }
             : {}),
+          ...(effectiveConfig.confineWritesToWorkspace === true
+            ? { confineWritesToWorkspace: true }
+            : {}),
           binaryPath: effectiveConfig.binaryPath,
           launchArgs,
         },
         processEnvironment: claudeProcessEnvironment,
       });
-      const textGeneration = yield* makeClaudeTextGeneration(effectiveConfig, processEnv);
+      const textGeneration = yield* makeClaudeTextGeneration(effectiveConfig, processEnv, (model) =>
+        Ref.get(probedModels).pipe(
+          Effect.map(
+            (models) =>
+              models.find((row) => row.slug === model)?.capabilities ??
+              getClaudeModelCapabilities(model),
+          ),
+        ),
+      );
 
       // Per-instance capabilities cache: keyed on binary + resolved HOME so
       // account-specific probes never share auth metadata across instances.
+      // Instance-level probes are not tied to a project, so they run in the
+      // server's state dir. The server cwd is $HOME in packaged desktop builds,
+      // and `claude` wrappers that scope themselves to their cwd refuse to run
+      // there.
       const probes = yield* makeClaudeInstanceProbes(effectiveConfig, processEnv, {
-        cwd: serverCwd,
+        cwd: serverConfig.stateDir,
+      });
+      // Running a usage probe makes the CLI refresh its stored OAuth token, which
+      // the limit-reset client only ever reads.
+      const limitResets = yield* makeClaudeLimitResetAccess(effectiveConfig, processEnv, {
+        cwd: serverConfig.stateDir,
+        refreshToken: () => Effect.runPromise(probes.usage.pipe(Effect.ignore)),
       });
       const accountUsage = yield* makeAccountUsageCapability(
         {
@@ -208,6 +262,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           sections: [emptyAccountSection("claude-usage")],
         },
         probes.usage.pipe(
+          // Best effort: a failed limit-reset read only hides the block. A slow one
+          // keeps running for the next refresh while this one uses the last read.
+          Effect.flatMap((usage) =>
+            usage.limitsAvailable && usage.subscriptionLabel !== null
+              ? Effect.promise(() => limitResets.fetchStatus()).pipe(
+                  Effect.timeoutOption(LIMIT_RESET_STATUS_WAIT),
+                  Effect.map((resets) => ({
+                    ...usage,
+                    limitResets: Option.isSome(resets)
+                      ? resets.value
+                      : limitResets.lastKnownStatus(),
+                  })),
+                )
+              : Effect.succeed({ ...usage, limitResets: null }),
+          ),
           Effect.map((data) => {
             const fetchedAt = new Date().toISOString();
             return [
@@ -221,18 +290,46 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             ];
           }),
         ),
-        { readerOwnsTimeout: true },
+        {
+          identity: claudeAccountUsageIdentity(
+            effectiveConfig.binaryPath,
+            claudeProcessEnvironment,
+          ),
+          readerOwnsTimeout: true,
+          // A failed or signed-out usage read retries instead of holding the TTL.
+          retryFailedReads: true,
+        },
+      );
+      const usageAnalyzer = yield* makeClaudeUsageAnalyzer(
+        analyzeClaudeUsage(effectiveConfig, processEnv, { cwd: serverConfig.stateDir }).pipe(
+          Effect.provideService(Path.Path, path),
+        ),
       );
 
-      const checkProvider = checkClaudeProviderStatus(
-        effectiveConfig,
-        () => probes.capabilities,
-        processEnv,
+      // Signing out drops cached account probes, so limits return as soon as the user signs back in.
+      const withSignOutInvalidation = yield* makeClaudeSignOutInvalidation({
+        invalidateProbes: probes.invalidate,
+        invalidateUsage: accountUsage.invalidate.pipe(
+          Effect.andThen(Effect.sync(() => limitResets.invalidate())),
+        ),
+      });
+      const resetCreditIdentity = claudeAccountUsageIdentity(
+        effectiveConfig.binaryPath,
+        claudeProcessEnvironment,
+      );
+      const consumeResetCredit = makeClaudeConsumeResetCredit(limitResets, DRIVER_KIND, instanceId);
+      const checkProvider = withSignOutInvalidation(
+        checkClaudeProviderStatus(
+          effectiveConfig,
+          () => probes.capabilities,
+          processEnv,
+          serverConfig.stateDir,
+        ),
       ).pipe(
         Effect.map(stampIdentity),
-        Effect.tap((provider) => Ref.set(probedModels, provider.models)),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(Path.Path, path),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
       );
 
       const snapshot = yield* makeManagedServerProvider<ClaudeSettings>({
@@ -267,18 +364,35 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          driver: DRIVER_KIND,
+          binaryPath: effectiveConfig.binaryPath,
+          resolutionEnvironment: claudeProcessEnvironment,
+          claudeConfigDir: claudeProcessEnvironment.CLAUDE_CONFIG_DIR,
+          instanceEnvironment: environment,
+          instanceId,
+        }),
         continuationIdentity: {
           ...fallbackContinuationIdentity,
           continuationKey: continuationGroupKey,
         },
+        // Launch-only settings restart sessions at their next safe start. Set only when
+        // enabled so existing launch fingerprints stay stable.
+        ...(effectiveConfig.confineWritesToWorkspace === true
+          ? { launchIdentity: "claude:confineWritesToWorkspace" }
+          : {}),
         displayName,
         accentColor,
         enabled,
         snapshot,
         adapter: protectProfileAdapter(adapter, serverConfig, effectiveConfig),
         textGeneration,
-        accountUsage,
+        accountUsage: usageAnalyzer.withAnalysis(accountUsage),
+        resetCreditIdentity,
+        consumeResetCredit,
+        analyzeClaudeUsage: usageAnalyzer.analyze,
         invalidateAccountStatus: probes.invalidate,
+        updateModelCatalog: (models) => Ref.set(probedModels, models),
         inventory: ({ projectRoot }) => {
           const configDir = resolveClaudeConfigDir(claudeProcessEnvironment, serverCwd);
           return Effect.tryPromise({

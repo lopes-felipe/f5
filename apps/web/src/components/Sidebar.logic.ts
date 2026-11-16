@@ -13,7 +13,8 @@ import {
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export type SidebarNewThreadEnvMode = "local" | "worktree";
-export type SidebarThreadBucket = "active" | "archived";
+/** Per-project lists whose "Show more" / "N older" expansion the sidebar remembers. */
+export type SidebarThreadBucket = "active" | "archived" | "older" | "snoozed" | "settled";
 
 export function resolveSidebarComposerDraftPreview(
   draft: ComposerDraftPreviewInput | null | undefined,
@@ -70,16 +71,23 @@ export function resolveSidebarNewThreadIntent(input: {
  * else the first project.
  */
 export function resolvePrimaryNewThreadProjectId(input: {
+  readonly projects?: ReadonlyArray<{ readonly id: ProjectId }>;
   readonly activeThreadProjectId: ProjectId | null | undefined;
   readonly activeDraftProjectId: ProjectId | null | undefined;
   readonly mostRecentProjectId: ProjectId | null;
   readonly firstProjectId: ProjectId | null;
 }): ProjectId | null {
   return (
-    input.activeThreadProjectId ??
-    input.activeDraftProjectId ??
-    input.mostRecentProjectId ??
-    input.firstProjectId
+    [
+      input.activeThreadProjectId,
+      input.activeDraftProjectId,
+      input.mostRecentProjectId,
+      input.firstProjectId,
+    ].find(
+      (id): id is ProjectId =>
+        id != null &&
+        (input.projects === undefined || input.projects.some((project) => project.id === id)),
+    ) ?? null
   );
 }
 
@@ -135,11 +143,16 @@ export function reconcileFrozenOrder<T, Key extends string>(input: {
   return ordered;
 }
 
+/**
+ * Whether a workflow row lists its threads: the user's toggle, else open while it holds the
+ * open thread, else collapsed once the workflow completed, else the expand-by-default setting.
+ */
 export function resolveWorkflowThreadListExpanded(input: {
   overrideExpanded?: boolean | undefined;
   expandByDefault: boolean;
   activeThreadId: ThreadId | null;
   workflowThreadIds: readonly ThreadId[];
+  overallState?: "error" | "active" | "completed" | "pending" | undefined;
 }): boolean {
   if (typeof input.overrideExpanded === "boolean") {
     return input.overrideExpanded;
@@ -148,6 +161,8 @@ export function resolveWorkflowThreadListExpanded(input: {
   if (input.activeThreadId !== null && input.workflowThreadIds.includes(input.activeThreadId)) {
     return true;
   }
+
+  if (input.overallState === "completed") return false;
 
   return input.expandByDefault;
 }
@@ -174,6 +189,16 @@ export function toggleWorkflowThreadListExpansion(input: {
     [input.workflowId]: nextExpanded,
   };
 }
+
+/** Thread and workflow rows in the project tree: a little taller than the default 32px. */
+export const SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME = "h-[34px]";
+
+/**
+ * Done work (archived and settled rows): text and icons in the muted color until the row is
+ * hovered or focused. A color, not opacity, so the text keeps AA contrast in both themes.
+ */
+export const SIDEBAR_DONE_ROW_CLASS_NAME =
+  "text-muted-foreground [&:not(:hover):not(:focus-within)_*]:text-muted-foreground";
 
 /**
  * One level of the sidebar tree (a project's threads and workflows, a
@@ -263,6 +288,127 @@ export function buildRenderedProjectThreadIds(input: {
       input.previewLimit,
     ),
   ];
+}
+
+/** A nav badge count: exact below 1000, then one decimal of thousands ("2.2k", "15k"). */
+export function formatCompactCount(count: number): string {
+  if (count < 1000) return String(count);
+  const thousands = count / 1000;
+  const rounded = thousands < 10 ? Math.floor(thousands * 10) / 10 : Math.floor(thousands);
+  return `${String(rounded)}k`;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Splits items into recent ones and those idle longer than `days`, keeping each side in input
+ * order. Exempt keys and items without a parseable activity time stay recent; `days` 0 is off.
+ */
+export function partitionAgedSidebarItems<T>(
+  items: readonly T[],
+  now: number,
+  days: number,
+  exemptKeys: ReadonlySet<string>,
+  accessors: {
+    readonly getKey: (item: T) => string;
+    readonly getActivityAt: (item: T) => string | null | undefined;
+  },
+): { readonly recent: T[]; readonly older: T[] } {
+  if (days <= 0) return { recent: [...items], older: [] };
+  const cutoff = now - days * DAY_MS;
+  const recent: T[] = [];
+  const older: T[] = [];
+  for (const item of items) {
+    const activityAt = accessors.getActivityAt(item);
+    const activityMs = activityAt ? Date.parse(activityAt) : Number.NaN;
+    if (
+      !exemptKeys.has(accessors.getKey(item)) &&
+      Number.isFinite(activityMs) &&
+      activityMs < cutoff
+    )
+      older.push(item);
+    else recent.push(item);
+  }
+  return { recent, older };
+}
+
+/** The quiet lists a project's shelf row holds, in the row's order. */
+export const SIDEBAR_SHELF_BUCKETS = ["scheduled", "snoozed", "settled", "archived"] as const;
+export type SidebarShelfBucket = (typeof SIDEBAR_SHELF_BUCKETS)[number];
+
+/** The shelf bucket that lists a thread, or null when the thread is not on the shelf. */
+export function findShelfBucketForThread(
+  lists: {
+    readonly scheduledThreads: ReadonlyArray<{ readonly id: ThreadId }>;
+    readonly snoozedThreads: ReadonlyArray<{ readonly id: ThreadId }>;
+    readonly settledThreads: ReadonlyArray<{ readonly id: ThreadId }>;
+    readonly archivedSidebarItems: ReadonlyArray<
+      | { readonly kind: "thread"; readonly thread: { readonly id: ThreadId } }
+      | { readonly kind: "workflow" }
+    >;
+  },
+  threadId: ThreadId | null,
+): SidebarShelfBucket | null {
+  if (threadId === null) return null;
+  if (lists.scheduledThreads.some((thread) => thread.id === threadId)) return "scheduled";
+  if (lists.snoozedThreads.some((thread) => thread.id === threadId)) return "snoozed";
+  if (lists.settledThreads.some((thread) => thread.id === threadId)) return "settled";
+  if (
+    lists.archivedSidebarItems.some((item) => item.kind === "thread" && item.thread.id === threadId)
+  )
+    return "archived";
+  return null;
+}
+
+export interface SidebarGitTarget {
+  readonly threadId: ThreadId;
+  readonly branch: string | null;
+  readonly archived: boolean;
+  readonly cwd: string | null;
+}
+
+/**
+ * Workspaces whose sidebar git status polls: those of live branch threads and
+ * of the open thread. Archived rows keep a disabled observer, so they show a
+ * cached status without fetching one.
+ */
+export function polledSidebarGitStatusCwds(
+  targets: ReadonlyArray<SidebarGitTarget>,
+  routeThreadId: ThreadId | null | undefined,
+): ReadonlySet<string> {
+  const cwds = new Set<string>();
+  for (const target of targets)
+    if (
+      target.branch !== null &&
+      target.cwd !== null &&
+      (!target.archived || target.threadId === routeThreadId)
+    )
+      cwds.add(target.cwd);
+  return cwds;
+}
+
+export interface SidebarPullRequestLinkThread {
+  readonly id: ThreadId;
+  readonly archived: boolean;
+  readonly lookupCwd: string | null;
+  readonly pullRequests: ReadonlyArray<{ readonly url: string }> | undefined;
+}
+
+/**
+ * Linked PRs whose state the sidebar resolves. Like git status, archived threads keep a
+ * disabled lookup (cached state only) unless they are the open thread.
+ */
+export function sidebarPullRequestLinkTargets(
+  threads: ReadonlyArray<SidebarPullRequestLinkThread>,
+  routeThreadId: ThreadId | null | undefined,
+): Array<{ cwd: string | null; url: string; enabled: boolean }> {
+  return threads.flatMap((thread) =>
+    (thread.pullRequests ?? []).map((link) => ({
+      cwd: thread.lookupCwd,
+      url: link.url,
+      enabled: thread.lookupCwd !== null && (!thread.archived || thread.id === routeThreadId),
+    })),
+  );
 }
 
 export { hasUnseenCompletion, resolveThreadStatusPill, type ThreadStatusPill };

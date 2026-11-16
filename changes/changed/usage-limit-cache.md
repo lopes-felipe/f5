@@ -1,0 +1,1 @@
+- Usage limits use a shared snapshot cache and serialized account refreshes.

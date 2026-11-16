@@ -49,3 +49,57 @@ it("returns focus to the element that opened the gallery when it closes", async 
     await view.unmount();
   }
 });
+
+it.each(["/work/pipeline.svg", "/work/diagram#v2.svg", "/work/diagram?v2.svg"])(
+  "fits an SVG with no intrinsic dimensions using its file reference: %s",
+  async (path) => {
+    const src = URL.createObjectURL(
+      new Blob(
+        [
+          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1174 920"><rect width="1174" height="920"/></svg>',
+        ],
+        { type: "image/svg+xml" },
+      ),
+    );
+    const view = await render(
+      <AssetImageGallery
+        gallery={{ images: [{ src, name: "Pipeline", path }], index: 0 }}
+        onChange={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    try {
+      await vi.waitFor(() => {
+        const image = document.querySelector<HTMLImageElement>('img[alt="Pipeline"]')!;
+        expect(image.naturalWidth).toBeGreaterThan(0);
+        const expected = Math.min(
+          window.innerWidth * 0.92 - (window.innerWidth >= 640 ? 96 : 0),
+          (window.innerHeight * 0.8 * image.naturalWidth) / image.naturalHeight,
+        );
+        expect(image.getBoundingClientRect().width).toBeCloseTo(expected, 0);
+      });
+    } finally {
+      await view.unmount();
+      URL.revokeObjectURL(src);
+    }
+  },
+);
+
+it("keeps raster images capped at their natural size", async () => {
+  const view = await render(
+    <AssetImageGallery
+      gallery={{ images: [{ src: PIXEL, name: "pixel.png" }], index: 0 }}
+      onChange={() => {}}
+      onClose={() => {}}
+    />,
+  );
+  try {
+    await vi.waitFor(() => {
+      const image = document.querySelector<HTMLImageElement>('img[alt="pixel.png"]')!;
+      expect(image.naturalWidth).toBe(1);
+      expect(image.getBoundingClientRect().width).toBe(1);
+    });
+  } finally {
+    await view.unmount();
+  }
+});

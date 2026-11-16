@@ -1,4 +1,8 @@
-import { ProjectId } from "@t3tools/contracts";
+import {
+  ProjectId,
+  type OrchestrationLatestTurn,
+  type OrchestrationThreadActivity,
+} from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { fixture, messageFixture } from "./fixtures.ts";
 
@@ -23,7 +27,7 @@ export function createBrowserFixture(protocolVersion = 1) {
         id: `${prefix}-${i}`,
         role: data.role,
         text: data.text,
-        turnId: null,
+        turnId: null as string | null,
         streaming: false,
         createdAt: data.createdAt,
         updatedAt: data.createdAt,
@@ -49,14 +53,14 @@ export function createBrowserFixture(protocolVersion = 1) {
     runtimeMode: "full-access",
     branch: "main",
     worktreePath: null,
-    latestTurn: null,
+    latestTurn: null as OrchestrationLatestTurn | null,
     archivedAt: null,
     createdAt: time,
     lastInteractionAt: time,
     updatedAt: time,
     deletedAt: null,
     messages: messages(count, prefix),
-    activities: [],
+    activities: [] as OrchestrationThreadActivity[],
     proposedPlans: [],
     tasks: [],
     tasksTurnId: null,
@@ -68,8 +72,8 @@ export function createBrowserFixture(protocolVersion = 1) {
       status: "ready",
       providerName: "codex",
       runtimeMode: "full-access",
-      activeTurnId: null,
-      lastError: null,
+      activeTurnId: null as string | null,
+      lastError: null as string | null,
       updatedAt: time,
     },
   });
@@ -78,6 +82,7 @@ export function createBrowserFixture(protocolVersion = 1) {
     thread(SMALL_THREAD, "Performance small thread", 20, "perf-small-message"),
     ...STREAM_THREADS.map((id) => thread(id, id, 2, `${id}-message`)),
   ];
+  const paginatedThreads = new Set<string>();
   const commands = Array.from(
     { length: fixture.chat.messages / fixture.chat.toolEvery },
     (_, i) => {
@@ -129,9 +134,10 @@ export function createBrowserFixture(protocolVersion = 1) {
   const details = (id: string) => {
     const t = threads.find((t) => t.id === id);
     if (!t) throw new Error(`Unknown fixture thread ${id}`);
+    const selected = paginatedThreads.has(id) ? t.messages.slice(-40) : t.messages;
     return {
       threadId: id,
-      messages: t.messages,
+      messages: selected,
       checkpoints: [],
       activities: [],
       commandExecutions: id === LARGE_THREAD ? commands : [],
@@ -140,12 +146,12 @@ export function createBrowserFixture(protocolVersion = 1) {
       tasksUpdatedAt: null,
       sessionNotes: null,
       threadReferences: [],
-      hasOlderMessages: false,
+      hasOlderMessages: selected.length < t.messages.length,
       hasOlderCheckpoints: false,
       hasOlderCommandExecutions: false,
       oldestLoadedMessageCursor: {
-        createdAt: t.messages[0]!.createdAt,
-        messageId: t.messages[0]!.id,
+        createdAt: selected[0]!.createdAt,
+        messageId: selected[0]!.id,
       },
       oldestLoadedCheckpointTurnCount: null,
       oldestLoadedCommandExecutionCursor: null,
@@ -181,7 +187,17 @@ export function createBrowserFixture(protocolVersion = 1) {
     threads,
     commands,
     unknownMethods,
+    nextSequence: () => ++sequence,
+    addHistoryThread() {
+      const id = "perf-history";
+      if (!paginatedThreads.has(id)) {
+        paginatedThreads.add(id);
+        threads.push(thread(id, id, 1000, "perf-history-message"));
+        sequence++;
+      }
+    },
     welcome: {
+      backendIncarnation: "performance-fixture",
       cwd: "/fixture",
       projectName: "Performance fixture",
       bootstrapProjectId: "perf-project",
@@ -203,12 +219,28 @@ export function createBrowserFixture(protocolVersion = 1) {
       switch (body._tag) {
         case "server.probe":
           return { ok: true };
+        case "server.reportClientDiagnostics":
+          return null;
+        case "orchestration.getLatestSequence":
+          return { latestSequence: sequence, backendIncarnation: "performance-fixture" };
         case "orchestration.getRewindDrafts":
           return { threadId: id, drafts: [] };
         case "worktreeSetup.subscribe":
-          return null;
+          return { snapshot: null, generation: 0, sequence: 0 };
         case "projects.cloneList":
           return [];
+        case "worktrees.getTransition":
+          return null;
+        case "worktrees.threadState":
+          return {
+            recovery: "none",
+            worktreePath: null,
+            branch: "main",
+            directoryExists: true,
+            registration: "none",
+            branchExists: true,
+            defaultBranch: "main",
+          };
         case "server.getProjectSettings":
           return resolveProjectSettings({
             projectId: ProjectId.makeUnsafe(String(body.projectId)),
@@ -231,12 +263,21 @@ export function createBrowserFixture(protocolVersion = 1) {
             maxItems: 20,
             quarantinedCount: 0,
           };
+        case "storage.getDiskSpace":
+          return {
+            level: "ok",
+            checkedAt: time,
+            lowThresholdBytes: 0,
+            criticalThresholdBytes: 0,
+            volumes: [],
+            reclaimable: [],
+          };
+        case "nativeOperation.list":
+          return [];
         case "prHub.getThreadLinks":
           return [];
-        case "orchestration.getRewindDrafts":
-          return { threadId: id, drafts: [] };
-        case "worktreeSetup.subscribe":
-          return null;
+        case "pullRequestWatches.list":
+          return [];
         case "orchestration.getSnapshot":
           return snapshot();
         case "orchestration.getStartupSnapshot":
@@ -249,6 +290,25 @@ export function createBrowserFixture(protocolVersion = 1) {
           return details(id);
         case "orchestration.getThreadDetails":
           return details(id);
+        case "orchestration.getThreadHistoryPage": {
+          const t = threads.find((thread) => thread.id === id);
+          if (!t) throw new Error(`Unknown fixture thread ${id}`);
+          const cursor = body.beforeMessageCursor as { messageId?: string } | null;
+          const index = cursor
+            ? t.messages.findIndex((message) => message.id === cursor.messageId)
+            : -1;
+          const end = index < 0 ? t.messages.length : index;
+          const start = Math.max(0, end - 40);
+          const messages = t.messages.slice(start, end);
+          return {
+            ...details(id),
+            messages,
+            hasOlderMessages: start > 0,
+            oldestLoadedMessageCursor: messages[0]
+              ? { createdAt: messages[0].createdAt, messageId: messages[0].id }
+              : null,
+          };
+        }
         case "orchestration.getThreadCommandExecutions":
           return {
             threadId: id,

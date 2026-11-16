@@ -1,3 +1,28 @@
+import {
+  ProviderNativeHistory,
+  ProviderNativeHistoryLive,
+} from "./provider/ProviderNativeHistory.ts";
+import { ProviderNativeHistoryWorkerLive } from "./orchestration/Layers/ProviderNativeHistory.ts";
+import {
+  ProviderContinuationRequests,
+  ProviderContinuationRequestsLive,
+} from "./provider/ProviderContinuationRequests.ts";
+import { ProviderContinuationWorkerLive } from "./provider/ProviderContinuationWorker.ts";
+import { McpAppServiceLive } from "./mcpApps/McpAppService.ts";
+import { ThreadSettlementServiceLive } from "./orchestration/Layers/ThreadSettlementService.ts";
+import { PullRequestWatchServiceLive } from "./orchestration/Layers/PullRequestWatchService.ts";
+import { ThreadMcpBroker, ThreadMcpBrokerLive } from "./mcp/threadMcpTools.ts";
+import { PrHubReviewGuideServiceLive } from "./prHub/Layers/PrHubReviewGuideService.ts";
+import { WorkspaceTransitionsLive } from "./persistence/Layers/WorkspaceTransitions.ts";
+import { WorkspaceTransitionLive } from "./project/Layers/WorkspaceTransition.ts";
+import { WorktreePreparationsLive } from "./persistence/Layers/WorktreePreparations.ts";
+import { WorktreePreparationLive } from "./project/Layers/WorktreePreparation.ts";
+import { WorktreeManagerLive } from "./project/Layers/WorktreeManager.ts";
+import {
+  ComputerAutomationBroker,
+  ComputerAutomationBrokerLive,
+} from "./computer/ComputerAutomationBroker";
+import { AgentControlPauseLive, AgentControlPauseService } from "./mcp/agentControlPause";
 import { WorktreeSetupLive } from "./project/Layers/WorktreeSetup.ts";
 import { DefaultBranchAutoPullLive } from "./git/DefaultBranchAutoPull.ts";
 import { StorageCleanupWorkerLive } from "./storage/StorageCleanupWorker.ts";
@@ -18,6 +43,7 @@ import { ServerConfig } from "./config";
 import { OrchestrationCommandReceiptRepositoryLive } from "./persistence/Layers/OrchestrationCommandReceipts";
 import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore";
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime";
+import { ProviderHandoffStateRepositoryLive } from "./persistence/Layers/ProviderHandoffState";
 import { ProviderTerminalEventRepositoryLive } from "./persistence/Layers/ProviderTerminalEvents";
 import { ProviderTerminalEventRepository } from "./persistence/Services/ProviderTerminalEvents";
 import { ProjectMcpConfigRepositoryLive } from "./persistence/Layers/ProjectMcpConfigs";
@@ -145,11 +171,16 @@ export function makeServerProviderLayer(): Layer.Layer<
   | McpRuntimeService
   | ProjectMcpConfigService
   | PreviewAutomationBroker
+  | ComputerAutomationBroker
   | PreviewMcpHttpServer
+  | ThreadMcpBroker
   | ProviderRegistry
   | ProviderUpdateAdvisor
   | ProviderAdvisoryProjection
   | ProviderInstanceRegistry
+  | ProviderContinuationRequests
+  | ProviderNativeHistory
+  | AgentControlPauseService
   | ProviderAdapterRegistry
   | ServerSettingsService
   | DiskSpaceMonitor,
@@ -180,6 +211,7 @@ export function makeServerProviderLayer(): Layer.Layer<
     const projectMcpConfigRepositoryLayer = ProjectMcpConfigRepositoryLive;
     const projectMcpConfigServiceLayer = ProjectMcpConfigServiceLive.pipe(
       Layer.provide(projectMcpConfigRepositoryLayer),
+      Layer.provide(ServerSecretStoreLive),
     );
     const providerEventLoggersLayer = Layer.succeed(ProviderEventLoggers, {
       native: nativeEventLogger,
@@ -188,14 +220,25 @@ export function makeServerProviderLayer(): Layer.Layer<
     const serverSettingsLayer = ServerSettingsLive;
     const previewAutomationBrokerLayer = PreviewAutomationBrokerLive.pipe(
       Layer.provide(serverSettingsLayer),
+      Layer.provide(AgentControlPauseLive),
+    );
+    const computerAutomationBrokerLayer = ComputerAutomationBrokerLive.pipe(
+      Layer.provide(serverSettingsLayer),
+      Layer.provide(AgentControlPauseLive),
     );
     const previewMcpHttpServerLayer = PreviewMcpHttpServerLive.pipe(
+      Layer.provide(ThreadMcpBrokerLive),
+      Layer.provide(computerAutomationBrokerLayer),
       Layer.provide(previewAutomationBrokerLayer),
     );
     const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe(
+      Layer.provide(ProviderContinuationRequestsLive),
+      Layer.provide(ProviderNativeHistoryLive),
+      Layer.provide(ThreadMcpBrokerLive),
       Layer.provide(serverSettingsLayer),
       Layer.provide(providerEventLoggersLayer),
       Layer.provide(OpenCodeRuntimeLive),
+      Layer.provide(computerAutomationBrokerLayer),
       Layer.provide(previewMcpHttpServerLayer),
       Layer.provide(previewAutomationBrokerLayer),
     );
@@ -203,19 +246,13 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(providerInstanceRegistryLayer),
     );
     const providerRegistryLayer = ProviderRegistryLive.pipe(
-      Layer.provide(providerInstanceRegistryLayer),
-    );
-    const providerUpdateAdvisorLayer = ProviderUpdateAdvisorLive.pipe(
-      Layer.provide(providerRegistryLayer),
       Layer.provide(serverSettingsLayer),
-    );
-    const providerAdvisoryProjectionLayer = ProviderAdvisoryProjectionLive.pipe(
-      Layer.provide(providerRegistryLayer),
-      Layer.provide(providerUpdateAdvisorLayer),
+      Layer.provide(providerInstanceRegistryLayer),
     );
     const codexMcpEventBusLayer = CodexMcpEventBusLive;
     const codexControlClientRegistryLayer = CodexControlClientRegistryLive.pipe(
       Layer.provide(serverSettingsLayer),
+      Layer.provide(ProjectionProjectRepositoryLive),
     );
     const codexMcpSyncServiceLayer = CodexMcpSyncServiceLive.pipe(
       Layer.provide(codexControlClientRegistryLayer),
@@ -225,12 +262,24 @@ export function makeServerProviderLayer(): Layer.Layer<
       ...(canonicalEventLogger ? { canonicalEventLogger } : {}),
       recordTerminalEvent: providerTerminalEventRepository.record,
     }).pipe(
+      Layer.provide(makeServerGitLayers().gitLayer),
       Layer.provide(adapterRegistryLayer),
       Layer.provide(providerRegistryLayer),
       Layer.provide(serverSettingsLayer),
       Layer.provide(providerSessionDirectoryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
+      Layer.provide(computerAutomationBrokerLayer),
       Layer.provide(previewAutomationBrokerLayer),
+    );
+    const providerUpdateAdvisorLayer = ProviderUpdateAdvisorLive.pipe(
+      Layer.provide(providerRegistryLayer),
+      Layer.provide(providerInstanceRegistryLayer),
+      Layer.provide(providerServiceLayer),
+      Layer.provide(serverSettingsLayer),
+    );
+    const providerAdvisoryProjectionLayer = ProviderAdvisoryProjectionLive.pipe(
+      Layer.provide(providerRegistryLayer),
+      Layer.provide(providerUpdateAdvisorLayer),
     );
     const harnessValidationLayer = HarnessValidationLive.pipe(
       Layer.provide(adapterRegistryLayer),
@@ -245,6 +294,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(projectMcpConfigServiceLayer),
     );
     const mcpRuntimeServiceLayer = McpRuntimeServiceLive.pipe(
+      Layer.provide(ProjectionProjectRepositoryLive),
       Layer.provide(serverSettingsLayer),
       Layer.provide(McpRuntimeDiagnosticsLive),
       Layer.provide(providerServiceLayer),
@@ -255,6 +305,9 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(projectMcpConfigServiceLayer),
     );
     return Layer.mergeAll(
+      ProviderContinuationRequestsLive,
+      ProviderNativeHistoryLive,
+      AgentControlPauseLive,
       serverSettingsLayer,
       DiskSpaceMonitorLive.pipe(Layer.provide(serverSettingsLayer)),
       providerServiceLayer,
@@ -271,7 +324,9 @@ export function makeServerProviderLayer(): Layer.Layer<
       mcpRuntimeServiceLayer,
       projectMcpConfigServiceLayer,
       previewAutomationBrokerLayer,
+      computerAutomationBrokerLayer,
       previewMcpHttpServerLayer,
+      ThreadMcpBrokerLive,
     );
   }).pipe(Effect.provide(ProviderTerminalEventRepositoryLive), Layer.unwrap);
 }
@@ -280,7 +335,10 @@ export function makeServerProviderLayer(): Layer.Layer<
 export function makeServerRuntimeServicesLayer() {
   const forgeAccountsLayer = ForgeAccountsLive.pipe(Layer.provideMerge(ServerSecretStoreLive));
   const githubCliLayer = GitHubCliLive.pipe(Layer.provideMerge(ServerSecretStoreLive));
-  const textGenerationLayer = TextGenerationLive;
+  const textGenerationLayer = TextGenerationLive.pipe(
+    Layer.provide(ProjectionProjectRepositoryLive),
+    Layer.provide(ProjectionThreadRepositoryLive),
+  );
 
   const { gitLayer, checkpointDiffQueryLayer } = makeServerGitLayers();
   const threadCommandExecutionQueryLayer = ThreadCommandExecutionQueryLive.pipe(
@@ -311,6 +369,10 @@ export function makeServerRuntimeServicesLayer() {
     Layer.provideMerge(ProjectionProjectRepositoryLive),
   );
   const prHubLayer = PrHubFederatedServiceLive.pipe(Layer.provideMerge(federationLayer));
+  const prHubReviewGuideLayer = PrHubReviewGuideServiceLive.pipe(
+    Layer.provideMerge(federationLayer),
+    Layer.provideMerge(textGenerationLayer),
+  );
   const prHubExtensionsLayer = PrHubExtensionsLive.pipe(Layer.provideMerge(prHubLayer));
   const prHubAdvisoryLayer = PrHubAdvisoryServiceLive.pipe(
     Layer.provideMerge(prHubLayer),
@@ -329,16 +391,20 @@ export function makeServerRuntimeServicesLayer() {
     prHubLayer,
     prHubExtensionsLayer,
     prHubAdvisoryLayer,
+    prHubReviewGuideLayer,
     terminalLayer,
     KeybindingsLive,
-    ObservabilityLive,
+    ObservabilityLive.pipe(Layer.provide(ServerSettingsLive)),
     NextTurnQueueStoreLive,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }
 
 /** Build orchestration workers with the same credential-aware Git composition as server routes. */
 export function makeServerOrchestrationRuntimeLayer() {
-  const textGenerationLayer = TextGenerationLive;
+  const textGenerationLayer = TextGenerationLive.pipe(
+    Layer.provide(ProjectionProjectRepositoryLive),
+    Layer.provide(ProjectionThreadRepositoryLive),
+  );
   const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
     Layer.provide(ProviderSessionRuntimeRepositoryLive),
   );
@@ -346,9 +412,13 @@ export function makeServerOrchestrationRuntimeLayer() {
   const threadBackgroundWorkLayer = ThreadBackgroundWorkLive.pipe(
     Layer.provideMerge(providerSessionDirectoryLayer),
   );
-  const usageServiceLayer = UsageServiceLive;
+  // The secret store keys persisted account identities across restarts.
+  const usageServiceLayer = UsageServiceLive.pipe(Layer.provide(ServerSecretStoreLive));
   const { gitLayer, checkpointDiffQueryLayer } = makeServerGitLayers();
   const orchestrationLayer = OrchestrationEngineLive.pipe(
+    Layer.provide(providerSessionDirectoryLayer),
+    Layer.provideMerge(WorkspaceTransitionsLive),
+    Layer.provideMerge(gitLayer),
     Layer.provide(NextTurnQueueStoreLive),
     Layer.provide(projectionSnapshotQueryLayer),
     Layer.provide(OrchestrationProjectionPipelineLive),
@@ -361,6 +431,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     providerSessionDirectoryLayer,
     RuntimeReceiptBusLive,
     ProviderTurnDeliveryRepositoryLive,
+    ProviderHandoffStateRepositoryLive,
     ProjectionTurnRepositoryLive,
     threadBackgroundWorkLayer,
     StorageMaintenanceLive.pipe(
@@ -371,7 +442,15 @@ export function makeServerOrchestrationRuntimeLayer() {
   );
   // One gate instance is shared by the queue dispatcher and the setup service.
   const worktreeSetupGateLayer = WorktreeSetupGateLive;
+  const worktreePreparationLayer = WorktreePreparationLive.pipe(
+    Layer.provideMerge(WorktreePreparationsLive),
+    Layer.provideMerge(worktreeSetupGateLayer),
+    Layer.provideMerge(NextTurnQueueStoreLive),
+    Layer.provideMerge(runtimeServicesLayer),
+  );
   const nextTurnQueueDispatcherLayer = NextTurnQueueDispatcherLive.pipe(
+    Layer.provideMerge(WorkspaceTransitionsLive),
+    Layer.provideMerge(worktreePreparationLayer),
     Layer.provideMerge(ServerSecretStoreLive),
     Layer.provideMerge(usageServiceLayer),
     Layer.provideMerge(worktreeSetupGateLayer),
@@ -392,16 +471,23 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(projectionSnapshotQueryLayer),
     Layer.provideMerge(textGenerationLayer),
   );
-  const investigationWorkflowServiceLayer = InvestigationWorkflowServiceLive.pipe(
+  const investigationWorkflowServiceBaseLayer = InvestigationWorkflowServiceLive.pipe(
     Layer.provideMerge(orchestrationLayer),
     Layer.provideMerge(projectionSnapshotQueryLayer),
     Layer.provideMerge(textGenerationLayer),
   );
   const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
+    // History recovery verifies projected command output before repairing it.
+    Layer.provide(
+      ThreadCommandExecutionQueryLive.pipe(
+        Layer.provide(ProjectionThreadCommandExecutionRepositoryLive),
+      ),
+    ),
     Layer.provideMerge(usageServiceLayer),
     Layer.provideMerge(runtimeServicesLayer),
   );
   const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(
+    Layer.provideMerge(worktreePreparationLayer),
     Layer.provideMerge(runtimeServicesLayer),
     Layer.provideMerge(textGenerationLayer),
   );
@@ -413,6 +499,9 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(providerTurnDeliveryWorkerLayer),
   );
   const codeReviewWorkflowServiceLayer = codeReviewWorkflowServiceBaseLayer.pipe(
+    Layer.provideMerge(providerTurnDeliveryWorkerLayer),
+  );
+  const investigationWorkflowServiceLayer = investigationWorkflowServiceBaseLayer.pipe(
     Layer.provideMerge(providerTurnDeliveryWorkerLayer),
   );
   const checkpointReactorLayer = CheckpointReactorLive.pipe(
@@ -427,7 +516,17 @@ export function makeServerOrchestrationRuntimeLayer() {
   const sessionNotesServiceLayer = SessionNotesServiceLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
   );
+  const continuationWorkerLayer = ProviderContinuationWorkerLive.pipe(
+    Layer.provideMerge(runtimeServicesLayer),
+    Layer.provideMerge(NextTurnQueueStoreLive),
+    Layer.provideMerge(nextTurnQueueDispatcherLayer),
+  );
+  const nativeHistoryWorkerLayer = ProviderNativeHistoryWorkerLive.pipe(
+    Layer.provideMerge(runtimeServicesLayer),
+  );
   const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
+    Layer.provideMerge(nativeHistoryWorkerLayer),
+    Layer.provideMerge(continuationWorkerLayer),
     Layer.provideMerge(orchestrationLayer),
     Layer.provideMerge(runtimeIngestionLayer),
     Layer.provideMerge(providerCommandReactorLayer),
@@ -450,9 +549,27 @@ export function makeServerOrchestrationRuntimeLayer() {
   const projectSetupScriptRunnerLayer = ProjectSetupScriptRunnerLive.pipe(
     Layer.provideMerge(orchestrationLayer),
   );
+  const workspaceTransitionLayer = WorkspaceTransitionLive.pipe(
+    Layer.provideMerge(textGenerationLayer),
+    Layer.provideMerge(WorkspaceTransitionsLive),
+    Layer.provideMerge(worktreePreparationLayer),
+    Layer.provideMerge(nextTurnQueueDispatcherLayer),
+    Layer.provideMerge(worktreeSetupGateLayer),
+    Layer.provideMerge(gitLayer),
+  );
   const worktreeSetupLayer = WorktreeSetupLive.pipe(
+    Layer.provideMerge(workspaceTransitionLayer),
+    Layer.provideMerge(textGenerationLayer),
+    Layer.provideMerge(worktreePreparationLayer),
     Layer.provideMerge(worktreeSetupGateLayer),
     Layer.provideMerge(nextTurnQueueDispatcherLayer),
+    Layer.provideMerge(gitLayer),
+  );
+  const worktreeManagerLayer = WorktreeManagerLive.pipe(
+    Layer.provideMerge(workspaceTransitionLayer),
+    Layer.provideMerge(worktreePreparationLayer),
+    Layer.provideMerge(nextTurnQueueDispatcherLayer),
+    Layer.provideMerge(worktreeSetupGateLayer),
     Layer.provideMerge(gitLayer),
   );
   const storageCleanupWorkerLayer = StorageCleanupWorkerLive.pipe(
@@ -478,6 +595,11 @@ export function makeServerOrchestrationRuntimeLayer() {
     providerTurnDeliveryWorkerLayer,
     worktreeSetupLayer,
     storageCleanupWorkerLayer,
+    worktreeManagerLayer,
+    workspaceTransitionLayer,
     defaultBranchAutoPullLayer,
+    PullRequestWatchServiceLive.pipe(Layer.provideMerge(nextTurnQueueDispatcherLayer)),
+    ThreadSettlementServiceLive.pipe(Layer.provideMerge(nextTurnQueueDispatcherLayer)),
+    McpAppServiceLive.pipe(Layer.provideMerge(runtimeServicesLayer)),
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }

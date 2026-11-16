@@ -3,8 +3,12 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
-import { acquireLauncherLease } from "./launcher";
+import { acquireLauncherLease as acquireRealLauncherLease } from "./launcher";
 import { atomicJson } from "./files";
+// Process creation probes are restricted in some developer/agent sandboxes.
+// Lease unit tests exercise real liveness with an injectable birth identity.
+const acquireLauncherLease = (directory: string) =>
+  acquireRealLauncherLease(directory, async (pid) => `fixture-birth:${pid}`);
 let root: string;
 const children: ChildProcess[] = [];
 beforeEach(async () => {
@@ -63,3 +67,21 @@ it("does not mistake a reused launcher PID with a different birth identity for t
   const lease = await acquireLauncherLease(root);
   await lease.release();
 });
+
+it("fails closed when a live owner's birth identity cannot be verified", async () => {
+  const lease = await acquireLauncherLease(root);
+  await expect(
+    acquireRealLauncherLease(root, async () => {
+      throw new Error("probe denied");
+    }),
+  ).rejects.toThrow("already running");
+  await lease.release();
+});
+it.runIf(process.env.CI === "true")(
+  "acquires a real process-identity lease on CI hosts",
+  async () => {
+    const lease = await acquireRealLauncherLease(root);
+    await expect(acquireRealLauncherLease(root)).rejects.toThrow("already running");
+    await lease.release();
+  },
+);

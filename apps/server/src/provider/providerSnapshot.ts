@@ -196,14 +196,21 @@ export interface ReportedProviderModel {
 export function mergeReportedProviderModels(
   models: ReadonlyArray<ServerProviderModel>,
   reported: ReadonlyArray<ReportedProviderModel> | undefined,
+  options?: { readonly presentSlugs?: ReadonlyArray<string>; readonly complete?: boolean },
 ): ReadonlyArray<ServerProviderModel> {
-  if (!reported || reported.length === 0) return models;
+  if ((!reported || reported.length === 0) && !options?.complete) return models;
+  reported = reported ?? [];
+  const present = new Set(options?.presentSlugs ?? reported.map((model) => model.slug));
   const reportedBySlug = new Map(reported.map((model) => [model.slug, model] as const));
   const known = new Set(models.map((model) => model.slug));
   return [
     ...models.map((model) => {
       const match = model.isCustom ? undefined : reportedBySlug.get(model.slug);
-      return match ? { ...model, capabilities: match.capabilities } : model;
+      return match
+        ? { ...model, isUnlisted: false, capabilities: match.capabilities }
+        : options?.complete && !model.isCustom
+          ? { ...model, isUnlisted: !present.has(model.slug) }
+          : model;
     }),
     ...reported
       .filter((model) => !known.has(model.slug))
@@ -269,6 +276,7 @@ export function buildServerProvider(input: {
   slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   skills?: ReadonlyArray<ServerProviderSkill>;
   probe: ProviderProbeResult;
+  modelCatalog?: ServerProvider["modelCatalog"];
 }): ServerProviderDraft {
   const probeOutcome = providerProbeOutcome(input);
   return {
@@ -286,6 +294,7 @@ export function buildServerProvider(input: {
     probeOutcome,
     probeOutcomeStartedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
+    ...(input.modelCatalog ? { modelCatalog: input.modelCatalog } : {}),
     models: input.models,
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],

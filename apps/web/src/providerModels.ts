@@ -8,7 +8,11 @@ import {
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
-import { createModelCapabilities, normalizeModelSlug } from "@t3tools/shared/model";
+import {
+  createModelCapabilities,
+  normalizeModelSlug,
+  pickPreferredModel,
+} from "@t3tools/shared/model";
 
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -93,9 +97,21 @@ export function getDefaultServerModel(
 ): string {
   const models = getProviderModels(providers, provider);
   return (
-    models.find((model) => !model.isCustom)?.slug ??
-    models[0]?.slug ??
+    pickPreferredModel(models, [DEFAULT_MODEL_BY_DRIVER[provider] ?? DEFAULT_MODEL])?.slug ??
     DEFAULT_MODEL_BY_DRIVER[provider] ??
     DEFAULT_MODEL
   );
+}
+
+export { isListedModel, pickPreferredModel } from "@t3tools/shared/model";
+
+/** Workflow slots persist a driver kind; resolve the same instance as server dispatch. */
+export function getWorkflowModelCapabilities(
+  providers: ReadonlyArray<ServerProvider>,
+  driver: ProviderDriverKind,
+  model: string,
+): ModelCapabilities {
+  const provider =
+    getProviderSnapshot(providers, driver) ?? providers.find((entry) => entry.driver === driver);
+  return getProviderModelCapabilities(provider?.models ?? [], model, driver);
 }

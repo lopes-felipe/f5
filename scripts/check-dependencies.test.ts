@@ -1,10 +1,26 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import * as OS from "node:os";
 import * as Path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { findMissingDependencies } from "./check-dependencies.ts";
+import {
+  ensureDependencies,
+  findMissingDependencies,
+  isInstallStale,
+  lockfileFingerprint,
+  recordInstall,
+} from "./check-dependencies.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -111,5 +127,203 @@ describe("dependency preflight", () => {
       { manifest: "package.json", dependency: "vite" },
       { manifest: "apps/web/package.json", dependency: "react" },
     ]);
+  });
+
+  it("keeps --install check-only in CI", () => {
+    const root = fixture();
+    writeManifest(root, "apps/web/package.json", { dependencies: { react: "^19" } });
+    writeFileSync(Path.join(root, "bun.lock"), "lock-v1");
+    const script = Path.join(root, "scripts/check-dependencies.ts");
+    mkdirSync(Path.dirname(script), { recursive: true });
+    copyFileSync(Path.join(import.meta.dirname, "check-dependencies.ts"), script);
+    const result = spawnSync(process.execPath, [script, "--install"], {
+      cwd: OS.tmpdir(),
+      encoding: "utf8",
+      env: { ...process.env, CI: "1" },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toContain("Running");
+    expect(result.stderr).toContain("apps/web/package.json: react");
+    expect(existsSync(Path.join(root, STAMP))).toBe(false);
+  });
+});
+
+const STAMP = "node_modules/.f5-install-stamp";
+
+describe("dependency auto-install", () => {
+  function installedFixture() {
+    const root = fixture();
+    writeManifest(root, "apps/web/package.json", { dependencies: { react: "^19" } });
+    writeFileSync(Path.join(root, "bun.lock"), "lock-v1");
+    return root;
+  }
+
+  function installReact(root: string) {
+    writeManifest(root, "node_modules/react/package.json", { name: "react", version: "19.0.0" });
+  }
+
+  it("installs missing dependencies and records the lockfile it installed from", () => {
+    const root = installedFixture();
+    const install = vi.fn(() => {
+      installReact(root);
+      return true;
+    });
+    const log = vi.fn();
+    expect(ensureDependencies(root, { install, log })).toEqual({
+      status: "ready",
+      installed: true,
+    });
+    expect(install).toHaveBeenCalledOnce();
+    expect(log.mock.calls[0]?.[0]).toContain("missing: apps/web/package.json: react");
+    expect(readFileSync(Path.join(root, STAMP), "utf8").trim()).toBe(lockfileFingerprint(root));
+    expect(isInstallStale(root)).toBe(false);
+  });
+
+  it("reinstalls when bun.lock changes even though every package is present", () => {
+    const root = installedFixture();
+    installReact(root);
+    const install = vi.fn(() => true);
+    ensureDependencies(root, { install, log: () => {} });
+    expect(install).toHaveBeenCalledOnce();
+
+    expect(ensureDependencies(root, { install, log: () => {} })).toEqual({
+      status: "ready",
+      installed: false,
+    });
+    expect(install).toHaveBeenCalledOnce();
+
+    writeFileSync(Path.join(root, "bun.lock"), "lock-v2");
+    expect(isInstallStale(root)).toBe(true);
+    const log = vi.fn();
+    expect(ensureDependencies(root, { install, log })).toEqual({
+      status: "ready",
+      installed: true,
+    });
+    expect(install).toHaveBeenCalledTimes(2);
+    expect(log.mock.calls[0]?.[0]).toContain("bun.lock changed since last install");
+  });
+
+  it("does not record the install when it fails or leaves packages missing", () => {
+    const root = installedFixture();
+    expect(ensureDependencies(root, { install: () => false, log: () => {} })).toEqual({
+      status: "install-failed",
+      missing: [{ manifest: "apps/web/package.json", dependency: "react" }],
+    });
+    expect(existsSync(Path.join(root, STAMP))).toBe(false);
+
+    expect(ensureDependencies(root, { install: () => true, log: () => {} })).toEqual({
+      status: "missing",
+      missing: [{ manifest: "apps/web/package.json", dependency: "react" }],
+    });
+    expect(existsSync(Path.join(root, STAMP))).toBe(false);
+  });
+
+  it("drops a current stamp when a repair fails so the next run retries", () => {
+    const root = installedFixture();
+    recordInstall(root);
+    expect(isInstallStale(root)).toBe(false);
+    // The install restores the package manifests, then fails partway through.
+    const failing = vi.fn(() => {
+      installReact(root);
+      return false;
+    });
+    expect(ensureDependencies(root, { install: failing, log: () => {} })).toEqual({
+      status: "install-failed",
+      missing: [],
+    });
+    expect(existsSync(Path.join(root, STAMP))).toBe(false);
+
+    const install = vi.fn(() => true);
+    ensureDependencies(root, { install, log: () => {} });
+    expect(install).toHaveBeenCalledOnce();
+  });
+
+  it("tracks installs run outside the preflight through the postinstall record", () => {
+    const root = installedFixture();
+    installReact(root);
+    const install = vi.fn(() => true);
+    ensureDependencies(root, { install, log: () => {} });
+    expect(install).toHaveBeenCalledOnce();
+
+    // Switch to branch B and install by hand: postinstall records B's lockfile.
+    writeFileSync(Path.join(root, "bun.lock"), "lock-branch-b");
+    recordInstall(root);
+    expect(ensureDependencies(root, { install, log: () => {} })).toEqual({
+      status: "ready",
+      installed: false,
+    });
+
+    // Back on branch A, node_modules still holds B's versions.
+    writeFileSync(Path.join(root, "bun.lock"), "lock-v1");
+    expect(isInstallStale(root)).toBe(true);
+    ensureDependencies(root, { install, log: () => {} });
+    expect(install).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("dependency auto-install CLI", () => {
+  function cliFixture(stub: string) {
+    const root = fixture();
+    writeManifest(root, "apps/web/package.json", { dependencies: { react: "^19" } });
+    writeFileSync(Path.join(root, "bun.lock"), "lock-v1");
+    const script = Path.join(root, "scripts/check-dependencies.ts");
+    mkdirSync(Path.dirname(script), { recursive: true });
+    copyFileSync(Path.join(import.meta.dirname, "check-dependencies.ts"), script);
+    const bun = Path.join(root, "bin/bun");
+    mkdirSync(Path.dirname(bun), { recursive: true });
+    writeFileSync(bun, `#!/bin/sh\necho "$@" > bun-args\n${stub}\n`);
+    chmodSync(bun, 0o755);
+    const run = (args: string[], env: Record<string, string> = {}) =>
+      spawnSync(process.execPath, [script, ...args], {
+        cwd: OS.tmpdir(),
+        encoding: "utf8",
+        env: { ...process.env, CI: "false", npm_execpath: bun, ...env },
+      });
+    return { root, run };
+  }
+
+  const installReactStub =
+    'mkdir -p node_modules/react && echo \'{"name":"react"}\' > node_modules/react/package.json';
+
+  it("runs a frozen install with the bun that started the script", () => {
+    const { root, run } = cliFixture(installReactStub);
+    const result = run(["--install"]);
+    expect(result.status).toBe(0);
+    expect(readFileSync(Path.join(root, "bun-args"), "utf8").trim()).toBe(
+      "install --frozen-lockfile",
+    );
+    expect(isInstallStale(root)).toBe(false);
+  });
+
+  it("continues with a warning when the install fails but nothing is missing", () => {
+    const { root, run } = cliFixture("exit 1");
+    writeManifest(root, "node_modules/react/package.json", { name: "react" });
+    const result = run(["--install"]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("Continuing with the existing installation");
+    expect(existsSync(Path.join(root, STAMP))).toBe(false);
+  });
+
+  it("fails when the install fails and packages are missing", () => {
+    const { run } = cliFixture("exit 1");
+    const result = run(["--install"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("apps/web/package.json: react");
+  });
+
+  it("reports why bun could not be started", () => {
+    const { root, run } = cliFixture("exit 0");
+    const result = run(["--install"], { npm_execpath: Path.join(root, "bin/bun-missing") });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Could not run");
+    expect(result.stderr).toContain("ENOENT");
+  });
+
+  it("records the lockfile from the postinstall hook", () => {
+    const { root, run } = cliFixture("exit 1");
+    const result = run(["--record-install"]);
+    expect(result.status).toBe(0);
+    expect(readFileSync(Path.join(root, STAMP), "utf8").trim()).toBe(lockfileFingerprint(root));
+    expect(existsSync(Path.join(root, "bun-args"))).toBe(false);
   });
 });

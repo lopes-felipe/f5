@@ -59,6 +59,7 @@ export function makeCheckedInProjectFileService(
           sourceFile: null,
           defaultThreadEnvMode: null,
           iconPath: null,
+          upstream: null,
           diagnostics: [
             { field: "file", message: "The registered project workspace is unavailable." },
           ],
@@ -82,6 +83,7 @@ export function makeCheckedInProjectFileService(
             sourceFile,
             defaultThreadEnvMode: null,
             iconPath: null,
+            upstream: null,
             diagnostics: [readFailureDiagnostic(sourceFile, error)],
           };
         }
@@ -111,6 +113,7 @@ export function makeCheckedInProjectFileService(
           defaultThreadEnvMode: parsed.defaultThreadEnvMode,
           ...(parsed.settings ? { settings: parsed.settings } : {}),
           iconPath,
+          upstream: parsed.upstream,
           diagnostics,
         };
       }
@@ -120,6 +123,7 @@ export function makeCheckedInProjectFileService(
         sourceFile: null,
         defaultThreadEnvMode: null,
         iconPath: null,
+        upstream: null,
         diagnostics: [],
       };
     },

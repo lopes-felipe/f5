@@ -1,7 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
 import * as runner from "../../processRunner.ts";
-import { discoverGrokSkills, discoverGlobalGrokSkills, parseGrokSkills } from "./GrokSkills.ts";
+import {
+  discoverGrokSkills,
+  discoverGlobalGrokSkills,
+  parseGrokSkills,
+  rewriteLeadingGrokSkill,
+} from "./GrokSkills.ts";
+
+it("rewrites only a leading enabled catalog skill, preserving arguments", () => {
+  const skills = [
+    { name: "acme:deploy", enabled: true },
+    { name: "hidden", enabled: false },
+  ];
+  expect(rewriteLeadingGrokSkill("  $acme:deploy ship\nnow", skills)).toBe(
+    "/acme:deploy ship\nnow",
+  );
+  for (const text of ["$25", "$missing test", "$hidden test", "use $acme:deploy", "$acme:deploy!"])
+    expect(rewriteLeadingGrokSkill(text, skills)).toBe(text);
+});
 
 describe("Grok skill inventory", () => {
   it("preserves disabled skills and lets project definitions win", () => {

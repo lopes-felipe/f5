@@ -1,9 +1,16 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { AcceptedShutdownWork, registerShutdown } from "../../shutdown.ts";
+import { pruneCheckpointRefs } from "../../checkpointing/pruneCheckpointRefs.ts";
+import { dispatchVerifiedWorkspace } from "../../project/workspaceTransitionContext.ts";
+import { GitCore } from "../../git/Services/GitCore.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeConversationRewind } from "../rewind.ts";
-import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "../../git/worktreePaths.ts";
+import { followsCheckoutBranchAtTurnEnd } from "../../project/worktreeReadiness.ts";
 import { GitService } from "../../git/Services/GitService.ts";
+import { branchNameFromHeadRef } from "../../git/headBranch.ts";
 import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
 import {
+  type CheckpointRef,
   CommandId,
   EventId,
   MessageId,
@@ -14,13 +21,11 @@ import {
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import { Cause, Effect, Layer, Option, Stream } from "effect";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
-import {
-  checkpointRefForThreadTurn,
-  resolveThreadWorkspaceCwd,
-} from "../../checkpointing/Utils.ts";
+import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
+import { resolveThreadWorkspaceCwd, threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { clearWorkspaceIndexCache } from "../../workspaceEntries.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -28,6 +33,7 @@ import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionT
 import { CheckpointReactor, type CheckpointReactorShape } from "../Services/CheckpointReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
+import { resolveTurnAssistantMessage } from "../turnAssistantMessage.ts";
 
 type ReactorInput =
   | {
@@ -64,13 +70,14 @@ function checkpointStatusFromRuntime(status: string | undefined): "ready" | "mis
 }
 
 const serverCommandId = (tag: string): CommandId =>
-  CommandId.makeUnsafe(`server:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`server:${tag}:${timeOrderedUuid()}`);
 
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const checkpointStore = yield* CheckpointStore;
   const git = yield* GitService;
+  const workspaceGit = yield* Effect.serviceOption(GitCore);
   const receiptBus = yield* RuntimeReceiptBus;
   const turns = yield* ProjectionTurnRepository;
   const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
@@ -122,7 +129,7 @@ const make = Effect.gen(function* () {
       commandId: serverCommandId("checkpoint-revert-failure"),
       threadId: input.threadId,
       activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         tone: "error",
         kind: "checkpoint.revert.failed",
         summary: "Checkpoint revert failed",
@@ -148,7 +155,7 @@ const make = Effect.gen(function* () {
       commandId: serverCommandId("checkpoint-capture-failure"),
       threadId: input.threadId,
       activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         tone: input.checkpointSaved ? "info" : "error",
         kind: "checkpoint.capture.failed",
         summary: input.checkpointSaved
@@ -227,6 +234,17 @@ const make = Effect.gen(function* () {
     return cwd;
   });
 
+  // Like a non-Git workspace, one its repository ignores gets no checkpoint
+  // instead of a capture failure on every turn.
+  const captureCheckpointIfSupported = (input: {
+    readonly cwd: string;
+    readonly checkpointRef: CheckpointRef;
+  }) =>
+    checkpointStore.captureCheckpoint(input).pipe(
+      Effect.as(true),
+      Effect.catchTag("CheckpointUnsupportedError", () => Effect.succeed(false)),
+    );
+
   // Shared tail for both capture paths: creates the git checkpoint ref, diffs
   // it against the previous turn, then dispatches the domain events to update
   // the orchestration read model.
@@ -240,6 +258,8 @@ const make = Effect.gen(function* () {
         readonly id: MessageId;
         readonly role: string;
         readonly turnId: TurnId | null;
+        readonly text: string;
+        readonly streaming: boolean;
       }>;
     };
     readonly cwd: string;
@@ -251,6 +271,16 @@ const make = Effect.gen(function* () {
     const fromTurnCount = Math.max(0, input.turnCount - 1);
     const fromCheckpointRef = checkpointRefForThreadTurn(input.threadId, fromTurnCount);
     const targetCheckpointRef = checkpointRefForThreadTurn(input.threadId, input.turnCount);
+
+    // An unsupported workspace never has a baseline; skip it before warning about one.
+    if (
+      !(yield* captureCheckpointIfSupported({
+        cwd: input.cwd,
+        checkpointRef: targetCheckpointRef,
+      }))
+    ) {
+      return false;
+    }
 
     const fromCheckpointExists = yield* checkpointStore
       .hasCheckpointRef({
@@ -275,11 +305,6 @@ const make = Effect.gen(function* () {
       });
     }
 
-    yield* checkpointStore.captureCheckpoint({
-      cwd: input.cwd,
-      checkpointRef: targetCheckpointRef,
-    });
-
     if (!fromCheckpointExists) {
       yield* appendCaptureFailureActivity({
         threadId: input.threadId,
@@ -302,39 +327,34 @@ const make = Effect.gen(function* () {
         const result = yield* git.execute({
           operation: "checkpoint.syncBranch",
           cwd: input.cwd,
-          args: ["symbolic-ref", "--quiet", "--short", "HEAD"],
+          args: ["symbolic-ref", "--quiet", "HEAD"],
           allowNonZeroExit: true,
         });
-        const branch = result.stdout.trim();
+        const branch = branchNameFromHeadRef(result.stdout);
+        if (result.code !== 0 || !branch || branch === input.thread.branch) return;
         if (
-          result.code !== 0 ||
-          !branch ||
-          branch === input.thread.branch ||
-          isTemporaryWorktreeBranch(branch)
+          !(yield* followsCheckoutBranchAtTurnEnd(
+            yield* orchestrationEngine.getReadModel(),
+            input.threadId,
+            input.cwd,
+            branch,
+          ))
         )
           return;
-        const current = yield* orchestrationEngine.getReadModel();
-        const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(input.cwd));
-        for (const other of current.threads) {
-          if (
-            other.id === input.threadId ||
-            other.deletedAt !== null ||
-            other.worktreePath === null
-          )
-            continue;
-          const otherPath = yield* Effect.tryPromise(() =>
-            canonicalWorktreePath(other.worktreePath!),
-          );
-          if (otherPath === canonical) return;
-        }
-        yield* orchestrationEngine.dispatch({
-          type: "thread.meta.update",
-          commandId: serverCommandId("checkpoint-branch"),
-          threadId: input.threadId,
-          branch,
-          expectedBranch: input.thread.branch,
-          expectedWorktreePath: input.thread.worktreePath,
-        });
+        if (Option.isNone(workspaceGit)) return;
+        yield* dispatchVerifiedWorkspace(
+          orchestrationEngine,
+          workspaceGit.value,
+          {
+            type: "thread.meta.update",
+            commandId: serverCommandId("checkpoint-branch"),
+            threadId: input.threadId,
+            branch,
+            expectedBranch: input.thread.branch,
+            expectedWorktreePath: input.thread.worktreePath,
+          },
+          { observation: true },
+        );
       }).pipe(Effect.catch(() => Effect.void));
     }
 
@@ -349,6 +369,8 @@ const make = Effect.gen(function* () {
             fromCheckpointRef,
             toCheckpointRef: targetCheckpointRef,
             fallbackFromToHead: false,
+            // Only the per-file totals are kept, so the patch needs no minimization.
+            options: { excludeGitImports: true, minimal: false },
           })
         : Effect.succeed("")
     ).pipe(
@@ -380,10 +402,8 @@ const make = Effect.gen(function* () {
     );
 
     const assistantMessageId =
+      resolveTurnAssistantMessage(input.thread.messages, input.turnId)?.id ??
       input.assistantMessageId ??
-      input.thread.messages
-        .toReversed()
-        .find((entry) => entry.role === "assistant" && entry.turnId === input.turnId)?.id ??
       MessageId.makeUnsafe(`assistant:${input.turnId}`);
 
     yield* orchestrationEngine.dispatch({
@@ -413,7 +433,7 @@ const make = Effect.gen(function* () {
       commandId: serverCommandId("checkpoint-captured-activity"),
       threadId: input.threadId,
       activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         tone: "info",
         kind: "checkpoint.captured",
         summary: "Checkpoint captured",
@@ -426,6 +446,7 @@ const make = Effect.gen(function* () {
       },
       createdAt: input.createdAt,
     });
+    return true;
   });
 
   // Captures a real git checkpoint when a turn completes via a runtime event.
@@ -483,7 +504,7 @@ const make = Effect.gen(function* () {
       ? existingPlaceholder.checkpointTurnCount
       : currentTurnCount + 1;
 
-    yield* captureAndDispatchCheckpoint({
+    const supported = yield* captureAndDispatchCheckpoint({
       threadId: thread.id,
       turnId,
       thread,
@@ -493,7 +514,7 @@ const make = Effect.gen(function* () {
       assistantMessageId: existingPlaceholder?.assistantMessageId ?? undefined,
       createdAt: input.createdAt,
     });
-    return nextTurnCount;
+    return supported ? nextTurnCount : undefined;
   });
 
   const settleTerminalTurnProcessing = Effect.fnUntraced(function* (input: {
@@ -574,10 +595,14 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* checkpointStore.captureCheckpoint({
-      cwd: checkpointCwd,
-      checkpointRef: baselineCheckpointRef,
-    });
+    if (
+      !(yield* captureCheckpointIfSupported({
+        cwd: checkpointCwd,
+        checkpointRef: baselineCheckpointRef,
+      }))
+    ) {
+      return;
+    }
     yield* receiptBus.publish({
       type: "checkpoint.baseline.captured",
       threadId: thread.id,
@@ -633,10 +658,14 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* checkpointStore.captureCheckpoint({
-      cwd: checkpointCwd,
-      checkpointRef: baselineCheckpointRef,
-    });
+    if (
+      !(yield* captureCheckpointIfSupported({
+        cwd: checkpointCwd,
+        checkpointRef: baselineCheckpointRef,
+      }))
+    ) {
+      return;
+    }
     yield* receiptBus.publish({
       type: "checkpoint.baseline.captured",
       threadId,
@@ -802,7 +831,7 @@ const make = Effect.gen(function* () {
       .map((checkpoint) => checkpoint.checkpointRef);
 
     if (staleCheckpointRefs.length > 0) {
-      yield* checkpointStore.deleteCheckpointRefs({
+      yield* pruneCheckpointRefs(checkpointStore, {
         cwd: sessionRuntime.value.cwd,
         checkpointRefs: staleCheckpointRefs,
       });
@@ -945,7 +974,12 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processInputSafely);
+  const worker = yield* makeBackgroundWorker(
+    (input: Parameters<typeof processInputSafely>[0]) =>
+      processInputSafely(input).pipe(Effect.provideService(AcceptedShutdownWork, true)),
+    { name: "CheckpointReactor" },
+  );
+  yield* registerShutdown("checkpoints", "drain", () => worker.drain, ["provider-ingestion"]);
 
   const reconcileStartupQuiescence = Effect.gen(function* () {
     const unquiesced = yield* turns.listTerminalUnquiesced.pipe(
@@ -991,6 +1025,7 @@ const make = Effect.gen(function* () {
         }
         return worker.enqueue({ source: "domain", event });
       }),
+      { startImmediately: true },
     );
 
     yield* Effect.forkScoped(
@@ -1004,6 +1039,7 @@ const make = Effect.gen(function* () {
         }
         return worker.enqueue({ source: "runtime", event });
       }),
+      { startImmediately: true },
     );
 
     // Historical recovery can involve filesystem and Git work for many turns.

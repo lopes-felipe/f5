@@ -1,9 +1,11 @@
+import { pausePreviewThread } from "./computerControls";
 import { decodeTaggedAutomationErrorMessage } from "@t3tools/shared/preview";
 import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings";
 import { isAgentBrowserActive, useAgentBrowserActivityStore } from "../agentBrowserActivityStore";
 import { useAppSettings } from "../appSettings";
 import { useSettings, type UnifiedWebSettings } from "../hooks/useSettings";
 import { useStore } from "../store";
+import { selectThreadById } from "../threadSelectors";
 import { PreviewAgentOverlay } from "./PreviewAgentOverlay";
 import { setAttachmentSource } from "../lib/attachmentUploadQueue";
 import { notifyPreviewFocused } from "../lib/previewFocus";
@@ -63,7 +65,7 @@ import {
 } from "./PreviewPanel.logic";
 import { PreviewAutomationResponseCache } from "./PreviewAutomationResponseCache";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
+import { Input, fieldSurfaceClassName } from "./ui/input";
 import { Spinner } from "./ui/spinner";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { toastManager } from "./ui/toast";
@@ -668,9 +670,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const canGoBack = activeSession?.canGoBack ?? false;
   const canGoForward = activeSession?.canGoForward ?? false;
   const previewAutomation = desktopPreview?.automation;
-  const projectId = useStore(
-    (store) => store.threads.find((entry) => entry.id === threadId)?.projectId,
-  );
+  const projectId = useStore((store) => selectThreadById(store, threadId)?.projectId);
   // Project-resolved settings: the same allowlist the server enforces for this thread.
   const externalHostsKey = useSettings(selectPreviewExternalHostsKey, projectId);
   const sessionTabIdsKey = sessions.map((session) => session.tabId).join("\n");
@@ -704,10 +704,9 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const setAgentPaused = useCallback(
     (paused: boolean) => {
       // The paused-state effect below cancels in-flight input; the server fails queued actions.
-      useAgentBrowserActivityStore.getState().setPaused(threadId, paused);
-      void api.preview.automation.setPaused({ threadId, paused }).catch(() => undefined);
+      void pausePreviewThread(threadId, paused).catch(() => undefined);
     },
-    [api, threadId],
+    [threadId],
   );
   // Any local pause (this overlay or the chat's live card) stops in-flight input at once,
   // without waiting for the server's pause broadcast.
@@ -1877,7 +1876,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         {desktopPreview?.setZoom && activeSession ? (
           <select
             aria-label="Tab zoom"
-            className="h-7 rounded-md border border-input bg-background px-1.5 text-2xs text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            className={cn(fieldSurfaceClassName, "h-7 px-1.5 text-2xs")}
             value={String(
               zoomTabs[activeSession.tabId] ?? previewSettings.previewDefaults.zoomFactor,
             )}
@@ -1982,38 +1981,43 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
       <div ref={viewportContainerRef} className="relative min-h-0 flex-1 overflow-auto bg-muted/20">
         {sessions.length > 0 && webviewConfig ? (
           <div className="flex min-h-full min-w-full items-center justify-center">
-            {sessions.map((session) => {
-              const isActive = session.tabId === activeSession?.tabId;
-              const requested = requestedViewportByTabId[session.tabId] ?? null;
-              const dimensions = requested
-                ? clampPreviewViewport({ requested, bounds: viewportBounds })
-                : null;
-              return (
-                <PreviewBrowserWebview
-                  key={session.tabId}
-                  session={session}
-                  visible={isActive}
-                  config={webviewConfig}
-                  desktopPreview={desktopPreview}
-                  dimensions={dimensions}
-                  hiddenDimensions={requested ?? viewportBounds}
-                  onStatus={reportWebviewStatus}
-                  isAgentTab={() => automationOwnedTabs.current.has(session.tabId)}
-                  applyNavigationPolicy={applyNavigationPolicy}
-                  overlay={
-                    isActive ? (
-                      <PreviewAgentOverlay
-                        threadId={threadId}
-                        zoomFactor={desktopStateByTabId[session.tabId]?.zoomFactor ?? 1}
-                        paused={agentPaused}
-                        onTakeOver={() => setAgentPaused(true)}
-                        onResume={() => setAgentPaused(false)}
-                      />
-                    ) : null
-                  }
-                />
-              );
-            })}
+            {/* Moving a webview destroys its Electron guest. Keep DOM order independent of tab order. */}
+            {sessions
+              .toSorted((left, right) =>
+                left.tabId < right.tabId ? -1 : left.tabId > right.tabId ? 1 : 0,
+              )
+              .map((session) => {
+                const isActive = session.tabId === activeSession?.tabId;
+                const requested = requestedViewportByTabId[session.tabId] ?? null;
+                const dimensions = requested
+                  ? clampPreviewViewport({ requested, bounds: viewportBounds })
+                  : null;
+                return (
+                  <PreviewBrowserWebview
+                    key={session.tabId}
+                    session={session}
+                    visible={isActive}
+                    config={webviewConfig}
+                    desktopPreview={desktopPreview}
+                    dimensions={dimensions}
+                    hiddenDimensions={requested ?? viewportBounds}
+                    onStatus={reportWebviewStatus}
+                    isAgentTab={() => automationOwnedTabs.current.has(session.tabId)}
+                    applyNavigationPolicy={applyNavigationPolicy}
+                    overlay={
+                      isActive ? (
+                        <PreviewAgentOverlay
+                          threadId={threadId}
+                          zoomFactor={desktopStateByTabId[session.tabId]?.zoomFactor ?? 1}
+                          paused={agentPaused}
+                          onTakeOver={() => setAgentPaused(true)}
+                          onResume={() => setAgentPaused(false)}
+                        />
+                      ) : null
+                    }
+                  />
+                );
+              })}
             {activeSession && activeViewport ? (
               <button
                 type="button"

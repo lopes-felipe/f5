@@ -1,3 +1,4 @@
+import { resolveEmptyAppRpc } from "../test/emptyAppRpc";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { DEFAULT_SERVER_SETTINGS, type ProjectId as SettingsProjectId } from "@t3tools/contracts";
 import { serverBootstrapFixture } from "../test/serverBootstrap";
@@ -27,6 +28,7 @@ import { useComposerDraftStore } from "../composerDraftStore";
 import { getRouter } from "../router";
 import { useStore } from "../store";
 import { createTestServerProvider } from "../testServerProvider";
+import { toastManager } from "./ui/toast";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
@@ -148,6 +150,8 @@ function resolveWsRpc(body: {
   value?: string | boolean;
   key?: string;
 }): unknown {
+  const emptyReply = resolveEmptyAppRpc(body);
+  if (emptyReply !== undefined) return emptyReply;
   const tag = body._tag;
   if (tag === AGENTS_WS_METHODS.getSnapshot) {
     return { entries: [], generatedAt: NOW_ISO };
@@ -296,6 +300,7 @@ function resolveWsRpc(body: {
   if (tag === WS_METHODS.projectsSearchEntries) {
     return { entries: [], truncated: false };
   }
+  if (tag === WS_METHODS.worktreesGetTransition) return null;
   return {};
 }
 
@@ -464,9 +469,16 @@ describe("Keybindings update toast", () => {
       sendServerConfigUpdatedPush([]);
       await waitForToast("Keybindings updated", 1);
 
-      // Each server push represents a distinct file change, so it should produce its own toast.
+      // Each server push is a distinct file change; identical toasts collapse into one with a
+      // count, so the second update shows as "×2" on the same toast.
       sendServerConfigUpdatedPush([]);
-      await waitForToast("Keybindings updated", 2);
+      await vi.waitFor(
+        () => {
+          expect(queryToastTitles().filter((t) => t === "Keybindings updated")).toHaveLength(1);
+          expect(document.querySelector('[data-slot="toast-count"]')?.textContent).toBe("×2");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }
@@ -502,6 +514,9 @@ describe("Keybindings update toast", () => {
     try {
       sendServerConfigUpdatedPush([]);
       await waitForToast("Keybindings updated");
+      // This tests replay suppression, not auto-dismiss timers (which pause on
+      // blur/hover). Dismiss the live toast before checking the fresh mount.
+      toastManager.close();
       await waitForNoToast("Keybindings updated");
 
       // Remount the app — onServerConfigUpdated replays the cached value

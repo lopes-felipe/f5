@@ -5,45 +5,54 @@
 <h1 align="center">F5</h1>
 
 <p align="center">
-  Run coding agents against your codebase — and have them plan, review, and critique each other across models.
+  A desktop and web workspace for coding agents, where each step of a workflow can run on a different provider and model.
 </p>
 
-F5 is a desktop and web GUI for coding agents with a twist: every step of a workflow picks its own model. Mix **Codex** and **Claude Code** in a single feature-development run — two authors draft competing plans, each cross-reviews the other, a merge agent picks the winner, and an implementer executes it — each role on the provider and model you choose. The same per-slot model selection powers a dual-reviewer code-review workflow with a consolidation pass.
-
-It is for developers who use Codex or Claude Code and want a multi-agent, multi-model surface on top.
+F5 runs Codex, Claude Code, Cursor, OpenCode, Grok, Antigravity, Muse Code and custom ACP agents against your
+repositories, and chains them into multi-model workflows: competing plans, cross-reviews, merges,
+implementation and code review, with every step on the provider and model you pick.
 
 > [!WARNING]
-> This project is very early. Expect bugs, breaking changes, and rough edges.
+> This project is very early. Expect bugs, breaking changes and rough edges. These docs track the current source checkout, so the latest packaged release may lag behind them.
 
 ![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/lopes-felipe/f5?utm_source=oss&utm_medium=github&utm_campaign=lopes-felipe%2Ff5&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
-## Screenshots
-
 <p align="center">
-  <img src="./assets/screenshots/home.png" alt="F5 Home — projects sidebar, threads needing attention, currently working, and recent activity" width="800" />
+  <img src="./assets/screenshots/workflow.png" alt="Finished Feature workflow showing its phase board and the merged plan" width="900" />
 </p>
 
-<p align="center"><em>Home dashboard — every project, every workflow, and every thread that wants your attention in one place.</em></p>
+<table>
+  <tr>
+    <td width="50%"><img src="./assets/screenshots/home.png" alt="F5 Home with the threads that need a decision, finished work and running work" /></td>
+    <td width="50%"><img src="./assets/screenshots/thread.png" alt="Chat thread with commands, file changes and the diff panel open" /></td>
+  </tr>
+  <tr>
+    <td align="center"><em>Home: what needs a decision, what is ready for review, and what is running.</em></td>
+    <td align="center"><em>A thread with its file changes open in the Diff panel.</em></td>
+  </tr>
+</table>
 
-<p align="center">
-  <img src="./assets/screenshots/workflow.png" alt="Cross-model feature-development workflow timeline with Authoring, Reviews, Revision, Merge, Implementation, Code Review, and Apply Reviews stages" width="800" />
-</p>
+## Download
 
-<p align="center"><em>A completed feature-development workflow — two authors, cross-reviews, a merge, an implementer, and a dual code review, each on its own model.</em></p>
+[Download F5](https://github.com/lopes-felipe/f5/releases/latest). Windows x64 is the first stable
+desktop platform; macOS has an Apple Silicon preview, and the `f5` CLI ships for every platform.
+See [Install F5](docs/install.md), then [Getting started](docs/user/getting-started.md).
 
-<p align="center">
-  <img src="./assets/screenshots/thread.png" alt="Chat thread showing an agent producing inline diffs across multiple files in response to a feature request" width="800" />
-</p>
+## What you can do
 
-<p align="center"><em>Chat thread — agents edit files inline with diffs you can scrub through, review, and apply.</em></p>
+- **Run multi-model workflows** for features, code review, investigations and documents → [Workflows](docs/user/workflows.md)
+- **Work in threads** with diffs, checkpoints, terminals and a next-turn queue → [Threads and workspaces](docs/user/threads-and-workspaces.md)
+- **Use seven providers**, several accounts each → [Provider prerequisites](docs/provider-prerequisites.md)
+- **Choose how much agents may do** per thread → [Runtime modes](docs/runtime-modes.md)
+- **Send one message to several models**, each in its own worktree → [Worktrees](docs/user/worktrees-and-storage-automation.md)
+- **Review pull requests** from GitHub, GitLab, Bitbucket, Azure DevOps and Forgejo → [PR Hub](docs/user/pr-hub-forges.md)
+- **Track tokens, cost and account limits** → [Usage and limits](docs/user/usage-limits.md)
+- **Give agents MCP servers, skills and memory** → [Agent tools](docs/user/agent-tools.md)
 
-## Cross-model workflows
+## Multi-model workflows
 
-The headline capability. Each **slot** in a workflow — Author A, Author B, Merge, Implementer, Reviewer A, Reviewer B, Consolidation — independently picks its provider (Codex or Claude Code), its model, and its reasoning effort. Invoke from the command palette (`/workflow.new`) or the sidebar's **New workflow** action.
-
-### Feature development (planning → merge → implement)
-
-Two authors independently draft plans for the same requirement. Each **cross-reviews** the other's plan, both authors revise based on the feedback, and a **merge agent** synthesizes a single approved plan. An **implementer** then executes it — optionally in an isolated git worktree, optionally followed by a code-review pass on the resulting diff.
+**Feature.** Two authors plan, review each other and revise; a merge agent combines the plans, and
+an implementer builds the result when you ask.
 
 ```mermaid
 flowchart LR
@@ -56,14 +65,11 @@ flowchart LR
     A2 --> M[Merge agent<br/>model 3]
     B2 --> M
     M --> I[Implementer<br/>model 4]
-    I -. optional .-> CR[Code review]
+    I -. optional .-> CR[Code review] --> AR[Apply reviews]
 ```
 
-Why it matters: two models catch blind spots a single model would miss, you can pair a fast planner with a strong implementer, and the merge agent arbitrates between competing approaches instead of leaving that to you.
-
-### Code review (dual reviewer → consolidation)
-
-Two reviewers independently review the current branch, then a **consolidation** agent merges their findings into a single ranked report — each agent on its own model.
+**Code Review.** Two reviewers inspect a branch independently, and a consolidation agent merges
+their findings into one ranked report.
 
 ```mermaid
 flowchart LR
@@ -74,11 +80,11 @@ flowchart LR
     C --> Report[Unified review]
 ```
 
-Why it matters: reviewers disagree in useful ways; the consolidation pass dedupes findings, resolves contradictions, and ranks what's worth your attention.
+Investigation and Document workflows, options and retries: [Workflows](docs/user/workflows.md).
 
-## Install & run
+## Build from source
 
-### Desktop app from source (recommended)
+Requires [Bun](https://bun.sh/) ≥ 1.3.9, [Node.js](https://nodejs.org/) ≥ 24.13.1 and Git.
 
 ```bash
 bun install --frozen-lockfile
@@ -86,98 +92,15 @@ bun run build:desktop
 bun run start:desktop
 ```
 
-Desktop builds target macOS (arm64/x64), Linux (x64), and Windows 11 (x64).
-
-Full source-build recipes: [`docs/quick-start.md`](./docs/quick-start.md).
-
-When updating an existing source checkout, refresh dependencies before starting:
-
-```bash
-git pull --ff-only
-bun install --frozen-lockfile
-bun run start:desktop
-```
-
-`start:desktop` rebuilds the app. Desktop builds check for missing dependencies
-before starting and print the install command if the local installation is incomplete.
-
-### From npm (web UI)
-
-No install needed:
-
-```bash
-npx t3
-```
-
-This runs the bundled WebSocket server and opens the web UI in your browser. The published package is named `t3` for backwards compatibility — see [Relationship to upstream](#relationship-to-upstream).
-
-### Download
-
-Work in progress
-
-## Prerequisites
-
-- [Bun](https://bun.sh/) ≥ 1.3.9
-- [Node.js](https://nodejs.org/) ≥ 24.13.1
-- At least one authenticated provider:
-  - [Codex CLI](https://github.com/openai/codex), installed on `PATH` — `codex login`
-  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — F5 bundles the Claude Agent SDK runtime; authenticate once with `claude auth login`
-
-See [`docs/provider-prerequisites.md`](./docs/provider-prerequisites.md) for provider-specific setup.
-
-## Also included
-
-- **Multi-provider chat** — Codex and Claude Code as first-class providers, switchable per thread.
-- **MCP support** — stdio, SSE, and streamable HTTP transports with per-project and shared scopes, OAuth, and tool filtering.
-- **Project Skills** — user- and project-scoped skills surfaced to agents and triggerable from the composer.
-- **Git integration** — branches, worktrees, diffs (`@pierre/diffs`), PR helpers, stacked-action runners.
-- **Integrated terminal** — PTY-backed xterm.js terminals attached to the project.
-- **File view panel** — inline file viewer with line/column navigation and "open in external editor" hand-off.
-- **Token & context tracking** — per-thread, per-session, per-model, persisted server-side.
-- **Customizable keybindings** — see [`KEYBINDINGS.md`](./KEYBINDINGS.md).
-
-Full change history vs. upstream: [`CHANGELOG.md`](./CHANGELOG.md). Architecture deep-dive: [`ARCHITECTURE.md`](./ARCHITECTURE.md).
-
-## Architecture at a glance
-
-```
-├── apps/
-│   ├── desktop     # Electron app (primary distribution)
-│   ├── server      # Node.js WebSocket server (published as the `t3` CLI)
-│   ├── web         # React 19 / Vite frontend
-│   └── marketing   # Astro marketing site
-├── packages/
-│   ├── contracts   # Shared Effect-Schema types
-│   └── shared      # Shared runtime utilities
-└── scripts/        # Dev runner, build helpers, release tooling
-```
-
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`docs/architecture.md`](./docs/architecture.md) for the runtime event flow, orchestration layers, and provider adapter contract.
-
-## Configuration
-
-F5 stores persistent state under `~/.f5` by default (`%USERPROFILE%\.f5` on Windows). Prefer `F5_HOME` and `F5_STATE_DIR` for overrides; the inherited `T3CODE_*` variables remain supported for backwards compatibility — see [`NOTICE.md`](./NOTICE.md). Full reference: [`docs/environment.md`](./docs/environment.md).
+More recipes, including packaging and updating a checkout: [Quick start](docs/quick-start.md).
 
 ## Documentation
 
-- [`docs/quick-start.md`](./docs/quick-start.md) — one-liner recipes for dev, build, and dist
-- [`docs/architecture.md`](./docs/architecture.md) — runtime, orchestration, persistence
-- [`docs/provider-architecture.md`](./docs/provider-architecture.md) — WebSocket protocol, adapter contract
-- [`docs/provider-prerequisites.md`](./docs/provider-prerequisites.md) — Codex + Claude Code install and auth
-- [`docs/runtime-modes.md`](./docs/runtime-modes.md) — full-access vs. supervised modes
-- [`docs/encyclopedia.md`](./docs/encyclopedia.md) — glossary of domain terms
-- [`docs/workspace-layout.md`](./docs/workspace-layout.md) — one-line package overview
-- [`docs/environment.md`](./docs/environment.md) — full env-var reference
-- [`docs/project-configuration.md`](./docs/project-configuration.md) — safe checked-in project defaults
-- [`docs/release.md`](./docs/release.md) — release process
-- [`KEYBINDINGS.md`](./KEYBINDINGS.md) — default keybindings and how to customize
-- [`REMOTE.md`](./REMOTE.md) — running F5 on a remote host
-- [`SECURITY.md`](./SECURITY.md) — reporting vulnerabilities
-- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — contribution policy
+Guides, configuration and contributor docs: **[docs/README.md](docs/README.md)**.
 
 ## Relationship to upstream
 
-F5 is an opinionated fork of [T3 Code](https://github.com/pingdotgg/t3code) by [@pingdotgg](https://github.com/pingdotgg). It keeps the upstream's MIT license and retains a handful of legacy identifiers (the `t3` npm package, `@t3tools/*` workspace names, `T3CODE_*` environment variables) so existing installations keep working. See [`NOTICE.md`](./NOTICE.md) for the full list and [`CHANGELOG.md`](./CHANGELOG.md) for what F5 adds on top.
+F5 is an opinionated fork of [T3 Code](https://github.com/pingdotgg/t3code) by [@pingdotgg](https://github.com/pingdotgg). It keeps the upstream's MIT license and some legacy identifiers (the `t3` npm package, `@t3tools/*` workspace names, `T3CODE_*` environment variables) so existing installations keep working. See [`NOTICE.md`](./NOTICE.md) and [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## Community
 

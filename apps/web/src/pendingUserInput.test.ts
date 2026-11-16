@@ -8,11 +8,33 @@ import {
   derivePendingUserInputProgress,
   findFirstUnansweredPendingUserInputQuestionIndex,
   resolvePendingUserInputAnswer,
+  seedPendingUserInputAnswers,
   setPendingUserInputCustomAnswer,
+  appendPendingUserInputFileReferences,
   togglePendingUserInputOption,
 } from "./pendingUserInput";
 
 describe("resolvePendingUserInputAnswer", () => {
+  it("sends option values and rejects stale custom drafts for option-only questions", () => {
+    const question = {
+      id: "branch",
+      header: "Branch",
+      question: "Choose",
+      allowCustomAnswer: false,
+      options: [{ label: "Main", description: "Main", value: "opt-main" }],
+    };
+    expect(
+      buildPendingUserInputAnswers([question], {
+        branch: { selectedOptionLabels: ["Main"], customAnswer: "stale" },
+      }),
+    ).toEqual({ branch: "opt-main" });
+    expect(
+      buildPendingUserInputAnswers([question], { branch: { customAnswer: "typed" } }),
+    ).toBeNull();
+    expect(
+      buildPendingUserInputAnswers([question], { branch: { selectedOptionLabels: ["stale"] } }),
+    ).toBeNull();
+  });
   it("keeps selected custom-answer mentions local and invalidates changed references", () => {
     const answer = "Use @src/a.ts";
     const mentions = [createComposerMention("src/a.ts", 4)];
@@ -22,6 +44,14 @@ describe("resolvePendingUserInputAnswer", () => {
     expect(setPendingUserInputCustomAnswer(draft, answer, []).mentions).toBeUndefined();
     expect(setPendingUserInputCustomAnswer(draft, "Use @src/b.ts").mentions).toBeUndefined();
   });
+  it("appends folder references without losing selected mentions in an answer", () => {
+    const customAnswer = "Use @src/a.ts";
+    const mentions = [createComposerMention("src/a.ts", 4)];
+    const next = appendPendingUserInputFileReferences({ customAnswer, mentions }, ["/repo/folder"]);
+    expect(next.customAnswer).toBe("Use @src/a.ts\n/repo/folder");
+    expect(next.mentions).toEqual(mentions);
+  });
+
   it("prefers a custom answer over a selected option", () => {
     expect(
       resolvePendingUserInputAnswer({
@@ -306,4 +336,25 @@ it("allows empty optional questions without treating required questions as answe
   expect(
     derivePendingUserInputProgress(questions, { required: { customAnswer: "Ada" } }, 1),
   ).toMatchObject({ isComplete: true, canAdvance: true });
+});
+
+it("seeds editor drafts once and preserves edits, empty answers and unrelated questions", () => {
+  const question = {
+    id: "editor",
+    header: "Edit",
+    question: "Edit draft",
+    options: [],
+    initialAnswer: "Existing\n draft",
+  };
+  const empty = {};
+  const seeded = seedPendingUserInputAnswers([question], empty);
+  expect(seeded).toEqual({ editor: { customAnswer: "Existing\n draft" } });
+  expect(empty).toEqual({});
+  for (const customAnswer of ["Changed", ""]) {
+    const edited = { editor: { customAnswer }, other: { customAnswer: "Keep" } };
+    expect(seedPendingUserInputAnswers([question], edited)).toBe(edited);
+  }
+  expect(seedPendingUserInputAnswers([{ ...question, initialAnswer: undefined }], empty)).toBe(
+    empty,
+  );
 });

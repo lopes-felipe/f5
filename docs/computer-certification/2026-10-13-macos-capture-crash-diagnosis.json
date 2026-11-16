@@ -1,0 +1,38 @@
+{
+  "scope": "content-free-native-capture-crash-diagnosis",
+  "certified": false,
+  "reports": [
+    {
+      "reportName": "f5-computer-helper-2026-10-13-112709.ips",
+      "exceptionType": "EXC_BREAKPOINT",
+      "signal": "SIGTRAP",
+      "frames": [
+        "CFRetain",
+        "CGColorCreateCopy",
+        "-[SCStreamConfiguration copyWithZone:]",
+        "-[SCStream initWithFilter:configuration:delegate:]",
+        "+[SCScreenshotManager captureImageWithFilter:configuration:completionHandler:]",
+        "closure #3 in screenshot(_:_:)",
+        "partial apply for closure #3 in screenshot(_:_:)",
+        "authorizedComputerCaptureCanvas(width:height:applicationCount:capture:)"
+      ]
+    },
+    {
+      "reportName": "f5-computer-helper-2026-10-13-114653.ips",
+      "exceptionType": "EXC_BREAKPOINT",
+      "signal": "SIGTRAP",
+      "frames": [
+        "CFRetain",
+        "CGColorCreateCopy",
+        "-[SCStreamConfiguration copyWithZone:]",
+        "-[SCStream initWithFilter:configuration:delegate:]",
+        "+[SCScreenshotManager captureImageWithFilter:configuration:completionHandler:]",
+        "closure #3 in screenshot(_:_:)",
+        "partial apply for closure #3 in screenshot(_:_:)",
+        "authorizedComputerCaptureCanvas(width:height:applicationCount:capture:)"
+      ]
+    }
+  ],
+  "sdkProperty": "SCStreamConfiguration.backgroundColor: nonatomic, assign CGColorRef",
+  "limitation": "Selected symbols only; no full crash reports, images, content, account data or machine identifiers persisted"
+}

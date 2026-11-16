@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type {
   ServerSettingsPatch,
   StorageAutomationAuditEntry,
@@ -6,9 +7,12 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
 
-import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { Link } from "@tanstack/react-router";
+
+import { useSettings } from "../../hooks/useSettings";
 import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { ensureNativeApi } from "../../nativeApi";
+import { rpcQueryContext, rpcQueryMeta } from "../../lib/rpcQueryContext";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
@@ -24,6 +28,7 @@ const JOB_LABELS = {
   "event-compaction": "Event compaction",
   "thread-purge": "Thread purge",
   "database-vacuum": "Database space",
+  "machine-cleanup": "Machine cleanup",
 } as const satisfies Record<StorageAutomationTarget["job"], string>;
 
 const ACTION_LABELS = {
@@ -37,6 +42,8 @@ const RESULT_LABELS = {
   pulled: "Pulled",
   skipped: "Skipped",
   failed: "Failed",
+  archiving: "Archiving",
+  archived: "Archived",
 } as const satisfies Record<StorageAutomationAuditEntry["result"], string>;
 
 export function describeAutomationTarget(target: StorageAutomationTarget): string {
@@ -48,19 +55,42 @@ function errorMessage(error: unknown): string {
 }
 
 export function StorageAutomationSettings() {
+  const scheduledBackupsEnabled = useSettings((settings) => settings.scheduledBackupsEnabled);
+  const databaseSnapshotsEnabled = useSettings((settings) => settings.databaseSnapshotsEnabled);
   const storageCleanup = useSettings((settings) => settings.storageCleanup);
   const autoPullDefaultBranch = useSettings((settings) => settings.autoPullDefaultBranch);
-  const { updateSettings } = useUpdateSettings();
   const queryClient = useQueryClient();
+  const saveScheduledBackups = (enabled: boolean) =>
+    void ensureNativeApi()
+      .server.updateSettings({ scheduledBackupsEnabled: enabled })
+      .then((settings) =>
+        queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
+          existing ? { ...existing, settings } : existing,
+        ),
+      )
+      .catch((error: unknown) =>
+        toastManager.add({
+          type: "error",
+          title: "Could not save scheduled backups",
+          description: errorMessage(error),
+        }),
+      );
+  const saveDatabaseSnapshots = (enabled: boolean) =>
+    void ensureNativeApi()
+      .server.updateSettings({ databaseSnapshotsEnabled: enabled })
+      .then((settings) =>
+        queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
+          existing ? { ...existing, settings } : existing,
+        ),
+      )
+      .catch((error: unknown) =>
+        toastManager.add({
+          type: "error",
+          title: "Could not save database snapshots",
+          description: errorMessage(error),
+        }),
+      );
 
-  const save = (patch: Parameters<typeof updateSettings>[0]) =>
-    void updateSettings(patch).catch((error: unknown) =>
-      toastManager.add({
-        type: "error",
-        title: "Could not save storage automation",
-        description: errorMessage(error),
-      }),
-    );
   // Send only the changed fields; the server deep-merges them. Spreading the
   // rendered `storageCleanup` would let a second quick edit revert the first.
   const saveCleanup = (next: NonNullable<ServerSettingsPatch["storageCleanup"]>) =>
@@ -88,9 +118,20 @@ export function StorageAutomationSettings() {
         description: errorMessage(error),
       }),
   });
+  const [activityLimit, setActivityLimit] = useState(10);
+  const [activitySource, setActivitySource] = useState<"automatic" | "manual" | "all">("all");
   const audit = useQuery({
-    queryKey: auditQueryKey,
-    queryFn: () => ensureNativeApi().storage.automationAudit({ limit: 50 }),
+    queryKey: [...auditQueryKey, activityLimit, activitySource],
+    queryFn: (context) =>
+      ensureNativeApi().storage.automationAudit(
+        {
+          limit: activityLimit,
+          ...(activitySource !== "all" ? { source: activitySource } : {}),
+        },
+        rpcQueryContext(context),
+      ),
+    meta: rpcQueryMeta("refresh-background"),
+    refetchInterval: 30_000,
   });
 
   const rulesDisabled = !storageCleanup.enabled;
@@ -119,6 +160,64 @@ export function StorageAutomationSettings() {
         />
       </label>
 
+      <label className="flex items-center justify-between gap-4 py-2 text-sm">
+        <span>
+          Database snapshots
+          <span className="block text-xs text-muted-foreground">
+            Hourly copy-on-write copies of this profile’s database in its backups folder, keeping 24
+            hourly and 7 daily copies. On APFS a copy only takes space for data that has changed
+            since, and the history is thinned while the disk stays under 10 GB free. Skipped on
+            volumes that cannot clone files.
+          </span>
+        </span>
+        <Switch
+          aria-label="Database snapshots"
+          checked={databaseSnapshotsEnabled}
+          onCheckedChange={saveDatabaseSnapshots}
+        />
+      </label>
+
+      <label className="flex items-center justify-between gap-4 py-2 text-sm">
+        <span>
+          Daily backups
+          <span className="block text-xs text-muted-foreground">
+            Retain seven successful archives in this profile’s backups folder. Credentials are
+            excluded. Runs while F5 is open.
+          </span>
+        </span>
+        <Switch
+          aria-label="Daily backups"
+          checked={scheduledBackupsEnabled}
+          onCheckedChange={saveScheduledBackups}
+        />
+      </label>
+      <div className="space-y-1 text-xs text-muted-foreground" aria-live="polite">
+        <p>
+          Last successful daily backup:{" "}
+          {audit.data?.scheduledBackupStatus?.lastSuccessAt
+            ? new Date(audit.data.scheduledBackupStatus.lastSuccessAt).toLocaleString()
+            : "None recorded"}
+        </p>
+        {audit.data?.scheduledBackupStatus?.lastAttemptAt && (
+          <p>
+            Last attempt:{" "}
+            {new Date(audit.data.scheduledBackupStatus.lastAttemptAt).toLocaleString()}
+          </p>
+        )}
+        {audit.data?.scheduledBackupStatus?.lastError && (
+          <p role="alert" className="whitespace-pre-wrap text-destructive">
+            Daily backup failed: {audit.data.scheduledBackupStatus.lastError}
+          </p>
+        )}
+        {audit.isError && (
+          <p role="alert">
+            Could not load daily backup status.{" "}
+            <Button size="xs" onClick={() => void audit.refetch()}>
+              Try again
+            </Button>
+          </p>
+        )}
+      </div>
       <fieldset disabled={rulesDisabled} className="space-y-1 disabled:opacity-60">
         <legend className="text-xs font-medium text-muted-foreground">
           Remove a worktree when any rule matches (projects can override these)
@@ -128,6 +227,23 @@ export function StorageAutomationSettings() {
           disabled={rulesDisabled}
           onChange={(worktree) => saveCleanup({ worktree })}
         />
+        <label className="flex items-center justify-between gap-4 py-2 text-sm">
+          <span>
+            Remove inactive F5 worktrees and prune missing entries hourly
+            <span className="block text-xs text-muted-foreground">
+              Runs the Storage cleanup below for merged or pushed worktrees that are orphaned or
+              used only by archived threads. Build output and each project's disposable paths are
+              discarded, and a merged branch is deleted unless an archived thread uses it. Worktrees
+              outside F5's worktrees folder are never removed automatically.
+            </span>
+          </span>
+          <Switch
+            aria-label="Remove inactive F5 worktrees hourly"
+            checked={storageCleanup.inactiveWorktrees}
+            disabled={rulesDisabled}
+            onCheckedChange={(inactiveWorktrees) => saveCleanup({ inactiveWorktrees })}
+          />
+        </label>
         <label className="flex items-center justify-between gap-4 py-2 text-sm">
           <span>
             Delete provider logs after
@@ -212,25 +328,19 @@ export function StorageAutomationSettings() {
         />
       </label>
 
-      <label
-        className="flex items-center justify-between gap-4 border-t border-border pt-4 text-sm"
-        data-settings-search-target="storage.auto-pull"
-      >
-        <span>
-          Auto-pull default branches
-          <span className="block text-xs text-muted-foreground">
-            Every 15 minutes, fast-forwards a project root that has its default branch checked out,
-            a clean tree and no agent working in it. Never merges or rebases.
-          </span>
-        </span>
-        <Switch
-          aria-label="Auto-pull default branches"
-          checked={autoPullDefaultBranch}
-          onCheckedChange={(value) => save({ autoPullDefaultBranch: value })}
-        />
-      </label>
+      <p className="border-t border-border pt-4 text-xs text-muted-foreground">
+        Auto-pull of default branches is set in{" "}
+        <Link
+          to="/settings"
+          search={{ category: "git", item: "git.auto-pull" }}
+          className="underline underline-offset-2 hover:text-foreground"
+        >
+          Git &amp; GitHub
+        </Link>
+        . Its pulls appear in the preview and activity below.
+      </p>
 
-      <div className="flex items-center gap-2 border-t border-border pt-4">
+      <div className="flex items-center gap-2">
         <Button
           size="sm"
           variant="outline"
@@ -270,8 +380,24 @@ export function StorageAutomationSettings() {
         </div>
       ) : null}
 
-      <div>
-        <h3 className="text-xs font-medium text-muted-foreground">Recent activity</h3>
+      <details>
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+          Activity
+        </summary>
+        <label className="mt-2 block text-xs text-muted-foreground">
+          Source{" "}
+          <select
+            aria-label="Activity source"
+            value={activitySource}
+            onChange={(event) =>
+              setActivitySource(event.currentTarget.value as typeof activitySource)
+            }
+          >
+            <option value="all">All</option>
+            <option value="automatic">Automatic</option>
+            <option value="manual">Manual</option>
+          </select>
+        </label>
         {audit.data && audit.data.entries.length > 0 ? (
           <ul aria-label="Automatic cleanup activity" className="mt-1 space-y-1 text-xs">
             {audit.data.entries.map((entry) => (
@@ -280,11 +406,15 @@ export function StorageAutomationSettings() {
                   {new Date(entry.createdAt).toLocaleString()}
                 </time>
                 <span className="shrink-0 font-medium">
-                  {JOB_LABELS[entry.job]}: {RESULT_LABELS[entry.result]}
+                  {entry.source === "manual" ? entry.target : JOB_LABELS[entry.job]}:{" "}
+                  {RESULT_LABELS[entry.result]}
                 </span>
                 <span className="truncate font-mono">{entry.target}</span>
                 {entry.reason ? (
-                  <span className="text-muted-foreground">{entry.reason}</span>
+                  <details className="min-w-0 text-muted-foreground">
+                    <summary className="line-clamp-2 cursor-pointer">{entry.reason}</summary>
+                    <p>{entry.reason}</p>
+                  </details>
                 ) : null}
               </li>
             ))}
@@ -294,7 +424,16 @@ export function StorageAutomationSettings() {
             {audit.isError ? errorMessage(audit.error) : "No automatic cleanup or pulls yet."}
           </p>
         )}
-      </div>
+        {activityLimit < 200 ? (
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={() => setActivityLimit(activityLimit === 10 ? 50 : 200)}
+          >
+            Show more activity
+          </Button>
+        ) : null}
+      </details>
     </section>
   );
 }

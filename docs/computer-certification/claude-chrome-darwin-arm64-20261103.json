@@ -1,0 +1,63 @@
+{
+  "integration": "claude-chrome",
+  "evidenceId": "claude-chrome-darwin-arm64-20261103",
+  "platform": "darwin",
+  "arch": "arm64",
+  "versions": {
+    "sdkMin": "0.3.317",
+    "cliMin": "2.1.317"
+  },
+  "assertions": {
+    "manifests-and-wrapper": true,
+    "allowed-origins": true,
+    "write-ordering": true,
+    "status-shape": true,
+    "tool-inventory": true,
+    "read-only-call": true,
+    "restore-original-bytes": true,
+    "terminal-claude-unaffected": true,
+    "byte-identical-launches": true
+  },
+  "toolNames": [
+    "browser_batch",
+    "computer",
+    "file_upload",
+    "find",
+    "form_input",
+    "get_page_text",
+    "gif_creator",
+    "javascript_tool",
+    "list_connected_browsers",
+    "navigate",
+    "read_console_messages",
+    "read_network_requests",
+    "read_page",
+    "resize_window",
+    "select_browser",
+    "shortcuts_execute",
+    "shortcuts_list",
+    "switch_browser",
+    "tabs_close_mcp",
+    "tabs_context_mcp",
+    "tabs_create_mcp",
+    "upload_image"
+  ],
+  "sourceCommit": "cc1141061f3dc918b370e4ca3e09c6968dce75e4",
+  "dirty": false,
+  "observations": {
+    "manifestsMsAfterStart": 203,
+    "connectedMsAfterStart": 503,
+    "terminal": {
+      "exitCode": 0,
+      "terminalRegistered": true,
+      "conflict": true,
+      "untouchedAfterRestore": true
+    },
+    "contestedRestore": {
+      "state": "partially-restored",
+      "skipped": 7,
+      "unresolved": 0
+    }
+  },
+  "notAutomated": []
+}

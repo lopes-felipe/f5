@@ -1,4 +1,5 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import { threadAttachmentWorkspaceRoots } from "@t3tools/shared/threadWorkspace";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useState, type MouseEvent } from "react";
 
@@ -10,17 +11,20 @@ import {
 } from "../../composerDraftStore";
 import { isElectron } from "../../env";
 import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
+import { useStartScratchThread } from "../../hooks/useStartScratchThread";
 import {
   nativeThreadActionMenuItems,
+  pickSnoozeMenuPreset,
+  resolveSnoozeMenuPresets,
+  snoozeThreadActionLabel,
   useThreadActionController,
 } from "../../hooks/useThreadActionController";
 import { partitionDroppedAttachments } from "../../lib/droppedAttachments";
-import { resolveSnoozePreset } from "../../lib/snoozePresets";
 import { isMacPlatform } from "../../lib/utils";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
-import type { Project, Thread } from "../../types";
+import type { Project, ThreadListItem } from "../../types";
 import {
   attachedFileReferenceWarnings,
   createCachedAbsolutePathComparisonNormalizer,
@@ -56,9 +60,9 @@ export interface ThreadContextMenuOptions {
  */
 export function useSidebarThreadActions(input: {
   projects: ReadonlyArray<Project>;
-  threads: ReadonlyArray<Thread>;
+  threads: ReadonlyArray<ThreadListItem>;
   routeThreadId: ThreadId | null;
-  activeThread: Thread | undefined;
+  activeThread: ThreadListItem | undefined;
   activeDraftThread: DraftThreadState | null;
   confirmThreadDelete: boolean;
 }) {
@@ -66,6 +70,7 @@ export function useSidebarThreadActions(input: {
     input;
   const navigate = useNavigate();
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
+  const startScratchThread = useStartScratchThread();
   const markThreadUnread = useStore((store) => store.markThreadUnread);
   const setProjectExpanded = useStore((store) => store.setProjectExpanded);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -74,8 +79,9 @@ export function useSidebarThreadActions(input: {
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
 
-  const attachDropToThread = (event: React.DragEvent, thread: Thread) => {
+  const attachDropToThread = (event: React.DragEvent, thread: ThreadListItem) => {
     if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
     event.stopPropagation();
@@ -86,10 +92,10 @@ export function useSidebarThreadActions(input: {
         files: folders,
         isElectron,
         desktopBridge: window.desktopBridge,
-        workspaceRoots: [
-          thread.worktreePath,
-          projects.find((project) => project.id === thread.projectId)?.cwd,
-        ],
+        workspaceRoots: threadAttachmentWorkspaceRoots(
+          thread,
+          projects.find((project) => project.id === thread.projectId),
+        ),
         normalizeAbsolutePathForComparison: createCachedAbsolutePathComparisonNormalizer(
           window.desktopBridge?.resolveRealPath ?? identityAbsolutePathNormalizer,
         ),
@@ -110,9 +116,10 @@ export function useSidebarThreadActions(input: {
     });
   };
 
-  const openPrLink = useCallback((event: React.MouseEvent<HTMLElement>, prUrl: string) => {
-    event.preventDefault();
-    event.stopPropagation();
+  // A PR menu choice passes no event: the menu already handled its click.
+  const openPrLink = useCallback((event: React.MouseEvent<HTMLElement> | null, prUrl: string) => {
+    event?.preventDefault();
+    event?.stopPropagation();
 
     const api = readNativeApi();
     if (!api) {
@@ -133,11 +140,12 @@ export function useSidebarThreadActions(input: {
   }, []);
 
   const handleNewThread = useCallback(
-    (projectId: ProjectId, options?: NewThreadOptions) => {
+    (projectId: ProjectId | null, options?: NewThreadOptions) => {
+      if (projectId === null) return startScratchThread(options);
       setProjectExpanded(projectId, true);
       return createProjectBackedDraftThread(projectId, options);
     },
-    [createProjectBackedDraftThread, setProjectExpanded],
+    [createProjectBackedDraftThread, setProjectExpanded, startScratchThread],
   );
 
   /**
@@ -146,7 +154,7 @@ export function useSidebarThreadActions(input: {
    * alternate workspace mode; Cmd/Ctrl+Shift opens the thread in a new window.
    */
   const createThreadInProject = useCallback(
-    (projectId: ProjectId, modifiers: NewThreadModifiers) => {
+    (projectId: ProjectId | null, modifiers: NewThreadModifiers) => {
       const intent = resolveSidebarNewThreadIntent(modifiers);
       const activeProjectThread = activeThread?.projectId === projectId ? activeThread : undefined;
       const activeProjectDraft =
@@ -156,7 +164,9 @@ export function useSidebarThreadActions(input: {
         worktreePath: activeProjectThread?.worktreePath ?? activeProjectDraft?.worktreePath ?? null,
         forceNonDefaultEnvMode: intent.forceNonDefaultEnvMode,
       })
-        .then(async ({ threadId }) => {
+        .then(async (result) => {
+          if (!result) return;
+          const { threadId } = result;
           if (!intent.openInNewWindow) return;
           const openThreadInNewWindow = window.desktopBridge?.openThreadInNewWindow;
           if (!openThreadInNewWindow) return;
@@ -193,7 +203,7 @@ export function useSidebarThreadActions(input: {
     archiveThread,
     deleteThreads,
     executeAction: executeThreadAction,
-    menuItemsForThread: threadActionMenuItems,
+    loadMenuItemsForThread: threadActionMenuItems,
     renameThread,
   } = useThreadActionController({
     activeThreadId: routeThreadId,
@@ -215,12 +225,21 @@ export function useSidebarThreadActions(input: {
       const thread = threads.find((entry) => entry.id === threadId);
       if (!thread) return;
       const clicked = await api.contextMenu.show(
-        nativeThreadActionMenuItems(threadActionMenuItems(thread)),
+        nativeThreadActionMenuItems(await threadActionMenuItems(thread)),
         position,
       );
       if (clicked) await executeThreadAction(threadId, clicked);
     },
     [executeThreadAction, threadActionMenuItems, threads],
+  );
+
+  const togglePinThread = useCallback(
+    (threadId: ThreadId) => {
+      const thread = threads.find((entry) => entry.id === threadId);
+      if (!thread) return;
+      void executeThreadAction(threadId, thread.pinnedAt != null ? "unpin" : "pin");
+    },
+    [executeThreadAction, threads],
   );
 
   const handleMultiSelectContextMenu = useCallback(
@@ -230,18 +249,27 @@ export function useSidebarThreadActions(input: {
       const ids = [...useThreadSelectionStore.getState().selectedThreadIds];
       if (ids.length === 0) return;
       const count = ids.length;
+      const snoozePresets = resolveSnoozeMenuPresets();
 
-      const clicked = await api.contextMenu.show(
+      const clickedId = await api.contextMenu.show(
         [
           { id: "mark-unread", label: `Mark unread (${count})` },
           { id: "pin", label: `Pin (${count})` },
           { id: "unpin", label: `Unpin (${count})` },
-          { id: "snooze", label: `Snooze for 3 hours (${count})` },
+          ...snoozePresets.map((preset) => ({
+            id: `snooze:${preset.id}`,
+            label: `${snoozeThreadActionLabel(preset)} (${count})`,
+          })),
           { id: "archive", label: `Archive (${count})` },
           { id: "delete", label: `Delete (${count})`, destructive: true },
         ],
         position,
       );
+      const snoozePreset = clickedId?.startsWith("snooze:")
+        ? pickSnoozeMenuPreset(snoozePresets, clickedId as `snooze:${string}`)
+        : undefined;
+      if (clickedId?.startsWith("snooze:") && !snoozePreset) return;
+      const clicked = snoozePreset ? "snooze" : clickedId;
 
       if (clicked === "mark-unread") {
         for (const id of ids) {
@@ -261,7 +289,7 @@ export function useSidebarThreadActions(input: {
           const result = await applyBulkThreadAction(
             ids,
             clicked,
-            clicked === "snooze" ? resolveSnoozePreset("three-hours") : undefined,
+            clicked === "snooze" ? snoozePreset?.snoozedUntil : undefined,
           );
           removeFromSelection(result.succeeded);
           if (result.failures.length)
@@ -317,8 +345,13 @@ export function useSidebarThreadActions(input: {
     ) => {
       event.preventDefault();
       const position = { x: event.clientX, y: event.clientY };
+      // The row's hover card stays closed while its menu is open.
+      const trackMenu = (menu: Promise<void>) => {
+        setContextMenuOpen(true);
+        void menu.finally(() => setContextMenuOpen(false));
+      };
       if (options?.allowMultiSelect === false) {
-        void handleThreadContextMenu(threadId, position);
+        trackMenu(handleThreadContextMenu(threadId, position));
         return;
       }
       const selectionState = useThreadSelectionStore.getState();
@@ -329,12 +362,12 @@ export function useSidebarThreadActions(input: {
         return;
       }
       if (selectionState.selectedThreadIds.has(threadId)) {
-        void handleMultiSelectContextMenu(position);
+        trackMenu(handleMultiSelectContextMenu(position));
       } else {
         if (selectionState.hasSelection()) {
           clearSelection();
         }
-        void handleThreadContextMenu(threadId, position);
+        trackMenu(handleThreadContextMenu(threadId, position));
       }
     },
     [clearSelection, handleMultiSelectContextMenu, handleThreadContextMenu],
@@ -399,7 +432,21 @@ export function useSidebarThreadActions(input: {
 
   /** Enter / Space on a focused row. */
   const handleThreadRowKeyDown = useCallback(
-    (event: React.KeyboardEvent, threadId: ThreadId, options?: { isDraft?: boolean }) => {
+    (
+      event: React.KeyboardEvent,
+      threadId: ThreadId,
+      options?: { isDraft?: boolean; canRename?: boolean },
+    ) => {
+      if (
+        event.key === "F2" &&
+        options?.canRename === true &&
+        options.isDraft !== true &&
+        renamingThreadId !== threadId
+      ) {
+        event.preventDefault();
+        startThreadRename(threadId);
+        return;
+      }
       if (event.key !== "Enter" && event.key !== " ") {
         return;
       }
@@ -416,11 +463,11 @@ export function useSidebarThreadActions(input: {
         params: { threadId },
       });
     },
-    [clearSelection, navigate, setSelectionAnchor],
+    [clearSelection, navigate, renamingThreadId, setSelectionAnchor, startThreadRename],
   );
 
   const handleThreadRowDoubleClick = useCallback(
-    (event: MouseEvent, thread: Thread, options?: { isDraft?: boolean }) => {
+    (event: MouseEvent, thread: ThreadListItem, options?: { isDraft?: boolean }) => {
       const shouldRename = shouldStartThreadRowRenameOnDoubleClick({
         isDraft: options?.isDraft === true,
         isRenaming: renamingThreadId === thread.id,
@@ -440,6 +487,8 @@ export function useSidebarThreadActions(input: {
 
   return {
     renamingThreadId,
+    contextMenuOpen,
+    togglePinThread,
     attachDropToThread,
     openPrLink,
     handleNewThread,
@@ -447,6 +496,10 @@ export function useSidebarThreadActions(input: {
     cancelRename,
     commitRename,
     archiveThread,
+    unsettleThread: (threadId: ThreadId) =>
+      executeThreadAction(threadId, "unsettle").catch(() => {
+        toastManager.add({ type: "error", title: "Could not unsettle thread" });
+      }),
     deleteThreads,
     openThreadContextMenu,
     openThread,

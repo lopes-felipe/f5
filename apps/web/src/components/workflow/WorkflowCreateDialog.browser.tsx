@@ -1,3 +1,10 @@
+import { useState } from "react";
+import type { ProviderModelOptions } from "@t3tools/contracts";
+import {
+  createReportedClaudeModelCapabilities,
+  createReportedCodexModelCapabilities,
+} from "@t3tools/shared/model";
+import { WorkflowReasoningPicker } from "./SlotRow";
 import "../../index.css";
 
 import type { ReactElement } from "react";
@@ -134,7 +141,8 @@ vi.mock("../../env", () => ({
 }));
 
 import { SlotRow } from "./SlotRow";
-import { WorkflowCreateDialog, normalizeWorkflowSlotModelOptions } from "./WorkflowCreateDialog";
+import { WorkflowCreateDialog } from "./WorkflowCreateDialog";
+import { normalizeWorkflowSlotModelOptions } from "./workflowSlots";
 
 const desktopBridgePathByFileName = new Map<string, string>();
 
@@ -225,8 +233,13 @@ function createDialogPrimaryKeybinding(
 }
 
 function installDesktopBridgeMock() {
-  const desktopBridge: Pick<DesktopBridge, "getPathForFile" | "resolveRealPath" | "setTheme"> = {
+  const desktopBridge: Pick<
+    DesktopBridge,
+    "getPathForFile" | "getWsUrl" | "resolveRealPath" | "setTheme"
+  > = {
     getPathForFile: (file: File) => desktopBridgePathByFileName.get(file.name) ?? null,
+    // The project picker's icons resolve asset URLs against the server origin.
+    getWsUrl: () => "ws://localhost:3773",
     resolveRealPath: (pathValue: string) => pathValue,
     setTheme: async () => {},
   };
@@ -290,6 +303,12 @@ async function seedModelPreferences(state: {
     }),
   );
   await useModelPreferencesStore.persist.rehydrate();
+}
+
+async function typeRequirementPrompt(text: string): Promise<void> {
+  // Exercise Lexical's input events instead of racing its controlled draft with fill().
+  await page.getByTestId("composer-editor").click();
+  await userEvent.keyboard(text);
 }
 
 function createWorkflowButton(): HTMLButtonElement {
@@ -418,6 +437,9 @@ describe("WorkflowCreateDialog", () => {
           opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
           grok: [{ slug: "grok-build", name: "Grok Build" }],
           antigravity: [],
+          muse: [],
+          acp: [],
+          pi: [],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
@@ -447,6 +469,57 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("divides the model and effort pickers only when reasoning controls render", async () => {
+    const modelOptionsByProvider = {
+      codex: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
+      claudeAgent: [{ slug: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+      cursor: [{ slug: "auto", name: "Auto" }],
+      opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
+      grok: [{ slug: "grok-build", name: "Grok Build" }],
+      antigravity: [],
+      muse: [],
+      acp: [],
+      pi: [],
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <>
+        <SlotRow
+          label="With reasoning"
+          provider="codex"
+          model="gpt-5-codex"
+          modelOptions={{ codex: { reasoningEffort: "high" } }}
+          modelOptionsByProvider={modelOptionsByProvider}
+          onProviderModelChange={() => {}}
+          onModelOptionsChange={() => {}}
+        />
+        <SlotRow
+          label="Without reasoning"
+          provider="cursor"
+          model="auto"
+          modelOptions={undefined}
+          modelOptionsByProvider={modelOptionsByProvider}
+          onProviderModelChange={() => {}}
+          onModelOptionsChange={() => {}}
+        />
+      </>,
+      { container: host },
+    );
+
+    try {
+      const withReasoning = page.getByRole("group", { name: "With reasoning" }).element();
+      const withoutReasoning = page.getByRole("group", { name: "Without reasoning" }).element();
+      expect(withReasoning.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+      expect(withReasoning.querySelector("button[aria-haspopup='menu']")?.textContent).toBe("High");
+      expect(withoutReasoning.querySelector('[data-slot="workflow-slot-divider"]')).toBeNull();
+      expect(withoutReasoning.querySelector("button[aria-haspopup='menu']")).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("omits Ultra for Astra and normalizes persisted Ultra to Max", async () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -464,6 +537,9 @@ describe("WorkflowCreateDialog", () => {
           opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
           grok: [{ slug: "grok-build", name: "Grok Build" }],
           antigravity: [],
+          muse: [],
+          acp: [],
+          pi: [],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
@@ -503,6 +579,9 @@ describe("WorkflowCreateDialog", () => {
           opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
           grok: [{ slug: "grok-build", name: "Grok Build" }],
           antigravity: [],
+          muse: [],
+          acp: [],
+          pi: [],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
@@ -599,7 +678,7 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => {
         expect(findProviderFieldButton("Author B").textContent ?? "").toContain("Fable 5");
       });
-      await page.getByTestId("composer-editor").fill("Plan the gated workflow");
+      await typeRequirementPrompt("Plan the gated workflow");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => {
         expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
@@ -641,7 +720,7 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => {
         expect(findProviderFieldButton("Author B").textContent ?? "").toContain("Opus 5");
       });
-      await page.getByTestId("composer-editor").fill("Plan the Opus workflow");
+      await typeRequirementPrompt("Plan the Opus workflow");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => {
         expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
@@ -660,7 +739,7 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
-  it("submits persisted Fable 5.1 aliases with supported effort only", async () => {
+  it("submits persisted Fable 5.2 aliases with supported effort only", async () => {
     await seedModelPreferences({
       lastProvider: "claudeAgent",
       lastModelByProvider: { claudeAgent: "fable[200k]" },
@@ -676,17 +755,17 @@ describe("WorkflowCreateDialog", () => {
       {
         container: host,
         providers: [
-          claudeProvider("2.1.257", ["claude-opus-5", "claude-fable-5-1", "claude-fable-5"]),
+          claudeProvider("2.1.290", ["claude-opus-5", "claude-fable-5-2", "claude-fable-5"]),
         ],
       },
     );
     try {
-      await page.getByTestId("composer-editor").fill("Plan Fable support");
+      await typeRequirementPrompt("Plan Fable support");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchB).toEqual({
         provider: "claudeAgent",
-        model: "claude-fable-5-1",
+        model: "claude-fable-5-2",
         modelOptions: { claudeAgent: { effort: "xhigh" } },
         providerOptions: { claudeAgent: { subagentsEnabled: true, subagentModel: "inherit" } },
       });
@@ -746,14 +825,41 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
-  it("preserves explicit workflow codex high reasoning", () => {
+  it("keeps workflow codex effort explicit when it equals the default", () => {
+    // Codex may report a different default than the client knows, so the
+    // shown effort is saved instead of being left for the server to fill.
     expect(
       normalizeWorkflowSlotModelOptions("codex", "gpt-5-codex", {
         codex: { reasoningEffort: "high" },
       }),
-    ).toEqual({
+    ).toEqual({ codex: { reasoningEffort: "high" } });
+  });
+
+  it("saves the effort the Codex picker showed when none was picked", () => {
+    const reported = createReportedCodexModelCapabilities({
+      model: "gpt-6.1-sol",
+      supportedReasoningEfforts: [
+        { reasoningEffort: "max" },
+        { reasoningEffort: "high" },
+        { reasoningEffort: "low" },
+      ],
+      defaultReasoningEffort: "low",
+      serviceTiers: [],
+    });
+    expect(normalizeWorkflowSlotModelOptions("codex", "gpt-6.1-sol", undefined, reported)).toEqual({
+      codex: { reasoningEffort: "low" },
+    });
+    expect(normalizeWorkflowSlotModelOptions("codex", "gpt-6.1-sol", undefined)).toEqual({
       codex: { reasoningEffort: "high" },
     });
+    expect(
+      normalizeWorkflowSlotModelOptions(
+        "codex",
+        "gpt-6.1-sol",
+        { codex: { reasoningEffort: "ultra" } },
+        reported,
+      ),
+    ).toEqual({ codex: { reasoningEffort: "max" } });
   });
 
   it("clamps unsupported Astra workflow reasoning before submission", () => {
@@ -793,7 +899,7 @@ describe("WorkflowCreateDialog", () => {
       ).toBe(false);
       expect(createWorkflowButton().disabled).toBe(true);
 
-      await page.getByTestId("composer-editor").fill("Plan the new workflow behavior");
+      await typeRequirementPrompt("Plan the new workflow behavior");
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);
@@ -826,7 +932,7 @@ describe("WorkflowCreateDialog", () => {
     };
     try {
       await page.getByRole("button", { name: "Document", exact: true }).click();
-      await page.getByTestId("composer-editor").fill("Describe the migration");
+      await typeRequirementPrompt("Describe the migration");
       await chooseClaude("Author B", "Claude Sonnet 4.6");
       expect(findProviderFieldButton("Reader model").textContent).toContain("Sonnet 4.6");
       const authorA = findProviderFieldButton("Author A").textContent;
@@ -860,7 +966,7 @@ describe("WorkflowCreateDialog", () => {
       await page.getByRole("button", { name: "Document", exact: true }).click();
       await page.getByRole("combobox", { name: "Document type" }).click();
       await page.getByRole("option", { name: "ADR", exact: true }).click();
-      await page.getByTestId("composer-editor").fill("Record why we chose queues");
+      await typeRequirementPrompt("Record why we chose queues");
       expect(document.body.textContent).toContain("/ 24,000");
       expect(document.body.textContent).not.toContain("Plans directory");
       expect(document.body.textContent).not.toContain("Compare against branch");
@@ -911,7 +1017,7 @@ describe("WorkflowCreateDialog", () => {
       await expect
         .element(page.getByRole("textbox", { name: "Reader persona (optional)" }))
         .not.toBeInTheDocument();
-      await page.getByTestId("composer-editor").fill("Fund the migration");
+      await typeRequirementPrompt("Fund the migration");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => expect(nativeApiMocks.createRun).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.createRun.mock.calls[0]![0].input).toMatchObject({
@@ -1069,7 +1175,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       const prompt = page.getByTestId("composer-editor");
-      await prompt.fill("Plan the new workflow behavior");
+      await typeRequirementPrompt("Plan the new workflow behavior");
 
       dispatchModifiedEnter(prompt.element());
 
@@ -1128,7 +1234,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       const prompt = page.getByTestId("composer-editor");
-      await prompt.fill("Plan the new workflow behavior");
+      await typeRequirementPrompt("Plan the new workflow behavior");
 
       const composingEvent = createModifiedEnterEvent();
       Object.defineProperty(composingEvent, "isComposing", { value: true });
@@ -1184,7 +1290,7 @@ describe("WorkflowCreateDialog", () => {
     );
 
     try {
-      await page.getByTestId("composer-editor").fill("Plan the new workflow behavior");
+      await typeRequirementPrompt("Plan the new workflow behavior");
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);
@@ -1235,7 +1341,7 @@ describe("WorkflowCreateDialog", () => {
     try {
       await page.getByRole("button", { name: "Code Review" }).click();
 
-      await page.getByTestId("composer-editor").fill("Review the workflow changes");
+      await typeRequirementPrompt("Review the workflow changes");
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);
@@ -1268,6 +1374,53 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("enables auto-post only for a detected GitHub pull request", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+    const autoPost = () =>
+      page.getByRole("checkbox", { name: /Post merged review to the PR when it finishes/ });
+
+    try {
+      await page.getByRole("button", { name: "Code Review" }).click();
+      await typeRequirementPrompt("Review the workflow changes");
+      await expect.element(autoPost()).toBeDisabled();
+      await expect
+        .element(page.getByText("Add a GitHub PR link or PR #number to the review instructions."))
+        .toBeVisible();
+
+      await typeRequirementPrompt(" for issue #42");
+      await expect.element(autoPost()).toBeDisabled();
+
+      await typeRequirementPrompt(" in PR #42");
+      await expect
+        .element(page.getByText(/^PR #42 in this project's GitHub repo\. It posts from your/))
+        .toBeVisible();
+
+      await typeRequirementPrompt(" https://github.com/acme/app/pull/42");
+      await expect.element(page.getByText(/^Will post to acme\/app#42\./)).toBeVisible();
+      await expect.element(autoPost()).toBeEnabled();
+      await autoPost().click();
+
+      await vi.waitFor(() => {
+        expect(createWorkflowButton().disabled).toBe(false);
+      });
+      createWorkflowButton().click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createCodeReviewWorkflow).toHaveBeenCalledTimes(1);
+      });
+      expect(nativeApiMocks.createCodeReviewWorkflow.mock.calls[0]?.[0]).toMatchObject({
+        autoPost: true,
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("sends investigation workflow own-model review preference", async () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -1284,7 +1437,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       await page.getByRole("button", { name: "Investigation" }).click();
-      await page.getByTestId("composer-editor").fill("Investigate checkout timeouts");
+      await typeRequirementPrompt("Investigate checkout timeouts");
       // Own-model review lives in the collapsed Options section.
       await page.getByRole("button", { name: /^Options/ }).click();
       await page.getByText("Own-model review", { exact: true }).click();
@@ -1355,11 +1508,8 @@ describe("WorkflowCreateDialog", () => {
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
     );
     try {
-      await page
-        .getByRole("textbox")
-        .first()
-        .fill('Use @creditornot/wolt-auth and @"src/main.ts" please');
-      createWorkflowButton().click();
+      await typeRequirementPrompt('Use @creditornot/wolt-auth and @"src/main.ts" please');
+      await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.authorizeEntry).not.toHaveBeenCalled();
       expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].requirementPrompt).toBe(
@@ -1431,6 +1581,59 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("preserves a dropped mention when the focus frame precedes the queued React render", async () => {
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await Promise.all(
+        page
+          .getByRole("dialog")
+          .element()
+          .getAnimations({ subtree: true })
+          .map((animation) => animation.finished),
+      );
+      const editor = page.getByTestId("composer-editor");
+      await editor.fill("@docs/AGENTS.md ");
+      await vi.waitFor(() => expect(createWorkflowButton().disabled).toBe(false));
+      let authorize!: (entry: { relativePath: string; kind: "file" }) => void;
+      nativeApiMocks.authorizeEntry.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            authorize = resolve;
+          }),
+      );
+      const transfer = new DataTransfer();
+      writeFileTreeDragMention(transfer, {
+        projectId: "project-1",
+        workspaceIdentity: workspaceIdentityForRoot("project-1", "/repo/project"),
+        relativePath: "docs/AGENTS.md",
+      });
+      getRequirementEditorSurface().dispatchEvent(
+        new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+      );
+      await vi.waitFor(() => expect(nativeApiMocks.authorizeEntry).toHaveBeenCalledOnce());
+      // React can defer a default-priority render beyond the next frame.
+      // Deliver that frame before React's scheduled task, after pending microtasks.
+      const frame = vi.spyOn(window, "requestAnimationFrame").mockImplementationOnce((callback) => {
+        queueMicrotask(() => callback(performance.now()));
+        return 0;
+      });
+      try {
+        authorize({ relativePath: "docs/AGENTS.md", kind: "file" });
+        await vi.waitFor(() =>
+          expect(document.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1),
+        );
+        expect(editor.element().textContent).toContain("@docs/AGENTS.md");
+      } finally {
+        frame.mockRestore();
+      }
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps workflow mention identity through deletion, undo and redo beside identical literal text", async () => {
     const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
@@ -1438,10 +1641,9 @@ describe("WorkflowCreateDialog", () => {
     try {
       const editor = page.getByTestId("composer-editor");
       await editor.fill("@docs/AGENTS.md ");
-      // Let the editor's controlled draft commit before dispatching the synthetic drop.
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-      );
+      // The enabled action observes the controlled parent draft, rather than
+      // relying on a fixed number of frames after the editor's DOM update.
+      await vi.waitFor(() => expect(createWorkflowButton().disabled).toBe(false));
       const transfer = new DataTransfer();
       writeFileTreeDragMention(transfer, {
         projectId: "project-1",
@@ -1457,6 +1659,18 @@ describe("WorkflowCreateDialog", () => {
       );
       const chipCount = () => document.querySelectorAll("[data-composer-mention-chip]").length;
       await vi.waitFor(() => expect(chipCount()).toBe(1), { timeout: 5000 });
+      // Drop schedules focusAtEnd on a frame after committing the mention.
+      // Deletion must start from that caret, not the selection left by fill().
+      await vi.waitFor(() => {
+        const surface = editor.element();
+        const selection = window.getSelection();
+        expect(document.activeElement).toBe(surface);
+        expect(selection?.isCollapsed).toBe(true);
+        const range = document.createRange();
+        range.selectNodeContents(surface);
+        range.setEnd(selection!.anchorNode!, selection!.anchorOffset);
+        expect(range.toString()).toBe(surface.textContent);
+      });
       await userEvent.keyboard("{Backspace}{Backspace}");
       await vi.waitFor(() => expect(chipCount()).toBe(0));
       expect(editor.element().textContent).toContain("@docs/AGENTS.md");
@@ -1521,4 +1735,247 @@ describe("WorkflowCreateDialog", () => {
       host.remove();
     }
   });
+
+  it("switches project in place, keeping the brief and clearing file references", async () => {
+    const baseProject = useStore.getState().projects[0]!;
+    useStore.setState({
+      projects: [
+        baseProject,
+        { ...baseProject, id: "project-2" as ProjectId, name: "Second", cwd: "/repo/second" },
+        {
+          ...baseProject,
+          id: "scratch" as ProjectId,
+          name: "Scratch home",
+          cwd: "/scratch",
+          kind: "scratch",
+        },
+      ],
+    });
+    desktopBridgePathByFileName.set("package.json", "/repo/project/packages/shared/package.json");
+    function Host() {
+      const [projectId, setProjectId] = useState("project-1" as ProjectId);
+      return (
+        <WorkflowCreateDialog
+          open
+          projectId={projectId}
+          onOpenChange={() => {}}
+          onProjectChange={setProjectId}
+        />
+      );
+    }
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(<Host />, { container: host });
+
+    try {
+      await dropFilesOnRequirement([
+        new File(['{"name":"shared"}'], "package.json", { type: "application/json" }),
+      ]);
+      await typeRequirementPrompt("Plan the import flow");
+      await vi.waitFor(() => {
+        expect(document.querySelector('[title="packages/shared/package.json"]')).not.toBeNull();
+      });
+
+      await page.getByRole("combobox", { name: "Project: Project" }).click();
+      expect(page.getByTestId("project-picker-no-project").elements()).toHaveLength(0);
+      expect(page.getByRole("option", { name: "Scratch home" }).elements()).toHaveLength(0);
+      await page.getByRole("option", { name: "Second" }).click();
+
+      await expect
+        .element(page.getByText("File references were cleared for the new project."))
+        .toBeVisible();
+      expect(document.querySelector('[title="packages/shared/package.json"]')).toBeNull();
+      await expect.element(page.getByRole("combobox", { name: "Project: Second" })).toBeVisible();
+
+      createWorkflowButton().click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
+      });
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0]).toMatchObject({
+        projectId: "project-2",
+        requirementPrompt: "Plan the import flow",
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("clears the review branch on a project change and drops the note once files are added", async () => {
+    const baseProject = useStore.getState().projects[0]!;
+    useStore.setState({
+      projects: [
+        baseProject,
+        { ...baseProject, id: "project-2" as ProjectId, name: "Second", cwd: "/repo/second" },
+      ],
+    });
+    desktopBridgePathByFileName.set("AGENTS.md", "/repo/second/AGENTS.md");
+    function Host() {
+      const [projectId, setProjectId] = useState("project-1" as ProjectId);
+      return (
+        <WorkflowCreateDialog
+          open
+          projectId={projectId}
+          onOpenChange={() => {}}
+          onProjectChange={setProjectId}
+        />
+      );
+    }
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(<Host />, { container: host });
+
+    try {
+      await page.getByRole("button", { name: "Code Review" }).click();
+      await page.getByRole("button", { name: /^Options/ }).click();
+      await page.getByPlaceholder("main").fill("release/old-repo");
+
+      await page.getByRole("combobox", { name: "Project: Project" }).click();
+      await page.getByRole("option", { name: "Second" }).click();
+
+      await expect
+        .element(page.getByText("The review branch was cleared for the new project."))
+        .toBeVisible();
+      await expect.element(page.getByPlaceholder("main")).toHaveValue("");
+
+      await dropFilesOnRequirement([new File(["agents"], "AGENTS.md", { type: "text/markdown" })]);
+      await vi.waitFor(() => {
+        expect(document.querySelector('[title="AGENTS.md"]')).not.toBeNull();
+      });
+      expect(document.body.textContent).not.toContain("cleared for the new project");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+});
+
+describe("reported workflow capabilities", () => {
+  it.each(["codex", "claudeAgent"] as const)(
+    "keeps unfamiliar %s model controls in the submitted options",
+    async (provider) => {
+      const capabilities =
+        provider === "codex"
+          ? createReportedCodexModelCapabilities({
+              model: "gpt-future-agent",
+              supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }],
+              defaultReasoningEffort: "low",
+              serviceTiers: [{ id: "priority" }],
+            })
+          : createReportedClaudeModelCapabilities({
+              value: "claude-opus-6",
+              supportedEffortLevels: ["low", "high"],
+              supportsFastMode: true,
+            });
+      const model = provider === "codex" ? "gpt-future-agent" : "claude-opus-6";
+      const changes = vi.fn();
+      const host = document.createElement("div");
+      document.body.append(host);
+      const Harness = () => {
+        const [options, setOptions] = useState<ProviderModelOptions>();
+        return (
+          <WorkflowReasoningPicker
+            provider={provider}
+            model={model}
+            capabilities={capabilities}
+            modelOptions={options}
+            onChange={(next) => {
+              setOptions(next);
+              changes(next);
+            }}
+          />
+        );
+      };
+      const screen = await render(<Harness />, { container: host });
+      try {
+        const defaultEffort = provider === "codex" ? "Low" : "High";
+        await page.getByRole("button", { name: defaultEffort, exact: true }).click();
+        const nondefaultEffort = provider === "codex" ? "High" : "Low";
+        await page.getByRole("menuitemradio", { name: nondefaultEffort, exact: true }).click();
+        await page.getByRole("button", { name: nondefaultEffort, exact: true }).click();
+        await page.getByRole("menuitemradio", { name: "On", exact: true }).click();
+        expect(changes.mock.lastCall?.[0]).toEqual(
+          provider === "codex"
+            ? { codex: { reasoningEffort: "high", fastMode: true } }
+            : { claudeAgent: { effort: "low", fastMode: true } },
+        );
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
+});
+
+it("saves a Codex pick of the built-in default when no capabilities were reported", async () => {
+  // The client's probe returned nothing, but the session will report Low as
+  // Sol's default; dropping "high" here would run the slot at Low.
+  const changes = vi.fn();
+  const host = document.createElement("div");
+  document.body.append(host);
+  const screen = await render(
+    <WorkflowReasoningPicker
+      provider="codex"
+      model="gpt-6.1-sol"
+      modelOptions={{ codex: { reasoningEffort: "medium" } }}
+      onChange={changes}
+    />,
+    { container: host },
+  );
+  try {
+    await page.getByRole("button", { name: "Medium", exact: true }).click();
+    await page.getByRole("menuitemradio", { name: /^High/ }).click();
+    expect(changes).toHaveBeenLastCalledWith({ codex: { reasoningEffort: "high" } });
+  } finally {
+    await screen.unmount();
+    host.remove();
+  }
+});
+
+it("walks an unsupported stored effort down, not to the default, and shows fast-only controls", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const props = {
+    provider: "codex" as const,
+    model: "gpt-future",
+    modelOptions: { codex: { reasoningEffort: "ultra" as const } },
+    onChange: () => {},
+  };
+  const screen = await render(
+    <WorkflowReasoningPicker
+      {...props}
+      capabilities={createReportedCodexModelCapabilities({
+        model: props.model,
+        supportedReasoningEfforts: [
+          { reasoningEffort: "max" },
+          { reasoningEffort: "high" },
+          { reasoningEffort: "low" },
+        ],
+        defaultReasoningEffort: "low",
+      })}
+    />,
+    { container: host },
+  );
+  try {
+    // turn/start lowers Ultra to Max; Low (the default) would misstate the run.
+    await expect.element(page.getByRole("button", { name: "Max", exact: true })).toBeVisible();
+    await screen.rerender(
+      <WorkflowReasoningPicker
+        {...props}
+        capabilities={createReportedCodexModelCapabilities({
+          model: props.model,
+          supportedReasoningEfforts: [],
+          serviceTiers: [{ id: "priority" }],
+        })}
+      />,
+    );
+    await expect
+      .element(page.getByRole("button", { name: "Fast Mode", exact: true }))
+      .toBeVisible();
+  } finally {
+    await screen.unmount();
+    host.remove();
+  }
 });

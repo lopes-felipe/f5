@@ -25,11 +25,13 @@ import type {
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
+  ServerProviderModel,
 } from "@t3tools/contracts";
 import type { Effect, Schema, Scope } from "effect";
 
 import type { AccountUsageCapability } from "../usage/accountUsage.ts";
 import type { TextGenerationShape } from "../git/Services/TextGeneration.ts";
+import type { ProviderInstallTarget } from "./providerInstallChannel.ts";
 import type { ProviderAdapterError, ProviderDriverError } from "./Errors.ts";
 import type { ProviderAdapterShape } from "./Services/ProviderAdapter.ts";
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
@@ -66,6 +68,7 @@ export interface ProviderInstance {
   readonly continuationIdentity: ProviderContinuationIdentity;
   /** Opaque server-side identity for executable, argv, and environment defaults. */
   readonly launchIdentity?: string;
+  readonly resolveInstallTarget?: () => ProviderInstallTarget | null;
   /** Stable identity for the complete decoded provider-instance configuration. */
   readonly configurationFingerprint?: string;
   readonly displayName: string | undefined;
@@ -78,12 +81,25 @@ export interface ProviderInstance {
   readonly resetCreditIdentity?: string;
   readonly consumeResetCredit?: (
     idempotencyKey: string,
+    /** Claude only: the limit-reset grant to claim. Codex ignores it. */
+    grantId?: string,
   ) => Effect.Effect<
     import("@t3tools/contracts").UsageConsumeResetCreditResult,
     ProviderDriverError
   >;
   readonly accountUsage?: AccountUsageCapability;
+  /** Native history not already represented by this instance's F5 usage facts. */
+  readonly usageHistory?: import("../usage/nativeHistory.ts").NativeHistoryCapability;
+  /** Claude only: on-demand local usage scan, sharing the account-probe permits. */
+  readonly analyzeClaudeUsage?: (
+    permits: import("effect/Semaphore").Semaphore,
+  ) => Effect.Effect<
+    import("@t3tools/contracts").ClaudeUsageAnalysis,
+    import("../usage/accountUsageErrors.ts").AccountUsageReadError
+  >;
   readonly invalidateAccountStatus?: Effect.Effect<void>;
+  readonly invalidateModelCatalog?: Effect.Effect<void>;
+  readonly updateModelCatalog?: (models: ReadonlyArray<ServerProviderModel>) => Effect.Effect<void>;
   /**
    * Read-only hooks/plugins/connectors/agents inventory for this instance.
    * `projectRoot` is resolved by the server from a project id, never taken
@@ -93,6 +109,7 @@ export interface ProviderInstance {
   readonly inventory?: (input: {
     readonly projectRoot?: string | undefined;
   }) => Effect.Effect<ProviderInstanceInventoryEntries, ProviderDriverError>;
+  readonly saveFeedback?: () => Effect.Effect<{ path: string }, ProviderDriverError>;
   /**
    * Remove a native session's local transcript from this instance's own
    * store (never the server-global home). Best-effort; callers log failures.
@@ -105,7 +122,14 @@ export interface ProviderInstance {
 /** Inventory body; the registry stamps instance id, driver and timestamps. */
 export type ProviderInstanceInventoryEntries = Pick<
   import("@t3tools/contracts").ProviderInstanceInventory,
-  "hooks" | "plugins" | "connectors" | "agents" | "warnings"
+  | "hooks"
+  | "plugins"
+  | "connectors"
+  | "agents"
+  | "warnings"
+  | "accountWorkspaces"
+  | "feedbackSupported"
+  | "account"
 >;
 
 export interface ProviderContinuationIdentity {

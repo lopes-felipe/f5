@@ -16,6 +16,11 @@ import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
  * OrchestrationProjectionPipelineShape - Service API for projection execution.
  */
 export interface OrchestrationProjectionPipelineShape {
+  /** Finalize all cursors once inside the engine's enclosing command transaction. */
+  readonly commitCursors?: (
+    lastEvent: OrchestrationEvent,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
   /**
    * Bootstrap projections by replaying persisted events.
    *
@@ -30,6 +35,7 @@ export interface OrchestrationProjectionPipelineShape {
    */
   readonly projectEvent: (
     event: OrchestrationEvent,
+    options?: { readonly deferCursor: boolean },
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

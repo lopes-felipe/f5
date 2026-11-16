@@ -1,0 +1,733 @@
+{
+  "batch": 3,
+  "commits": [
+    {
+      "pr": 4670,
+      "sha": "e77f42c111dc40e0b208393957ebb23863330e2e",
+      "subject": "Prevent draft thread detail polling before shell registration (#4670)",
+      "topic": "pr-4670"
+    },
+    {
+      "pr": 15108,
+      "sha": "e8545b293b79cdd73d30ef921db149ef1b5abee0",
+      "subject": "feat(usage): show cost by token type, speed, and model detail (#15108)",
+      "topic": "pr-15108"
+    },
+    {
+      "pr": 9032,
+      "sha": "e86604d3372acccd9f6a33a2c4ae46f4e2685541",
+      "subject": "perf(server): skip full-message reads while streaming (#9032)",
+      "topic": "pr-9032"
+    },
+    {
+      "pr": 18580,
+      "sha": "e9221e44dadd78126c83d2eeed0b51c25dcf0fb4",
+      "subject": "fix(web): center the pace icon on the limit card's \"left\" label (#18580)",
+      "topic": "pr-18580"
+    },
+    {
+      "pr": 9785,
+      "sha": "e9c3d950f023130791d8ac5fe7aa0992e3430738",
+      "subject": "fix(auth): preserve explicitly granted pairing scopes (#9785)",
+      "topic": "pr-9785"
+    },
+    {
+      "pr": 5547,
+      "sha": "ea50b695a749d6a0d44ef96b479b6dfceb8881e3",
+      "subject": "fix(web): update tooltip no longer dismisses when scrolling release notes (#5547)",
+      "topic": "pr-5547"
+    },
+    {
+      "pr": 16281,
+      "sha": "ea54be7f853aca37981f60958d66039196f13a0c",
+      "subject": "chore(review): configure CodeRabbit in TypeScript (#16281)",
+      "topic": "pr-16281"
+    },
+    {
+      "pr": 9476,
+      "sha": "ea646c0834a3394ecb0be4a30c5d367e5a9002bd",
+      "subject": "fix(server): stop Windows terminal polling from spiking CPU (#9476)",
+      "topic": "pr-9476"
+    },
+    {
+      "pr": 13867,
+      "sha": "ea7d46ac107e6a3461b81065ebc86dfd5483095f",
+      "subject": "fix(build): validate Linux node-pty prebuilds in Windows artifacts (#13867)",
+      "topic": "pr-13867"
+    },
+    {
+      "pr": 18564,
+      "sha": "eac6ba5ae9dfcd8106b43ac1b5612b2983bda642",
+      "subject": "ci: fail PRs on invalid allowBuilds entries in pnpm-workspace.yaml (#18564)",
+      "topic": "pr-18564"
+    },
+    {
+      "pr": 10098,
+      "sha": "ead1dee22916b414906eafdae5f5a1293f16e637",
+      "subject": "fix(web): explain what enabling network access means in its confirmation (#10098)",
+      "topic": "pr-10098"
+    },
+    {
+      "pr": 8358,
+      "sha": "ead4ce52a1624d9c55461f61524580978fc8b719",
+      "subject": "fix(grok): improve skills, plans, usage, and turn reliability (#8358)",
+      "topic": "pr-8358"
+    },
+    {
+      "pr": 17116,
+      "sha": "eb1cf7bd0efba7364d53907036f5b7eefb379c39",
+      "subject": "fix(web): stack merge dialog closes as soon as you confirm (#17116)",
+      "topic": "pr-17116"
+    },
+    {
+      "pr": 10341,
+      "sha": "eb8ed80300bd719b49fc80ad8708f9839bb48c92",
+      "subject": "perf(server): skip plan bodies in thread summaries (#10341)",
+      "topic": "pr-10341"
+    },
+    {
+      "pr": 11317,
+      "sha": "eb8f6f42a5cad1a5d0bc51eaa16cff13a9c69f45",
+      "subject": "ci(release): build, sign, and publish self-contained CLI archives (#11317)",
+      "topic": "pr-11317"
+    },
+    {
+      "pr": 13548,
+      "sha": "ebdcda135e31693c5283f8ac409019bd69e07f8e",
+      "subject": "fix(web): selected text stays visible on a revealed file line (#13548)",
+      "topic": "pr-13548"
+    },
+    {
+      "pr": 10432,
+      "sha": "ec36176e4f25fac7e3c380f6a4b646116e4ccf3d",
+      "subject": "fix(web): onboarding wizard now supports light mode (#10432)",
+      "topic": "pr-10432"
+    },
+    {
+      "pr": 17761,
+      "sha": "ec4378614046ab58864ff5e640de2b46f6704505",
+      "subject": "fix(web): a finished reply replaced by a steer is no longer labeled partial (#17761)",
+      "topic": "pr-17761"
+    },
+    {
+      "pr": 17158,
+      "sha": "ec80933ac8cd02fec5c97b342462ccc9567cdb1e",
+      "subject": "fix(connect): Cloudflare and other VPN addresses no longer show as Tailscale (#17158)",
+      "topic": "pr-17158"
+    },
+    {
+      "pr": 9689,
+      "sha": "ec8b2119c377f5c1dbe6235b221ef98eca31a96e",
+      "subject": "perf(server): omit repeated OpenCode progress logs (#9689)",
+      "topic": "pr-9689"
+    },
+    {
+      "pr": 20868,
+      "sha": "ecd95d5eb5c0b897b9d55819756c3dc2e789b29e",
+      "subject": "test(web): misc-a tests run in a real browser (#20868)",
+      "topic": "pr-20868"
+    },
+    {
+      "pr": 4446,
+      "sha": "ece05087a70e94efcd57441337fa1249559362ba",
+      "subject": "[codex] Fix glass hover compositing artifacts (#4446)",
+      "topic": "pr-4446"
+    },
+    {
+      "pr": 16282,
+      "sha": "ecfdda5fa804582066c1aa62afea419677c24883",
+      "subject": "refactor: layer variables are named layer or layerXyz (#16282)",
+      "topic": "pr-16282"
+    },
+    {
+      "pr": 18200,
+      "sha": "ed0f7b908b2e7b3a22e6fd82a73794c2fe6ee06e",
+      "subject": "fix(server): Sol Ultrafast stops vanishing from the Codex model picker (#18200)",
+      "topic": "pr-18200"
+    },
+    {
+      "pr": 12489,
+      "sha": "ed6fe339d71863f39a1d5405554a3bac892e55b6",
+      "subject": "fix(build): retain multiple license notices for one package (#12489)",
+      "topic": "pr-12489"
+    },
+    {
+      "pr": 5670,
+      "sha": "ed886fe1814890da30ae73c77f9e894ddc9bd481",
+      "subject": "fix(web): delay transient reconnect warnings (#5670)",
+      "topic": "pr-5670"
+    },
+    {
+      "pr": 4372,
+      "sha": "edb12401e547be4806836077f336295c58097c9b",
+      "subject": "fix(cli): publish nightly branded favicons (#4372)",
+      "topic": "pr-4372"
+    },
+    {
+      "pr": 4985,
+      "sha": "edc503a7a8ea5284a2711981c1a10a6b9999f5e4",
+      "subject": "fix(server): restore PR detection without HOME (#4985)",
+      "topic": "pr-4985"
+    },
+    {
+      "pr": 20584,
+      "sha": "ede009e762a77bb96eb9db118deb76996c91cd8e",
+      "subject": "perf(web): the diff worker pool provider compiles without manual memoization (#20584)",
+      "topic": "pr-20584"
+    },
+    {
+      "pr": 17823,
+      "sha": "ee2763e9b20f937de0c2adffff8dddfe2d5af3b3",
+      "subject": "Reject unknown params in t3_thread_read (#17823)",
+      "topic": "pr-17823"
+    },
+    {
+      "pr": 16619,
+      "sha": "ee7924ff7fcabe24d5e8d940ac5e878d36477a0d",
+      "subject": "fix(web): paths pasted after @ keep their underscores (#16619)",
+      "topic": "pr-16619"
+    },
+    {
+      "pr": 15479,
+      "sha": "ee7b49d638e412590b09b415cc48399d51644b60",
+      "subject": "test(server): the text generation's fake Claude CLI is a fixture file, not a generated string (#15479)",
+      "topic": "pr-15479"
+    },
+    {
+      "pr": 19291,
+      "sha": "eeaac49a9d20d94970b26fe7775fc8ddb4672f4f",
+      "subject": "fix: update all no longer runs agents twice or loses background work (#19291)",
+      "topic": "pr-18053"
+    },
+    {
+      "pr": 10138,
+      "sha": "eee05575ebd514db36f61d7eb05d2258a10c96bd",
+      "subject": "fix(clients): persist project icons across reloads and reconnects (#10138)",
+      "topic": "pr-10138"
+    },
+    {
+      "pr": 13713,
+      "sha": "eeea71a88108c375c04853f58c298a518a54acaf",
+      "subject": "fix(web): make the empty workspace draggable on desktop (#13713)",
+      "topic": "pr-13713"
+    },
+    {
+      "pr": 16242,
+      "sha": "eef36a67c37fa74905fc7feaa836e5a81daa8685",
+      "subject": "fix(server): caches and ids are written atomically (#16242)",
+      "topic": "pr-16242"
+    },
+    {
+      "pr": 5928,
+      "sha": "ef051bdb87c5eba1942aeda9a4f8607d892dc96c",
+      "subject": "fix(web): enable restore defaults after theme mix changes (#5928)",
+      "topic": "pr-5928"
+    },
+    {
+      "pr": 5095,
+      "sha": "ef4ec2ad4b9b08d1aca31d68aea28f0a846ef295",
+      "subject": "fix(server): self-update no longer rolls itself back on restart (#5095)",
+      "topic": "pr-4286"
+    },
+    {
+      "pr": 11103,
+      "sha": "ef6fa118749572da1905eca5d0543d1e98f0b1b2",
+      "subject": "fix(web): preserve drafts when compacting context (#11103)",
+      "topic": "pr-11103"
+    },
+    {
+      "pr": 7460,
+      "sha": "efcf7d1ac03e784bdb26843d61ae0ff81c03cec6",
+      "subject": "fix(desktop): boot the main window unthrottled so cold start paints at full speed (#7460)",
+      "topic": "pr-7460"
+    },
+    {
+      "pr": 20798,
+      "sha": "efdaa4b3536aab52efe6dbb4a2a1f53628b46400",
+      "subject": "refactor(web): the guide excerpt keeps its caching without \"use memo\" (#20798)",
+      "topic": "pr-20798"
+    },
+    {
+      "pr": 4660,
+      "sha": "f0121f31d0e7c069f4007480fc13907c28efd4d5",
+      "subject": "fix: close actions dropdown when editing (#4660)",
+      "topic": "pr-4660"
+    },
+    {
+      "pr": 6675,
+      "sha": "f075a58119f392137d699cefe5290b2aa6e55935",
+      "subject": "perf(server): persist the wire projection for streaming tool.updated data (#6675)",
+      "topic": "pr-6675"
+    },
+    {
+      "pr": 5654,
+      "sha": "f0b57ca2313bd7971cefb366d3b3808152b014fc",
+      "subject": "feat(web): add Open VSX theme search (#5654)",
+      "topic": "pr-5654"
+    },
+    {
+      "pr": 4964,
+      "sha": "f0c6ba994670bbd9eeab97eab6701d5c3589178d",
+      "subject": "fix(web): keep worktree default when switching a draft's machine (#4964)",
+      "topic": "pr-4964"
+    },
+    {
+      "pr": 5864,
+      "sha": "f0e2975180a85004e0d2604e3aa4125ed8bddb24",
+      "subject": "fix(web): align project name with headline (#5864)",
+      "topic": "pr-5864"
+    },
+    {
+      "pr": 5636,
+      "sha": "f0fb406acf419c1ab3d37d5f42093c07921484b2",
+      "subject": "feat(web): make sidebar artwork theme-aware (#5636)",
+      "topic": "pr-5636"
+    },
+    {
+      "pr": 7580,
+      "sha": "f0fb83aff1be5d093225cda511df1216cef748d2",
+      "subject": "fix(web): polish theme library buttons, search, and import dialog (#7580)",
+      "topic": "pr-5654"
+    },
+    {
+      "pr": 9561,
+      "sha": "f12d39359f0f76a64ff2d77959c5baf821df15be",
+      "subject": "fix(ui): unify loading and refresh feedback across clients (#9561)",
+      "topic": "pr-9561"
+    },
+    {
+      "pr": 6300,
+      "sha": "f131228a5908974c90d9b80a4d8ef866bb29e973",
+      "subject": "fix(web): theme Clerk surfaces (#6300)",
+      "topic": "pr-6300"
+    },
+    {
+      "pr": 4730,
+      "sha": "f1a68ac9b05c93292e677f700ae3ce7f7ac7f064",
+      "subject": "Fix Android showcase capture and rebuild v2 queued rows (#4730)",
+      "topic": "pr-4730"
+    },
+    {
+      "pr": 11425,
+      "sha": "f1add18ae1560f509405a5eece07f3cfb1cc850f",
+      "subject": "fix(shared): preserve final quoted empty CSV records (#11425)",
+      "topic": "pr-11425"
+    },
+    {
+      "pr": 8395,
+      "sha": "f1e6f0c9bbe527a76eaae9e3b498a5977ce3c7d6",
+      "subject": "fix(web): stop showing red x summaries for ordinary tool failures (#8395)",
+      "topic": "pr-8395"
+    },
+    {
+      "pr": 5923,
+      "sha": "f21d5e444e9a6b5876253ca8618a4dc8d4f2146c",
+      "subject": "Move project settings to contextual project routes (#5923)",
+      "topic": "pr-5923"
+    },
+    {
+      "pr": 9541,
+      "sha": "f239b77df93077e40c27cc5c5909e94266571859",
+      "subject": "fix(web): close composer menus when their controls hide (#9541)",
+      "topic": "pr-9541"
+    },
+    {
+      "pr": 13397,
+      "sha": "f26ee083fe41720207fb10616359500dcecc19d3",
+      "subject": "fix(web): appearance classes use theme tokens and scale values (#13397)",
+      "topic": "pr-13397"
+    },
+    {
+      "pr": 9684,
+      "sha": "f2e3764c257a7e27c8171d7dd1e38d4383074206",
+      "subject": "perf(server): stop retaining unused OpenCode tool history (#9684)",
+      "topic": "pr-9684"
+    },
+    {
+      "pr": 20481,
+      "sha": "f31850cd2aa972d5c22c58f4038dfc25a24bf619",
+      "subject": "perf(web): provider update rows compile with the React Compiler (#20481)",
+      "topic": "pr-20481"
+    },
+    {
+      "pr": 8011,
+      "sha": "f34adad34f21510e867b47fe018c7975779a0ffc",
+      "subject": "fix(web): scale Files tree with interface font size (#8011)",
+      "topic": "pr-8011"
+    },
+    {
+      "pr": 19321,
+      "sha": "f372c0061f7678da94853110da06e821a3af7c83",
+      "subject": "fix(server): stalled OAuth token requests no longer block credential calls (#19321)",
+      "topic": "pr-19321"
+    },
+    {
+      "pr": 11772,
+      "sha": "f391b88c3754047c3c9434b76328699c083723b0",
+      "subject": "fix(web): move sidebar shelves as one block (#11772)",
+      "topic": "pr-11772"
+    },
+    {
+      "pr": 15618,
+      "sha": "f4153a75a4b04e14bd45d1b578af4d1d63cc84e5",
+      "subject": "fix(server): expand home-relative media paths (#15618)",
+      "topic": "pr-15618"
+    },
+    {
+      "pr": 4397,
+      "sha": "f4c394323d458224b25898ef784ca0a0cc2969af",
+      "subject": "Add background preview capture and picture-in-picture support (#4397)",
+      "topic": "pr-4397"
+    },
+    {
+      "pr": 12760,
+      "sha": "f4d979a6c6139ab10aa1013335bd94a313a5b56e",
+      "subject": "fix(web): only show notice details when text is clipped (#12760)",
+      "topic": "pr-12760"
+    },
+    {
+      "pr": 20791,
+      "sha": "f4da08069e35b698329ffd1a16d8a5d560dfc1b3",
+      "subject": "chore(web): React compiler rules apply to every web file (#20791)",
+      "topic": "pr-20791"
+    },
+    {
+      "pr": 3617,
+      "sha": "f4da4f3b4037260bbb0d8914acbebafd2206607a",
+      "subject": "fix(opencode): resume the OpenCode session on follow-ups instead of starting an empty one (#3617)",
+      "topic": "pr-3617"
+    },
+    {
+      "pr": 16597,
+      "sha": "f4f148eb670622a049ae6561d7795011e383fc43",
+      "subject": "fix(desktop): include Linux package license and app metadata (#16597)",
+      "topic": "pr-16597"
+    },
+    {
+      "pr": 8513,
+      "sha": "f55c66b323d23ee876bf7b5754a814dd83467789",
+      "subject": "fix(web): show the correct new thread shortcut in command palette (#8513)",
+      "topic": "pr-8513"
+    },
+    {
+      "pr": 18341,
+      "sha": "f570294df8f5a73b31af7ae8f3105dc1efa6d419",
+      "subject": "fix(web): closed popovers no longer stay on screen and click-through (#18341)",
+      "topic": "pr-18341"
+    },
+    {
+      "pr": 20421,
+      "sha": "f5cb328aac19302a45a3fe9f7e6864a198cdb1ad",
+      "subject": "refactor(web): move the right panel's surface switch out of ChatView (#20421)",
+      "topic": "pr-20421"
+    },
+    {
+      "pr": 16746,
+      "sha": "f60367b8cb5e4a7e5e12dd01dc3889618151b1be",
+      "subject": "fix(web): thread details card gives titles room to read (#16746)",
+      "topic": "pr-16746"
+    },
+    {
+      "pr": 14910,
+      "sha": "f68e24fb419c985269cd0acb841e203af1419c43",
+      "subject": "fix(web): a thread that left a shell running shows its unseen completion (#14910)",
+      "topic": "pr-14910"
+    },
+    {
+      "pr": 9137,
+      "sha": "f6c04c552c203350705f9ab1e47773ea736af245",
+      "subject": "feat(web): add customizable project icons (#9137)",
+      "topic": "pr-9137"
+    },
+    {
+      "pr": 7969,
+      "sha": "f70eeeeb06d6d96f292be7eef1ed8948103e68dc",
+      "subject": "fix(clients): move settled pinned threads into the settled section (#7969)",
+      "topic": "pr-7969"
+    },
+    {
+      "pr": 10465,
+      "sha": "f729e8fd837e4d6de86781351c3aee5a4ea19ab3",
+      "subject": "fix(web): make onboarding a shared multi-computer wizard (#10465)",
+      "topic": "pr-10465"
+    },
+    {
+      "pr": 4213,
+      "sha": "f74eb62661734927aea45a243e2c3effced43fb9",
+      "subject": "fix(desktop): handle EPIPE errors on stdout/stderr to prevent crash dialog (#4213)",
+      "topic": "pr-4213"
+    },
+    {
+      "pr": 15384,
+      "sha": "f786ff3548aef904b7bdd47f263e8704ba20ca4b",
+      "subject": "fix(web): highlight tool inputs and remove nested work log indentation (#15384)",
+      "topic": "pr-15384"
+    },
+    {
+      "pr": 20294,
+      "sha": "f7916ad07cc1461fd15e41a70ae045188ae0b6ca",
+      "subject": "refactor(web): let the React Compiler compile usePendingThreadRequests (#20294)",
+      "topic": "pr-20294"
+    },
+    {
+      "sha": "f79f37a637bda257faa06a04184e368f78650d3d",
+      "subject": "fix(server): missing agent binaries report launch failure",
+      "topic": "pr-17662"
+    },
+    {
+      "pr": 4450,
+      "sha": "f7cc7764887a3c0616973043fa77e12671e3f9ef",
+      "subject": "Restore model picker layout and retain iterative test state (#4450)",
+      "topic": "pr-4450"
+    },
+    {
+      "pr": 16816,
+      "sha": "f8458952710cc70894bdeb5853d700524a1c7c49",
+      "subject": "fix: sync model favorites and visibility across clients (#16816)",
+      "topic": "pr-16816"
+    },
+    {
+      "pr": 9913,
+      "sha": "f87ecf0cc307f974745da8eea856fab5711023f3",
+      "subject": "fix(client): keep warm thread resumes live instead of flashing sync (#9913)",
+      "topic": "pr-9913"
+    },
+    {
+      "pr": 16644,
+      "sha": "f8ed2a039b7deaa324beda29b44cc74c846311f7",
+      "subject": "chore(deps): upgrade @pierre/diffs to 1.5.2 and @pierre/trees to beta.6 (#16644)",
+      "topic": "pr-16644"
+    },
+    {
+      "pr": 17858,
+      "sha": "f92afe79c921dd7de20204e83d62fed0491b4e54",
+      "subject": "fix(web): find bar and thread details panel stop covering each other (#17858)",
+      "topic": "pr-17858"
+    },
+    {
+      "pr": 20634,
+      "sha": "f99d12b5e5776a9bd7c629ec72dbe8764607a6d0",
+      "subject": "perf(web): the worktree base branch picker compiles without manual memoization (#20634)",
+      "topic": "pr-20634"
+    },
+    {
+      "sha": "f9e8236899f25653ce95d688fac798cd070afbc1",
+      "subject": "fix(server): release the tunnel when an explicit stop interrupts an update",
+      "topic": "c-f9e8236899f2"
+    },
+    {
+      "pr": 12657,
+      "sha": "fa1e1715538f6f8ac076761f7821f68479f616ab",
+      "subject": "refactor(observability): hold OTLP export settings per signal (#12657)",
+      "topic": "pr-12657"
+    },
+    {
+      "pr": 8006,
+      "sha": "fa219001dc2f14cfd9c7774c2c03c153359144be",
+      "subject": "perf(web): reuse work log rows during streaming (#8006)",
+      "topic": "pr-8006"
+    },
+    {
+      "pr": 4168,
+      "sha": "fa69f05b69d05003a6994194c12edd1d8aee080c",
+      "subject": "[codex] preserve custom model slugs (#4168)",
+      "topic": "pr-4168"
+    },
+    {
+      "pr": 8206,
+      "sha": "fa9f936ef5cbbe4bd4f9890b638766fc92f45075",
+      "subject": "fix(desktop): sign Windows native addons (#8206)",
+      "topic": "pr-8206"
+    },
+    {
+      "pr": 4843,
+      "sha": "faea70aebae41f1257140c6722f1d78f12f5eb74",
+      "subject": "perf(server): merge separate staged/unstaged numstat calls into single diff HEAD --numstat (#4843)",
+      "topic": "pr-4843"
+    },
+    {
+      "pr": 11228,
+      "sha": "fb3d165d33b155038de717851207d25fb52fe65e",
+      "subject": "fix(web): show platform file manager icons in Open menu (#11228)",
+      "topic": "pr-11228"
+    },
+    {
+      "pr": 9276,
+      "sha": "fb93902ee24d4ba380508df33d25478d3baf7a72",
+      "subject": "feat(web): add proactive panels (#9276)",
+      "topic": "pr-9276"
+    },
+    {
+      "pr": 5964,
+      "sha": "fbcae59ef57f28cc51956ca47c0838298b24e79c",
+      "subject": "fix(web): use import/export-appropriate icons for theme buttons (#5964)",
+      "topic": "pr-5964"
+    },
+    {
+      "pr": 5015,
+      "sha": "fbecb7365ede9892045dec4d03805d20ef9859f8",
+      "subject": "fix(desktop): bump Clerk Electron SDK to 0.0.24 and register t3code:// scheme on Linux (#5015)",
+      "topic": "pr-5015"
+    },
+    {
+      "pr": 3979,
+      "sha": "fc28abf24b034502402cba1fedf5fa38658ee2e8",
+      "subject": "Fix editable file focus and live syntax highlighting (#3979)",
+      "topic": "pr-16644"
+    },
+    {
+      "pr": 4416,
+      "sha": "fc3f78f5d917fdeee6271d2f6fd42961369c7d9f",
+      "subject": "fix: tone down branch-mismatch banner (#4416)",
+      "topic": "pr-4416"
+    },
+    {
+      "pr": 9052,
+      "sha": "fc53b273039cf5e0a932582b1fbb56e7223ad4ab",
+      "subject": "perf(clients): lease sidebar status by visibility (#9052)",
+      "topic": "pr-9052"
+    },
+    {
+      "pr": 20776,
+      "sha": "fc73c24ad37764c5b78e3b0ec1e91db5a5dc6e37",
+      "subject": "refactor(web): sidebar resize options stay cached without \"use memo\" (#20776)",
+      "topic": "pr-20776"
+    },
+    {
+      "pr": 10021,
+      "sha": "fc7ad2edaeedabebcbe1ad6d2f1a4780f0516310",
+      "subject": "fix(web): add project settings to legacy sidebar project menu (#10021)",
+      "topic": "pr-10021"
+    },
+    {
+      "pr": 5065,
+      "sha": "fccec9f097ab6b89714161ccab2efc7e19d59c00",
+      "subject": "fix(ci): capture iPad App Store screenshots in landscape (#5065)",
+      "topic": "pr-5065"
+    },
+    {
+      "pr": 17739,
+      "sha": "fd3549c8ffa5eac8230a8b5e1a87e59d28ba488e",
+      "subject": "refactor(contracts): source control provider kind is an open branded slug (#17739)",
+      "topic": "pr-17739"
+    },
+    {
+      "pr": 18115,
+      "sha": "fd6d9ddaab241f60a1ad3c2b7b1d836cf871447f",
+      "subject": "fix(web): hide stash menu behind maximized panel (#18115)",
+      "topic": "pr-18115"
+    },
+    {
+      "pr": 14921,
+      "sha": "fd7ee2c30a7eeef910c99e7bc92e944526555db7",
+      "subject": "chore(lint): forbid declaring tests inside for loops (#14921)",
+      "topic": "pr-14921"
+    },
+    {
+      "pr": 7392,
+      "sha": "fda740ad7b28334a6c579d801db22ad8f5914b5f",
+      "subject": "feat(web): show project location in new thread picker (#7392)",
+      "topic": "pr-7392"
+    },
+    {
+      "pr": 19521,
+      "sha": "fdacb3a3804bb535e8f5c7b733c4445e8567ea62",
+      "subject": "fix(server): a delegated task's question now wakes its parent agent (#19521)",
+      "topic": "pr-19521"
+    },
+    {
+      "pr": 7913,
+      "sha": "fdd1572b69537c95e31b45fdfafe88bbe964807a",
+      "subject": "fix(web): give sidebar project menu rows the same side padding as other menus (#7913)",
+      "topic": "pr-7913"
+    },
+    {
+      "pr": 7445,
+      "sha": "fe281c5408164250da6688de6fc71ac12d8a9d8f",
+      "subject": "fix(desktop): throttle hidden preview rendering (#7445)",
+      "topic": "pr-7445"
+    },
+    {
+      "pr": 15795,
+      "sha": "fe417dff4cdc149d6873bb4fbaaa388731628d0b",
+      "subject": "fix(cli): reject accidental server launches (#15795)",
+      "topic": "pr-15795"
+    },
+    {
+      "pr": 13795,
+      "sha": "fe6388f01d5ae9f9db43079c6f5b2c31869067ca",
+      "subject": "fix(mobile): link URLs with ports and single-label hosts (#13795)",
+      "topic": "pr-13795"
+    },
+    {
+      "pr": 15416,
+      "sha": "fe93a5dbdd3c4496f402f71d232597c391c4973b",
+      "subject": "fix(server): offer one-click provider updates for every install (#15416)",
+      "topic": "pr-15416"
+    },
+    {
+      "pr": 9160,
+      "sha": "fea1af81fdab64a19353224d60b4efa60f929740",
+      "subject": "fix(web): compact project settings actions (#9160)",
+      "topic": "pr-9160"
+    },
+    {
+      "pr": 8360,
+      "sha": "feb3ea7ebf83de2e301adb1f20300b262773ec54",
+      "subject": "fix(web): stop highlighter freezes and worker spin by using the Oniguruma WASM engine (#8360)",
+      "topic": "pr-8360"
+    },
+    {
+      "pr": 9747,
+      "sha": "fec606f9ae524277ef1f6886e614f32d9e15e36e",
+      "subject": "perf(web): avoid repeated terminal metadata scans (#9747)",
+      "topic": "pr-9747"
+    },
+    {
+      "pr": 11500,
+      "sha": "fec71c5ab4fd860331fb15ce37c15edf6db1c236",
+      "subject": "fix(server): return partial workspace index on timeout (#11500)",
+      "topic": "pr-11500"
+    },
+    {
+      "pr": 8567,
+      "sha": "ff1761012af46ceb5f1ecc9b2be00aae288a1691",
+      "subject": "fix(desktop): stop hidden previews draining battery (#8567)",
+      "topic": "pr-7445"
+    },
+    {
+      "pr": 13342,
+      "sha": "ff2fda7d6d59a05b9077b8fc48a5e0b67054b8d5",
+      "subject": "fix(web): avoid blocking image preparation conversions (#13342)",
+      "topic": "pr-13342"
+    },
+    {
+      "pr": 16361,
+      "sha": "ff397a29523d3c63e5844b11608c0189640c7561",
+      "subject": "chore(lint): catch known tags with Effect.catchTags (#16361)",
+      "topic": "pr-16361"
+    },
+    {
+      "pr": 16958,
+      "sha": "ff3a04a8ebaaf6bb74b8b5b996013b82e044c700",
+      "subject": "fix(settings): provider updates show live progress instead of a bare spinner (#16958)",
+      "topic": "pr-16958"
+    },
+    {
+      "pr": 16340,
+      "sha": "ff873b2ec1972b701c3f9edd6a0f727c91604dc4",
+      "subject": "refactor(server): CloudLink keeps only the link lifecycle; pure checks live beside it (#16340)",
+      "topic": "pr-16340"
+    },
+    {
+      "pr": 19359,
+      "sha": "ffceb61fcbbdc7ac5268812a1cc5dfedd7a6f7b9",
+      "subject": "fix(cli): t3 triage reports the server's version, not its own, as the user's build (#19359)",
+      "topic": "pr-19359"
+    }
+  ],
+  "count": 121,
+  "createdAt": "2026-10-26T17:34:07.879Z",
+  "digest": "b3d92c207560cc4848fbe1b9277fad53048c9f4003086bf1990ec832be8c9d2a",
+  "schemaVersion": 7
+}

@@ -2,8 +2,10 @@ import { createElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRouter } from "@tanstack/react-router";
 
+import { followPrHubAccountSetting } from "./lib/prHubAccountSetting";
 import { routeTree } from "./routeTree.gen";
 import { StoreProvider } from "./store";
+import { isQueryRetryable } from "./wsTransport";
 
 type RouterHistory = NonNullable<Parameters<typeof createRouter>[0]["history"]>;
 
@@ -12,9 +14,14 @@ export function getRouter(history: RouterHistory) {
     defaultOptions: {
       queries: {
         gcTime: 60_000,
+        // The transport owns overload retries (`RpcBusy`, `ServerStarting`);
+        // retrying those here would multiply load. Other failures retry once.
+        retry: (failureCount, error) => failureCount < 1 && isQueryRetryable(error),
       },
     },
   });
+  // Outside React, so the account is set before the first render and never during one.
+  followPrHubAccountSetting(() => void queryClient.invalidateQueries({ queryKey: ["prHub"] }));
 
   return createRouter({
     routeTree,

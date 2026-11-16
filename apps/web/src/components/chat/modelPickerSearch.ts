@@ -12,6 +12,12 @@ type ModelPickerSearchableModel = {
 };
 
 const MODEL_PICKER_FAVORITE_SCORE_BOOST = 24;
+// Far below any token-scored match, favorites included.
+const MODEL_PICKER_EXACT_NAME_SCORE = -1000;
+
+function normalizeModelName(name: string): string {
+  return normalizeSearchQuery(name).replace(/\s+/gu, " ");
+}
 
 export function buildModelPickerSearchText(model: ModelPickerSearchableModel): string {
   return normalizeSearchQuery(
@@ -53,6 +59,9 @@ function scoreModelPickerSearchToken(
     boundaryBase: fieldBase + 4,
     includesBase: fieldBase + 6,
     ...(token.length >= 3 ? { fuzzyBase: fieldBase + 100 } : {}),
+    // Rank by match tier only, so equal matches keep the provider's newest-first order
+    // instead of favoring short names or matches near the start.
+    ignorePosition: true,
   });
 }
 
@@ -66,6 +75,14 @@ export function scoreModelPickerSearch(
 
   if (tokens.length === 0) {
     return 0;
+  }
+
+  const normalizedQuery = tokens.join(" ");
+  if (
+    normalizedQuery === normalizeModelName(model.name) ||
+    normalizedQuery === normalizeModelName(model.shortName ?? "")
+  ) {
+    return MODEL_PICKER_EXACT_NAME_SCORE;
   }
 
   const fields = getModelPickerSearchFields(model);
@@ -84,4 +101,29 @@ export function scoreModelPickerSearch(
   }
 
   return model.isFavorite ? score - MODEL_PICKER_FAVORITE_SCORE_BOOST : score;
+}
+
+/**
+ * Filters `items` to those matching `query`, best match first. Equal matches
+ * keep their order in `items`, which is the provider's own newest-first order.
+ */
+export function rankModelPickerSearch<T>(
+  items: ReadonlyArray<T>,
+  query: string,
+  toSearchable: (item: T) => ModelPickerSearchableModel,
+): T[] {
+  const ranked: Array<{ item: T; score: number; isFavorite: boolean; order: number }> = [];
+  items.forEach((item, order) => {
+    const searchable = toSearchable(item);
+    const score = scoreModelPickerSearch(searchable, query);
+    if (score !== null) {
+      ranked.push({ item, score, isFavorite: searchable.isFavorite === true, order });
+    }
+  });
+  return ranked
+    .toSorted(
+      (a, b) =>
+        a.score - b.score || Number(b.isFavorite) - Number(a.isFavorite) || a.order - b.order,
+    )
+    .map((entry) => entry.item);
 }

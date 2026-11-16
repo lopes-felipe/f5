@@ -1,3 +1,5 @@
+import Migration0129 from "../../persistence/Migrations/134_BackgroundWorkEffort.ts";
+import Migration0155 from "../../persistence/Migrations/155_BackgroundWorkNativeParentSession.ts";
 import {
   EventId,
   ProviderInstanceId,
@@ -39,6 +41,9 @@ const directory: ProviderSessionDirectoryShape = {
     ),
   listThreadIds: () => Effect.succeed([threadId]),
   listBindings: () => Effect.succeed([]),
+  updateMcpStateIfCurrent: () => Effect.succeed(true),
+  updateHistoryReconciliationIfCurrent: () => Effect.succeed(true),
+  updateTerminalLifecycleIfCurrent: () => Effect.succeed(true),
   listBindingsByProject: () => Effect.succeed([]),
 };
 
@@ -50,6 +55,8 @@ const testLayer = ThreadBackgroundWorkLive.pipe(
 const migrateBackgroundWork = Effect.gen(function* () {
   yield* Migration0066;
   yield* Migration0111;
+  yield* Migration0129;
+  yield* Migration0155;
 });
 
 function eventBase(index: number) {
@@ -89,10 +96,45 @@ it("classifies inert, monitor, and workflow task starts", () => {
 });
 
 it.layer(testLayer)("ThreadBackgroundWork", (it) => {
+  it.effect("preserves native session identity and reads dismissed owned rows", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
+      yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
+      yield* migrateBackgroundWork;
+      yield* sql`DELETE FROM projection_thread_background_work`;
+      const work = yield* ThreadBackgroundWork;
+      const taskId = RuntimeTaskId.makeUnsafe("identity-agent");
+      yield* work.recordProviderEvent({
+        ...eventBase(1),
+        type: "task.started",
+        payload: { taskId, nativeParentSessionId: "original-session" },
+      });
+      yield* work.recordProviderEvent({
+        ...eventBase(2),
+        type: "task.completed",
+        payload: { taskId, status: "completed" },
+      });
+      yield* work.dismiss({ threadId, workItemIds: [taskId] });
+      const owned = yield* work.getOwnedEntries({ threadId, workItemIds: [taskId, "foreign"] });
+      assert.equal(owned.length, 1);
+      assert.equal(owned[0]?.nativeParentSessionId, "original-session");
+      assert.equal((yield* work.getThreadSnapshot(threadId)).entries.length, 0);
+      yield* sql`UPDATE projection_threads SET deleted_at='2026-01-01T00:00:05.000Z' WHERE thread_id=${threadId}`;
+      assert.equal((yield* work.getOwnedEntries({ threadId, workItemIds: [taskId] })).length, 0);
+      assert.equal(
+        (yield* work.getOwnedEntries({
+          threadId: ThreadId.makeUnsafe("other"),
+          workItemIds: [taskId],
+        })).length,
+        0,
+      );
+    }),
+  );
   it.effect("persists liveness, bounds output, and expires stale work", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* migrateBackgroundWork;
       yield* sql`DELETE FROM projection_thread_background_work`;
@@ -152,7 +194,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+        yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
         yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
         yield* migrateBackgroundWork;
         yield* sql`DELETE FROM projection_thread_background_work`;
@@ -213,7 +255,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
   it.effect("records completion without an earlier start as inactive and unprotected", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* migrateBackgroundWork;
       yield* sql`DELETE FROM projection_thread_background_work`;
@@ -239,7 +281,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
   it.effect("marks all active work terminal when its provider session exits", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* migrateBackgroundWork;
       yield* sql`DELETE FROM projection_thread_background_work`;
@@ -265,7 +307,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
   it.effect("ignores progress when its task start was never stored", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* migrateBackgroundWork;
       yield* sql`DELETE FROM projection_thread_background_work`;
@@ -285,7 +327,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
   it.effect("keeps inert work inactive when a progress event follows its start", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* migrateBackgroundWork;
       yield* sql`DELETE FROM projection_thread_background_work`;
@@ -313,7 +355,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
   it.effect("does not let delayed progress reactivate completed work", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* migrateBackgroundWork;
       yield* sql`DELETE FROM projection_thread_background_work`;
@@ -349,7 +391,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
   it.effect("bounds snapshots and periodically prunes persisted history", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* migrateBackgroundWork;
       yield* sql`DELETE FROM projection_thread_background_work`;
@@ -376,7 +418,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
   it.effect("keeps title, kind and type stable while progress reports the last tool", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* migrateBackgroundWork;
       yield* sql`DELETE FROM projection_thread_background_work`;
@@ -416,7 +458,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
   it.effect("records title and prompt from collaboration tool calls", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* migrateBackgroundWork;
       yield* sql`DELETE FROM projection_thread_background_work`;
@@ -464,7 +506,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
   it.effect("only stores real descriptions as titles", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* migrateBackgroundWork;
       yield* sql`DELETE FROM projection_thread_background_work`;
@@ -511,7 +553,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const otherThreadId = ThreadId.makeUnsafe("background-thread-other");
-      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
       yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${otherThreadId})`;
       yield* migrateBackgroundWork;
@@ -592,3 +634,50 @@ it("persists distinct work identities for successive native task runs", () => {
   assert.equal(first?.workItemId, "task-1::run:run-1");
   assert.equal(second?.workItemId, "task-1::run:run-2");
 });
+
+it.effect(
+  "persists each agent's effort through heartbeats and clears an unsupported model's effort",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
+      yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
+      yield* migrateBackgroundWork;
+      const work = yield* ThreadBackgroundWork;
+      const taskId = RuntimeTaskId.make("own-effort");
+      yield* work.recordProviderEvent({
+        ...eventBase(1),
+        type: "task.started",
+        payload: { taskId, taskType: "local_agent", model: "claude-sonnet-4-6", effort: "low" },
+      });
+      yield* work.recordProviderEvent({
+        ...eventBase(2),
+        type: "task.progress",
+        payload: { taskId, description: "Still reviewing" },
+      });
+      const retained = (yield* work.getSnapshot).entries.find(
+        (entry) => entry.workItemId === taskId,
+      )!;
+      assert.equal(retained.model, "claude-sonnet-4-6");
+      assert.equal(retained.effort, "low");
+      yield* work.recordProviderEvent({
+        ...eventBase(3),
+        type: "task.progress",
+        payload: {
+          taskId,
+          description: "Actual model reported",
+          model: "claude-haiku-4-5",
+          effort: null,
+        },
+      });
+      const updated = (yield* work.getSnapshot).entries.find(
+        (entry) => entry.workItemId === taskId,
+      )!;
+      assert.equal(updated.model, "claude-haiku-4-5");
+      assert.equal(updated.effort, null);
+      const rows = yield* sql<{
+        effort: string | null;
+      }>`SELECT effort FROM projection_thread_background_work WHERE provider_work_item_id=${taskId}`;
+      assert.deepStrictEqual(rows, [{ effort: null }]);
+    }).pipe(Effect.provide(testLayer)),
+);

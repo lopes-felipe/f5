@@ -1,8 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { RouteErrorView } from "../components/RouteErrorView";
+
 import { StartupWorkflowRouteSkeleton } from "../components/StartupLoadingState";
 import { CodeReviewWorkflowView } from "../components/workflow/CodeReviewWorkflowView";
 import { SidebarInset } from "../components/ui/sidebar";
+import { useWorkflowDocumentTitle } from "../hooks/useDocumentTitle";
 import { useStartupReady } from "../lib/startupReady";
 
 function CodeReviewWorkflowRouteView() {
@@ -10,6 +13,7 @@ function CodeReviewWorkflowRouteView() {
   const workflowId = Route.useParams({
     select: (params) => params.workflowId,
   });
+  useWorkflowDocumentTitle("code-review", workflowId);
 
   if (!startupReady) {
     return <StartupWorkflowRouteSkeleton kind="code-review" />;
@@ -26,4 +30,5 @@ function CodeReviewWorkflowRouteView() {
 
 export const Route = createFileRoute("/_chat/code-review/$workflowId")({
   component: CodeReviewWorkflowRouteView,
+  errorComponent: RouteErrorView,
 });

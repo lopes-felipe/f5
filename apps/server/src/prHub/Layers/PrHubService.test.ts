@@ -5,7 +5,7 @@ import {
   makeGitHubRequestScheduler,
 } from "../../git/githubRequestScheduler.ts";
 import { PrHubRepositoryLive } from "./PrHubRepository.ts";
-import type { TrackedPullRequest } from "@t3tools/contracts";
+import { PullRequestKey, type TrackedPullRequest } from "@t3tools/contracts";
 import type { PrHubServiceShape } from "../Services/PrHubService.ts";
 import { PrHubJobCoordinatorLive } from "./PrHubJobCoordinator.ts";
 import { PrHubDiscoveryLive } from "./PrHubDiscovery.ts";
@@ -31,6 +31,7 @@ import { PrHubService } from "../Services/PrHubService.ts";
 import { PrHubServiceLive } from "./PrHubService.ts";
 
 const SEARCH_ALIASES = [
+  "direct_review",
   "review_requested",
   "team_review_0",
   "team_review_1",
@@ -327,7 +328,8 @@ function makeGithubStub(input: {
       });
       const overridden = input.graphqlRequest?.(request);
       if (overridden) return overridden;
-      if (request.query.includes("PrHubSearch($rr:")) {
+      // The personal review bucket opens every poll, so it advances the scripted response.
+      if (request.query.includes("PrHubSearch($dr:")) {
         currentSearchResponse = nextResponse(searchResponses, emptySearchResponse());
         searchRequestCount += 1;
         if (input.stallSearchAfterFirst && searchRequestCount > 1) {
@@ -475,7 +477,13 @@ function makeLayer(input: {
   return serviceLayer.pipe(
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-pr-hub-test-" })),
-    Layer.provideMerge(ServerSettingsService.layerTest(input.settings ?? {})),
+    Layer.provideMerge(
+      // Fixtures carry fixed dates, so they must not age into the Stale section.
+      ServerSettingsService.layerTest({
+        ...input.settings,
+        prHub: { staleAfterDays: 0, ...input.settings?.prHub },
+      }),
+    ),
     Layer.provideMerge(Layer.succeed(GitHubCli, github)),
     Layer.provideMerge(Layer.succeed(GitCore, gitCore)),
     Layer.provideMerge(Layer.succeed(ProjectionProjectRepository, projects)),
@@ -760,8 +768,9 @@ it.effect("coalesces overlapping forced refreshes into one GitHub fetch", () => 
     );
 
     const searchCalls = calls.graphql.filter((call) => call.query.includes("PrHubSearch"));
-    assert.equal(searchCalls.length, 6);
+    assert.equal(searchCalls.length, 7);
     assert.equal(searchCalls.filter((call) => call.query.includes("$rr:")).length, 1);
+    assert.equal(searchCalls.filter((call) => call.query.includes("$dr:")).length, 1);
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -847,7 +856,7 @@ it.effect("stores a concise degraded message when GraphQL falls back to gh searc
     assert.equal(snapshot.status, "degraded");
     assert.equal(
       snapshot.errorMessage,
-      "GitHub API returned HTTP 502. Fallback search completed 5 of 5 scopes.",
+      "GitHub API returned HTTP 502. Fallback search completed 6 of 6 scopes.",
     );
     assert.equal(snapshot.errorMessage?.includes("query PrHub"), false);
   }).pipe(
@@ -917,7 +926,7 @@ it.effect(
       }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE task_key='legacy-broken'`;
       assert.equal(legacy[0]?.count, 0);
       const searches = calls.graphql.filter((call) => call.query.includes("query PrHubSearch("));
-      assert.equal(searches.length, 12);
+      assert.equal(searches.length, 14);
       for (const search of searches) {
         assert.equal(search.query.includes("team_review_"), false);
         assert.equal(JSON.stringify(search.variables).includes("1970"), false);
@@ -1013,7 +1022,7 @@ it.effect("stores a concise degraded message when GraphQL details cannot be hydr
     assert.equal(snapshot.status, "degraded");
     assert.equal(
       snapshot.errorMessage,
-      "GitHub API returned HTTP 502. Fallback search completed 5 of 5 scopes.",
+      "GitHub API returned HTTP 502. Fallback search completed 6 of 6 scopes.",
     );
     assert.equal(snapshot.errorMessage?.includes("query PrHub"), false);
   }).pipe(
@@ -1432,6 +1441,381 @@ it.effect("moves ignored pull requests to resolved history for the active viewer
   );
 });
 
+it.effect("restores an ignored pull request to the queue", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_unignore", number: 15 });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const tracked = (yield* service.refreshNow({ mode: "force" })).pullRequests[0];
+    assert.ok(tracked);
+    const ignored = yield* service.ignore({ key: tracked.key });
+    assert.deepStrictEqual(ignored.pullRequests, []);
+
+    const restored = yield* service.unignore({ key: tracked.key });
+    assert.deepStrictEqual(
+      restored.pullRequests.map((entry) => entry.key),
+      [tracked.key],
+    );
+    assert.equal(restored.pullRequests[0]?.ignoredAt, null);
+    assert.deepStrictEqual(restored.recentlyResolved, []);
+  }).pipe(
+    Effect.provide(makeLayer({ calls, searchResponses: [searchResponse("direct_review", [pr])] })),
+  );
+});
+
+it.effect("reports what changed since a pull request was last seen", () => {
+  const calls = makeCalls();
+  const before = makePrNode({ id: "PR_activity", number: 61, headRefOid: "head-a" });
+  const after = {
+    ...makePrNode({
+      id: "PR_activity",
+      number: 61,
+      headRefOid: "head-b",
+      checkState: "FAILURE",
+    }),
+    comments: { totalCount: 4 },
+  };
+  const arrival = makePrNode({ id: "PR_arrival", number: 62 });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const sql = yield* SqlClient.SqlClient;
+    // The first sync is a silent baseline: nothing it finds is reported as new.
+    const first = yield* service.refreshNow({ mode: "force" });
+    assert.deepStrictEqual(first.pullRequests[0]?.changesSinceSeen, []);
+    assert.equal((yield* service.getOverview({})).unreadCount, 0);
+
+    const second = yield* service.refreshNow({ mode: "force" });
+    const byNumber = new Map(second.pullRequests.map((pr) => [pr.number, pr]));
+    assert.deepStrictEqual(byNumber.get(61)?.changesSinceSeen, [
+      { kind: "ci_failed" },
+      { kind: "commits" },
+      { kind: "comments", count: 3 },
+    ]);
+    // Found after the first sync and never opened.
+    assert.deepStrictEqual(byNumber.get(62)?.changesSinceSeen, [{ kind: "new" }]);
+    assert.equal((yield* service.getOverview({})).unreadCount, 2);
+    const unread = yield* service.listPullRequests({ unread: true, sort: "updated" });
+    assert.deepStrictEqual(unread.pullRequests.map((pr) => pr.number).toSorted(), [61, 62]);
+
+    const changed = byNumber.get(61)!;
+    const seen = yield* service.markSeen({
+      key: changed.key,
+      attentionFingerprint: changed.attentionFingerprint,
+    });
+    assert.deepStrictEqual(seen.pullRequests.find((pr) => pr.number === 61)?.changesSinceSeen, []);
+    assert.equal((yield* service.getOverview({})).unreadCount, 1);
+    const stored = yield* sql<{ seen_baseline_json: string }>`
+      SELECT seen_baseline_json FROM pr_hub_viewer_state WHERE number = ${61}`;
+    assert.include(JSON.parse(stored[0]!.seen_baseline_json), {
+      headRefOid: "head-b",
+      commentsCount: 4,
+      checkRollup: "failure",
+    });
+    // The baseline survives the next read of the same facts.
+    const third = yield* service.refreshNow({ mode: "force" });
+    assert.deepStrictEqual(third.pullRequests.find((pr) => pr.number === 61)?.changesSinceSeen, []);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [
+          searchResponse("direct_review", [before]),
+          searchResponse("direct_review", [after, arrival]),
+          searchResponse("direct_review", [after, arrival]),
+        ],
+      }),
+    ),
+  );
+});
+
+it.effect("updates many pull requests in one transaction and one publication", () => {
+  const calls = makeCalls();
+  const nodes = [71, 72, 73].map((number) => makePrNode({ id: `PR_bulk_${number}`, number }));
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const sql = yield* SqlClient.SqlClient;
+    const tracked = (yield* service.refreshNow({ mode: "force" })).pullRequests;
+    const keys = tracked.map((pr) => pr.key).toSorted();
+    assert.equal(keys.length, 3);
+    const revision = async () => Number((await Effect.runPromise(service.getSnapshot)).revision);
+    const until = new Date(Date.now() + 3_600_000).toISOString();
+    const snoozed = () =>
+      sql<{ number: number }>`SELECT number FROM pr_hub_viewer_state
+        WHERE snoozed_until IS NOT NULL ORDER BY number`.pipe(
+        Effect.map((rows) => rows.map((row) => row.number)),
+      );
+
+    // A snooze needs a time, and a failure on any row leaves every row as it was.
+    assert.equal(
+      (yield* Effect.exit(service.bulkUpdate({ keys, action: "snooze" })))._tag,
+      "Failure",
+    );
+    yield* sql`CREATE TRIGGER fail_bulk BEFORE UPDATE ON pr_hub_viewer_state
+      WHEN NEW.number = 73 AND NEW.snoozed_until IS NOT NULL
+      BEGIN SELECT RAISE(ABORT, 'boom'); END`;
+    const beforeFailure = yield* Effect.promise(revision);
+    assert.equal(
+      (yield* Effect.exit(service.bulkUpdate({ keys, action: "snooze", until })))._tag,
+      "Failure",
+    );
+    assert.deepStrictEqual(yield* snoozed(), []);
+    assert.equal(yield* Effect.promise(revision), beforeFailure);
+    yield* sql`DROP TRIGGER fail_bulk`;
+
+    // Duplicates and keys that are not tracked are skipped, not errors.
+    const result = yield* service.bulkUpdate({
+      keys: [
+        ...keys.slice(0, 2),
+        keys[0]!,
+        PullRequestKey.makeUnsafe("github:github.com/octo/repo#999"),
+      ],
+      action: "snooze",
+      until,
+    });
+    assert.deepStrictEqual(result, { updated: 2 });
+    assert.deepStrictEqual(yield* snoozed(), [71, 72]);
+    assert.equal(yield* Effect.promise(revision), beforeFailure + 1);
+    const afterSnooze = yield* service.getSnapshot;
+    assert.deepStrictEqual(
+      afterSnooze.pullRequests.map((pr) => [pr.number, pr.snoozedUntil]).toSorted(),
+      [
+        [71, until],
+        [72, until],
+        [73, null],
+      ],
+    );
+
+    yield* sql`UPDATE pr_hub_viewer_state SET last_seen_fingerprint = NULL, seen_baseline_json = NULL`;
+    const seenState = () =>
+      sql<{ seen: number; baseline: number }>`
+        SELECT count(*) FILTER (WHERE last_seen_fingerprint = attention_fingerprint) AS seen,
+          count(seen_baseline_json) AS baseline FROM pr_hub_viewer_state`;
+    // Marking seen covers what was on screen. A pull request whose attention changed
+    // since, or that came without a fingerprint, stays unread.
+    const onScreen = Object.fromEntries(
+      (yield* service.getSnapshot).pullRequests.map((pr) => [pr.key, pr.attentionFingerprint]),
+    );
+    assert.deepStrictEqual(yield* service.bulkUpdate({ keys, action: "mark_seen" }), {
+      updated: 0,
+    });
+    assert.deepStrictEqual(
+      yield* service.bulkUpdate({
+        keys,
+        action: "mark_seen",
+        seenFingerprints: { ...onScreen, [keys[0]!]: "an-older-fingerprint" },
+      }),
+      { updated: 2 },
+    );
+    assert.deepStrictEqual(yield* seenState(), [{ seen: 2, baseline: 2 }]);
+    assert.deepStrictEqual(
+      yield* service.bulkUpdate({ keys, action: "mark_seen", seenFingerprints: onScreen }),
+      { updated: 3 },
+    );
+    const seen = yield* seenState();
+    assert.deepStrictEqual(seen, [{ seen: 3, baseline: 3 }]);
+    assert.isTrue(
+      (yield* service.getSnapshot).pullRequests.every((pr) => pr.changesSinceSeen?.length === 0),
+    );
+
+    assert.deepStrictEqual(yield* service.bulkUpdate({ keys: [keys[2]!], action: "ignore" }), {
+      updated: 1,
+    });
+    const afterIgnore = yield* service.getSnapshot;
+    assert.deepStrictEqual(afterIgnore.pullRequests.map((pr) => pr.number).toSorted(), [71, 72]);
+    assert.deepStrictEqual(
+      afterIgnore.recentlyResolved.map((pr) => [pr.number, pr.ignoredAt !== null]),
+      [[73, true]],
+    );
+    // Nothing matched: nothing is published.
+    const quiet = yield* Effect.promise(revision);
+    assert.deepStrictEqual(
+      yield* service.bulkUpdate({
+        keys: [PullRequestKey.makeUnsafe("github:github.com/octo/repo#999")],
+        action: "ignore",
+      }),
+      { updated: 0 },
+    );
+    assert.equal(yield* Effect.promise(revision), quiet);
+  }).pipe(
+    Effect.provide(makeLayer({ calls, searchResponses: [searchResponse("direct_review", nodes)] })),
+  );
+});
+
+it.effect("keeps team-only review requests out of the queue until their team is promoted", () => {
+  const calls = makeCalls();
+  const direct = makePrNode({
+    id: "PR_direct",
+    number: 31,
+    reviewRequests: ["me", "octo/platform"],
+  });
+  const team = makePrNode({ id: "PR_team", number: 32, reviewRequests: ["octo/platform"] });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const settings = yield* ServerSettingsService;
+    const sql = yield* SqlClient.SqlClient;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const byNumber = new Map(snapshot.pullRequests.map((pr) => [pr.number, pr]));
+    assert.include(byNumber.get(31), {
+      attentionState: "review_requested",
+      reviewRequestSource: "direct",
+      section: "review",
+    });
+    assert.include(byNumber.get(32), {
+      attentionState: "team_review_requested",
+      attentionBucket: "informational",
+      reviewRequestSource: "team",
+      section: "team",
+      notificationPending: false,
+    });
+    const overview = yield* service.getOverview({});
+    assert.equal(overview.counts.needs_you, 1);
+    assert.include(overview.sectionCounts, { review: 1, team: 1 });
+    // The first sync is a silent baseline; make both rows unseen to compare them.
+    yield* sql`UPDATE pr_hub_viewer_state SET last_seen_fingerprint = NULL`;
+    const claimed = yield* service.claimNotifications({
+      accountGeneration: overview.account!.generation,
+      clientId: "client",
+      maxItems: 20,
+    });
+    assert.deepStrictEqual(
+      claimed.pullRequests.map((pr) => pr.number),
+      [31],
+    );
+
+    // Promotion applies on the next read; it does not wait for a refresh.
+    yield* settings.updateSettings({ prHub: { directReviewTeams: ["Octo/Platform"] } });
+    const promoted = yield* service.getOverview({});
+    assert.equal(promoted.counts.needs_you, 2);
+    assert.include(promoted.sectionCounts, { review: 2, team: 0 });
+
+    // The request was already there, so promoting its team is not activity to notify.
+    const polled = yield* service.refreshNow({ mode: "force" });
+    assert.include(
+      polled.pullRequests.find((pr) => pr.number === 32),
+      { attentionState: "review_requested", section: "review", notificationPending: false },
+    );
+    const reclaimed = yield* service.claimNotifications({
+      accountGeneration: overview.account!.generation,
+      clientId: "other-client",
+      maxItems: 20,
+    });
+    assert.notInclude(
+      reclaimed.pullRequests.map((pr) => pr.number),
+      32,
+    );
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        teams: ["octo/platform"],
+        searchResponses: Array.from({ length: 2 }, () =>
+          multiSearchResponse({
+            direct_review: [direct],
+            review_requested: [direct, team],
+            team_review_0: [team],
+          }),
+        ),
+      }),
+    ),
+  );
+});
+
+it.effect("does not let a lagging search mark a reviewed pull request as requested again", () => {
+  const calls = makeCalls();
+  // The viewer reviewed and GitHub dropped the request, but the search index still returns
+  // the pull request for `user-review-requested:`.
+  const reviewed = makePrNode({ id: "PR_reviewed", number: 33, reviewRequests: [] });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const pr = [...snapshot.pullRequests, ...snapshot.recentlyResolved].find(
+      (candidate) => candidate.number === 33,
+    );
+    assert.equal(pr?.viewerReviewRequested ?? false, false);
+    assert.notEqual(pr?.attentionState, "review_requested");
+    assert.notEqual(pr?.attentionState, "re_review_requested");
+    assert.equal(pr?.notificationPending ?? false, false);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [multiSearchResponse({ direct_review: [reviewed] })],
+      }),
+    ),
+  );
+});
+
+it.effect("reports a review-thread page that fails to load as degraded, not as backlog", () => {
+  const calls = makeCalls();
+  const paged = {
+    ...makePrNode({ id: "PR_paged", number: 34 }),
+    reviewThreads: {
+      totalCount: 150,
+      nodes: [],
+      pageInfo: { hasNextPage: true, endCursor: "page-2" },
+    },
+  };
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    assert.ok(calls.graphql.some((call) => call.query.includes("PrHubAttentionPage")));
+    assert.equal(snapshot.status, "degraded");
+    assert.notEqual(snapshot.errorKind, "backlog");
+    assert.equal((yield* service.getOverview({})).sync?.state, "error");
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [multiSearchResponse({ direct_review: [paged] })],
+        graphqlRequest: (request) =>
+          request.query.includes("PrHubAttentionPage")
+            ? Effect.fail(ghError("HTTP 500 from GitHub"))
+            : undefined,
+      }),
+    ),
+  );
+});
+
+it.effect("treats searches deferred by the request budget as backlog, not a failed refresh", () => {
+  const calls = makeCalls();
+  let fallbacks = 0;
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    assert.equal(snapshot.status, "ok");
+    assert.equal(snapshot.errorKind, "backlog");
+    // The gh fallback would spend the same budget that deferred the search.
+    assert.equal(fallbacks, 0);
+    const overview = yield* service.getOverview({});
+    assert.equal(overview.sync?.state, "syncing");
+    assert.isAbove(overview.sync?.pending.searches ?? 0, 0);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [
+          new GitHubCliError({
+            operation: "schedule",
+            detail: "GitHub search budget reached.",
+            kind: "rate_limited",
+          }),
+        ],
+        fallbackRequest: () => {
+          fallbacks += 1;
+          return Effect.succeed([]);
+        },
+      }),
+    ),
+  );
+});
+
 it.effect("clearData isolates the selected account and rejects an old generation", () => {
   const calls = makeCalls();
   const pr = makePrNode({ id: "PR_clear_advisory", number: 19 });
@@ -1815,6 +2199,7 @@ it.effect("uses the tracked head oid for merge instead of trusting client input"
     const staleClientInput = {
       url: tracked.url,
       method: "squash",
+      deleteBranch: true,
       expectedHeadOid: "stale-client-head",
       expectedComparison: {
         baseRepository: "octo/repo",
@@ -1827,7 +2212,8 @@ it.effect("uses the tracked head oid for merge instead of trusting client input"
         mode: "current_pr",
       },
     } as Parameters<typeof service.merge>[0] & { readonly expectedHeadOid: string };
-    yield* service.merge(staleClientInput);
+    const merged = yield* service.merge(staleClientInput);
+    assert.ok(merged.actionWarning?.includes("The PR merged"));
     assert.equal(
       (yield* Effect.exit(
         service.merge({
@@ -1948,6 +2334,84 @@ it.effect("loads GitHub detail surfaces and retains cached data on transient fai
         prDetailResponses: [prDetailResponse({ title: "Fresh detail" }), transientFailure],
         timelineResponses: [prTimelineResponse()],
         fileResponses: [prFilesResponse()],
+      }),
+    ),
+  );
+});
+
+it.effect("loads GitHub detail when GitHub refuses a requested reviewer", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });
+  const refused = {
+    ...prDetailResponse({ title: "Partial detail" }),
+    errors: [
+      {
+        type: "FORBIDDEN",
+        message: "Resource not accessible by integration",
+        path: ["repository", "pullRequest", "reviewRequests", "nodes", 0, "requestedReviewer"],
+      },
+    ],
+  };
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const tracked = snapshot.pullRequests[0];
+    assert.ok(tracked);
+
+    const detail = yield* service.getDetail({ key: tracked.key });
+    assert.equal(detail.detail.title, "Fresh detail");
+    const reads = calls.graphql.filter((request) => request.query.includes("F5PrDetail("));
+    assert.deepStrictEqual(
+      reads.map(
+        (request) => (request.variables as { requestedReviewers?: number }).requestedReviewers,
+      ),
+      [50, 0],
+    );
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("author", [pr])],
+        prDetailResponses: [refused, prDetailResponse({ title: "Fresh detail" })],
+      }),
+    ),
+  );
+});
+
+it.effect("does not retry GitHub detail for other GraphQL errors", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });
+  const failed = {
+    ...prDetailResponse(),
+    errors: [
+      {
+        type: "FORBIDDEN",
+        message: "Resource not accessible by integration",
+        path: ["repository", "pullRequest", "reviewRequests", "nodes", 0, "requestedReviewer"],
+      },
+      { type: "FORBIDDEN", message: "denied", path: ["repository", "pullRequest", "labels"] },
+    ],
+  };
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const tracked = snapshot.pullRequests[0];
+    assert.ok(tracked);
+
+    const exit = yield* Effect.exit(service.getDetail({ key: tracked.key }));
+    assert.equal(Exit.isFailure(exit), true);
+    assert.equal(
+      calls.graphql.filter((request) => request.query.includes("F5PrDetail(")).length,
+      1,
+    );
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("author", [pr])],
+        prDetailResponses: [failed, prDetailResponse({ title: "Fresh detail" })],
       }),
     ),
   );
@@ -2777,12 +3241,12 @@ it.effect("resumes unfinished scopes while refreshing healthy scopes after resta
     const first = yield* service.refreshNow({ mode: "force" });
     assert.equal(first.status, "degraded");
     const initial = calls.graphql.filter((call) => call.query.includes("query PrHubSearch("));
-    assert.equal(initial.length, 6);
+    assert.equal(initial.length, 7);
     assert.ok(initial.every((call) => !call.query.includes("team_review")));
     const completed = yield* sql<{
       count: number;
     }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE kind = 'source_watermark' AND json_extract(payload_json, '$.complete') = 1`;
-    assert.equal(completed[0]!.count, 5);
+    assert.equal(completed[0]!.count, 6);
     // Old versions created watermarks for no-match team scopes; they must not stall the new cycle.
     yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
       VALUES('github','github.com','1','source_watermark','unused-team','{"complete":false,"task":{"alias":"team_review_0"}}','2026-01-01','2026-01-01')`;
@@ -2797,7 +3261,7 @@ it.effect("resumes unfinished scopes while refreshing healthy scopes after resta
       assert.equal(recovered.pullRequests[0]?.number, 401);
       assert.equal(
         calls.graphql.filter((call) => call.query.includes("query PrHubSearch(")).length,
-        11,
+        13,
       );
       assert.equal(
         recovered.coverage?.find((scope) => scope.scope === "global_relationship_search")?.status,

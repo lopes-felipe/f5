@@ -1,11 +1,33 @@
+import { vi } from "vitest";
+import {
+  removeScratchThreadFolder,
+  scratchThreadCleanupPath,
+} from "../project/scratchFolderCleanup.ts";
+vi.mock("../project/scratchFolderCleanup.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../project/scratchFolderCleanup.ts")>();
+  return { ...actual, removeScratchThreadFolder: vi.fn(actual.removeScratchThreadFolder) };
+});
+import { removeFileIfSafe } from "./storagePathSafety.ts";
+vi.mock("./storagePathSafety.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./storagePathSafety.ts")>();
+  return { ...actual, removeFileIfSafe: vi.fn(actual.removeFileIfSafe) };
+});
+import { withAttachmentRetentionLease } from "./attachmentRetention.ts";
+import { withWorktreeLifecycleLock } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
+import { withProviderThreadAccess } from "../provider/providerThreadAccess.ts";
+import { makeFakeGitCore } from "../git/testDoubles.ts";
+import { canonicalWorktreePath } from "../git/worktreePaths.ts";
+import { NextTurnQueueStoreLive } from "../nextTurnQueue/Layers/NextTurnQueueStore.ts";
+import { TerminalManager, type TerminalManagerShape } from "../terminal/Services/Manager.ts";
 import * as NodeFS from "node:fs/promises";
+import { customWorktreesDirectory } from "../worktreesDirectoryPaths.ts";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { CommandId, EventId, ProjectId, ThreadId } from "@t3tools/contracts";
-import { Effect, Exit, Layer, Scope, Stream } from "effect";
+import { CheckpointRef, CommandId, EventId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Scope, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
@@ -15,6 +37,11 @@ import {
 } from "../checkpointing/Services/CheckpointStore.ts";
 import { ServerConfig } from "../config.ts";
 import { GitCore, type GitCoreShape } from "../git/Services/GitCore.ts";
+import { GitManager, type GitManagerShape } from "../git/Services/GitManager.ts";
+import { GitServiceLive } from "../git/Layers/GitService.ts";
+import { GitCoreTestLive } from "../git/testLayers.ts";
+import { git as runGit, makeClonedRepo } from "./storageAutomation.testHarness.ts";
+import { ProfileRegistryStore } from "../profiles/ProfileRegistryStore.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -26,11 +53,18 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../provider/Services/ProviderService.ts";
-import { withHomeSandbox } from "../testing/homeSandbox.ts";
+import {
+  reportDatabaseCorruption,
+  resetDatabaseHealthForTest,
+} from "../persistence/databaseHealth.ts";
+import { assertOutsideRealUserState, withHomeSandbox } from "../testing/homeSandbox.ts";
+import { workflowArchiveFixture } from "../orchestration/workflowArchive.testUtils.ts";
+import type { OrchestrationReadModel } from "@t3tools/contracts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { StorageMaintenance } from "./StorageMaintenance.ts";
 import { StorageMaintenanceLive } from "./StorageMaintenance.ts";
 import { sizeIfExists } from "./diskUsage.ts";
+import { openRuntimeSqliteDatabase } from "../persistence/runtimeSqlite.ts";
 
 function makeProviderServiceStub(input?: {
   readonly stopSession?: ProviderServiceShape["stopSession"];
@@ -60,41 +94,116 @@ function makeCheckpointStoreStub(): CheckpointStoreShape {
     isGitRepository: notImplemented,
     captureCheckpoint: notImplemented,
     hasCheckpointRef: notImplemented,
+    readCheckpointRefs: () => Effect.succeed({}),
     restoreCheckpoint: notImplemented,
     diffCheckpoints: notImplemented,
     deleteCheckpointRefs: () => Effect.void,
   } as unknown as CheckpointStoreShape;
 }
 
+const metadataWorktrees = new Map<string, string[]>();
+
 function makeGitCoreStub(input?: {
   readonly removeWorktree?: GitCoreShape["removeWorktree"];
   readonly status?: GitCoreShape["status"];
 }): GitCoreShape {
-  return {
-    status:
-      input?.status ??
-      ((request) =>
-        Effect.succeed({
-          branch: "main",
-          hasWorkingTreeChanges: request.cwd.includes("feature-dirty"),
-          workingTree: { files: [], insertions: 0, deletions: 0 },
-          hasUpstream: false,
-          aheadCount: request.cwd.includes("feature-ahead") ? 1 : 0,
-          behindCount: 0,
-          pr: null,
-        })),
+  const status: GitCoreShape["status"] =
+    input?.status ??
+    ((request) =>
+      Effect.succeed({
+        branch: "feature",
+        hasWorkingTreeChanges: request.cwd.includes("feature-dirty"),
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+        hasUpstream: true,
+        aheadCount: request.cwd.includes("feature-ahead") ? 1 : 0,
+        behindCount: 0,
+        pr: null,
+        changeRequest: null,
+      }));
+  return makeFakeGitCore({
+    status,
+    listWorktrees: (cwd) =>
+      Effect.tryPromise(async () =>
+        Promise.all(
+          (metadataWorktrees.get(cwd) ?? []).map(async (path) => ({
+            path,
+            canonicalPath: await canonicalWorktreePath(path),
+            headSha: "abc123",
+            branch: "feature",
+            bare: false,
+            detached: false,
+            locked: null,
+            prunable: null,
+            isMain: false,
+          })),
+        ),
+      ).pipe(Effect.orDie),
+    resolveCommonDir: (cwd) =>
+      Effect.promise(() => canonicalWorktreePath(NodePath.join(cwd, ".git"))),
+    inspectCheckout: (cwd) =>
+      Effect.gen(function* () {
+        const state = yield* status({ cwd });
+        const root = [...metadataWorktrees].find(([, paths]) => paths.includes(cwd))?.[0] ?? cwd;
+        return {
+          canonicalRoot: yield* Effect.promise(() => canonicalWorktreePath(cwd)),
+          commonDir: yield* Effect.promise(() =>
+            canonicalWorktreePath(NodePath.join(root, ".git")),
+          ),
+          registration: null,
+          headSha: "abc123",
+          branch: "feature",
+          operation: null,
+          hasInitializedSubmodules: false,
+          hasTrackedChanges: state.hasWorkingTreeChanges,
+          hasUntrackedChanges: false,
+          ignoredEntries: [],
+          ignoredTruncated: false,
+          upstreamRef: "origin/feature",
+          upstreamSha: "abc123",
+          aheadCount: state.aheadCount,
+          behindCount: state.behindCount,
+        };
+      }),
     removeWorktree:
       input?.removeWorktree ??
       ((request) =>
         Effect.promise(() => NodeFS.rm(request.path, { recursive: true, force: true }))),
-  } as unknown as GitCoreShape;
+  }).service;
 }
 
 function makeOrchestrationEngineStub(input?: {
   readonly dispatch?: OrchestrationEngineShape["dispatch"];
+  readonly omitDeletedScratchThreads?: boolean;
+  readonly getWorkflows?: () => Pick<
+    OrchestrationReadModel,
+    "planningWorkflows" | "codeReviewWorkflows" | "investigationWorkflows"
+  >;
 }): OrchestrationEngineShape {
   return {
-    getReadModel: () => Effect.succeed({} as never),
+    getReadModel: () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const projects =
+          yield* sql`SELECT project_id AS id, title, kind, workspace_root AS "workspaceRoot", deleted_at AS "deletedAt" FROM projection_projects`;
+        const threads =
+          yield* sql`SELECT thread_id AS id, title, last_interaction_at AS "lastInteractionAt", project_id AS "projectId", worktree_path AS "worktreePath", scratch_path AS "scratchPath", archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads`;
+        return {
+          ...input?.getWorkflows?.(),
+          projects: input?.omitDeletedScratchThreads
+            ? projects.filter((project) => project.kind !== "scratch")
+            : projects,
+          threads: threads
+            .filter(
+              (thread) =>
+                !input?.omitDeletedScratchThreads ||
+                thread.deletedAt === null ||
+                !projects.some(
+                  (project) => project.id === thread.projectId && project.kind === "scratch",
+                ),
+            )
+            .map((thread) => ({ ...thread, session: null, activities: [] })),
+        } as never;
+      }),
     readEvents: () => Stream.empty,
     dispatch:
       input?.dispatch ??
@@ -103,6 +212,9 @@ function makeOrchestrationEngineStub(input?: {
           const sql = yield* SqlClient.SqlClient;
           const now = new Date().toISOString();
           switch (command.type) {
+            case "thread.archive":
+              yield* sql`UPDATE projection_threads SET archived_at = ${command.createdAt}, updated_at = ${now} WHERE thread_id = ${command.threadId}`;
+              return { sequence: 1 };
             case "thread.meta.update":
               yield* sql`
                 UPDATE projection_threads
@@ -138,10 +250,13 @@ function makeOrchestrationEngineStub(input?: {
 function makeStorageTestLayer(input?: {
   readonly providerService?: ProviderServiceShape;
   readonly checkpointStore?: CheckpointStoreShape;
-  readonly gitCore?: GitCoreShape;
+  /** A stub, or `"real"` for the live GitCore against temporary repositories. */
+  readonly gitCore?: GitCoreShape | "real";
   readonly orchestrationEngine?: OrchestrationEngineShape;
   /** Provide server settings; without them the Codex staging category is omitted. */
   readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
+  /** Run as a named profile: the default profile's state directory, given this one's. */
+  readonly defaultStateDir?: (stateDir: string) => string;
 }) {
   const maintenance = input?.settings
     ? StorageMaintenanceLive.pipe(
@@ -149,12 +264,37 @@ function makeStorageTestLayer(input?: {
       )
     : StorageMaintenanceLive;
   return maintenance.pipe(
+    Layer.provideMerge(NextTurnQueueStoreLive),
+    Layer.provideMerge(
+      Layer.succeed(TerminalManager, {
+        listSessions: Effect.succeed([]),
+      } as unknown as TerminalManagerShape),
+    ),
     Layer.provideMerge(OrchestrationEventStoreLive),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(
-      ServerConfig.layerTest(process.cwd(), {
-        prefix: "t3-storage-maintenance-test-",
-      }),
+      input?.gitCore === "real"
+        ? GitCoreTestLive.pipe(Layer.provideMerge(GitServiceLive))
+        : Layer.succeed(GitCore, input?.gitCore ?? makeGitCoreStub()),
+    ),
+    Layer.provideMerge(
+      Layer.effect(
+        ServerConfig,
+        Effect.gen(function* () {
+          const base = yield* ServerConfig;
+          const config = input?.defaultStateDir
+            ? { ...base, defaultStateDir: input.defaultStateDir(base.stateDir) }
+            : base;
+          yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+          return config;
+        }),
+      ).pipe(
+        Layer.provide(
+          ServerConfig.layerTest(process.cwd(), {
+            prefix: "t3-storage-maintenance-test-",
+          }),
+        ),
+      ),
     ),
     Layer.provideMerge(
       Layer.succeed(ProviderService, input?.providerService ?? makeProviderServiceStub()),
@@ -162,7 +302,6 @@ function makeStorageTestLayer(input?: {
     Layer.provideMerge(
       Layer.succeed(CheckpointStore, input?.checkpointStore ?? makeCheckpointStoreStub()),
     ),
-    Layer.provideMerge(Layer.succeed(GitCore, input?.gitCore ?? makeGitCoreStub())),
     Layer.provideMerge(
       Layer.succeed(
         OrchestrationEngineService,
@@ -183,6 +322,8 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 async function writeFile(path: string, contents: string) {
+  // Several fixtures write placeholder bytes over `~/.f5/userdata/state.sqlite`.
+  assertOutsideRealUserState(path);
   await NodeFS.mkdir(NodePath.dirname(path), { recursive: true });
   await NodeFS.writeFile(path, contents);
 }
@@ -191,6 +332,12 @@ async function writeGitWorktreeMetadata(input: {
   readonly worktreePath: string;
   readonly mainWorktreePath: string;
 }) {
+  assertOutsideRealUserState(input.worktreePath);
+  assertOutsideRealUserState(input.mainWorktreePath);
+  metadataWorktrees.set(input.mainWorktreePath, [
+    ...(metadataWorktrees.get(input.mainWorktreePath) ?? []),
+    input.worktreePath,
+  ]);
   const gitDir = NodePath.join(input.mainWorktreePath, ".git");
   const worktreeGitDir = NodePath.join(gitDir, "worktrees", NodePath.basename(input.worktreePath));
   await NodeFS.mkdir(input.worktreePath, { recursive: true });
@@ -199,7 +346,684 @@ async function writeGitWorktreeMetadata(input: {
   await NodeFS.writeFile(NodePath.join(worktreeGitDir, "commondir"), "../..\n");
 }
 
+for (const categoryId of ["inactiveF5Worktrees", "legacyT3Worktrees"] as const) {
+  it.effect(`continues ${categoryId} cleanup after a deleted session refuses to stop`, () => {
+    const threadId = ThreadId.makeUnsafe(`stop-failed-${categoryId}`);
+    let blockedPath = "";
+    const providers: ProviderServiceShape = {
+      ...makeProviderServiceStub({ stopSession: () => Effect.die("stop refused") }),
+      listSessions: () =>
+        Effect.succeed([{ threadId, cwd: blockedPath, status: "ready" }] as never),
+    };
+    return withHomeSandbox(
+      Effect.gen(function* () {
+        const config = yield* ServerConfig;
+        const sql = yield* SqlClient.SqlClient;
+        const storage = yield* StorageMaintenance;
+        const root =
+          categoryId === "inactiveF5Worktrees"
+            ? config.worktreesDir
+            : NodePath.join(NodeOS.homedir(), ".t3", "worktrees");
+        blockedPath = NodePath.join(root, "blocked");
+        const cleanPath = NodePath.join(root, "clean");
+        yield* Effect.promise(async () => {
+          await writeFile(
+            NodePath.join(NodeOS.homedir(), ".f5", "userdata", "state.sqlite"),
+            "ready",
+          );
+          for (const worktreePath of [blockedPath, cleanPath]) {
+            await writeGitWorktreeMetadata({
+              worktreePath,
+              mainWorktreePath: NodePath.join(config.baseDir, "main"),
+            });
+            await writeFile(NodePath.join(worktreePath, "file.txt"), "contents");
+          }
+        });
+        yield* seedThread({
+          sql,
+          threadId,
+          deletedAt: new Date().toISOString(),
+          worktreePath: blockedPath,
+        });
+        const report = yield* storage.inspect({ force: true });
+        const targets = report.categories.find((category) => category.id === categoryId)!.targets;
+        assert.equal(targets.filter((target) => target.safeToDelete).length, 2);
+        const result = yield* storage.cleanup({
+          operationId: `cleanup-${categoryId}`,
+          scanId: report.scanId,
+          nonce: report.confirmationNonce,
+          categoryIds: [categoryId],
+          targetSelections: [{ categoryId, targetIds: targets.map((target) => target.id) }],
+          confirmationText: "DELETE",
+          options: { vacuumAfterDeletes: false },
+        });
+        assert.equal(yield* Effect.promise(() => pathExists(blockedPath)), true);
+        assert.equal(yield* Effect.promise(() => pathExists(cleanPath)), false);
+        assert.ok(
+          result.results[0]?.warnings.some(
+            (warning) => warning.path === blockedPath && warning.reason.includes("stop refused"),
+          ),
+        );
+      }).pipe(Effect.provide(makeStorageTestLayer({ providerService: providers }))),
+    );
+  });
+}
+
+const awaitOperation = (
+  storage: import("./StorageMaintenance.ts").StorageMaintenanceShape,
+  operationId: string,
+) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 1000; attempt++) {
+      const result = yield* storage.getOperation({ operationId });
+      if (result.status.completedAt) return result;
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 1)));
+    }
+    return yield* Effect.die("Cleanup did not complete.");
+  });
+
 const layer = it.layer(makeStorageTestLayer());
+
+it.effect(
+  "lists another profile's database snapshots without discounting this profile's total",
+  () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const config = yield* ServerConfig;
+        const otherStateDir = config.defaultStateDir!;
+        assert.notEqual(otherStateDir, config.stateDir);
+        const backups = NodePath.join(otherStateDir, "backups");
+        const older = NodePath.join(backups, "snapshot-1790000000000");
+        const newest = NodePath.join(backups, "snapshot-1790003600000");
+        const database = "page".repeat(64 * 1024);
+        yield* Effect.promise(async () => {
+          await writeFile(NodePath.join(otherStateDir, "state.sqlite"), database);
+          for (const snapshot of [older, newest])
+            await writeFile(NodePath.join(snapshot, "state.sqlite"), database);
+        });
+        // The first scan stores its comparison in this profile's state directory;
+        // scan again so that file is part of what both sides measure.
+        yield* storage.inspect({ force: true });
+        const report = yield* storage.inspect({ force: true });
+
+        const category = report.categories.find((entry) => entry.id === "f5Backups")!;
+        const target = category.targets.find((entry) => entry.path === older)!;
+        // Sized by what the newer copy lacks, like this profile's own snapshots.
+        assert.equal(target.bytes, 0);
+        assert.include(target.detail, "not shared with newer copies");
+        // Those snapshots are outside this profile's measured usage, so the
+        // bytes they share must not come off it.
+        const sizeOf = (path: string) => Effect.promise(() => sizeIfExists(path));
+        assert.equal(
+          report.totalUsedBytes,
+          (yield* sizeOf(config.stateDir)).bytes + (yield* sizeOf(config.worktreesDir)).bytes,
+        );
+      }).pipe(
+        Effect.provide(
+          makeStorageTestLayer({
+            defaultStateDir: (stateDir) =>
+              NodePath.join(NodePath.dirname(stateDir), "default-profile-userdata"),
+          }),
+        ),
+      ),
+    ),
+  // Builds its own server layer and scans twice, which outruns the default on a loaded runner.
+  60_000,
+);
+
+it.effect(
+  "skipped purge and no-op log pruning keep the measured generation and concise audit reasons",
+  () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.makeUnsafe("skipped-stop-no-mutation");
+        yield* seedThread({ sql, threadId, deletedAt: daysAgo(90) });
+        const report = yield* storage.inspect({ force: true });
+        const before = yield* storage.getUsage();
+        yield* storage.purgeThreads({
+          operationId: "automatic-stop-skip",
+          deletedBefore: daysAgo(30),
+          archivedBefore: null,
+          maxThreads: 1,
+        });
+        yield* storage.pruneTerminalThreadLogs({
+          operationId: "logs-no-mutation",
+          modifiedBefore: daysAgo(1),
+          includeArchived: true,
+        });
+        assert.deepStrictEqual((yield* storage.getUsage()).confirmation, before.confirmation);
+        const operation = yield* storage.acceptCleanup({
+          operationId: "manual-stop-skip",
+          backendEpoch: before.status.backendEpoch,
+          scanId: report.scanId,
+          nonce: report.confirmationNonce,
+          categoryIds: ["purgeDeletedThreads"],
+          options: { vacuumAfterDeletes: false },
+        });
+        const result = yield* awaitOperation(storage, operation.operationId);
+        assert.equal(result.status.result?.results[0]?.perTargetReclaimed[0]?.status, "Skipped");
+        assert.equal(yield* countRows(sql, "projection_threads", threadId), 1);
+        const usage = yield* storage.getUsage();
+        assert.equal(usage.report?.scanId, report.scanId);
+        assert.equal(usage.status.scan.state, "idle");
+        const audit = yield* sql<{
+          reason: string | null;
+        }>`SELECT reason FROM storage_automation_audit`;
+        assert.isAbove(audit.length, 0);
+        for (const row of audit) {
+          assert.isAtMost(row.reason?.length ?? 0, 300);
+          assert.notInclude(row.reason ?? "", "\n    at ");
+        }
+      }).pipe(
+        Effect.provide(
+          makeStorageTestLayer({
+            providerService: makeProviderServiceStub({
+              stopSession: () => Effect.die(new Error(`Provider stop failed: ${"x".repeat(500)}`)),
+            }),
+          }),
+        ),
+      ),
+    ),
+);
+
+for (const mode of [
+  "failure",
+  "remove-failure",
+  "refusal",
+  "foreign-project",
+  "outside-root",
+  "removed-before-purge",
+  "archived",
+  "missing-metadata",
+  "missing-metadata-unallocated",
+] as const) {
+  it.effect(`handles guarded scratch folder purge (${mode})`, () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const sql = yield* SqlClient.SqlClient;
+        const config = yield* ServerConfig;
+        const threadId = ThreadId.makeUnsafe(`scratch-purge-${mode}`);
+        const scratchRoot = NodePath.join(config.stateDir, "scratch");
+        const folder = NodePath.join(
+          mode === "outside-root" ? config.stateDir : scratchRoot,
+          "research-12345678",
+        );
+        const tombstone = scratchThreadCleanupPath(folder, threadId);
+        yield* seedThread({
+          sql,
+          threadId,
+          deletedAt: mode === "archived" ? null : daysAgo(90),
+          ...(mode === "archived" ? { archivedAt: daysAgo(90) } : {}),
+        });
+        yield* sql`UPDATE projection_projects SET kind='scratch', workspace_root=${scratchRoot} WHERE project_id='project-storage-maintenance'`;
+        if (mode !== "missing-metadata-unallocated") {
+          yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
+          yield* Effect.promise(() => writeFile(NodePath.join(folder, "notes.txt"), "research"));
+        }
+        if (mode === "removed-before-purge") {
+          yield* Effect.promise(() => NodeFS.rm(folder, { recursive: true }));
+        }
+        if (mode === "refusal") {
+          yield* Effect.promise(async () => {
+            await NodeFS.rm(folder, { recursive: true });
+            await NodeFS.symlink(config.stateDir, folder, "dir");
+          });
+        }
+        if (mode === "failure")
+          vi.mocked(removeScratchThreadFolder).mockRejectedValueOnce(new Error("EBUSY"));
+        if (mode === "remove-failure") {
+          const original = vi.mocked(removeScratchThreadFolder).getMockImplementation()!;
+          vi.mocked(removeScratchThreadFolder)
+            .mockImplementationOnce(original)
+            .mockRejectedValueOnce(new Error("EBUSY"));
+        }
+        if (mode === "foreign-project")
+          yield* sql`UPDATE projection_projects SET kind='standard' WHERE project_id='project-storage-maintenance'`;
+        const purge = (suffix: string) =>
+          storage.purgeThreads({
+            operationId: `scratch-${mode}-${suffix}`,
+            deletedBefore: daysAgo(30),
+            archivedBefore: mode === "archived" ? daysAgo(30) : null,
+            maxThreads: 1,
+          });
+        const result = yield* purge("first");
+        if (mode === "failure" || mode === "remove-failure") {
+          assert.equal(yield* countRows(sql, "projection_threads", threadId), 1);
+          assert.isTrue(
+            yield* Effect.promise(() => pathExists(mode === "remove-failure" ? tombstone : folder)),
+          );
+          yield* purge("retry");
+        }
+        assert.equal(yield* countRows(sql, "projection_threads", threadId), 0);
+        const retained =
+          mode === "refusal" || mode === "foreign-project" || mode === "outside-root";
+        assert.equal(yield* Effect.promise(() => pathExists(folder)), retained);
+        assert.isFalse(yield* Effect.promise(() => pathExists(tombstone)));
+        if (retained)
+          assert.isTrue(
+            result.warnings.some((warning) => warning.reason.includes("Workspace retained")),
+          );
+      }).pipe(
+        Effect.provide(
+          makeStorageTestLayer({
+            orchestrationEngine: makeOrchestrationEngineStub({
+              omitDeletedScratchThreads: mode.startsWith("missing-metadata"),
+            }),
+          }),
+        ),
+      ),
+    ),
+  );
+}
+
+it.effect("keeps an authorized archived purge deleted and retryable after SQL rollback", () =>
+  withHomeSandbox(
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance;
+      const sql = yield* SqlClient.SqlClient;
+      const config = yield* ServerConfig;
+      const threadId = ThreadId.makeUnsafe("archived-scratch-sql-rollback");
+      const scratchRoot = NodePath.join(config.stateDir, "scratch");
+      const folder = NodePath.join(scratchRoot, "rollback-12345678");
+      yield* seedThread({ sql, threadId, archivedAt: daysAgo(90), deletedAt: null });
+      yield* sql`UPDATE projection_projects SET kind='scratch', workspace_root=${scratchRoot} WHERE project_id='project-storage-maintenance'`;
+      yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
+      yield* Effect.promise(() =>
+        writeFile(NodePath.join(folder, "notes.txt"), "authorized deletion"),
+      );
+      yield* sql`CREATE TRIGGER block_scratch_purge BEFORE DELETE ON projection_threads WHEN OLD.thread_id = 'archived-scratch-sql-rollback' BEGIN SELECT RAISE(ABORT, 'test SQL failure'); END`;
+      const result = yield* storage.purgeThreads({
+        operationId: "archived-scratch-sql-failure",
+        archivedBefore: daysAgo(30),
+        deletedBefore: daysAgo(0),
+        maxThreads: 1,
+      });
+      assert.deepEqual(result.purgedThreadIds, []);
+      const rows = yield* sql<{
+        deletedAt: string | null;
+      }>`SELECT deleted_at AS "deletedAt" FROM projection_threads WHERE thread_id=${threadId}`;
+      assert.lengthOf(rows, 1);
+      assert.isString(rows[0]?.deletedAt);
+      assert.isFalse(yield* Effect.promise(() => pathExists(folder)));
+      assert.isFalse(
+        yield* Effect.promise(() => pathExists(scratchThreadCleanupPath(folder, threadId))),
+      );
+      assert.isTrue(
+        result.warnings.some((warning) => warning.reason.startsWith("Deleted, cleanup incomplete")),
+      );
+      yield* sql`DROP TRIGGER block_scratch_purge`;
+      const retry = yield* storage.purgeThreads({
+        operationId: "archived-scratch-sql-retry",
+        archivedBefore: null,
+        deletedBefore: daysAgo(0),
+        maxThreads: 1,
+      });
+      assert.deepEqual(retry.purgedThreadIds, [threadId]);
+    }).pipe(Effect.provide(makeStorageTestLayer())),
+  ),
+);
+
+for (const mode of ["fallback", "another-copy", "remaining"] as const) {
+  it.effect(`checkpoint preflight uses bulk identity reads (${mode})`, () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        let removed = false;
+        let deletedCwd: string | undefined;
+        let reads = 0;
+        const ref = CheckpointRef.makeUnsafe("refs/t3/checkpoints/purge-ref/1");
+        const oid = "a".repeat(40);
+        let worktree = "";
+        const checkpoints: CheckpointStoreShape = {
+          ...makeCheckpointStoreStub(),
+          isGitRepository: () => Effect.succeed(true),
+          readCheckpointRefs: ({ cwd }) =>
+            Effect.sync(() => {
+              reads++;
+              return removed && cwd === deletedCwd ? {} : { [ref]: oid };
+            }),
+          deleteCheckpointRefs: (input) =>
+            Effect.sync(() => {
+              deletedCwd = input.cwd;
+              assert.deepStrictEqual(input.expectedOids, { [ref]: oid });
+              removed = mode !== "remaining";
+            }),
+        };
+        return yield* Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            sql = yield* SqlClient.SqlClient,
+            config = yield* ServerConfig;
+          const threadId = ThreadId.makeUnsafe(`purge-ref-${mode}`);
+          const workspace = NodePath.join(config.baseDir, "recorded-root");
+          worktree = NodePath.join(config.baseDir, "recorded-worktree");
+          yield* Effect.promise(async () => {
+            await NodeFS.mkdir(NodePath.join(workspace, ".git"), { recursive: true });
+            if (mode !== "fallback")
+              await NodeFS.mkdir(NodePath.join(worktree, ".git"), { recursive: true });
+          });
+          yield* seedThread({ sql, threadId, worktreePath: worktree, deletedAt: daysAgo(90) });
+          yield* sql`UPDATE projection_projects SET workspace_root = ${workspace}`;
+          yield* sql`INSERT INTO projection_turns (thread_id, turn_id, state, requested_at, checkpoint_turn_count, checkpoint_ref, checkpoint_files_json)
+          VALUES (${threadId}, 'ref-turn', 'completed', ${daysAgo(90)}, 1, ${ref}, '[]')`;
+          const report = yield* storage.inspect({ force: true });
+          const operation = yield* storage.acceptCleanup({
+            operationId: `ref-${mode}`,
+            backendEpoch: (yield* storage.getStatus).backendEpoch,
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["purgeDeletedThreads"],
+            options: { vacuumAfterDeletes: false },
+          });
+          const result = yield* awaitOperation(storage, operation.operationId);
+          assert.equal(deletedCwd, mode === "fallback" ? workspace : worktree);
+          assert.isAtMost(reads, 3);
+          assert.equal(
+            yield* countRows(sql, "projection_threads", threadId),
+            mode === "remaining" ? 1 : 0,
+          );
+          if (mode === "another-copy")
+            assert.isTrue(
+              result.status.result?.warnings.some((warning) =>
+                warning.reason.includes("another recorded repository"),
+              ),
+            );
+          if (mode === "remaining")
+            assert.equal(
+              result.status.result?.results[0]?.perTargetReclaimed[0]?.status,
+              "Deleted, cleanup incomplete",
+            );
+        }).pipe(Effect.provide(makeStorageTestLayer({ checkpointStore: checkpoints })));
+      }),
+    ),
+  );
+}
+
+it.effect(
+  "manual acceptance and automatic purge share lock order without holding attachment access during stop",
+  () =>
+    Effect.gen(function* () {
+      const stopping = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      let stopped = false;
+      const providers = makeProviderServiceStub({
+        stopSession: () =>
+          Effect.gen(function* () {
+            if (!stopped) {
+              stopped = true;
+              yield* Deferred.succeed(stopping, undefined);
+              yield* Deferred.await(resume);
+            }
+          }),
+      });
+      return yield* withHomeSandbox(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const storage = yield* StorageMaintenance;
+            const sql = yield* SqlClient.SqlClient;
+            const config = yield* ServerConfig;
+            const threadId = ThreadId.makeUnsafe("concurrent-manual-automatic");
+            yield* seedThread({ sql, threadId, deletedAt: daysAgo(90) });
+            const report = yield* storage.inspect({ force: true });
+            const operation = yield* storage.acceptCleanup({
+              operationId: "manual-overlap",
+              backendEpoch: (yield* storage.getStatus).backendEpoch,
+              scanId: report.scanId,
+              nonce: report.confirmationNonce,
+              categoryIds: ["purgeDeletedThreads"],
+              options: { vacuumAfterDeletes: false },
+            });
+            yield* Deferred.await(stopping);
+            // Quiescence must leave attachment ingress/backup access available.
+            yield* withAttachmentRetentionLease(config.attachmentsDir, Effect.void).pipe(
+              Effect.timeout("1 second"),
+            );
+            const automatic = yield* storage
+              .purgeThreads({
+                operationId: "automatic-overlap",
+                deletedBefore: daysAgo(30),
+                archivedBefore: null,
+                maxThreads: 1,
+              })
+              .pipe(Effect.forkIn(yield* Scope.Scope));
+            // Let the automatic pass enumerate its small fixture and wait for the same provider lock.
+            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+            yield* withAttachmentRetentionLease(config.attachmentsDir, Effect.void).pipe(
+              Effect.timeout("1 second"),
+            );
+            yield* Deferred.succeed(resume, undefined);
+            const manual = yield* awaitOperation(storage, operation.operationId);
+            yield* Fiber.join(automatic).pipe(Effect.timeout("1 second"));
+            assert.equal(manual.status.state, "succeeded");
+            assert.equal(yield* countRows(sql, "projection_threads", threadId), 0);
+            yield* withAttachmentRetentionLease(config.attachmentsDir, Effect.void).pipe(
+              Effect.timeout("1 second"),
+            );
+          }),
+        ).pipe(Effect.provide(makeStorageTestLayer({ providerService: providers }))),
+      );
+    }),
+);
+
+for (const categoryId of ["inactiveF5Worktrees", "legacyT3Worktrees"] as const) {
+  it.effect(
+    `cancelling ${categoryId} while its lifecycle lock is held leaves the checkout intact`,
+    () =>
+      withHomeSandbox(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const storage = yield* StorageMaintenance;
+            const config = yield* ServerConfig;
+            const path = NodePath.join(
+              categoryId === "inactiveF5Worktrees"
+                ? config.worktreesDir
+                : NodePath.join(NodeOS.homedir(), ".t3", "worktrees"),
+              "cancel-locked",
+            );
+            yield* Effect.promise(async () => {
+              await writeFile(
+                NodePath.join(NodeOS.homedir(), ".f5", "userdata", "state.sqlite"),
+                "ready",
+              );
+              await writeGitWorktreeMetadata({
+                worktreePath: path,
+                mainWorktreePath: NodePath.join(config.baseDir, "cancel-main"),
+              });
+              await writeFile(NodePath.join(path, "keep.txt"), "keep these bytes");
+            });
+            const report = yield* storage.inspect({ force: true });
+            assert.isTrue(
+              report.categories
+                .find((category) => category.id === categoryId)
+                ?.targets.some((target) => target.path === path && target.safeToDelete),
+              JSON.stringify(report.categories.find((category) => category.id === categoryId)),
+            );
+            const locked = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            yield* withWorktreeLifecycleLock(
+              path,
+              Deferred.succeed(locked, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            ).pipe(Effect.forkIn(yield* Scope.Scope));
+            yield* Deferred.await(locked);
+            const operation = yield* storage.acceptCleanup({
+              operationId: `cancel-${categoryId}`,
+              backendEpoch: (yield* storage.getStatus).backendEpoch,
+              scanId: report.scanId,
+              nonce: report.confirmationNonce,
+              categoryIds: [categoryId],
+              targetSelections: [
+                {
+                  categoryId,
+                  targetIds: [
+                    report.categories
+                      .find((category) => category.id === categoryId)!
+                      .targets.find((target) => target.path === path)!.id,
+                  ],
+                },
+              ],
+              confirmationText: "DELETE",
+              options: { vacuumAfterDeletes: false },
+            });
+            while ((yield* storage.getStatus).cleanup?.progress?.phase !== "deleting")
+              yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 1)));
+            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+            yield* storage.cancel(operation.operationId);
+            yield* Deferred.succeed(release, undefined);
+            const result = yield* awaitOperation(storage, operation.operationId);
+            assert.equal(result.status.state, "cancelled");
+            assert.deepStrictEqual(result.status.result?.results, []);
+            assert.isTrue(yield* Effect.promise(() => pathExists(NodePath.join(path, "keep.txt"))));
+          }),
+        ).pipe(Effect.provide(makeStorageTestLayer())),
+      ),
+  );
+}
+
+for (const cancelled of [false, true]) {
+  it.effect(
+    `keeps completed purge outcomes when optional compaction ${cancelled ? "is cancelled" : "fails"}`,
+    () =>
+      Effect.gen(function* () {
+        const compacting = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let gates = 0;
+        const engine = {
+          ...makeOrchestrationEngineStub(),
+          acquireMaintenanceLock: () =>
+            Effect.gen(function* () {
+              if (++gates === 2 && cancelled) {
+                yield* Deferred.succeed(compacting, undefined);
+                yield* Deferred.await(release);
+              }
+              return yield* Scope.make("sequential");
+            }),
+        };
+        return yield* withHomeSandbox(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const storage = yield* StorageMaintenance;
+              const sql = yield* SqlClient.SqlClient;
+              const config = yield* ServerConfig;
+              const threadId = ThreadId.makeUnsafe(`post-purge-compaction-${cancelled}`);
+              const path = NodePath.join(
+                config.attachmentsDir,
+                `${threadId}-11111111-1111-4111-8111-111111111111.txt`,
+              );
+              yield* seedThread({ sql, threadId, deletedAt: daysAgo(90) });
+              yield* Effect.promise(() => writeFile(path, "removed and accounted for"));
+              // The helper will fail opening these bytes as a database; the SQL fixture is :memory:.
+              yield* Effect.promise(() => writeFile(config.dbPath, "not a SQLite database"));
+              const report = yield* storage.inspect({ force: true });
+              const operation = yield* storage.acceptCleanup({
+                operationId: `post-purge-${cancelled}`,
+                backendEpoch: (yield* storage.getStatus).backendEpoch,
+                scanId: report.scanId,
+                nonce: report.confirmationNonce,
+                categoryIds: ["purgeDeletedThreads"],
+              });
+              if (cancelled) {
+                yield* Deferred.await(compacting);
+                yield* storage.cancel(operation.operationId);
+                yield* Deferred.succeed(release, undefined);
+              }
+              const result = yield* awaitOperation(storage, operation.operationId);
+              assert.equal(
+                result.status.state,
+                cancelled ? "cancelled" : "partial",
+                JSON.stringify(result),
+              );
+              assert.isAbove(result.status.result?.reclaimedBytes ?? 0, 0);
+              assert.equal(
+                result.status.result?.results[0]?.perTargetReclaimed[0]?.status,
+                "Removed",
+              );
+              assert.equal(result.status.result?.results[1]?.categoryId, "databaseVacuum");
+              assert.equal(yield* countRows(sql, "projection_threads", threadId), 0);
+              assert.isFalse(yield* Effect.promise(() => pathExists(path)));
+            }),
+          ).pipe(Effect.provide(makeStorageTestLayer({ orchestrationEngine: engine }))),
+        );
+      }),
+  );
+}
+
+it.effect("an unreadable provider-home root keeps accessible cleanup categories actionable", () =>
+  withHomeSandbox(
+    Effect.gen(function* () {
+      if (process.platform === "win32" || process.getuid?.() === 0) return;
+      const storage = yield* StorageMaintenance;
+      const config = yield* ServerConfig;
+      const root = config.providerHomesDir ?? NodePath.join(config.stateDir, "provider-homes");
+      const log = NodePath.join(config.providerLogsDir, "accessible-orphan.log");
+      yield* Effect.promise(async () => {
+        await NodeFS.mkdir(root, { recursive: true });
+        await writeFile(log, "accessible sibling");
+        await NodeFS.chmod(root, 0);
+      });
+      yield* Effect.gen(function* () {
+        const report = yield* storage.inspect({ force: true });
+        assert.isTrue(
+          report.warnings.some(
+            (warning) => warning.path === root && /EACCES|permission/i.test(warning.reason),
+          ),
+        );
+        assert.equal(report.providerHomesMeasurement, "unavailable");
+        assert.equal(
+          report.categories.find((category) => category.id === "databaseVacuum")?.measurement,
+          "complete",
+        );
+        const logs = report.categories.find(
+          (category) => category.id === "providerLogsForTerminalThreads",
+        );
+        assert.equal(logs?.measurement, "complete");
+        assert.equal(logs?.availability, "ready");
+        assert.isTrue(logs?.targets.some((target) => target.path === log));
+        assert.isNotNull((yield* storage.getUsage()).confirmation);
+      }).pipe(Effect.ensuring(Effect.promise(() => NodeFS.chmod(root, 0o700))));
+    }).pipe(Effect.provide(makeStorageTestLayer())),
+  ),
+);
+
+it.effect("an empty eligible attachment manifest never adds newly eligible files", () =>
+  withHomeSandbox(
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance;
+      const sql = yield* SqlClient.SqlClient;
+      const config = yield* ServerConfig;
+      const threadId = ThreadId.makeUnsafe("new-unconfirmed-attachment-thread");
+      yield* seedThread({ sql, threadId, deletedAt: null });
+      const outsidePath = NodePath.join(config.baseDir, "outside-attachments.png");
+      yield* sql`INSERT INTO attachments(attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash, final_path, lifecycle, created_at, updated_at)
+        VALUES ('outside-unconfirmed', ${threadId}, 'image', 'outside.png', 'image/png', 0, 'hash', ${outsidePath}, 'ready', '2026-01-01', '2026-01-01')`;
+      const report = yield* storage.inspect({ force: true });
+      assert.equal(
+        report.categories
+          .find((category) => category.id === "orphanAttachments")
+          ?.targets.filter((target) => target.safeToDelete).length,
+        0,
+      );
+      const path = NodePath.join(config.attachmentsDir, "new-unconfirmed.png");
+      yield* Effect.promise(() => writeFile(path, "new attachment"));
+      yield* sql`INSERT INTO attachments(attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash, final_path, lifecycle, created_at, updated_at)
+        VALUES ('new-unconfirmed', ${threadId}, 'image', 'new.png', 'image/png', 14, 'hash', ${path}, 'ready', '2026-01-01', '2026-01-01')`;
+      const result = yield* storage.cleanup({
+        operationId: "empty-confirmed-manifest",
+        scanId: report.scanId,
+        nonce: report.confirmationNonce,
+        categoryIds: ["orphanAttachments"],
+        options: { vacuumAfterDeletes: false },
+      });
+      assert.equal(result.reclaimedBytes, 0);
+      assert.isTrue(yield* Effect.promise(() => pathExists(path)));
+      const rows = yield* sql<{
+        lifecycle: string;
+      }>`SELECT lifecycle FROM attachments WHERE attachment_id = 'new-unconfirmed'`;
+      assert.equal(rows[0]?.lifecycle, "ready");
+    }).pipe(Effect.provide(makeStorageTestLayer())),
+  ),
+);
 
 layer("StorageMaintenance", (it) => {
   it.effect("inspect enumerates provider log files without following symlinks", () =>
@@ -283,12 +1107,12 @@ layer("StorageMaintenance", (it) => {
         const result = yield* storage.cleanup({
           operationId: "operation-provider-logs",
           scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
+          nonce: report.confirmationNonce,
           categoryIds: ["providerLogsForTerminalThreads"],
           options: { vacuumAfterDeletes: false },
         });
 
-        assert.equal(result.results[0]?.status, "Cleaned");
+        assert.equal(result.results[0]?.status, "Cleaned", JSON.stringify(result));
         assert.equal(yield* Effect.promise(() => pathExists(stalePath)), false);
         assert.equal(yield* Effect.promise(() => pathExists(activePath)), true);
         assert.equal(yield* Effect.promise(() => pathExists(busyPath)), true);
@@ -313,7 +1137,7 @@ layer("StorageMaintenance", (it) => {
         const request = {
           operationId: "operation-nonce",
           scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
+          nonce: report.confirmationNonce,
           categoryIds: ["providerLogRotations" as const],
           options: { vacuumAfterDeletes: false },
         };
@@ -344,7 +1168,7 @@ layer("StorageMaintenance", (it) => {
           storage.cleanup({
             operationId: "operation-legacy-no-delete",
             scanId: report.scanId,
-            confirmationNonce: report.confirmationNonce,
+            nonce: report.confirmationNonce,
             categoryIds: ["legacyT3Caches"],
             options: { vacuumAfterDeletes: false },
           }),
@@ -355,7 +1179,7 @@ layer("StorageMaintenance", (it) => {
         const result = yield* storage.cleanup({
           operationId: "operation-legacy-delete",
           scanId: nextReport.scanId,
-          confirmationNonce: nextReport.confirmationNonce,
+          nonce: nextReport.confirmationNonce,
           categoryIds: ["legacyT3Caches"],
           confirmationText: "DELETE",
           options: { vacuumAfterDeletes: false },
@@ -409,6 +1233,152 @@ layer("StorageMaintenance", (it) => {
     ),
   );
 
+  it.effect(
+    "counts database snapshots at what newer copies do not share",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance;
+          const config = yield* ServerConfig;
+          const backups = NodePath.join(config.stateDir, "backups");
+          const older = NodePath.join(backups, "snapshot-1790000000000");
+          const newest = NodePath.join(backups, "snapshot-1790003600000");
+          // Unchanged since both snapshots: on a cloning volume they would share every block.
+          const database = "page".repeat(64 * 1024);
+          yield* Effect.promise(async () => {
+            await writeFile(NodePath.join(config.stateDir, "state.sqlite"), database);
+            for (const snapshot of [older, newest]) {
+              await writeFile(NodePath.join(snapshot, "state.sqlite"), database);
+              await writeFile(NodePath.join(snapshot, "state.sqlite-wal"), "write-ahead log");
+            }
+          });
+          // The first scan stores its comparison next to the usage report; scan
+          // again so that file is part of what both sides measure.
+          yield* storage.inspect({ force: true });
+          const report = yield* storage.inspect({ force: true });
+
+          const sizeOf = (path: string) => Effect.promise(() => sizeIfExists(path));
+          const snapshotDatabaseBytes =
+            (yield* sizeOf(NodePath.join(older, "state.sqlite"))).bytes +
+            (yield* sizeOf(NodePath.join(newest, "state.sqlite"))).bytes;
+          const category = report.categories.find((entry) => entry.id === "f5Backups")!;
+          assert.equal(category.measurement, "complete");
+          // The newest snapshot is never offered.
+          assert.deepStrictEqual(
+            category.targets.map((target) => target.path),
+            [older],
+          );
+          const target = category.targets[0]!;
+          assert.equal(
+            target.bytes,
+            (yield* sizeOf(NodePath.join(older, "state.sqlite-wal"))).bytes,
+          );
+          assert.include(target.detail, "not shared with newer copies");
+          assert.equal(category.bytes, target.bytes);
+          assert.equal(
+            report.totalUsedBytes,
+            (yield* sizeOf(config.stateDir)).bytes +
+              (yield* sizeOf(config.worktreesDir)).bytes -
+              snapshotDatabaseBytes,
+          );
+
+          const result = yield* storage.cleanup({
+            operationId: "operation-reclaim-snapshot",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["f5Backups"],
+            targetSelections: [{ categoryId: "f5Backups", targetIds: [target.id] }],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.equal(result.results[0]?.status, "Cleaned");
+          assert.equal(result.results[0]?.reclaimedBytes, target.bytes);
+          assert.equal(yield* Effect.promise(() => pathExists(older)), false);
+          assert.equal(yield* Effect.promise(() => pathExists(newest)), true);
+        }),
+      ),
+    // Two forced scans and a cleanup took 10 s of the default 15 s on a CI runner.
+    60_000,
+  );
+
+  it.effect(
+    "reports a kept-neighbour snapshot at what it really freed, and an empty leftover as removed",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance;
+          const config = yield* ServerConfig;
+          const backups = NodePath.join(config.stateDir, "backups");
+          const snapshot = (hour: number) =>
+            NodePath.join(backups, `snapshot-${1_790_000_000_000 + hour * 3_600_000}`);
+          // Whole chunks on every platform's copy-on-write unit.
+          const block = 16 * 1024;
+          const pages = (rewritten: ReadonlyArray<number>) =>
+            Array.from({ length: 16 }, (_, index) =>
+              (rewritten.includes(index) ? "old!" : "page").repeat(block / 4),
+            ).join("");
+          // The oldest and the middle snapshot share block 5, which the newest lacks.
+          const [oldest, middle, newest, leftover] = [0, 1, 2, 3].map(snapshot) as [
+            string,
+            string,
+            string,
+            string,
+          ];
+          yield* Effect.promise(async () => {
+            // The state directory is shared by this file's tests.
+            await NodeFS.rm(backups, { recursive: true, force: true });
+            await writeFile(NodePath.join(config.stateDir, "state.sqlite"), pages([]));
+            await writeFile(NodePath.join(oldest, "state.sqlite"), pages([5, 9]));
+            await writeFile(NodePath.join(middle, "state.sqlite"), pages([5]));
+            await writeFile(NodePath.join(newest, "state.sqlite"), pages([]));
+            // Emptied by an earlier cleanup that left the directory behind.
+            await NodeFS.mkdir(leftover);
+          });
+          const report = yield* storage.inspect({ force: true });
+          const category = report.categories.find((entry) => entry.id === "f5Backups")!;
+          const targetFor = (path: string) =>
+            category.targets.find((target) => target.path === path)!;
+          // The scan charges the middle snapshot the block its successor lacks.
+          assert.equal(targetFor(middle).bytes, block);
+          assert.include(targetFor(middle).detail, "less is freed while an older snapshot is kept");
+          assert.equal(targetFor(leftover).bytes, 0);
+
+          const result = yield* storage.cleanup({
+            operationId: "operation-reclaim-middle-snapshot",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["f5Backups"],
+            targetSelections: [
+              {
+                categoryId: "f5Backups",
+                targetIds: [targetFor(middle).id, targetFor(leftover).id],
+              },
+            ],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.equal(result.results[0]?.status, "Cleaned");
+          // The oldest snapshot still holds that block, so nothing was freed.
+          assert.deepStrictEqual(
+            result.results[0]?.perTargetReclaimed.map((target) => [
+              target.path,
+              target.status,
+              target.reclaimedBytes,
+            ]),
+            [
+              [middle, "Removed", 0],
+              [leftover, "Removed", 0],
+            ],
+          );
+          assert.equal(yield* Effect.promise(() => pathExists(middle)), false);
+          assert.equal(yield* Effect.promise(() => pathExists(leftover)), false);
+          assert.equal(yield* Effect.promise(() => pathExists(oldest)), true);
+          assert.equal(yield* Effect.promise(() => pathExists(newest)), true);
+        }),
+      ),
+    60_000,
+  );
+
   it.effect("requires explicit target selection for legacy worktree cleanup", () =>
     withHomeSandbox(
       Effect.gen(function* () {
@@ -431,7 +1401,7 @@ layer("StorageMaintenance", (it) => {
           storage.cleanup({
             operationId: "operation-worktree-without-targets",
             scanId: report.scanId,
-            confirmationNonce: report.confirmationNonce,
+            nonce: report.confirmationNonce,
             categoryIds: ["legacyT3Worktrees"],
             confirmationText: "DELETE",
             options: { vacuumAfterDeletes: false },
@@ -524,7 +1494,7 @@ layer("StorageMaintenance", (it) => {
         const result = yield* storage.cleanup({
           operationId: "operation-legacy-child-worktree",
           scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
+          nonce: report.confirmationNonce,
           categoryIds: ["legacyT3Worktrees"],
           targetSelections: [{ categoryId: "legacyT3Worktrees", targetIds: [staleTarget!.id] }],
           confirmationText: "DELETE",
@@ -566,12 +1536,15 @@ layer("StorageMaintenance", (it) => {
 
         assert.equal(cleanTarget?.safeToDelete, true);
         assert.equal(dirtyTarget?.safeToDelete, false);
-        assert.equal(dirtyTarget?.disabledReason, "Worktree has uncommitted changes.");
+        assert.equal(
+          dirtyTarget?.disabledReason,
+          "it has uncommitted changes (including untracked files)",
+        );
 
         const result = yield* storage.cleanup({
           operationId: "operation-legacy-dirty-worktree",
           scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
+          nonce: report.confirmationNonce,
           categoryIds: ["legacyT3Worktrees"],
           targetSelections: [{ categoryId: "legacyT3Worktrees", targetIds: [dirtyTarget!.id] }],
           confirmationText: "DELETE",
@@ -584,7 +1557,7 @@ layer("StorageMaintenance", (it) => {
           result.results[0]?.warnings.some(
             (warning) =>
               warning.path === dirtyWorktreePath &&
-              warning.reason === "Worktree has uncommitted changes.",
+              warning.reason === "it has uncommitted changes (including untracked files)",
           ),
           true,
         );
@@ -592,7 +1565,7 @@ layer("StorageMaintenance", (it) => {
     ),
   );
 
-  it.effect("reclaims legacy worktree directories when parent Git metadata is missing", () =>
+  it.effect("retains legacy worktree directories when parent Git metadata is missing", () =>
     withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
@@ -611,25 +1584,23 @@ layer("StorageMaintenance", (it) => {
         const worktrees = report.categories.find((category) => category.id === "legacyT3Worktrees");
         const target = worktrees?.targets.find((entry) => entry.path === worktreePath);
 
-        assert.equal(target?.safeToDelete, true);
-        assert.equal(target?.disabledReason, undefined);
-        assert.equal(
-          target?.detail,
-          "Git metadata is missing; directory will be deleted directly.",
-        );
+        assert.equal(target?.safeToDelete, false);
+        assert.equal(target?.disabledReason, "Git worktree metadata could not be resolved.");
 
-        const result = yield* storage.cleanup({
-          operationId: "operation-legacy-missing-metadata-worktree",
-          scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
-          categoryIds: ["legacyT3Worktrees"],
-          targetSelections: [{ categoryId: "legacyT3Worktrees", targetIds: [target!.id] }],
-          confirmationText: "DELETE",
-          options: { vacuumAfterDeletes: false },
-        });
+        const result = yield* storage
+          .cleanup({
+            operationId: "operation-legacy-missing-metadata-worktree",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["legacyT3Worktrees"],
+            targetSelections: [{ categoryId: "legacyT3Worktrees", targetIds: [target!.id] }],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          })
+          .pipe(Effect.exit);
 
-        assert.equal(result.results[0]?.status, "Cleaned");
-        assert.equal(yield* Effect.promise(() => pathExists(worktreePath)), false);
+        assert.equal(result._tag, "Failure");
+        assert.equal(yield* Effect.promise(() => pathExists(worktreePath)), true);
       }),
     ),
   );
@@ -691,7 +1662,7 @@ layer("StorageMaintenance", (it) => {
         const result = yield* storage.cleanup({
           operationId: "operation-archived-provider-logs",
           scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
+          nonce: report.confirmationNonce,
           categoryIds: ["providerLogsForTerminalThreads"],
           options: { vacuumAfterDeletes: false },
         });
@@ -704,7 +1675,7 @@ layer("StorageMaintenance", (it) => {
     ),
   );
 
-  it.effect("removes clean archived F5 worktrees after clearing thread references", () =>
+  it.effect("removes clean archived F5 worktrees while preserving thread references", () =>
     withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
@@ -733,7 +1704,7 @@ layer("StorageMaintenance", (it) => {
         const result = yield* storage.cleanup({
           operationId: "operation-f5-worktree-clean",
           scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
+          nonce: report.confirmationNonce,
           categoryIds: ["inactiveF5Worktrees"],
           targetSelections: [{ categoryId: "inactiveF5Worktrees", targetIds: [target!.id] }],
           confirmationText: "DELETE",
@@ -746,7 +1717,7 @@ layer("StorageMaintenance", (it) => {
         `;
 
         assert.equal(result.results[0]?.status, "Cleaned");
-        assert.equal(rows[0]?.worktreePath, null);
+        assert.equal(rows[0]?.worktreePath, worktreePath);
         assert.equal(yield* Effect.promise(() => pathExists(worktreePath)), false);
       }),
     ),
@@ -769,7 +1740,10 @@ layer("StorageMaintenance", (it) => {
         const target = category?.targets.find((entry) => entry.path === worktreePath);
 
         assert.equal(target?.safeToDelete, false);
-        assert.equal(target?.disabledReason, "Worktree has uncommitted changes.");
+        assert.equal(
+          target?.disabledReason,
+          "it has uncommitted changes (including untracked files)",
+        );
       }),
     ),
   );
@@ -791,7 +1765,10 @@ layer("StorageMaintenance", (it) => {
         const target = category?.targets.find((entry) => entry.path === worktreePath);
 
         assert.equal(target?.safeToDelete, false);
-        assert.equal(target?.disabledReason, "Worktree has unpushed commits.");
+        assert.match(
+          target?.disabledReason ?? "",
+          /^it has commits that are not in .+ and not pushed$/,
+        );
       }),
     ),
   );
@@ -820,7 +1797,7 @@ layer("StorageMaintenance", (it) => {
         const result = yield* storage.cleanup({
           operationId: "operation-f5-worktree-root",
           scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
+          nonce: report.confirmationNonce,
           categoryIds: ["inactiveF5Worktrees"],
           targetSelections: [{ categoryId: "inactiveF5Worktrees", targetIds: [target!.id] }],
           confirmationText: "DELETE",
@@ -929,7 +1906,7 @@ layer("StorageMaintenance", (it) => {
           const result = yield* storage.cleanup({
             operationId: "operation-purge-deleted",
             scanId: report.scanId,
-            confirmationNonce: report.confirmationNonce,
+            nonce: report.confirmationNonce,
             categoryIds: ["purgeDeletedThreads"],
             options: { vacuumAfterDeletes: false },
           });
@@ -1006,7 +1983,7 @@ layer("StorageMaintenance", (it) => {
         const providerLogPath = NodePath.join(config.providerLogsDir, `${archivedSegment}.log`);
         const attachmentPath = NodePath.join(
           config.attachmentsDir,
-          `${archivedSegment}-attachment.txt`,
+          `${archivedSegment}-11111111-1111-4111-8111-111111111111.txt`,
         );
         yield* Effect.promise(async () => {
           await writeFile(providerLogPath, "archived provider log");
@@ -1022,7 +1999,7 @@ layer("StorageMaintenance", (it) => {
         const result = yield* storage.cleanup({
           operationId: "operation-purge-archived",
           scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
+          nonce: report.confirmationNonce,
           categoryIds: ["purgeArchivedThreads"],
           confirmationText: "DELETE",
           options: { vacuumAfterDeletes: false },
@@ -1100,7 +2077,7 @@ layer("StorageMaintenance", (it) => {
         const result = yield* storage.cleanup({
           operationId: "operation-purge-archived-race",
           scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
+          nonce: report.confirmationNonce,
           categoryIds: ["purgeArchivedThreads"],
           confirmationText: "DELETE",
           options: { vacuumAfterDeletes: false },
@@ -1109,6 +2086,213 @@ layer("StorageMaintenance", (it) => {
         assert.equal(result.results[0]?.status, "Skipped");
         assert.equal(yield* countRows(sql, "projection_threads", archivedThreadId), 1);
       }),
+    ),
+  );
+});
+
+for (const kind of ["planning", "codeReview", "investigation"] as const) {
+  it.effect("releases " + kind + " workflow retention after parent project deletion", () => {
+    const fixture = workflowArchiveFixture(kind);
+    const engine = makeOrchestrationEngineStub({
+      getWorkflows: () => ({
+        planningWorkflows: fixture.model.planningWorkflows.map((workflow) => ({
+          ...workflow,
+          projectId: ProjectId.makeUnsafe("project-storage-maintenance"),
+        })),
+        codeReviewWorkflows: fixture.model.codeReviewWorkflows.map((workflow) => ({
+          ...workflow,
+          projectId: ProjectId.makeUnsafe("project-storage-maintenance"),
+        })),
+        investigationWorkflows: fixture.model.investigationWorkflows.map((workflow) => ({
+          ...workflow,
+          projectId: ProjectId.makeUnsafe("project-storage-maintenance"),
+        })),
+      }),
+    });
+    return withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const sql = yield* SqlClient.SqlClient;
+        yield* seedThread({ sql, threadId: fixture.a, archivedAt: daysAgo(90), deletedAt: null });
+        {
+          const report = yield* storage.inspect({ force: true });
+          assert.isFalse(
+            report.categories
+              .find((category) => category.id === "purgeArchivedThreads")
+              ?.targets.some((target) => target.id === fixture.a),
+          );
+        }
+        yield* sql`UPDATE projection_projects SET deleted_at = ${daysAgo(40)}`;
+        const report = yield* storage.inspect({ force: true });
+        assert.isTrue(
+          report.categories
+            .find((category) => category.id === "purgeArchivedThreads")
+            ?.targets.some((target) => target.id === fixture.a),
+        );
+        const result = yield* storage.purgeThreads({
+          operationId: "deleted-parent-" + kind,
+          archivedBefore: daysAgo(30),
+          deletedBefore: daysAgo(0),
+          maxThreads: 10,
+        });
+        assert.deepEqual(result.purgedThreadIds, [fixture.a]);
+      }).pipe(Effect.provide(makeStorageTestLayer({ orchestrationEngine: engine }))),
+    );
+  });
+
+  it.effect("retains " + kind + " workflow threads until their workflow is deleted", () => {
+    const fixture = workflowArchiveFixture(kind);
+    let retained = false;
+    const engine = makeOrchestrationEngineStub({
+      getWorkflows: () =>
+        retained
+          ? fixture.model
+          : {
+              planningWorkflows: [],
+              codeReviewWorkflows: [],
+              investigationWorkflows: [],
+            },
+    });
+    return withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const config = yield* ServerConfig;
+        const sql = yield* SqlClient.SqlClient;
+        yield* seedThread({
+          sql,
+          threadId: fixture.a,
+          archivedAt: daysAgo(90),
+          deletedAt: null,
+        });
+        const log = NodePath.join(
+          config.providerLogsDir,
+          toSafeThreadAttachmentSegment(fixture.a)! + ".log",
+        );
+        yield* Effect.promise(() => writeFile(log, "workflow history"));
+        const report = yield* storage.inspect({ force: true });
+        assert.isTrue(
+          report.categories
+            .find((category) => category.id === "purgeArchivedThreads")
+            ?.targets.some((target) => target.id === fixture.a),
+        );
+        retained = true;
+        const guarded = yield* storage.cleanup({
+          operationId: "retained-stale-report-" + kind,
+          scanId: report.scanId,
+          nonce: report.confirmationNonce,
+          categoryIds: ["purgeArchivedThreads"],
+          targetSelections: [{ categoryId: "purgeArchivedThreads", targetIds: [fixture.a] }],
+          confirmationText: "DELETE",
+          options: { vacuumAfterDeletes: false },
+        });
+        assert.isTrue(
+          guarded.results
+            .flatMap((result) => result.warnings)
+            .some((warning) => warning.reason.includes("workflow")),
+          JSON.stringify(guarded),
+        );
+        assert.isTrue(yield* Effect.promise(() => pathExists(log)));
+        assert.equal(yield* countRows(sql, "projection_threads", fixture.a), 1);
+        const next = yield* storage.inspect({ force: true });
+        assert.isFalse(
+          next.categories
+            .find((category) => category.id === "purgeArchivedThreads")
+            ?.targets.some((target) => target.id === fixture.a),
+        );
+        const scheduled = yield* storage.purgeThreads({
+          operationId: "retained-scheduled-" + kind,
+          archivedBefore: daysAgo(30),
+          deletedBefore: daysAgo(0),
+          maxThreads: 10,
+        });
+        assert.deepEqual(scheduled.purgedThreadIds, []);
+        retained = false;
+        const released = yield* storage.purgeThreads({
+          operationId: "released-workflow-" + kind,
+          archivedBefore: daysAgo(30),
+          deletedBefore: daysAgo(0),
+          maxThreads: 10,
+        });
+        assert.deepEqual(released.purgedThreadIds, [fixture.a]);
+        assert.isFalse(yield* Effect.promise(() => pathExists(log)));
+      }).pipe(Effect.provide(makeStorageTestLayer({ orchestrationEngine: engine }))),
+    );
+  });
+}
+
+it.effect("keeps filesystem cleanup outside the exclusive orchestration gate", () => {
+  let gateHeld = false;
+  let removals = 0;
+  let scratchRemovals = 0;
+  const base = makeOrchestrationEngineStub();
+  const engine = {
+    ...base,
+    acquireMaintenanceLock: () =>
+      Effect.gen(function* () {
+        gateHeld = true;
+        const scope = yield* Scope.make("sequential");
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => {
+            gateHeld = false;
+          }),
+        );
+        return scope;
+      }),
+  };
+  const original = vi.mocked(removeFileIfSafe).getMockImplementation()!;
+  const originalScratch = vi.mocked(removeScratchThreadFolder).getMockImplementation()!;
+  return withHomeSandbox(
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance;
+      const sql = yield* SqlClient.SqlClient;
+      const config = yield* ServerConfig;
+      const threadId = ThreadId.makeUnsafe("slow-purge-outside-gate");
+      yield* seedThread({ sql, threadId, archivedAt: daysAgo(90), deletedAt: null });
+      const scratchRoot = NodePath.join(config.stateDir, "scratch");
+      const folder = NodePath.join(scratchRoot, "slow-12345678");
+      yield* sql`UPDATE projection_projects SET kind='scratch', workspace_root=${scratchRoot} WHERE project_id='project-storage-maintenance'`;
+      yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
+      yield* Effect.promise(() => writeFile(NodePath.join(folder, "notes.txt"), "cleanup bytes"));
+      vi.mocked(removeScratchThreadFolder).mockImplementation((input) =>
+        originalScratch({
+          ...input,
+          remove: async (path) => {
+            assert.isFalse(gateHeld, "Recursive scratch cleanup must not freeze command writes");
+            scratchRemovals++;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            await NodeFS.rm(path, { recursive: true, force: true });
+          },
+        }),
+      );
+      const file = NodePath.join(
+        config.providerLogsDir,
+        toSafeThreadAttachmentSegment(threadId)! + ".log",
+      );
+      yield* Effect.promise(() => writeFile(file, "cleanup bytes"));
+      vi.mocked(removeFileIfSafe).mockImplementationOnce(async (input) => {
+        assert.isFalse(gateHeld, "Filesystem removal must not freeze command writes");
+        removals++;
+        return original(input);
+      });
+      const result = yield* storage.purgeThreads({
+        operationId: "purge-outside-engine-gate",
+        archivedBefore: daysAgo(30),
+        deletedBefore: daysAgo(0),
+        maxThreads: 10,
+      });
+      assert.deepEqual(result.purgedThreadIds, [threadId]);
+      assert.equal(removals, 1);
+      assert.equal(scratchRemovals, 1);
+      assert.isFalse(gateHeld);
+    }).pipe(
+      Effect.provide(makeStorageTestLayer({ orchestrationEngine: engine })),
+      Effect.ensuring(
+        Effect.sync(() => {
+          vi.mocked(removeFileIfSafe).mockImplementation(original);
+          vi.mocked(removeScratchThreadFolder).mockImplementation(originalScratch);
+        }),
+      ),
     ),
   );
 });
@@ -1562,7 +2746,7 @@ it.layer(
         const result = yield* storage.cleanup({
           operationId: "operation-codex-staging",
           scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
+          nonce: report.confirmationNonce,
           categoryIds: ["codexMarketplaceStaging"],
         });
 
@@ -1730,7 +2914,7 @@ it.layer(makeStorageTestLayer())("StorageMaintenance automatic maintenance", (it
     ),
   );
 
-  it.effect("does not let threads that keep failing hold every purge slot", () =>
+  it.effect("purges missing workspaces with a warning while preserving busy threads", () =>
     withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
@@ -1770,10 +2954,14 @@ it.layer(makeStorageTestLayer())("StorageMaintenance automatic maintenance", (it
             maxThreads: 1,
           });
 
-        // The busy thread is never selected; the stuck one fails once...
+        // Missing recorded workspaces no longer prevent a purge. Ref copies in
+        // a moved repository are explicitly reported and left alone.
         const first = yield* pass("purge-first");
-        assert.deepStrictEqual(first.purgedThreadIds, []);
-        assert.equal(yield* countRows(sql, "projection_threads", stuck), 1);
+        assert.deepStrictEqual(first.purgedThreadIds, [stuck]);
+        assert.equal(yield* countRows(sql, "projection_threads", stuck), 0);
+        assert.isTrue(
+          first.warnings.some((warning) => warning.reason.includes("moved repository")),
+        );
         // ...and then waits behind the thread that can be purged.
         const second = yield* pass("purge-second");
         assert.deepStrictEqual(second.purgedThreadIds, [purgeable]);
@@ -1799,7 +2987,8 @@ it.layer(makeStorageTestLayer())("StorageMaintenance automatic maintenance", (it
 
       const result = yield* storage.reclaimDatabaseSpace({ maxDurationMs: 10_000 });
       assert.equal(result.action, "incremental");
-      assert.isAbove(result.reclaimedBytes, 0);
+      // This fixture uses :memory:; releasing pages frees no on-disk bytes.
+      assert.equal(result.reclaimedBytes, 0);
       const after = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
       assert.equal(after[0]!.freelist_count, 0);
       assert.deepStrictEqual(yield* storage.reclaimDatabaseSpace({ maxDurationMs: 10_000 }), {
@@ -1808,4 +2997,1692 @@ it.layer(makeStorageTestLayer())("StorageMaintenance automatic maintenance", (it
       });
     }),
   );
+
+  it.effect("refuses every mutating entry point while the database is damaged", () =>
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance;
+      const usage = yield* storage.getUsage();
+      reportDatabaseCorruption(
+        "/tmp/f5-storage-damaged/state.sqlite",
+        Object.assign(new Error("database disk image is malformed"), { errcode: 11 }),
+      );
+      try {
+        const attempts: ReadonlyArray<Effect.Effect<unknown, { readonly message: string }>> = [
+          storage.reclaimDatabaseSpace({ maxDurationMs: 10_000 }),
+          storage.purgeThreads({
+            operationId: "damaged-purge",
+            deletedBefore: daysAgo(30),
+            archivedBefore: null,
+            maxThreads: 1,
+          }),
+          storage.pruneTerminalThreadLogs({
+            operationId: "damaged-logs",
+            modifiedBefore: daysAgo(1),
+            includeArchived: true,
+          }),
+          storage.acceptCleanup({
+            operationId: "damaged-cleanup",
+            backendEpoch: usage.status.backendEpoch,
+            scanId: "scan",
+            nonce: "nonce",
+            categoryIds: ["purgeDeletedThreads"],
+          }),
+        ];
+        for (const attempt of attempts) {
+          const outcome = yield* attempt.pipe(
+            Effect.as("succeeded"),
+            Effect.catch((error) => Effect.succeed(error.message)),
+          );
+          assert.include(outcome, "damaged");
+        }
+        assert.isNull(
+          yield* storage.cleanInactiveWorktreesAutomatically({ operationId: "damaged-worktrees" }),
+        );
+      } finally {
+        resetDatabaseHealthForTest();
+      }
+    }),
+  );
 });
+
+it.effect("successful compaction without file-size reduction stays succeeded", () =>
+  withHomeSandbox(
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance,
+        config = yield* ServerConfig;
+      yield* Effect.promise(async () => {
+        await NodeFS.mkdir(NodePath.dirname(config.dbPath), { recursive: true });
+        const db = await openRuntimeSqliteDatabase(config.dbPath, { readOnly: false });
+        try {
+          db.exec(
+            "PRAGMA auto_vacuum=INCREMENTAL; CREATE TABLE kept(value TEXT); INSERT INTO kept VALUES ('kept'); VACUUM",
+          );
+        } finally {
+          db.close();
+        }
+      });
+      const report = yield* storage.inspect({ force: true });
+      const operation = yield* storage.acceptCleanup({
+        operationId: "already-compact",
+        backendEpoch: (yield* storage.getStatus).backendEpoch,
+        scanId: report.scanId,
+        nonce: report.confirmationNonce,
+        categoryIds: ["databaseVacuum"],
+        confirmationText: "DELETE",
+      });
+      const result = yield* awaitOperation(storage, operation.operationId);
+      assert.equal(result.status.state, "succeeded");
+      assert.equal(result.status.result?.reclaimedBytes, 0);
+      assert.deepStrictEqual(result.status.result?.warnings, []);
+    }),
+  ).pipe(Effect.provide(makeStorageTestLayer())),
+);
+
+it.effect("schedules a compaction for the next start and runs it once the server is ready", () => {
+  let locks = 0;
+  const base = makeOrchestrationEngineStub();
+  const engine = {
+    ...base,
+    acquireMaintenanceLock: () => {
+      locks += 1;
+      return base.acquireMaintenanceLock();
+    },
+  } as OrchestrationEngineShape;
+  return withHomeSandbox(
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance,
+        config = yield* ServerConfig,
+        sql = yield* SqlClient.SqlClient;
+      const marker = NodePath.join(config.stateDir, "storage", "compact-on-restart");
+      assert.deepStrictEqual(yield* storage.scheduleCompaction("restart"), {
+        scheduledForRestart: true,
+      });
+      assert.isTrue(yield* Effect.promise(() => pathExists(marker)));
+      assert.deepStrictEqual(yield* storage.scheduleCompaction("cancel"), {
+        scheduledForRestart: false,
+      });
+      assert.isFalse(yield* Effect.promise(() => pathExists(marker)));
+
+      // Nothing scheduled: startup takes no lock.
+      yield* Effect.scoped(storage.startScheduledCompaction(Effect.void));
+      assert.equal(locks, 0);
+
+      yield* storage.scheduleCompaction("restart");
+      const ready = yield* Deferred.make<void>();
+      const audits = () => sql<{ readonly result: string; readonly reason: string }>`
+        SELECT result, reason FROM storage_automation_audit
+        WHERE job = 'database-vacuum' AND operation_id LIKE 'scheduled-compaction-%'
+      `;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* storage.startScheduledCompaction(Deferred.await(ready));
+          // The request is gone before compaction starts. No lock is taken until
+          // the server is ready, so startup repairs can still dispatch commands.
+          assert.isFalse(yield* Effect.promise(() => pathExists(marker)));
+          assert.equal(locks, 0);
+          assert.lengthOf(yield* audits(), 0);
+          yield* Deferred.succeed(ready, undefined);
+          for (let attempt = 0; attempt < 1000 && (yield* audits()).length === 0; attempt++)
+            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 2)));
+        }),
+      );
+      // The in-memory test database is already incremental.
+      assert.deepStrictEqual(
+        (yield* audits()).map((row) => row.result),
+        ["skipped"],
+      );
+      assert.match((yield* audits())[0]!.reason, /already returns free space in steps/);
+      assert.equal(locks, 0);
+      // A compaction that is not stuck is not offered.
+      assert.isNull(yield* storage.getPendingCompaction);
+    }),
+  ).pipe(Effect.provide(makeStorageTestLayer({ orchestrationEngine: engine })));
+});
+
+it.layer(makeStorageTestLayer())("StorageMaintenance scan and operation safety", (it) => {
+  for (const afterMark of [false, true]) {
+    it.effect(
+      `cancelling orphan cleanup ${afterMark ? "after" : "before"} marking preserves lifecycle safety`,
+      () =>
+        withHomeSandbox(
+          Effect.gen(function* () {
+            const storage = yield* StorageMaintenance,
+              sql = yield* SqlClient.SqlClient,
+              config = yield* ServerConfig;
+            const threadId = ThreadId.makeUnsafe(`attachment-cancel-${afterMark}`);
+            yield* seedThread({ sql, threadId, deletedAt: null });
+            const id = `cancel-image-${afterMark}`,
+              path = NodePath.join(config.attachmentsDir, id);
+            yield* Effect.promise(() => writeFile(path, "image bytes"));
+            yield* sql`INSERT INTO attachments(attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash, final_path, lifecycle, created_at, updated_at)
+          VALUES (${id}, ${threadId}, 'image', 'cancel.png', 'image/png', 11, 'hash', ${path}, 'ready', '2026-01-01', '2026-01-01')`;
+            const report = yield* storage.inspect({ force: true });
+            const operationId = `cancel-attachment-${afterMark}`;
+            if (afterMark) {
+              const original = yield* Effect.promise(() =>
+                vi.importActual<typeof import("./storagePathSafety.ts")>("./storagePathSafety.ts"),
+              );
+              vi.mocked(removeFileIfSafe).mockImplementationOnce(async (input) => {
+                const rows = await Effect.runPromise(
+                  sql<{
+                    lifecycle: string;
+                  }>`SELECT lifecycle FROM attachments WHERE attachment_id = ${id}`,
+                );
+                assert.equal(rows[0]?.lifecycle, "deleting");
+                await Effect.runPromise(storage.cancel(operationId));
+                return original.removeFileIfSafe(input);
+              });
+            }
+            const result = yield* storage.cleanup(
+              {
+                operationId,
+                scanId: report.scanId,
+                nonce: report.confirmationNonce,
+                categoryIds: ["orphanAttachments"],
+                targetSelections: [{ categoryId: "orphanAttachments", targetIds: [id] }],
+                options: { vacuumAfterDeletes: false },
+              },
+              {
+                publishProgress: (progress) =>
+                  !afterMark &&
+                  progress.categoryId === "orphanAttachments" &&
+                  progress.phase === "deleting"
+                    ? storage.cancel(operationId)
+                    : Effect.void,
+              },
+            );
+            assert.isTrue(result.cancelled);
+            const rows = yield* sql<{
+              lifecycle: string;
+            }>`SELECT lifecycle FROM attachments WHERE attachment_id = ${id}`;
+            assert.equal(rows.length, afterMark ? 0 : 1);
+            if (!afterMark) {
+              assert.equal(rows[0]?.lifecycle, "ready");
+              yield* sql`INSERT INTO attachment_owners VALUES (${id}, 'ingress', 'cancelled-cleanup-reused', '2026-01-01')`;
+            }
+            assert.equal(yield* Effect.promise(() => pathExists(path)), !afterMark);
+            assert.equal(
+              (yield* sql`SELECT 1 FROM attachment_cleanup_jobs WHERE attachment_id = ${id}`)
+                .length,
+              0,
+            );
+          }),
+        ),
+    );
+  }
+  it.effect(
+    "retains a long-running operation from completion, including idempotent acceptance",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            sql = yield* SqlClient.SqlClient,
+            config = yield* ServerConfig;
+          const threadId = ThreadId.makeUnsafe("long-attachment-cleanup");
+          yield* seedThread({ sql, threadId, deletedAt: null });
+          const path = NodePath.join(config.attachmentsDir, "long-cleanup.png");
+          yield* Effect.promise(() => writeFile(path, "image bytes"));
+          yield* sql`INSERT INTO attachments(attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash, final_path, lifecycle, created_at, updated_at)
+        VALUES ('long-cleanup', ${threadId}, 'image', 'long.png', 'image/png', 11, 'hash', ${path}, 'ready', '2026-01-01', '2026-01-01')`;
+          const report = yield* storage.inspect({ force: true });
+          const request = {
+            operationId: "long-cleanup",
+            backendEpoch: (yield* storage.getStatus).backendEpoch,
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["orphanAttachments"] as const,
+            targetSelections: [
+              { categoryId: "orphanAttachments" as const, targetIds: ["long-cleanup"] },
+            ],
+            options: { vacuumAfterDeletes: false },
+          };
+          const started = Date.now();
+          vi.useFakeTimers({ toFake: ["Date"] });
+          yield* Effect.gen(function* () {
+            const original = yield* Effect.promise(() =>
+              vi.importActual<typeof import("./storagePathSafety.ts")>("./storagePathSafety.ts"),
+            );
+            vi.mocked(removeFileIfSafe).mockImplementationOnce(async (input) => {
+              vi.setSystemTime(started + 20 * 60_000);
+              return original.removeFileIfSafe(input);
+            });
+            yield* storage.acceptCleanup(request);
+            const finished = yield* awaitOperation(storage, request.operationId);
+            assert.equal(finished.status.state, "succeeded");
+            assert.equal(finished.results[0]?.perTargetReclaimed[0]?.id, "long-cleanup");
+            assert.equal((yield* storage.acceptCleanup(request)).state, "succeeded");
+            vi.setSystemTime(started + 34 * 60_000);
+            assert.equal(
+              (yield* storage.getOperation({ operationId: request.operationId })).status.state,
+              "succeeded",
+            );
+            vi.setSystemTime(started + 36 * 60_000);
+            assert.isTrue(
+              Exit.isFailure(
+                yield* Effect.exit(storage.getOperation({ operationId: request.operationId })),
+              ),
+            );
+          }).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers())));
+        }),
+      ),
+  );
+
+  it.effect(
+    "accepts an operation once and rejects conflicting reuse or a previous backend epoch",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            config = yield* ServerConfig;
+          const log = NodePath.join(config.providerLogsDir, "operation-orphan.log");
+          yield* Effect.promise(() => writeFile(log, "data"));
+          const report = yield* storage.inspect({ force: true });
+          const request = {
+            operationId: "test-idempotent",
+            backendEpoch: (yield* storage.getStatus).backendEpoch,
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["providerLogsForTerminalThreads"] as const,
+            options: { vacuumAfterDeletes: false },
+          };
+          const first = yield* storage.acceptCleanup(request),
+            second = yield* storage.acceptCleanup(request);
+          assert.equal(first.operationId, second.operationId);
+          assert.isTrue(
+            Exit.isFailure(
+              yield* Effect.exit(
+                storage.acceptCleanup({ ...request, confirmationText: "changed" }),
+              ),
+            ),
+          );
+          assert.isTrue(
+            Exit.isFailure(
+              yield* Effect.exit(
+                storage.acceptCleanup({ ...request, backendEpoch: "previous-backend" }),
+              ),
+            ),
+          );
+          const result = yield* awaitOperation(storage, request.operationId);
+          assert.equal(result.status.state, "succeeded");
+          assert.isFalse(yield* Effect.promise(() => pathExists(log)));
+          assert.equal((yield* storage.acceptCleanup(request)).state, "succeeded");
+        }),
+      ),
+  );
+  it.effect("shares a scan nonce across windows and rejects it after a real mutation", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const report = yield* storage.inspect({ force: true });
+        const first = yield* storage.getUsage(),
+          second = yield* storage.getUsage();
+        assert.deepStrictEqual(first.confirmation, second.confirmation);
+        yield* storage.noteStorageMutated;
+        const result = yield* Effect.exit(
+          storage.cleanup({
+            operationId: "stale-generation",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["databaseVacuum"],
+            confirmationText: "DELETE",
+          }),
+        );
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result))
+          assert.include((Cause.squash(result.cause) as Error).message, "Storage changed");
+      }),
+    ),
+  );
+  it.effect("retains orphan attachment metadata and retry jobs when unlink is refused", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient,
+          config = yield* ServerConfig;
+        const threadId = ThreadId.makeUnsafe("orphan-refused-thread"),
+          path = NodePath.join(config.attachmentsDir, "directory-instead-of-file");
+        yield* seedThread({ sql, threadId, deletedAt: null });
+        yield* Effect.promise(() => NodeFS.mkdir(path, { recursive: true }));
+        yield* sql`INSERT INTO attachments(attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash, final_path, lifecycle, created_at, updated_at)
+      VALUES ('orphan-refused', ${threadId}, 'image', 'refused.png', 'image/png', 0, 'hash', ${path}, 'ready', '2026-01-01', '2026-01-01')`;
+        const report = yield* storage.inspect({ force: true });
+        const result = yield* storage.cleanup({
+          operationId: "orphan-refusal",
+          scanId: report.scanId,
+          nonce: report.confirmationNonce,
+          categoryIds: ["orphanAttachments"],
+          options: { vacuumAfterDeletes: false },
+        });
+        assert.equal(result.reclaimedBytes, 0);
+        const rows = yield* sql<{
+          lifecycle: string;
+          lastError: string;
+        }>`SELECT lifecycle, last_error AS "lastError" FROM attachments JOIN attachment_cleanup_jobs USING (attachment_id) WHERE attachment_id = 'orphan-refused'`;
+        assert.equal(rows[0]?.lifecycle, "deleting");
+        assert.include(rows[0]?.lastError ?? "", "non-file");
+        for (const kind of [
+          "ingress",
+          "queue_item",
+          "message",
+          "user_input",
+          "rewind_draft",
+          "activity",
+        ]) {
+          assert.isTrue(
+            Exit.isFailure(
+              yield* Effect.exit(
+                sql`INSERT INTO attachment_owners VALUES ('orphan-refused', ${kind}, 'owner', '2026-01-01')`,
+              ),
+            ),
+          );
+        }
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              sql`UPDATE attachments SET lifecycle = 'ready' WHERE attachment_id = 'orphan-refused'`,
+            ),
+          ),
+        );
+        // Refusal does not permanently reserve this content-addressed id.
+        // After correcting the filesystem problem, confirmed cleanup finalizes
+        // the absent bytes and deletes the old registry/job, permitting reuse.
+        yield* Effect.promise(() => NodeFS.rmdir(path));
+        const retry = yield* storage.inspect({ force: true });
+        yield* storage.cleanup({
+          operationId: "orphan-refusal-retry",
+          scanId: retry.scanId,
+          nonce: retry.confirmationNonce,
+          categoryIds: ["orphanAttachments"],
+          options: { vacuumAfterDeletes: false },
+        });
+        const remaining =
+          yield* sql`SELECT 1 FROM attachments WHERE attachment_id = 'orphan-refused'`;
+        assert.equal(remaining.length, 0);
+        const jobs =
+          yield* sql`SELECT 1 FROM attachment_cleanup_jobs WHERE attachment_id = 'orphan-refused'`;
+        assert.equal(jobs.length, 0);
+      }),
+    ),
+  );
+  for (const archived of [false, true])
+    it.effect(
+      `retains files before purging a ${archived ? "archived" : "deleted"} thread owned by a scheduled run`,
+      () =>
+        withHomeSandbox(
+          Effect.gen(function* () {
+            const storage = yield* StorageMaintenance;
+            const sql = yield* SqlClient.SqlClient;
+            const config = yield* ServerConfig;
+            const threadId = ThreadId.makeUnsafe(`scheduled-purge-${archived}`);
+            const file = NodePath.join(
+              config.attachmentsDir,
+              `${threadId}-11111111-1111-4111-8111-111111111111.txt`,
+            );
+            yield* seedThread({
+              sql,
+              threadId,
+              archivedAt: archived ? daysAgo(90) : null,
+              deletedAt: archived ? null : daysAgo(40),
+            });
+            yield* Effect.promise(() => writeFile(file, "execution evidence"));
+            yield* sql`INSERT INTO scheduled_tasks(id,project_id,definition_json,request_hash,requested_at,version,enabled,updated_at)
+          VALUES(${`owned-task:${archived}`},'project','{}','hash','2026-01-01',1,0,'2026-01-01')`;
+            yield* sql`INSERT INTO scheduled_task_runs(id,task_id,scheduled_for,trigger,status,state_json,snapshot_json,thread_id,owns_execution,canceled,capacity,created_at)
+          VALUES(${`owned-run:${archived}`},${`owned-task:${archived}`},'2026-01-01','manual','needs_attention','{}','{}',${threadId},1,1,1,'2026-01-01')`;
+            const report = yield* storage.inspect({ force: true });
+            const result = yield* storage.cleanup({
+              operationId: `scheduled-purge:${archived}`,
+              scanId: report.scanId,
+              nonce: report.confirmationNonce,
+              categoryIds: [archived ? "purgeArchivedThreads" : "purgeDeletedThreads"],
+              ...(archived ? { confirmationText: "DELETE" } : {}),
+              options: { vacuumAfterDeletes: false },
+            });
+            assert.equal(
+              yield* Effect.promise(() => NodeFS.readFile(file, "utf8")),
+              "execution evidence",
+            );
+            assert.equal(yield* countRows(sql, "projection_threads", threadId), 1);
+            assert.isTrue(
+              result.warnings.some((warning) => warning.reason.includes("scheduled run")),
+            );
+            assert.equal(result.reclaimedBytes, 0);
+          }),
+        ),
+    );
+  it.effect("preserves settlement process claims across attempted permanent thread purge", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.makeUnsafe("settlement-purge-claim");
+        const archivedAt = daysAgo(90);
+        yield* seedThread({ sql, threadId, archivedAt, deletedAt: null });
+        yield* sql`INSERT INTO thread_settlement_hooks(thread_id,job_id,settled_at,worktree_path,project_id,scripts_json,state,updated_at) SELECT thread_id,'hook',${archivedAt},'/tmp/settlement-hook',project_id,'[]','pending',${archivedAt} FROM projection_threads WHERE thread_id=${threadId}`;
+        for (const state of ["pending", "running", "orphaned"]) {
+          yield* sql`UPDATE thread_settlement_hooks SET state=${state} WHERE thread_id=${threadId}`;
+          const report = yield* storage.inspect({ force: true });
+          const result = yield* storage.cleanup({
+            operationId: `settlement-purge-${state}`,
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["purgeArchivedThreads"],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.isTrue(
+            result.warnings.some((warning) => warning.reason.includes("Settlement script")),
+          );
+          assert.lengthOf(
+            yield* sql`SELECT thread_id FROM projection_threads WHERE thread_id=${threadId} AND deleted_at IS NULL`,
+            1,
+          );
+          assert.equal(
+            (yield* sql<{
+              state: string;
+            }>`SELECT state FROM thread_settlement_hooks WHERE thread_id=${threadId}`)[0]?.state,
+            state,
+          );
+        }
+      }),
+    ),
+  );
+
+  it.effect("blocks archived purge before deletion when a native operation needs recovery", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.makeUnsafe("archived-native-recovery"),
+          archivedAt = daysAgo(90);
+        yield* seedThread({ sql, threadId, archivedAt, deletedAt: null });
+        yield* sql`INSERT INTO native_operations VALUES ('native-recovery', ${threadId}, 0, 'indeterminate', '{}', '2026-01-01', '2026-01-01')`;
+        const report = yield* storage.inspect({ force: true });
+        const result = yield* storage.cleanup({
+          operationId: "blocked-archived",
+          scanId: report.scanId,
+          nonce: report.confirmationNonce,
+          categoryIds: ["purgeArchivedThreads"],
+          confirmationText: "DELETE",
+          options: { vacuumAfterDeletes: false },
+        });
+        const rows = yield* sql<{
+          archivedAt: string;
+          deletedAt: string | null;
+        }>`SELECT archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads WHERE thread_id = ${threadId}`;
+        assert.equal(rows[0]?.archivedAt, archivedAt);
+        assert.isNull(rows[0]?.deletedAt);
+        assert.isTrue(
+          result.warnings.some((warning) => warning.reason.includes("Native operation")),
+        );
+      }),
+    ),
+  );
+  it.effect("retries SQL rollback after files have already been removed", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient,
+          config = yield* ServerConfig;
+        const threadId = ThreadId.makeUnsafe("rollback-after-files"),
+          file = NodePath.join(
+            config.attachmentsDir,
+            `${threadId}-11111111-1111-4111-8111-111111111111.txt`,
+          );
+        yield* seedThread({ sql, threadId, deletedAt: daysAgo(40) });
+        yield* Effect.promise(() => writeFile(file, "retryable bytes"));
+        yield* sql`CREATE TRIGGER block_test_purge BEFORE DELETE ON projection_threads WHEN OLD.thread_id = 'rollback-after-files' BEGIN SELECT RAISE(ABORT, 'test SQL failure'); END`;
+        const first = yield* storage.inspect({ force: true });
+        const failed = yield* storage.cleanup({
+          operationId: "rollback-first",
+          scanId: first.scanId,
+          nonce: first.confirmationNonce,
+          categoryIds: ["purgeDeletedThreads"],
+          options: { vacuumAfterDeletes: false },
+        });
+        assert.equal(yield* countRows(sql, "projection_threads", threadId), 1);
+        assert.isFalse(yield* Effect.promise(() => pathExists(file)));
+        assert.isTrue(
+          failed.warnings.some((warning) =>
+            warning.reason.startsWith("Deleted, cleanup incomplete"),
+          ),
+        );
+        assert.isAbove(failed.reclaimedBytes, 0);
+        yield* sql`DROP TRIGGER block_test_purge`;
+        const second = yield* storage.inspect({ force: true });
+        const retried = yield* storage.cleanup({
+          operationId: "rollback-second",
+          scanId: second.scanId,
+          nonce: second.confirmationNonce,
+          categoryIds: ["purgeDeletedThreads"],
+          options: { vacuumAfterDeletes: false },
+        });
+        assert.equal(yield* countRows(sql, "projection_threads", threadId), 0);
+        assert.equal(retried.reclaimedBytes, 0);
+        assert.isTrue(
+          retried.results[0]?.perTargetReclaimed.some(
+            (target) => target.id === threadId && target.status === "Removed",
+          ),
+        );
+      }),
+    ),
+  );
+  it.effect(
+    "retains an archived thread before the boundary and reports incomplete deletion after it",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            sql = yield* SqlClient.SqlClient,
+            config = yield* ServerConfig;
+          const threadId = ThreadId.makeUnsafe("archived-unsafe-file"),
+            file = NodePath.join(config.attachmentsDir, "unsafe-file.png");
+          yield* seedThread({ sql, threadId, archivedAt: daysAgo(90), deletedAt: null });
+          yield* Effect.promise(() => NodeFS.symlink(config.stateDir, file));
+          yield* sql`INSERT INTO attachments(attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash, final_path, lifecycle, created_at, updated_at) VALUES ('unsafe-file', ${threadId}, 'image', 'unsafe.png', 'image/png', 0, 'hash', ${file}, 'ready', '2026-01-01', '2026-01-01')`;
+          const report = yield* storage.inspect({ force: true });
+          const result = yield* storage.cleanup({
+            operationId: "archived-boundary",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["purgeArchivedThreads"],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+          const rows = yield* sql<{
+            deletedAt: string | null;
+          }>`SELECT deleted_at AS "deletedAt" FROM projection_threads WHERE thread_id = ${threadId}`;
+          assert.isNotNull(rows[0]?.deletedAt);
+          assert.isTrue(
+            result.results[0]?.perTargetReclaimed.some(
+              (target) => target.status === "Deleted, cleanup incomplete",
+            ),
+          );
+          assert.isTrue(yield* Effect.promise(() => pathExists(file)));
+        }),
+      ),
+  );
+  it.effect("cancels while waiting for provider access before the archived delete boundary", () =>
+    withHomeSandbox(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            sql = yield* SqlClient.SqlClient;
+          const threadId = ThreadId.makeUnsafe("cancel-before-boundary");
+          yield* seedThread({ sql, threadId, archivedAt: daysAgo(90), deletedAt: null });
+          const report = yield* storage.inspect({ force: true });
+          const entered = yield* Deferred.make<void>(),
+            release = yield* Deferred.make<void>();
+          yield* withProviderThreadAccess(
+            threadId,
+            Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          ).pipe(Effect.forkIn(yield* Scope.Scope));
+          yield* Deferred.await(entered);
+          const operation = yield* storage.acceptCleanup({
+            operationId: "cancel-queued",
+            backendEpoch: (yield* storage.getStatus).backendEpoch,
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["purgeArchivedThreads"],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+          yield* storage.cancel(operation.operationId);
+          yield* Deferred.succeed(release, undefined);
+          const result = yield* awaitOperation(storage, operation.operationId);
+          assert.equal(result.status.state, "cancelled");
+          assert.deepStrictEqual(result.status.result?.results, []);
+          const rows = yield* sql<{
+            deletedAt: string | null;
+          }>`SELECT deleted_at AS "deletedAt" FROM projection_threads WHERE thread_id = ${threadId}`;
+          assert.isNull(rows[0]?.deletedAt);
+        }),
+      ),
+    ),
+  );
+});
+
+it.effect(
+  "getUsage returns before a blocked worktree readiness check and joins repeated rescans",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>(),
+        release = yield* Deferred.make<void>();
+      const base = makeGitCoreStub();
+      const blocked = makeGitCoreStub({
+        status: (input) =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(base.status(input)),
+          ),
+      });
+      return yield* withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            config = yield* ServerConfig;
+          const path = NodePath.join(config.worktreesDir, "blocked-readiness");
+          yield* Effect.promise(() =>
+            writeGitWorktreeMetadata({
+              worktreePath: path,
+              mainWorktreePath: NodePath.join(config.baseDir, "main-readiness"),
+            }),
+          );
+          const first = yield* storage.getUsage({ force: true });
+          assert.isNull(first.report);
+          assert.equal(first.status.scan.state, "scanning");
+          yield* Deferred.await(entered);
+          const second = yield* storage.getUsage({ force: true });
+          assert.isNull(second.report);
+          assert.equal(second.status.scan.startedAt, first.status.scan.startedAt);
+          yield* Deferred.succeed(release, undefined);
+          const report = yield* storage.inspect();
+          assert.equal(
+            report.categories.find((category) => category.id === "inactiveF5Worktrees")
+              ?.targetCount,
+            1,
+          );
+        }).pipe(
+          Effect.provide(makeStorageTestLayer({ gitCore: blocked })),
+          Effect.ensuring(Deferred.succeed(release, undefined)),
+        ),
+      );
+    }),
+);
+
+function seedProject(input: {
+  readonly sql: SqlClient.SqlClient;
+  readonly projectId: string;
+  readonly workspaceRoot: string;
+}) {
+  const now = new Date().toISOString();
+  return input.sql`
+    INSERT INTO projection_projects (
+      project_id, title, workspace_root, default_model, scripts_json, created_at, updated_at, deleted_at
+    )
+    VALUES (
+      ${ProjectId.makeUnsafe(input.projectId)}, ${input.projectId}, ${input.workspaceRoot},
+      ${null}, ${"[]"}, ${now}, ${now}, ${null}
+    )
+  `;
+}
+
+const localBranches = (cwd: string) =>
+  runGit(cwd, "branch", "--format=%(refname:short)").split("\n").filter(Boolean);
+
+const registeredPaths = (cwd: string) =>
+  runGit(cwd, "worktree", "list", "--porcelain")
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => NodePath.normalize(line.slice("worktree ".length)));
+
+const squashEvidence = new Map<string, string>();
+it.layer(
+  makeStorageTestLayer({
+    gitCore: "real",
+  }).pipe(
+    Layer.provideMerge(
+      Layer.succeed(GitManager, {
+        branchPullRequest: ({ cwd, branch }: { cwd: string; branch: string }) =>
+          Effect.succeed(
+            squashEvidence.has(cwd + "|" + branch)
+              ? {
+                  number: 1,
+                  title: "Squash merged",
+                  url: "https://example.test/pull/1",
+                  headRefName: branch,
+                  headRefOid: squashEvidence.get(cwd + "|" + branch)!,
+                  baseRefName: "main",
+                  state: "merged",
+                }
+              : null,
+          ),
+      } as unknown as GitManagerShape),
+    ),
+    Layer.provideMerge(
+      ServerSettingsService.layerTest({
+        worktreeDisposablePaths: ["README.md"],
+        providers: {
+          codex: { homePath: NodePath.join(NodeOS.tmpdir(), "f5-storage-real-git-codex-home") },
+        },
+      }),
+    ),
+  ),
+)("StorageMaintenance worktree cleanup against real repositories", (it) => {
+  it.effect(
+    "removes a reviewed squash-merged orphan without an upstream through the complete workflow",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            config = yield* ServerConfig,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-squash-workflow-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const target = NodePath.join(config.worktreesDir, "squashed-orphan");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "squashed-orphan", target, "main");
+          runGit(target, "commit", "--allow-empty", "-qm", "topic squashed upstream");
+          yield* seedProject({ sql, projectId: "squash-project", workspaceRoot: repo.root });
+          const key = repo.root + "|squashed-orphan";
+          squashEvidence.set(key, runGit(target, "rev-parse", "HEAD"));
+          yield* Effect.addFinalizer(() => Effect.sync(() => squashEvidence.delete(key)));
+          const report = yield* storage.inspect({ force: true });
+          const reviewed = report.categories
+            .find((c) => c.id === "inactiveF5Worktrees")
+            ?.targets.find((t) => t.path === target);
+          assert.isTrue(reviewed?.safeToDelete, reviewed?.disabledReason);
+          const result = yield* storage.cleanup({
+            operationId: "squash-orphan-workflow",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["inactiveF5Worktrees"],
+            confirmationText: "DELETE",
+            targetSelections: [{ categoryId: "inactiveF5Worktrees", targetIds: [reviewed!.id] }],
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.equal(result.results[0]?.status, "Cleaned", JSON.stringify(result));
+          assert.isFalse(yield* Effect.promise(() => pathExists(target)));
+          assert.include(localBranches(repo.root), "squashed-orphan");
+        }),
+      ),
+  );
+  it.effect(
+    "discovers linked worktrees in selected folders without importing a project",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            settings = yield* ServerSettingsService,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-unregistered-discovery-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const target = NodePath.join(repo.dir, "unregistered-worktree");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "unregistered-worktree", target, "main");
+          const previous = (yield* settings.getSettings).storageDiscovery;
+          yield* settings.updateSettings({
+            storageDiscovery: {
+              machineCleanupEnabled: false,
+              repositoryRoots: [repo.root, target],
+              searchProjectFolders: true,
+            },
+          });
+          yield* Effect.addFinalizer(() =>
+            settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
+          );
+          const report = yield* storage.inspect({ force: true });
+          const targets = report.categories.find((c) => c.id === "externalWorktrees")?.targets;
+          assert.equal(targets?.filter((t) => t.path === target).length, 1);
+          const reviewed = targets?.find((t) => t.path === target);
+          assert.isTrue(reviewed?.safeToDelete, reviewed?.disabledReason);
+          const result = yield* storage.cleanup({
+            operationId: "unregistered-discovery",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["externalWorktrees"],
+            targetSelections: [{ categoryId: "externalWorktrees", targetIds: [reviewed!.id] }],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.equal(result.results[0]?.status, "Cleaned", JSON.stringify(result.warnings));
+          assert.isFalse(yield* Effect.promise(() => pathExists(target)));
+          assert.include(localBranches(repo.root), "unregistered-worktree");
+          const projects =
+            yield* sql`SELECT project_id FROM projection_projects WHERE workspace_root = ${repo.root}`;
+          assert.lengthOf(projects, 0);
+        }),
+      ),
+    // About 17 s on idle Windows runners; load pushed it past the 30 s Windows default.
+    process.platform === "win32" ? 90_000 : 30_000,
+  );
+  it.effect(
+    "searches a registered folder of repositories and cleans its dependency folders and leftover packs",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-folder-of-repos-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const worktree = NodePath.join(repo.dir, "topic-worktree");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "topic-worktree", worktree, "main");
+          const rootModules = NodePath.join(repo.root, "node_modules");
+          const worktreeModules = NodePath.join(worktree, "node_modules");
+          const pack = NodePath.join(repo.root, ".git", "objects", "pack", "tmp_pack_interrupted");
+          yield* Effect.promise(async () => {
+            await writeFile(NodePath.join(rootModules, "pkg", "index.js"), "x".repeat(8192));
+            await writeFile(NodePath.join(worktreeModules, "pkg", "index.js"), "x");
+            await writeFile(pack, "x".repeat(4096));
+            const old = new Date(Date.now() - 2 * 86400_000);
+            await NodeFS.utimes(pack, old, old);
+          });
+          // The project is the folder holding the repositories, not a repository itself.
+          yield* seedProject({ sql, projectId: "folder-of-repos", workspaceRoot: repo.dir });
+          const report = yield* storage.inspect({ force: true });
+          assert.include(report.implicitDiscoveryRoots ?? [], repo.dir);
+          assert.include(
+            report.categories
+              .find((c) => c.id === "externalWorktrees")
+              ?.targets.map((t) => t.path) ?? [],
+            worktree,
+          );
+          const folders = report.categories.find((c) => c.id === "dependencyFolders")!;
+          assert.includeMembers(
+            folders.targets.map((t) => t.path),
+            [rootModules, worktreeModules],
+          );
+          const rootTarget = folders.targets.find((t) => t.path === rootModules)!;
+          assert.isTrue(rootTarget.safeToDelete, rootTarget.disabledReason);
+          assert.match(rootTarget.detail ?? "", /reinstalling dependencies/);
+          const packs = report.categories.find((c) => c.id === "gitTemporaryPacks")!;
+          assert.deepStrictEqual(
+            packs.targets.map((t) => t.path),
+            [pack],
+          );
+          assert.isTrue(packs.defaultSelected);
+          const result = yield* storage.cleanup({
+            operationId: "folder-of-repos-cleanup",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["dependencyFolders", "gitTemporaryPacks"],
+            targetSelections: [{ categoryId: "dependencyFolders", targetIds: [rootTarget.id] }],
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.deepStrictEqual(
+            result.results.map((r) => [r.categoryId, r.status]),
+            [
+              ["dependencyFolders", "Cleaned"],
+              ["gitTemporaryPacks", "Cleaned"],
+            ],
+            JSON.stringify(result.warnings),
+          );
+          assert.isFalse(yield* Effect.promise(() => pathExists(rootModules)));
+          assert.isTrue(yield* Effect.promise(() => pathExists(worktreeModules)));
+          assert.isFalse(yield* Effect.promise(() => pathExists(pack)));
+          assert.deepStrictEqual(
+            (yield* Effect.promise(() => NodeFS.readdir(repo.root))).filter((name) =>
+              name.startsWith(".f5-deps-trash-"),
+            ),
+            [],
+          );
+
+          // Turned off, the folder is no longer searched.
+          const settings = yield* ServerSettingsService;
+          const previous = (yield* settings.getSettings).storageDiscovery;
+          yield* settings.updateSettings({
+            storageDiscovery: { ...previous, searchProjectFolders: false },
+          });
+          yield* Effect.addFinalizer(() =>
+            settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
+          );
+          const off = yield* storage.inspect({ force: true });
+          assert.deepStrictEqual(off.implicitDiscoveryRoots, []);
+          assert.notInclude(
+            off.categories.find((c) => c.id === "dependencyFolders")?.targets.map((t) => t.path) ??
+              [],
+            worktreeModules,
+          );
+        }),
+      ),
+    // About 14 s on idle Windows runners; load pushed it past the 30 s Windows default.
+    process.platform === "win32" ? 90_000 : 30_000,
+  );
+  it.effect("keeps dependency folders of a checkout a thread used recently", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient;
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-recent-checkout-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        const modules = NodePath.join(repo.root, "node_modules");
+        yield* Effect.promise(() => writeFile(NodePath.join(modules, "pkg", "index.js"), "x"));
+        yield* seedProject({ sql, projectId: "recent-checkout", workspaceRoot: repo.root });
+        yield* seedThread({
+          sql,
+          threadId: ThreadId.makeUnsafe("thread-recent-checkout"),
+          worktreePath: repo.root,
+          deletedAt: null,
+        });
+        const report = yield* storage.inspect({ force: true });
+        const target = report.categories
+          .find((c) => c.id === "dependencyFolders")
+          ?.targets.find((t) => t.path === modules);
+        assert.isFalse(target?.safeToDelete);
+        assert.equal(target?.disabledReason, "A thread used this checkout in the last 24 hours.");
+      }),
+    ),
+  );
+  it.effect("keeps dependency folders of checkouts inside a folder a thread used recently", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient;
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-parent-folder-checkout-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        const modules = NodePath.join(repo.root, "node_modules");
+        yield* Effect.promise(() => writeFile(NodePath.join(modules, "pkg", "index.js"), "x"));
+        yield* seedProject({ sql, projectId: "parent-folder-checkout", workspaceRoot: repo.root });
+        // The thread works in the folder holding the checkout, as in a folder-of-repositories project.
+        yield* seedThread({
+          sql,
+          threadId: ThreadId.makeUnsafe("thread-parent-folder"),
+          worktreePath: NodePath.dirname(repo.root),
+          deletedAt: null,
+        });
+        const report = yield* storage.inspect({ force: true });
+        const target = report.categories
+          .find((c) => c.id === "dependencyFolders")
+          ?.targets.find((t) => t.path === modules);
+        assert.isFalse(target?.safeToDelete);
+        assert.equal(target?.disabledReason, "A thread used this checkout in the last 24 hours.");
+      }),
+    ),
+  );
+  it.effect(
+    "requires explicit archive consent and retains conversation history and branch",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            config = yield* ServerConfig,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-archive-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const target = NodePath.join(config.worktreesDir, "idle-owned");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "idle-owned", target, "main");
+          yield* seedProject({ sql, projectId: "idle-project", workspaceRoot: repo.root });
+          const threadId = ThreadId.makeUnsafe("idle-storage-thread");
+          yield* seedThread({
+            sql,
+            threadId,
+            worktreePath: target,
+            archivedAt: null,
+            deletedAt: null,
+          });
+          const report = yield* storage.inspect({ force: true });
+          const item = report.categories
+            .find((c) => c.id === "inactiveF5Worktrees")
+            ?.targets.find((t) => t.path === target);
+          assert.equal(item?.action, "archiveAndRemove");
+          const request = {
+            operationId: "archive-consent",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["inactiveF5Worktrees"] as const,
+            targetSelections: [{ categoryId: "inactiveF5Worktrees" as const, targetIds: [target] }],
+            confirmationText: "DELETE",
+          };
+          const denied = yield* storage.cleanup(request).pipe(Effect.result);
+          assert.equal(denied._tag, "Failure");
+          yield* sql`UPDATE projection_threads SET last_interaction_at = '2026-10-29T12:34:56.000Z' WHERE thread_id = ${threadId}`;
+          const changed = yield* storage.cleanup({
+            ...request,
+            options: { archiveIdleThreads: true, vacuumAfterDeletes: false },
+          });
+          assert.isTrue(
+            changed.warnings.some((warning) => warning.reason.includes("conversation changed")),
+          );
+          assert.isTrue(yield* Effect.promise(() => pathExists(target)));
+          const refreshed = yield* storage.inspect({ force: true });
+          const result = yield* storage.cleanup({
+            ...request,
+            operationId: "archive-consent-refreshed",
+            scanId: refreshed.scanId,
+            nonce: refreshed.confirmationNonce,
+            options: { archiveIdleThreads: true, vacuumAfterDeletes: false },
+          });
+          assert.equal(result.results[0]?.status, "Cleaned", JSON.stringify(result.warnings));
+          assert.equal(yield* Effect.promise(() => pathExists(target)), false);
+          assert.include(localBranches(repo.root), "idle-owned");
+          const rows = yield* sql<{
+            deletedAt: string | null;
+            archivedAt: string | null;
+            path: string | null;
+          }>`SELECT deleted_at AS "deletedAt", archived_at AS "archivedAt", worktree_path AS path FROM projection_threads WHERE thread_id = ${threadId}`;
+          assert.isNull(rows[0]?.deletedAt);
+          assert.isNotNull(rows[0]?.archivedAt);
+          assert.equal(rows[0]?.path, target);
+        }),
+      ),
+    // Two scans and repeated archive preflights use real Git and native process
+    // probes; Windows CI needs headroom for process startup and NTFS latency.
+    process.platform === "win32" ? 60_000 : 30_000,
+  );
+  it.effect.each(["merged", "pushed"] as const)(
+    "removes inactive F5 worktrees and preserves every branch during manual cleanup: %s",
+    (branchKind) =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance;
+          const config = yield* ServerConfig;
+          const sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-managed-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const managed = (name: string) =>
+            NodePath.join(config.worktreesDir, "managed-" + branchKind, name);
+          // Each batch mixes ordinary and protected branches without returning
+          // to the seven-worktree fixture that exceeded the Windows timeout.
+          const selected = branchKind === "merged" ? ["a", "c", "m"] : ["b", "r", "t"];
+          yield* Effect.promise(async () => {
+            if (selected.includes("a")) {
+              runGit(repo.root, "worktree", "add", "-q", "-b", "merged-a", managed("a"), "main");
+              // Ignored build output no longer blocks storage cleanup.
+              await writeFile(
+                NodePath.join(repo.root, ".git", "info", "exclude"),
+                "dist/\n*.tsbuildinfo\n",
+              );
+              await writeFile(NodePath.join(managed("a"), "node_modules", "x", "index.js"), "x");
+              await writeFile(NodePath.join(managed("a"), "dist", "index.js"), "x");
+              await writeFile(NodePath.join(managed("a"), "app.tsbuildinfo"), "{}");
+            }
+            if (selected.includes("b")) {
+              runGit(repo.root, "worktree", "add", "-q", "-b", "pushed-b", managed("b"), "main");
+              await writeFile(NodePath.join(managed("b"), "b.txt"), "b\n");
+              runGit(managed("b"), "add", ".");
+              runGit(managed("b"), "commit", "-q", "-m", "b");
+              runGit(managed("b"), "push", "-q", "-u", "origin", "pushed-b");
+            }
+            if (selected.includes("c")) {
+              runGit(repo.root, "worktree", "add", "-q", "-b", "archived-c", managed("c"), "main");
+            }
+            if (selected.includes("m")) {
+              runGit(repo.root, "checkout", "-q", "-b", "feature-x");
+              runGit(repo.root, "worktree", "add", "-q", managed("m"), "main");
+            }
+            if (selected.includes("r")) {
+              runGit(repo.root, "branch", "release-1", "main");
+              runGit(repo.root, "push", "-q", "-u", "origin", "release-1");
+              runGit(repo.root, "worktree", "add", "-q", managed("r"), "release-1");
+            }
+            if (selected.includes("t")) {
+              runGit(
+                repo.root,
+                "worktree",
+                "add",
+                "-q",
+                "--track",
+                "-b",
+                "tracks-main",
+                managed("t"),
+                "origin/main",
+              );
+            }
+            runGit(repo.root, "worktree", "add", "-q", "-b", "ahead-d", managed("d"), "main");
+            await writeFile(NodePath.join(managed("d"), "d.txt"), "d\n");
+            runGit(managed("d"), "add", ".");
+            runGit(managed("d"), "commit", "-q", "-m", "d");
+          });
+          yield* seedProject({
+            sql,
+            projectId: "project-managed-" + branchKind,
+            workspaceRoot: repo.root,
+          });
+          if (selected.includes("c"))
+            yield* seedThread({
+              sql,
+              threadId: ThreadId.makeUnsafe("thread-archived-managed-c"),
+              archivedAt: "2026-04-01T00:00:00.000Z",
+              deletedAt: null,
+              worktreePath: managed("c"),
+            });
+
+          const report = yield* storage.inspect({ force: true });
+          const category = report.categories.find((entry) => entry.id === "inactiveF5Worktrees");
+          const target = (name: string) =>
+            category?.targets.find((entry) => entry.path === managed(name));
+          for (const name of selected) {
+            assert.equal(target(name)?.safeToDelete, true, target(name)?.disabledReason);
+          }
+          assert.equal(target("d")?.safeToDelete, false);
+          assert.equal(
+            target("d")?.disabledReason,
+            "it has commits that are not in origin/main and not pushed",
+          );
+          // The managed worktrees are not offered again as external ones.
+          assert.deepEqual(
+            report.categories.find((entry) => entry.id === "externalWorktrees")?.targets ?? [],
+            [],
+          );
+
+          const result = yield* storage.cleanup({
+            operationId: "operation-real-managed-worktrees-" + branchKind,
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["inactiveF5Worktrees"],
+            targetSelections: [
+              {
+                categoryId: "inactiveF5Worktrees",
+                targetIds: selected.map((name) => target(name)!.id),
+              },
+            ],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+
+          const reclaimed = result.results[0]?.perTargetReclaimed ?? [];
+          assert.equal(result.results[0]?.status, "Cleaned");
+          assert.deepEqual(
+            reclaimed.map((entry) => [entry.path, entry.branch]).toSorted(),
+            selected.map((name) => [managed(name), "kept"]),
+          );
+          const branches = localBranches(repo.root);
+          for (const branch of branchKind === "merged"
+            ? ["merged-a", "archived-c"]
+            : ["pushed-b", "tracks-main", "release-1"])
+            assert.include(branches, branch);
+          assert.include(branches, "main");
+          assert.include(branches, "ahead-d");
+          for (const name of selected) {
+            assert.equal(yield* Effect.promise(() => pathExists(managed(name))), false);
+          }
+          assert.equal(yield* Effect.promise(() => pathExists(managed("d"))), true);
+        }),
+      ),
+    // Each case keeps batch cleanup coverage with four real worktrees and three
+    // removals. Keep Windows headroom for fresh process probes and NTFS Git calls.
+    process.platform === "win32" ? 120_000 : 60_000,
+  );
+
+  it.effect(
+    "offers external worktrees and missing registrations, discarding reviewed changes",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance;
+          const config = yield* ServerConfig;
+          const sql = yield* SqlClient.SqlClient;
+          yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-external-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const external = NodePath.join(repo.dir, "external-e");
+          const kept = NodePath.join(repo.dir, "external-kept");
+          const gone = NodePath.join(repo.dir, "gone-g");
+          yield* Effect.promise(async () => {
+            runGit(repo.root, "worktree", "add", "-q", "-b", "external-e", external, "main");
+            await NodeFS.writeFile(NodePath.join(external, "README.md"), "regenerated\n");
+            runGit(repo.root, "worktree", "add", "-q", "-b", "external-kept", kept, "main");
+            await NodeFS.writeFile(NodePath.join(kept, ".env"), "SECRET=1\n");
+            runGit(repo.root, "worktree", "add", "-q", "-b", "gone-g", gone, "main");
+            await NodeFS.rm(gone, { recursive: true, force: true });
+          });
+          yield* seedProject({ sql, projectId: "project-external", workspaceRoot: repo.root });
+
+          const report = yield* storage.inspect({ force: true });
+          const externalCategory = report.categories.find(
+            (entry) => entry.id === "externalWorktrees",
+          );
+          const staleCategory = report.categories.find(
+            (entry) => entry.id === "staleWorktreeRegistrations",
+          );
+          assert.equal(externalCategory?.defaultSelected, false);
+          assert.equal(externalCategory?.impact, "high");
+          assert.equal(staleCategory?.defaultSelected, true);
+          const externalTarget = externalCategory?.targets.find((entry) => entry.path === external);
+          const keptTarget = externalCategory?.targets.find((entry) => entry.path === kept);
+          const staleTarget = staleCategory?.targets.find((entry) => entry.path === gone);
+          assert.equal(externalTarget?.safeToDelete, true, externalTarget?.disabledReason);
+          assert.equal(
+            externalTarget?.detail,
+            "External · external-e · Discards 1 changed file: README.md",
+          );
+          assert.equal(keptTarget?.safeToDelete, false);
+          assert.match(keptTarget?.disabledReason ?? "", /\.env/);
+          assert.equal(staleTarget?.safeToDelete, true);
+          assert.equal(staleTarget?.bytes, 0);
+
+          const result = yield* storage.cleanup({
+            operationId: "operation-real-external-worktrees",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["externalWorktrees", "staleWorktreeRegistrations"],
+            targetSelections: [
+              { categoryId: "externalWorktrees", targetIds: [externalTarget!.id] },
+              { categoryId: "staleWorktreeRegistrations", targetIds: [staleTarget!.id] },
+            ],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+
+          assert.deepEqual(
+            result.results.map((entry) => [entry.categoryId, entry.status]),
+            [
+              ["externalWorktrees", "Cleaned"],
+              ["staleWorktreeRegistrations", "Cleaned"],
+            ],
+          );
+          assert.equal(yield* Effect.promise(() => pathExists(external)), false);
+          assert.equal(yield* Effect.promise(() => pathExists(kept)), true);
+          const registered = registeredPaths(repo.root);
+          assert.notInclude(registered, external);
+          assert.notInclude(registered, gone);
+          assert.include(registered, kept);
+          assert.include(localBranches(repo.root), "external-e");
+        }),
+      ),
+    // Several real worktrees, two scans and a cleanup: well over 15 s on CI runners.
+    60_000,
+  );
+
+  it.effect("refuses external cleanup when local changes differ from the reviewed ones", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const config = yield* ServerConfig;
+        const sql = yield* SqlClient.SqlClient;
+        yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-drift-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        const external = NodePath.join(repo.dir, "external-drift");
+        yield* Effect.promise(async () => {
+          runGit(repo.root, "worktree", "add", "-q", "-b", "external-drift", external, "main");
+          await NodeFS.writeFile(NodePath.join(external, "README.md"), "regenerated\n");
+        });
+        yield* seedProject({ sql, projectId: "project-drift", workspaceRoot: repo.root });
+
+        const report = yield* storage.inspect({ force: true });
+        const target = report.categories
+          .find((entry) => entry.id === "externalWorktrees")
+          ?.targets.find((entry) => entry.path === external);
+        assert.equal(target?.safeToDelete, true, target?.disabledReason);
+        yield* Effect.promise(() =>
+          NodeFS.writeFile(NodePath.join(external, "README.md"), "edited after review\n"),
+        );
+
+        const result = yield* storage.cleanup({
+          operationId: "operation-real-external-drift",
+          scanId: report.scanId,
+          nonce: report.confirmationNonce,
+          categoryIds: ["externalWorktrees"],
+          targetSelections: [{ categoryId: "externalWorktrees", targetIds: [target!.id] }],
+          confirmationText: "DELETE",
+          options: { vacuumAfterDeletes: false },
+        });
+
+        assert.notEqual(result.results[0]?.status, "Cleaned");
+        assert.equal(yield* Effect.promise(() => pathExists(external)), true);
+        assert.equal(
+          yield* Effect.promise(() =>
+            NodeFS.readFile(NodePath.join(external, "README.md"), "utf8"),
+          ),
+          "edited after review\n",
+        );
+      }),
+    ),
+  );
+
+  it.effect("refuses removal when only staged content changed after review", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const config = yield* ServerConfig;
+        const sql = yield* SqlClient.SqlClient;
+        yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-index-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        const external = NodePath.join(repo.dir, "external-index");
+        yield* Effect.promise(async () => {
+          runGit(repo.root, "worktree", "add", "-q", "-b", "external-index", external, "main");
+          await NodeFS.writeFile(NodePath.join(external, "README.md"), "staged\n");
+          runGit(external, "add", "README.md");
+          await NodeFS.writeFile(NodePath.join(external, "README.md"), "working\n");
+        });
+        yield* seedProject({ sql, projectId: "project-index", workspaceRoot: repo.root });
+
+        const report = yield* storage.inspect({ force: true });
+        const target = report.categories
+          .find((entry) => entry.id === "externalWorktrees")
+          ?.targets.find((entry) => entry.path === external);
+        assert.equal(target?.safeToDelete, true, target?.disabledReason);
+        // Stage other content without touching the working file; status stays `MM`.
+        yield* Effect.promise(async () => {
+          const blob = NodePath.join(repo.dir, "blob.txt");
+          await NodeFS.writeFile(blob, "written straight to the index\n");
+          const sha = runGit(external, "hash-object", "-w", blob);
+          runGit(external, "update-index", "--cacheinfo", `100644,${sha},README.md`);
+        });
+
+        const result = yield* storage.cleanup({
+          operationId: "operation-real-external-index",
+          scanId: report.scanId,
+          nonce: report.confirmationNonce,
+          categoryIds: ["externalWorktrees"],
+          targetSelections: [{ categoryId: "externalWorktrees", targetIds: [target!.id] }],
+          confirmationText: "DELETE",
+          options: { vacuumAfterDeletes: false },
+        });
+
+        assert.notEqual(result.results[0]?.status, "Cleaned");
+        assert.equal(yield* Effect.promise(() => pathExists(external)), true);
+      }),
+    ),
+  );
+
+  it.effect("applies disposable paths only for projects in the worktree's repository", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const config = yield* ServerConfig;
+        const sql = yield* SqlClient.SqlClient;
+        const owned = yield* Effect.promise(() => makeClonedRepo("f5-storage-owned-"));
+        const unowned = yield* Effect.promise(() => makeClonedRepo("f5-storage-unowned-"));
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(() => Promise.all([owned.cleanup(), unowned.cleanup()])),
+        );
+        const ownedTree = NodePath.join(config.worktreesDir, "owned", "regenerated");
+        const unownedTree = NodePath.join(config.worktreesDir, "unowned", "regenerated");
+        yield* Effect.promise(async () => {
+          runGit(owned.root, "worktree", "add", "-q", "-b", "regen", ownedTree, "main");
+          await NodeFS.writeFile(NodePath.join(ownedTree, "README.md"), "regenerated\n");
+          runGit(unowned.root, "worktree", "add", "-q", "-b", "regen", unownedTree, "main");
+          await NodeFS.writeFile(NodePath.join(unownedTree, "README.md"), "regenerated\n");
+          await NodeFS.mkdir(NodePath.join(owned.root, "packages", "app"), { recursive: true });
+        });
+        // A project rooted in a subdirectory still owns the repository's worktrees.
+        yield* seedProject({
+          sql,
+          projectId: "project-subdirectory",
+          workspaceRoot: NodePath.join(owned.root, "packages", "app"),
+        });
+
+        const report = yield* storage.inspect({ force: true });
+        const targets = report.categories.find(
+          (entry) => entry.id === "inactiveF5Worktrees",
+        )?.targets;
+        const ownedTarget = targets?.find((entry) => entry.path === ownedTree);
+        const unownedTarget = targets?.find((entry) => entry.path === unownedTree);
+
+        assert.equal(ownedTarget?.safeToDelete, true, ownedTarget?.disabledReason);
+        assert.match(ownedTarget?.detail ?? "", /Discards 1 changed file: README\.md/);
+        // No project owns this repository, so the global list does not apply.
+        assert.equal(unownedTarget?.safeToDelete, false);
+        assert.equal(
+          unownedTarget?.disabledReason,
+          "it has uncommitted changes (including untracked files)",
+        );
+      }),
+    ),
+  );
+
+  it.effect("reports a warning instead of failing when the default branch cannot be fetched", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-fetch-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        runGit(repo.root, "remote", "set-url", "origin", NodePath.join(repo.dir, "missing.git"));
+        yield* seedProject({ sql, projectId: "project-fetch", workspaceRoot: repo.root });
+
+        const report = yield* storage.inspect({ force: true });
+
+        assert.isTrue(
+          report.warnings.some(
+            (warning) =>
+              warning.path === repo.root && /Could not refresh origin\/main/.test(warning.reason),
+          ),
+        );
+        assert.isTrue(report.categories.some((entry) => entry.id === "inactiveF5Worktrees"));
+      }),
+    ),
+  );
+});
+
+const archiveFailureSessions: Array<{ threadId: ThreadId; cwd: string; status: "ready" }> = [];
+it.layer(
+  makeStorageTestLayer({
+    gitCore: "real",
+    providerService: {
+      ...makeProviderServiceStub({
+        stopSession: () => Effect.die(new Error("Fixture session refused shutdown.")),
+      }),
+      listSessions: () => Effect.sync(() => archiveFailureSessions as never),
+    },
+  }),
+)("StorageMaintenance archive partial completion", (it) => {
+  it.effect(
+    "retains archived conversations, branches and checkout when session shutdown fails",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            config = yield* ServerConfig,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-stop-failed-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const target = NodePath.join(config.worktreesDir, "stop-failed");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "stop-failed", target, "main");
+          yield* seedProject({ sql, projectId: "stop-failed-project", workspaceRoot: repo.root });
+          const threadId = ThreadId.makeUnsafe("stop-failed-thread");
+          yield* seedThread({
+            sql,
+            threadId,
+            worktreePath: target,
+            archivedAt: null,
+            deletedAt: null,
+          });
+          archiveFailureSessions.push({ threadId, cwd: target, status: "ready" });
+          yield* Effect.addFinalizer(() => Effect.sync(() => archiveFailureSessions.splice(0)));
+          const report = yield* storage.inspect({ force: true });
+          const reviewed = report.categories
+            .find((c) => c.id === "inactiveF5Worktrees")
+            ?.targets.find((t) => t.path === target);
+          assert.isTrue(reviewed?.safeToDelete, reviewed?.disabledReason);
+          const result = yield* storage.cleanup({
+            operationId: "stop-failed",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["inactiveF5Worktrees"],
+            targetSelections: [{ categoryId: "inactiveF5Worktrees", targetIds: [reviewed!.id] }],
+            confirmationText: "DELETE",
+            options: { archiveIdleThreads: true, vacuumAfterDeletes: false },
+          });
+          assert.isTrue(result.warnings.some((w) => w.reason.includes("session shutdown failed")));
+          assert.isTrue(yield* Effect.promise(() => pathExists(target)));
+          assert.include(localBranches(repo.root), "stop-failed");
+          const rows = yield* sql<{
+            archivedAt: string | null;
+            deletedAt: string | null;
+          }>`SELECT archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads WHERE thread_id = ${threadId}`;
+          assert.isNotNull(rows[0]?.archivedAt);
+          assert.isNull(rows[0]?.deletedAt);
+          const retry = yield* storage.inspect({ force: true });
+          const remaining = retry.categories
+            .find((c) => c.id === "inactiveF5Worktrees")
+            ?.targets.find((t) => t.path === target);
+          assert.isFalse(remaining?.safeToDelete);
+          assert.include(remaining?.disabledReason ?? "", "session");
+        }),
+      ),
+  );
+});
+
+it.layer(
+  makeStorageTestLayer({ gitCore: "real" }).pipe(
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+  ),
+)("StorageMaintenance custom worktree locations", (it) => {
+  it.effect(
+    "reviews and removes worktrees in both current and previous custom roots",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance;
+          const config = yield* ServerConfig;
+          const settings = yield* ServerSettingsService;
+          const sql = yield* SqlClient.SqlClient;
+          yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-custom-storage-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const oldRoot = NodePath.join(config.baseDir, "old-worktrees");
+          const currentRoot = NodePath.join(config.baseDir, "new-worktrees");
+          yield* settings.updateSettings({ worktreesDirectory: oldRoot });
+          yield* settings.recordWorktreeLocation!(oldRoot);
+          yield* settings.updateSettings({ worktreesDirectory: currentRoot });
+          const oldTree = NodePath.join(
+            customWorktreesDirectory(oldRoot, config.worktreesDir),
+            "repo",
+            "old",
+          );
+          const currentTree = NodePath.join(
+            customWorktreesDirectory(currentRoot, config.worktreesDir),
+            "repo",
+            "current",
+          );
+          const foreignTree = NodePath.join(
+            customWorktreesDirectory(currentRoot, config.worktreesDir),
+            "repo",
+            "foreign",
+          );
+          yield* Effect.promise(async () => {
+            runGit(repo.root, "worktree", "add", "-q", "-b", "custom-old", oldTree, "main");
+            runGit(repo.root, "worktree", "add", "-q", "-b", "custom-current", currentTree, "main");
+            runGit(repo.root, "worktree", "add", "-q", "-b", "foreign", foreignTree, "main");
+          });
+          for (const [index, worktreePath] of [oldTree, currentTree].entries())
+            yield* seedThread({
+              sql,
+              threadId: ThreadId.makeUnsafe("custom-owner-" + index),
+              worktreePath,
+              archivedAt: daysAgo(90),
+              deletedAt: null,
+            });
+          yield* seedProject({
+            sql,
+            projectId: "custom-storage-project",
+            workspaceRoot: repo.root,
+          });
+          const report = yield* storage.inspect({ force: true });
+          const targets = report.categories.find(
+            (category) => category.id === "inactiveF5Worktrees",
+          )!.targets;
+          for (const tree of [oldTree, currentTree])
+            assert.equal(targets.find((target) => target.path === tree)?.safeToDelete, true);
+          assert.equal(targets.find((target) => target.path === foreignTree)?.safeToDelete, false);
+          assert.deepEqual(
+            report.categories.find((category) => category.id === "externalWorktrees")!.targets,
+            [],
+          );
+          const cleaned = yield* storage.cleanup({
+            operationId: "custom-root-cleanup",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["inactiveF5Worktrees"],
+            targetSelections: [
+              { categoryId: "inactiveF5Worktrees", targetIds: [oldTree, currentTree] },
+            ],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.equal(cleaned.results[0]?.status, "Cleaned");
+          assert.equal(yield* Effect.promise(() => pathExists(oldTree)), false);
+          assert.equal(yield* Effect.promise(() => pathExists(currentTree)), false);
+          assert.equal(yield* Effect.promise(() => pathExists(foreignTree)), true);
+          yield* storage.cleanInactiveWorktreesAutomatically({
+            operationId: "foreign-custom-root",
+          });
+          assert.equal(yield* Effect.promise(() => pathExists(foreignTree)), true);
+          const unavailable = currentRoot + "-offline";
+          yield* Effect.promise(() => NodeFS.rename(currentRoot, unavailable));
+          yield* Effect.addFinalizer(() =>
+            Effect.promise(() => NodeFS.rename(unavailable, currentRoot)),
+          );
+          yield* seedThread({
+            sql,
+            threadId: ThreadId.makeUnsafe("unmounted-custom-owner"),
+            worktreePath: foreignTree,
+            archivedAt: daysAgo(90),
+            deletedAt: null,
+          });
+          const previews = yield* storage.previewInactiveWorktrees;
+          assert.isFalse(
+            previews.some(
+              (preview) => preview.kind === "missingRegistration" && preview.path === foreignTree,
+            ),
+          );
+          const automatic = yield* storage.cleanInactiveWorktreesAutomatically({
+            operationId: "unmounted-custom-root",
+          });
+          assert.isFalse(
+            automatic?.some((result) =>
+              result.perTargetReclaimed.some((target) => target.path === foreignTree),
+            ) ?? false,
+          );
+          const registrations = yield* (yield* GitCore).listWorktrees(repo.root);
+          const canonicalTree = yield* Effect.promise(() => canonicalWorktreePath(foreignTree));
+          assert.isTrue(registrations.some((entry) => entry.canonicalPath === canonicalTree));
+        }),
+      ),
+    60_000,
+  );
+});
+
+it.layer(makeStorageTestLayer({ gitCore: "real" }))(
+  "StorageMaintenance automatic worktree cleanup",
+  (it) => {
+    it.effect(
+      "removes safe managed worktrees and prunes missing entries, never external ones",
+      () =>
+        withHomeSandbox(
+          Effect.gen(function* () {
+            const storage = yield* StorageMaintenance;
+            const config = yield* ServerConfig;
+            const sql = yield* SqlClient.SqlClient;
+            yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+            const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-automatic-"));
+            yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+            const orphan = NodePath.join(config.worktreesDir, "automatic", "orphan");
+            const dirty = NodePath.join(config.worktreesDir, "automatic", "dirty");
+            const external = NodePath.join(repo.dir, "external-auto");
+            const gone = NodePath.join(repo.dir, "gone-auto");
+            const goneManaged = yield* Effect.promise(async () => {
+              runGit(repo.root, "worktree", "add", "-q", "-b", "orphan", orphan, "main");
+              runGit(repo.root, "worktree", "add", "-q", "-b", "dirty", dirty, "main");
+              await NodeFS.writeFile(NodePath.join(dirty, "work.txt"), "unsaved\n");
+              runGit(repo.root, "worktree", "add", "-q", "-b", "external-auto", external, "main");
+              runGit(repo.root, "worktree", "add", "-q", "-b", "gone-auto", gone, "main");
+              await NodeFS.rm(gone, { recursive: true, force: true });
+              const managedGone = NodePath.join(
+                await NodeFS.realpath(NodePath.dirname(orphan)),
+                "gone-managed",
+              );
+              runGit(repo.root, "worktree", "add", "-q", "-b", "gone-managed", managedGone, "main");
+              await NodeFS.rm(managedGone, { recursive: true, force: true });
+              return managedGone;
+            });
+            yield* seedProject({ sql, projectId: "project-automatic", workspaceRoot: repo.root });
+
+            // The preview lists what the hourly run would do, and only inside the F5 folder.
+            const preview = yield* storage.previewInactiveWorktrees;
+            const previewed = new Map(preview.map((entry) => [entry.path, entry.action]));
+            assert.equal(previewed.get(orphan), "remove");
+            assert.equal(previewed.get(dirty), "skip");
+            assert.equal(previewed.get(goneManaged), "remove");
+            assert.isFalse(previewed.has(external));
+            assert.isFalse(previewed.has(gone));
+
+            const results = yield* storage.cleanInactiveWorktreesAutomatically({
+              operationId: "operation-automatic-worktrees",
+            });
+
+            const byCategory = new Map(results?.map((entry) => [entry.categoryId, entry]));
+            assert.deepEqual(
+              byCategory.get("inactiveF5Worktrees")?.perTargetReclaimed.map((entry) => entry.path),
+              [orphan],
+            );
+            assert.deepEqual(
+              byCategory
+                .get("staleWorktreeRegistrations")
+                ?.perTargetReclaimed.map((entry) => entry.path),
+              [goneManaged],
+            );
+            assert.equal(yield* Effect.promise(() => pathExists(orphan)), false);
+            assert.equal(yield* Effect.promise(() => pathExists(dirty)), true);
+            assert.equal(yield* Effect.promise(() => pathExists(external)), true);
+            assert.notInclude(localBranches(repo.root), "orphan");
+            assert.include(registeredPaths(repo.root), external);
+            // A missing folder outside the F5 folder may be an unmounted disk: keep its entry.
+            assert.include(registeredPaths(repo.root), gone);
+            assert.notInclude(registeredPaths(repo.root), goneManaged);
+          }),
+        ),
+    );
+  },
+);

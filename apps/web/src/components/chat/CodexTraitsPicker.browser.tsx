@@ -1,6 +1,7 @@
 import "../../index.css";
 
-import { ThreadId } from "@t3tools/contracts";
+import { ProviderDriverKind, ThreadId, type ServerProviderModel } from "@t3tools/contracts";
+import { createReportedCodexModelCapabilities } from "@t3tools/shared/model";
 import { page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
@@ -8,6 +9,8 @@ import { render } from "vitest-browser-react";
 import { CodexTraitsPicker } from "./CodexTraitsPicker";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useModelPreferencesStore } from "../../modelPreferencesStore";
+import { getComposerProviderState } from "./composerProviderState";
+import { providerModelOptionsToSelections } from "../../providerModelOptions";
 
 /** Effort levels whose battery segment is currently filled, top row first. */
 function filledLevels() {
@@ -21,6 +24,7 @@ async function mountPicker(props?: {
   draftModel?: string | null;
   effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   fastModeEnabled?: boolean;
+  models?: ReadonlyArray<ServerProviderModel>;
 }) {
   const threadId = ThreadId.makeUnsafe("thread-codex-traits");
   const draftsByThreadId = {} as ReturnType<
@@ -56,11 +60,16 @@ async function mountPicker(props?: {
   const host = document.createElement("div");
   document.body.append(host);
   const screen = await render(
-    <CodexTraitsPicker threadId={threadId} model={props?.model ?? "gpt-5.6-sol"} />,
+    <CodexTraitsPicker
+      threadId={threadId}
+      model={props?.model ?? "gpt-5.6-sol"}
+      {...(props?.models ? { models: props.models } : {})}
+    />,
     { container: host },
   );
 
   return {
+    threadId,
     cleanup: async () => {
       await screen.unmount();
       host.remove();
@@ -69,6 +78,44 @@ async function mountPicker(props?: {
 }
 
 describe("CodexTraitsPicker", () => {
+  it("starts at High and retains a selected provider default explicitly for dispatch", async () => {
+    const models: ReadonlyArray<ServerProviderModel> = [
+      {
+        slug: "gpt-6-luna",
+        name: "GPT-6 Luna",
+        isCustom: false,
+        capabilities: createReportedCodexModelCapabilities({
+          model: "gpt-6-luna",
+          supportedReasoningEfforts: [
+            { reasoningEffort: "low" },
+            { reasoningEffort: "medium" },
+            { reasoningEffort: "high" },
+          ],
+          defaultReasoningEffort: "medium",
+        }),
+      },
+    ];
+    const mounted = await mountPicker({ model: "gpt-6-luna", models });
+    try {
+      await expect.element(page.getByRole("button")).toHaveAttribute("data-effort-level", "high");
+      await page.getByRole("button").click();
+      await page.getByRole("menuitemradio", { name: /^Medium/ }).click();
+      await expect.element(page.getByRole("button")).toHaveAttribute("data-effort-level", "medium");
+      const draftOptions =
+        useComposerDraftStore.getState().draftsByThreadId[mounted.threadId]?.modelOptions;
+      expect(draftOptions?.codex?.reasoningEffort).toBe("medium");
+      expect(
+        getComposerProviderState({
+          provider: ProviderDriverKind.make("codex"),
+          model: "gpt-6-luna",
+          models,
+          modelOptions: providerModelOptionsToSelections("codex", draftOptions),
+        }).modelOptionsForDispatch,
+      ).toContainEqual({ id: "reasoningEffort", value: "medium" });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
   beforeEach(() => {
     localStorage.clear();
     useModelPreferencesStore.setState({
@@ -96,6 +143,43 @@ describe("CodexTraitsPicker", () => {
         expect(document.querySelector('[aria-label="Fast mode enabled"]')).not.toBeNull();
         expect(page.getByRole("button").element().textContent?.trim()).toBe("High");
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows inherited Fast and keeps an explicit off choice after reopening", async () => {
+    const models: ReadonlyArray<ServerProviderModel> = [
+      {
+        slug: "gpt-6.1-sol",
+        name: "GPT-6.1 Sol",
+        isCustom: false,
+        capabilities: createReportedCodexModelCapabilities({
+          model: "gpt-6.1-sol",
+          serviceTiers: [{ id: "priority", name: "Fast" }],
+          defaultServiceTier: "priority",
+        }),
+      },
+    ];
+    const mounted = await mountPicker({ model: "gpt-6.1-sol", models });
+    try {
+      await vi.waitFor(() =>
+        expect(document.querySelector('[aria-label="Fast mode enabled"]')).not.toBeNull(),
+      );
+      await page.getByRole("button").click();
+      await page.getByRole("menuitemcheckbox", { name: "Fast Mode" }).click();
+      await vi.waitFor(() => {
+        expect(
+          useComposerDraftStore.getState().draftsByThreadId[mounted.threadId]?.modelOptions?.codex
+            ?.fastMode,
+        ).toBe(false);
+        expect(document.querySelector('[aria-label="Fast mode enabled"]')).toBeNull();
+      });
+      await userEvent.keyboard("{Escape}");
+      await page.getByRole("button").click();
+      await expect
+        .element(page.getByRole("menuitemcheckbox", { name: "Fast Mode" }))
+        .toHaveAttribute("aria-checked", "false");
     } finally {
       await mounted.cleanup();
     }
@@ -198,6 +282,42 @@ describe("CodexTraitsPicker", () => {
         useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelOptions?.codex
           ?.reasoningEffort,
       ).toBe("medium");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the shown effort when fast mode is toggled with reported capabilities", async () => {
+    // Stored Ultra, reported [max, high, low] with default Low: the turn runs
+    // at Max, so toggling fast mode must not drop the effort and fall to Low.
+    const models: ReadonlyArray<ServerProviderModel> = [
+      {
+        slug: "gpt-6.1-sol",
+        name: "GPT-6.1 Sol",
+        isCustom: false,
+        capabilities: createReportedCodexModelCapabilities({
+          model: "gpt-6.1-sol",
+          supportedReasoningEfforts: [
+            { reasoningEffort: "max" },
+            { reasoningEffort: "high" },
+            { reasoningEffort: "low" },
+          ],
+          defaultReasoningEffort: "low",
+          serviceTiers: [{ id: "fast", name: "Fast" }],
+        }),
+      },
+    ];
+    const mounted = await mountPicker({ model: "gpt-6.1-sol", effort: "ultra", models });
+
+    try {
+      await expect.element(page.getByRole("button")).toHaveTextContent("Max");
+      await page.getByRole("button").click();
+      await page.getByRole("menuitemcheckbox", { name: "Fast Mode" }).click();
+      await vi.waitFor(() => {
+        expect(
+          useComposerDraftStore.getState().draftsByThreadId[mounted.threadId]?.modelOptions?.codex,
+        ).toEqual({ reasoningEffort: "max", fastMode: true });
+      });
     } finally {
       await mounted.cleanup();
     }

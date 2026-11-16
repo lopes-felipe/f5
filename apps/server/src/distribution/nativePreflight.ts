@@ -5,9 +5,27 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { createRequire } from "node:module";
 import { loadFff } from "./runtimeModules";
+import { execFileSync } from "node:child_process";
+import {
+  resolveBundledCodexExecutable,
+  stripCodexManagedEnvironment,
+} from "../provider/codexExecutable";
+import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
 export async function nativePreflight(): Promise<void> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "f5-native-preflight-"));
   try {
+    const version = execFileSync(resolveBundledCodexExecutable(), ["--version"], {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: {
+        ...stripCodexManagedEnvironment(process.env),
+        HOME: directory,
+        USERPROFILE: directory,
+        CODEX_HOME: directory,
+      },
+    }).trim();
+    if (version !== "codex-cli " + CODEX_PROTOCOL_BASELINE_VERSION)
+      throw new Error("Standalone bundled Codex version mismatch: " + version);
     await fs.writeFile(path.join(directory, "fixture.txt"), "F5 standalone native search\n");
     const fff = await loadFff();
     const result = fff.FileFinder.create({ basePath: directory, disableWatch: true });

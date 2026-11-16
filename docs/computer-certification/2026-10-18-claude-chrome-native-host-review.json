@@ -1,0 +1,18 @@
+{
+  "at": "2026-10-18T14:42:19.214Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "sdkVersion": "0.3.295",
+  "executableSha256": "0116ee2e0a513900b633d9951367f18747686478e2b462805b8c31609f047f70",
+  "executableBytes": 239695888,
+  "temporary": "/tmp/f5-chrome-discovery-175IuW",
+  "exitCode": 71,
+  "failure": "sandbox-denied",
+  "diagnostic": "sandbox-exec: sandbox_apply: Operation not permitted\n",
+  "operatorRegistrationsUnchanged": true,
+  "changed": [],
+  "outsideTransactionLocations": [],
+  "registrations": [],
+  "serverStatus": "not-reachable-without-authentication",
+  "candidateReady": false
+}

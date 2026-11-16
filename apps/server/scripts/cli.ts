@@ -139,6 +139,16 @@ const buildCmd = Command.make(
         })`node node_modules/tsdown/dist/run.mjs`,
       );
 
+      // Build the maintenance entry independently: it must not share a chunk
+      // that eagerly loads provider SDKs from the normal application graph.
+      yield* runCommand(
+        ChildProcess.make({
+          cwd: serverDir,
+          stdout: config.verbose ? "inherit" : "ignore",
+          stderr: "inherit",
+        })`node node_modules/tsdown/dist/run.mjs --config tsdown.maintenance.config.ts`,
+      );
+
       const webDist = path.join(repoRoot, "apps/web/dist");
       const clientTarget = path.join(serverDir, "dist/client");
 

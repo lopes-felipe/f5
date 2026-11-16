@@ -119,4 +119,53 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       );
     }),
   );
+
+  for (const [label, config] of [
+    ["an empty key", { T3CODE_POSTHOG_KEY: "" }],
+    ["no key", {}],
+    [
+      "a key with telemetry disabled",
+      { T3CODE_POSTHOG_KEY: "phc_test_key", T3CODE_TELEMETRY_ENABLED: false },
+    ],
+  ] as const) {
+    it.effect(`records, flushes and closes without sending anything given ${label}`, () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const stateDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-telemetry-inactive-",
+        });
+        const capturedRequests: Array<string> = [];
+        const serverConfigLayer = ServerConfig.layerTest(process.cwd(), stateDir);
+        const configLayer = ConfigProvider.layer(
+          ConfigProvider.fromUnknown({ T3CODE_POSTHOG_HOST: "", ...config }),
+        );
+        const batchServerLayer = HttpServer.serve(
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            capturedRequests.push(request.url);
+            return HttpServerResponse.jsonUnsafe({});
+          }),
+        );
+        const runtimeLayer = AnalyticsServiceLayerLive.pipe(
+          Layer.provideMerge(serverConfigLayer),
+          Layer.provide(configLayer),
+          Layer.provideMerge(NodeHttpServer.layerTest),
+        );
+
+        const anonymousIdPath = yield* Effect.gen(function* () {
+          yield* Layer.launch(batchServerLayer).pipe(Effect.forkScoped);
+          const analytics = yield* AnalyticsService;
+          for (let index = 0; index < 50; index += 1) {
+            yield* analytics.record("test.inactive", { index });
+          }
+          yield* analytics.record("server.boot.heartbeat");
+          yield* analytics.flush;
+          return (yield* ServerConfig).anonymousIdPath;
+        }).pipe(Effect.scoped, Effect.provide(runtimeLayer));
+
+        assert.deepEqual(capturedRequests, []);
+        assert.equal(yield* fileSystem.exists(anonymousIdPath), false);
+      }),
+    );
+  }
 });

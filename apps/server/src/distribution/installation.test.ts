@@ -10,6 +10,14 @@ describe("runtime installation boundaries", () => {
         "f5",
       ),
     ).not.toThrow();
+    // Windows bsdtar listing with CRLF line endings.
+    expect(() =>
+      validateArchiveListing(
+        "f5/\r\nf5/f5.exe\r\n",
+        "drwxr-xr-x  0 0      0           0 Oct  2 10:00 f5/\r\n-rwxr-xr-x  0 0      0         100 Oct  2 10:00 f5/f5.exe\r\n",
+        "f5",
+      ),
+    ).not.toThrow();
     for (const file of [
       "../database",
       "/etc/passwd",

@@ -7,13 +7,20 @@
  * @module Open
  */
 import { spawn } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
+import NodeOs from "node:os";
 import NodePath from "node:path";
 
 import { EDITORS, type EditorId } from "@t3tools/contracts";
 import { Cause, Effect, Exit, Layer, Schema, ServiceMap } from "effect";
 
 import { editorLaunchTotal, increment } from "./observability/Metrics.ts";
-import { isCommandAvailable, resolveInvocation } from "./spawn/resolveCommand.ts";
+import {
+  isCommandAvailable,
+  PathDirectoryListings,
+  resolveExecutables,
+  resolveInvocation,
+} from "./spawn/resolveCommand.ts";
 
 export { isCommandAvailable } from "./spawn/resolveCommand.ts";
 
@@ -105,6 +112,8 @@ const macEditorAppNames: Partial<Record<EditorId, readonly string[]>> = {
   vscode: ["Visual Studio Code"],
   "vscode-insiders": ["Visual Studio Code - Insiders"],
   idea: ["IntelliJ IDEA", "IntelliJ IDEA CE", "IntelliJ IDEA Ultimate"],
+  // `Antigravity.app` is the separate Hub, not the IDE.
+  antigravity: ["Antigravity IDE"],
 };
 
 function resolveEditorCommandCandidates(
@@ -148,15 +157,51 @@ function resolveEditorCommandCandidates(
   }
 }
 
+/**
+ * Launchers that share an editor's command name but do not open the editor.
+ * Cursor Agent installs `~/.local/bin/cursor`, which forwards to the IDE's CLI
+ * when another `cursor` is on PATH and otherwise prints this message and exits 1.
+ */
+const EDITOR_SHIM_MARKERS: Partial<Record<EditorId, string>> = {
+  cursor: "No Cursor IDE installation found",
+};
+const MAX_EDITOR_SHIM_BYTES = 4096;
+
+export function isEditorShim(editorId: EditorId, filePath: string): boolean {
+  const marker = EDITOR_SHIM_MARKERS[editorId];
+  if (!marker) return false;
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile() || stat.size > MAX_EDITOR_SHIM_BYTES) return false;
+    return readFileSync(filePath, "utf8").includes(marker);
+  } catch {
+    return false;
+  }
+}
+
+/** Absolute paths of usable editor executables, in preference order, shims removed. */
+function resolveEditorExecutables(
+  editor: (typeof EDITORS)[number],
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+  pathDirectoryListings?: PathDirectoryListings,
+): ReadonlyArray<string> {
+  return resolveEditorCommandCandidates(editor, platform, env)
+    .flatMap((candidate) => resolveExecutables(candidate, env, { platform, pathDirectoryListings }))
+    .filter((executable) => !isEditorShim(editor.id, executable));
+}
+
 function resolveEditorCommand(
   editor: (typeof EDITORS)[number],
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
-): string {
-  const candidates = resolveEditorCommandCandidates(editor, platform, env);
-  return (
-    candidates.find((command) => isCommandAvailable(command, { platform, env })) ?? editor.command!
-  );
+): string | null {
+  // Launch the accepted path itself: a bare command would resolve through PATH
+  // again and could land on a skipped shim.
+  const executable = resolveEditorExecutables(editor, platform, env)[0];
+  if (executable) return executable;
+  // The bare name would only reach a shim; report the editor as missing instead.
+  return EDITOR_SHIM_MARKERS[editor.id] ? null : editor.command!;
 }
 
 function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
@@ -175,13 +220,16 @@ export function resolveAvailableEditors(
   env: NodeJS.ProcessEnv = process.env,
 ): ReadonlyArray<EditorId> {
   const available: EditorId[] = [];
+  const pathDirectoryListings = new PathDirectoryListings();
 
   for (const editor of EDITORS) {
     const commandAvailable = editor.command
-      ? resolveEditorCommandCandidates(editor, platform, env).some((command) =>
-          isCommandAvailable(command, { platform, env }),
-        )
-      : isCommandAvailable(fileManagerCommandForPlatform(platform), { platform, env });
+      ? resolveEditorExecutables(editor, platform, env, pathDirectoryListings).length > 0
+      : isCommandAvailable(fileManagerCommandForPlatform(platform), {
+          platform,
+          env,
+          pathDirectoryListings,
+        });
     if (commandAvailable) {
       available.push(editor.id);
     }
@@ -235,10 +283,11 @@ export const resolveEditorLaunch = Effect.fnUntraced(function* (
   }
 
   if (editorDef.command) {
-    return {
-      command: resolveEditorCommand(editorDef, platform, env),
-      args: resolveEditorArgs(editorDef.id, input.cwd),
-    };
+    const command = resolveEditorCommand(editorDef, platform, env);
+    if (!command) {
+      return yield* new OpenError({ message: `Editor command not found: ${editorDef.command}` });
+    }
+    return { command, args: resolveEditorArgs(editorDef.id, input.cwd) };
   }
 
   if (editorDef.id !== "file-manager") {
@@ -248,7 +297,38 @@ export const resolveEditorLaunch = Effect.fnUntraced(function* (
   return { command: fileManagerCommandForPlatform(platform), args: [input.cwd] };
 });
 
-export const launchDetached = (launch: EditorLaunch) =>
+/**
+ * The desktop app runs this server with ELECTRON_RUN_AS_NODE. A launched editor
+ * or file manager passes its environment on to everything started from it, so
+ * any Electron app opened from there would start as plain Node and exit.
+ */
+export function launchedAppEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !isRunAsNodeKey(key)));
+}
+
+function isRunAsNodeKey(key: string): boolean {
+  return key.toUpperCase() === "ELECTRON_RUN_AS_NODE";
+}
+
+/**
+ * `open` always spawns with this process's environment. Under ELECTRON_RUN_AS_NODE
+ * (the desktop `f5` CLI launcher) it would pick the system `open` or `xdg-open`, so
+ * launch that opener here instead, without the variable. Windows, and WSL's
+ * PowerShell handoff, do not pass this environment on, so `open` keeps them.
+ */
+export function resolveBrowserLaunch(
+  target: string,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  osRelease: string = NodeOs.release(),
+): EditorLaunch | null {
+  if (!Object.keys(env).some(isRunAsNodeKey)) return null;
+  if (platform === "darwin") return { command: "open", args: [target] };
+  if (platform === "win32" || osRelease.toLowerCase().includes("microsoft")) return null;
+  return { command: "xdg-open", args: [target] };
+}
+
+export const launchDetached = (launch: EditorLaunch, checkEarlyExit = true) =>
   Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan({
       "open.command": launch.command,
@@ -264,6 +344,7 @@ export const launchDetached = (launch: EditorLaunch) =>
         const invocation = resolveInvocation(launch.command, launch.args);
         child = spawn(invocation.file, [...invocation.args], {
           detached: true,
+          env: launchedAppEnvironment(),
           stdio: "ignore",
           windowsHide: true,
         });
@@ -273,17 +354,58 @@ export const launchDetached = (launch: EditorLaunch) =>
         );
       }
 
-      const handleSpawn = () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let finished = false;
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        clearTimeout(timer);
+        child.removeListener("spawn", handleSpawn);
+        child.removeListener("exit", handleExit);
+        child.removeListener("error", handleError);
+        child.once("error", ignoreDetachedError);
         child.unref();
-        resume(Effect.void);
       };
-
+      const finish = (error?: OpenError) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        resume(error ? Effect.fail(error) : Effect.void);
+      };
+      // CLI launchers can spawn successfully and then immediately fail. Observe
+      // that handoff briefly without waiting for a long-running editor to close.
+      const handleSpawn = () => {
+        if (checkEarlyExit) timer = setTimeout(() => finish(), 1000);
+        else finish();
+      };
+      const handleExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        finish(
+          code === 0
+            ? undefined
+            : new OpenError({
+                message: signal
+                  ? `Editor launcher terminated by ${signal}: ${launch.command}`
+                  : `Editor launcher exited with code ${code}: ${launch.command}`,
+              }),
+        );
+      };
       child.once("spawn", handleSpawn);
-      child.once("error", (cause) =>
-        resume(Effect.fail(new OpenError({ message: "failed to spawn detached process", cause }))),
-      );
+      child.once("exit", handleExit);
+      const handleError = (cause: Error) =>
+        finish(new OpenError({ message: "failed to spawn detached process", cause }));
+      child.once("error", handleError);
+      return Effect.sync(() => {
+        finished = true;
+        cleanup();
+      });
     });
   });
+
+// An interrupted spawn may still fail later, after its waiting fiber has gone.
+function ignoreDetachedError(): void {
+  /* No owner remains to notify. */
+}
 
 function classifyEditorLaunchFailure(error: OpenError): string {
   if (error.message.startsWith("Unknown editor:")) {
@@ -315,7 +437,9 @@ const make = Effect.gen(function* () {
       return yield* Effect.failCause(launchExit.cause);
     }
 
-    const detachedExit = yield* Effect.exit(launchDetached(launchExit.value));
+    const detachedExit = yield* Effect.exit(
+      launchDetached(launchExit.value, input.editor !== "file-manager"),
+    );
     if (Exit.isFailure(detachedExit)) {
       const error = Cause.squash(detachedExit.cause) as OpenError;
       yield* increment(editorLaunchTotal, {
@@ -335,7 +459,9 @@ const make = Effect.gen(function* () {
     targetPath: string,
   ) {
     const detachedExit = yield* Effect.exit(
-      launchDetached(resolveFileManagerRevealLaunch(targetPath)),
+      // Explorer can exit 1 after a successful handoff. File-manager launchers
+      // retain spawn-only semantics on every platform.
+      launchDetached(resolveFileManagerRevealLaunch(targetPath), false),
     );
     if (Exit.isFailure(detachedExit)) {
       const error = Cause.squash(detachedExit.cause) as OpenError;
@@ -349,11 +475,15 @@ const make = Effect.gen(function* () {
   });
 
   return {
-    openBrowser: (target) =>
-      Effect.tryPromise({
-        try: () => open.default(target),
-        catch: (cause) => new OpenError({ message: "Browser auto-open failed", cause }),
-      }),
+    openBrowser: (target) => {
+      const launch = resolveBrowserLaunch(target);
+      return launch
+        ? launchDetached(launch, false)
+        : Effect.tryPromise({
+            try: () => open.default(target),
+            catch: (cause) => new OpenError({ message: "Browser auto-open failed", cause }),
+          }).pipe(Effect.asVoid);
+    },
     openInEditor: (input) => openInEditor(input).pipe(Effect.withSpan("open.in-editor")),
     revealInFileManager: (targetPath) =>
       revealInFileManager(targetPath).pipe(Effect.withSpan("open.reveal-in-file-manager")),

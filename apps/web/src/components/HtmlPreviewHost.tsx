@@ -1,0 +1,80 @@
+import { HTML_PREVIEW_FETCH_TIMEOUT_MS, HTML_RENDER_MAX_PAGE_BYTES } from "@t3tools/contracts";
+import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
+import { readBoundedResponseText } from "../lib/readBoundedResponseText";
+import { useEffect, useRef } from "react";
+import { useHtmlRenderThemes } from "../hooks/useHtmlRenderTheme";
+import { readNativeApi } from "../nativeApi";
+import { onServerWelcome } from "../wsNativeApi";
+
+/** Only desktop app renderers can fulfill offscreen preview requests. */
+export function HtmlPreviewHost() {
+  // Read through a ref, so a theme change neither re-registers the host nor drops requests.
+  const current = useHtmlRenderThemes();
+  const themes = useRef(current);
+  // After commit, so a discarded render cannot leave a theme that never showed.
+  useEffect(() => {
+    themes.current = current;
+  }, [current]);
+  useEffect(() => {
+    const render = window.desktopBridge?.htmlPreview;
+    const api = readNativeApi()?.htmlRender;
+    if (!render || !api) return;
+    let disposed = false;
+    const requests = new Map<string, AbortController>();
+    const register = () => {
+      if (!disposed) void api.setHost({ available: true }).catch(() => undefined);
+    };
+    const stop = api.onRequest((request) => {
+      if (requests.has(request.requestId)) return;
+      const controller = new AbortController();
+      requests.set(request.requestId, controller);
+      // Which leg failed goes back to the agent, so a failure names itself.
+      let failure = "The desktop could not load the preview document.";
+      void fetch(`${getServerHttpOrigin()}${request.documentPath}`, {
+        credentials: "include",
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(HTML_PREVIEW_FETCH_TIMEOUT_MS),
+        ]),
+      })
+        .then((response) => readBoundedResponseText(response, HTML_RENDER_MAX_PAGE_BYTES))
+        .then((html) => {
+          if (disposed || controller.signal.aborted) throw new Error("Preview host closed");
+          failure = "The desktop could not render this HTML preview.";
+          return render({
+            requestId: request.requestId,
+            threadId: request.threadId,
+            width: request.width,
+            appearance: request.appearance,
+            // The appearance the agent asked for, even when the reader shows the other one.
+            theme: themes.current[request.appearance],
+            html,
+          });
+        })
+        .then((result) => {
+          if (!disposed) return api.respond({ requestId: request.requestId, result });
+        })
+        .catch(() => {
+          if (!disposed)
+            void api
+              .respond({
+                requestId: request.requestId,
+                result: { _tag: "Unavailable", message: failure },
+              })
+              .catch(() => undefined);
+        })
+        .finally(() => requests.delete(request.requestId));
+    });
+    const stopWelcome = onServerWelcome(register);
+    register();
+    return () => {
+      disposed = true;
+      for (const controller of requests.values()) controller.abort();
+      requests.clear();
+      stop();
+      stopWelcome();
+      void api.setHost({ available: false }).catch(() => undefined);
+    };
+  }, []);
+  return null;
+}

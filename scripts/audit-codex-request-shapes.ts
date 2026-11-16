@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+  resolveBundledCodexExecutable,
+  resolveCodexCommand,
+  stripCodexManagedEnvironment,
+} from "../apps/server/src/provider/codexExecutable.ts";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,7 +17,11 @@ import { codexRequestShapeProbe } from "./codexRequestShapeAudit.ts";
 
 const PINNED_VERSION = CODEX_PROTOCOL_BASELINE_VERSION;
 async function command(file: string, args: string[]) {
-  const child = Bun.spawn([file, ...args], { stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([file, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: stripCodexManagedEnvironment(process.env),
+  });
   const [code, out, err] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
@@ -26,25 +35,10 @@ const root = path.resolve(import.meta.dirname, "..");
 const probeDirectory = await mkdtemp(path.join(root, "scripts/.codex-request-audit-"));
 const temporary = await mkdtemp(path.join(tmpdir(), "f5-codex-request-shapes-"));
 try {
-  let binary = process.env.CODEX_BINARY_PATH ?? "codex";
-  if (process.argv.includes("--install-baseline")) {
-    const platformPackage = `@openai/codex-${process.platform}-${process.arch}`;
-    await command("npm", [
-      "install",
-      "--prefix",
-      temporary,
-      "--no-save",
-      "--omit=optional",
-      "--fetch-retries=2",
-      `@openai/codex@${PINNED_VERSION}`,
-      `${platformPackage}@npm:@openai/codex@${PINNED_VERSION}-${process.platform}-${process.arch}`,
-    ]);
-    binary = path.join(
-      temporary,
-      "node_modules/.bin",
-      process.platform === "win32" ? "codex.cmd" : "codex",
-    );
-  }
+  const binary =
+    process.argv.includes("--bundled-baseline") || process.argv.includes("--install-baseline")
+      ? resolveBundledCodexExecutable()
+      : resolveCodexCommand(process.env.CODEX_BINARY_PATH);
   const version = await command(binary, ["--version"]);
   if (parseCodexCliVersion(version) !== PINNED_VERSION)
     throw new Error(`Request audit requires ${PINNED_VERSION}; received ${version}`);
@@ -53,6 +47,41 @@ try {
   const baseline = JSON.parse(
     await readFile(path.join(root, "scripts/fixtures/codex-requests/baseline.json"), "utf8"),
   ) as { cliVersion: string; sha256: Record<string, string> };
+  if (process.argv.includes("--write-fixture")) {
+    const files = [
+      ...Object.keys(baseline.sha256),
+      "v2/ThreadSampleParams.ts",
+      "v2/ThreadReadStateUpdateParams.ts",
+      "v2/ThreadMemoryReadParams.ts",
+      "v2/ThreadGoalSetParams.ts",
+      "v2/ThreadGoalClearParams.ts",
+      "v2/GetAccountTokenUsageParams.ts",
+    ];
+    const sha256 = Object.fromEntries(
+      await Promise.all(
+        [...new Set(files)].map(async (file) => [
+          file,
+          createHash("sha256")
+            .update(await readFile(path.join(schemas, file)))
+            .digest("hex"),
+        ]),
+      ),
+    );
+    const fixture = {
+      cliVersion: PINNED_VERSION,
+      sourceRevision: process.env.CODEX_SOURCE_REVISION,
+      experimental: true,
+      sha256,
+    };
+    if (!fixture.sourceRevision)
+      throw new Error("CODEX_SOURCE_REVISION is required to write fixtures");
+    await writeFile(
+      path.join(root, "scripts/fixtures/codex-requests/baseline.json"),
+      JSON.stringify(fixture, null, 2) + "\n",
+    );
+    baseline.cliVersion = PINNED_VERSION;
+    baseline.sha256 = sha256;
+  }
   if (baseline.cliVersion !== PINNED_VERSION) throw new Error("Request fixture version mismatch");
   for (const [file, checksum] of Object.entries(baseline.sha256)) {
     const generated = await readFile(path.join(schemas, file));
@@ -104,9 +133,7 @@ try {
     "--project",
     config,
   ]);
-  console.log(
-    `Codex ${PINNED_VERSION}: all seven real request builders satisfy generated experimental types.`,
-  );
+  console.log(`Codex ${PINNED_VERSION}: request builders satisfy generated experimental types.`);
 } finally {
   await rm(probeDirectory, { recursive: true, force: true });
   await rm(temporary, { recursive: true, force: true });

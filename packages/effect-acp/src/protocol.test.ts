@@ -46,6 +46,98 @@ const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(import.meta.dirname, "../test/fixtures/acp-mock-peer.ts"),
 );
 
+it.effect("delivers cancelled tool notifications as failed through the wire decoder", () =>
+  Effect.gen(function* () {
+    const { stdio, input } = yield* makeInMemoryStdio();
+    const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+      stdio,
+      serverRequestMethods: new Set(),
+    });
+    for (const sessionUpdate of ["tool_call", "tool_call_update"] as const) {
+      yield* Queue.offer(
+        input,
+        new TextEncoder().encode(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: {
+              sessionId: "session-1",
+              update: {
+                sessionUpdate,
+                toolCallId: "tool-1",
+                title: "Run sleep 60",
+                kind: "execute",
+                status: "cancelled",
+              },
+            },
+          }) + "\n",
+        ),
+      );
+    }
+    const notifications = yield* transport.incoming.pipe(Stream.take(2), Stream.runCollect);
+    assert.equal(notifications.length, 2);
+    for (const notification of notifications) {
+      assert.equal(notification._tag, "SessionUpdate");
+      const params = notification.params as AcpSchema.SessionNotification;
+      assert.equal((params.update as { status?: string }).status, "failed");
+    }
+  }).pipe(Effect.scoped),
+);
+
+it("frames large fragmented lines and streaming UTF-8 without losing the tail", () => {
+  const frame = AcpProtocol.makeAcpLineFramer();
+  const chunk = "x".repeat(4096);
+  for (let i = 0; i < 1024; i++) assert.equal(frame(chunk), "");
+  const utf8 = new TextEncoder().encode("🙂");
+  assert.equal(frame(utf8.slice(0, 2)), "");
+  assert.equal(frame(utf8.slice(2)), "");
+  assert.equal(frame("\nsecond\nthird"), chunk.repeat(1024) + "🙂\nsecond\n");
+  assert.equal(frame("\n"), "third\n");
+  assert.equal(frame("last"), "");
+  assert.equal(frame(), "last\n");
+  assert.equal(frame(), "");
+});
+
+it.effect(
+  "bounds an unread diagnostic stream while delivering every notification to its handler",
+  () =>
+    Effect.gen(function* () {
+      const { stdio, input } = yield* makeInMemoryStdio();
+      const delivered = yield* Deferred.make<void>();
+      let count = 0;
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        onNotification: () =>
+          Effect.gen(function* () {
+            if (++count === 100) yield* Deferred.succeed(delivered, undefined);
+          }),
+      });
+      for (let index = 0; index < 100; index++) {
+        yield* Queue.offer(
+          input,
+          yield* encodeJsonl(SessionUpdateNotification, {
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: {
+              sessionId: "session-1",
+              update: {
+                sessionUpdate: "plan",
+                entries: [{ content: String(index), priority: "high", status: "in_progress" }],
+              },
+            },
+          }),
+        );
+      }
+      yield* Deferred.await(delivered);
+      const retained = yield* transport.incoming.pipe(Stream.take(32), Stream.runCollect);
+      assert.equal(count, 100);
+      assert.equal(retained.length, 32);
+      const first = retained[0]?.params as { update: { entries: Array<{ content: string }> } };
+      assert.equal(first.update.entries[0]?.content, "68");
+    }).pipe(Effect.scoped),
+);
+
 const makeHandle = (env?: Record<string, string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -127,6 +219,61 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
         assert.equal(update?._tag, "SessionUpdate");
         assert.equal(completion?._tag, "ElicitationComplete");
       }),
+  );
+
+  it.effect("drops a session/update that fails to decode and keeps the session running", () =>
+    Effect.gen(function* () {
+      const { stdio, input } = yield* makeInMemoryStdio();
+      const events: Array<AcpProtocol.AcpProtocolLogEvent> = [];
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        logIncoming: true,
+        logger: (event) => Effect.sync(() => events.push(event)),
+      });
+      const received = yield* Deferred.make<AcpProtocol.AcpIncomingNotification>();
+      yield* transport.incoming.pipe(
+        Stream.take(1),
+        Stream.runForEach((notification) => Deferred.succeed(received, notification)),
+        Effect.forkScoped,
+      );
+
+      // A usage_update without its required fields, as a newer or buggy agent may send.
+      yield* Queue.offer(
+        input,
+        new TextEncoder().encode(
+          `${JSON.stringify({
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: { sessionId: "session-1", update: { sessionUpdate: "usage_update" } },
+          })}\n`,
+        ),
+      );
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(SessionUpdateNotification, {
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: "session-1",
+            update: {
+              sessionUpdate: "plan",
+              entries: [{ content: "Still here", priority: "high", status: "in_progress" }],
+            },
+          },
+        }),
+      );
+
+      const notification = yield* Deferred.await(received);
+      assert.equal(notification._tag, "SessionUpdate");
+      assert.isTrue(
+        events.some(
+          (event) =>
+            event.stage === "decode_failed" &&
+            (event.payload as { method?: string }).method === "session/update",
+        ),
+      );
+    }),
   );
 
   it.effect("logs outgoing notifications when logOutgoing is enabled", () =>
@@ -355,6 +502,77 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
           },
         },
       });
+    }),
+  );
+
+  it.effect("routes a final response without a newline before stdout termination", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const logs: Array<AcpProtocol.AcpProtocolLogEvent> = [];
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        logIncoming: true,
+        logger: (event) =>
+          Effect.sync(() => {
+            logs.push(event);
+          }),
+      });
+      const pending = yield* transport.request("x/test", {}).pipe(Effect.forkScoped);
+      yield* Queue.take(output);
+      yield* Queue.offer(
+        input,
+        new TextEncoder().encode('{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'),
+      );
+      yield* Queue.end(input);
+      assert.deepEqual(yield* Fiber.join(pending), { ok: true });
+      assert.isTrue(
+        logs.some(
+          (event) =>
+            event.direction === "incoming" &&
+            event.stage === "decoded" &&
+            Array.isArray(event.payload) &&
+            event.payload.length > 0,
+        ),
+      );
+    }),
+  );
+
+  it.effect("fails pending and later requests when stdout closes before process exit", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const termination = yield* Deferred.make<AcpError.AcpError>();
+      const logs: Array<AcpProtocol.AcpProtocolLogEvent> = [];
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        terminationError: Effect.never,
+        logIncoming: true,
+        logger: (event) =>
+          Effect.sync(() => {
+            logs.push(event);
+          }),
+        serverRequestMethods: new Set(),
+        onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
+      });
+      const pending = yield* transport
+        .request("x/test", {})
+        .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
+      yield* Queue.take(output);
+      yield* Queue.offer(input, new TextEncoder().encode('{"jsonrpc":"2.0","id":1,"result":'));
+      yield* Queue.end(input);
+      const error = yield* Deferred.await(termination);
+      assert.instanceOf(error, AcpError.AcpTransportError);
+      assert.isTrue(logs.some((event) => event.stage === "decode_failed"));
+      assert.include(error.message, "input stream ended");
+      assert.strictEqual(yield* Fiber.join(pending), error);
+      assert.strictEqual(
+        yield* transport.request("x/test", {}).pipe(Effect.flip, Effect.orDie),
+        error,
+      );
+      assert.strictEqual(
+        yield* transport.notify("session/cancel", { sessionId: "session-1" }).pipe(Effect.flip),
+        error,
+      );
     }),
   );
 

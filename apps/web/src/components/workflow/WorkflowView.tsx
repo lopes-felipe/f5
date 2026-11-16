@@ -1,3 +1,5 @@
+import { useWorkflowDetails, WorkflowDetailsStatus } from "../../hooks/useWorkflowDetails";
+import type { ThreadId } from "@t3tools/contracts";
 import {
   planningWorkflowDocumentType,
   WORKFLOW_DOCUMENT_PROFILES,
@@ -13,6 +15,9 @@ import { useTheme } from "../../hooks/useTheme";
 import { WORKFLOW_TYPE_DIALOG_LABEL } from "../../lib/workflowType";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
+import { useThreadsByIds } from "../../threadSelectors";
+import { useThreadPlansHydrated } from "../../lib/useThreadPlansHydrated";
+import { threadIdsForWorkflow } from "./workflowUtils";
 import ChatMarkdown from "../ChatMarkdown";
 import { FileChip } from "../chat/FileChip";
 import {
@@ -27,7 +32,7 @@ import {
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { WorkflowImplementDialog } from "./WorkflowImplementDialog";
-import { WorkflowPageLayout, WorkflowPageNotFound } from "./WorkflowPageLayout";
+import { WorkflowPageLayout } from "./WorkflowPageLayout";
 import {
   WorkflowArtifactSection,
   WorkflowFailedSteps,
@@ -51,6 +56,8 @@ function retryErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Failed to retry workflow.";
 }
 
+const EMPTY_WORKFLOW_THREAD_IDS: readonly ThreadId[] = [];
+
 export function WorkflowView(props: { workflowId: string }) {
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
@@ -58,10 +65,14 @@ export function WorkflowView(props: { workflowId: string }) {
   const [retrying, setRetrying] = useState(false);
   const [skipOpen, setSkipOpen] = useState(false);
   const [duplicateRiskThreadIds, setDuplicateRiskThreadIds] = useState<readonly string[]>([]);
-  const workflow = useStore((store) =>
-    store.planningWorkflows.find((entry) => entry.id === props.workflowId),
+  const detail = useWorkflowDetails("planning", props.workflowId);
+  const workflow = detail.workflow;
+  // Only this workflow's threads: unrelated streaming does not re-render the view.
+  const workflowThreadIds = useMemo(
+    () => (workflow ? threadIdsForWorkflow(workflow) : EMPTY_WORKFLOW_THREAD_IDS),
+    [workflow],
   );
-  const threads = useStore((store) => store.threads);
+  const threads = useThreadsByIds(workflowThreadIds);
   const cwd = useStore(
     (store) => store.projects.find((project) => project.id === workflow?.projectId)?.cwd,
   );
@@ -77,9 +88,13 @@ export function WorkflowView(props: { workflowId: string }) {
     () => (workflow ? collectPlanningWorkflowErrors(workflow) : []),
     [workflow],
   );
+  // An archived merge thread's plans may have been left out of the startup snapshot.
+  const mergeThreadPlans = useThreadPlansHydrated(workflow?.merge.threadId ?? null);
 
   if (!workflow) {
-    return <WorkflowPageNotFound />;
+    return (
+      <WorkflowDetailsStatus missing={detail.missing} error={detail.error} retry={detail.retry} />
+    );
   }
 
   const mergeThread = workflow.merge.threadId ? threadById.get(workflow.merge.threadId) : null;
@@ -228,15 +243,24 @@ export function WorkflowView(props: { workflowId: string }) {
           </WorkflowArtifactSection>
         ) : (
           <p className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-            {documentType
-              ? "The document will appear here after the drafts are reviewed and merged."
-              : "The merged plan will appear here once the workflow reaches manual review."}
+            {mergeThreadPlans.loading
+              ? documentType
+                ? "Loading the document…"
+                : "Loading the merged plan…"
+              : mergeThreadPlans.failed
+                ? documentType
+                  ? "The document could not be loaded."
+                  : "The merged plan could not be loaded."
+                : documentType
+                  ? "The document will appear here after the drafts are reviewed and merged."
+                  : "The merged plan will appear here once the workflow reaches manual review."}
           </p>
         )}
         <WorkflowInputSection
           label={documentType ? "Brief" : "Requirement"}
           text={workflow.requirementPrompt}
-          defaultOpen={!mergedPlan}
+          // Stay collapsed while omitted plans hydrate, as when they arrive with the snapshot.
+          defaultOpen={!mergedPlan && !mergeThreadPlans.loading}
         >
           {documentType && workflow.readerReviewEnabled ? (
             <p className="mt-3 flex flex-wrap items-center gap-x-2 text-ui text-muted-foreground">

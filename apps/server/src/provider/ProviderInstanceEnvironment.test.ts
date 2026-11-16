@@ -18,4 +18,15 @@ describe("mergeProviderInstanceEnvironment", () => {
       PATH: "/bin",
     });
   });
+
+  it("marks the process for the Agent Bridge recursion guard, even over an override", () => {
+    expect(
+      mergeProviderInstanceEnvironment(
+        [{ name: "F5_AGENT_PROCESS", value: "0", sensitive: false }],
+        {
+          PATH: "/bin",
+        },
+      ).F5_AGENT_PROCESS,
+    ).toBe("1");
+  });
 });

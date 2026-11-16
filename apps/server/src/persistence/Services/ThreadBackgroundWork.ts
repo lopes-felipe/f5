@@ -17,6 +17,9 @@ import type { Effect } from "effect";
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ThreadBackgroundWorkTransition = Schema.Struct({
+  nativeParentSessionId: Schema.optional(
+    Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  ),
   threadId: ThreadId,
   workItemId: TrimmedNonEmptyString,
   provider: ProviderKind,
@@ -29,6 +32,7 @@ export const ThreadBackgroundWorkTransition = Schema.Struct({
   status: BackgroundWorkStatus,
   active: Schema.Boolean,
   model: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  effort: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(64)))),
   phase: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   title: Schema.optional(Schema.NullOr(Schema.String)),
   prompt: Schema.optional(Schema.NullOr(Schema.String)),
@@ -78,7 +82,22 @@ export const DismissThreadBackgroundWorkInput = Schema.Struct({
 });
 export type DismissThreadBackgroundWorkInput = typeof DismissThreadBackgroundWorkInput.Type;
 
+export type OwnedBackgroundWorkEntry = Pick<
+  typeof ThreadBackgroundWorkEntry.Type,
+  | "workItemId"
+  | "provider"
+  | "providerInstanceId"
+  | "providerSessionIdentity"
+  | "kind"
+  | "active"
+  | "status"
+> & { readonly nativeParentSessionId: string | null };
+
 export interface ThreadBackgroundWorkRepositoryShape {
+  readonly getOwnedEntries: (input: {
+    threadId: typeof ThreadId.Type;
+    workItemIds: readonly string[];
+  }) => Effect.Effect<ReadonlyArray<OwnedBackgroundWorkEntry>, ProjectionRepositoryError>;
   readonly upsertTransition: (
     transition: ThreadBackgroundWorkTransition,
   ) => Effect.Effect<void, ProjectionRepositoryError>;

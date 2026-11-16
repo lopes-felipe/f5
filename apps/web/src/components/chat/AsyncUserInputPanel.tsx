@@ -1,32 +1,87 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  CommandId,
   type AttachmentUpload,
   type PendingUserInput,
   type ThreadId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
+import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
 import { ArrowRightIcon } from "lucide-react";
 import { readNativeApi } from "~/nativeApi";
+import { newCommandId } from "~/lib/utils";
+import {
+  type AsyncUserInputDraft,
+  usePendingUserInputDraftStore,
+} from "../../pendingUserInputDraftStore";
 import { Button } from "../ui/button";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./composer/ComposerTray";
 import { UserInputAttachments } from "./UserInputAttachments";
 import { UserInputQuestionStep } from "./UserInputQuestionStep";
+import { resolvePendingUserInputOptionValues } from "../../pendingUserInput";
 
-/** Message questions keep their drafts mounted while the conversation continues. */
+function initialAsyncDraft(questions: ReadonlyArray<UserInputQuestion>): AsyncUserInputDraft {
+  const prefilled = questions.filter(
+    (question) => question.allowCustomAnswer !== false && question.initialAnswer !== undefined,
+  );
+  return {
+    answers: {},
+    custom: Object.fromEntries(prefilled.map((question) => [question.id, question.initialAnswer!])),
+    customOpen: Object.fromEntries(prefilled.map((question) => [question.id, true])),
+    questionIndex: 0,
+  };
+}
+
+/**
+ * A blocking request is answered on the provider's own request, whose adapters read one
+ * value per question. The value follows the composer's rule (`resolvePendingUserInputAnswer`):
+ * typed text is the answer and replaces any selected options; otherwise one option is a
+ * string and several are an array. A skipped optional question sends "".
+ */
+export function blockingUserInputAnswer(
+  selected: ReadonlyArray<string>,
+  typed: string,
+): string | string[] {
+  if (typed) return typed;
+  if (selected.length === 0) return "";
+  return selected.length === 1 ? selected[0]! : [...selected];
+}
+
+/**
+ * Message questions keep their drafts mounted while the conversation continues. Home also
+ * answers blocking questions with this panel, without opening their thread.
+ */
 export function AsyncUserInputPanel({
   threadId,
   input,
+  cwd,
   variant = "standalone",
 }: {
   threadId: ThreadId;
-  input: PendingUserInput;
+  input: Pick<PendingUserInput, "requestId" | "questions" | "responseMode" | "blocking"> &
+    Partial<Pick<PendingUserInput, "receipt">>;
+  cwd?: string | undefined;
   variant?: ComposerPanelVariant;
 }) {
-  const [answers, setAnswers] = useState<Record<string, string[]>>({});
-  const [custom, setCustom] = useState<Record<string, string>>({});
-  const [customOpen, setCustomOpen] = useState<Record<string, boolean>>({});
-  const [questionIndex, setQuestionIndex] = useState(0);
+  const blocking = isBlockingUserInput(input);
+  // Kept outside the panel so leaving the thread does not drop a typed answer.
+  const storedDraft = usePendingUserInputDraftStore(
+    (store) => store.asyncDraftsByThreadId[threadId]?.[input.requestId],
+  );
+  const initialDraft = useMemo(() => initialAsyncDraft(input.questions), [input.questions]);
+  const { answers, custom, customOpen, questionIndex } = storedDraft ?? initialDraft;
+  const updateDraft =
+    <K extends keyof AsyncUserInputDraft>(key: K) =>
+    (update: (current: AsyncUserInputDraft[K]) => AsyncUserInputDraft[K]) =>
+      usePendingUserInputDraftStore
+        .getState()
+        .updateAsyncDraft(threadId, input.requestId, (current) => {
+          const draft = current ?? initialDraft;
+          return { ...draft, [key]: update(draft[key]) };
+        });
+  const setAnswers = updateDraft("answers");
+  const setCustom = updateDraft("custom");
+  const setCustomOpen = updateDraft("customOpen");
+  const setQuestionIndex = (index: number) => updateDraft("questionIndex")(() => index);
   const [attachments, setAttachments] = useState<AttachmentUpload[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,12 +93,15 @@ export function AsyncUserInputPanel({
   const isLastQuestion = activeIndex >= questions.length - 1;
   // Typed text counts only while its field is open; options-free questions always are.
   const customTextFor = (question: UserInputQuestion) =>
-    customOpen[question.id] || question.options.length === 0
+    question.allowCustomAnswer !== false &&
+    (customOpen[question.id] || question.options.length === 0)
       ? (custom[question.id]?.trim() ?? "")
       : "";
+  const selectedFor = (question: UserInputQuestion) =>
+    resolvePendingUserInputOptionValues(question, answers[question.id]);
   const answerFor = (question: UserInputQuestion) => {
     const text = customTextFor(question);
-    return [...(answers[question.id] ?? []), ...(text ? [text] : [])];
+    return [...selectedFor(question), ...(text ? [text] : [])];
   };
   const isAnswered = (question: UserInputQuestion) => answerFor(question).length > 0;
   const canSend = questions.every((question) => question.optional || isAnswered(question));
@@ -63,7 +121,7 @@ export function AsyncUserInputPanel({
     setError(null);
     try {
       const base = {
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: newCommandId(),
         threadId,
         requestId: input.requestId,
         createdAt: new Date().toISOString(),
@@ -82,7 +140,12 @@ export function AsyncUserInputPanel({
               ...base,
               type: "thread.user-input.respond",
               answers: Object.fromEntries(
-                questions.map((question) => [question.id, { answers: answerFor(question) }]),
+                questions.map((question) => [
+                  question.id,
+                  blocking
+                    ? blockingUserInputAnswer(selectedFor(question), customTextFor(question))
+                    : { answers: answerFor(question) },
+                ]),
               ),
               attachments: attachments.map((attachment) => ({
                 type: "upload" as const,
@@ -91,9 +154,9 @@ export function AsyncUserInputPanel({
             },
       );
       setAttachments([]);
-      setAnswers({});
-      setCustom({});
-      setCustomOpen({});
+      usePendingUserInputDraftStore
+        .getState()
+        .updateAsyncDraft(threadId, input.requestId, () => undefined);
       setResolved(true);
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
@@ -162,6 +225,7 @@ export function AsyncUserInputPanel({
       {activeQuestion ? (
         <UserInputQuestionStep
           question={activeQuestion}
+          cwd={cwd}
           questionIndex={activeIndex}
           questionCount={questions.length}
           selectedOptionLabels={answers[activeQuestion.id] ?? []}

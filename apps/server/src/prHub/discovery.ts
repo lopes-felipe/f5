@@ -32,6 +32,17 @@ interface HydrationTask {
   repository: string | null;
   updatedAt: string | null;
 }
+/**
+ * Which discovered pull requests have their details read first when the budget is short:
+ * the viewer's own work (3), then conversations they are part of (2), then team review
+ * queues and recently closed ones (1).
+ */
+export function prHubHydrationPriority(alias: string): number {
+  if (alias === "author" || alias === "direct_review" || alias === "assignee") return 3;
+  if (alias === "mentioned" || alias === "involved") return 2;
+  return 1;
+}
+
 const record = (value: unknown): Record<string, unknown> | null =>
   typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -239,10 +250,7 @@ export function ingestPrHubSearch(
             ? (JSON.parse(existing[0].payload_json) as HydrationTask)
             : null;
           const payload: HydrationTask = {
-            priority: Math.max(
-              previous?.priority ?? 0,
-              /^(review_requested|team_review|mentioned)/.test(task.alias) ? 2 : 1,
-            ),
+            priority: Math.max(previous?.priority ?? 0, prHubHydrationPriority(task.alias)),
             nodeId,
             repository,
             updatedAt: string(node?.updatedAt),
@@ -457,7 +465,7 @@ function enumeratePrHubRepository(
                 ? "assignee"
                 : field === "participants"
                   ? "involved"
-                  : "review_requested",
+                  : "direct_review",
             );
           if (
             field === "reviewRequests" &&
@@ -713,7 +721,11 @@ export function enqueuePrHubTracked(
       SELECT p.provider_kind, p.host, p.viewer_id, 'hydrate', COALESCE(p.node_id, p.repo || '#' || p.number),
         json_object('nodeId', COALESCE(p.node_id, p.repo || '#' || p.number), 'number', CASE WHEN p.node_id IS NULL THEN p.number ELSE NULL END,
           'aliases', json_array('involved'), 'repository', p.repo, 'updatedAt', p.updated_at,
-          'priority', CASE WHEN p.attention_bucket = 'needs_you' THEN 2 ELSE 0 END),
+          'priority', CASE
+            WHEN instr(p.roles_json, '"author"') > 0 OR instr(p.roles_json, '"review_requested"') > 0
+              OR instr(p.roles_json, '"assignee"') > 0 THEN 3
+            WHEN instr(p.roles_json, '"team_review_requested"') > 0 THEN 1
+            ELSE 2 END),
         COALESCE(json_extract(p.viewer_payload_json, '$.lastVerifiedAt'), p.created_at), p.updated_at
       FROM (${candidates}) p
       WHERE (p.facts_verified = 0 OR (p.state = 'open' AND

@@ -1,0 +1,220 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-codex-profile-readiness",
+  "state": "passed",
+  "repositoryCommit": "69553e2b8c05aae5955c1b8e6646eaeb9fd4d6dd",
+  "workingTreeDirty": false,
+  "recordedAt": "2026-10-14T12:18:27.477Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "provider": "codex",
+  "runtimeMode": "full-access",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "a4bdc0c5022c09bc98e13e3cbd526b1f2ded4ef0c235a627cf4926613813d629",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "4367632a0ee26cbb4957814c01fca60c6912f3742c69822938451e96181ed7a4",
+    "observerSource": "c201709b3bc633242344d22618df7f8a7e4919fddc69635e50605fc7e0f2338a",
+    "transportObserverSource": "88da9c9eefcdfee6767c5f7a8695de27b726ef2d41a7542b16be268f2d5eb10b",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "a3b8c3d877aa24fd44168bc82fa39208f54e5358e197264ca0470861680baa49",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "17281f635c4f653e13d7dcbeb52e8570e6930a32e93414c0de713437e5abe95d",
+    "profileIsolationSource": "2a3d1a74f85ad39fd42b696e2851823759440ece3321c6e21fbc8d75e124f38e",
+    "profileIsolationObserverSource": "78074c750d7bcfd7da45a234482761606d74bbaa6363919a6dc06979b318e7cc",
+    "profileIsolationEvidenceSource": "91d88dde7a975893d95a4d8c1e8b5b562f1735b660ffdc8a001004afdd9c00ba",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "two-real-profiles": true,
+    "no-grant-lease-or-input": true,
+    "credential-files-unchanged": true,
+    "sessions-stopped": true,
+    "cleanup": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "profileIsolationObservation": {
+    "readinessOnly": true,
+    "channels": {
+      "configured": true,
+      "traceComplete": true,
+      "profiles": [
+        {
+          "held": false,
+          "anonymousBanners": 0,
+          "ownBanners": 0,
+          "ownActivities": 0,
+          "ownImages": 0,
+          "busy": 0,
+          "grants": 1,
+          "ownWsActivities": 0,
+          "ownWsImages": 0,
+          "foreignActivity": false,
+          "foreignImages": false,
+          "foreignGrants": false,
+          "foreignIdentity": false,
+          "invalidBanner": false,
+          "busyWhileForeignHeld": false,
+          "native": {
+            "responses": {
+              "nativeCaptureSucceeded": false,
+              "nativeInspectionSucceeded": false,
+              "nativeInputSucceeded": false
+            },
+            "held": false,
+            "leaseObserved": false,
+            "pauseObserved": false,
+            "resumeObserved": false,
+            "captureResponses": 0,
+            "inspectionResponses": 0,
+            "activityMessages": 0,
+            "activityThumbnails": 0,
+            "toolOutcomeErrors": [],
+            "traceComplete": true,
+            "pendingResponses": 0,
+            "accessRequests": 0,
+            "accessAnswersForwarded": 0,
+            "accessAnswerSummaries": [],
+            "sessionGenerationsObserved": 1,
+            "requestSessions": [
+              {
+                "op": "listApps",
+                "sessionOrdinal": 1
+              }
+            ],
+            "backendRestarts": [],
+            "backendLifecycle": [],
+            "mcpTransport": [],
+            "mcpTransportOverflow": false,
+            "grantChanges": 2,
+            "lastGrantCount": 0,
+            "operations": [
+              {
+                "op": "listApps",
+                "outcome": "ok",
+                "validApps": true
+              }
+            ]
+          }
+        },
+        {
+          "held": false,
+          "anonymousBanners": 0,
+          "ownBanners": 0,
+          "ownActivities": 0,
+          "ownImages": 0,
+          "busy": 0,
+          "grants": 0,
+          "ownWsActivities": 0,
+          "ownWsImages": 0,
+          "foreignActivity": false,
+          "foreignImages": false,
+          "foreignGrants": false,
+          "foreignIdentity": false,
+          "invalidBanner": false,
+          "busyWhileForeignHeld": false,
+          "native": {
+            "responses": {
+              "nativeCaptureSucceeded": false,
+              "nativeInspectionSucceeded": false,
+              "nativeInputSucceeded": false
+            },
+            "hostStatus": {
+              "available": true
+            },
+            "held": false,
+            "leaseObserved": false,
+            "pauseObserved": false,
+            "resumeObserved": false,
+            "captureResponses": 0,
+            "inspectionResponses": 0,
+            "activityMessages": 0,
+            "activityThumbnails": 0,
+            "toolOutcomeErrors": [],
+            "traceComplete": true,
+            "pendingResponses": 0,
+            "accessRequests": 0,
+            "accessAnswersForwarded": 0,
+            "accessAnswerSummaries": [],
+            "sessionGenerationsObserved": 1,
+            "requestSessions": [
+              {
+                "op": "listApps",
+                "sessionOrdinal": 1
+              }
+            ],
+            "backendRestarts": [],
+            "backendLifecycle": [],
+            "mcpTransport": [],
+            "mcpTransportOverflow": false,
+            "grantChanges": 2,
+            "lastGrantCount": 0,
+            "operations": [
+              {
+                "op": "listApps",
+                "outcome": "ok",
+                "validApps": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "distinctRendererProfiles": true,
+    "distinctBackendProcesses": true,
+    "isolatedProviderHomes": true,
+    "sourceCredentialsUnchanged": true,
+    "isolatedCredentialsUnchanged": true,
+    "profileSnapshotsPrivate": true,
+    "bothSessionsStopped": true
+  },
+  "admission": {
+    "version": 1,
+    "suiteId": "6a3780cf-c552-4b66-971a-f85e3af5ec58",
+    "scenario": "profile-readiness",
+    "attempt": 1,
+    "identityHash": "63d25eeb4d0b085a6d05563c2b26d2974a0c1a5197967310db1e426380ced7e8",
+    "state": "passed",
+    "evidenceKind": "provider-desktop",
+    "startedAt": "2026-10-14T12:17:33.614Z",
+    "finishedAt": "2026-10-14T12:18:27.505Z",
+    "checks": {
+      "realElectronPermissionsAvailable": true,
+      "two-real-profiles": true,
+      "no-grant-lease-or-input": true,
+      "credential-files-unchanged": true,
+      "sessions-stopped": true,
+      "cleanup": true,
+      "receipt.two-real-profiles": true,
+      "receipt.no-grant-lease-or-input": true,
+      "receipt.credential-files-unchanged": true,
+      "receipt.sessions-stopped": true,
+      "receipt.cleanup": true
+    },
+    "measurements": {},
+    "cleanup": "confirmed",
+    "evidenceSha256": "53af3232dd4e30bd3276dbfad99b0f8d9606c000afb69b8f0c5b483af5b31d7a"
+  },
+  "providerVersion": "0.162.1",
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Two genuine read-only Codex provider sessions and separate real profile backends; no access request, permit, capture or input",
+    "Both native metadata replies correlated; snapshots private, credential files unchanged and sessions stopped; cleanup confirmed",
+    "Does not prove contention, foreign activity/thumbnail isolation, stale-release rejection, filesystem reads, Windows or installed builds",
+    "This evidence is pinned to source 69553e2b8c; later executable/source changes require a fresh suite identity"
+  ]
+}

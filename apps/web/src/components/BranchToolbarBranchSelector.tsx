@@ -1,3 +1,6 @@
+import { switchConversationWorkspace } from "../lib/workspaceTransitions";
+import { useStore } from "../store";
+import { selectThreadById } from "../threadSelectors";
 import type { ChangeRequest, GitBranch, GitCheckoutConflict, ThreadId } from "@t3tools/contracts";
 import { resolveChangeRequestWebUrl } from "@t3tools/shared/sourceControl";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -14,12 +17,12 @@ import {
   useTransition,
 } from "react";
 
-import { useAppSettings } from "../appSettings";
+import { useAppSettingsSelector } from "../appSettings";
 import {
   gitBranchesQueryOptions,
-  gitQueryKeys,
   gitStatusQueryOptions,
   invalidateGitQueries,
+  refreshCheckedOutGitBranch,
 } from "../lib/gitReactQuery";
 import { readNativeApi } from "../nativeApi";
 import { WsRequestError } from "../wsTransport";
@@ -62,7 +65,11 @@ interface BranchToolbarBranchSelectorProps {
   branchCwd: string | null;
   effectiveEnvMode: EnvMode;
   envLocked: boolean;
-  onSetThreadBranch: (branch: string | null, worktreePath: string | null) => void;
+  onSetThreadBranch: (
+    branch: string | null,
+    worktreePath: string | null,
+    sharedFilesystemConfirmed?: boolean,
+  ) => void;
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
 }
@@ -111,7 +118,9 @@ export function BranchToolbarBranchSelector({
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
 }: BranchToolbarBranchSelectorProps) {
-  const { settings } = useAppSettings();
+  const gitStatusAutoRefreshIntervalSeconds = useAppSettingsSelector(
+    (settings) => settings.gitStatusAutoRefreshIntervalSeconds,
+  );
   const queryClient = useQueryClient();
   const [isBranchMenuOpen, setIsBranchMenuOpen] = useState(false);
   const [checkoutConflict, setCheckoutConflict] = useState<{
@@ -136,14 +145,13 @@ export function BranchToolbarBranchSelector({
   }, [context]);
   const [branchQuery, setBranchQuery] = useState("");
   const deferredBranchQuery = useDeferredValue(branchQuery);
-  const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
-  const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
+  const gitAutoRefreshIntervalMs = gitStatusAutoRefreshIntervalSeconds * 1000;
+  const gitAutoRefreshEnabled = gitStatusAutoRefreshIntervalSeconds > 0;
 
   const branchesQuery = useQuery(
     gitBranchesQueryOptions({
       cwd: branchCwd,
       autoRefresh: gitAutoRefreshEnabled,
-      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   const branchStatusQuery = useQuery(
@@ -182,9 +190,16 @@ export function BranchToolbarBranchSelector({
   const prReference = parsePullRequestReference(trimmedBranchQuery);
   const isSelectingWorktreeBase =
     effectiveEnvMode === "worktree" && !envLocked && !activeWorktreePath;
+  // The checkout is gone: there is nothing to switch or create a branch in.
+  // Only a thread worktree comes back on send; a missing project root does not.
+  const checkoutMissing = branchesQuery.data?.worktreeMissing === true;
+  const worktreeMissing = checkoutMissing && activeWorktreePath !== null;
   const checkoutPullRequestItemValue =
-    prReference && onCheckoutPullRequestRequest ? `__checkout_pull_request__:${prReference}` : null;
-  const canCreateBranch = !isSelectingWorktreeBase && trimmedBranchQuery.length > 0;
+    prReference && onCheckoutPullRequestRequest && !checkoutMissing
+      ? `__checkout_pull_request__:${prReference}`
+      : null;
+  const canCreateBranch =
+    !isSelectingWorktreeBase && !checkoutMissing && trimmedBranchQuery.length > 0;
   const newRefName = sanitizeNewRefName(trimmedBranchQuery);
   const hasExactBranchMatch = branchByName.has(newRefName);
   const createBranchItemValue = canCreateBranch
@@ -235,7 +250,19 @@ export function BranchToolbarBranchSelector({
     });
   };
 
-  const handleCheckoutError = (error: unknown) => {
+  const handleCheckoutError = (error: unknown, desiredBranch?: string) => {
+    if (
+      desiredBranch &&
+      branchCwd &&
+      error instanceof WsRequestError &&
+      error.code === "WorkspaceRequiresNewWorktree"
+    ) {
+      setCheckoutConflict({
+        conflict: { cwd: branchCwd, branch: desiredBranch, files: [] },
+        context,
+      });
+      return;
+    }
     if (
       error instanceof WsRequestError &&
       error.code === "GitCheckoutConflict" &&
@@ -277,7 +304,21 @@ export function BranchToolbarBranchSelector({
 
     // If the branch already lives in a worktree, point the thread there.
     if (selectionTarget.reuseExistingWorktree) {
-      onSetThreadBranch(branch.name, selectionTarget.nextWorktreePath);
+      if (selectThreadById(useStore.getState(), threadId)) {
+        runBranchAction(async () => {
+          try {
+            await switchConversationWorkspace(threadId, {
+              intent: "attach_existing",
+              targetPath: selectionTarget.checkoutCwd,
+              branch: branch.name,
+              sharedFilesystemConfirmed: workspaceConfirmed,
+            });
+            await invalidateGitQueries(queryClient);
+          } catch (error) {
+            handleCheckoutError(error);
+          }
+        });
+      } else onSetThreadBranch(branch.name, selectionTarget.nextWorktreePath, workspaceConfirmed);
       setIsBranchMenuOpen(false);
       onComposerFocusRequest?.();
       return;
@@ -293,10 +334,23 @@ export function BranchToolbarBranchSelector({
     runBranchAction(async () => {
       setOptimisticBranch(selectedBranchName);
       try {
-        await api.git.checkout({ cwd: selectionTarget.checkoutCwd, branch: branch.name });
+        if (selectThreadById(useStore.getState(), threadId)) {
+          if (selectionTarget.checkoutCwd !== branchCwd)
+            await switchConversationWorkspace(threadId, {
+              intent: "attach_existing",
+              targetPath: selectionTarget.checkoutCwd,
+              branch: branch.name,
+              sharedFilesystemConfirmed: workspaceConfirmed,
+            });
+          else
+            await switchConversationWorkspace(threadId, {
+              intent: "checkout_branch",
+              branch: branch.name,
+            });
+        } else await api.git.checkout({ cwd: selectionTarget.checkoutCwd, branch: branch.name });
         await invalidateGitQueries(queryClient, { cwd: selectionTarget.checkoutCwd });
       } catch (error) {
-        handleCheckoutError(error);
+        handleCheckoutError(error, branch.name);
         return;
       }
 
@@ -309,7 +363,8 @@ export function BranchToolbarBranchSelector({
       }
 
       setOptimisticBranch(nextBranchName);
-      onSetThreadBranch(nextBranchName, selectionTarget.nextWorktreePath);
+      if (!selectThreadById(useStore.getState(), threadId))
+        onSetThreadBranch(nextBranchName, selectionTarget.nextWorktreePath, workspaceConfirmed);
     });
   };
 
@@ -325,12 +380,19 @@ export function BranchToolbarBranchSelector({
       setOptimisticBranch(name);
 
       try {
-        await api.git.createBranch({ cwd: branchCwd, branch: name });
-        try {
-          await api.git.checkout({ cwd: branchCwd, branch: name });
-        } catch (error) {
-          handleCheckoutError(error);
-          return;
+        if (selectThreadById(useStore.getState(), threadId))
+          await switchConversationWorkspace(threadId, {
+            intent: "create_branch_and_checkout",
+            branch: name,
+          });
+        else {
+          await api.git.createBranch({ cwd: branchCwd, branch: name });
+          try {
+            await api.git.checkout({ cwd: branchCwd, branch: name });
+          } catch (error) {
+            handleCheckoutError(error);
+            return;
+          }
         }
       } catch (error) {
         toastManager.add({
@@ -342,7 +404,8 @@ export function BranchToolbarBranchSelector({
       }
 
       setOptimisticBranch(name);
-      onSetThreadBranch(name, activeWorktreePath);
+      if (!selectThreadById(useStore.getState(), threadId))
+        onSetThreadBranch(name, activeWorktreePath);
       setBranchQuery("");
     });
   };
@@ -372,9 +435,7 @@ export function BranchToolbarBranchSelector({
         setBranchQuery("");
         return;
       }
-      void queryClient.invalidateQueries({
-        queryKey: gitQueryKeys.branches(branchCwd),
-      });
+      void refreshCheckedOutGitBranch(queryClient, branchCwd);
     },
     [branchCwd, queryClient],
   );
@@ -556,7 +617,13 @@ export function BranchToolbarBranchSelector({
               onChange={(event) => setBranchQuery(event.target.value)}
             />
           </div>
-          <ComboboxEmpty>No branches found.</ComboboxEmpty>
+          <ComboboxEmpty>
+            {worktreeMissing
+              ? activeThreadBranch
+                ? `Worktree missing. Send a message to recreate it on ${activeThreadBranch}.`
+                : "Worktree missing."
+              : "No branches found."}
+          </ComboboxEmpty>
 
           {shouldVirtualizeBranchList ? (
             <ComboboxListVirtualized>

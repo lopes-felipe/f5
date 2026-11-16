@@ -21,6 +21,22 @@ describe("proposedPlanTitle", () => {
 });
 
 describe("buildPlanImplementationPrompt", () => {
+  it("turns thread references the agent wrote into plain labels", () => {
+    expect(
+      buildPlanImplementationPrompt(
+        "- Read [Other project](f5://thread/secret-thread) first\n- Keep [PR](https://x.test/1)",
+      ),
+    ).toBe(
+      "PLEASE IMPLEMENT THIS PLAN:\n- Read Other project first\n- Keep [PR](https://x.test/1)",
+    );
+    expect(
+      resolvePlanFollowUpSubmission({
+        draftText: "",
+        planMarkdown: "[Other](f5://thread/secret-thread)",
+      }).text,
+    ).toBe("PLEASE IMPLEMENT THIS PLAN:\nOther");
+  });
+
   it("formats the plan exactly like the Codex follow-up handoff prompt", () => {
     expect(buildPlanImplementationPrompt("## Ship it\n\n- step 1\n")).toBe(
       "PLEASE IMPLEMENT THIS PLAN:\n## Ship it\n\n- step 1",

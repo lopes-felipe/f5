@@ -5,13 +5,27 @@ export const TOKEN_SEGMENTS = [
   { key: "cacheWriteTokens", label: "Cache write", color: "bg-accent" },
   { key: "unattributedTokens", label: "Unattributed", color: "bg-muted-foreground/40" },
 ] as const;
-export function ChartLegend() {
+
+export const COST_SEGMENTS = [
+  { key: "reported", label: "Provider-reported", color: "bg-primary" },
+  { key: "estimated", label: "User-price estimate", color: "bg-primary/40" },
+] as const;
+
+export function ChartLegend(props: {
+  readonly segments?: ReadonlyArray<{
+    readonly key: string;
+    readonly label: string;
+    readonly color: string;
+  }>;
+  readonly label?: string;
+}) {
+  const segments = props.segments ?? TOKEN_SEGMENTS;
   return (
     <ul
       className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground"
-      aria-label="Token chart legend"
+      aria-label={props.label ?? "Token chart legend"}
     >
-      {TOKEN_SEGMENTS.map((segment) => (
+      {segments.map((segment) => (
         <li key={segment.key} className="flex items-center gap-1.5">
           <span aria-hidden="true" className={`size-2 rounded-sm ${segment.color}`} />
           {segment.label}

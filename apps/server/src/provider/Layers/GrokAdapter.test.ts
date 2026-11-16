@@ -5,7 +5,7 @@ import { mkdtemp } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, it, it as rootIt } from "@effect/vitest";
 import {
   ApprovalRequestId,
   GrokSettings,
@@ -14,7 +14,7 @@ import {
   type ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
-import { Effect, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
+import { Cause, Effect, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
 
 import { vi } from "vitest";
 import * as GrokAcpSupport from "../acp/GrokAcpSupport.ts";
@@ -28,6 +28,9 @@ class GrokAdapter extends ServiceMap.Service<GrokAdapter, GrokAdapterShape>()(
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
+const discoverHardeningSkills = vi.fn(() =>
+  Effect.succeed([{ name: "deploy", description: "Deploy" }]),
+);
 
 const GrokAdapterHardeningTestLayer = Layer.effect(
   GrokAdapter,
@@ -37,7 +40,9 @@ const GrokAdapterHardeningTestLayer = Layer.effect(
       env: { T3_ACP_PROMPT_DELAY_MS: "80", T3_ACP_LOAD_FAIL_NOT_FOUND: "1" },
     });
     const settings = Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath });
-    return yield* makeGrokAdapter(settings);
+    return yield* makeGrokAdapter(settings, {
+      discoverSkillCommands: discoverHardeningSkills,
+    });
   }),
 ).pipe(
   Layer.provideMerge(
@@ -51,6 +56,62 @@ const GrokAdapterHardeningTestLayer = Layer.effect(
 );
 
 it.layer(GrokAdapterHardeningTestLayer)("GrokAdapterLive ACP hardening", (it) => {
+  it.effect(
+    "classifies and sends leading catalog skills through the same native command path",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* GrokAdapter;
+        const threadId = ThreadId.make("grok-picked-skill");
+        const original = GrokAcpSupport.makeGrokAcpRuntime;
+        const prompts: Array<unknown> = [];
+        const spy = vi.spyOn(GrokAcpSupport, "makeGrokAcpRuntime").mockImplementation((input) =>
+          original(input).pipe(
+            Effect.map((runtime) => ({
+              ...runtime,
+              prompt: (input) => {
+                prompts.push(input.prompt);
+                return runtime.prompt(input);
+              },
+            })),
+          ),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+        const classification = adapter.classifyTurnInput!(threadId, "$deploy ship", process.cwd());
+        assert.equal(
+          yield* Effect.isEffect(classification) ? classification : Effect.succeed(classification),
+          "native-command",
+        );
+        const probes = discoverHardeningSkills.mock.calls.length;
+        assert.equal(adapter.classifyTurnInput!(threadId, "$25 budget", process.cwd()), "prompt");
+        assert.equal(discoverHardeningSkills.mock.calls.length, probes);
+        yield* adapter.startSession({
+          threadId,
+          provider: "grok",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId, input: "$deploy ship", attachments: [] });
+        assert.deepEqual(prompts[0], [{ type: "text", text: "/deploy ship" }]);
+        discoverHardeningSkills.mockReturnValueOnce(Effect.succeed([]));
+        const removed = adapter.classifyTurnInput!(threadId, "$deploy ship", process.cwd());
+        assert.equal(yield* Effect.isEffect(removed) ? removed : Effect.succeed(removed), "prompt");
+        yield* adapter.stopSession(threadId);
+      }),
+  );
+  it.effect("classifies only a leading slash command as native for a provider switch", () =>
+    Effect.gen(function* () {
+      const adapter = yield* GrokAdapter;
+      const threadId = ThreadId.makeUnsafe("grok-classify");
+      assert.strictEqual(adapter.classifyTurnInput?.(threadId, "/compact"), "native-command");
+      assert.strictEqual(
+        adapter.classifyTurnInput?.(threadId, " /skill:review x"),
+        "native-command",
+      );
+      assert.strictEqual(adapter.classifyTurnInput?.(threadId, "/Users/me/app.ts fails"), "prompt");
+      assert.strictEqual(adapter.classifyTurnInput?.(threadId, "run /compact later"), "prompt");
+    }),
+  );
+
   it.effect("ignores a late prompt from an older context with the same resumed session ID", () =>
     Effect.gen(function* () {
       const original = GrokAcpSupport.makeGrokAcpRuntime;
@@ -280,6 +341,57 @@ const AntigravityAdapterTestLayer = Layer.effect(
 );
 
 it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
+  rootIt.live("retires a silent prompt and starts a fresh runtime on the next message", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "antigravity-inactive-")),
+      );
+      const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {});
+      let starts = 0;
+      let live = 0;
+      const adapter = yield* makeGrokAdapter(
+        Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+        {
+          provider: "antigravity",
+          promptInactivityTimeoutMs: 100,
+          makeRuntime: (input) =>
+            Effect.gen(function* () {
+              starts++;
+              live++;
+              yield* Effect.addFinalizer(() =>
+                Effect.sync(() => {
+                  live--;
+                }),
+              );
+              return yield* GrokAcpSupport.makeGrokAcpRuntime(input);
+            }),
+        },
+      );
+      const threadId = ThreadId.make("antigravity-inactive");
+      const input = {
+        threadId,
+        provider: "antigravity" as const,
+        cwd: process.cwd(),
+        runtimeMode: "full-access" as const,
+      };
+      yield* adapter.startSession(input);
+      const result = yield* adapter
+        .sendTurn({ threadId, input: "silent-inactivity-test", attachments: [] })
+        .pipe(Effect.exit);
+      assert.isTrue(result._tag === "Failure");
+      assert.equal(
+        live,
+        0,
+        result._tag === "Failure" ? Cause.pretty(result.cause) : "unexpected success",
+      );
+      yield* adapter.startSession(input);
+      // Allow the normal fixture turn to finish without using the accelerated deadline.
+      yield* adapter.sendTurn({ threadId, input: "continue", attachments: [] });
+      assert.equal(starts, 2);
+      yield* adapter.stopSession(threadId);
+      assert.equal(live, 0);
+    }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
   it.effect("waits for the user's answer even in full-access mode", () =>
     Effect.gen(function* () {
       const adapter = yield* GrokAdapter;
@@ -310,8 +422,13 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         false,
       );
       const request = question!;
+      assert.equal(request.payload.questions[0]?.allowCustomAnswer, false);
+      assert.deepEqual(
+        request.payload.questions[0]?.options.map((option) => option.value),
+        ["dev", "prod"],
+      );
       yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(request.requestId!), {
-        interaction_test: "Development",
+        interaction_test: "dev",
       });
       yield* Fiber.join(turn);
       assert.equal(events.filter((event) => event.type === "user-input.resolved").length, 1);
@@ -377,3 +494,149 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
     }),
   );
 });
+
+const GrokAdapterExitingAgentTestLayer = Layer.effect(
+  GrokAdapter,
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "grok-acp-exit-")));
+    const wrapperPath = writeAcpWrapper(path.join(dir, "fake-grok"), mockAgentPath, {
+      env: { T3_ACP_EXIT_DURING_PROMPT: "1" },
+    });
+    const settings = Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath });
+    return yield* makeGrokAdapter(settings);
+  }),
+).pipe(
+  Layer.provideMerge(
+    ServerConfig.layerTest(process.cwd(), { prefix: "t3code-grok-adapter-exit-test-" }),
+  ),
+  Layer.provideMerge(NodeServices.layer),
+);
+
+it.layer(GrokAdapterExitingAgentTestLayer)("GrokAdapterLive agent exit", (it) => {
+  it.effect("fails the active turn and releases the session when the agent exits", () =>
+    Effect.gen(function* () {
+      const adapter = yield* GrokAdapter;
+      const threadId = ThreadId.make("grok-exit-during-prompt");
+      const events: ProviderRuntimeEvent[] = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId,
+        provider: "grok",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter
+        .sendTurn({ threadId, input: "exit mid-prompt", attachments: [] })
+        .pipe(Effect.exit);
+      const turnId = events.find((event) => event.type === "turn.started")?.turnId;
+      assert.isDefined(turnId);
+      const exited = (event: ProviderRuntimeEvent) =>
+        event.type === "session.exited" && event.threadId === threadId;
+      for (let attempt = 0; attempt < 200 && !events.some(exited); attempt += 1)
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+
+      const completions = events.filter(
+        (event) => event.type === "turn.completed" && event.turnId === turnId,
+      );
+      assert.equal(completions.length, 1);
+      assert.deepInclude(completions[0]!.payload, { state: "failed" });
+      assert.deepInclude(events.find(exited)?.payload, { exitKind: "error", recoverable: true });
+      assert.isFalse(yield* adapter.hasSession(threadId));
+      yield* Fiber.interrupt(eventFiber);
+    }),
+  );
+});
+
+const grokApprovalTestLayer = (env: Record<string, string>) =>
+  Layer.effect(
+    GrokAdapter,
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "grok-acp-approval-")),
+      );
+      const wrapperPath = writeAcpWrapper(path.join(dir, "fake-grok"), mockAgentPath, {
+        env: {
+          T3_ACP_EMIT_TOOL_CALLS: "1",
+          T3_ACP_OMIT_ALLOW_ALWAYS: "1",
+          T3_ACP_PERMISSION_REQUEST_COUNT: "2",
+          ...env,
+        },
+      });
+      const settings = Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath });
+      return yield* makeGrokAdapter(settings);
+    }),
+  ).pipe(
+    Layer.provideMerge(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3code-grok-adapter-approval-test-" }),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+/** Runs one supervised turn, answering every approval prompt with "Always allow this session". */
+const runAlwaysAllowTurn = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const adapter = yield* GrokAdapter;
+    const events: ProviderRuntimeEvent[] = [];
+    const answered = new Set<string>();
+    const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+      Effect.gen(function* () {
+        events.push(event);
+        if (event.type === "request.opened" && event.requestId && !answered.has(event.requestId)) {
+          answered.add(event.requestId);
+          yield* adapter.respondToRequest(
+            threadId,
+            ApprovalRequestId.make(event.requestId),
+            "acceptForSession",
+          );
+        }
+      }),
+    ).pipe(Effect.forkChild);
+    yield* adapter.startSession({
+      threadId,
+      provider: "grok",
+      cwd: process.cwd(),
+      runtimeMode: "approval-required",
+    });
+    yield* adapter.sendTurn({ threadId, input: "Read the package", attachments: [] });
+    const completed = (event: ProviderRuntimeEvent) => event.type === "turn.completed";
+    for (let attempt = 0; attempt < 200 && !events.some(completed); attempt += 1)
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+    yield* adapter.stopSession(threadId);
+    yield* Fiber.interrupt(eventFiber);
+    return {
+      prompts: events.filter((event) => event.type === "request.opened").length,
+      completion: events.find(completed),
+    };
+  });
+
+it.layer(grokApprovalTestLayer({}))("GrokAdapterLive always allow", (it) => {
+  it.effect("keeps the turn running and stops asking when Grok has no allow_always", () =>
+    Effect.gen(function* () {
+      const { prompts, completion } = yield* runAlwaysAllowTurn(
+        ThreadId.make("grok-always-allow-once"),
+      );
+      assert.deepInclude(completion?.payload, { state: "completed" });
+      assert.equal(prompts, 1);
+    }),
+  );
+});
+
+it.layer(grokApprovalTestLayer({ T3_ACP_SECOND_PERMISSION_COMMAND: "rm -rf build" }))(
+  "GrokAdapterLive always allow scope",
+  (it) => {
+    it.effect("asks again before a different command", () =>
+      Effect.gen(function* () {
+        const { prompts, completion } = yield* runAlwaysAllowTurn(
+          ThreadId.make("grok-always-allow-scope"),
+        );
+        assert.deepInclude(completion?.payload, { state: "completed" });
+        assert.equal(prompts, 2);
+      }),
+    );
+  },
+);

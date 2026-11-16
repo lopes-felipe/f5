@@ -2,12 +2,39 @@ import { parseGitHubPullRequestUrl } from "./sourceControl";
 import { describe, expect, it } from "vitest";
 
 import {
+  detectCreatedPullRequest,
   formatSourceControlPullRequestKey,
+  hasThreadPullRequestLink,
   parseSourceControlPullRequestKey,
   parseSourceControlRemoteUrl,
+  isSshRemoteUrl,
   resolveChangeRequestWebUrl,
   sourceControlPullRequestKeysEqual,
+  toThreadPullRequestLink,
+  updateThreadPullRequestLinks,
 } from "./sourceControl";
+
+it.each(["github.com", "gitlab.com", "bitbucket.org", "code.example.test"])(
+  "resolves userless SSH remotes on %s",
+  (host) => {
+    const remote = host + ":team/project.git";
+    expect(isSshRemoteUrl(remote)).toBe(true);
+    expect(parseSourceControlRemoteUrl(remote)).toMatchObject({
+      host,
+      owner: "team",
+      repository: "project",
+      webUrl: "https://" + host + "/team/project",
+    });
+  },
+);
+
+it.each([
+  "C:/repos/project",
+  "C:\\repos\\project",
+  "./team:group/repo",
+  "hg::team/repo",
+  "file:///srv/git/repo",
+])("does not treat %s as SSH", (remote) => expect(isSshRemoteUrl(remote)).toBe(false));
 
 describe("source-control pull-request keys", () => {
   it("formats provider-qualified keys and parses legacy GitHub keys", () => {
@@ -43,6 +70,29 @@ describe("source-control pull-request keys", () => {
 });
 
 describe("parseSourceControlRemoteUrl", () => {
+  it.each([
+    "git@github.com-work:octo/repo.git",
+    "github.com-work:octo/repo.git",
+    "ssh://git@github.com-work:22/octo/repo.git",
+    "ssh://github.com-work/octo/repo.git",
+    "git@GitHub.com-WORK:octo/repo.git",
+  ])("routes the SSH alias %s to GitHub's API and browser host", (remote) => {
+    expect(parseSourceControlRemoteUrl(remote)).toEqual({
+      kind: "github",
+      host: "github.com",
+      owner: "octo",
+      repository: "repo",
+      webUrl: "https://github.com/octo/repo",
+    });
+  });
+  it.each([
+    "https://github.com-work/octo/repo.git",
+    "git@github.com-work.example:octo/repo.git",
+    "git@github.com-:octo/repo.git",
+  ])("preserves real DNS hosts and unsupported aliases in %s", (remote) => {
+    expect(parseSourceControlRemoteUrl(remote).host).not.toBe("github.com");
+  });
+
   it("parses GitHub SSH remotes", () => {
     expect(parseSourceControlRemoteUrl("git@github.com:pingdotgg/t3code.git")).toEqual({
       kind: "github",
@@ -86,6 +136,21 @@ describe("parseSourceControlRemoteUrl", () => {
       kind: "unknown",
       host: "notdev.azure.com",
     });
+  });
+
+  it("classifies GitHub Enterprise Cloud data residency hosts on ghe.com as GitHub", () => {
+    expect(parseSourceControlRemoteUrl("https://acme.ghe.com/owner/repo.git")).toEqual({
+      kind: "github",
+      host: "acme.ghe.com",
+      owner: "owner",
+      repository: "repo",
+      webUrl: "https://acme.ghe.com/owner/repo",
+    });
+    expect(parseSourceControlRemoteUrl("git@acme.ghe.com:owner/repo.git").kind).toBe("github");
+    expect(parseSourceControlRemoteUrl("https://ghe.com/owner/repo.git").kind).toBe("unknown");
+    expect(parseSourceControlRemoteUrl("https://acme.notghe.com/owner/repo.git").kind).toBe(
+      "unknown",
+    );
   });
 
   it("parses Bitbucket remotes", () => {
@@ -238,4 +303,134 @@ it("parses provider-qualified URLs including nested namespaces and self-hosted F
       "forge.example",
     ),
   ).toBeNull();
+});
+
+describe("detectCreatedPullRequest", () => {
+  const created = "https://github.com/lopes-felipe/f5/pull/493";
+
+  it("reads Claude's command text from the detail and the URL gh prints last", () => {
+    expect(
+      detectCreatedPullRequest({
+        command: "Bash: {}",
+        detail:
+          'Bash: cd /tmp/wt && gh pr create --base main --title "fix(html-preview): stop the deadlock" --body-file -',
+        output: `Warning: 1 uncommitted change\n${created}\n`,
+      }),
+    ).toEqual({
+      provider: "github",
+      host: "github.com",
+      repository: "lopes-felipe/f5",
+      number: 493,
+      title: "fix(html-preview): stop the deadlock",
+      url: created,
+    });
+  });
+
+  it("reads Codex's command text and falls back to a numbered title", () => {
+    expect(
+      detectCreatedPullRequest({
+        command: "/bin/zsh -lc 'gh pr create --fill'",
+        detail: null,
+        output: created,
+      }),
+    ).toMatchObject({ number: 493, title: "Pull request #493" });
+    expect(
+      detectCreatedPullRequest({
+        command: "gh pr create -t 'Single quoted' --body x",
+        detail: null,
+        output: created,
+      })?.title,
+    ).toBe("Single quoted");
+  });
+
+  it("does not take a shell expansion as the title", () => {
+    expect(
+      detectCreatedPullRequest({
+        command: 'gh pr create --title "$(git log -1 --format=%s)"',
+        detail: null,
+        output: created,
+      })?.title,
+    ).toBe("Pull request #493");
+  });
+
+  it("ignores other gh commands and non-PR URLs", () => {
+    expect(
+      detectCreatedPullRequest({ command: "gh pr view 493", detail: null, output: created }),
+    ).toBeNull();
+    expect(
+      detectCreatedPullRequest({
+        command: "gh api repos/lopes-felipe/f5/pulls/493/comments",
+        detail: null,
+        output: created,
+      }),
+    ).toBeNull();
+    expect(
+      detectCreatedPullRequest({
+        command: "gh pr create --fill",
+        detail: null,
+        output: `${created}#issuecomment-6656341689\n${created}/files`,
+      }),
+    ).toBeNull();
+  });
+
+  it("takes the last PR URL when several appear", () => {
+    expect(
+      detectCreatedPullRequest({
+        command: "gh pr create --fill",
+        detail: null,
+        output: "See https://github.com/o/r/pull/1 for context.\nhttps://github.com/o/r/pull/2",
+      })?.number,
+    ).toBe(2);
+  });
+});
+
+describe("thread pull request links", () => {
+  const link = (number: number, title = `PR ${number}`) => ({
+    provider: "github" as const,
+    host: "github.com",
+    repository: "o/r",
+    number,
+    title,
+    url: `https://github.com/o/r/pull/${number}`,
+  });
+
+  it("moves a relinked PR to the front without duplicating it", () => {
+    const current = [link(2), link(1)];
+    expect(updateThreadPullRequestLinks(current, { link: link(1, "Renamed") })).toEqual([
+      link(1, "Renamed"),
+      link(2),
+    ]);
+  });
+
+  it("removes an unlinked PR, matching repository case-insensitively", () => {
+    const current = [link(2), link(1)];
+    expect(
+      updateThreadPullRequestLinks(current, {
+        unlink: { provider: "github", host: "github.com", repository: "O/R", number: 2 },
+      }),
+    ).toEqual([link(1)]);
+    expect(
+      updateThreadPullRequestLinks(current, {
+        unlink: { provider: "github", host: "github.com", repository: "o/r", number: 9 },
+      }),
+    ).toBe(current);
+  });
+
+  it("keeps at most the shell limit, newest first", () => {
+    let links = updateThreadPullRequestLinks(undefined, {});
+    for (let number = 1; number <= 25; number += 1)
+      links = updateThreadPullRequestLinks(links, { link: link(number) });
+    expect(links).toHaveLength(20);
+    expect(links[0]?.number).toBe(25);
+    expect(hasThreadPullRequestLink(links, link(5))).toBe(false);
+    expect(hasThreadPullRequestLink(links, link(6))).toBe(true);
+  });
+
+  it("builds a link with a bounded fallback title", () => {
+    const ref = { provider: "github" as const, host: "github.com", repository: "o/r", number: 4 };
+    expect(toThreadPullRequestLink(ref, { url: link(4).url, title: "  " })?.title).toBe(
+      "Pull request #4",
+    );
+    expect(toThreadPullRequestLink(ref, { url: "ftp://x" })).toBeNull();
+  });
 });

@@ -1,21 +1,16 @@
-import { providerSelectionsToModelOptions } from "../providerModelOptions";
-import { inferProviderForModel } from "@t3tools/shared/model";
+import { resolveNewThreadPreferences } from "../newThreadPreferences";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
 import {
   cachedGlobalDraftSettings,
   defaultDraftRuntimeMode,
   rememberDraftSettings,
 } from "../lib/draftSettingsDefaults";
 import { ensureNativeApi } from "../nativeApi";
-import {
-  isKnownProviderKind,
-  type ProjectId,
-  type ServerSettings,
-  ThreadId,
-} from "@t3tools/contracts";
+import { type ProjectId, type ServerSettings, ThreadId } from "@t3tools/contracts";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useCallback } from "react";
 
-import { useAppSettings, type AppSettings } from "../appSettings";
+import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../appSettings";
 import {
   type DraftThreadEnvMode,
   type DraftThreadState,
@@ -25,8 +20,11 @@ import { newThreadId } from "../lib/utils";
 import { useProjectThreadEnvModeResolver } from "../lib/projectConfigReactQuery";
 import { getModelPreferences } from "../modelPreferencesStore";
 import { useStore } from "../store";
+import { getWsConnectionState } from "../wsConnectionState";
 
 export interface CreateProjectBackedDraftThreadOptions {
+  /** Rechecked after async settings resolution, immediately before navigation. */
+  canNavigate?: () => boolean;
   branch?: string | null;
   worktreePath?: string | null;
   envMode?: DraftThreadEnvMode;
@@ -40,7 +38,15 @@ interface CreateProjectBackedDraftThreadInput {
   onboardingLiteStatus: AppSettings["onboardingLiteStatus"];
   updateSettings: (patch: Partial<AppSettings>) => void;
   options?: CreateProjectBackedDraftThreadOptions;
+  /**
+   * Whether the project was in the store when the request began. Callers that
+   * await before this function read it first; defaults to the current store.
+   */
+  projectKnownAtRequest?: boolean;
 }
+
+const projectIsKnown = (projectId: ProjectId): boolean =>
+  useStore.getState().projects.some((project) => project.id === projectId);
 
 export interface CreateProjectBackedDraftThreadResult {
   projectId: ProjectId;
@@ -53,38 +59,12 @@ export function seedDraftThreadFromModelPreferences(
   serverSettings = cachedGlobalDraftSettings(),
 ): void {
   const project = useStore.getState().projects.find((entry) => entry.id === projectId);
-  if (project?.defaultModelSelection) {
-    const selection = project.defaultModelSelection;
-    const driver =
-      serverSettings.providerInstances[selection.instanceId]?.driver ?? selection.instanceId;
-    const provider = isKnownProviderKind(driver)
-      ? driver
-      : inferProviderForModel(selection.model, "codex");
-    const draft = useComposerDraftStore.getState();
-    draft.setProvider(threadId, provider);
-    draft.setProviderInstance(threadId, selection.instanceId);
-    draft.setModel(threadId, selection.model);
-    draft.setModelOptions(threadId, providerSelectionsToModelOptions(provider, selection.options));
-    return;
-  }
-  if (project?.defaultModel) {
-    const draft = useComposerDraftStore.getState();
-    draft.setProvider(threadId, inferProviderForModel(project.defaultModel, "codex"));
-    draft.setModel(threadId, project.defaultModel);
-    return;
-  }
-  const preferences = getModelPreferences();
-  const { setModel, setModelOptions, setProvider } = useComposerDraftStore.getState();
-  if (preferences.lastProvider) {
-    setProvider(threadId, preferences.lastProvider);
-    const rememberedModel = preferences.lastModelByProvider[preferences.lastProvider];
-    if (rememberedModel) {
-      setModel(threadId, rememberedModel);
-    }
-  }
-  if (preferences.lastModelOptions) {
-    setModelOptions(threadId, preferences.lastModelOptions);
-  }
+  const preference = resolveNewThreadPreferences(project, serverSettings, getModelPreferences());
+  const draft = useComposerDraftStore.getState();
+  if (preference.provider) draft.setProvider(threadId, preference.provider);
+  if (preference.instanceId) draft.setProviderInstance(threadId, preference.instanceId);
+  if (preference.model) draft.setModel(threadId, preference.model);
+  if (preference.options !== undefined) draft.setModelOptions(threadId, preference.options);
 }
 
 function maybeMarkOnboardingLiteCompleted(
@@ -117,16 +97,24 @@ export async function createProjectBackedDraftThread({
   projectId,
   routeThreadId,
   updateSettings,
-}: CreateProjectBackedDraftThreadInput): Promise<CreateProjectBackedDraftThreadResult> {
+  projectKnownAtRequest = projectIsKnown(projectId),
+}: CreateProjectBackedDraftThreadInput): Promise<CreateProjectBackedDraftThreadResult | null> {
   let resolvedSettings: ServerSettings | undefined;
   let runtimeMode = defaultDraftRuntimeMode(projectId);
   try {
-    resolvedSettings = (await ensureNativeApi().server.getProjectSettings({ projectId })).settings;
-    rememberDraftSettings(resolvedSettings, projectId);
-    runtimeMode = resolvedSettings.defaultRuntimeMode;
+    // Read requests can wait for reconnection. A local draft must open immediately.
+    if (getWsConnectionState().phase === "connected") {
+      resolvedSettings = (await ensureNativeApi().server.getProjectSettings({ projectId }))
+        .settings;
+      rememberDraftSettings(resolvedSettings, projectId);
+      runtimeMode = resolvedSettings.defaultRuntimeMode;
+    }
   } catch {
     // Local draft creation remains available while reconnecting.
   }
+  // Removal can land while settings load; a draft opened after that belongs
+  // to a project that no longer exists, so neither create nor navigate.
+  if (projectKnownAtRequest && !projectIsKnown(projectId)) return null;
   // Re-read drafts after the await: concurrent clicks must reuse the first draft.
   const {
     getDraftThread,
@@ -148,6 +136,7 @@ export async function createProjectBackedDraftThread({
     : null;
   const latestActiveDraftThreadMatchesRequest =
     latestActiveDraftThread !== null &&
+    !latestActiveDraftThread.promoting &&
     latestActiveDraftThread.projectId === projectId &&
     latestActiveDraftThread.envMode === requestedEnvMode &&
     latestActiveDraftThread.worktreePath === requestedWorktreePath;
@@ -170,7 +159,7 @@ export async function createProjectBackedDraftThread({
       onboardingLiteStatus,
       updateSettings,
     );
-    if (routeThreadId !== storedDraftThread.threadId) {
+    if (routeThreadId !== storedDraftThread.threadId && options?.canNavigate?.() !== false) {
       await navigate({
         to: "/$threadId",
         params: { threadId: storedDraftThread.threadId },
@@ -218,10 +207,12 @@ export async function createProjectBackedDraftThread({
   seedDraftThreadFromModelPreferences(threadId, projectId, resolvedSettings);
   maybeMarkOnboardingLiteCompleted(projectId, threadId, onboardingLiteStatus, updateSettings);
 
-  await navigate({
-    to: "/$threadId",
-    params: { threadId },
-  });
+  if (options?.canNavigate?.() !== false) {
+    await navigate({
+      to: "/$threadId",
+      params: { threadId },
+    });
+  }
 
   return {
     projectId,
@@ -231,7 +222,7 @@ export async function createProjectBackedDraftThread({
 
 export function useCreateProjectBackedDraftThread() {
   const navigate = useNavigate();
-  const { settings, updateSettings } = useAppSettings();
+  const onboardingLiteStatus = useAppSettingsSelector((settings) => settings.onboardingLiteStatus);
   const resolveProjectThreadEnvMode = useProjectThreadEnvModeResolver();
   const routeThreadId = useParams({
     strict: false,
@@ -241,6 +232,22 @@ export function useCreateProjectBackedDraftThread() {
   return useCallback(
     async (projectId: ProjectId, options?: CreateProjectBackedDraftThreadOptions) => {
       const { forceNonDefaultEnvMode = false, ...draftOptions } = options ?? {};
+      const projectKnownAtRequest = projectIsKnown(projectId);
+      // A thread without a project gets its own folder from the server: no branch, no worktree.
+      if (isScratchProject(useStore.getState().projects.find((entry) => entry.id === projectId)))
+        return createProjectBackedDraftThread({
+          navigate,
+          onboardingLiteStatus,
+          projectId,
+          routeThreadId,
+          updateSettings: updateAppSettings,
+          options: {
+            ...draftOptions,
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+          },
+        });
       const requested =
         draftOptions.envMode ?? (draftOptions.worktreePath ? "worktree" : undefined);
       const envMode = await resolveProjectThreadEnvMode(projectId, {
@@ -249,19 +256,14 @@ export function useCreateProjectBackedDraftThread() {
       });
       return createProjectBackedDraftThread({
         navigate,
-        onboardingLiteStatus: settings.onboardingLiteStatus,
+        onboardingLiteStatus,
         projectId,
         routeThreadId,
-        updateSettings,
+        updateSettings: updateAppSettings,
         options: { ...draftOptions, envMode },
+        projectKnownAtRequest,
       });
     },
-    [
-      navigate,
-      resolveProjectThreadEnvMode,
-      routeThreadId,
-      settings.onboardingLiteStatus,
-      updateSettings,
-    ],
+    [navigate, onboardingLiteStatus, resolveProjectThreadEnvMode, routeThreadId],
   );
 }

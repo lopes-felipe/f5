@@ -15,12 +15,14 @@ import {
 const ProjectMcpConfigDbRowSchema = ProjectMcpConfigRecord.mapFields(
   Struct.assign({
     servers: Schema.fromJsonString(McpProjectServersConfig),
+    disabledCommonServers: Schema.optional(Schema.fromJsonString(Schema.Array(Schema.String))),
   }),
 );
 
 const ReplaceProjectMcpConfigDbRequestSchema = ReplaceProjectMcpConfigInput.mapFields(
   Struct.assign({
     servers: Schema.fromJsonString(McpProjectServersConfig),
+    disabledCommonServers: Schema.optional(Schema.fromJsonString(Schema.Array(Schema.String))),
     scopeKey: Schema.String,
   }),
 );
@@ -54,20 +56,59 @@ const makeProjectMcpConfigRepository = Effect.gen(function* () {
     execute: ({ scopeKey }) =>
       sql`
         SELECT
-          scope,
-          project_id AS "projectId",
-          version,
-          servers_json AS "servers",
-          updated_at AS "updatedAt"
-        FROM project_mcp_configs
-        WHERE scope_key = ${scopeKey}
+          c.scope,
+          c.project_id AS "projectId",
+          p.title AS "projectName",
+          c.version,
+          c.servers_json AS "servers", c.disabled_common_servers_json AS "disabledCommonServers",
+          c.updated_at AS "updatedAt"
+        FROM project_mcp_configs c LEFT JOIN projection_projects p ON p.project_id = c.project_id
+        WHERE c.scope_key = ${scopeKey}
       `,
   });
+
+  const listRows = SqlSchema.findAll({
+    Request: Schema.Struct({
+      scope: Schema.Literals(["common", "project"]),
+      includeDeleted: Schema.Boolean,
+    }),
+    Result: ProjectMcpConfigDbRowSchema,
+    execute: ({ scope, includeDeleted }) => sql`
+      SELECT c.scope, c.project_id AS "projectId", p.title AS "projectName", c.version, c.servers_json AS "servers", c.disabled_common_servers_json AS "disabledCommonServers", c.updated_at AS "updatedAt"
+      FROM project_mcp_configs c LEFT JOIN projection_projects p ON p.project_id = c.project_id WHERE c.scope = ${scope} AND (${includeDeleted ? 1 : 0} = 1 OR p.deleted_at IS NULL)
+    `,
+  });
+  const listByScope: ProjectMcpConfigRepositoryShape["listByScope"] = (scope, options) =>
+    listRows({ scope, includeDeleted: options?.includeDeleted ?? false }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectMcpConfigRepository.listByScope:query",
+          "ProjectMcpConfigRepository.listByScope:decodeRow",
+        ),
+      ),
+    );
+  const withTransaction: ProjectMcpConfigRepositoryShape["withTransaction"] = (effect) =>
+    sql
+      .withTransaction(effect)
+      .pipe(
+        Effect.catchTag("SqlError", (cause) =>
+          Effect.fail(toPersistenceSqlError("ProjectMcpConfigRepository.transaction")(cause)),
+        ),
+      );
 
   const replaceProjectMcpConfigRow = SqlSchema.findOneOption({
     Request: ReplaceProjectMcpConfigDbRequestSchema,
     Result: ProjectMcpConfigDbRowSchema,
-    execute: ({ scopeKey, scope, projectId, expectedVersion, nextVersion, servers, updatedAt }) =>
+    execute: ({
+      scopeKey,
+      scope,
+      projectId,
+      expectedVersion,
+      nextVersion,
+      servers,
+      disabledCommonServers,
+      updatedAt,
+    }) =>
       sql`
         WITH existing AS (
           SELECT version
@@ -80,6 +121,7 @@ const makeProjectMcpConfigRepository = Effect.gen(function* () {
           project_id,
           version,
           servers_json,
+          disabled_common_servers_json,
           updated_at
         )
         SELECT
@@ -88,6 +130,7 @@ const makeProjectMcpConfigRepository = Effect.gen(function* () {
           ${projectId},
           ${nextVersion},
           ${servers},
+          ${disabledCommonServers ?? "[]"},
           ${updatedAt}
         WHERE
           (${expectedVersion} IS NULL AND NOT EXISTS (SELECT 1 FROM existing))
@@ -98,6 +141,7 @@ const makeProjectMcpConfigRepository = Effect.gen(function* () {
           project_id = excluded.project_id,
           version = excluded.version,
           servers_json = excluded.servers_json,
+          disabled_common_servers_json = excluded.disabled_common_servers_json,
           updated_at = excluded.updated_at
         WHERE project_mcp_configs.version = ${expectedVersion}
         RETURNING
@@ -105,6 +149,7 @@ const makeProjectMcpConfigRepository = Effect.gen(function* () {
           project_id AS "projectId",
           version,
           servers_json AS "servers",
+          disabled_common_servers_json AS "disabledCommonServers",
           updated_at AS "updatedAt"
       `,
   });
@@ -152,6 +197,8 @@ const makeProjectMcpConfigRepository = Effect.gen(function* () {
     );
 
   return {
+    listByScope,
+    withTransaction,
     get,
     replaceIfVersionMatches,
   } satisfies ProjectMcpConfigRepositoryShape;

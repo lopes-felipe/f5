@@ -3,6 +3,7 @@ import type * as React from "react";
 import type {
   ApprovalRequestId,
   ProviderInstanceId,
+  ProviderKind,
   ResolvedKeybindingsConfig,
   ServerProvider,
 } from "@t3tools/contracts";
@@ -12,6 +13,7 @@ import type { ExpandedImagePreview } from "~/components/chat/ExpandedImagePrevie
 import type { ImageAttachmentActionItem } from "~/components/chat/imageAttachmentActions";
 import type { ProviderInstanceModelPicker } from "~/components/chat/ProviderInstanceModelPicker";
 import type { ComposerImageAttachment } from "~/composerDraftStore";
+import type { FavoritePreset } from "~/favoritePresets";
 import type { TerminalContextDraft } from "~/lib/terminalContext";
 import type { NextTurnQueueThreadState } from "~/nextTurnQueueStore";
 import type {
@@ -25,7 +27,8 @@ import type {
   PendingApproval,
   PendingUserInput,
 } from "~/session-logic";
-import type { SessionPhase } from "~/types";
+import type { Project, SessionPhase } from "~/types";
+import type { ProjectPickerSelection } from "~/components/ProjectPicker";
 
 export type ComposerSendIntent = "auto" | "queue-tail" | "queue-head" | "send-now";
 export type ComposerRuntimeMode =
@@ -33,13 +36,7 @@ export type ComposerRuntimeMode =
   | "approval-required"
   | "auto-accept-edits"
   | "full-access";
-export type ComposerProvider =
-  | "codex"
-  | "claudeAgent"
-  | "cursor"
-  | "opencode"
-  | "grok"
-  | "antigravity";
+export type ComposerProvider = ProviderKind;
 
 /** Approvals and structured questions the agent is waiting on. */
 export interface ComposerPendingInteraction {
@@ -64,11 +61,14 @@ export interface ComposerPendingInteraction {
 
 /** Provider, model and provider-specific trait pickers. */
 export interface ComposerModelControls {
+  noProviderAvailable?: boolean;
   selectedProvider: ComposerProvider;
   selectedProviderInstanceId: ProviderInstanceId;
   selectedModel: string;
   selectedModelForPickerWithCustomFallback: string;
   hasThreadStarted: boolean;
+  /** The started thread cannot switch providers (the server cannot hand it off). */
+  providerLocked?: boolean;
   modelOptionsByInstance: React.ComponentProps<
     typeof ProviderInstanceModelPicker
   >["modelOptionsByInstance"];
@@ -81,6 +81,8 @@ export interface ComposerModelControls {
   onProviderModelSelect: React.ComponentProps<
     typeof ProviderInstanceModelPicker
   >["onInstanceModelChange"];
+  /** The favorite preset the composer currently shows, marked active in the picker. */
+  activeFavoritePreset?: FavoritePreset | null;
   /** Multi-model fan-out for a new thread's first message (empty draft, git project). */
   fanOutModels?: React.ComponentProps<typeof ProviderInstanceModelPicker>["selectedModels"];
   onToggleFanOutModel?: React.ComponentProps<typeof ProviderInstanceModelPicker>["onToggleModel"];
@@ -123,6 +125,7 @@ export interface ComposerNativeGoalControls {
 
 /** Sending, queueing, interrupting and plan implementation. */
 export interface ComposerSendControls {
+  readonly mutationsUnavailable?: boolean;
   onSend: (event?: { preventDefault: () => void }, intent?: ComposerSendIntent) => Promise<void>;
   onInterrupt: () => Promise<void>;
   phase: SessionPhase;
@@ -152,6 +155,15 @@ export interface ComposerSendControls {
   onImplementPlanInNewThread: () => Promise<void>;
 }
 
+/** Project picker for an unsent draft; absent once the thread exists on the server. */
+export interface ComposerProjectPickerControls {
+  readonly projects: ReadonlyArray<Project>;
+  readonly selection: ProjectPickerSelection;
+  /** True while a switch is running. */
+  readonly disabled?: boolean | undefined;
+  readonly onSelect: (selection: ProjectPickerSelection) => void;
+}
+
 /** Images, file mentions, terminal contexts and drag-and-drop. */
 export interface ComposerAttachments {
   composerImages: ComposerImageAttachment[];
@@ -167,6 +179,8 @@ export interface ComposerAttachments {
   onAttachFiles: (files: File[]) => void;
   onComposerPaste: (event: React.ClipboardEvent<HTMLElement>) => void;
   isDragOverComposer: boolean;
+  /** What a drop would do: attach files, or insert a file-tree / PR reference. */
+  composerDropKind: "files" | "reference";
   onComposerFileMentionDragEnterCapture: (event: React.DragEvent<HTMLDivElement>) => void;
   onComposerFileMentionDragOverCapture: (event: React.DragEvent<HTMLDivElement>) => void;
   onComposerFileMentionDragLeaveCapture: (event: React.DragEvent<HTMLDivElement>) => void;

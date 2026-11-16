@@ -1,3 +1,5 @@
+import { requireAttachmentOwner } from "./attachmentOwnership.ts";
+import { withAttachmentRetentionLease } from "./storage/attachmentRetention.ts";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { AttachmentUploads } from "./attachmentUploads";
@@ -213,27 +215,29 @@ const discardAttachmentEntries = Effect.fnUntraced(function* (input: {
   yield* Effect.forEach(
     input.entries,
     (entry) =>
-      Effect.gen(function* () {
-        yield* sql`
+      withAttachmentRetentionLease(
+        entry.finalPath ? path.dirname(entry.finalPath) : "",
+        Effect.gen(function* () {
+          yield* sql`
           DELETE FROM attachment_owners
           WHERE attachment_id = ${entry.attachment.id}
             AND owner_kind = 'ingress'
             AND owner_id = ${input.commandId}
         `.pipe(Effect.ignore);
-        const owners = yield* sql<{ readonly count: number }>`
+          const owners = yield* sql<{ readonly count: number }>`
           SELECT COUNT(*) AS count
           FROM attachment_owners
           WHERE attachment_id = ${entry.attachment.id}
         `.pipe(Effect.catch(() => Effect.succeed([{ count: 0 }])));
-        if ((owners[0]?.count ?? 0) > 0) return;
+          if ((owners[0]?.count ?? 0) > 0) return;
 
-        yield* Effect.all(
-          [entry.stagingPath, entry.finalPath].flatMap((filePath) =>
-            filePath ? [fileSystem.remove(filePath, { force: true }).pipe(Effect.ignore)] : [],
-          ),
-          { discard: true },
-        );
-        yield* sql`
+          yield* Effect.all(
+            [entry.stagingPath, entry.finalPath].flatMap((filePath) =>
+              filePath ? [fileSystem.remove(filePath, { force: true }).pipe(Effect.ignore)] : [],
+            ),
+            { discard: true },
+          );
+          yield* sql`
           DELETE FROM attachments
           WHERE attachment_id = ${entry.attachment.id}
             AND NOT EXISTS (
@@ -241,7 +245,8 @@ const discardAttachmentEntries = Effect.fnUntraced(function* (input: {
               WHERE attachment_id = ${entry.attachment.id}
             )
         `.pipe(Effect.ignore);
-      }),
+        }),
+      ),
     { concurrency: 1, discard: true },
   );
 });
@@ -339,13 +344,13 @@ export const persistPreparedAttachmentIngress = Effect.fnUntraced(function* (
                   ${entry.finalPath}, 'staged', ${createdAt}, ${createdAt}
                 )
               `;
-              yield* sql`
-                INSERT INTO attachment_owners (
-                  attachment_id, owner_kind, owner_id, created_at
-                ) VALUES (
-                  ${entry.attachment.id}, 'ingress', ${prepared.commandId}, ${createdAt}
-                )
-              `;
+              yield* requireAttachmentOwner(
+                sql,
+                entry.attachment.id,
+                "ingress",
+                prepared.commandId,
+                createdAt,
+              );
             });
           },
           { concurrency: 1, discard: true },

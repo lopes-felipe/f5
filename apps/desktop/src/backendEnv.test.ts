@@ -20,6 +20,7 @@ describe("buildDesktopBackendEnv", () => {
         stateDir: "/tmp/t3-state",
         stateDirSource: "explicit-state",
         authToken: "token-123",
+        shellEnvironmentPrepared: true,
       },
     );
 
@@ -27,12 +28,31 @@ describe("buildDesktopBackendEnv", () => {
       PATH: "/usr/bin",
       T3CODE_MODE: "desktop",
       T3CODE_NO_BROWSER: "1",
+      F5_SHELL_ENVIRONMENT_PREPARED: "1",
       T3CODE_PORT: "3773",
       F5_STATE_DIR: "/tmp/t3-state",
       T3CODE_STATE_DIR: "/tmp/t3-state",
       T3CODE_AUTH_TOKEN: "token-123",
       T3CODE_OBSERVABILITY_ENABLED: "true",
     });
+  });
+
+  it("lets the server repair PATH when the desktop shell probe captured none", () => {
+    for (const shellEnvironmentPrepared of [false, undefined]) {
+      const env = buildDesktopBackendEnv(
+        { PATH: "/usr/bin", F5_SHELL_ENVIRONMENT_PREPARED: "1" },
+        {
+          backendPort: 3773,
+          stateDir: "/tmp/t3-state",
+          stateDirSource: "default",
+          authToken: "token-123",
+          ...(shellEnvironmentPrepared === undefined ? {} : { shellEnvironmentPrepared }),
+        },
+      );
+
+      expect(env).not.toHaveProperty("F5_SHELL_ENVIRONMENT_PREPARED");
+      expect(env.PATH).toBe("/usr/bin");
+    }
   });
 
   it("does not add observability enablement when it is absent", () => {
@@ -109,7 +129,7 @@ describe("buildDesktopBackendEnv", () => {
         },
         "/Users/test-user",
       ),
-    ).toEqual({ stateDir: "/tmp/f5-state", source: "explicit-state" });
+    ).toEqual({ stateDir: Path.resolve("/tmp/f5-state"), source: "explicit-state" });
   });
 
   it("resolves F5_HOME to its userdata state directory", () => {
@@ -128,7 +148,7 @@ describe("buildDesktopBackendEnv", () => {
         },
         "/Users/test-user",
       ),
-    ).toBe("/tmp/t3-state");
+    ).toBe(Path.resolve("/tmp/t3-state"));
   });
 
   it("resolves legacy T3CODE_HOME when no F5 state or home is configured", () => {

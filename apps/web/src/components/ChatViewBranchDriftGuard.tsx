@@ -1,9 +1,9 @@
+import { switchConversationWorkspace } from "../lib/workspaceTransitions";
 import type { ThreadId } from "@t3tools/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { invalidateGitQueries } from "~/lib/gitReactQuery";
-import { newCommandId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import { detectBranchDrift, type BranchDrift } from "./ChatView.branchDrift.logic";
 import { Button } from "./ui/button";
@@ -19,6 +19,7 @@ import {
 import { toastManager } from "./ui/toast";
 
 interface BranchDriftRequest extends BranchDrift {
+  readonly worktreePath?: string | null;
   readonly cwd: string;
   readonly threadId: ThreadId;
 }
@@ -36,6 +37,7 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
     readonly cwd: string;
     readonly threadId: ThreadId;
     readonly recordedBranch: string | null;
+    readonly worktreePath?: string | null;
   }) => Promise<boolean>;
   readonly branchDriftDialog: ReactNode;
 } {
@@ -67,6 +69,7 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
       readonly cwd: string;
       readonly threadId: ThreadId;
       readonly recordedBranch: string | null;
+      readonly worktreePath?: string | null;
     }): Promise<boolean> => {
       if (input.recordedBranch === null) return true;
       const api = readNativeApi();
@@ -76,6 +79,7 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
         const drift = detectBranchDrift({
           recordedBranch: input.recordedBranch,
           currentBranch: branches.branches.find((branch) => branch.current)?.name ?? null,
+          checkoutAvailable: branches.worktreeMissing !== true && branches.isRepo,
         });
         if (!drift) return true;
         resolverRef.current?.(false);
@@ -112,19 +116,20 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
       setPendingDecision(decision);
       setDecisionError(null);
       try {
-        if (decision === "switch") {
-          await api.git.checkout({ cwd: request.cwd, branch: request.recordedBranch });
+        if (decision === "switch" && !request.worktreePath) {
+          await switchConversationWorkspace(request.threadId, {
+            intent: "checkout_branch",
+            branch: request.recordedBranch,
+          });
           const verified = await api.git.listBranches({ cwd: request.cwd });
           if (verified.branches.find((branch) => branch.current)?.name !== request.recordedBranch) {
             throw new Error(`Git did not switch to '${request.recordedBranch}'.`);
           }
         } else {
-          await api.orchestration.dispatchCommand({
-            type: "thread.meta.update",
-            commandId: newCommandId(),
-            threadId: request.threadId,
-            branch: request.currentBranch,
-            expectedBranch: request.recordedBranch,
+          await switchConversationWorkspace(request.threadId, {
+            intent: "attach_existing",
+            targetPath: request.cwd,
+            ...(request.currentBranch ? { branch: request.currentBranch } : {}),
           });
         }
         await invalidateGitQueries(queryClient, { cwd: request.cwd });
@@ -155,8 +160,9 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
         </DialogHeader>
         <DialogPanel className="space-y-3 text-sm">
           <p>
-            Switch back if this turn belongs on the recorded branch. Git will refuse the switch if
-            local changes cannot be preserved safely.
+            {request.worktreePath
+              ? "Continue on the current branch. Switching a shared worktree could affect other threads."
+              : "Switch back if this turn belongs on the recorded branch. Git will refuse the switch if local changes cannot be preserved safely."}
           </p>
           {decisionError ? <p className="text-destructive-foreground">{decisionError}</p> : null}
         </DialogPanel>
@@ -175,9 +181,11 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
           >
             Continue on {currentBranchLabel}
           </Button>
-          <Button disabled={pendingDecision !== null} onClick={() => void decide("switch")}>
-            Switch to {request.recordedBranch}
-          </Button>
+          {!request.worktreePath && (
+            <Button disabled={pendingDecision !== null} onClick={() => void decide("switch")}>
+              Switch to {request.recordedBranch}
+            </Button>
+          )}
         </DialogFooter>
       </DialogPopup>
     </Dialog>

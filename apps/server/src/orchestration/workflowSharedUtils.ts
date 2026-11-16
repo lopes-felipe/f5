@@ -5,9 +5,34 @@ import {
 } from "@t3tools/shared/model";
 
 import { truncateMiddleByCharacters } from "./outputTruncation.ts";
+import { OrchestrationCommandInvariantError } from "./Errors.ts";
 
 export const WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE = 0.5;
 export const WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT = 116_000;
+
+export function workflowPromptFitError(input: {
+  readonly prompt: string;
+  readonly artifacts: ReadonlyArray<string>;
+  readonly targetSlot: WorkflowModelSlot;
+  readonly thread?: Pick<OrchestrationThread, "estimatedContextTokens"> | null;
+  readonly artifactLabel: string;
+  readonly enforceArtifactBudget: boolean;
+}): OrchestrationCommandInvariantError | null {
+  if (input.prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
+    return new OrchestrationCommandInvariantError({
+      commandType: "workflow.turn.start",
+      detail: `${input.artifactLabel} rendered prompt is ${input.prompt.length} characters; maximum is ${WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT}.`,
+    });
+  }
+  if (!input.enforceArtifactBudget) return null;
+  const fit = workflowArtifactFit(input);
+  return fit.fits
+    ? null
+    : new OrchestrationCommandInvariantError({
+        commandType: "workflow.turn.start",
+        detail: `${input.artifactLabel} requires an estimated ${fit.estimatedTokens} tokens; only ${fit.availableTokens} authoritative-artifact tokens are available.`,
+      });
+}
 
 export {
   isActiveWorkflow,

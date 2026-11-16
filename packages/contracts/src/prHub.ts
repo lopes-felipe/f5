@@ -1,6 +1,15 @@
 import { FILESYSTEM_PATH_MAX_LENGTH } from "./filesystem";
 import { Schema, Struct } from "effect";
-import { IsoDateTime, makeEntityId, NonNegativeInt, ProjectId } from "./baseSchemas";
+import { ModelSelection } from "./orchestration";
+import {
+  IsoDateTime,
+  makeEntityId,
+  NonNegativeInt,
+  PositiveInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas";
 import {
   ForgeCapabilities,
   SourceControlCapability,
@@ -41,6 +50,7 @@ export const PrAttentionState = Schema.Literals([
   "changes_pushed",
   "review_requested",
   "re_review_requested",
+  "team_review_requested",
   "ready_to_merge",
   "awaiting_review",
   "reviewed_waiting",
@@ -69,6 +79,23 @@ export const PrAttentionReason = Schema.Struct({
   verification: Schema.Literals(["verified", "unverified"]),
 });
 export type PrAttentionReason = typeof PrAttentionReason.Type;
+
+/** How the viewer's review was requested. A team request is not a personal one. */
+export const PrReviewRequestSource = Schema.Literals(["direct", "team"]);
+export type PrReviewRequestSource = typeof PrReviewRequestSource.Type;
+
+/** Queue sections, in display order. Only review, action and ready count as "needs you". */
+export const PrHubSection = Schema.Literals([
+  "review",
+  "action",
+  "ready",
+  "waiting",
+  "drafts",
+  "team",
+  "other",
+  "stale",
+]);
+export type PrHubSection = typeof PrHubSection.Type;
 
 export const PrCheckRollup = Schema.Literals(["success", "failure", "pending", "error", "none"]);
 export type PrCheckRollup = typeof PrCheckRollup.Type;
@@ -124,7 +151,31 @@ export const PrHubMergeRequirements = Schema.Struct({
 });
 export type PrHubMergeRequirements = typeof PrHubMergeRequirements.Type;
 
+/** What happened to a pull request since the viewer last looked at it, most important first. */
+export const PrHubChangeKind = Schema.Literals([
+  "new",
+  "merged",
+  "closed",
+  "ready",
+  "changes_requested",
+  "approved",
+  "ci_failed",
+  "conflict",
+  "commits",
+  "comments",
+  "ci_passed",
+]);
+export type PrHubChangeKind = typeof PrHubChangeKind.Type;
+export const PrHubChange = Schema.Struct({
+  kind: PrHubChangeKind,
+  /** How many, for kinds that count (new comments). */
+  count: Schema.optional(NonNegativeInt),
+});
+export type PrHubChange = typeof PrHubChange.Type;
+
 export const TrackedPullRequest = Schema.Struct({
+  /** Empty once seen; absent on forges and servers that do not record what was seen. */
+  changesSinceSeen: Schema.optional(Schema.Array(PrHubChange)),
   allowedMergeMethods: Schema.optional(
     Schema.Array(Schema.Literals(["squash", "merge", "rebase"])),
   ),
@@ -160,6 +211,10 @@ export const TrackedPullRequest = Schema.Struct({
   mergePermission: Schema.optional(Schema.Literals(["allowed", "denied", "unknown"])),
   viewerHasReviewed: Schema.Boolean,
   viewerReviewRequested: Schema.Boolean,
+  /** Absent on forges that cannot tell a team request from a personal one. */
+  reviewRequestSource: Schema.optional(Schema.NullOr(PrReviewRequestSource)),
+  /** Derived when the snapshot is read; absent on rows from older servers. */
+  section: Schema.optional(PrHubSection),
   reviewRequestReviewers: Schema.Array(Schema.String),
   reviewRequestsCount: NonNegativeInt,
   commentsCount: NonNegativeInt,
@@ -215,10 +270,13 @@ export const PrHubCoverage = Schema.Struct({
   status: Schema.Literals(["not_scanned", "partial", "complete"]),
   description: Schema.String,
   remainingTasks: Schema.optional(NonNegativeInt),
+  remainingSearches: Schema.optional(NonNegativeInt),
+  remainingHydrations: Schema.optional(NonNegativeInt),
   checkedAt: Schema.optional(IsoDateTime),
   limits: Schema.optional(Schema.Array(Schema.String)),
 });
 export const PrHubSchedulerState = Schema.Struct({
+  cooldownReason: Schema.optional(Schema.NullOr(Schema.Literals(["network", "rate-limit"]))),
   retryAt: Schema.NullOr(IsoDateTime),
   activeOrQueuedRequests: NonNegativeInt,
   resources: Schema.Array(
@@ -233,7 +291,18 @@ export const PrHubSchedulerState = Schema.Struct({
   ),
 });
 export type PrHubSchedulerState = typeof PrHubSchedulerState.Type;
+/** What monitoring is doing now. Backlog that resumes on its own is "syncing", not a failure. */
+export const PrHubSyncState = Schema.Struct({
+  state: Schema.Literals(["idle", "syncing", "rate_limited", "offline", "auth_required", "error"]),
+  lastSyncedAt: Schema.NullOr(IsoDateTime),
+  nextSyncAt: Schema.NullOr(IsoDateTime),
+  resumeAt: Schema.NullOr(IsoDateTime),
+  pending: Schema.Struct({ searches: NonNegativeInt, hydrations: NonNegativeInt }),
+  message: Schema.NullOr(Schema.String),
+});
+export type PrHubSyncState = typeof PrHubSyncState.Type;
 export const PrHubSnapshot = Schema.Struct({
+  actionWarning: Schema.optional(Schema.String),
   nextRefreshAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   scheduler: Schema.optional(PrHubSchedulerState),
   coverage: Schema.optional(Schema.Array(PrHubCoverage)),
@@ -272,19 +341,41 @@ export const PrHubListFilter = Schema.Literals([
   "notification_pending",
 ]);
 export type PrHubListFilter = typeof PrHubListFilter.Type;
-export const PrHubOverviewInput = Schema.Struct({
+const prHubAccountScope = {
   accountId: Schema.optional(Schema.String),
   accountGeneration: Schema.optional(Schema.String),
   stalledBefore: Schema.optional(IsoDateTime),
+};
+/** The search and filters that narrow the queue; a saved view keeps one of these. */
+const prHubQueueFilters = {
+  query: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+  draft: Schema.optional(Schema.Literals(["only", "hide"])),
+  review: Schema.optional(PrReviewDecision),
+  repository: Schema.optional(Schema.String),
+  ci: Schema.optional(PrCheckRollup),
+};
+export const PrHubSavedQuery = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+  ...prHubQueueFilters,
+});
+export type PrHubSavedQuery = typeof PrHubSavedQuery.Type;
+export const PR_HUB_MAX_SAVED_VIEWS = 12;
+export const PrHubOverviewInput = Schema.Struct({
+  ...prHubAccountScope,
+  /** Saved views to count; the overview answers with `savedCounts`. */
+  savedQueries: Schema.optional(
+    Schema.Array(PrHubSavedQuery).check(Schema.isMaxLength(PR_HUB_MAX_SAVED_VIEWS)),
+  ),
 });
 export type PrHubOverviewInput = typeof PrHubOverviewInput.Type;
 export const PrHubListInput = Schema.Struct({
-  ...PrHubOverviewInput.fields,
+  ...prHubAccountScope,
+  ...prHubQueueFilters,
   filter: Schema.optional(PrHubListFilter),
-  query: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
-  repository: Schema.optional(Schema.String),
+  section: Schema.optional(PrHubSection),
+  /** Only pull requests that changed since the viewer last looked at them. */
+  unread: Schema.optional(Schema.Boolean),
   relationship: Schema.optional(PrViewerRole),
-  ci: Schema.optional(PrCheckRollup),
   visibility: Schema.optional(Schema.Literals(["active", "snoozed", "ignored", "resolved", "any"])),
   lifecycle: Schema.optional(Schema.Literals(["open", "closed", "merged"])),
   sort: Schema.optional(Schema.Literals(["priority", "updated"])),
@@ -300,14 +391,34 @@ export const PrHubOverview = Schema.Struct({
   ...Struct.omit(PrHubSnapshot.fields, ["pullRequests", "recentlyResolved", "cappedBuckets"]),
   revision: Schema.String,
   counts: Schema.Record(PrHubListFilter, NonNegativeInt),
+  /** Active pull requests per queue section. */
+  sectionCounts: Schema.optional(Schema.Record(PrHubSection, NonNegativeInt)),
+  sync: Schema.optional(PrHubSyncState),
+  /** Active pull requests that changed since the viewer last looked at them. */
+  unreadCount: Schema.optional(NonNegativeInt),
+  /** Per saved query id: matches that need the viewer (review, action, ready). */
+  savedCounts: Schema.optional(Schema.Record(Schema.String, NonNegativeInt)),
+  /** Values the queue's filters offer, most common first, from active pull requests. */
+  facets: Schema.optional(
+    Schema.Struct({
+      repositories: Schema.Array(Schema.String),
+      authors: Schema.Array(Schema.String),
+      labels: Schema.Array(Schema.String),
+    }),
+  ),
   coverage: Schema.Array(PrHubCoverage),
 });
 export type PrHubOverview = typeof PrHubOverview.Type;
+/** An F5 thread linked to a pull request. */
+export const PrHubThreadLink = Schema.Struct({ threadId: ThreadId, title: Schema.String });
+export type PrHubThreadLink = typeof PrHubThreadLink.Type;
 export const PrHubListPage = Schema.Struct({
   accountGeneration: Schema.optional(Schema.String),
   revision: Schema.String,
   status: Schema.Literals(["ok", "cursor_stale"]),
   pullRequests: Schema.Array(TrackedPullRequest).check(Schema.isMaxLength(100)),
+  /** Linked threads by pull request key, newest first; keys without links are absent. */
+  threadLinks: Schema.optional(Schema.Record(Schema.String, Schema.Array(PrHubThreadLink))),
   nextCursor: Schema.NullOr(Schema.String),
 });
 export type PrHubListPage = typeof PrHubListPage.Type;
@@ -318,6 +429,13 @@ export const PrHubChanged = Schema.Struct({
   removedKeys: Schema.Array(PullRequestKey).check(Schema.isMaxLength(500)),
   counts: Schema.Record(PrHubListFilter, NonNegativeInt),
   resyncRequired: Schema.Boolean,
+  /**
+   * Position of this event in its sender's stream, one higher than the event before it.
+   * `changedKeys` is a difference from the previous event, and the buffers between the hub
+   * and the client drop events under load, so a receiver that sees a jump has missed keys
+   * and must re-read everything.
+   */
+  sequence: Schema.optional(NonNegativeInt),
 });
 export type PrHubChanged = typeof PrHubChanged.Type;
 
@@ -382,6 +500,7 @@ export const PrHubRequestChangesInput = Schema.Struct({
 export type PrHubRequestChangesInput = typeof PrHubRequestChangesInput.Type;
 
 export const PrHubMergeInput = Schema.Struct({
+  deleteBranch: Schema.optional(Schema.Boolean),
   accountGeneration: Schema.optional(Schema.String),
   url: Schema.String,
   expectedComparison: Schema.optional(Schema.suspend(() => PrHubComparisonIdentity)),
@@ -420,6 +539,32 @@ export const PrHubIgnoreInput = Schema.Struct({
   key: PullRequestKey,
 });
 export type PrHubIgnoreInput = typeof PrHubIgnoreInput.Type;
+
+export const PrHubUnignoreInput = PrHubIgnoreInput;
+export type PrHubUnignoreInput = typeof PrHubUnignoreInput.Type;
+
+export const PR_HUB_BULK_MAX_KEYS = 200;
+/** One local change to many pull requests of one account, stored and published once. */
+export const PrHubBulkUpdateInput = Schema.Struct({
+  accountId: Schema.optional(Schema.String),
+  accountGeneration: Schema.optional(Schema.String),
+  keys: Schema.Array(PullRequestKey).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(PR_HUB_BULK_MAX_KEYS),
+  ),
+  action: Schema.Literals(["snooze", "ignore", "mark_seen"]),
+  /** Required for `snooze`. */
+  until: Schema.optional(IsoDateTime),
+  /**
+   * For `mark_seen`: the attention fingerprint each pull request had on the screen where
+   * it was marked, by key. A pull request whose attention changed since then, or that has
+   * no fingerprint here, stays unread.
+   */
+  seenFingerprints: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+export type PrHubBulkUpdateInput = typeof PrHubBulkUpdateInput.Type;
+export const PrHubBulkUpdateResult = Schema.Struct({ updated: NonNegativeInt });
+export type PrHubBulkUpdateResult = typeof PrHubBulkUpdateResult.Type;
 
 export const PrHubAcknowledgeAttentionInput = Schema.Struct({
   accountGeneration: Schema.String,
@@ -612,12 +757,78 @@ export const PrHubCheckStatus = Schema.Literals([
 export type PrHubCheckStatus = typeof PrHubCheckStatus.Type;
 
 export const PrHubCheck = Schema.Struct({
+  required: Schema.optional(Schema.Boolean),
   name: Schema.String,
   status: PrHubCheckStatus,
   description: Schema.NullOr(Schema.String),
   url: Schema.NullOr(Schema.String),
 });
 export type PrHubCheck = typeof PrHubCheck.Type;
+
+/** One check of the head commit, with what is needed to group it, time it and read its log. */
+export const PrHubCheckRun = Schema.Struct({
+  ...PrHubCheck.fields,
+  /** Stable within one head commit. The forge's job ID where there is one. */
+  id: Schema.String,
+  workflow: Schema.NullOr(Schema.String),
+  workflowRunId: Schema.NullOr(Schema.String),
+  startedAt: Schema.NullOr(IsoDateTime),
+  completedAt: Schema.NullOr(IsoDateTime),
+  logAvailable: Schema.Boolean,
+});
+export type PrHubCheckRun = typeof PrHubCheckRun.Type;
+
+export const PrHubChecksInput = Schema.Struct({
+  accountGeneration: Schema.optional(Schema.String),
+  key: PullRequestKey,
+  mode: Schema.optional(Schema.Literals(["if_stale", "force"])),
+});
+export type PrHubChecksInput = typeof PrHubChecksInput.Type;
+
+export const PrHubChecksResult = Schema.Struct({
+  headOid: Schema.NullOr(Schema.String),
+  checks: Schema.Array(PrHubCheckRun),
+  /** The head commit has more checks than were read. */
+  truncated: Schema.Boolean,
+  refreshedAt: IsoDateTime,
+});
+export type PrHubChecksResult = typeof PrHubChecksResult.Type;
+
+export const PrHubCheckLogInput = Schema.Struct({
+  accountGeneration: Schema.optional(Schema.String),
+  key: PullRequestKey,
+  checkId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+});
+export type PrHubCheckLogInput = typeof PrHubCheckLogInput.Type;
+
+export const PrHubCheckLogUnavailable = Schema.Literals([
+  "unsupported",
+  "pending",
+  "expired",
+  "forbidden",
+  "failed",
+  // The server reads GitHub through a `gh` too old to print logs.
+  "client_outdated",
+]);
+export type PrHubCheckLogUnavailable = typeof PrHubCheckLogUnavailable.Type;
+
+/**
+ * The part of a check's log around its first error. `excerpt` is null when the log could
+ * not be read; `unavailable` then says why.
+ */
+export const PrHubCheckLog = Schema.Struct({
+  checkId: Schema.String,
+  excerpt: Schema.NullOr(Schema.String),
+  unavailable: Schema.optional(PrHubCheckLogUnavailable),
+  /** Line number, in the whole log, of the excerpt's first line. Zero without an excerpt. */
+  startLine: NonNegativeInt,
+  totalLines: NonNegativeInt,
+  /** Line number, in the whole log, of the first error. */
+  errorLine: Schema.NullOr(PositiveInt),
+  /** Lines of the log were left out of the excerpt. */
+  truncated: Schema.Boolean,
+});
+export type PrHubCheckLog = typeof PrHubCheckLog.Type;
 
 export const PrHubReviewer = Schema.Struct({
   ...PrHubActor.fields,
@@ -640,6 +851,7 @@ export const PrHubDetailProviderDetails = Schema.Union([
     provider: Schema.Literal("github"),
     nodeId: Schema.NullOr(Schema.String),
     mergeStateStatus: Schema.String,
+    autoMergeAllowed: Schema.optionalKey(Schema.Boolean),
     headRefOid: Schema.NullOr(Schema.String),
     baseRefOid: Schema.NullOr(Schema.String),
     viewerCanUpdate: Schema.Boolean,
@@ -648,6 +860,7 @@ export const PrHubDetailProviderDetails = Schema.Union([
   Schema.Struct({
     provider: Schema.Literals(["gitlab", "azure-devops", "bitbucket", "forgejo", "unknown"]),
     externalId: Schema.optional(Schema.NullOr(Schema.String)),
+    headRefOid: Schema.optional(Schema.NullOr(Schema.String)),
   }),
 ]);
 export type PrHubDetailProviderDetails = typeof PrHubDetailProviderDetails.Type;
@@ -685,6 +898,7 @@ export const PrHubDetailResult = Schema.Struct({
   detail: PrHubDetail,
   stale: Schema.Boolean,
   warning: Schema.optional(Schema.String),
+  readErrorKind: Schema.optional(Schema.Literals(["rate_limited", "failed"])),
   refreshedAt: IsoDateTime,
   rateLimit: Schema.optional(SourceControlRateLimit),
 });
@@ -703,6 +917,8 @@ export const PrHubTimelineComment = Schema.Struct({
   databaseId: Schema.NullOr(Schema.String),
   kind: PrHubTimelineCommentKind,
   author: Schema.NullOr(PrHubActor),
+  /** GitHub's relation of the author to the repository, such as `OWNER` or `NONE`. */
+  authorAssociation: Schema.optionalKey(Schema.String),
   body: Schema.String,
   createdAt: IsoDateTime,
   updatedAt: Schema.NullOr(IsoDateTime),
@@ -729,6 +945,7 @@ export const PrHubTimelineEntry = Schema.Union([PrHubTimelineComment, PrHubTimel
 export type PrHubTimelineEntry = typeof PrHubTimelineEntry.Type;
 
 export const PrHubTimelineInput = Schema.Struct({
+  commentsOnly: Schema.optional(Schema.Boolean),
   accountGeneration: Schema.optional(Schema.String),
   key: PullRequestKey,
   cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
@@ -768,9 +985,14 @@ export const PrHubChangedFile = Schema.Struct({
 export type PrHubChangedFile = typeof PrHubChangedFile.Type;
 
 export const PrHubReviewComment = Schema.Struct({
+  /** Explicit host permission; absent retains the host-specific fallback. */
+  canEdit: Schema.optionalKey(Schema.Boolean),
+  authorIsBot: Schema.optionalKey(Schema.Boolean),
   id: Schema.String,
   url: Schema.String,
   author: Schema.NullOr(Schema.String),
+  /** GitHub's relation of the author to the repository, such as `OWNER` or `NONE`. */
+  authorAssociation: Schema.optionalKey(Schema.String),
   bodyText: Schema.String,
   body: Schema.optional(Schema.String),
   createdAt: Schema.NullOr(Schema.String),
@@ -779,7 +1001,10 @@ export const PrHubReviewComment = Schema.Struct({
   diffHunk: Schema.NullOr(Schema.String),
   authorId: Schema.optional(Schema.NullOr(NonNegativeInt)),
 });
+export type PrHubReviewComment = typeof PrHubReviewComment.Type;
 export const PrHubReviewThread = Schema.Struct({
+  /** Per-thread permission can narrow, never widen, repository capabilities. */
+  canResolve: Schema.optionalKey(Schema.Boolean),
   id: Schema.String,
   isResolved: Schema.Boolean,
   path: Schema.NullOr(Schema.String),
@@ -1080,6 +1305,8 @@ export const PR_HUB_WS_METHODS = {
   recoverOperation: "prHub.recoverOperation",
   cancelOperation: "prHub.cancelOperation",
   listReviewerCandidates: "prHub.listReviewerCandidates",
+  getChecks: "prHub.getChecks",
+  getCheckLog: "prHub.getCheckLog",
 
   getOverview: "prHub.getOverview",
   listPullRequests: "prHub.listPullRequests",
@@ -1095,11 +1322,15 @@ export const PR_HUB_WS_METHODS = {
   snooze: "prHub.snooze",
   unsnooze: "prHub.unsnooze",
   ignore: "prHub.ignore",
+  unignore: "prHub.unignore",
+  bulkUpdate: "prHub.bulkUpdate",
   markSeen: "prHub.markSeen",
   acknowledgeAttention: "prHub.acknowledgeAttention",
   markNotified: "prHub.markNotified",
   analyzeAdvisories: "prHub.analyzeAdvisories",
   getAdvisories: "prHub.getAdvisories",
+  getReviewGuide: "prHub.getReviewGuide",
+  generateReviewGuide: "prHub.generateReviewGuide",
   // Legacy wire compatibility for older clients; new actions use resolveLocalCheckout.
   listLocalCheckoutCandidates: "prHub.listLocalCheckoutCandidates",
   resolveLocalCheckout: "prHub.resolveLocalCheckout",
@@ -1185,5 +1416,79 @@ export type PrHubCommentOperation = typeof PrHubCommentOperation.Type;
 export const PrHubCommentReadInput = Schema.Struct({
   accountGeneration: Schema.String,
   key: PullRequestKey,
+  /** Read and reconcile this operation; without it, the PR's most relevant one. */
+  id: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
 });
 export type PrHubCommentReadInput = typeof PrHubCommentReadInput.Type;
+
+export const PullRequestReviewGuideAttention = Schema.Struct({
+  kind: Schema.Literals(["tradeoff", "contract", "product", "risk", "accessibility"]),
+  note: TrimmedNonEmptyString,
+});
+export type PullRequestReviewGuideAttention = typeof PullRequestReviewGuideAttention.Type;
+
+export const PullRequestReviewGuideExcerpt = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  side: Schema.Literals(["new", "old"]),
+  start: PositiveInt,
+  end: PositiveInt,
+  caption: Schema.String,
+});
+export type PullRequestReviewGuideExcerpt = typeof PullRequestReviewGuideExcerpt.Type;
+
+export const PullRequestReviewGuideNote = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  line: PositiveInt,
+  title: TrimmedNonEmptyString,
+  body: Schema.String,
+});
+export type PullRequestReviewGuideNote = typeof PullRequestReviewGuideNote.Type;
+
+export const PullRequestReviewGuideStop = Schema.Struct({
+  title: TrimmedNonEmptyString,
+  summary: Schema.String,
+  attention: Schema.NullOr(PullRequestReviewGuideAttention),
+  excerpts: Schema.Array(PullRequestReviewGuideExcerpt),
+  files: Schema.Array(
+    Schema.Struct({
+      path: TrimmedNonEmptyString,
+      note: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  notes: Schema.Array(PullRequestReviewGuideNote),
+  questions: Schema.Array(TrimmedNonEmptyString),
+});
+export type PullRequestReviewGuideStop = typeof PullRequestReviewGuideStop.Type;
+
+export const PullRequestReviewGuide = Schema.Struct({
+  headSha: TrimmedNonEmptyString,
+  generatedAt: IsoDateTime,
+  modelSelection: ModelSelection,
+  stops: Schema.Array(PullRequestReviewGuideStop),
+});
+export type PullRequestReviewGuide = typeof PullRequestReviewGuide.Type;
+
+export const PullRequestReviewGuideRun = Schema.Union([
+  Schema.TaggedStruct("Running", {
+    headSha: TrimmedNonEmptyString,
+    startedAt: IsoDateTime,
+  }),
+  Schema.TaggedStruct("Failed", {
+    headSha: TrimmedNonEmptyString,
+    failedAt: IsoDateTime,
+    detail: TrimmedNonEmptyString,
+  }),
+]);
+export type PullRequestReviewGuideRun = typeof PullRequestReviewGuideRun.Type;
+
+export const PullRequestReviewGuideResult = Schema.Struct({
+  guide: Schema.NullOr(PullRequestReviewGuide),
+  run: Schema.NullOr(PullRequestReviewGuideRun),
+  currentHeadSha: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type PullRequestReviewGuideResult = typeof PullRequestReviewGuideResult.Type;
+
+export const PrHubReviewGuideInput = Schema.Struct({
+  ...PrHubDetailInput.fields,
+});
+export type PrHubReviewGuideInput = typeof PrHubReviewGuideInput.Type;

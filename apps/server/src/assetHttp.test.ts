@@ -1,8 +1,9 @@
+import { once } from "node:events";
 import { mkdtemp, mkdir, writeFile, symlink, rm, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assetHeaders, openContainedFile, parseAssetRange } from "./assetHttp";
+import { assetHeaders, openContainedFile, parseAssetRange, streamFileHandle } from "./assetHttp";
 import { makeWorkspaceAssetAuthorizer } from "./WorkspaceAssetAuthorizer";
 
 const openingRace = vi.hoisted(() => ({
@@ -144,4 +145,50 @@ it("handles single, open and suffix ranges and refuses unsatisfiable or multiple
   for (const range of ["bytes=10-", "bytes=3-1", "bytes=-0", "bytes=0-1,4-5", "bytes=-"])
     expect(parseAssetRange(range, 10)).toBe(false);
   expect(parseAssetRange("bytes=0-", 0)).toBe(false);
+});
+
+it("closes the streamed file descriptor after a client disconnects under backpressure", async () => {
+  const { createServer, get } = await import("node:http");
+  const root = await fixture();
+  const file = await openContainedFile(root, "doc/app.js");
+  // Reopen writable only to create a sparse fixture, not a 64 MiB allocation.
+  const { open } = await import("node:fs/promises");
+  const writable = await open(path.join(root, "doc/app.js"), "r+");
+  await writable.truncate(64 * 1024 * 1024);
+  await writable.close();
+  const finished = Promise.withResolvers<void>();
+  let failure: unknown;
+  const server = createServer((request, response) => {
+    void streamFileHandle(request, response, file, { "Content-Type": "application/javascript" })
+      .catch((error) => {
+        failure = error;
+        response.destroy();
+      })
+      .finally(() => finished.resolve());
+  });
+  const listening = once(server, "listening");
+  server.listen(0, "127.0.0.1");
+  await listening;
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Expected a TCP address");
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const request = get(`http://127.0.0.1:${address.port}/app.js`, (response) => {
+        response.once("data", () => {
+          response.destroy();
+          resolve();
+        });
+        response.on("error", () => {});
+      });
+      request.on("error", reject);
+    });
+    await finished.promise;
+    expect(failure).toBeDefined();
+    expect(file.fd).toBe(-1);
+    await expect(file.stat()).rejects.toThrow();
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await file.close();
+  }
 });

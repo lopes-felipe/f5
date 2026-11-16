@@ -1,4 +1,4 @@
-import type { GitResolvePullRequestResult } from "@t3tools/contracts";
+import type { GitResolvePullRequestResult, ThreadId } from "@t3tools/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -21,9 +21,11 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Spinner } from "./ui/spinner";
+import { toastManager } from "./ui/toast";
 
 interface PullRequestThreadDialogProps {
   open: boolean;
+  threadId?: ThreadId | undefined;
   cwd: string | null;
   initialReference: string | null;
   onOpenChange: (open: boolean) => void;
@@ -32,6 +34,7 @@ interface PullRequestThreadDialogProps {
 
 export function PullRequestThreadDialog({
   open,
+  threadId,
   cwd,
   initialReference,
   onOpenChange,
@@ -87,7 +90,11 @@ export function PullRequestThreadDialog({
     return cached?.pullRequest ?? null;
   }, [cwd, parsedReference, queryClient]);
   const preparePullRequestThreadMutation = useMutation(
-    gitPreparePullRequestThreadMutationOptions({ cwd, queryClient }),
+    gitPreparePullRequestThreadMutationOptions({
+      ...(threadId ? { threadId } : {}),
+      cwd,
+      queryClient,
+    }),
   );
 
   const liveResolvedPullRequest =
@@ -135,6 +142,13 @@ export function PullRequestThreadDialog({
           branch: result.branch,
           worktreePath: result.worktreePath,
         });
+        if (result.isOnPullRequestHead === false)
+          toastManager.add({
+            type: "warning",
+            title: "Checkout head could not be confirmed",
+            description:
+              "Local commits and files were preserved. The checkout may differ from the pull request's latest commits.",
+          });
         onOpenChange(false);
       } finally {
         setPreparingMode(null);

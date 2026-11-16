@@ -1,11 +1,19 @@
+import { WorktreeChip } from "./WorktreeChip";
+import { WorktreeCreationOptions } from "./worktrees/WorktreeCreationOptions";
+import { setupProjectScript } from "../projectScripts";
+import { switchConversationWorkspace } from "../lib/workspaceTransitions";
+import { toastManager } from "./ui/toast";
 import type { ThreadId } from "@t3tools/contracts";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { FolderIcon, GitForkIcon } from "lucide-react";
 import { useCallback } from "react";
 
-import { newCommandId } from "../lib/utils";
-import { readNativeApi } from "../nativeApi";
 import { useComposerDraftStore } from "../composerDraftStore";
+import { useShallow } from "zustand/react/shallow";
+
 import { useStore } from "../store";
+import { selectThreadById } from "../threadSelectors";
 import {
   EnvMode,
   resolveDraftEnvModeAfterBranchChange,
@@ -23,40 +31,69 @@ interface BranchToolbarProps {
   threadId: ThreadId;
   onEnvModeChange: (mode: EnvMode) => void;
   envLocked: boolean;
+  multiModel?: boolean;
+  onOpenTerminal?: () => void;
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
+  /** The server is still creating this thread's worktree. */
+  preparingWorktree?: boolean;
 }
 
 export default function BranchToolbar({
   threadId,
   onEnvModeChange,
   envLocked,
+  multiModel = false,
+  onOpenTerminal,
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
+  preparingWorktree = false,
 }: BranchToolbarProps) {
-  const threads = useStore((store) => store.threads);
+  // Only the workspace fields; a streaming delta on this thread does not re-render the toolbar.
+  const serverThread = useStore(
+    useShallow((store) => {
+      const thread = selectThreadById(store, threadId);
+      return thread
+        ? {
+            id: thread.id,
+            projectId: thread.projectId,
+            branch: thread.branch,
+            worktreePath: thread.worktreePath,
+            hasSession: thread.session !== null,
+            moveDisabled:
+              Boolean(thread.session?.activeTurnId) ||
+              thread.session?.status === "running" ||
+              thread.session?.status === "connecting" ||
+              thread.latestTurn?.state === "running",
+            sessionVersion: JSON.stringify(thread.session ?? null),
+          }
+        : undefined;
+    }),
+  );
   const projects = useStore((store) => store.projects);
-  const setThreadBranchAction = useStore((store) => store.setThreadBranch);
   const draftThread = useComposerDraftStore((store) => store.getDraftThread(threadId));
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
 
-  const serverThread = threads.find((thread) => thread.id === threadId);
   const activeProjectId = serverThread?.projectId ?? draftThread?.projectId ?? null;
   const activeProject = projects.find((project) => project.id === activeProjectId);
   const activeThreadId = serverThread?.id ?? (draftThread ? threadId : undefined);
   const activeThreadBranch = serverThread?.branch ?? draftThread?.branch ?? null;
   const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
-  const branchCwd = activeWorktreePath ?? activeProject?.cwd ?? null;
+  const branchCwd = isScratchProject(activeProject)
+    ? null
+    : (threadWorkspaceCwd(serverThread ?? draftThread, activeProject) ?? null);
   const hasServerThread = serverThread !== undefined;
+  const creatingWorktree = hasServerThread && !activeWorktreePath && preparingWorktree;
   const effectiveEnvMode = resolveEffectiveEnvMode({
     activeWorktreePath,
     hasServerThread,
     draftThreadEnvMode: draftThread?.envMode,
+    preparingWorktree: creatingWorktree,
   });
 
-  const workspaceVersion = JSON.stringify(serverThread?.session ?? null);
+  const workspaceVersion = serverThread?.sessionVersion ?? "null";
   const canApplyWorkspace = () => {
-    const latestServer = useStore.getState().threads.find((thread) => thread.id === threadId);
+    const latestServer = selectThreadById(useStore.getState(), threadId);
     const latestDraft = useComposerDraftStore.getState().getDraftThread(threadId);
     const latest = latestServer ?? latestDraft;
     const latestProject = useStore
@@ -73,37 +110,28 @@ export default function BranchToolbar({
         activeWorktreePath: latest.worktreePath,
         hasServerThread: Boolean(latestServer),
         draftThreadEnvMode: latestDraft?.envMode,
+        preparingWorktree: creatingWorktree,
       }) === effectiveEnvMode,
     );
   };
 
   const setThreadBranch = useCallback(
-    (branch: string | null, worktreePath: string | null) => {
+    (branch: string | null, worktreePath: string | null, sharedFilesystemConfirmed = false) => {
       if (!activeThreadId) return;
-      const api = readNativeApi();
-      // If the effective cwd is about to change, stop the running session so the
-      // next message creates a new one with the correct cwd.
-      if (serverThread?.session && worktreePath !== activeWorktreePath && api) {
-        void api.orchestration
-          .dispatchCommand({
-            type: "thread.session.stop",
-            commandId: newCommandId(),
-            threadId: activeThreadId,
-            createdAt: new Date().toISOString(),
-          })
-          .catch(() => undefined);
-      }
-      if (api && hasServerThread) {
-        void api.orchestration.dispatchCommand({
-          type: "thread.meta.update",
-          commandId: newCommandId(),
-          threadId: activeThreadId,
-          branch,
-          worktreePath,
-        });
-      }
       if (hasServerThread) {
-        setThreadBranchAction(activeThreadId, branch, worktreePath);
+        if (branch === activeThreadBranch && worktreePath === activeWorktreePath) return;
+        void switchConversationWorkspace(activeThreadId, {
+          intent: "attach_existing",
+          targetPath: worktreePath ?? activeProject!.cwd,
+          sharedFilesystemConfirmed,
+          ...(branch ? { branch } : {}),
+        }).catch((error) =>
+          toastManager.add({
+            type: "error",
+            title: "Could not switch workspace",
+            description: String(error),
+          }),
+        );
         return;
       }
       const nextDraftEnvMode = resolveDraftEnvModeAfterBranchChange({
@@ -115,14 +143,15 @@ export default function BranchToolbar({
         branch,
         worktreePath,
         envMode: nextDraftEnvMode,
+        sharedFilesystemConfirmed,
       });
     },
     [
       activeThreadId,
-      serverThread?.session,
       activeWorktreePath,
+      activeThreadBranch,
+      activeProject,
       hasServerThread,
-      setThreadBranchAction,
       setDraftThreadContext,
       threadId,
       effectiveEnvMode,
@@ -134,22 +163,23 @@ export default function BranchToolbar({
   return (
     <div
       data-slot="branch-toolbar"
-      className="mx-auto flex h-7 w-full max-w-(--chat-content-max-width) shrink-0 items-center justify-between gap-2 px-1 text-2xs text-muted-foreground"
+      className="mx-auto flex min-h-7 w-full flex-wrap max-w-(--chat-content-max-width) shrink-0 items-center justify-between gap-2 px-1 text-2xs text-muted-foreground"
     >
-      {envLocked || activeWorktreePath ? (
-        <span className="inline-flex items-center gap-1 px-2 text-2xs text-muted-foreground">
-          {activeWorktreePath ? (
-            <>
-              <GitForkIcon className="size-3" />
-              Worktree
-            </>
-          ) : (
-            <>
-              <FolderIcon className="size-3" />
-              Local
-            </>
-          )}
-        </span>
+      {creatingWorktree || envLocked || activeWorktreePath || effectiveEnvMode === "local" ? (
+        <WorktreeChip
+          threadId={threadId}
+          projectId={activeProject.id}
+          branch={activeThreadBranch}
+          path={activeWorktreePath ?? activeProject.cwd}
+          isWorktree={Boolean(activeWorktreePath)}
+          creatingWorktree={creatingWorktree}
+          canMove={hasServerThread && !activeWorktreePath && !creatingWorktree}
+          moveDisabled={serverThread?.moveDisabled ?? false}
+          {...(!envLocked && !activeWorktreePath && !creatingWorktree
+            ? { onNewWorktree: () => onEnvModeChange("worktree") }
+            : {})}
+          {...(onOpenTerminal ? { onOpenTerminal } : {})}
+        />
       ) : (
         <Select
           value={effectiveEnvMode}
@@ -186,6 +216,13 @@ export default function BranchToolbar({
         </Select>
       )}
 
+      {!envLocked && !activeWorktreePath && effectiveEnvMode === "worktree" && (
+        <WorktreeCreationOptions
+          threadId={threadId}
+          multiModel={multiModel}
+          hasSetupScript={Boolean(setupProjectScript(activeProject.scripts))}
+        />
+      )}
       <BranchToolbarBranchSelector
         key={threadId}
         threadId={threadId}

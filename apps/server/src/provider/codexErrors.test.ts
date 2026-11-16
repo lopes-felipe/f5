@@ -4,6 +4,7 @@ import {
   detectCodexUsageLimit,
   formatCodexUnsupportedModelError,
   isUnsupportedCodexModelError,
+  resolveCodexCompletionErrorInfo,
 } from "./codexErrors.ts";
 
 describe("Codex unsupported model errors", () => {
@@ -76,4 +77,58 @@ it("ignores stale workspace blocks while retaining fresh spend-block suppression
   };
   expect(detectCodexUsageLimit(input)?.resetsAt).toBe("2026-10-02T00:00:00.000Z");
   expect(detectCodexUsageLimit({ ...input, snapshotNotBefore: "2026-09-30T00:00:00Z" })).toBeNull();
+});
+
+describe("resolveCodexCompletionErrorInfo", () => {
+  const message = "exceeded retry limit";
+  const exhaustion = (httpStatusCode: number | null) => ({
+    responseTooManyFailedAttempts: { httpStatusCode },
+  });
+  const previous = { message, errorInfo: exhaustion(429) };
+
+  it("keeps the notification's evidence when the completion has no status", () => {
+    expect(
+      resolveCodexCompletionErrorInfo({ message, errorInfo: exhaustion(null), previous }),
+    ).toBe(previous.errorInfo);
+    expect(resolveCodexCompletionErrorInfo({ message, errorInfo: undefined, previous })).toBe(
+      previous.errorInfo,
+    );
+    expect(resolveCodexCompletionErrorInfo({ message: undefined, errorInfo: null, previous })).toBe(
+      previous.errorInfo,
+    );
+  });
+
+  it("lets an explicit completion status or different failure win", () => {
+    const explicit = exhaustion(503);
+    expect(resolveCodexCompletionErrorInfo({ message, errorInfo: explicit, previous })).toBe(
+      explicit,
+    );
+    const other = { httpConnectionFailed: {} };
+    expect(resolveCodexCompletionErrorInfo({ message, errorInfo: other, previous })).toBe(other);
+    expect(
+      resolveCodexCompletionErrorInfo({ message: "other", errorInfo: exhaustion(null), previous }),
+    ).toEqual(exhaustion(null));
+    expect(
+      resolveCodexCompletionErrorInfo({
+        message,
+        errorInfo: exhaustion(null),
+        previous: undefined,
+      }),
+    ).toEqual(exhaustion(null));
+  });
+});
+
+it("treats retry exhaustion on HTTP 429 as a usage limit, but not other statuses", () => {
+  const exhausted = (httpStatusCode: number | null) => ({
+    message: "exceeded retry limit, last status: 429 Too Many Requests",
+    errorInfo: { responseTooManyFailedAttempts: { httpStatusCode } },
+    at: "2026-10-01T00:00:03Z",
+  });
+
+  expect(detectCodexUsageLimit(exhausted(429))).toMatchObject({ evidence: "typed" });
+  expect(detectCodexUsageLimit(exhausted(500))).toBeNull();
+  expect(detectCodexUsageLimit(exhausted(null))).toBeNull();
+  expect(
+    detectCodexUsageLimit({ ...exhausted(429), errorInfo: { httpConnectionFailed: {} } }),
+  ).toBeNull();
 });

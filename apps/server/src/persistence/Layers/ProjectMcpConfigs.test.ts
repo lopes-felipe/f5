@@ -21,6 +21,7 @@ layer("ProjectMcpConfigRepositoryLive", (it) => {
         projectId,
         expectedVersion: null,
         nextVersion: "version-1",
+        disabledCommonServers: ["shared"],
         servers: {
           filesystem: {
             type: "stdio",
@@ -40,6 +41,7 @@ layer("ProjectMcpConfigRepositoryLive", (it) => {
       assert.equal(Option.isSome(fetched), true);
       if (Option.isSome(fetched)) {
         assert.deepEqual(fetched.value.servers, saved.value.servers);
+        assert.deepEqual(fetched.value.disabledCommonServers, ["shared"]);
       }
     }),
   );

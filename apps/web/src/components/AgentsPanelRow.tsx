@@ -8,6 +8,7 @@ import {
   CopyIcon,
   EyeOffIcon,
   SquareIcon,
+  ScrollTextIcon,
   TriangleAlertIcon,
   WorkflowIcon,
   XIcon,
@@ -80,7 +81,9 @@ function activityLine(entry: AgentsPanelEntry): string | null {
   return outcome;
 }
 
-export function AgentStatusGlyph(props: { readonly entry: AgentsPanelEntry }) {
+export function AgentStatusGlyph(props: {
+  readonly entry: Pick<AgentsPanelEntry, "status" | "live">;
+}) {
   const label = agentStatusLabel(props.entry);
   const presentation = STATUS_PRESENTATION[props.entry.status];
   const settledButRunning = !props.entry.live && presentation.icon === null;
@@ -181,6 +184,7 @@ export interface AgentRowActions {
   readonly onStop: () => void;
   readonly onDismiss: () => void;
   readonly onNavigate: () => void;
+  readonly onOpenTranscript?: () => void;
   readonly onOpenThread: () => void;
   readonly onInspect: (cursor?: string) => Promise<NativeTaskInspection | null>;
   readonly onLoadPrompt: () => Promise<string | null>;
@@ -214,6 +218,7 @@ function useEntryPrompt(entry: AgentsPanelEntry, load: () => Promise<string | nu
 
 function AgentDetail(props: {
   readonly entry: AgentsPanelEntry;
+  readonly providerName?: string | undefined;
   readonly now: number;
   readonly showThread: boolean;
   readonly actions: AgentRowActions;
@@ -246,7 +251,12 @@ function AgentDetail(props: {
       <DetailSection
         title={entry.live ? "Latest output" : "Result"}
         action={
-          actions.canInspect ? (
+          entry.kind !== "shell" ? (
+            <Button size="xs" variant="ghost" onClick={actions.onOpenTranscript}>
+              <ScrollTextIcon />
+              Open transcript
+            </Button>
+          ) : actions.canInspect ? (
             <Button
               size="xs"
               variant="ghost"
@@ -290,8 +300,13 @@ function AgentDetail(props: {
             <span className="font-mono">{entry.model}</span>
           </MetadataRow>
         ) : null}
+        {entry.effort ? (
+          <MetadataRow label="Effort">
+            <span className="font-mono">{entry.effort}</span>
+          </MetadataRow>
+        ) : null}
         <MetadataRow label="Provider">
-          <span className="font-mono">{entry.provider}</span>
+          <span>{props.providerName ?? entry.provider}</span>
         </MetadataRow>
         <MetadataRow label="Started">{new Date(entry.startedAt).toLocaleString()}</MetadataRow>
         {elapsed ? <MetadataRow label="Duration">{elapsed}</MetadataRow> : null}
@@ -336,6 +351,12 @@ function AgentDetail(props: {
         <Button size="xs" variant="outline" onClick={actions.onNavigate}>
           Jump to timeline
         </Button>
+        {entry.kind !== "shell" ? (
+          <Button size="xs" variant="outline" onClick={actions.onOpenTranscript}>
+            <ScrollTextIcon />
+            Open transcript
+          </Button>
+        ) : null}
         {!entry.active ? (
           <Button size="xs" variant="ghost" onClick={actions.onDismiss}>
             <EyeOffIcon />
@@ -349,6 +370,7 @@ function AgentDetail(props: {
 
 export function AgentRow(props: {
   readonly entry: AgentsPanelEntry;
+  readonly providerName?: string | undefined;
   readonly now: number;
   readonly expanded: boolean;
   readonly showThread: boolean;
@@ -396,17 +418,33 @@ export function AgentRow(props: {
                 {typeLabel}
               </span>
             ) : null}
-            <span className="ml-auto shrink-0 font-mono text-2xs text-muted-foreground tabular-nums group-hover/agent:invisible group-focus-within/agent:invisible">
+            <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums group-hover/agent:invisible group-focus-within/agent:invisible">
               {elapsed}
             </span>
           </span>
-          {line ? (
+          {props.providerName || line ? (
             <span className="mt-0.5 block min-w-0 truncate text-xs text-muted-foreground">
+              {props.providerName ? (
+                <>
+                  <span>{props.providerName}</span>
+                  {line ? " · " : null}
+                </>
+              ) : null}
               {line}
             </span>
           ) : null}
         </span>
         <span className="pointer-events-none absolute top-1 right-1 flex items-center gap-0.5 rounded-md bg-background/90 opacity-0 group-focus-within/agent:pointer-events-auto group-focus-within/agent:opacity-100 group-hover/agent:pointer-events-auto group-hover/agent:opacity-100">
+          {entry.kind !== "shell" ? (
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label="Open transcript"
+              onClick={actions.onOpenTranscript}
+            >
+              <ScrollTextIcon />
+            </Button>
+          ) : null}
           {entry.live && actions.canStop ? (
             <Button
               size="icon-xs"
@@ -446,6 +484,7 @@ export function AgentRow(props: {
         <div id={detailId}>
           <AgentDetail
             entry={entry}
+            providerName={props.providerName}
             now={props.now}
             showThread={props.showThread}
             actions={actions}

@@ -1,4 +1,5 @@
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import { createReportedCodexModelCapabilities } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import "../../index.css";
 
@@ -21,6 +22,7 @@ import { render } from "vitest-browser-react";
 
 import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { useStore } from "../../store";
+import { noteWsConnectionOpened, resetWsConnectionStateForTests } from "../../wsConnectionState";
 
 const nativeApiMocks = vi.hoisted(() => ({
   startImplementation: vi.fn<(input: OrchestrationStartImplementationInput) => Promise<void>>(
@@ -185,8 +187,44 @@ function claudeProvider(version: string, models: ReadonlyArray<string>): ServerP
   };
 }
 
+/** Codex snapshot whose `model/list` reports Sol defaulting to Low. */
+function codexProviderWithReportedSol(): ServerProvider {
+  const driver = ProviderDriverKind.make("codex");
+  return {
+    instanceId: defaultInstanceIdForDriver(driver),
+    driver,
+    enabled: true,
+    installed: true,
+    version: "0.160.1",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-07-28T00:00:00.000Z",
+    models: [
+      {
+        slug: "gpt-6.1-sol",
+        name: "GPT-6.1 Sol",
+        isCustom: false,
+        capabilities: createReportedCodexModelCapabilities({
+          model: "gpt-6.1-sol",
+          supportedReasoningEfforts: [
+            { reasoningEffort: "high" },
+            { reasoningEffort: "medium" },
+            { reasoningEffort: "low" },
+          ],
+          defaultReasoningEffort: "low",
+          serviceTiers: [],
+        }),
+      },
+    ],
+    slashCommands: [],
+    skills: [],
+  };
+}
+
 describe("WorkflowImplementDialog", () => {
   beforeEach(() => {
+    resetWsConnectionStateForTests();
+    noteWsConnectionOpened();
     useStore.setState({
       projects: [
         {
@@ -209,6 +247,7 @@ describe("WorkflowImplementDialog", () => {
   });
 
   afterEach(() => {
+    resetWsConnectionStateForTests();
     document.body.innerHTML = "";
     nativeApiMocks.startImplementation.mockClear();
     nativeApiMocks.listBranches.mockClear();
@@ -249,7 +288,7 @@ describe("WorkflowImplementDialog", () => {
     }
   });
 
-  it("implements with the canonical persisted Fable 5.1 selection", async () => {
+  it("implements with the canonical persisted Fable 5.2 selection", async () => {
     const host = document.createElement("div");
     document.body.append(host);
     const workflow = makeWorkflow({
@@ -258,7 +297,7 @@ describe("WorkflowImplementDialog", () => {
       modelOptions: { claudeAgent: { effort: "xhigh" } },
     });
     const client = makeQueryClient([
-      claudeProvider("2.1.257", ["claude-opus-5", "claude-fable-5-1"]),
+      claudeProvider("2.1.290", ["claude-opus-5", "claude-fable-5-2"]),
     ]);
     const screen = await render(
       <QueryClientProvider client={client}>
@@ -271,7 +310,7 @@ describe("WorkflowImplementDialog", () => {
       await vi.waitFor(() => expect(nativeApiMocks.startImplementation).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.startImplementation.mock.calls[0]?.[0]).toMatchObject({
         provider: "claudeAgent",
-        model: "claude-fable-5-1",
+        model: "claude-fable-5-2",
         modelOptions: { claudeAgent: { effort: "xhigh" } },
       });
     } finally {
@@ -280,6 +319,44 @@ describe("WorkflowImplementDialog", () => {
       host.remove();
     }
   });
+
+  it.each([
+    { pick: null, expected: "low" },
+    { pick: "High", expected: "high" },
+  ] as const)(
+    "sends the Codex effort the picker showed (pick: $pick)",
+    async ({ pick, expected }) => {
+      const host = document.createElement("div");
+      document.body.append(host);
+      const workflow = makeWorkflow({ provider: "codex", model: "gpt-6.1-sol" });
+      const client = makeQueryClient([codexProviderWithReportedSol()]);
+      const screen = await render(
+        <QueryClientProvider client={client}>
+          <WorkflowImplementDialog open workflow={workflow} onOpenChange={() => {}} />
+        </QueryClientProvider>,
+        { container: host },
+      );
+      try {
+        // The reported default (Low), not the built-in one (High).
+        await expect.element(page.getByRole("button", { name: "Low", exact: true })).toBeVisible();
+        if (pick) {
+          await page.getByRole("button", { name: "Low", exact: true }).click();
+          await page.getByRole("menuitemradio", { name: pick, exact: true }).click();
+        }
+        await page.getByRole("button", { name: "Start implementation" }).click();
+        await vi.waitFor(() => expect(nativeApiMocks.startImplementation).toHaveBeenCalledTimes(1));
+        expect(nativeApiMocks.startImplementation.mock.calls[0]?.[0]).toMatchObject({
+          provider: "codex",
+          model: "gpt-6.1-sol",
+          modelOptions: { codex: { reasoningEffort: expected } },
+        });
+      } finally {
+        client.clear();
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
 
   it("starts from the persisted per-project workspace mode", async () => {
     useStore.setState((state) => ({

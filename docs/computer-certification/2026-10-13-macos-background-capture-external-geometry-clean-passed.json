@@ -1,0 +1,89 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-13T10:10:15.549Z",
+  "repositoryCommit": "1c964b078d602725cdefb74b303e0bc38419b9bd",
+  "workingTreeDirty": false,
+  "sourceHashes": {
+    "helper": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+    "rehearsal": "4684eac421a4ad8c40ab57812c78d420881d3c73bafda90c9e4a32ad507862f8",
+    "verifier": "4c368f8ad4a2b8ee3d892db980423e0fa20bab9ae2a0dec1c6e1dcb68dda7e48",
+    "fixtureLauncher": "ec6bd139d315d10864ef48c38372c5bb2aa016867ccb179e575663df744e83fe",
+    "failureSummary": "1cc7f3ecf911ff84107e57a77ad0f2c2766b21d45adc2418d5c9bb4874958b8a",
+    "fixture": "2be162612affa388dbc43a26787c5e6a184298c737c502f50ded22e94e057260"
+  },
+  "fixtureDisplayId": "3",
+  "displayGeometry": [
+    {
+      "displayId": "3",
+      "geometryGeneration": "3:0.0:0.0:3337.0:1397.0:6674:2794:0.0",
+      "primary": true,
+      "nativeBounds": {
+        "x": 0,
+        "y": 0,
+        "width": 3337,
+        "height": 1397
+      },
+      "pixelSize": {
+        "width": 6674,
+        "height": 2794
+      },
+      "rotation": 0,
+      "modelSize": {
+        "width": 1456,
+        "height": 609
+      }
+    },
+    {
+      "displayId": "1",
+      "geometryGeneration": "1:902.0:1397.0:1728.0:1117.0:3456:2234:0.0",
+      "primary": false,
+      "nativeBounds": {
+        "x": 902,
+        "y": 1397,
+        "width": 1728,
+        "height": 1117
+      },
+      "pixelSize": {
+        "width": 3456,
+        "height": 2234
+      },
+      "rotation": 0,
+      "modelSize": {
+        "width": 1333,
+        "height": 862
+      }
+    }
+  ],
+  "fixtureMarker": {
+    "boundsKnown": true,
+    "displayId": "3"
+  },
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "scope": "unsigned-suspended-helper-background-synthetic-granted-capture",
+  "signed": false,
+  "certified": false,
+  "state": "passed",
+  "helperStayedSuspended": true,
+  "heartbeats": 19,
+  "checks": [
+    {
+      "displayId": "3",
+      "passed": true,
+      "markerVisible": true,
+      "neutralFrame": false
+    },
+    {
+      "displayId": "1",
+      "passed": true,
+      "markerVisible": false,
+      "neutralFrame": true
+    }
+  ],
+  "limitations": [
+    "One background synthetic app with its catalog full-tier grant; helper stays suspended without any permit, input or active lease",
+    "Each connected display capture checked with at least one synthetic positive marker; not Chrome, password masking or complete multi-display privacy proof",
+    "No signed installed-build attribution, real-keychain/autofill, Windows or complete release certification"
+  ]
+}

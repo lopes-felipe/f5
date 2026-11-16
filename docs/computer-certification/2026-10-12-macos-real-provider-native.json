@@ -1,0 +1,273 @@
+{
+  "evidenceVersion": 1,
+  "recordedAt": "2026-10-12T11:17:03.331117+00:00",
+  "scope": "unsigned-real-provider-native-controller-and-synthetic-app-rehearsal-not-release-certification",
+  "repositoryCommit": "f8357aa7cde19251e734203aaa77d182985b64cc",
+  "workingTreeDirty": true,
+  "signingDeferredByUser": true,
+  "certified": false,
+  "responseEvidenceQualification": {
+    "correlatedSuccessfulCaptureAndInspectionCollected": false,
+    "explanation": "These historical checks observed request dispatch and independent app input delivery. They did not require correlated successful capture/inspection responses. The strengthened rehearsal requires those responses; these results do not satisfy that additional check without a new coordinated run."
+  },
+  "providerVersions": {
+    "claudeAgentSdk": "0.3.295",
+    "codexCli": "0.162.1"
+  },
+  "providerRuns": {
+    "claude": {
+      "reportVersion": 1,
+      "recordedAt": "2026-10-12T11:11:26.597Z",
+      "platform": "darwin",
+      "arch": "arm64",
+      "osVersion": "27.0.0",
+      "repositoryCommit": "f8357aa7cde19251e734203aaa77d182985b64cc",
+      "workingTreeDirty": true,
+      "helperSha256": "4e0bf4b5145b3f8604cfb9e7ce589e22ee6375f63e7805eec1d049dd4a233869",
+      "scope": "unsigned-real-provider-native-controller-synthetic-app-rehearsal",
+      "signed": false,
+      "certified": false,
+      "scriptedConsent": true,
+      "physicalInterruption": false,
+      "results": [
+        {
+          "provider": "claude",
+          "model": "claude-fable-5-1",
+          "completed": true,
+          "interrupted": false,
+          "modelReceivedImage": true,
+          "resultSubtype": "success",
+          "authenticationRejected": false,
+          "additionalApprovalMethods": [],
+          "elapsedMs": 38049,
+          "state": "passed",
+          "exitCode": 0,
+          "checks": {
+            "providerCompleted": true,
+            "scriptedFixtureConsent": true,
+            "nativeCaptureDispatched": true,
+            "modelReceivedNativeImage": true,
+            "nativeInspectionDispatched": true,
+            "nativeInputDispatched": true,
+            "realAppReceivedExactlyOnePress": true,
+            "realAppReceivedExpectedUnicodeText": true,
+            "serverReleasedTurnLease": true,
+            "leaseReleasedAfterWorkerExit": true
+          },
+          "operations": [
+            "resolveApps",
+            "resolveApps",
+            "activateApp",
+            "screenshot",
+            "resolveApps",
+            "inspect",
+            "resolveApps",
+            "elementAction",
+            "resolveApps",
+            "elementAction",
+            "type",
+            "resolveApps",
+            "inspect"
+          ]
+        }
+      ],
+      "limitations": [
+        "Production controller, lease, host IPC, broker and provider transports; no Electron renderer or real overlay windows",
+        "Scripted consent permits only this run's synthetic fixture; no real trusted consent dialog proof",
+        "Physical kill chord, stop latency, renderer/backend stalls and multiple profiles/displays remain pending",
+        "Real-app workflow/capture matrix, Windows desktop, signing and installed-build TCC attribution remain pending",
+        "Provider built-in and Chrome integration gates remain closed"
+      ]
+    },
+    "codex": {
+      "reportVersion": 1,
+      "recordedAt": "2026-10-12T11:14:22.787Z",
+      "platform": "darwin",
+      "arch": "arm64",
+      "osVersion": "27.0.0",
+      "repositoryCommit": "f8357aa7cde19251e734203aaa77d182985b64cc",
+      "workingTreeDirty": true,
+      "helperSha256": "4e0bf4b5145b3f8604cfb9e7ce589e22ee6375f63e7805eec1d049dd4a233869",
+      "scope": "unsigned-real-provider-native-controller-synthetic-app-rehearsal",
+      "signed": false,
+      "certified": false,
+      "scriptedConsent": true,
+      "physicalInterruption": false,
+      "results": [
+        {
+          "provider": "codex",
+          "model": "gpt-6.1-sol",
+          "completed": true,
+          "interrupted": false,
+          "authenticationRejected": false,
+          "additionalApprovalMethods": [
+            "mcpServer/elicitation/request",
+            "mcpServer/elicitation/request",
+            "mcpServer/elicitation/request",
+            "mcpServer/elicitation/request",
+            "mcpServer/elicitation/request"
+          ],
+          "additionalApprovalDecisions": ["accept", "accept", "accept", "accept", "accept"],
+          "elapsedMs": 72796,
+          "state": "passed",
+          "exitCode": 0,
+          "checks": {
+            "providerCompleted": true,
+            "scriptedFixtureConsent": true,
+            "nativeCaptureDispatched": true,
+            "nativeInspectionDispatched": true,
+            "nativeInputDispatched": true,
+            "realAppReceivedExactlyOnePress": true,
+            "realAppReceivedExpectedUnicodeText": true,
+            "serverReleasedTurnLease": true,
+            "leaseReleasedAfterWorkerExit": true
+          },
+          "operations": [
+            "resolveApps",
+            "resolveApps",
+            "activateApp",
+            "screenshot",
+            "resolveApps",
+            "inspect",
+            "resolveApps",
+            "elementAction",
+            "resolveApps",
+            "elementAction",
+            "type",
+            "resolveApps",
+            "inspect"
+          ]
+        }
+      ],
+      "limitations": [
+        "Production controller, lease, host IPC, broker and provider transports; no Electron renderer or real overlay windows",
+        "Scripted consent permits only this run's synthetic fixture; no real trusted consent dialog proof",
+        "Physical kill chord, stop latency, renderer/backend stalls and multiple profiles/displays remain pending",
+        "Real-app workflow/capture matrix, Windows desktop, signing and installed-build TCC attribution remain pending",
+        "Provider built-in and Chrome integration gates remain closed"
+      ]
+    }
+  },
+  "nativeRegression": {
+    "reportVersion": 1,
+    "recordedAt": "2026-10-12T11:14:52.327Z",
+    "platform": "darwin",
+    "arch": "arm64",
+    "osVersion": "27.0.0",
+    "helperSha256": "4e0bf4b5145b3f8604cfb9e7ce589e22ee6375f63e7805eec1d049dd4a233869",
+    "scope": "unsigned-native-helper-only",
+    "signed": false,
+    "certified": false,
+    "checks": [
+      {
+        "name": "A second helper with a different HOME cannot acquire the OS user's device lock",
+        "state": "passed",
+        "elapsedMs": 11
+      },
+      {
+        "name": "Granted fixture app activation",
+        "state": "passed",
+        "elapsedMs": 369
+      },
+      {
+        "name": "Real accessibility inspection and secure-value omission",
+        "state": "passed",
+        "elapsedMs": 61
+      },
+      {
+        "name": "Capture control includes both synthetic markers when both fixtures are granted",
+        "state": "passed",
+        "elapsedMs": 695
+      },
+      {
+        "name": "Capture includes granted pixels, excludes revoked fixture pixels and masks secure fields",
+        "state": "passed",
+        "elapsedMs": 295
+      },
+      {
+        "name": "Zoom masks secure fields and provides additional Retina detail",
+        "state": "passed",
+        "elapsedMs": 138
+      },
+      {
+        "name": "Semantic press reaches the real app",
+        "state": "passed",
+        "elapsedMs": 546
+      },
+      {
+        "name": "Secure semantic setValue is refused",
+        "state": "passed",
+        "elapsedMs": 13
+      },
+      {
+        "name": "Revoked fixture inspect is refused",
+        "state": "passed",
+        "elapsedMs": 1
+      },
+      {
+        "name": "Unicode typing reaches only the fixture's editable field",
+        "state": "passed",
+        "elapsedMs": 785
+      },
+      {
+        "name": "Protected system chord is refused without emitting input",
+        "state": "passed",
+        "elapsedMs": 6
+      },
+      {
+        "name": "Focused secure field rejects keyboard typing",
+        "state": "passed",
+        "elapsedMs": 443
+      },
+      {
+        "name": "Coordinate click reaches the fixture in display model space",
+        "state": "passed",
+        "elapsedMs": 377
+      },
+      {
+        "name": "Permit expiry blocks the next real action",
+        "state": "passed",
+        "elapsedMs": 1261
+      }
+    ],
+    "physicalInterruption": false,
+    "remaining": [
+      "Provider-mediated app consent and real provider turns",
+      "Capture isolation and secure masking across real apps, popups and moving windows",
+      "Coordinate/drag/typing focus changes",
+      "Physical kill-chord latency and user-input interruption",
+      "Renderer/backend-stall stop path",
+      "Multiple profiles, overlays and mixed-DPI/fullscreen displays",
+      "Windows desktop runtime",
+      "Signed packaging and TCC attribution"
+    ]
+  },
+  "failClosedObservations": {
+    "physicalInput": {
+      "recordedAt": "2026-10-12T11:06:56.755Z",
+      "physicalInterruption": true,
+      "workerExitCode": null,
+      "operations": ["resolveApps", "resolveApps", "activateApp"],
+      "fixturePressDelivered": false,
+      "fixtureTypingDelivered": false,
+      "state": "interrupted-not-successful"
+    },
+    "codexExtraApprovalDenied": {
+      "state": "failed",
+      "additionalApprovalMethods": ["mcpServer/elicitation/request"],
+      "operations": [],
+      "fixturePressDelivered": false,
+      "fixtureTypingDelivered": false,
+      "explanation": "The first approval-required attempt denied the Codex MCP consent and delivered no native input. The successful run approved once only represented consent naming its exact authenticated F5 computer server."
+    }
+  },
+  "limitations": [
+    "Both real providers used the production IPC host channel, broker, controller, lease authority and helper to control a synthetic AppKit app. Electron main/renderer UI and real overlay windows were not launched.",
+    "App and session-action consent were scripted for the exact temporary fixture identity; trusted real-user consent integrity remains pending.",
+    "Claude model-facing native image delivery was directly observed; Codex native screenshot dispatch and real app changes were observed without persisting raw provider tool output.",
+    "No screenshot bytes, accessibility content, typed values, credentials or raw provider errors are saved in this record.",
+    "Physical input interrupted one attempt without auto-resume. No physical kill-chord latency measurement or hung-renderer/backend proof was collected.",
+    "Real-app workflow/capture matrix, multiple profiles and mixed-display/fullscreen overlay checks, Windows desktop runtime, signed packaging and installed-build TCC attribution remain pending.",
+    "Provider built-in and Chrome gates remain closed; these runs used F5-native tools only."
+  ]
+}

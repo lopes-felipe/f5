@@ -3,12 +3,17 @@ import { useEffect, useRef } from "react";
 import { useParams } from "@tanstack/react-router";
 import { ThreadId, type DesktopSnapShotResult } from "@t3tools/contracts";
 import { useComposerDraftStore } from "../composerDraftStore";
-import { useAppSettings } from "../appSettings";
+import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { toastManager } from "../components/ui/toast";
+
+function selectSnapShotSettings(settings: AppSettings) {
+  return { snapShotEnabled: settings.snapShotEnabled, snapShotShortcut: settings.snapShotShortcut };
+}
+
 /** One renderer-level subscription survives navigation into settings. */
 export function useSnapShotRouting() {
   const params = useParams({ strict: false }) as { threadId?: string };
-  const { settings } = useAppSettings();
+  const settings = useAppSettingsSelector(selectSnapShotSettings);
   const lastThread = useRef<ThreadId | undefined>(undefined),
     pending = useRef<DesktopSnapShotResult[]>([]);
   const attach = (thread: ThreadId, result: DesktopSnapShotResult) => {

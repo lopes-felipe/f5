@@ -1,7 +1,10 @@
+import { createReportedCodexModelCapabilities } from "@t3tools/shared/model";
 import { describe, expect, it, vi } from "vitest";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -9,31 +12,40 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   EventId,
   type ProviderEvent,
+  type ProviderSession,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
 
 import {
+  type CodexAppServerStartSessionInput,
   buildCodexInitializeParams,
+  buildCodexThreadForkParams,
   buildCodexThreadOpenRequestParams,
+  buildCodexTurnStartParams,
   CODEX_ELICITATION_OPENED_METHOD,
   CODEX_ELICITATION_SETTLED_METHOD,
   CODEX_ONE_OFF_WORKER_IDLE_MS,
   codexOneOffPoolKey,
   codexRequestTimeoutMs,
   CodexAppServerManager,
+  CODEX_EXIT_STATUS_GRACE_MS,
+  CODEX_MAX_INCOMING_MESSAGE_BYTES,
+  CODEX_STDOUT_ENDED_MESSAGE,
   CodexJsonRpcError,
   classifyCodexStderrLine,
   isRecoverableThreadResumeError,
   isUnknownMethodError,
   legacyCodexApprovalDecision,
+  codexSessionAllowedResponse,
   normalizeCodexModelSlug,
   readCodexAccountSnapshot,
   readEnabledSkillsFromSkillsListResponse,
   resolveCodexModelForAccount,
 } from "./codexAppServerManager";
 import {
-  buildCodexAssistantInstructions,
+  buildCodexAdditionalContext,
+  buildCodexModeInstructions,
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "./provider/sharedAssistantContract";
@@ -41,6 +53,23 @@ import { fingerprintSupportedSlashCommands } from "./provider/supportedSlashComm
 import { ElicitationRegistry } from "./provider/elicitationRegistry";
 
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
+
+async function cleanupCodexFixture(manager: CodexAppServerManager, directory: string) {
+  // stopAll initiates termination; Windows keeps the cwd locked until the child exits.
+  await manager.shutdown();
+  await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
+type TurnStartContextParams = {
+  additionalContext?: Record<string, { kind: string; value: string }>;
+};
+
+/** Every `additionalContext` value of a `turn/start` request, in key order. */
+const additionalContextText = (params: unknown): string =>
+  Object.entries((params as TurnStartContextParams).additionalContext ?? {})
+    .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([, entry]) => entry.value)
+    .join("\n\n");
 const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
 const currentDate = () => new Date().toISOString().slice(0, 10);
 
@@ -297,6 +326,33 @@ describe("CodexAppServerManager protocol diagnostics", () => {
     expect(rejectedError?.message).toContain(`turn/start failed: ${original}`);
     expect(rejectedError?.message).toContain("Choose another model");
   });
+  it("preserves the raw -32600 writer conflict and never treats it as missing history", () => {
+    const manager = new CodexAppServerManager();
+    const reject = vi.fn();
+    const raw = "thread not found: thread already has an active writer";
+    const context = {
+      pending: new Map([
+        [
+          "1",
+          {
+            method: "thread/resume",
+            timeout: setTimeout(() => {}, 60_000),
+            resolve: vi.fn(),
+            reject,
+          },
+        ],
+      ]),
+    };
+    (
+      manager as unknown as { handleResponse: (context: unknown, response: unknown) => void }
+    ).handleResponse(context, { id: 1, error: { code: -32600, message: raw } });
+    const error = reject.mock.calls[0]![0] as CodexJsonRpcError;
+    expect(error.code).toBe(-32600);
+    expect(error.rawMessage).toBe(raw);
+    expect(error.message).toContain("Quit the other Codex");
+    expect(isRecoverableThreadResumeError(error)).toBe(false);
+    expect(context.pending.size).toBe(0);
+  });
 
   it("does not classify model/list method errors as unsupported-model errors", () => {
     const manager = new CodexAppServerManager();
@@ -519,7 +575,12 @@ describe("isRecoverableThreadResumeError", () => {
         new Error("thread/resume failed: no rollout found for thread id abc"),
       ),
     ).toBe(true);
-    for (const reason of ["rate limit exceeded", "unauthorized", "permission denied"]) {
+    for (const reason of [
+      "rate limit exceeded",
+      "unauthorized",
+      "permission denied",
+      "thread not found: already has an active writer",
+    ]) {
       expect(isRecoverableThreadResumeError(new Error(`thread/resume failed: ${reason}`))).toBe(
         false,
       );
@@ -565,6 +626,15 @@ describe("Codex runtime-mode thread configuration", () => {
       expect(params.resume).toMatchObject({ excludeTurns: true });
     },
   );
+
+  it("gives slow MCP servers a startup grace on start, resume and fork", () => {
+    const input = { runtimeMode: "full-access", resumeThreadId: "provider-thread-1" } as const;
+    const params = buildCodexThreadOpenRequestParams(input);
+    const config = { mcp_optional_startup_grace_ms: 10_000 };
+    expect(params.start.config).toEqual(config);
+    expect(params.resume?.config).toEqual(config);
+    expect(buildCodexThreadForkParams(input, "provider-thread-1").config).toEqual(config);
+  });
 
   it.each(["unattended-readonly", "attended-readonly"] as const)(
     "forces read-only, never-approve configuration for %s",
@@ -724,6 +794,114 @@ describe("readEnabledSkillsFromSkillsListResponse", () => {
 });
 
 describe("startSession", () => {
+  it("retires a broken writer and fails requests already waiting for a response", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-writer-failure-"));
+    const binaryPath = path.join(directory, "codex.cjs");
+    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+    const manager = new CodexAppServerManager();
+    vi.spyOn(
+      manager as unknown as { assertSupportedCodexCliVersion: () => string },
+      "assertSupportedCodexCliVersion",
+    ).mockReturnValue("0.166.0");
+    const internal = manager as unknown as {
+      sessions: Map<
+        string,
+        {
+          child: { stdin: import("node:stream").Writable };
+          phase?: string;
+          pending: Map<string, { wasWritten: boolean }>;
+        }
+      >;
+      sendRequest: (context: unknown, method: string, params: unknown) => Promise<unknown>;
+    };
+    const bootstrap = () =>
+      vi
+        .spyOn(internal, "sendRequest")
+        .mockImplementation(async (_context, method) =>
+          method === "thread/start" ? { thread: { id: "native-thread" } } : {},
+        );
+    const initial = bootstrap();
+    const input = {
+      threadId: asThreadId("writer-failure"),
+      cwd: directory,
+      runtimeMode: "full-access" as const,
+      providerOptions: { codex: { binaryPath } },
+    };
+    try {
+      await manager.startSession(input);
+      initial.mockRestore();
+      const context = internal.sessions.get(input.threadId)!;
+      const pending = internal.sendRequest(context, "thread/read", {});
+      const rejected = expect(pending).rejects.toThrow("EPIPE");
+      await vi.waitFor(() =>
+        expect([...context.pending.values()].some((entry) => entry.wasWritten)).toBe(true),
+      );
+      context.child.stdin.emit("error", new Error("EPIPE"));
+      await rejected;
+      expect(context.pending.size).toBe(0);
+      expect(context.phase).toBe("draining");
+      await expect(internal.sendRequest(context, "thread/read", {})).rejects.toThrow();
+      const replacementBootstrap = bootstrap();
+      try {
+        await manager.startSession(input);
+        expect(internal.sessions.get(input.threadId)).not.toBe(context);
+      } finally {
+        replacementBootstrap.mockRestore();
+      }
+    } finally {
+      initial.mockRestore();
+      await cleanupCodexFixture(manager, directory);
+    }
+  });
+
+  it("removes a stale browser tool flag when resume falls back to a fresh thread", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-browser-fallback-"));
+    const binaryPath = path.join(directory, "codex.cjs");
+    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+    const manager = new CodexAppServerManager();
+    vi.spyOn(
+      manager as unknown as { assertSupportedCodexCliVersion: () => string },
+      "assertSupportedCodexCliVersion",
+    ).mockReturnValue("0.166.0");
+    let resumed = false;
+    vi.spyOn(
+      manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+      "sendRequest",
+    ).mockImplementation(async (_context, method) => {
+      if (method === "thread/resume" && !resumed) {
+        resumed = true;
+        throw new Error("thread/resume failed: thread not found");
+      }
+      if (method === "thread/start" || method === "thread/resume")
+        return { thread: { id: "fresh-without-tool" } };
+      return {};
+    });
+    try {
+      const input = {
+        threadId: asThreadId("browser-fallback"),
+        cwd: directory,
+        runtimeMode: "full-access" as const,
+        providerOptions: { codex: { binaryPath } },
+      };
+      const first = await manager.startSession({
+        ...input,
+        resumeCursor: { threadId: "missing", f5BrowserResume: true, unrelated: "keep" },
+      });
+      expect(first.resumeCursor).toMatchObject({
+        threadId: "fresh-without-tool",
+        unrelated: "keep",
+      });
+      expect(first.resumeCursor).not.toHaveProperty("f5BrowserResume");
+      await manager.startSession({
+        ...input,
+        resumeCursor: first.resumeCursor,
+        browserResume: async () => ({}),
+      });
+      expect(manager.browserResumeAvailable(input.threadId)).toBe(false);
+    } finally {
+      await cleanupCodexFixture(manager, directory);
+    }
+  });
   it("sends recovered context on the first real turn/start after resuming a replacement thread", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "codex-recovery-context-"));
     const binaryPath = path.join(directory, "codex.cjs");
@@ -753,15 +931,53 @@ describe("startSession", () => {
         priorWorkSummary: "Recovered requirement: preserve the user's API",
       });
       await manager.sendTurn({ threadId: asThreadId("recovery"), input: "Continue" });
-      const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2] as {
-        collaborationMode: { settings: { developer_instructions: string } };
-      };
-      expect(first.collaborationMode.settings.developer_instructions).toContain(
-        "Recovered requirement",
-      );
+      const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2];
+      expect(additionalContextText(first)).toContain("Recovered requirement");
     } finally {
-      manager.stopAll();
-      rmSync(directory, { recursive: true, force: true });
+      await cleanupCodexFixture(manager, directory);
+    }
+  });
+
+  it("unarchives an archived Codex session and resumes it instead of starting fresh", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-archived-resume-"));
+    const binaryPath = path.join(directory, "codex.cjs");
+    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+    const manager = new CodexAppServerManager();
+    vi.spyOn(
+      manager as unknown as { assertSupportedCodexCliVersion: () => string },
+      "assertSupportedCodexCliVersion",
+    ).mockReturnValue("0.162.0");
+    let resumes = 0;
+    const requests = vi
+      .spyOn(
+        manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+        "sendRequest",
+      )
+      .mockImplementation(async (_context, method) => {
+        if (method === "thread/resume" && resumes++ === 0)
+          throw new Error(
+            "thread/resume failed: session archived-thread is archived. Run `codex unarchive archived-thread`.",
+          );
+        if (method === "thread/resume") return { thread: { id: "archived-thread" } };
+        return {};
+      });
+    try {
+      await manager.startSession({
+        threadId: asThreadId("archived"),
+        cwd: directory,
+        runtimeMode: "full-access",
+        providerOptions: { codex: { binaryPath } },
+        resumeCursor: { threadId: "archived-thread" },
+      });
+      const methods = requests.mock.calls.map((call) => call[1]);
+      expect(methods).toContain("thread/unarchive");
+      expect(methods).not.toContain("thread/start");
+      expect(methods.filter((method) => method === "thread/resume")).toHaveLength(2);
+      expect(requests.mock.calls.find((call) => call[1] === "thread/unarchive")?.[2]).toEqual({
+        threadId: "archived-thread",
+      });
+    } finally {
+      await cleanupCodexFixture(manager, directory);
     }
   });
 
@@ -815,8 +1031,7 @@ describe("startSession", () => {
           "modelContextWindowTokens",
         );
       } finally {
-        manager.stopAll();
-        rmSync(directory, { recursive: true, force: true });
+        await cleanupCodexFixture(manager, directory);
       }
     },
   );
@@ -932,6 +1147,46 @@ describe("startSession", () => {
 });
 
 describe("sendTurn", () => {
+  it.each(["ready", "error"])("replaces a leftover turn id from a %s session", async (status) => {
+    const { manager, context, sendRequest, updateSession } = createSendTurnHarness();
+    updateSession.mockRestore();
+    context.session.status = status;
+    context.session.activeTurnId = TurnId.makeUnsafe("turn_dead");
+    sendRequest.mockResolvedValueOnce({ turn: { id: "turn_live" } });
+    await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "retry" });
+    expect(context.session.activeTurnId).toBe("turn_live");
+    await manager.interruptTurn(asThreadId("thread_1"), context.session.activeTurnId);
+    expect(sendRequest).toHaveBeenLastCalledWith(context, "turn/interrupt", {
+      threadId: "thread_1",
+      turnId: "turn_live",
+    });
+  });
+
+  it("Stop interrupts the running turn after a queued follow-up is accepted", async () => {
+    const { manager, context, sendRequest, updateSession } = createSendTurnHarness();
+    updateSession.mockRestore();
+    sendRequest.mockImplementation(async (_context, method, params) => {
+      if (method === "turn/start") {
+        return { turn: { id: context.session.activeTurnId ? "turn_queued" : "turn_running" } };
+      }
+      if (method === "turn/interrupt") {
+        expect(params).toEqual({ threadId: "thread_1", turnId: "turn_running" });
+        return {};
+      }
+      throw new Error("Unexpected method: " + method);
+    });
+    const first = await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "work" });
+    expect(first.turnId).toBe("turn_running");
+    const queued = await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "next" });
+    expect(queued.turnId).toBe("turn_queued");
+    expect(context.session.activeTurnId).toBe("turn_running");
+    await manager.interruptTurn(asThreadId("thread_1"), first.turnId);
+    expect(sendRequest).toHaveBeenLastCalledWith(context, "turn/interrupt", {
+      threadId: "thread_1",
+      turnId: "turn_running",
+    });
+  });
+
   it("steers the active native turn without starting another turn", async () => {
     const { manager, context, sendRequest } = createSendTurnHarness();
     context.session.activeTurnId = TurnId.makeUnsafe("turn_busy");
@@ -986,6 +1241,7 @@ describe("sendTurn", () => {
     const expected = {
       model: "gpt-6.1-sol",
       cwd: "/tmp/project",
+      effort: "high",
       ...(limit !== undefined ? { modelContextWindowTokens: limit } : {}),
     };
     expect(context.configuredBase).toEqual(expected);
@@ -1061,14 +1317,15 @@ describe("sendTurn", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "high",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "default",
-            currentDate: today,
-            model: "gpt-5.3-codex",
-            effort: "high",
-          }),
+          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "default",
+        currentDate: today,
+        model: "gpt-5.3-codex",
+        effort: "high",
+      }),
     });
     expect(updateSession).toHaveBeenCalledWith(context, {
       status: "running",
@@ -1101,18 +1358,21 @@ describe("sendTurn", () => {
         },
       ],
       model: "gpt-5.3-codex",
+      effort: "high",
       collaborationMode: {
         mode: "default",
         settings: {
           model: "gpt-5.3-codex",
-          reasoning_effort: "medium",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "default",
-            currentDate: today,
-            model: "gpt-5.3-codex",
-          }),
+          reasoning_effort: "high",
+          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "default",
+        currentDate: today,
+        model: "gpt-5.3-codex",
+        effort: "high",
+      }),
     });
   });
 
@@ -1136,18 +1396,21 @@ describe("sendTurn", () => {
         },
       ],
       model: DEFAULT_MODEL_BY_PROVIDER.codex,
+      effort: "high",
       collaborationMode: {
         mode: "default",
         settings: {
           model: DEFAULT_MODEL_BY_PROVIDER.codex,
-          reasoning_effort: "medium",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "default",
-            currentDate: today,
-            model: DEFAULT_MODEL_BY_PROVIDER.codex,
-          }),
+          reasoning_effort: "high",
+          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "default",
+        currentDate: today,
+        model: DEFAULT_MODEL_BY_PROVIDER.codex,
+        effort: "high",
+      }),
     });
     expect(updateSession).toHaveBeenCalledWith(context, {
       status: "running",
@@ -1209,6 +1472,138 @@ describe("sendTurn", () => {
     );
   });
 
+  describe("effort and service tier resolution", () => {
+    const account = { type: "unknown" as const, planType: null, sparkEnabled: false };
+    const reportedEfforts = (defaultEffort: string) =>
+      new Map([
+        [
+          "gpt-5.3-codex",
+          {
+            source: "reported" as const,
+            optionDescriptors: [
+              {
+                id: "reasoningEffort",
+                label: "Reasoning",
+                type: "select" as const,
+                options: ["low", "medium", "high"].map((id) => ({
+                  id,
+                  label: id,
+                  ...(id === defaultEffort ? { isDefault: true } : {}),
+                })),
+              },
+            ],
+          },
+        ],
+      ]);
+    const build = (
+      input: Partial<Parameters<typeof buildCodexTurnStartParams>[0]>,
+      state: Partial<Parameters<typeof buildCodexTurnStartParams>[1]> = {},
+    ) =>
+      buildCodexTurnStartParams(
+        { threadId: asThreadId("thread_1"), input: "Go", model: "gpt-5.3-codex", ...input },
+        { providerThreadId: "thread_1", account, ...state },
+      );
+
+    it("sends the model default when no effort is given", () => {
+      const params = build({});
+      expect(params.effort).toBe("high");
+      expect(params.collaborationMode?.settings.reasoning_effort).toBe("high");
+    });
+
+    it("uses the reported default effort", () => {
+      const params = build({}, { reportedModelCapabilities: reportedEfforts("medium") });
+      expect(params.effort).toBe("medium");
+      expect(params.collaborationMode?.settings.reasoning_effort).toBe("medium");
+    });
+
+    it("omits effort and sends a null reasoning effort when the model takes none", () => {
+      const params = build(
+        { effort: "high" },
+        {
+          reportedModelCapabilities: new Map([
+            ["gpt-5.3-codex", { source: "reported" as const, supportsEffort: false }],
+          ]),
+        },
+      );
+      expect(params).not.toHaveProperty("effort");
+      expect(params.collaborationMode?.settings.reasoning_effort).toBeNull();
+    });
+
+    it("keeps an explicit supported effort", () => {
+      const params = build({ effort: "low" });
+      expect(params.effort).toBe("low");
+      expect(params.collaborationMode?.settings.reasoning_effort).toBe("low");
+    });
+
+    it("downgrades an unsupported effort", () => {
+      const params = build(
+        { effort: "xhigh" },
+        { reportedModelCapabilities: reportedEfforts("medium") },
+      );
+      expect(params.effort).toBe("high");
+      expect(params.collaborationMode?.settings.reasoning_effort).toBe("high");
+    });
+
+    it("preserves native project/profile tiers and clears any tier F5 explicitly applied", async () => {
+      const { manager, context, sendRequest } = createSendTurnHarness();
+      const tierSent = () => {
+        const params = sendRequest.mock.calls.at(-1)?.[2] as Record<string, unknown>;
+        return Object.hasOwn(params, "serviceTier") ? params.serviceTier : "omitted";
+      };
+      // Fast never enabled: a tier from the user's config.toml is left alone.
+      await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBe("omitted");
+      // Native config (including a project Standard override of global Fast)
+      // is authoritative when F5 has not applied a tier.
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Continue",
+        model: "gpt-test",
+      });
+      expect(tierSent()).toBe("omitted");
+
+      // Explicit Standard must override an inherited global Fast tier immediately.
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Go",
+        serviceTier: "default",
+      });
+      expect(tierSent()).toBe("default");
+      // A native continuation without Codex options keeps that explicit Standard.
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Continue",
+        model: "gpt-test",
+      });
+      expect(tierSent()).toBe("omitted");
+      await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBeNull();
+      await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBe("omitted");
+
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Go",
+        serviceTier: "fast",
+      });
+      expect(tierSent()).toBe("fast");
+      await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBeNull();
+      await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBe("omitted");
+
+      // A thread started with fast is cleared by the first fast-off turn.
+      (context as { serviceTierApplied?: boolean }).serviceTierApplied = true;
+      await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBeNull();
+    });
+
+    it("never asks for a reasoning summary", () => {
+      expect(build({ effort: "low", serviceTier: "fast" })).not.toHaveProperty("summary");
+      expect(build({})).not.toHaveProperty("summary");
+    });
+  });
+
   it("passes Codex plan mode as a collaboration preset on turn/start", async () => {
     const { manager, context, sendRequest } = createSendTurnHarness();
     const today = currentDate();
@@ -1229,18 +1624,21 @@ describe("sendTurn", () => {
         },
       ],
       model: "gpt-5.3-codex",
+      effort: "high",
       collaborationMode: {
         mode: "plan",
         settings: {
           model: "gpt-5.3-codex",
-          reasoning_effort: "medium",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "plan",
-            currentDate: today,
-            model: "gpt-5.3-codex",
-          }),
+          reasoning_effort: "high",
+          developer_instructions: CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "plan",
+        currentDate: today,
+        model: "gpt-5.3-codex",
+        effort: "high",
+      }),
     });
   });
 
@@ -1264,18 +1662,21 @@ describe("sendTurn", () => {
         },
       ],
       model: "gpt-5.3-codex",
+      effort: "high",
       collaborationMode: {
         mode: "default",
         settings: {
           model: "gpt-5.3-codex",
-          reasoning_effort: "medium",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "default",
-            currentDate: today,
-            model: "gpt-5.3-codex",
-          }),
+          reasoning_effort: "high",
+          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "default",
+        currentDate: today,
+        model: "gpt-5.3-codex",
+        effort: "high",
+      }),
     });
   });
 
@@ -1300,18 +1701,21 @@ describe("sendTurn", () => {
         },
       ],
       model: "gpt-5.2-codex",
+      effort: "high",
       collaborationMode: {
         mode: "plan",
         settings: {
           model: "gpt-5.2-codex",
-          reasoning_effort: "medium",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "plan",
-            currentDate: today,
-            model: "gpt-5.2-codex",
-          }),
+          reasoning_effort: "high",
+          developer_instructions: CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "plan",
+        currentDate: today,
+        model: "gpt-5.2-codex",
+        effort: "high",
+      }),
     });
   });
 
@@ -1337,25 +1741,13 @@ describe("sendTurn", () => {
       input: "Continue again",
     });
 
-    const firstParams = sendRequest.mock.calls[0]?.[2] as {
-      collaborationMode?: { settings: { developer_instructions: string } };
-    };
-    const secondParams = sendRequest.mock.calls[1]?.[2] as {
-      collaborationMode?: { settings: { developer_instructions: string } };
-    };
+    const firstText = additionalContextText(sendRequest.mock.calls[0]?.[2]);
+    const secondText = additionalContextText(sendRequest.mock.calls[1]?.[2]);
 
-    expect(firstParams.collaborationMode?.settings.developer_instructions).toContain(
-      "### Prior Work Summary",
-    );
-    expect(firstParams.collaborationMode?.settings.developer_instructions).toContain(
-      "### Restored Task Snapshot",
-    );
-    expect(secondParams.collaborationMode?.settings.developer_instructions).not.toContain(
-      "### Prior Work Summary",
-    );
-    expect(secondParams.collaborationMode?.settings.developer_instructions).not.toContain(
-      "### Restored Task Snapshot",
-    );
+    expect(firstText).toContain("### Prior Work Summary");
+    expect(firstText).toContain("### Restored Task Snapshot");
+    expect(secondText).not.toContain("### Prior Work Summary");
+    expect(secondText).not.toContain("### Restored Task Snapshot");
   });
 
   it("delivers pending recovery context on turn/start and clears its persisted marker", async () => {
@@ -1371,16 +1763,12 @@ describe("sendTurn", () => {
       Object.assign(context.session, updates);
     });
     await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Continue" });
-    const params = sendRequest.mock.calls[0]?.[2] as {
-      collaborationMode: { settings: { developer_instructions: string } };
-    };
-    expect(params.collaborationMode.settings.developer_instructions).toContain(
+    expect(additionalContextText(sendRequest.mock.calls[0]?.[2])).toContain(
       "Recovered requirement",
     );
     expect(context.session.resumeCursor).toEqual({ threadId: "replacement" });
     await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Continue again" });
-    const next = sendRequest.mock.calls[1]?.[2] as typeof params;
-    expect(next.collaborationMode.settings.developer_instructions).not.toContain(
+    expect(additionalContextText(sendRequest.mock.calls[1]?.[2])).not.toContain(
       "Recovered requirement",
     );
   });
@@ -1403,38 +1791,110 @@ describe("sendTurn", () => {
       input: "Continue the work",
     });
 
-    const params = sendRequest.mock.calls[0]?.[2] as {
-      collaborationMode?: { settings: { developer_instructions: string } };
-    };
+    const text = additionalContextText(sendRequest.mock.calls[0]?.[2]);
 
-    expect(params.collaborationMode?.settings.developer_instructions).not.toContain(
-      "### Prior Work Summary",
-    );
-    expect(params.collaborationMode?.settings.developer_instructions).not.toContain(
-      "### Restored Task Snapshot",
-    );
+    expect(text).not.toContain("### Prior Work Summary");
+    expect(text).not.toContain("### Restored Task Snapshot");
   });
 
-  it("composes shared Codex instructions with the detailed plan mode prompt", () => {
-    const instructions = buildCodexAssistantInstructions({
+  it("sends the session's workflow host contract after the mode prompt and in the context", async () => {
+    const { manager, sendRequest } = createSendTurnHarness({
+      instructionContext: { workflowExecutionProfile: "unattended-readonly" },
+    });
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Plan the stage",
       interactionMode: "plan",
-      model: "gpt-5.3-codex",
     });
 
-    expect(instructions).toContain("If the user asks what model you are");
-    expect(instructions).toContain("<proposed_plan>");
-    expect(instructions).toContain(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS);
+    const params = sendRequest.mock.calls[0]![2] as TurnStartContextParams & {
+      collaborationMode: { settings: { developer_instructions: string } };
+    };
+    expect(params.collaborationMode.settings.developer_instructions).toBe(
+      buildCodexModeInstructions({
+        interactionMode: "plan",
+        workflowExecutionProfile: "unattended-readonly",
+      }),
+    );
+    expect(params.collaborationMode.settings.developer_instructions).toContain(
+      "No user reply path exists",
+    );
+    expect(params.additionalContext?.f5_workflow_contract?.value).toContain(
+      "No user reply path exists",
+    );
   });
 
-  it("composes shared Codex instructions with the detailed default mode prompt", () => {
-    const instructions = buildCodexAssistantInstructions({
-      interactionMode: "default",
-      model: "gpt-5.3-codex",
-    });
+  it("keeps only the mode prompt in the collaboration mode", () => {
+    // Codex drops `developer_instructions` when the model catalog ships its own
+    // mode text, so the shared contract must not depend on it.
+    expect(buildCodexModeInstructions({ interactionMode: "plan" })).toBe(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+    );
+    expect(buildCodexModeInstructions({ interactionMode: "default" })).toBe(
+      CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+    );
+    expect(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS).not.toContain(
+      "If the user asks what model you are",
+    );
+  });
 
-    expect(instructions).toContain("If the user asks what model you are");
-    expect(instructions).toContain("request_user_input");
-    expect(instructions).toContain(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS);
+  it("sends the shared Codex contract and runtime context as additional context", async () => {
+    const { manager, sendRequest } = createSendTurnHarness();
+
+    await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Hi" });
+
+    const params = sendRequest.mock.calls[0]?.[2] as TurnStartContextParams;
+    for (const entry of Object.values(params.additionalContext ?? {})) {
+      expect(entry.kind).toBe("application");
+    }
+    const text = additionalContextText(params);
+    expect(text).toContain("If the user asks what model you are");
+    expect(text).toContain("## Codex Runtime Notes");
+    expect(text).toContain("- Active model: gpt-5.3-codex");
+  });
+
+  it("restores the persistent additional context after compaction on the root thread", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness({
+      instructionContext: { priorWorkSummary: "Summary:\nPrevious work" },
+    });
+    sendRequest.mockImplementation(async (_context, method) =>
+      method === "turn/start" ? { turn: { id: "turn_1" } } : {},
+    );
+    await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Continue" });
+    const sent = (sendRequest.mock.calls[0]![2] as TurnStartContextParams).additionalContext!;
+    sendRequest.mockClear();
+    (manager as unknown as { sessions: Map<string, unknown> }).sessions.set("thread_1", context);
+
+    const notify = (threadId: string, type: string) =>
+      (
+        manager as unknown as {
+          handleServerNotification: (context: unknown, notification: unknown) => void;
+        }
+      ).handleServerNotification(context, {
+        method: "item/completed",
+        params: { threadId, turnId: "turn_1", item: { type, id: "item_1" } },
+      });
+    notify("thread_1", "agentMessage");
+    notify("child_thread", "contextCompaction");
+    expect(sendRequest).not.toHaveBeenCalledWith(context, "thread/inject_items", expect.anything());
+
+    notify("thread_1", "contextCompaction");
+    const injectCall = sendRequest.mock.calls.find((call) => call[1] === "thread/inject_items");
+    const injected = injectCall?.[2] as {
+      threadId: string;
+      items: Array<{ type: string; role: string; content: Array<{ text: string }> }>;
+    };
+    expect(injected.threadId).toBe("thread_1");
+    const expectedKeys = Object.keys(sent).filter((key) => !key.startsWith("f5_resumed_context"));
+    expect(injected.items).toEqual(
+      expectedKeys.map((key) => ({
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: `<${key}>${sent[key]!.value}</${key}>` }],
+      })),
+    );
+    expect(JSON.stringify(injected)).not.toContain("Previous work");
   });
 
   it("rejects empty turn input", async () => {
@@ -2013,6 +2473,11 @@ describe("runOneOffPrompt", () => {
       }),
     );
     expect(stopSession).toHaveBeenCalledWith(expect.stringMatching(/^one-off:/));
+
+    await manager.runOneOffPrompt({ prompt: "No effort", timeoutMs: 1_000 });
+    expect(manager.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ input: "No effort", effort: "medium" }),
+    );
   });
 
   it("fails when the synthetic turn completes without assistant text", async () => {
@@ -2481,6 +2946,7 @@ describe("thread checkpoint control", () => {
       ],
     ]);
     expect(result).toEqual({
+      historyCoverage: "complete",
       threadId: "provider-thread",
       turns: turns.map(({ id, items }) => ({ id, items })),
     });
@@ -2556,6 +3022,7 @@ describe("thread checkpoint control", () => {
       .mockResolvedValueOnce({ data: [], nextCursor: null });
     await expect(manager.readThread(asThreadId("thread_1"))).rejects.toThrow("while paging");
     await expect(manager.readThread(asThreadId("thread_1"))).resolves.toEqual({
+      historyCoverage: "complete",
       threadId: "thread_1",
       turns: [],
     });
@@ -2616,7 +3083,11 @@ describe("thread checkpoint control", () => {
       status: "ready",
       activeTurnId: undefined,
     });
-    expect(result).toEqual({ threadId: "thread_1", turns: [{ id: "turn_1", items: [] }] });
+    expect(result).toEqual({
+      historyCoverage: "complete",
+      threadId: "thread_1",
+      turns: [{ id: "turn_1", items: [] }],
+    });
   });
 
   it("derives the revert boundary from the read-back when no turn id is given", async () => {
@@ -2824,6 +3295,7 @@ describe("respondToRequest", () => {
             requestId: "req-permissions-1",
             requestKind: "permission",
             requestMethod: "item/permissions/requestApproval",
+            requestedPermissions: { filesystem: { read: true, write: true } },
             decision,
           },
         }),
@@ -2964,8 +3436,8 @@ describe("respondToRequest", () => {
 });
 
 describe("Codex server requests", () => {
-  function requestContext() {
-    return {
+  function requestContext(manager: CodexAppServerManager) {
+    const context = {
       session: {
         provider: "codex",
         status: "ready",
@@ -2979,11 +3451,16 @@ describe("Codex server requests", () => {
       elicitations: new ElicitationRegistry(),
       nativeRequestCorrelations: new Map(),
     };
+    (manager as unknown as { sessions: Map<string, unknown> }).sessions.set(
+      context.session.threadId,
+      context,
+    );
+    return context;
   }
 
   it("routes legacy callId fields to provider items", () => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     (
       manager as unknown as {
         handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
@@ -3012,7 +3489,7 @@ describe("Codex server requests", () => {
 
   it("bounds native request correlations while retaining the newest prompts", () => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     const handleServerRequest = (
       manager as unknown as {
         handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
@@ -3060,9 +3537,63 @@ describe("Codex server requests", () => {
     });
   });
 
+  it("stops asking for commands the user allowed for the session, until the mode changes", async () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext(manager);
+    const internals = manager as unknown as {
+      handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      requireSession: (threadId: string) => unknown;
+      writeMessage: (...args: unknown[]) => Promise<void>;
+    };
+    vi.spyOn(internals, "requireSession").mockReturnValue(context);
+    const writeMessage = vi.spyOn(internals, "writeMessage").mockResolvedValue();
+    const command = (id: number, method = "item/commandExecution/requestApproval") =>
+      internals.handleServerRequest(context, {
+        id,
+        method,
+        params: { threadId: "thread_1", turnId: "turn_1", itemId: `item-${id}`, command: "ls" },
+      });
+
+    command(90);
+    const [first] = context.pendingApprovals.keys();
+    await manager.respondToRequest(asThreadId("thread_1"), first!, "acceptForSession");
+    expect(context.pendingApprovals.size).toBe(0);
+
+    // A new command in the same mode is answered without a prompt.
+    command(91);
+    await vi.waitFor(() =>
+      expect(writeMessage).toHaveBeenCalledWith(context, {
+        id: 91,
+        result: { decision: "acceptForSession" },
+      }),
+    );
+    expect(context.pendingApprovals.size).toBe(0);
+
+    // File changes were never allowed, so they still ask.
+    command(92, "item/fileChange/requestApproval");
+    expect(context.pendingApprovals.size).toBe(1);
+    context.pendingApprovals.clear();
+
+    // Another runtime mode ends the allowance.
+    (context.session as { runtimeMode: string }).runtimeMode = "approval-required";
+    command(93);
+    expect(context.pendingApprovals.size).toBe(1);
+  });
+
+  it("answers a session-allowed request only with a decision the request offers", () => {
+    expect(codexSessionAllowedResponse("legacy-decision", undefined)).toEqual({
+      decision: "approved_for_session",
+    });
+    expect(
+      codexSessionAllowedResponse("decision", { decisions: new Set(["accept", "decline"]) }),
+    ).toEqual({ decision: "accept" });
+    expect(codexSessionAllowedResponse("decision", { decisions: new Set(["decline"]) })).toBeNull();
+    expect(codexSessionAllowedResponse("permissions", undefined)).toBeNull();
+  });
+
   it("answers currentTime/read without creating a prompt", async () => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     const writeMessage = vi
       .spyOn(
         manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
@@ -3092,7 +3623,7 @@ describe("Codex server requests", () => {
 
   it("keeps MCP app approval pending until the user chooses an advertised response", async () => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     const writeMessage = vi
       .spyOn(
         manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
@@ -3138,7 +3669,7 @@ describe("Codex server requests", () => {
 
   it("sends an execpolicy amendment only when the command approval offered it", async () => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     const writeMessage = vi
       .spyOn(
         manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
@@ -3208,7 +3739,7 @@ describe("Codex server requests", () => {
 
   it("cancels MCP forms with unsupported constraints visibly, without publishing a request", () => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     const writeMessage = vi
       .spyOn(
         manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
@@ -3245,7 +3776,7 @@ describe("Codex server requests", () => {
   it("answers supported MCP forms privately and settles them on native completion", async () => {
     const SENTINEL = "sentinel-value-4be1";
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     const writeMessage = vi
       .spyOn(
         manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
@@ -3321,7 +3852,7 @@ describe("Codex server requests", () => {
 
   it("settles a cancelled MCP form as cancelled, not as a provided answer", async () => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     vi.spyOn(
       manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
       "writeMessage",
@@ -3366,7 +3897,7 @@ describe("Codex server requests", () => {
     ["attestation/generate", "attestation"],
   ] as const)("rejects unexpected %s requests deterministically", async (method, messagePart) => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     const events: Array<{ method: string; message?: string }> = [];
     manager.on("event", (event) =>
       events.push({
@@ -3406,7 +3937,7 @@ describe("Codex server requests", () => {
 
   it("clears externally resolved prompts while preserving request type", () => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     const requestId = ApprovalRequestId.makeUnsafe("req-external");
     context.pendingApprovals.set(requestId, {});
     context.nativeRequestCorrelations.set("85", {
@@ -3445,9 +3976,48 @@ describe("Codex server requests", () => {
     });
   });
 
+  it("preserves the permission profile when a prompt is resolved externally", () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext(manager);
+    const requestId = ApprovalRequestId.makeUnsafe("req-external-permission");
+    const requestedPermissions = {
+      fileSystem: {
+        entries: [{ access: "write", path: { type: "glob_pattern", pattern: "/w/out/**" } }],
+      },
+    };
+    context.pendingApprovals.set(requestId, { requestedPermissions });
+    context.nativeRequestCorrelations.set("85", {
+      nativeRequestId: "85",
+      requestId,
+      method: "item/permissions/requestApproval",
+      requestKind: "permission",
+      responseChannel: "approval",
+      resolvedLocally: false,
+    });
+    const events: Array<Record<string, unknown>> = [];
+    manager.on("event", (event) => events.push(event as unknown as Record<string, unknown>));
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "serverRequest/resolved",
+      params: { threadId: "thread_1", requestId: 85 },
+    });
+    expect(context.pendingApprovals.size).toBe(0);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      method: "serverRequest/resolved",
+      payload: {
+        request: { method: "item/permissions/requestApproval", kind: "permission" },
+        requestedPermissions,
+      },
+    });
+  });
+
   it("suppresses the server acknowledgement after a local resolution", () => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     const requestId = ApprovalRequestId.makeUnsafe("req-local");
     context.nativeRequestCorrelations.set("86", {
       nativeRequestId: "86",
@@ -3475,7 +4045,7 @@ describe("Codex server requests", () => {
 
   it("suppresses uncorrelated late server acknowledgements", () => {
     const manager = new CodexAppServerManager();
-    const context = requestContext();
+    const context = requestContext(manager);
     const events: unknown[] = [];
     manager.on("event", (event) => events.push(event));
 
@@ -3599,6 +4169,10 @@ describe("respondToUserInput", () => {
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
     };
+    (manager as unknown as { sessions: Map<string, unknown> }).sessions.set(
+      context.session.threadId,
+      context,
+    );
     type ApprovalRequestContext = {
       session: typeof context.session;
       pendingApprovals: typeof context.pendingApprovals;
@@ -3640,6 +4214,10 @@ describe("respondToUserInput", () => {
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
     };
+    (manager as unknown as { sessions: Map<string, unknown> }).sessions.set(
+      context.session.threadId,
+      context,
+    );
     type ApprovalRequestContext = {
       session: typeof context.session;
       pendingApprovals: typeof context.pendingApprovals;
@@ -3686,6 +4264,10 @@ describe("respondToUserInput", () => {
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
     };
+    (manager as unknown as { sessions: Map<string, unknown> }).sessions.set(
+      context.session.threadId,
+      context,
+    );
     type ApprovalRequestContext = {
       session: typeof context.session;
       pendingApprovals: typeof context.pendingApprovals;
@@ -3806,6 +4388,331 @@ describe.skipIf(!process.env.CODEX_BINARY_PATH)("startSession live Codex resume"
       rmSync(workspaceDir, { recursive: true, force: true });
     }
   }, 180_000);
+});
+
+it("drains replaced provider sources without closing their replacement", () => {
+  const manager = new CodexAppServerManager();
+  const output = Object.assign(new EventEmitter(), { close: vi.fn(), finish: vi.fn() });
+  const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter() });
+  const context = {
+    session: { threadId: "replaced" },
+    stopping: false,
+    output,
+    child,
+    writer: { close: vi.fn() },
+    pending: new Map(),
+    pendingApprovals: new Map(),
+    pendingUserInputs: new Map(),
+    nativeRequestCorrelations: new Map(),
+  };
+  const internal = manager as unknown as {
+    sessions: Map<string, unknown>;
+    attachProcessListeners: (context: unknown) => void;
+    handleStdoutLine: (...args: unknown[]) => void;
+    emitErrorEvent: (...args: unknown[]) => void;
+    emitLifecycleEvent: (...args: unknown[]) => void;
+  };
+  const stdout = vi.spyOn(internal, "handleStdoutLine").mockImplementation(() => {});
+  const errors = vi.spyOn(internal, "emitErrorEvent");
+  const lifecycle = vi.spyOn(internal, "emitLifecycleEvent");
+  internal.sessions.set("replaced", context);
+  internal.attachProcessListeners(context);
+  const replacement = { session: { threadId: "replaced" } };
+  internal.sessions.set("replaced", replacement);
+  output.emit("line", '{"method":"turn/completed"}');
+  child.stderr.emit("data", Buffer.from("ERROR old process"));
+  child.emit("error", new Error("old process"));
+  child.emit("exit", 1, null);
+  child.emit("close", 1, null);
+  expect(stdout).toHaveBeenCalledTimes(1);
+  expect(errors.mock.calls.every((call) => call[1] === "process/stderr")).toBe(true);
+  expect(lifecycle).toHaveBeenCalledTimes(1);
+  expect(internal.sessions.get("replaced")).toBe(replacement);
+});
+it("ends the session when codex app-server sends a message over the size cap", () => {
+  const manager = new CodexAppServerManager();
+  const output = Object.assign(new EventEmitter(), { close: vi.fn(), finish: vi.fn() });
+  const child = Object.assign(new EventEmitter(), {
+    stderr: new EventEmitter(),
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    pid: undefined,
+    kill: vi.fn(() => true),
+  });
+  const writerClose = vi.fn();
+  const context = {
+    session: { threadId: "oversized" },
+    stopping: false,
+    output,
+    child,
+    writer: { close: writerClose },
+    pending: new Map(),
+    pendingApprovals: new Map(),
+    pendingUserInputs: new Map(),
+    nativeRequestCorrelations: new Map(),
+  };
+  const internal = manager as unknown as {
+    sessions: Map<string, unknown>;
+    attachProcessListeners: (context: unknown) => void;
+    updateSession: (...args: unknown[]) => void;
+    emitErrorEvent: (...args: unknown[]) => void;
+    emitLifecycleEvent: (...args: unknown[]) => void;
+  };
+  const updates = vi.spyOn(internal, "updateSession").mockImplementation(() => {});
+  const errors = vi.spyOn(internal, "emitErrorEvent").mockImplementation(() => {});
+  const lifecycle = vi.spyOn(internal, "emitLifecycleEvent").mockImplementation(() => {});
+  internal.sessions.set("oversized", context);
+  internal.attachProcessListeners(context);
+  output.emit("overflow", new Error("Provider stdout line exceeds the limit"));
+  output.emit("close");
+  child.stderr.emit("close");
+  const message = `codex app-server sent a message larger than ${CODEX_MAX_INCOMING_MESSAGE_BYTES} bytes; the session was ended.`;
+  expect(updates).toHaveBeenCalledWith(context, { status: "error", lastError: message });
+  expect(errors).toHaveBeenCalledWith(context, "process/error", message);
+  expect(writerClose).toHaveBeenCalledWith(new Error(message));
+  expect(lifecycle).toHaveBeenCalledWith(context, "session/exited", message, undefined);
+  expect(internal.sessions.has("oversized")).toBe(false);
+});
+describe("Release 5 native operations", () => {
+  it("unarchives and retries a fork with identical parameters, without retrying other errors", async () => {
+    const manager = new CodexAppServerManager();
+    const fork = manager as unknown as {
+      forkWithArchivedRecovery: (
+        context: unknown,
+        params: Record<string, unknown>,
+        request: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+      ) => Promise<unknown>;
+    };
+    const params = { threadId: "archived", lastTurnId: "boundary", deferGoalContinuation: true };
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("session archived is archived. Run codex unarchive archived"),
+      )
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ thread: { id: "forked" } });
+    await expect(fork.forkWithArchivedRecovery({}, params, request)).resolves.toEqual({
+      thread: { id: "forked" },
+    });
+    expect(request.mock.calls).toEqual([
+      ["thread/fork", params],
+      ["thread/unarchive", { threadId: "archived" }],
+      ["thread/fork", params],
+    ]);
+    const failed = vi.fn().mockRejectedValue(new Error("connection lost"));
+    await expect(fork.forkWithArchivedRecovery({}, params, failed)).rejects.toThrow(
+      "connection lost",
+    );
+    expect(failed).toHaveBeenCalledTimes(1);
+  });
+  it.each(["receipt", "history"] as const)(
+    "preserves cancellation while awaiting %s before sample dispatch",
+    async (phase) => {
+      const { manager, context, sendRequest } = createThreadControlHarness();
+      Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 12 });
+      let release!: () => void;
+      const barrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered = false;
+      const receipt =
+        phase === "receipt"
+          ? async () => {
+              entered = true;
+              await barrier;
+            }
+          : undefined;
+      sendRequest.mockImplementation(async (_context, method) => {
+        if (method === "thread/turns/list") {
+          if (phase === "history") {
+            entered = true;
+            await barrier;
+          }
+          return { data: [{ id: "last", status: "completed" }] };
+        }
+        throw new Error("No sample should be dispatched.");
+      });
+      const pending = manager.executeNativeOperation(asideInput, receipt).catch((error) => error);
+      await vi.waitFor(() => expect(entered).toBe(true));
+      await manager.interruptTurn(asThreadId("thread_1"));
+      release();
+      expect(await pending).toMatchObject({
+        nativeOperationCancelled: true,
+        deliveryCertainty: "not_sent",
+      });
+      expect(context).toMatchObject({ samplePreparing: false });
+      expect(sendRequest.mock.calls.some((call) => call[1] === "thread/sample")).toBe(false);
+    },
+  );
+  it("keeps the actual sample RPC pending past the control timeout and accepts a late response", async () => {
+    vi.useFakeTimers();
+    const manager = new CodexAppServerManager();
+    const context = { nextRequestId: 1, pending: new Map() };
+    const internal = manager as unknown as {
+      sendRequest(context: unknown, method: string, params: unknown): Promise<unknown>;
+      handleResponse(context: unknown, response: unknown): void;
+      writeMessage(...args: unknown[]): Promise<void>;
+    };
+    const write = vi.spyOn(internal, "writeMessage").mockResolvedValue();
+    try {
+      let settled = false;
+      const pending = internal.sendRequest(context, "thread/sample", {}).then((result) => {
+        settled = true;
+        return result;
+      });
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(settled).toBe(false);
+      expect(context.pending.size).toBe(1);
+      internal.handleResponse(context, { id: 1, result: { text: "Late answer" } });
+      expect(await pending).toEqual({ text: "Late answer" });
+      expect(context.pending.size).toBe(0);
+      expect(write).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      write.mockRestore();
+    }
+  });
+  it("interrupts an aside and waits for its sample response before releasing the waiter", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 12 });
+    let finish!: (value: unknown) => void;
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "thread/turns/list") return { data: [{ id: "last", status: "completed" }] };
+      if (method === "thread/sample")
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      return {};
+    });
+    const result = manager.executeNativeOperation(asideInput).catch((error) => error);
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    let settled = false;
+    const cancel = manager.interruptTurn(asThreadId("thread_1")).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/sample/cancel", { requestId: 12 });
+    finish({ text: null });
+    await cancel;
+    expect(await result).toMatchObject({ nativeOperationCancelled: true });
+  });
+  it.each(["memory", "usage"] as const)(
+    "reads %s only through the existing session",
+    async (kind) => {
+      const { manager, context, requireSession, sendRequest } = createThreadControlHarness();
+      Object.assign(context, { cliVersion: "0.166.0" });
+      sendRequest.mockResolvedValue({ summary: "summary" });
+      await manager.inspectNativeOperation({
+        threadId: asThreadId("thread_1"),
+        generation: 1,
+        kind,
+      });
+      expect(requireSession).toHaveBeenCalledWith("thread_1");
+      expect(sendRequest).toHaveBeenCalledWith(
+        context,
+        kind === "memory" ? "thread/memory/read" : "account/usage/read",
+        { threadId: "thread_1" },
+      );
+    },
+  );
+  it("aborting the waiter cancels with the JSON-RPC request id", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 12 });
+    let finish!: (value: unknown) => void;
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "thread/turns/list") return { data: [{ id: "last", status: "completed" }] };
+      if (method === "thread/sample")
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      return {};
+    });
+    const controller = new AbortController();
+    const pending = manager
+      .executeNativeOperation(asideInput, undefined, controller.signal)
+      .catch((error) => error);
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    controller.abort();
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/sample/cancel", { requestId: 12 });
+    finish({ text: null, inputTokens: 4, outputTokens: 1, cachedInputTokens: 2 });
+    expect(await pending).toMatchObject({ nativeOperationCancelled: true });
+  });
+  const asideInput = {
+    threadId: asThreadId("thread_1"),
+    operationId: "aside",
+    generation: 1,
+    command: { kind: "aside" as const, question: "Why?" },
+  };
+  it.each(["completed", "failed", "interrupted"])(
+    "samples a %s turn without a turn/start",
+    async (status) => {
+      const { manager, context, sendRequest } = createThreadControlHarness();
+      Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 9 });
+      sendRequest.mockImplementation(async (_context, method) =>
+        method === "thread/turns/list"
+          ? { data: [{ id: "last", status }] }
+          : { text: "Because.", inputTokens: 3, cachedInputTokens: 2, outputTokens: 1 },
+      );
+      expect(await manager.executeNativeOperation(asideInput)).toMatchObject({
+        question: "Why?",
+        text: "Because.",
+      });
+      expect(sendRequest).toHaveBeenCalledWith(context, "thread/sample", {
+        threadId: "thread_1",
+        expectedTurnId: "last",
+        prompt: "Why?",
+      });
+      expect(sendRequest.mock.calls.some((call) => call[1] === "turn/start")).toBe(false);
+    },
+  );
+  it("rejects unsupported and active sources before sampling", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    await expect(manager.executeNativeOperation(asideInput)).rejects.toThrow("0.166.0");
+    Object.assign(context, { cliVersion: "0.166.0" });
+    sendRequest.mockResolvedValue({ data: [{ id: "last", status: "inProgress" }] });
+    await expect(manager.executeNativeOperation(asideInput)).rejects.toThrow("settled native turn");
+    expect(sendRequest.mock.calls.some((call) => call[1] === "thread/sample")).toBe(false);
+  });
+  it("does not create a session to mark a missing thread read", async () => {
+    const { manager, requireSession, sendRequest } = createThreadControlHarness();
+    await manager.markNativeThreadRead(asThreadId("missing"));
+    expect(requireSession).not.toHaveBeenCalled();
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+  it("replaces a conflicted read revision without retrying", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, {
+      cliVersion: "0.166.0",
+      readState: { firstUnread: {}, revision: "old" },
+    });
+    (manager as unknown as { sessions: Map<string, unknown> }).sessions.set("thread_1", context);
+    sendRequest.mockRejectedValue(
+      new CodexJsonRpcError("thread/readState/update", -32600, "Conflict", {
+        reason: "readStateConflict",
+        readState: { firstUnread: {}, revision: "new" },
+      }),
+    );
+    await manager.markNativeThreadRead(asThreadId("thread_1"));
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+    expect(context).toMatchObject({ readState: { revision: "new" } });
+  });
+  it("marks only an unread supported live session", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, {
+      cliVersion: "0.166.0",
+      readState: { firstUnread: {}, revision: "seen" },
+    });
+    (manager as unknown as { sessions: Map<string, unknown> }).sessions.set("thread_1", context);
+    sendRequest.mockResolvedValue({});
+    await manager.markNativeThreadRead(asThreadId("thread_1"));
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/readState/update", {
+      threadId: "thread_1",
+      expectedRevision: "seen",
+      operation: { type: "read" },
+    });
+  });
 });
 
 describe("Release 4 native operations", () => {
@@ -3959,6 +4866,7 @@ describe("Release 4 native operations", () => {
       objective: "Goal",
       tokenBudget: 100,
       status: "active",
+      origin: "user",
     });
     expect(manager.listenerCount("event")).toBe(0);
   });
@@ -4093,6 +5001,189 @@ it("reads one bounded native item page for an owned child thread", async () => {
   expect(sendRequest).toHaveBeenCalledTimes(1);
 });
 
+it.each(
+  ["started", "interacted", "completed", "interrupted"].flatMap((kind) => [
+    {
+      kind,
+      type: "subAgentActivity",
+      identity: { agentThreadId: "native-child", agentPath: "/root/child" },
+    },
+    {
+      kind,
+      type: "sub_agent_activity",
+      identity: { agent_thread_id: " native-child ", agent_path: " /root/child " },
+    },
+  ]),
+)(
+  "registers children from parent subagent activity ($type, $kind) for transcript reads",
+  async ({ kind, type, identity }) => {
+    const { manager, context, sendRequest, updateSession } = createThreadControlHarness();
+    const threadId = asThreadId("thread_1");
+    (manager as unknown as { sessions: Map<ThreadId, unknown> }).sessions.set(threadId, context);
+    vi.spyOn(
+      manager as unknown as { emitEvent: (...args: unknown[]) => void },
+      "emitEvent",
+    ).mockImplementation(() => {});
+    const notify = (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: unknown) => void;
+      }
+    ).handleServerNotification.bind(manager);
+    notify(context, {
+      method: "item/completed",
+      params: {
+        threadId: "thread_1",
+        item: {
+          type,
+          kind,
+          ...identity,
+        },
+      },
+    });
+    expect(updateSession).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({
+        resumeCursor: { threadId: "thread_1", childThreadIds: ["native-child"] },
+      }),
+    );
+    sendRequest.mockResolvedValue({ data: [], nextCursor: null });
+    expect(await manager.readChildThreadItems(threadId, "native-child", null, 50)).toEqual({
+      data: [],
+      nextCursor: null,
+    });
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/items/list", {
+      threadId: "native-child",
+      cursor: null,
+      limit: 50,
+      sortDirection: "asc",
+    });
+    expect(await manager.readChildThreadItems(threadId, "foreign-child", null, 50)).toBeNull();
+  },
+);
+
+it.each([
+  { threadId: "other-parent", kind: "started", agentPath: "/root/child" },
+  { threadId: "review-1", kind: "started", agentPath: "/root/child" },
+  { threadId: undefined, kind: "started", agentPath: "/root/child" },
+  { threadId: "thread_1", kind: "unknown", agentPath: "/root/child" },
+  { threadId: "thread_1", kind: "started", agentPath: "" },
+  { threadId: "thread_1", kind: "started", agentPath: "  " },
+  { threadId: "thread_1", kind: "started", agentPath: "/root/child", agentThreadId: "  " },
+  { threadId: "thread_1", kind: "started", agentPath: "/root/child", missingPrimary: true },
+  { threadId: "thread_1", kind: "started", agentPath: "/root/child", type: "collab agent" },
+  { threadId: "thread_1", kind: "collab agent", agentPath: "/root/child", type: undefined },
+])(
+  "refuses foreign or malformed subagent ownership ($threadId, $kind, $agentPath)",
+  async (input) => {
+    const { manager, context, sendRequest, updateSession } = createThreadControlHarness();
+    Object.assign(context, { reviewThreadIds: new Set(["review-1"]) });
+    if ("missingPrimary" in input) Object.assign(context.session, { resumeCursor: {} });
+    const threadId = asThreadId("thread_1");
+    (manager as unknown as { sessions: Map<ThreadId, unknown> }).sessions.set(threadId, context);
+    vi.spyOn(
+      manager as unknown as { emitEvent: (...args: unknown[]) => void },
+      "emitEvent",
+    ).mockImplementation(() => {});
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: unknown) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "item/completed",
+      params: {
+        threadId: input.threadId,
+        item: {
+          type: "type" in input ? input.type : "subAgentActivity",
+          kind: input.kind,
+          agentThreadId: "agentThreadId" in input ? input.agentThreadId : "foreign-child",
+          agentPath: input.agentPath,
+          receiverThreadIds: ["foreign-child"],
+        },
+      },
+    });
+    expect(await manager.readChildThreadItems(threadId, "foreign-child", null, 50)).toBeNull();
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(updateSession).not.toHaveBeenCalled();
+  },
+);
+
+it("persists new child ownership at capacity without refreshing duplicate activity", async () => {
+  const { manager, context, updateSession, sendRequest } = createThreadControlHarness();
+  const threadId = asThreadId("thread_1");
+  const children = new Set(Array.from({ length: 512 }, (_, i) => "child-" + i));
+  Object.assign(context, { childThreadIds: children });
+  (manager as unknown as { sessions: Map<ThreadId, unknown> }).sessions.set(threadId, context);
+  vi.spyOn(
+    manager as unknown as { emitEvent: (...args: unknown[]) => void },
+    "emitEvent",
+  ).mockImplementation(() => {});
+  const notify = (
+    manager as unknown as {
+      handleServerNotification: (context: unknown, notification: unknown) => void;
+    }
+  ).handleServerNotification.bind(manager);
+  const notification = {
+    method: "item/completed",
+    params: {
+      threadId: "thread_1",
+      item: {
+        type: "subAgentActivity",
+        kind: "completed",
+        agentThreadId: "newest-child",
+        agentPath: "/root/newest",
+      },
+    },
+  };
+  notify(context, notification);
+  expect(children.size).toBe(512);
+  expect(children.has("child-0")).toBe(false);
+  expect(children.has("newest-child")).toBe(true);
+  expect(updateSession).toHaveBeenCalledWith(context, {
+    resumeCursor: { threadId: "thread_1", childThreadIds: [...children] },
+  });
+  notify(context, notification);
+  expect(updateSession).toHaveBeenCalledTimes(1);
+  sendRequest.mockResolvedValue({ data: [], nextCursor: null });
+  expect(await manager.readChildThreadItems(threadId, "newest-child", null, 50)).toEqual({
+    data: [],
+    nextCursor: null,
+  });
+  expect(await manager.readChildThreadItems(threadId, "child-0", null, 50)).toBeNull();
+});
+
+it("reads raw child transcript pages with ownership and envelope checks", async () => {
+  const { manager, context, sendRequest } = createThreadControlHarness();
+  const threadId = asThreadId("thread_1");
+  const sessions = (manager as unknown as { sessions: Map<ThreadId, unknown> }).sessions;
+  sessions.set(threadId, context);
+  Object.assign(context, { childThreadIds: new Set(["native-child"]) });
+  const data = [
+    {
+      id: "command",
+      type: "commandExecution",
+      command: "pwd",
+      aggregatedOutput: "x".repeat(100000),
+    },
+  ];
+  sendRequest.mockResolvedValue({ data, nextCursor: "next" });
+  expect(await manager.readChildThreadItems(threadId, "native-child", null, 50)).toEqual({
+    data,
+    nextCursor: "next",
+  });
+  expect(await manager.readChildThreadItems(threadId, "foreign-child", null, 50)).toBeNull();
+  expect(sendRequest).toHaveBeenCalledTimes(1);
+  sendRequest.mockResolvedValue({});
+  await expect(manager.readChildThreadItems(threadId, "native-child", null, 50)).rejects.toThrow(
+    "Invalid child transcript page",
+  );
+  sendRequest.mockRejectedValue(
+    new CodexJsonRpcError("thread/items/list", -32601, "not available"),
+  );
+  expect(await manager.readChildThreadItems(threadId, "native-child", null, 50)).toBe(
+    "unsupported-provider",
+  );
+});
+
 it.each(["0.144.3", "0.147.0", "0.160.1", "0.162.0"])(
   "gates goal deferral on resume for %s",
   (cliVersion) => {
@@ -4102,5 +5193,419 @@ it.each(["0.144.3", "0.147.0", "0.160.1", "0.162.0"])(
       cliVersion,
     });
     expect("deferGoalContinuation" in params.resume!).toBe(cliVersion === "0.162.0");
+  },
+);
+
+describe("session catalog paging and effective fallback", () => {
+  it.each(["partial", "failed", "paged"] as const)(
+    "uses fresh restrictions and hidden later-page metadata: %s",
+    async (mode) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "codex-catalog-review-"));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+      const manager = new CodexAppServerManager();
+      const events: ProviderEvent[] = [];
+      manager.on("event", (event) => events.push(event));
+      vi.spyOn(
+        manager as unknown as { assertSupportedCodexCliVersion: () => void },
+        "assertSupportedCodexCliVersion",
+      ).mockImplementation(() => {});
+      let pages = 0;
+      const requests = vi
+        .spyOn(
+          manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method) => {
+          if (method === "model/list") {
+            if (mode === "failed") throw new Error("offline");
+            if (pages++ === 0)
+              return {
+                data: [
+                  {
+                    model: mode === "paged" ? "gpt-other" : "gpt-fresh",
+                    supportedReasoningEfforts: [],
+                    serviceTiers: [],
+                  },
+                ],
+                nextCursor: "second",
+              };
+            if (mode === "partial") throw new Error("page two offline");
+            return {
+              data: [
+                {
+                  model: "gpt-fresh",
+                  hidden: true,
+                  limits: { contextWindowTokens: 872_000 },
+                  supportedReasoningEfforts: [],
+                  serviceTiers: [{ id: "priority" }],
+                },
+              ],
+              nextCursor: null,
+            };
+          }
+          if (method === "thread/start") return { thread: { id: "provider-thread" } };
+          if (method === "turn/start") return { turn: { id: "turn" } };
+          return {};
+        });
+      const fallback = createReportedCodexModelCapabilities({
+        model: "gpt-fresh",
+        supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+        serviceTiers: [{ id: "priority" }],
+      });
+      try {
+        await manager.startSession({
+          threadId: asThreadId("review"),
+          model: "gpt-fresh",
+          serviceTier: "fast",
+          cwd: directory,
+          runtimeMode: "full-access",
+          providerOptions: { codex: { binaryPath } },
+          effectiveModelCapabilities: new Map([["gpt-fresh", fallback]]),
+        });
+        await manager.sendTurn({
+          threadId: asThreadId("review"),
+          input: "hello",
+          model: "gpt-fresh",
+          effort: "high",
+          serviceTier: "fast",
+        });
+        const turn = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2] as Record<
+          string,
+          unknown
+        >;
+        expect(turn.serviceTier).toBe(mode === "partial" ? null : "priority");
+        if (mode === "failed") expect(turn.effort).toBe("high");
+        else expect(turn).not.toHaveProperty("effort");
+        const configured = events.find((event) => event.method === "session/configured")
+          ?.payload as { config: Record<string, unknown> };
+        expect(configured.config.serviceTier).toBe(mode === "partial" ? null : "priority");
+        if (mode === "paged") expect(configured.config.modelContextWindowTokens).toBe(872_000);
+      } finally {
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
+});
+
+it("stamps MCP startup notifications from their emitting Codex context", () => {
+  const { manager, context } = createSendTurnHarness();
+  const emitting = {
+    ...context,
+    mcpEventIdentity: { providerInstanceId: "old-account", sessionGeneration: 1 },
+  };
+  const managerInternals = manager as unknown as {
+    sessions: Map<string, unknown>;
+    handleServerNotification: (context: unknown, notification: unknown) => void;
+  };
+  managerInternals.sessions.set(context.session.threadId, {
+    ...context,
+    mcpEventIdentity: { providerInstanceId: "new-account", sessionGeneration: 2 },
+  });
+  const events: ProviderEvent[] = [];
+  manager.on("event", (event) => events.push(event));
+  managerInternals.handleServerNotification(emitting, {
+    method: "mcpServer/startupStatus/updated",
+    params: { name: "docs", status: "ready" },
+  });
+  expect(events[0]?.payload).toMatchObject({
+    providerInstanceId: "old-account",
+    sessionGeneration: 1,
+  });
+});
+
+describe("Codex process settlement and source draining", () => {
+  function fixture() {
+    const manager = new CodexAppServerManager();
+    const output = Object.assign(new EventEmitter(), { close: vi.fn(), finish: vi.fn() });
+    const child = Object.assign(new EventEmitter(), {
+      stdout: { destroy: vi.fn() },
+      stdin: { destroy: vi.fn() },
+      stderr: Object.assign(new EventEmitter(), { destroy: vi.fn() }),
+    });
+    const reject = vi.fn();
+    const timeout = setTimeout(() => reject(new Error("late timeout")), 60_000);
+    const context = {
+      session: {
+        threadId: "draining",
+        status: "running",
+        activeTurnId: TurnId.makeUnsafe("draining-turn"),
+      },
+      stopping: false,
+      output,
+      child,
+      writer: { close: vi.fn() },
+      pending: new Map([[1, { timeout, reject }]]),
+      pendingApprovals: new Map(),
+      pendingUserInputs: new Map(),
+      nativeRequestCorrelations: new Map(),
+    };
+    const internal = manager as unknown as {
+      sessions: Map<string, unknown>;
+      attachProcessListeners: (context: unknown) => void;
+      handleStdoutLine: (...args: unknown[]) => void;
+      emitLifecycleEvent: (...args: unknown[]) => void;
+      emitErrorEvent: (...args: unknown[]) => void;
+    };
+    internal.sessions.set("draining", context);
+    const lines = vi.spyOn(internal, "handleStdoutLine").mockImplementation(() => {});
+    const lifecycle = vi.spyOn(internal, "emitLifecycleEvent").mockImplementation(() => {});
+    const errors = vi.spyOn(internal, "emitErrorEvent").mockImplementation(() => {});
+    internal.attachProcessListeners(context);
+    return { context, output, child, reject, internal, lines, lifecycle, errors };
+  }
+  it.each(["exit", "error"])(
+    "settles written requests on %s before pipes close, including replaced contexts",
+    (kind) => {
+      const f = fixture();
+      const replacement = { session: { threadId: "draining" } };
+      f.internal.sessions.set("draining", replacement);
+      if (kind === "exit") f.child.emit("exit", 1, null);
+      else f.child.emit("error", new Error("dead"));
+      expect(f.reject).toHaveBeenCalledTimes(1);
+      expect(f.context.pending.size).toBe(0);
+      f.child.emit("close");
+      expect(f.internal.sessions.get("draining")).toBe(replacement);
+      expect(f.lifecycle).toHaveBeenCalledTimes(1);
+      expect(f.child.eventNames()).toEqual([]);
+    },
+  );
+  it("includes launcher stderr in pending request failures and terminal events", () => {
+    const f = fixture();
+    const reason = "Error: Missing optional dependency @openai/codex-darwin-arm64.";
+    f.child.stderr.emit(
+      "data",
+      Buffer.from("source excerpt\n" + reason + "\n at launcher\nNode.js v26\n"),
+    );
+    f.child.emit("exit", 1, null);
+    expect(f.reject.mock.calls[0]?.[0].message).toContain(reason);
+    f.output.emit("close");
+    f.child.stderr.emit("end");
+    expect(f.lifecycle).toHaveBeenCalledWith(
+      f.context,
+      "session/exited",
+      expect.stringContaining(reason),
+      TurnId.makeUnsafe("draining-turn"),
+    );
+  });
+
+  it("retains late stderr in the terminal event and session error", () => {
+    const f = fixture();
+    f.child.emit("exit", 1, null);
+    f.child.stderr.emit("data", Buffer.from("Error: invalid config"));
+    f.output.emit("close");
+    f.child.stderr.emit("end");
+    expect(f.lifecycle).toHaveBeenCalledWith(
+      f.context,
+      "session/exited",
+      expect.stringContaining("Error: invalid config"),
+      TurnId.makeUnsafe("draining-turn"),
+    );
+    expect((f.context.session as { lastError?: string }).lastError).toContain(
+      "Error: invalid config",
+    );
+  });
+
+  it("publishes final output and split stderr after exit before one terminal event", () => {
+    const f = fixture();
+    f.child.stderr.emit("data", Buffer.from("ERROR final "));
+    f.child.emit("exit", 0, null);
+    expect(f.reject).toHaveBeenCalledTimes(1);
+    expect(f.lifecycle).not.toHaveBeenCalled();
+    f.output.emit("line", '{"method":"turn/completed"}');
+    f.child.stderr.emit("data", Buffer.from("diagnostic\n"));
+    expect(f.lines).toHaveBeenCalledTimes(1);
+    expect(f.errors).toHaveBeenCalledWith(
+      f.context,
+      "process/stderr",
+      expect.stringContaining("final diagnostic"),
+    );
+    f.child.emit("exit", 0, null);
+    f.child.emit("error", new Error("duplicate"));
+    f.output.emit("close");
+    f.child.stderr.emit("end");
+    expect(f.lifecycle).toHaveBeenCalledTimes(1);
+    expect(f.lifecycle).toHaveBeenCalledWith(
+      f.context,
+      "session/exited",
+      expect.any(String),
+      TurnId.makeUnsafe("draining-turn"),
+    );
+    expect(f.context.session.activeTurnId).toBeUndefined();
+    expect(f.internal.sessions.size).toBe(0);
+    expect(f.context.pending.size).toBe(0);
+    expect(f.child.eventNames()).toEqual([]);
+    expect(f.output.listenerCount("line")).toBe(0);
+    expect(f.child.stderr.listenerCount("data")).toBe(0);
+  });
+  it("fails pending requests promptly when stdout closes while the process keeps running", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      const kill = vi.fn(() => true);
+      Object.assign(f.child, { killed: false, exitCode: null, signalCode: null, kill });
+      f.output.emit("close");
+      await vi.advanceTimersByTimeAsync(CODEX_EXIT_STATUS_GRACE_MS - 1);
+      expect(f.reject).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.reject).toHaveBeenCalledTimes(1);
+      expect(f.reject.mock.calls[0]?.[0]).toMatchObject({ message: CODEX_STDOUT_ENDED_MESSAGE });
+      expect(f.context.pending.size).toBe(0);
+      expect(kill).toHaveBeenCalled();
+      expect(f.errors).not.toHaveBeenCalled();
+      // The exit that follows the kill is a signal, not a status to report.
+      f.child.emit("exit", null, "SIGTERM");
+      f.child.stderr.emit("close");
+      expect(f.lifecycle).toHaveBeenCalledTimes(1);
+      expect(f.lifecycle).toHaveBeenCalledWith(
+        f.context,
+        "session/exited",
+        CODEX_STDOUT_ENDED_MESSAGE,
+        TurnId.makeUnsafe("draining-turn"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each([
+    [0, undefined],
+    [3, "codex app-server exited (code=3, signal=null)."],
+  ])("reports an exit code %s that arrives after the grace period", async (code, lastError) => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      const kill = vi.fn(() => true);
+      Object.assign(f.child, { killed: false, exitCode: null, signalCode: null, kill });
+      f.output.emit("close");
+      await vi.advanceTimersByTimeAsync(CODEX_EXIT_STATUS_GRACE_MS);
+      expect(f.reject).toHaveBeenCalledTimes(1);
+      f.child.emit("exit", code, null);
+      f.child.stderr.emit("close");
+      const message = `codex app-server exited (code=${code}, signal=null).`;
+      expect(f.lifecycle).toHaveBeenCalledWith(
+        f.context,
+        "session/exited",
+        message,
+        TurnId.makeUnsafe("draining-turn"),
+      );
+      expect((f.context.session as { lastError?: string }).lastError).toBe(lastError);
+      expect(f.errors).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("reports the exit status when it follows stdout closure within the grace period", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.output.emit("close");
+      await vi.advanceTimersByTimeAsync(100);
+      f.child.emit("exit", 1, null);
+      expect(f.reject).toHaveBeenCalledTimes(1);
+      expect(f.reject.mock.calls[0]?.[0]).toMatchObject({
+        message: "codex app-server exited (code=1, signal=null).",
+      });
+      await vi.advanceTimersByTimeAsync(CODEX_EXIT_STATUS_GRACE_MS);
+      expect(f.errors).not.toHaveBeenCalledWith(
+        f.context,
+        "process/error",
+        CODEX_STDOUT_ENDED_MESSAGE,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("closes hanging pipes at the drain deadline without leaking listeners", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.output.finish.mockImplementation(() => {
+        f.output.emit("line", '{"method":"final"}');
+        f.output.emit("close");
+      });
+      f.child.emit("error", new Error("failed without exit"));
+      expect(f.context.pending.size).toBe(0);
+      await vi.advanceTimersByTimeAsync(1_800);
+      expect(f.lifecycle).toHaveBeenCalledTimes(1);
+      expect(f.lines).toHaveBeenCalledWith(f.context, '{"method":"final"}');
+      expect(f.lines.mock.invocationCallOrder[0]).toBeLessThan(
+        f.lifecycle.mock.invocationCallOrder[0]!,
+      );
+      expect(f.child.eventNames()).toEqual([]);
+      expect(f.child.stderr.eventNames()).toEqual([]);
+      expect(f.output.eventNames()).toEqual([]);
+      expect(f.child.stdout.destroy).toHaveBeenCalledTimes(1);
+      expect(f.child.stderr.destroy).toHaveBeenCalledTimes(1);
+      expect(f.child.stdin.destroy).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+it("cancels a queued session start without releasing the preceding start's exclusion", async () => {
+  const manager = new CodexAppServerManager();
+  let release!: (session: ProviderSession) => void;
+  const firstResult = new Promise<ProviderSession>((resolve) => {
+    release = resolve;
+  });
+  const session = {
+    threadId: asThreadId("cancel-start"),
+    provider: "codex",
+    status: "ready",
+    runtimeMode: "full-access",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  } as const;
+  const internal = manager as unknown as {
+    startSessionUnlocked: (input: CodexAppServerStartSessionInput) => Promise<ProviderSession>;
+  };
+  const start = vi
+    .spyOn(internal, "startSessionUnlocked")
+    .mockImplementationOnce(() => firstResult)
+    .mockResolvedValue(session);
+  const input = { threadId: session.threadId, runtimeMode: "full-access" } as const;
+  const first = manager.startSession(input);
+  await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+  const controller = new AbortController();
+  const cancelled = manager.startSession(input, controller.signal);
+  const rejection = expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+  controller.abort();
+  await rejection;
+  const third = manager.startSession(input);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(start).toHaveBeenCalledTimes(1);
+  release(session);
+  await Promise.all([first, third]);
+  expect(start).toHaveBeenCalledTimes(2);
+});
+
+it.each([false, true])(
+  "retired goal pause cannot stop a replacement (request already started: %s)",
+  async (started) => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    const internal = manager as unknown as {
+      sessions: Map<string, unknown>;
+      handleServerNotification: (context: unknown, notification: unknown) => void;
+    };
+    internal.sessions.set(context.session.threadId, context);
+    const stop = vi.spyOn(manager, "stopSession").mockImplementation(() => {});
+    const request = Promise.withResolvers<never>();
+    sendRequest.mockReturnValue(request.promise);
+    const frame = {
+      method: "thread/goal/updated",
+      params: { threadId: "thread_1", goal: { status: "active" } },
+    };
+    if (started) internal.handleServerNotification(context, frame);
+    const replacement = { session: { ...context.session } };
+    internal.sessions.set(context.session.threadId, replacement);
+    if (started) request.reject(new Error("retired writer closed"));
+    else internal.handleServerNotification(context, frame);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stop).not.toHaveBeenCalled();
+    expect(sendRequest).toHaveBeenCalledTimes(started ? 1 : 0);
+    expect(internal.sessions.get(context.session.threadId)).toBe(replacement);
   },
 );

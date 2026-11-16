@@ -4,6 +4,7 @@ import type {
   ProviderInstanceInventory,
   ProviderInventorySource,
 } from "@t3tools/contracts";
+import { withoutScratchProjects } from "@t3tools/shared/scratchProject";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDownIcon, RotateCwIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -14,6 +15,7 @@ import { useStore } from "../../store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { fieldSurfaceClassName } from "../ui/input";
 import { Spinner } from "../ui/spinner";
 
 const SOURCE_LABELS: Record<ProviderInventorySource, string> = {
@@ -91,13 +93,44 @@ function InventoryBody({ inventory }: { readonly inventory: ProviderInstanceInve
   const hasAgents = inventory.driver === "claudeAgent";
   return (
     <div className="space-y-3">
+      {inventory.account && (
+        <p className="text-xs">
+          {inventory.account.type === "gcp" ? "Google Vertex AI" : inventory.account.type}
+          {inventory.account.email && (
+            <span className="ml-2 blur-sm hover:blur-none">{inventory.account.email}</span>
+          )}
+          {inventory.account.workspaceName && (
+            <span className="ml-2">{inventory.account.workspaceName}</span>
+          )}
+        </p>
+      )}
+      {inventory.accountWorkspaces && (
+        <InventoryGroup title="Account workspaces" empty="No account workspaces reported.">
+          {inventory.accountWorkspaces.map((workspace, index) => (
+            <InventoryRow
+              key={index}
+              title={workspace.name}
+              detail={[workspace.kind, workspace.active ? "Active" : null]
+                .filter(Boolean)
+                .join(" · ")}
+              source="instance"
+            />
+          ))}
+        </InventoryGroup>
+      )}
       <InventoryGroup title="Hooks" empty="No hooks configured.">
         {inventory.hooks.map((hook, index) => (
           <InventoryRow
             key={`${hook.sourcePath ?? hook.source}:${hook.event}:${index}`}
             title={
               <>
-                {hook.event}
+                {(
+                  {
+                    preModelRequest: "Before model request",
+                    postModelRequest: "After model request",
+                  } as Record<string, string>
+                )[hook.event] ?? hook.event}
+                {hook.environmentId ? " · Environment (managed)" : ""}
                 {hook.matcher ? (
                   <span className="text-muted-foreground"> · {hook.matcher}</span>
                 ) : null}
@@ -183,6 +216,9 @@ export function ProviderInventorySection({
   const projects = useStore((store) => store.projects);
   const [open, setOpen] = useState(false);
   const [projectId, setProjectId] = useState<ProjectId | undefined>(undefined);
+  const [feedbackPath, setFeedbackPath] = useState<string | null>(null);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [savingFeedback, setSavingFeedback] = useState(false);
   const query = useQuery({
     queryKey: providerInventoryQueryKey(instanceId, projectId),
     queryFn: () =>
@@ -213,17 +249,64 @@ export function ProviderInventorySection({
         </CollapsibleTrigger>
         <CollapsibleContent>
           <div className="mt-3 space-y-3">
+            {query.data?.feedbackSupported && (
+              <div className="space-y-2">
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={savingFeedback}
+                  onClick={() => {
+                    setSavingFeedback(true);
+                    setFeedbackError(null);
+                    const save = ensureNativeApi().server.saveProviderFeedback;
+                    if (!save) {
+                      setSavingFeedback(false);
+                      setFeedbackError("Feedback save is unavailable.");
+                      return;
+                    }
+                    void save({ instanceId })
+                      .then((result) => setFeedbackPath(result.path))
+                      .catch((cause) => setFeedbackError(String(cause)))
+                      .finally(() => setSavingFeedback(false));
+                  }}
+                >
+                  Save Codex feedback bundle
+                </Button>
+                {feedbackPath && (
+                  <p className="break-all text-xs">
+                    {feedbackPath}{" "}
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      disabled={!window.desktopBridge?.revealFile}
+                      onClick={() => {
+                        void window.desktopBridge
+                          ?.revealFile?.(feedbackPath)
+                          .catch((cause) => setFeedbackError(String(cause)));
+                      }}
+                    >
+                      Reveal
+                    </Button>
+                  </p>
+                )}
+                {feedbackError && (
+                  <p role="alert" className="text-xs text-destructive">
+                    {feedbackError}
+                  </p>
+                )}
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <select
                 aria-label="Project for project-shared entries"
-                className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs"
+                className={cn(fieldSurfaceClassName, "h-7 min-w-0 flex-1 px-2 text-xs")}
                 value={projectId ?? ""}
                 onChange={(event) =>
                   setProjectId(event.target.value ? (event.target.value as ProjectId) : undefined)
                 }
               >
                 <option value="">Instance only (no project)</option>
-                {projects.map((project) => (
+                {withoutScratchProjects(projects).map((project) => (
                   <option key={project.id} value={project.id}>
                     {project.name}
                   </option>

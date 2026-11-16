@@ -1,13 +1,45 @@
 import { createHash } from "node:crypto";
+import { Effect } from "effect";
+import { prSearchPredicate } from "./prSearch.ts";
 import {
   PrHubListFilter,
   type PrHubListInput,
   type PrHubListPage,
   type PrHubOverview,
+  type PrHubSavedQuery,
+  type PrHubSection,
   type PrHubSnapshot,
   type PrHubChanged,
+  type TrackedPullRequest,
 } from "@t3tools/contracts";
-import { matchesPrHubFilter, comparePrPriority } from "@t3tools/shared/prHub";
+import {
+  matchesPrHubFilter,
+  comparePrPriority,
+  PR_HUB_SECTIONS,
+  prHubSectionOf,
+} from "@t3tools/shared/prHub";
+
+/**
+ * Adds the linked F5 threads to a list page. Links decorate rows: when they cannot be read
+ * the page goes out without them and the failure is logged, because a row without its
+ * links offers to start an agent although one may already be running.
+ */
+export function withPrHubThreadLinks<E, R>(
+  page: PrHubListPage,
+  read: (
+    keys: ReadonlyArray<string>,
+  ) => Effect.Effect<NonNullable<PrHubListPage["threadLinks"]>, E, R>,
+): Effect.Effect<PrHubListPage, never, R> {
+  if (page.pullRequests.length === 0) return Effect.succeed(page);
+  return read(page.pullRequests.map((pr) => pr.key)).pipe(
+    Effect.map((threadLinks) => ({ ...page, threadLinks })),
+    Effect.catch((error) =>
+      Effect.logWarning("PR Hub linked threads could not be read; the list is sent without them", {
+        error: error instanceof Error ? error.message : String(error),
+      }).pipe(Effect.as(page)),
+    ),
+  );
+}
 
 export function excludePrHubRepositories(
   snapshot: PrHubSnapshot,
@@ -52,25 +84,85 @@ export function defaultPrHubCoverage(
   ];
 }
 
+/** Enough for a filter's suggestions; anything rarer is still reachable by typing it. */
+const FACET_LIMIT = 200;
+const tally = (counts: Map<string, number>, value: string) =>
+  counts.set(value, (counts.get(value) ?? 0) + 1);
+const mostCommon = (counts: ReadonlyMap<string, number>) =>
+  [...counts]
+    .sort(([a, x], [b, y]) => y - x || a.localeCompare(b))
+    .slice(0, FACET_LIMIT)
+    .map(([value]) => value);
+
+type QueueFilters = Pick<PrHubListInput, "query" | "repository" | "ci" | "review" | "draft">;
+
+/** The search and filters of the queue, shared by lists and saved-view counts. */
+function queueFilterPredicate(filters: QueueFilters, viewerLogin: string | null) {
+  const matchesSearch = prSearchPredicate(filters.query ?? "", viewerLogin);
+  return (pr: TrackedPullRequest) =>
+    (!filters.repository || pr.repository.nameWithOwner === filters.repository) &&
+    (!filters.ci || pr.checkRollup === filters.ci) &&
+    (!filters.draft || pr.isDraft === (filters.draft === "only")) &&
+    (!filters.review || pr.reviewDecision === filters.review) &&
+    matchesSearch(pr);
+}
+
+const isUnread = (pr: TrackedPullRequest) => (pr.changesSinceSeen?.length ?? 0) > 0;
+const NEEDS_VIEWER: ReadonlySet<PrHubSection> = new Set(["review", "action", "ready"]);
+
 export function prHubOverview(
   snapshot: PrHubSnapshot,
   revision: string,
   stalledBefore?: string,
   now = Date.now(),
+  savedQueries: readonly PrHubSavedQuery[] = [],
 ): PrHubOverview {
   const { pullRequests, recentlyResolved, cappedBuckets, ...metadata } = snapshot;
+  const saved = savedQueries.map((query) => ({
+    id: query.id,
+    matches: queueFilterPredicate(query, snapshot.viewerLogin),
+  }));
+  const savedCounts: Record<string, number> = Object.fromEntries(
+    saved.map((query) => [query.id, 0]),
+  );
+  let unreadCount = 0;
   const counts = Object.fromEntries(
     PrHubListFilter.literals.map((filter) => [filter, 0]),
   ) as Record<PrHubListFilter, number>;
+  const sectionCounts = Object.fromEntries(
+    PR_HUB_SECTIONS.map((section) => [section, 0]),
+  ) as Record<PrHubSection, number>;
+  const repositories = new Map<string, number>();
+  const authors = new Map<string, number>();
+  const labels = new Map<string, number>();
   for (const pr of [...pullRequests, ...recentlyResolved]) {
     for (const filter of PrHubListFilter.literals) {
       if (matchesPrHubFilter(pr, filter, stalledBefore, now)) counts[filter]++;
+    }
+    // Sections describe the active queue: snoozed, ignored and closed rows are elsewhere.
+    if (matchesPrHubFilter(pr, "all", undefined, now, "active")) {
+      const section = prHubSectionOf(pr, now);
+      sectionCounts[section]++;
+      if (isUnread(pr)) unreadCount++;
+      if (NEEDS_VIEWER.has(section))
+        for (const query of saved) if (query.matches(pr)) savedCounts[query.id]!++;
+      tally(repositories, pr.repository.nameWithOwner);
+      if (pr.author) tally(authors, pr.author);
+      for (const label of pr.labels) tally(labels, label);
     }
   }
   return {
     ...metadata,
     revision,
     counts,
+    sectionCounts,
+    unreadCount,
+    ...(saved.length > 0 ? { savedCounts } : {}),
+    facets: {
+      repositories: mostCommon(repositories),
+      authors: mostCommon(authors),
+      labels: mostCommon(labels),
+    },
     coverage: snapshot.coverage?.length
       ? snapshot.coverage
       : defaultPrHubCoverage(snapshot.lastPolledAt, cappedBuckets),
@@ -96,6 +188,7 @@ export function listPrHubPullRequests(
   if (accountGeneration !== undefined && accountGeneration !== snapshot.account?.generation)
     return empty;
   let offset = 0;
+  let expectedPrefix: unknown;
   if (cursor) {
     // Cursors are navigation hints, not capabilities: all reads are independently
     // scoped to the verified account and validated filter/revision below.
@@ -109,37 +202,45 @@ export function listPrHubPullRequests(
       )
         return empty;
       offset = parsed.offset;
+      expectedPrefix = parsed.prefix;
     } catch {
       return empty;
     }
   }
-  const query = input.query?.trim().toLowerCase();
+  const matchesFilters = queueFilterPredicate(input, snapshot.viewerLogin);
+  const now = Date.now();
+  // A section is a slice of the active queue unless the caller asks for another status.
+  const visibility = input.visibility ?? (input.section ? "active" : undefined);
   const rows = [...snapshot.pullRequests, ...snapshot.recentlyResolved].filter((pr) => {
     if (input.key) return pr.key === input.key;
     return (
-      matchesPrHubFilter(
-        pr,
-        input.filter ?? "all",
-        input.stalledBefore,
-        Date.now(),
-        input.visibility,
-      ) &&
-      (!input.repository || pr.repository.nameWithOwner === input.repository) &&
+      matchesPrHubFilter(pr, input.filter ?? "all", input.stalledBefore, now, visibility) &&
+      (!input.section || prHubSectionOf(pr, now) === input.section) &&
+      (!input.unread || isUnread(pr)) &&
       (!input.relationship || pr.roles.includes(input.relationship)) &&
-      (!input.ci || pr.checkRollup === input.ci) &&
       (!input.lifecycle || pr.state === input.lifecycle) &&
-      (!query ||
-        `${pr.title} ${pr.repository.nameWithOwner} #${pr.number} ${pr.author ?? ""}`
-          .toLowerCase()
-          .includes(query))
+      matchesFilters(pr)
     );
   });
   rows.sort(
     (a, b) =>
       (input.sort === "updated"
         ? Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
-        : comparePrPriority(a, b)) || a.key.localeCompare(b.key),
+        : comparePrPriority(a, b, now)) || a.key.localeCompare(b.key),
   );
+  // Sections, and with them the order, follow the clock and the viewer's settings, and
+  // neither changes the revision. So a cursor also names the rows that came before it: if a
+  // row has moved across the page boundary since, resuming by offset would skip or repeat one.
+  const prefixOf = (count: number) =>
+    createHash("sha256")
+      .update(
+        rows
+          .slice(0, count)
+          .map((pr) => pr.key)
+          .join("\n"),
+      )
+      .digest("hex");
+  if (cursor && expectedPrefix !== prefixOf(offset)) return empty;
   if (!cursor && input.anchorKey) {
     const anchor = rows.findIndex((pr) => pr.key === input.anchorKey);
     if (anchor >= 0) offset = Math.max(0, anchor - 10);
@@ -150,11 +251,39 @@ export function listPrHubPullRequests(
     accountGeneration: snapshot.account?.generation,
     revision,
     status: "ok",
-    pullRequests: rows.slice(offset, next),
+    pullRequests: rows
+      .slice(offset, next)
+      .map((pr) => (pr.section ? pr : { ...pr, section: prHubSectionOf(pr, now) })),
     nextCursor:
       next < rows.length
-        ? Buffer.from(JSON.stringify({ revision, signature, offset: next })).toString("base64url")
+        ? Buffer.from(
+            JSON.stringify({ revision, signature, offset: next, prefix: prefixOf(next) }),
+          ).toString("base64url")
         : null,
+  };
+}
+
+/**
+ * Passes change events from several hubs on as one numbered stream. Each event's changed
+ * keys are a difference from the hub's previous event, and a hub's buffer drops events it
+ * could not deliver, so a jump in a hub's own numbering means keys were lost: that event
+ * asks for a resync. The relayed stream is numbered again for the next reader.
+ */
+export function makePrHubChangeRelay() {
+  let relayed = 0;
+  /** One source hub. */
+  return () => {
+    let last: number | undefined;
+    return (event: PrHubChanged): PrHubChanged => {
+      const missed =
+        event.sequence !== undefined && last !== undefined && event.sequence !== last + 1;
+      if (event.sequence !== undefined) last = event.sequence;
+      return {
+        ...event,
+        sequence: ++relayed,
+        resyncRequired: event.resyncRequired || missed,
+      };
+    };
   };
 }
 

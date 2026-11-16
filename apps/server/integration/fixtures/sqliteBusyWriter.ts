@@ -16,6 +16,9 @@ try {
       const sql = yield* SqlClient.SqlClient;
       const rows = yield* sql<{ timeout: number }>`PRAGMA busy_timeout`;
       if (rows[0]?.timeout !== 5000) throw new Error("Busy timeout missing");
+      // Match the production journal mode. Rollback mode can deadlock a waiting
+      // writer's shared lock against the parent's COMMIT on Windows.
+      yield* sql`PRAGMA journal_mode = WAL`;
       yield* sql`CREATE TABLE contention_test (value TEXT)`;
     }),
   );
@@ -25,7 +28,17 @@ try {
       const sql = yield* SqlClient.SqlClient;
       process.stdout.write("writing\n");
       const startedAt = performance.now();
-      yield* sql`INSERT INTO contention_test VALUES ('child')`;
+      if (process.argv[3] === "transaction")
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{
+              count: number;
+            }>`SELECT count(*) AS count FROM contention_test`;
+            process.stdout.write(`read:${rows[0]!.count}\n`);
+            yield* sql`INSERT INTO contention_test VALUES ('child')`;
+          }),
+        );
+      else yield* sql`INSERT INTO contention_test VALUES ('child')`;
       process.stdout.write(`written:${performance.now() - startedAt}\n`);
     }),
   );

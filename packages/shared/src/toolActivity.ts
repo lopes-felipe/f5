@@ -14,6 +14,16 @@ function asTrimmedString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/** Derive the heading from validated native Skill input, including streamed input. */
+export function claudeSkillToolTitle(
+  toolName: string | undefined,
+  input: unknown,
+): string | undefined {
+  if (toolName !== "Skill") return undefined;
+  const name = asTrimmedString(asRecord(input)?.skill);
+  return name && name.length <= 512 ? `Skill: ${name}` : undefined;
+}
+
 function normalizeCommandValue(value: unknown): string | undefined {
   const direct = asTrimmedString(value);
   if (direct) {

@@ -1,3 +1,4 @@
+import { deleteGitHubPullRequestBranch } from "../git/githubBranchDeletion.ts";
 import {
   SOURCE_CONTROL_PULL_REQUEST_ACTIONS,
   type SourceControlCapability,
@@ -96,6 +97,8 @@ export function makeGitHubSourceControlProvider(github: GitHubCliShape): SourceC
 
   return {
     kind: "github",
+    deletePullRequestBranch: (input) =>
+      mapGithubError(deleteGitHubPullRequestBranch(github, input)),
     capabilities: GITHUB_SOURCE_CONTROL_CAPABILITIES,
     capability,
     requireCapability,

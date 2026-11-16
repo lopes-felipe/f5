@@ -1,3 +1,4 @@
+import { DeliveryAttemptContext } from "../../provider/deliveryAttemptContext";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { makeFakeGitCore } from "../../git/testDoubles.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -135,126 +136,134 @@ const question = (threadId: ThreadId, message = true, turnId = "old-turn") =>
     return requestId;
   });
 suite("durable turn lifecycle", (it) => {
-  it.effect(
-    "dispatches steering alongside an unresolved ACP start while keeping starts ordered",
-    () =>
-      Effect.gen(function* () {
-        const threadId = yield* seed("acp-steering");
-        const otherThreadId = yield* seed("acp-next-start");
-        const engine = yield* OrchestrationEngineService;
-        const store = yield* NextTurnQueueStore;
-        const startEntered = yield* Deferred.make<void>();
-        const finishPrompt = yield* Deferred.make<void>();
-        const steerEntered = yield* Deferred.make<void>();
-        const activeTurnId = TurnId.makeUnsafe("acp-active-turn");
-        const delivered: string[] = [];
-        let startFinished = false;
-        const reactor = Layer.succeed(ProviderCommandReactor, {
-          deliverTurnStart: (event: OrchestrationEvent) =>
-            Effect.gen(function* () {
-              delivered.push(event.type);
-              if (event.type === "thread.turn-steer-requested") {
-                assert.equal(startFinished, false);
-                yield* Deferred.succeed(steerEntered, undefined);
-                return { turnId: activeTurnId };
-              }
-              if (event.aggregateId === threadId) {
-                yield* engine.dispatch({
-                  type: "thread.session.set",
-                  commandId: CommandId.makeUnsafe("acp:running"),
-                  threadId,
-                  createdAt: at,
-                  session: {
-                    threadId,
-                    providerName: "codex",
-                    status: "running",
-                    runtimeMode: "full-access",
-                    activeTurnId,
-                    lastError: null,
-                    updatedAt: at,
-                  },
-                });
-                yield* Deferred.succeed(startEntered, undefined);
-                yield* Deferred.await(finishPrompt);
-                startFinished = true;
-              }
+  it.effect("dispatches steering alongside thirteen unresolved ACP starts", () =>
+    Effect.gen(function* () {
+      const threadId = yield* seed("acp-steering");
+      const otherThreadIds = yield* Effect.forEach(
+        Array.from({ length: 12 }, (_, i) => i),
+        (i) => seed(`acp-next-start-${i}`),
+      );
+      const allStarted = yield* Deferred.make<void>();
+      let startedCount = 0;
+      const engine = yield* OrchestrationEngineService;
+      const store = yield* NextTurnQueueStore;
+      const startEntered = yield* Deferred.make<void>();
+      const finishPrompt = yield* Deferred.make<void>();
+      const steerEntered = yield* Deferred.make<void>();
+      const activeTurnId = TurnId.makeUnsafe("acp-active-turn");
+      const delivered: string[] = [];
+      let startFinished = false;
+      const reactor = Layer.succeed(ProviderCommandReactor, {
+        deliverTurnStart: (event: OrchestrationEvent) =>
+          Effect.gen(function* () {
+            const attempt = yield* DeliveryAttemptContext;
+            if (attempt) yield* attempt.prepared(null);
+            delivered.push(event.type);
+            if (event.type === "thread.turn-steer-requested") {
+              assert.equal(startFinished, false);
+              yield* Deferred.succeed(steerEntered, undefined);
               return { turnId: activeTurnId };
-            }),
-          recordTurnStartFailure: () => Effect.void,
-        } as never);
-        const command = (name: string, target = threadId) => ({
-          type: "thread.turn.start" as const,
-          commandId: CommandId.makeUnsafe(`acp:${name}`),
-          threadId: target,
-          message: {
-            messageId: MessageId.makeUnsafe(`acp-message:${name}`),
-            role: "user" as const,
-            text: name,
-            attachments: [],
-          },
-          provider: "codex" as const,
-          model: "gpt-5-codex",
-          runtimeMode: "full-access" as const,
-          interactionMode: "default" as const,
-          createdAt: at,
+            }
+            if (event.type === "thread.turn-start-requested") {
+              const targetThreadId = event.aggregateId as ThreadId;
+              yield* engine.dispatch({
+                type: "thread.session.set",
+                commandId: CommandId.makeUnsafe(`acp:running:${targetThreadId}`),
+                threadId: targetThreadId,
+                createdAt: at,
+                session: {
+                  threadId: targetThreadId,
+                  providerName: "codex",
+                  status: "running",
+                  runtimeMode: "full-access",
+                  activeTurnId,
+                  lastError: null,
+                  updatedAt: at,
+                },
+              });
+              yield* Deferred.succeed(startEntered, undefined);
+              startedCount++;
+              if (startedCount === 13) yield* Deferred.succeed(allStarted, undefined);
+              yield* Deferred.await(finishPrompt);
+              startFinished = true;
+            }
+            return { turnId: activeTurnId };
+          }),
+        recordTurnStartFailure: () => Effect.void,
+      } as never);
+      const command = (name: string, target = threadId) => ({
+        type: "thread.turn.start" as const,
+        commandId: CommandId.makeUnsafe(`acp:${name}`),
+        threadId: target,
+        message: {
+          messageId: MessageId.makeUnsafe(`acp-message:${name}`),
+          role: "user" as const,
+          text: name,
+          attachments: [],
+        },
+        provider: "codex" as const,
+        model: "gpt-5-codex",
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        createdAt: at,
+      });
+      const insert = (name: string, steer = false) =>
+        store.insertSubmission({
+          submissionId: CommandId.makeUnsafe(`acp-submission:${name}`),
+          itemId: CommandId.makeUnsafe(`acp-item:${name}`),
+          requestHash: name,
+          atHead: steer,
+          command: { ...command(name), ...(steer ? { expectedTurnId: activeTurnId } : {}) },
         });
-        const insert = (name: string, steer = false) =>
-          store.insertSubmission({
-            submissionId: CommandId.makeUnsafe(`acp-submission:${name}`),
-            itemId: CommandId.makeUnsafe(`acp-item:${name}`),
-            requestHash: name,
-            atHead: steer,
-            command: { ...command(name), ...(steer ? { expectedTurnId: activeTurnId } : {}) },
-          });
-        yield* Effect.gen(function* () {
-          const worker = yield* ProviderTurnDeliveryWorker;
-          const dispatcher = yield* NextTurnQueueDispatcher;
-          yield* worker.start;
-          yield* Effect.yieldNow;
-          yield* insert("original");
-          yield* dispatcher.notify(threadId);
-          yield* dispatcher.drain;
-          yield* Deferred.await(startEntered);
-          // Another start is durable, but must not overtake the unresolved prompt.
-          yield* engine.dispatch(command("next", otherThreadId));
-          yield* insert("steer", true);
-          yield* dispatcher.notify(threadId);
-          yield* dispatcher.drain;
-          yield* Deferred.await(steerEntered);
-          assert.deepEqual(delivered, [
-            "thread.turn-start-requested",
-            "thread.turn-steer-requested",
-          ]);
-          const draining = yield* worker.drain.pipe(Effect.forkChild);
-          assert.equal(draining.pollUnsafe(), undefined);
-          yield* Deferred.succeed(finishPrompt, undefined);
-          yield* Fiber.join(draining);
-          assert.deepEqual(delivered, [
-            "thread.turn-start-requested",
-            "thread.turn-steer-requested",
-            "thread.turn-start-requested",
-          ]);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(ProviderTurnDeliveryWorkerLive, NextTurnQueueDispatcherLive).pipe(
-              Layer.provide(reactor),
-              Layer.provide(
-                Layer.succeed(ProviderService, {
-                  readThread: () => Effect.succeed({ threadId, turns: [] }),
-                } as never),
-              ),
-              Layer.provide(Layer.succeed(GitCore, makeFakeGitCore().service)),
-              Layer.provide(
-                Layer.succeed(RuntimeReceiptBus, {
-                  publish: () => Effect.void,
-                  stream: Stream.empty,
-                }),
-              ),
-              Layer.provideMerge(ProviderTurnDeliveryRepositoryLive),
-            ),
-          ),
+      yield* Effect.gen(function* () {
+        const worker = yield* ProviderTurnDeliveryWorker;
+        const dispatcher = yield* NextTurnQueueDispatcher;
+        yield* worker.start;
+        yield* Effect.yieldNow;
+        yield* insert("original");
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        yield* Deferred.await(startEntered);
+        // An unrelated thread starts while this prompt stays unresolved.
+        yield* Effect.forEach(
+          otherThreadIds,
+          (target, i) => engine.dispatch(command(`next-${i}`, target)),
+          { discard: true },
         );
-      }),
+        yield* Deferred.await(allStarted);
+        yield* insert("steer", true);
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        yield* Deferred.await(steerEntered);
+        assert.equal(delivered.filter((type) => type === "thread.turn-start-requested").length, 13);
+        assert.equal(delivered.filter((type) => type === "thread.turn-steer-requested").length, 1);
+        const draining = yield* worker.drain.pipe(Effect.forkChild);
+        assert.equal(draining.pollUnsafe(), undefined);
+        yield* Deferred.succeed(finishPrompt, undefined);
+        yield* Fiber.join(draining);
+        assert.equal(delivered.filter((type) => type === "thread.turn-start-requested").length, 13);
+        assert.equal(delivered.filter((type) => type === "thread.turn-steer-requested").length, 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(ProviderTurnDeliveryWorkerLive, NextTurnQueueDispatcherLive).pipe(
+            Layer.provide(reactor),
+            Layer.provide(
+              Layer.succeed(ProviderService, {
+                readThread: () => Effect.succeed({ threadId, turns: [] }),
+              } as never),
+            ),
+            Layer.provide(Layer.succeed(GitCore, makeFakeGitCore().service)),
+            Layer.provide(
+              Layer.succeed(RuntimeReceiptBus, {
+                publish: () => Effect.void,
+                stream: Stream.empty,
+              }),
+            ),
+            Layer.provideMerge(ProviderTurnDeliveryRepositoryLive),
+          ),
+        ),
+      );
+    }),
   );
   it.effect(
     "rewind removes discarded questions from memory, snapshots and replay, and rejects stale answers",
@@ -309,6 +318,50 @@ suite("durable turn lifecycle", (it) => {
       }),
   );
   it.effect(
+    "retires a canceled scheduled restart marker and recovers the following ordinary thread",
+    () =>
+      Effect.gen(function* () {
+        const scheduled = yield* seed("a-canceled-scheduled");
+        const ordinary = yield* seed("b-ordinary-restart");
+        yield* interrupted(scheduled);
+        yield* interrupted(ordinary);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO scheduled_tasks(id,project_id,definition_json,request_hash,requested_at,version,enabled,updated_at)
+        VALUES('canceled-task','project:a-canceled-scheduled','{}','hash',${at},1,0,${at})`;
+        yield* sql`INSERT INTO scheduled_task_runs(id,task_id,scheduled_for,trigger,status,state_json,snapshot_json,thread_id,owns_execution,canceled,created_at)
+        VALUES('canceled-run','canceled-task',${at},'manual','failed','{}','{}',${scheduled},0,1,${at})`;
+        yield* sql`INSERT INTO scheduled_run_submissions(submission_id,run_id,thread_id,message_id,turn_id,kind)
+        VALUES('source','canceled-run',${scheduled},'source-message','old-turn','initial')`;
+        for (const thread of [scheduled, ordinary])
+          yield* sql`INSERT INTO restart_turn_markers(thread_id,turn_id,marked_at,continuation_id) VALUES(${thread},'old-turn',${new Date().toISOString()},${`restart:${thread}`})`;
+        assert.deepEqual(yield* recoverRestartTurnMarkers, [ordinary]);
+        assert.equal((yield* sql`SELECT * FROM restart_turn_markers`).length, 0);
+        const queue = yield* NextTurnQueueStore;
+        assert.equal((yield* queue.listByThread(scheduled)).items.length, 0);
+        assert.equal((yield* queue.listByThread(ordinary)).items.length, 1);
+      }),
+  );
+  it.effect(
+    "never recovers a scheduled turn in a bound conversation, even while its run is live",
+    () =>
+      Effect.gen(function* () {
+        const bound = yield* seed("a-bound-conversation");
+        yield* interrupted(bound);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO scheduled_tasks(id,project_id,definition_json,request_hash,requested_at,version,enabled,updated_at)
+        VALUES('bound-task','project:a-bound-conversation','{}','hash',${at},1,1,${at})`;
+        // Still owning and not canceled: recovery would otherwise bypass later cancellation.
+        yield* sql`INSERT INTO scheduled_task_runs(id,task_id,scheduled_for,trigger,status,state_json,snapshot_json,thread_id,owns_execution,capacity,canceled,created_at)
+        VALUES('bound-run','bound-task',${at},'manual','running','{}',${JSON.stringify({ workspace: { kind: "thread", threadId: bound } })},${bound},1,1,0,${at})`;
+        yield* sql`INSERT INTO scheduled_run_submissions(submission_id,run_id,thread_id,message_id,turn_id,kind)
+        VALUES('bound-source','bound-run',${bound},'bound-message','old-turn','initial')`;
+        yield* sql`INSERT INTO restart_turn_markers(thread_id,turn_id,marked_at,continuation_id) VALUES(${bound},'old-turn',${new Date().toISOString()},${`restart:${bound}`})`;
+        assert.deepEqual(yield* recoverRestartTurnMarkers, []);
+        assert.equal((yield* sql`SELECT * FROM restart_turn_markers`).length, 0);
+        assert.equal((yield* (yield* NextTurnQueueStore).listByThread(bound)).items.length, 0);
+      }),
+  );
+  it.effect(
     "enqueues each restart continuation once and retains ineligible markers until expiry",
     () =>
       Effect.gen(function* () {
@@ -321,9 +374,9 @@ suite("durable turn lifecycle", (it) => {
         yield* interrupted(blockedThread);
         const marked = new Date().toISOString();
         const continuationId = `resume:${threadId}:old-turn`;
-        yield* sql`INSERT INTO restart_turn_markers VALUES (${threadId}, 'old-turn', ${marked}, ${continuationId})`;
-        yield* sql`INSERT INTO restart_turn_markers VALUES (${blockedThread}, 'old-turn', ${marked}, ${`resume:${blockedThread}:old-turn`})`;
-        yield* sql`INSERT INTO restart_turn_markers VALUES (${expiredThread}, 'old-turn', ${new Date(Date.now() - 31 * 60_000).toISOString()}, ${`resume:${expiredThread}:old-turn`})`;
+        yield* sql`INSERT INTO restart_turn_markers (thread_id, turn_id, marked_at, continuation_id) VALUES (${threadId}, 'old-turn', ${marked}, ${continuationId})`;
+        yield* sql`INSERT INTO restart_turn_markers (thread_id, turn_id, marked_at, continuation_id) VALUES (${blockedThread}, 'old-turn', ${marked}, ${`resume:${blockedThread}:old-turn`})`;
+        yield* sql`INSERT INTO restart_turn_markers (thread_id, turn_id, marked_at, continuation_id) VALUES (${expiredThread}, 'old-turn', ${new Date(Date.now() - 31 * 60_000).toISOString()}, ${`resume:${expiredThread}:old-turn`})`;
         assert.deepEqual(yield* recoverRestartTurnMarkers, [threadId]);
         assert.deepEqual(yield* recoverRestartTurnMarkers, []);
         const store = yield* NextTurnQueueStore;
@@ -353,13 +406,33 @@ suite("durable turn lifecycle", (it) => {
       }),
   );
 
+  it.effect(
+    "queues one bounded background-cut continuation and never claims the tasks completed",
+    () =>
+      Effect.gen(function* () {
+        const threadId = yield* seed("restart-background-cut");
+        yield* interrupted(threadId);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO restart_turn_markers (thread_id, turn_id, marked_at, continuation_id, interrupted_background_work) VALUES (${threadId}, 'old-turn', ${new Date().toISOString()}, ${`resume:${threadId}:old-turn`}, 201)`;
+        assert.deepEqual(yield* recoverRestartTurnMarkers, [threadId]);
+        assert.deepEqual(yield* recoverRestartTurnMarkers, []);
+        const queue = yield* (yield* NextTurnQueueStore).listByThread(threadId);
+        assert.equal(queue.items.length, 1);
+        const text = queue.items[0]!.command.message.text;
+        assert.include(text, "more than 200");
+        assert.include(text, "Completion was not confirmed");
+        assert.include(text, "Do not assume that a task succeeded");
+        assert.isBelow(text.length, 500);
+      }),
+  );
+
   it.effect("revokes restart markers after opt-out or newer conversation work", () =>
     Effect.gen(function* () {
       const threadId = yield* seed("restart-revoked");
       yield* interrupted(threadId);
       const sql = yield* SqlClient.SqlClient;
       const marker = () =>
-        sql`INSERT INTO restart_turn_markers VALUES (${threadId}, 'old-turn', ${new Date().toISOString()}, ${`resume:${threadId}:old-turn`})`;
+        sql`INSERT INTO restart_turn_markers (thread_id, turn_id, marked_at, continuation_id) VALUES (${threadId}, 'old-turn', ${new Date().toISOString()}, ${`resume:${threadId}:old-turn`})`;
       yield* marker();
       yield* interrupted(threadId, "newer-turn");
       assert.deepEqual(yield* recoverRestartTurnMarkers, []);
@@ -369,7 +442,7 @@ suite("durable turn lifecycle", (it) => {
       );
       const optedOutThread = yield* seed("restart-opted-out");
       yield* interrupted(optedOutThread);
-      yield* sql`INSERT INTO restart_turn_markers VALUES (${optedOutThread}, 'old-turn', ${new Date().toISOString()}, ${`resume:${optedOutThread}:old-turn`})`;
+      yield* sql`INSERT INTO restart_turn_markers (thread_id, turn_id, marked_at, continuation_id) VALUES (${optedOutThread}, 'old-turn', ${new Date().toISOString()}, ${`resume:${optedOutThread}:old-turn`})`;
       yield* (yield* ServerSettingsService).updateSettings({
         resumeActiveTurnsAfterRestart: false,
       });
@@ -405,6 +478,17 @@ suite("durable turn lifecycle", (it) => {
         };
         const receipt = yield* engine.dispatch(command);
         assert.deepEqual(yield* engine.dispatch(command), receipt);
+        const resolvedActivities = (yield* engine.getReadModel()).threads
+          .find((thread) => thread.id === threadId)!
+          .activities.filter((activity) => activity.kind === "user-input.resolved");
+        assert.equal(resolvedActivities.length, 1);
+        assert.equal(resolvedActivities[0]!.turnId, "old-turn");
+        assert.deepEqual(resolvedActivities[0]!.payload, {
+          requestId,
+          resolution: "answered",
+          answers: { "0": { answers: ["A", "typed"] } },
+          answerMessageId: `answer:${commandId}`,
+        });
         const queue = yield* store.listByThread(threadId);
         assert.equal(queue.items.length, 1);
         assert.notEqual(queue.items[0]!.command.commandId, commandId);
@@ -543,6 +627,37 @@ suite("durable turn lifecycle", (it) => {
       });
       const store = yield* NextTurnQueueStore;
       assert.equal((yield* store.listByThread(threadId)).items.length, 0);
+      const resolvedActivities = (yield* engine.getReadModel()).threads
+        .find((thread) => thread.id === threadId)!
+        .activities.filter((activity) => activity.kind === "user-input.resolved");
+      assert.equal(resolvedActivities.length, 1);
+      assert.deepEqual(resolvedActivities[0]!.payload, {
+        requestId,
+        resolution: "dismissed",
+        answers: {},
+      });
+    }),
+  );
+
+  it.effect("answering a blocking question leaves its resolution to the provider", () =>
+    Effect.gen(function* () {
+      const threadId = yield* seed("blocking-answer-activity");
+      const requestId = yield* question(threadId, false);
+      const engine = yield* OrchestrationEngineService;
+      yield* engine.dispatch({
+        type: "thread.user-input.respond",
+        commandId: CommandId.makeUnsafe("resolve:blocking"),
+        threadId,
+        requestId,
+        answers: { "0": { answers: ["A"] } },
+        createdAt: at,
+      });
+      assert.equal(
+        (yield* engine.getReadModel()).threads
+          .find((thread) => thread.id === threadId)!
+          .activities.filter((activity) => activity.kind === "user-input.resolved").length,
+        0,
+      );
     }),
   );
   it.effect("skips corrupt pending questions and rewind drafts while projecting valid rows", () =>

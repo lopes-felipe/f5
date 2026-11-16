@@ -112,9 +112,9 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
   });
 
   const listRuntimeRows = SqlSchema.findAll({
-    Request: Schema.Void,
+    Request: Schema.Struct({ excludeStopped: Schema.Boolean }),
     Result: ProviderSessionRuntimeDbRowSchema,
-    execute: () =>
+    execute: ({ excludeStopped }) =>
       sql`
         SELECT
           thread_id AS "threadId",
@@ -130,6 +130,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
           resume_cursor_json AS "resumeCursor",
           runtime_payload_json AS "runtimePayload"
         FROM provider_session_runtime
+        ${excludeStopped ? sql`WHERE status <> 'stopped'` : sql``}
         ORDER BY last_seen_at ASC, thread_id ASC
       `,
   });
@@ -201,8 +202,8 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
       ),
     );
 
-  const list: ProviderSessionRuntimeRepositoryShape["list"] = () =>
-    listRuntimeRows(undefined).pipe(
+  const list: ProviderSessionRuntimeRepositoryShape["list"] = (options) =>
+    listRuntimeRows({ excludeStopped: options?.excludeStopped === true }).pipe(
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
           "ProviderSessionRuntimeRepository.list:query",
@@ -254,7 +255,78 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
       ),
     );
 
+  const updateMcpStateIfCurrent: ProviderSessionRuntimeRepositoryShape["updateMcpStateIfCurrent"] =
+    (input) =>
+      sql`
+      UPDATE provider_session_runtime
+      SET mcp_config_version = CASE WHEN ${input.effectiveVersion !== undefined ? 1 : 0} THEN ${input.effectiveVersion ?? null} ELSE mcp_config_version END,
+          runtime_payload_json = json_set(CASE WHEN json_type(runtime_payload_json) = 'object' THEN runtime_payload_json ELSE '{}' END,
+            '$.mcpUnconvergedConfigVersion', ${input.unconvergedVersion})
+      WHERE thread_id = ${input.threadId}
+        AND COALESCE(provider_instance_id, provider_name) = ${input.instanceId}
+        AND status <> 'stopped'
+        AND CASE
+          WHEN json_type(runtime_payload_json, '$.sessionGeneration') IN ('integer', 'real')
+            AND json_extract(runtime_payload_json, '$.sessionGeneration') >= 0
+            AND CAST(json_extract(runtime_payload_json, '$.sessionGeneration') AS INTEGER) = json_extract(runtime_payload_json, '$.sessionGeneration')
+          THEN json_extract(runtime_payload_json, '$.sessionGeneration') ELSE 0
+        END = ${input.generation}
+      RETURNING thread_id
+    `.pipe(
+        Effect.map((rows) => rows.length === 1),
+        Effect.mapError(
+          toPersistenceSqlError("ProviderSessionRuntimeRepository.updateMcpStateIfCurrent"),
+        ),
+      );
+
+  const updateHistoryReconciliationIfCurrent: ProviderSessionRuntimeRepositoryShape["updateHistoryReconciliationIfCurrent"] =
+    (input) =>
+      sql`
+    UPDATE provider_session_runtime
+    SET runtime_payload_json = json_set(COALESCE(runtime_payload_json, '{}'),
+      '$.historyReconciliationRequired', json(${JSON.stringify(input.marker)}))
+    WHERE thread_id = ${input.threadId}
+      AND COALESCE(provider_instance_id, provider_name) = ${input.instanceId}
+      AND COALESCE(json_extract(runtime_payload_json, '$.sessionGeneration'), 0) = ${input.generation}
+      AND (${input.marker !== null ? 1 : 0} = 1 OR
+        json_extract(runtime_payload_json, '$.historyReconciliationRequired.eventId') = ${input.expectedMarkerId ?? null})
+    RETURNING thread_id
+  `.pipe(
+        Effect.map((rows) => rows.length === 1),
+        Effect.mapError(
+          toPersistenceSqlError(
+            "ProviderSessionRuntimeRepository.updateHistoryReconciliationIfCurrent",
+          ),
+        ),
+      );
+
+  const updateTerminalLifecycleIfCurrent: ProviderSessionRuntimeRepositoryShape["updateTerminalLifecycleIfCurrent"] =
+    (input) =>
+      sql`
+    UPDATE provider_session_runtime SET
+      status = CASE WHEN ${input.eventType} = 'session.exited' THEN 'stopped' ELSE status END,
+      last_seen_at = MAX(last_seen_at, ${input.createdAt}),
+      runtime_payload_json = json_set(COALESCE(runtime_payload_json, '{}'),
+        '$.activeTurnId', NULL, '$.lastRuntimeEvent', ${`provider.${input.eventType}`},
+        '$.lastRuntimeEventAt', ${input.createdAt})
+    WHERE thread_id = ${input.threadId}
+      AND COALESCE(provider_instance_id, provider_name) = ${input.instanceId}
+      AND COALESCE(json_extract(runtime_payload_json, '$.sessionGeneration'), 0) = ${input.generation}
+      AND (${input.eventType} = 'session.exited' OR json_extract(runtime_payload_json, '$.activeTurnId') IS ${input.turnId})
+    RETURNING thread_id
+  `.pipe(
+        Effect.map((rows) => rows.length === 1),
+        Effect.mapError(
+          toPersistenceSqlError(
+            "ProviderSessionRuntimeRepository.updateTerminalLifecycleIfCurrent",
+          ),
+        ),
+      );
+
   return {
+    updateHistoryReconciliationIfCurrent,
+    updateTerminalLifecycleIfCurrent,
+    updateMcpStateIfCurrent,
     upsert,
     getByThreadId,
     list,

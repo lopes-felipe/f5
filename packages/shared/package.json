@@ -4,6 +4,78 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./video": {
+      "types": "./src/video.ts",
+      "import": "./src/video.ts"
+    },
+    "./desktopAppControl": {
+      "types": "./src/desktopAppControl.ts",
+      "import": "./src/desktopAppControl.ts"
+    },
+    "./imageDimensions": {
+      "types": "./src/imageDimensions.ts",
+      "import": "./src/imageDimensions.ts"
+    },
+    "./mediaPreview": {
+      "types": "./src/mediaPreview.ts",
+      "import": "./src/mediaPreview.ts"
+    },
+    "./delimitedPreview": {
+      "types": "./src/delimitedPreview.ts",
+      "import": "./src/delimitedPreview.ts"
+    },
+    "./pendingActivityWindow": {
+      "types": "./src/pendingActivityWindow.ts",
+      "import": "./src/pendingActivityWindow.ts"
+    },
+    "./providerUpdate": {
+      "types": "./src/providerUpdate.ts",
+      "import": "./src/providerUpdate.ts"
+    },
+    "./providerBinary": {
+      "types": "./src/providerBinary.ts",
+      "import": "./src/providerBinary.ts"
+    },
+    "./generatedImageMarkdown": {
+      "types": "./src/generatedImageMarkdown.ts",
+      "import": "./src/generatedImageMarkdown.ts"
+    },
+    "./turnAssistantMessage": {
+      "types": "./src/turnAssistantMessage.ts",
+      "import": "./src/turnAssistantMessage.ts"
+    },
+    "./upstreamPortsOutcomes": {
+      "types": "./src/upstreamPortsOutcomes.ts",
+      "import": "./src/upstreamPortsOutcomes.ts"
+    },
+    "./upstreamPortsGrouping": {
+      "types": "./src/upstreamPortsGrouping.ts",
+      "import": "./src/upstreamPortsGrouping.ts"
+    },
+    "./upstreamPortsScore": {
+      "types": "./src/upstreamPortsScore.ts",
+      "import": "./src/upstreamPortsScore.ts"
+    },
+    "./nativeHistoryReconciliation": {
+      "types": "./src/nativeHistoryReconciliation.ts",
+      "import": "./src/nativeHistoryReconciliation.ts"
+    },
+    "./forgeCapabilities": {
+      "types": "./src/forgeCapabilities.ts",
+      "import": "./src/forgeCapabilities.ts"
+    },
+    "./rpcScheduling": {
+      "types": "./src/rpcScheduling.ts",
+      "import": "./src/rpcScheduling.ts"
+    },
+    "./computerRehearsalProfiles": {
+      "types": "./src/computerRehearsalProfiles.ts",
+      "import": "./src/computerRehearsalProfiles.ts"
+    },
+    "./computerRehearsalClaude": {
+      "types": "./src/computerRehearsalClaude.ts",
+      "import": "./src/computerRehearsalClaude.ts"
+    },
     "./github": {
       "types": "./src/github.ts",
       "import": "./src/github.ts"
@@ -27,6 +99,10 @@
     "./codexProtocolManifest": {
       "types": "./src/codexProtocolManifest.ts",
       "import": "./src/codexProtocolManifest.ts"
+    },
+    "./museProtocolManifest": {
+      "types": "./src/museProtocolManifest.ts",
+      "import": "./src/museProtocolManifest.ts"
     },
     "./model": {
       "types": "./src/model.ts",
@@ -68,6 +144,10 @@
       "types": "./src/DrainableWorker.ts",
       "import": "./src/DrainableWorker.ts"
     },
+    "./symlink": {
+      "types": "./src/symlink.ts",
+      "import": "./src/symlink.ts"
+    },
     "./schemaJson": {
       "types": "./src/schemaJson.ts",
       "import": "./src/schemaJson.ts"
@@ -79,6 +159,10 @@
     "./serverSettings": {
       "types": "./src/serverSettings.ts",
       "import": "./src/serverSettings.ts"
+    },
+    "./subagentDisplay": {
+      "types": "./src/subagentDisplay.ts",
+      "import": "./src/subagentDisplay.ts"
     },
     "./toolActivity": {
       "types": "./src/toolActivity.ts",
@@ -103,6 +187,10 @@
     "./sourceControl": {
       "types": "./src/sourceControl.ts",
       "import": "./src/sourceControl.ts"
+    },
+    "./codeReviewPullRequest": {
+      "types": "./src/codeReviewPullRequest.ts",
+      "import": "./src/codeReviewPullRequest.ts"
     },
     "./cliArgs": {
       "types": "./src/cliArgs.ts",
@@ -164,6 +252,26 @@
       "types": "./src/path.ts",
       "import": "./src/path.ts"
     },
+    "./scratchProject": {
+      "types": "./src/scratchProject.ts",
+      "import": "./src/scratchProject.ts"
+    },
+    "./conversationHandoff": {
+      "types": "./src/conversationHandoff.ts",
+      "import": "./src/conversationHandoff.ts"
+    },
+    "./promptLinks": {
+      "types": "./src/promptLinks.ts",
+      "import": "./src/promptLinks.ts"
+    },
+    "./threadReferences": {
+      "types": "./src/threadReferences.ts",
+      "import": "./src/threadReferences.ts"
+    },
+    "./threadWorkspace": {
+      "types": "./src/threadWorkspace.ts",
+      "import": "./src/threadWorkspace.ts"
+    },
     "./appStatePaths": {
       "types": "./src/appStatePaths.ts",
       "import": "./src/appStatePaths.ts"
@@ -175,6 +283,10 @@
     "./diskSpace": {
       "types": "./src/diskSpace.ts",
       "import": "./src/diskSpace.ts"
+    },
+    "./ids": {
+      "types": "./src/ids.ts",
+      "import": "./src/ids.ts"
     },
     "./downloadFilename": {
       "types": "./src/downloadFilename.ts",
@@ -248,6 +360,10 @@
       "types": "./src/pendingUserInputs.ts",
       "import": "./src/pendingUserInputs.ts"
     },
+    "./answerDelivery": {
+      "types": "./src/answerDelivery.ts",
+      "import": "./src/answerDelivery.ts"
+    },
     "./elicitationForm": {
       "types": "./src/elicitationForm.ts",
       "import": "./src/elicitationForm.ts"
@@ -272,6 +388,26 @@
       "types": "./src/claudeSdkManifest.ts",
       "import": "./src/claudeSdkManifest.ts"
     },
+    "./computerApps": {
+      "types": "./src/computerApps.ts",
+      "import": "./src/computerApps.ts"
+    },
+    "./computerGeometry": {
+      "types": "./src/computerGeometry.ts",
+      "import": "./src/computerGeometry.ts"
+    },
+    "./automationActivitySanitizer": {
+      "types": "./src/automationActivitySanitizer.ts",
+      "import": "./src/automationActivitySanitizer.ts"
+    },
+    "./computerControl": {
+      "types": "./src/computerControl.ts",
+      "import": "./src/computerControl.ts"
+    },
+    "./computerExecution": {
+      "types": "./src/computerExecution.ts",
+      "import": "./src/computerExecution.ts"
+    },
     "./nativeReviewTarget": {
       "types": "./src/nativeReviewTarget.ts",
       "import": "./src/nativeReviewTarget.ts"
@@ -283,16 +419,124 @@
     "./runtimeInfo": {
       "types": "./src/runtimeInfo.ts",
       "import": "./src/runtimeInfo.ts"
+    },
+    "./mcpImport": {
+      "types": "./src/mcpImport.ts",
+      "import": "./src/mcpImport.ts"
+    },
+    "./mcpValidation": {
+      "types": "./src/mcpValidation.ts",
+      "import": "./src/mcpValidation.ts"
+    },
+    "./workflowSummary": {
+      "types": "./src/workflowSummary.ts",
+      "import": "./src/workflowSummary.ts"
+    },
+    "./mcpDiagnostics": {
+      "types": "./src/mcpDiagnostics.ts",
+      "import": "./src/mcpDiagnostics.ts"
+    },
+    "./agentAutomationSupport": {
+      "types": "./src/agentAutomationSupport.ts",
+      "import": "./src/agentAutomationSupport.ts"
+    },
+    "./providerIntegrationCertification": {
+      "types": "./src/providerIntegrationCertification.ts",
+      "import": "./src/providerIntegrationCertification.ts"
+    },
+    "./codeSignature": {
+      "types": "./src/codeSignature.ts",
+      "import": "./src/codeSignature.ts"
+    },
+    "./computerAction": {
+      "types": "./src/computerAction.ts",
+      "import": "./src/computerAction.ts"
+    },
+    "./storageCleanup": {
+      "types": "./src/storageCleanup.ts",
+      "import": "./src/storageCleanup.ts"
+    },
+    "./mcpTools": "./src/mcpTools.ts",
+    "./mcpSecrets": "./src/mcpSecrets.ts",
+    "./cronSchedule": {
+      "types": "./src/cronSchedule.ts",
+      "import": "./src/cronSchedule.ts"
+    },
+    "./scheduledTasks": {
+      "types": "./src/scheduledTasks.ts",
+      "import": "./src/scheduledTasks.ts"
+    },
+    "./observability": "./src/observability.ts",
+    "./htmlRender": {
+      "types": "./src/htmlRender.ts",
+      "import": "./src/htmlRender.ts"
+    },
+    "./themeTokens": {
+      "types": "./src/themeTokens.ts",
+      "import": "./src/themeTokens.ts"
+    },
+    "./mcpApp": {
+      "types": "./src/mcpApp.ts",
+      "import": "./src/mcpApp.ts"
+    },
+    "./boundedJson": {
+      "types": "./src/boundedJson.ts",
+      "import": "./src/boundedJson.ts"
+    },
+    "./threadSearch": {
+      "types": "./src/threadSearch.ts",
+      "import": "./src/threadSearch.ts"
+    },
+    "./threadFindText": {
+      "types": "./src/threadFindText.ts",
+      "import": "./src/threadFindText.ts"
+    },
+    "./composerSendText": {
+      "types": "./src/composerSendText.ts",
+      "import": "./src/composerSendText.ts"
+    },
+    "./markdownAlerts": {
+      "types": "./src/markdownAlerts.ts",
+      "import": "./src/markdownAlerts.ts"
+    },
+    "./utf8Lines": {
+      "types": "./src/utf8Lines.ts",
+      "import": "./src/utf8Lines.ts"
+    },
+    "./abortSignal": {
+      "types": "./src/abortSignal.ts",
+      "import": "./src/abortSignal.ts"
+    },
+    "./turnStateTransitions": {
+      "types": "./src/turnStateTransitions.ts",
+      "import": "./src/turnStateTransitions.ts"
+    },
+    "./upstreamPorts": {
+      "types": "./src/upstreamPorts.ts",
+      "import": "./src/upstreamPorts.ts"
+    },
+    "./upstreamPortsArchive": {
+      "types": "./src/upstreamPortsArchive.ts",
+      "import": "./src/upstreamPortsArchive.ts"
+    },
+    "./upstreamPortsPrompts": {
+      "types": "./src/upstreamPortsPrompts.ts",
+      "import": "./src/upstreamPortsPrompts.ts"
     }
   },
   "scripts": {
-    "prepare": "node node_modules/@effect/language-service/cli.js patch",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "test": "node node_modules/vitest/vitest.mjs run"
   },
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
-    "effect": "catalog:"
+    "croner": "10.0.1",
+    "cronstrue": "3.37.0",
+    "effect": "catalog:",
+    "mdast-util-from-markdown": "2.0.3",
+    "mdast-util-gfm": "3.1.0",
+    "micromark-extension-gfm": "3.0.0",
+    "smol-toml": "1.6.0"
   },
   "devDependencies": {
     "@effect/language-service": "catalog:",

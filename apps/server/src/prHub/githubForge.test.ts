@@ -1,3 +1,4 @@
+import { makeGitHubHttpOperations } from "../git/githubHttpOperations.ts";
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import { makeFakeGitHubCli } from "../git/testDoubles.ts";
@@ -22,7 +23,16 @@ const pr = {
   base: { ref: "main", repo: { full_name: "team/repo" } },
   requested_reviewers: [],
 };
-function fixture(responses: unknown[] = []) {
+function fixture(
+  responses: unknown[] = [],
+  mergeMessage?: Record<string, unknown>,
+  autoMerge = {
+    autoMergeAllowed: true,
+    viewerPermission: "WRITE",
+    state: "OPEN",
+    mergeStateStatus: "BLOCKED",
+  },
+) {
   const calls: GitHubApiRequest[] = [];
   const queries: Array<{ query: string; variables: unknown }> = [];
   const github = makeFakeGitHubCli().service;
@@ -32,9 +42,11 @@ function fixture(responses: unknown[] = []) {
       Effect.succeed({ host: ref.host, viewerId: 42, login: "reader", generation: "a" }),
     request: (input: GitHubApiRequest) => {
       calls.push(input);
+      const next = (responses.shift() ?? pr) as { httpStatus?: number };
       return Effect.succeed({
-        status: 200,
-        body: responses.shift() ?? pr,
+        // A response that names its status is an error answer from GitHub.
+        status: typeof next.httpStatus === "number" ? next.httpStatus : 200,
+        body: next,
         graphqlErrors: [],
         links: {},
         etag: null,
@@ -45,6 +57,17 @@ function fixture(responses: unknown[] = []) {
     },
     runGraphql: (input: Parameters<typeof github.runGraphql>[0]) => {
       queries.push({ query: input.query, variables: input.variables });
+      if (input.query.includes("F5AutoMergeAvailability"))
+        return Effect.succeed({
+          data: {
+            repository: {
+              ...autoMerge,
+              pullRequest: { ...autoMerge, headRefOid: "head-sha" },
+            },
+          },
+        });
+      if (input.query.includes("F5PullRequestMergeMessage"))
+        return Effect.succeed({ data: { repository: { pullRequest: mergeMessage } } });
       if (input.query.startsWith("mutation")) {
         const field = /\{\s*([A-Za-z0-9_]+)\s*\(/.exec(input.query)?.[1] ?? "mutation";
         return Effect.succeed({
@@ -66,9 +89,22 @@ function fixture(responses: unknown[] = []) {
       });
     },
   };
-  return { provider: makeGitHubForge(scoped, "/repo"), calls, queries };
+  const http = makeGitHubHttpOperations(scoped, () => Effect.succeed(""));
+  return {
+    provider: makeGitHubForge({ ...scoped, mergePullRequest: http.mergePullRequest }, "/repo"),
+    calls,
+    queries,
+  };
 }
 describe("typed GitHub forge", () => {
+  it("preserves GitHub update time separately from creation time", async () => {
+    const created = "2026-01-01T12:00:00Z";
+    const updated = "2026-11-03T12:00:00Z";
+    const { provider } = fixture([{ ...pr, created_at: created, updated_at: updated }]);
+    const detail = await Effect.runPromise(provider.getDetail(ref));
+    expect(detail.updatedAt).toBe(updated);
+    expect(detail.raw.created_at).toBe(created);
+  });
   it("updates branches with the prepared head revision in the mutation", async () => {
     const { provider, queries } = fixture();
     await Effect.runPromise(
@@ -228,5 +264,246 @@ describe("typed GitHub forge", () => {
       )._tag,
     ).toBe("Failure");
     expect(changed.calls.some((call) => call.method === "POST")).toBe(false);
+  });
+});
+
+it("reads diff text through the captured HTTP request without gh", async () => {
+  const f = fixture(["diff --git a/a b/a\n+hello\n"]);
+  expect(await Effect.runPromise(f.provider.getDiff(ref))).toBe("diff --git a/a b/a\n+hello\n");
+  expect(f.calls[0]).toMatchObject({
+    endpoint: "repos/team/repo/pulls/7",
+    method: "GET",
+    accept: "application/vnd.github.diff",
+  });
+});
+
+it("auto-merge preserves the prepared head and cleaned body, including an explicitly empty body", async () => {
+  const { provider, queries } = fixture([], {
+    isMergeQueueEnabled: false,
+    headRefOid: "head-sha",
+    viewerMergeBodyText: "Co-authored-by: Claude <noreply@anthropic.com>",
+  });
+  await Effect.runPromise(
+    provider.performAction({
+      ref,
+      action: "enable-auto-merge",
+      method: "squash",
+      expectedHeadOid: "head-sha",
+      removeAgentCreditsOnMerge: true,
+    }),
+  );
+  expect(queries[1]?.variables).toMatchObject({ method: "SQUASH" });
+  expect(queries[2]?.query).toContain("expectedHeadOid:$head");
+  expect(queries[2]?.query).toContain("commitBody:$body");
+  expect(queries[2]?.variables).toMatchObject({ head: "head-sha", method: "SQUASH", body: "" });
+});
+it("keeps the host auto-merge message for a merge queue and rebase", async () => {
+  for (const method of ["merge", "rebase"] as const) {
+    const { provider, queries } = fixture([], {
+      isMergeQueueEnabled: true,
+      headRefOid: "head-sha",
+      viewerMergeBodyText: "Co-authored-by: Claude <noreply@anthropic.com>",
+    });
+    await Effect.runPromise(
+      provider.performAction({
+        ref,
+        action: "enable-auto-merge",
+        method,
+        expectedHeadOid: "head-sha",
+        removeAgentCreditsOnMerge: true,
+      }),
+    );
+    const mutation = queries.at(-1)!;
+    expect(mutation.query).not.toContain("commitBody");
+    expect(mutation.variables).not.toHaveProperty("body");
+    expect(mutation.variables).toMatchObject({ head: "head-sha" });
+    if (method === "rebase") expect(queries).toHaveLength(2);
+  }
+});
+
+it.each([
+  { autoMergeAllowed: false, mergeStateStatus: "BLOCKED" },
+  { autoMergeAllowed: true, mergeStateStatus: "CLEAN" },
+  { autoMergeAllowed: true, mergeStateStatus: "HAS_HOOKS" },
+  { autoMergeAllowed: true, mergeStateStatus: "UNSTABLE" },
+])("refuses unsafe auto-merge availability %j before sending a mutation", async (availability) => {
+  const { provider, queries } = fixture([], undefined, {
+    ...availability,
+    viewerPermission: "WRITE",
+    state: "OPEN",
+  });
+  const result = await Effect.runPromise(
+    provider
+      .performAction({
+        ref,
+        action: "enable-auto-merge",
+        expectedHeadOid: "head-sha",
+      })
+      .pipe(Effect.result),
+  );
+  expect(result._tag).toBe("Failure");
+  expect(queries.some((query) => query.query.startsWith("mutation"))).toBe(false);
+});
+it("does not activate auto-merge after the prepared head changes", async () => {
+  const { provider, queries } = fixture([], {
+    isMergeQueueEnabled: false,
+    headRefOid: "new-head",
+    viewerMergeBodyText: "Co-authored-by: Claude <noreply@anthropic.com>",
+  });
+  const result = await Effect.runPromise(
+    provider
+      .performAction({
+        ref,
+        action: "enable-auto-merge",
+        expectedHeadOid: "head-sha",
+        removeAgentCreditsOnMerge: true,
+      })
+      .pipe(Effect.result),
+  );
+  expect(result._tag).toBe("Failure");
+  expect(queries.some((entry) => entry.query.startsWith("mutation"))).toBe(false);
+});
+
+it("sends query parameters apart from the endpoint, which may not hold a query string", async () => {
+  const { provider, calls } = fixture([[{ login: "alice" }]]);
+  await Effect.runPromise(provider.listReviewerCandidates(ref));
+  expect(calls[0]).toMatchObject({
+    method: "GET",
+    endpoint: "repos/team/repo/collaborators",
+    query: { per_page: "100" },
+  });
+  const files = fixture([[]]);
+  await Effect.runPromise(files.provider.getFiles(ref));
+  expect(files.calls[0]).toMatchObject({
+    endpoint: "repos/team/repo/pulls/7/files",
+    query: { per_page: "100", page: "1" },
+  });
+  expect([...calls, ...files.calls].every((call) => !call.endpoint.includes("?"))).toBe(true);
+});
+
+describe("re-running failed checks", () => {
+  const run = (id: number, conclusion: string, status = "completed") => ({
+    id,
+    status,
+    conclusion,
+    head_sha: "head-sha",
+  });
+
+  it("re-runs the failed jobs of every failed workflow run at the prepared head", async () => {
+    const { provider, calls } = fixture([
+      pr,
+      {
+        total_count: 4,
+        workflow_runs: [
+          run(11, "failure"),
+          run(12, "success"),
+          run(13, "cancelled"),
+          run(14, "", "in_progress"),
+        ],
+      },
+      {},
+      {},
+    ]);
+    await Effect.runPromise(
+      provider.performAction({ ref, action: "rerun-failed-checks", expectedHeadOid: "head-sha" }),
+    );
+    expect(calls[1]).toMatchObject({
+      method: "GET",
+      endpoint: "repos/team/repo/actions/runs",
+      query: { head_sha: "head-sha", per_page: "100" },
+    });
+    expect(calls.slice(2).map((call) => [call.method, call.endpoint])).toEqual([
+      ["POST", "repos/team/repo/actions/runs/11/rerun-failed-jobs"],
+      ["POST", "repos/team/repo/actions/runs/13/rerun-failed-jobs"],
+    ]);
+  });
+
+  it("restarts one run at a time and says when GitHub refuses or cannot confirm", async () => {
+    const superseded = fixture([
+      pr,
+      {
+        total_count: 2,
+        workflow_runs: [
+          { ...run(11, "cancelled"), workflow_id: 70, event: "pull_request", run_number: 4 },
+          {
+            ...run(12, "", "in_progress"),
+            workflow_id: 70,
+            event: "pull_request",
+            run_number: 5,
+          },
+        ],
+      },
+    ]);
+    // An old cancelled run next to the run that replaced it leaves nothing to restart.
+    const none = await Effect.runPromise(
+      superseded.provider
+        .workflowRuns!.listFailed({ ref, expectedHeadOid: "head-sha" })
+        .pipe(Effect.result),
+    );
+    expect(none._tag).toBe("Failure");
+    expect(superseded.calls.some((call) => call.method === "POST")).toBe(false);
+
+    const accepted = fixture([{}]);
+    expect(
+      await Effect.runPromise(accepted.provider.workflowRuns!.rerunFailedJobs({ ref, runId: 11 })),
+    ).toBeNull();
+    expect(accepted.calls[0]).toMatchObject({
+      method: "POST",
+      endpoint: "repos/team/repo/actions/runs/11/rerun-failed-jobs",
+    });
+
+    const refused = fixture([{ httpStatus: 403, message: "This workflow is disabled." }]);
+    expect(
+      await Effect.runPromise(refused.provider.workflowRuns!.rerunFailedJobs({ ref, runId: 11 })),
+    ).toBe("GitHub refused to re-run a workflow run (403): This workflow is disabled.");
+
+    const unconfirmed = await Effect.runPromise(
+      fixture([{ httpStatus: 502 }])
+        .provider.workflowRuns!.rerunFailedJobs({ ref, runId: 11 })
+        .pipe(Effect.result),
+    );
+    expect(unconfirmed._tag).toBe("Failure");
+    if (unconfirmed._tag === "Failure") expect(unconfirmed.failure.requestDispatched).toBe(true);
+
+    const read = fixture([{ id: 11, status: "queued", run_attempt: 3 }]);
+    expect(await Effect.runPromise(read.provider.workflowRuns!.get({ ref, runId: 11 }))).toEqual({
+      id: 11,
+      attempt: 3,
+      completed: false,
+    });
+    expect(read.calls[0]).toMatchObject({
+      method: "GET",
+      endpoint: "repos/team/repo/actions/runs/11",
+    });
+  });
+
+  it("sends nothing without a prepared head, after a push, or when no run failed", async () => {
+    const attempts = [
+      { responses: [pr], expectedHeadOid: undefined },
+      { responses: [pr], expectedHeadOid: "old-sha" },
+      {
+        responses: [pr, { total_count: 1, workflow_runs: [run(12, "success")] }],
+        expectedHeadOid: "head-sha",
+      },
+      {
+        responses: [pr, { total_count: 250, workflow_runs: [run(11, "failure")] }],
+        expectedHeadOid: "head-sha",
+      },
+    ];
+    for (const attempt of attempts) {
+      const { provider, calls } = fixture(attempt.responses);
+      const result = await Effect.runPromise(
+        provider
+          .performAction({
+            ref,
+            action: "rerun-failed-checks",
+            ...(attempt.expectedHeadOid ? { expectedHeadOid: attempt.expectedHeadOid } : {}),
+          })
+          .pipe(Effect.result),
+      );
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure.requestDispatched).toBe(false);
+      expect(calls.some((call) => call.method === "POST")).toBe(false);
+    }
   });
 });

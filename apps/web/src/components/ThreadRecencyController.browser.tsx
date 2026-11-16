@@ -1,3 +1,4 @@
+import { resolveEmptyAppRpc } from "../test/emptyAppRpc";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { DEFAULT_SERVER_SETTINGS, type ProjectId as SettingsProjectId } from "@t3tools/contracts";
 import { serverBootstrapFixture } from "../test/serverBootstrap";
@@ -366,6 +367,8 @@ function resolveWsRpc(body: {
   value?: string | boolean;
   key?: string;
 }): unknown {
+  const emptyReply = resolveEmptyAppRpc(body);
+  if (emptyReply !== undefined) return emptyReply;
   const tag = body._tag;
   if (tag === AGENTS_WS_METHODS.getSnapshot) {
     return { entries: [], generatedAt: NOW_ISO };
@@ -915,6 +918,51 @@ describe("ThreadRecencyController", () => {
       await waitForPickerHidden();
       await waitForPath(mounted.router, "/settings");
       await waitForSettingsCategory(mounted.router, "providers");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("returns to settings in the project scope it was left in", async () => {
+    const mounted = await mountApp();
+
+    try {
+      await waitForThreadsHydrated();
+      await waitForPath(mounted.router, `/${THREAD_A}`);
+
+      await mounted.router.navigate({
+        to: "/settings",
+        search: { category: "threads", project: PROJECT_ID },
+      });
+      await waitForPath(mounted.router, "/settings");
+      await waitForSettingsCategory(mounted.router, "threads");
+      await waitForLayout();
+
+      await mounted.router.navigate({
+        to: "/$threadId",
+        params: { threadId: THREAD_B },
+      });
+      await waitForPath(mounted.router, `/${THREAD_B}`);
+
+      dispatchWindowKeyboardEvent("keydown", defaultCycleKeyOptions());
+      await waitForPickerVisible();
+      expect(queryHighlightedOption()?.textContent).toContain("Settings");
+      dispatchWindowKeyboardEvent("keyup", {
+        key: "Control",
+        ctrlKey: false,
+        metaKey: false,
+        shiftKey: false,
+        altKey: false,
+      });
+
+      await waitForPickerHidden();
+      await waitForPath(mounted.router, "/settings");
+      await vi.waitFor(() => {
+        expect(mounted.router.state.location.search).toMatchObject({
+          category: "threads",
+          project: PROJECT_ID,
+        });
+      });
     } finally {
       await mounted.cleanup();
     }

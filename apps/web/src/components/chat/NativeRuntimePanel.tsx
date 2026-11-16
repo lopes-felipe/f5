@@ -8,9 +8,21 @@ import {
   DialogDescription,
   DialogPanel,
 } from "../ui/dialog";
-import type { CompactRuntimeConfiguredActivityPayload } from "@t3tools/contracts";
+import type {
+  CompactRuntimeConfiguredActivityPayload,
+  ProjectId,
+  ProviderKind,
+} from "@t3tools/contracts";
+import { readMcpStatusActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
 import { SlidersHorizontalIcon } from "lucide-react";
 import { readNativeTaskIdentity } from "@t3tools/shared/nativeTaskIdentity";
+import {
+  describeFastModeDisabledReason,
+  fastModeDisabledReasonHelp,
+  refusedFastModeReason,
+} from "@t3tools/shared/runtimeInfo";
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useEffect, useState } from "react";
 import type {
   NativeOperationRecord,
@@ -19,9 +31,12 @@ import type {
   OrchestrationThreadActivity,
   ThreadBackgroundWorkEntry,
 } from "@t3tools/contracts";
+import type { ThreadSession } from "../../types";
 import { readNativeApi } from "../../nativeApi";
 import { describeBackgroundTask } from "./NativeRuntimeTray.logic";
 import { recentRuntimeNotices, resolveRuntimeModelReport } from "./runtimePresentation";
+import { McpSignInList, needsAuthMcpServers, supportsMcpSignIn } from "./McpSignInTray";
+import { formatExactTokens as formatTokenCount } from "./composer/contextMeter.logic";
 
 /**
  * Same names as the composer tray, plus the agent's own type so finished
@@ -42,12 +57,17 @@ function backgroundTaskLabel(task: ThreadBackgroundWorkEntry): string {
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 interface NativeRuntimePanelProps {
+  provider?: ProviderKind | null | undefined;
+  sessionStatus?: ThreadSession["status"] | null | undefined;
+  projectId?: ProjectId | undefined;
   threadId: ThreadId;
   capabilities: ProviderSessionCapabilities | null | undefined;
   activities: readonly OrchestrationThreadActivity[];
   requestedModel: string;
   runtime: CompactRuntimeConfiguredActivityPayload | null;
   outcome?: string | undefined;
+  /** An icon-only trigger for the chat header (compact chat layout). */
+  compact?: boolean | undefined;
 }
 
 /**
@@ -143,7 +163,25 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
   const normalized = info?.runtimeInfo;
   const effective = normalized?.effective;
   const requested = normalized?.requested;
-  const warnings = recentRuntimeNotices(activities);
+  const fastModeRefusal = refusedFastModeReason(info);
+  const fastModeHelp = fastModeRefusal ? fastModeDisabledReasonHelp(fastModeRefusal) : undefined;
+  const signInProvider = supportsMcpSignIn(props.provider, props.sessionStatus)
+    ? props.provider
+    : null;
+  const signInServers =
+    signInProvider && props.projectId
+      ? needsAuthMcpServers(activities, props.capabilities?.generation)
+      : [];
+  // needs-auth servers get their own section with Sign in instead of read-only notices.
+  const warnings = recentRuntimeNotices(
+    signInServers.length > 0
+      ? activities.filter(
+          (entry) =>
+            entry.kind !== "mcp.status.updated" ||
+            readMcpStatusActivityPayload(entry.payload)?.status !== "needs-auth",
+        )
+      : activities,
+  );
   const modelReport = resolveRuntimeModelReport({ configuredRuntime: info, activities });
   const attachments = activities.filter(
     (entry) => entry.kind === "native.metadata" && "nativeAttachment" in object(entry.payload),
@@ -154,12 +192,44 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
   return (
     <div
       data-slot="native-runtime-controls"
-      className="flex h-7 min-w-0 max-w-full items-center gap-2 px-2 text-xs text-muted-foreground"
+      className={
+        props.compact
+          ? "flex shrink-0 items-center"
+          : "flex h-7 min-w-0 max-w-full items-center gap-2 px-2 text-xs text-muted-foreground"
+      }
     >
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogTrigger render={<Button variant="ghost" size="xs" />}>
-          <SlidersHorizontalIcon /> Runtime details{pending ? " · pending" : ""}
-        </DialogTrigger>
+        {props.compact ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <DialogTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="relative text-muted-foreground"
+                      aria-label={pending ? "Runtime details, pending" : "Runtime details"}
+                    />
+                  }
+                />
+              }
+            >
+              <SlidersHorizontalIcon />
+              {pending ? (
+                <span
+                  aria-hidden
+                  className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-info"
+                />
+              ) : null}
+            </TooltipTrigger>
+            <TooltipPopup>Runtime details{pending ? " · pending" : ""}</TooltipPopup>
+          </Tooltip>
+        ) : (
+          <DialogTrigger render={<Button variant="ghost" size="xs" />}>
+            <SlidersHorizontalIcon /> Runtime details{pending ? " · pending" : ""}
+          </DialogTrigger>
+        )}
         <DialogPopup className="max-h-[min(80dvh,48rem)] max-w-2xl">
           <DialogHeader>
             <DialogTitle>Runtime details</DialogTitle>
@@ -168,6 +238,65 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-5 text-sm">
+            {props.provider === "codex" && (
+              <section aria-label="Codex memory and usage" className="space-y-2">
+                <h3 className="font-medium">Reported by Codex</h3>
+                {!capabilities ? (
+                  <p>Start the session to load</p>
+                ) : (
+                  <div className="flex gap-2">
+                    {(["memory", "usage"] as const).map((kind) => (
+                      <Button
+                        key={kind}
+                        variant="outline"
+                        size="xs"
+                        disabled={
+                          reading || !supported(kind === "memory" ? "nativeAside" : "nativeGoals")
+                        }
+                        onClick={() => {
+                          const api = readNativeApi()?.nativeOperations;
+                          if (!api?.inspect) {
+                            setError("Native operations API is unavailable.");
+                            return;
+                          }
+                          setReading(true);
+                          setError(null);
+                          setInspection(null);
+                          void api
+                            .inspect({
+                              threadId,
+                              generation: capabilities.generation,
+                              kind,
+                            })
+                            .then((value) => {
+                              const data = object(value);
+                              if (kind === "memory")
+                                setDetail(
+                                  data.summary ?? "No memory summary (memory off or empty)",
+                                );
+                              else {
+                                const usage = object(data.threadUsage);
+                                const dollars = (value: unknown) =>
+                                  typeof value === "number"
+                                    ? "$" + (value / 1_000_000).toFixed(6)
+                                    : "unknown";
+                                setDetail({
+                                  "Reported by Codex": dollars(usage.nativeUsageUsdMicros),
+                                  "Codex estimate": dollars(usage.estimatedUsageUsdMicros),
+                                });
+                              }
+                            })
+                            .catch((cause) => setError(String(cause)))
+                            .finally(() => setReading(false));
+                        }}
+                      >
+                        {kind === "memory" ? "Memory summary" : "Dollar usage"}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 [&_dt]:text-muted-foreground [&_dd]:break-words">
               <dt>Requested model</dt>
               <dd>
@@ -195,14 +324,75 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
                   <dd>{effective?.fastMode ?? info?.fastModeState}</dd>
                 </>
               )}
+              {fastModeRefusal && (
+                <>
+                  <dt>Fast mode unavailable</dt>
+                  <dd>{describeFastModeDisabledReason(fastModeRefusal)}</dd>
+                </>
+              )}
               {props.outcome && (
                 <>
                   <dt>Latest turn</dt>
                   <dd>{props.outcome}</dd>
                 </>
               )}
+              {capabilities?.executableVersion && (
+                <>
+                  <dt>Runtime version</dt>
+                  <dd>{capabilities.executableVersion}</dd>
+                </>
+              )}
+              {capabilities?.latestCacheWrites && (
+                <>
+                  <dt>Cache writes</dt>
+                  <dd>
+                    {formatTokenCount(capabilities.latestCacheWrites.ephemeral5mInputTokens)}{" "}
+                    5-minute ·{" "}
+                    {formatTokenCount(capabilities.latestCacheWrites.ephemeral1hInputTokens)} 1-hour
+                    <span className="block text-muted-foreground text-xs">
+                      Session totals for the whole agent tree, as reported by the SDK; not used for
+                      F5 usage or cost.
+                    </span>
+                  </dd>
+                </>
+              )}
             </dl>
             {normalized?.fallback && <p>{normalized.fallback}</p>}
+            {fastModeHelp && (
+              <section aria-label="Fast mode help" className="space-y-1">
+                <p className="text-muted-foreground">{fastModeHelp.text}</p>
+                {fastModeHelp.links.length > 0 && (
+                  <p className="flex flex-wrap gap-x-4">
+                    {fastModeHelp.links.map((link) => (
+                      <OpenLinkAnchor
+                        key={link.url}
+                        className="underline"
+                        href={link.url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {link.label}
+                      </OpenLinkAnchor>
+                    ))}
+                  </p>
+                )}
+              </section>
+            )}
+            {signInServers.length > 0 && signInProvider && props.projectId && (
+              <section aria-label="MCP sign-in" className="space-y-2">
+                <h3 className="font-medium">MCP servers that need sign-in</h3>
+                <p className="text-muted-foreground">
+                  Sign in opens your browser. Tokens are saved for this account, so later
+                  conversations connect without asking.
+                </p>
+                <McpSignInList
+                  servers={signInServers}
+                  provider={signInProvider}
+                  projectId={props.projectId}
+                  threadId={threadId}
+                />
+              </section>
+            )}
             {warnings.length > 0 && (
               <section aria-label="Provider notices" className="space-y-2">
                 <h3 className="font-medium">Provider notices</h3>
@@ -264,6 +454,17 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
                     </p>
                     {record.error && (
                       <p className="break-words text-muted-foreground">{record.error}</p>
+                    )}
+                    {record.command.kind === "aside" && (
+                      <details>
+                        <summary>Aside: {record.command.question}</summary>
+                        <p className="whitespace-pre-wrap">
+                          {String(
+                            object(record.result).text ??
+                              "No text answer; ask as a normal message instead.",
+                          )}
+                        </p>
+                      </details>
                     )}
                     {record.command.kind === "fork" && (
                       <p className="break-words text-muted-foreground">

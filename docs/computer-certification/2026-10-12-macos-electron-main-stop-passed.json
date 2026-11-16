@@ -1,0 +1,195 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-12T20:37:00.056Z",
+  "scope": "unsigned-real-electron-codex-main-frozen-physical-stop",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "repositoryCommit": "b1a70f7362fd833be343b3c3553b0893ec0b722b",
+  "workingTreeDirty": false,
+  "helperSha256": "27eff7abd0c3019bf76a5331f182bb722eb4a9bfaee3d033a39302c75c3f9a17",
+  "buildHashes": {
+    "desktopMain": "cd0f182b9f352998908652fe3bf3c80bb7a4f4a176ccb27aa98c6116d86206d9",
+    "serverBundle": "4e880cd60ded1d912017af59b63a01c8c3be6f8f5d966de4e26d627b00f58a30",
+    "rendererIndex": "f40903b377ac9e9ae9f0e100b7f022405c7d0668877feb94315d20dc7cb728fe",
+    "rehearsalSource": "b62f99291044b0e045bd781225f13591a75c4099394c6d2aef9d9b0279d1a950",
+    "observerSource": "f09543c97a8cfeec9a79d600305fb84e1751215aa984402d3b981722be20632e",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "bcfa8b28fd23448027e6672be0eaa1db138c806f273a130709750b84fcd16451"
+  },
+  "signed": false,
+  "certified": false,
+  "provider": "codex",
+  "runtimeMode": "full-access",
+  "state": "passed",
+  "interrupted": false,
+  "permissionStatus": {
+    "available": true,
+    "displays": [
+      {
+        "displayId": "1",
+        "geometryGeneration": "1:0.0:0.0:1728.0:1117.0:3456:2234:0.0",
+        "primary": true,
+        "nativeBounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1728,
+          "height": 1117
+        },
+        "pixelSize": {
+          "width": 3456,
+          "height": 2234
+        },
+        "rotation": 0,
+        "modelSize": {
+          "width": 1333,
+          "height": 862
+        }
+      }
+    ]
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": true,
+    "pauseObserved": true,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "activityMessages": 4,
+    "activityThumbnails": 0,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "accessRequests": 1,
+    "accessAnswersForwarded": 1,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "activateApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": false
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "type",
+        "outcome": "Interrupted",
+        "cause": "user-input"
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      }
+    ]
+  },
+  "threadObservation": {
+    "found": true,
+    "runtimeMode": "full-access",
+    "sessionRuntimeMode": "full-access",
+    "interactionMode": "default",
+    "turnState": "completed",
+    "pendingUserInputs": 0
+  },
+  "consentObservation": {
+    "requested": true,
+    "trustedClick": true,
+    "settled": true,
+    "allowed": true,
+    "fixtureGranted": true,
+    "cardHasError": false,
+    "dialogPresentInDom": true
+  },
+  "providerErrorCodes": [],
+  "toolOutcomeErrors": ["Interrupted"],
+  "thumbnailObservation": {
+    "visible": false,
+    "loaded": false
+  },
+  "fixtureObservation": {
+    "presses": 0,
+    "expectedSyntheticTextReceived": false
+  },
+  "stopMeasurement": {
+    "state": "passed",
+    "checks": {
+      "traceComplete": true,
+      "clocksValid": true,
+      "syntheticInputObserved": true,
+      "physicalInputRecognized": true,
+      "chordRecognized": true,
+      "promptedBeforeInterruption": true,
+      "typingActiveAtTrigger": true,
+      "physicalStopUnder100Ms": true,
+      "chordStopUnder100Ms": true,
+      "appDeliveryStoppedUnder100Ms": true,
+      "quietTailObserved": true,
+      "inFlightMutationInterrupted": true,
+      "pausedMutationRefused": true,
+      "leaseReleased": true,
+      "fixtureStillFrontmost": true,
+      "stallClockCalibrated": true,
+      "physicalAndChordDuringHostStall": true
+    },
+    "injectedKeyDowns": 25,
+    "injectedEvents": 50,
+    "chordEventsObserved": 1,
+    "chordEventToRecognitionDeltaMs": -0.1,
+    "physicalInputTailMs": 6.7,
+    "killChordTailMs": 0,
+    "appDeliveryTailMs": 15.1,
+    "physicalToChordMs": 30.3,
+    "hostStallDurationMs": 708.4,
+    "clockUncertaintyMs": 0.8,
+    "physicalRecognitionAfterStallStartMs": {
+      "min": 326.9,
+      "max": 327.7
+    },
+    "chordRecognitionAfterStallEndMs": {
+      "min": -351.2,
+      "max": -350.4
+    }
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "realConsentDialogVisible": true,
+    "realConsentSettledAllowed": true,
+    "humanTrustedConsent": true,
+    "consentTurnEmittedNoInput": true,
+    "realLeaseBannerVisible": true,
+    "actualElectronProcessFrozen": true,
+    "helperRecognizedChordAndMirroredPause": true,
+    "noSyntheticInputAfterStop": true,
+    "nativeStopMeasurementPassed": true
+  },
+  "limitations": [
+    "One real provider and one synthetic AppKit app, on the current display only",
+    "Human app consent and physical chord; UI Pause/Resume is excluded",
+    "No installed-build TCC attribution, signed packaging, real-app or multi-profile/display certification",
+    "SIGSTOP of one isolated Electron process; does not prove arbitrary deadlocks, signed packaging or Windows stop behavior",
+    "Provider built-in and Chrome gates remain closed; no image bytes, typed values, accessibility content or raw errors retained"
+  ]
+}

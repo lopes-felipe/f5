@@ -12,9 +12,11 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectMcpConfigRecord = Schema.Struct({
   scope: McpConfigScope,
+  projectName: Schema.optional(Schema.NullOr(Schema.String)),
   projectId: Schema.NullOr(ProjectId).pipe(Schema.withDecodingDefault(() => null)),
   version: TrimmedNonEmptyString,
   servers: McpProjectServersConfig,
+  disabledCommonServers: Schema.optional(Schema.Array(Schema.String)),
   updatedAt: IsoDateTime,
 });
 export type ProjectMcpConfigRecord = typeof ProjectMcpConfigRecord.Type;
@@ -33,11 +35,20 @@ export const ReplaceProjectMcpConfigInput = Schema.Struct({
   ),
   nextVersion: TrimmedNonEmptyString,
   servers: McpProjectServersConfig,
+  disabledCommonServers: Schema.optional(Schema.Array(Schema.String)),
   updatedAt: IsoDateTime,
 });
 export type ReplaceProjectMcpConfigInput = typeof ReplaceProjectMcpConfigInput.Type;
 
 export interface ProjectMcpConfigRepositoryShape {
+  readonly listByScope: (
+    scope: "common" | "project",
+    options?: { readonly includeDeleted?: boolean },
+  ) => Effect.Effect<ReadonlyArray<ProjectMcpConfigRecord>, ProjectionRepositoryError>;
+  readonly withTransaction: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | ProjectionRepositoryError, R>;
+
   readonly get: (
     input: GetProjectMcpConfigInput,
   ) => Effect.Effect<Option.Option<ProjectMcpConfigRecord>, ProjectionRepositoryError>;

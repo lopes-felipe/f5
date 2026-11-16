@@ -1,5 +1,7 @@
-import { UsagePriceOverride } from "./usage";
+import { UsageModelAliases, UsageMonthlyBudget, UsagePriceOverride } from "./usage";
+import { AgentBridgeSettings, AgentBridgeSettingsPatch } from "./agentBridge";
 import { Effect } from "effect";
+import * as Combiner from "effect/Combiner";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { IsoDateTime, ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas";
@@ -8,9 +10,11 @@ import {
   ProviderOptionSelections,
   ModelCapabilities,
 } from "./model";
-import { ModelSelection, RuntimeMode } from "./orchestration";
+import { ModelSelection, ProjectSkillScope, RuntimeMode } from "./orchestration";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance";
 import { ThreadEnvMode, type ThreadEnvMode as ThreadEnvModeType } from "./threadEnvMode";
+import { ComputerPasswordMasking } from "./computerAutomation";
+import { UpstreamPortsSettings, UpstreamPortsSettingsPatch } from "./upstreamPortsWire";
 export { ThreadEnvMode };
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -56,10 +60,13 @@ export const ClientSettingsSchema = Schema.Struct({
   // default instance for their kind (because `defaultInstanceIdForDriver(kind)`
   // uses the same slug). The field name is kept as `provider` for storage
   // stability; new call sites should treat the value as an instance id.
+  // `effort` optionally pins a reasoning effort, making the favorite a preset;
+  // the same model may then appear more than once with different efforts.
   favorites: Schema.Array(
     Schema.Struct({
       provider: ProviderInstanceId,
       model: TrimmedNonEmptyString,
+      effort: Schema.optional(TrimmedNonEmptyString),
     }),
   ).pipe(Schema.withDecodingDefault(() => [])),
   providerModelPreferences: Schema.Record(
@@ -115,11 +122,23 @@ export const CustomModelSetting = Schema.Union([
 ]);
 export type CustomModelSetting = typeof CustomModelSetting.Type;
 
+// Keep the legacy empty-home sentinel, but never trim a real directory name.
+const CodexHomePathSetting = Schema.String.pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transformOrFail({
+      decode: (value) => Effect.succeed(value.trim().length > 0 ? value : ""),
+      encode: (value) => Effect.succeed(value),
+    }),
+  ),
+  Schema.withDecodingDefault(() => ""),
+);
+
 export const CodexSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("codex"),
-  homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
-  shadowHomePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  homePath: CodexHomePathSetting,
+  shadowHomePath: CodexHomePathSetting,
   launchArgs: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
@@ -135,6 +154,8 @@ export const ClaudeSettings = Schema.Struct({
   enableFileCheckpointing: Schema.optionalKey(Schema.Boolean),
   nativeCompaction: Schema.optionalKey(Schema.Boolean),
   resumeCompactionPrompt: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Maps to Claude's `permissions.blockWritesOutsideWorkingDirectories` flag setting. */
+  confineWritesToWorkspace: Schema.optionalKey(Schema.Boolean),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("claude"),
   homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
@@ -155,6 +176,7 @@ export const OpenCodeSettings = Schema.Struct({
   binaryPath: makeBinaryPathSetting("opencode"),
   serverUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   serverPassword: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  serverPasswordRedacted: Schema.optionalKey(Schema.Boolean),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
@@ -166,6 +188,14 @@ export const GrokSettings = Schema.Struct({
 });
 export type GrokSettings = typeof GrokSettings.Type;
 
+/** Muse Code CLI. `META_API_KEY` travels through the instance environment. */
+export const MuseSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  binaryPath: makeBinaryPathSetting("muse"),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
+});
+export type MuseSettings = typeof MuseSettings.Type;
+
 export const AntigravitySettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
@@ -173,9 +203,66 @@ export const AntigravitySettings = Schema.Struct({
 });
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
+/** Pi is instantiated only through an explicit provider-instance entry. */
+export const PiSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  binaryPath: makeBinaryPathSetting("pi"),
+  launchArgs: Schema.String.check(
+    Schema.isMaxLength(32 * 1024),
+    Schema.makeFilter((value) => !value.includes("\0")),
+  ).pipe(Schema.withDecodingDefault(() => "")),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
+});
+export type PiSettings = typeof PiSettings.Type;
+
+/** Local ACP commands are executed directly, with an argument vector and instance environment. */
+export const AcpSettings = Schema.Struct({
+  command: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(4096),
+    Schema.makeFilter(
+      (value) => !value.includes("\0") && !value.includes("\r") && !value.includes("\n"),
+    ),
+  ),
+  args: Schema.Array(
+    Schema.String.check(
+      Schema.isMaxLength(16384),
+      Schema.makeFilter((value) => !value.includes("\0")),
+    ),
+  )
+    .check(Schema.isMaxLength(256))
+    .pipe(Schema.withDecodingDefault(() => [])),
+  env: Schema.Record(
+    Schema.String.check(Schema.isPattern(/^[a-zA-Z_][a-zA-Z0-9_]*$/)),
+    Schema.String.check(
+      Schema.isMaxLength(65536),
+      Schema.makeFilter((value) => !value.includes("\0")),
+    ),
+  )
+    .check(Schema.makeFilter((values) => Object.keys(values).length <= 128))
+    .pipe(Schema.withDecodingDefault(() => ({}))),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
+});
+export type AcpSettings = typeof AcpSettings.Type;
+
+export const OtlpHeader = Schema.Struct({
+  name: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(128),
+    Schema.isPattern(/^[!#$%&'*+.^_`|~0-9a-z-]+$/i),
+  ),
+  value: Schema.String.check(Schema.isMaxLength(4096), Schema.isPattern(/^[^\r\n]*$/)),
+  valueRedacted: Schema.optionalKey(Schema.Boolean),
+});
+export const OtlpHeaders = Schema.Array(OtlpHeader).check(
+  Schema.isMaxLength(100),
+  Schema.makeFilter(
+    (headers) =>
+      new Set(headers.map((header) => header.name.toLowerCase())).size === headers.length,
+  ),
+);
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  otlpHeaders: Schema.optionalKey(OtlpHeaders),
 });
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
@@ -184,10 +271,19 @@ const PrHubPollIntervalSeconds = Schema.Union([
   Schema.Int.check(Schema.isGreaterThanOrEqualTo(60)).check(Schema.isLessThanOrEqualTo(3600)),
 ]);
 
+/** Days without activity before a pull request moves to the Stale section; 0 turns it off. */
+export const PR_HUB_STALE_AFTER_DAYS_DEFAULT = 30;
+const PrHubStaleAfterDays = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3650 }));
+
 export const PrHubSettings = Schema.Struct({
   discoverNotifications: Schema.optional(Schema.Boolean),
   pollIntervalSeconds: PrHubPollIntervalSeconds.pipe(Schema.withDecodingDefault(() => 180)),
   excludeRepos: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  staleAfterDays: PrHubStaleAfterDays.pipe(
+    Schema.withDecodingDefault(() => PR_HUB_STALE_AFTER_DAYS_DEFAULT),
+  ),
+  /** Teams (`org/team`) whose review requests count as requests to the viewer. */
+  directReviewTeams: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type PrHubSettings = typeof PrHubSettings.Type;
 
@@ -227,11 +323,23 @@ export const StorageRetentionDays = Schema.NullOr(
 );
 export type StorageRetentionDays = typeof StorageRetentionDays.Type;
 
+/** Thread title instructions beyond this are cut from the title prompt; editors stop here. */
+export const THREAD_TITLE_INSTRUCTIONS_MAX_CHARS = 2_000;
+
+export const MAX_WORKTREE_CLEANUP_MIN_IDLE_HOURS = 720;
+export const DEFAULT_WORKTREE_CLEANUP_MIN_IDLE_HOURS = 24;
+
+/** Hours a thread must be idle before `onMerge` or `unchanged` may remove its worktree. */
+export const WorktreeCleanupMinIdleHours = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: MAX_WORKTREE_CLEANUP_MIN_IDLE_HOURS }),
+);
+
 /**
  * When an idle managed worktree may be removed. Removal keeps the branch and
  * the thread's worktree path, so resuming the thread recreates the checkout.
  */
 export const WorktreeCleanupRules = Schema.Struct({
+  onSettle: Schema.optionalKey(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),
   /** Remove after the thread has been idle this many days. */
   afterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => null)),
   /** Remove once HEAD is in the default branch and the branch's PR is merged. */
@@ -240,6 +348,15 @@ export const WorktreeCleanupRules = Schema.Struct({
   onDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Remove when HEAD has no commits beyond the default branch. */
   unchanged: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /**
+   * `onMerge` and `unchanged` apply only once the thread has been idle this
+   * many hours: a new worktree has no commits until the agent makes one, and a
+   * restart leaves an interrupted thread without the session that would
+   * otherwise claim it.
+   */
+  minIdleHours: WorktreeCleanupMinIdleHours.pipe(
+    Schema.withDecodingDefault(() => DEFAULT_WORKTREE_CLEANUP_MIN_IDLE_HOURS),
+  ),
 });
 export type WorktreeCleanupRules = typeof WorktreeCleanupRules.Type;
 
@@ -249,6 +366,14 @@ export const WorktreeCleanup = Schema.Union([
   Schema.Struct({ mode: Schema.Literal("custom"), rules: WorktreeCleanupRules }),
 ]);
 export type WorktreeCleanup = typeof WorktreeCleanup.Type;
+
+export const StorageDiscoverySettings = Schema.Struct({
+  machineCleanupEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  repositoryRoots: Schema.Array(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => [])),
+  /** Search project folders that are not repositories, such as a folder of clones, for repositories. */
+  searchProjectFolders: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+});
+export type StorageDiscoverySettings = typeof StorageDiscoverySettings.Type;
 
 export const StorageCleanupSettings = Schema.Struct({
   /** Master switch for automatic cleanup. Off by default. */
@@ -275,6 +400,12 @@ export const StorageCleanupSettings = Schema.Struct({
    * is on. Live threads keep their logs for transcript repair. Null keeps them.
    */
   terminalThreadLogsAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => 14)),
+  /**
+   * Hourly, remove clean, merged F5 worktrees that are orphaned or referenced
+   * only by archived threads, and prune missing worktree registrations. Needs
+   * `enabled`. Worktrees outside the F5 worktrees folder are never touched.
+   */
+  inactiveWorktrees: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
@@ -283,9 +414,11 @@ const StorageCleanupSettingsPatch = Schema.Struct({
   worktree: Schema.optionalKey(
     Schema.Struct({
       afterDays: Schema.optionalKey(StorageRetentionDays),
+      onSettle: Schema.optionalKey(Schema.Boolean),
       onMerge: Schema.optionalKey(Schema.Boolean),
       onDelete: Schema.optionalKey(Schema.Boolean),
       unchanged: Schema.optionalKey(Schema.Boolean),
+      minIdleHours: Schema.optionalKey(WorktreeCleanupMinIdleHours),
     }),
   ),
   providerLogsAfterDays: Schema.optionalKey(StorageRetentionDays),
@@ -293,6 +426,7 @@ const StorageCleanupSettingsPatch = Schema.Struct({
   archivedThreadsPurgeAfterDays: Schema.optionalKey(StorageRetentionDays),
   deletedThreadsPurgeAfterDays: Schema.optionalKey(StorageRetentionDays),
   terminalThreadLogsAfterDays: Schema.optionalKey(StorageRetentionDays),
+  inactiveWorktrees: Schema.optionalKey(Schema.Boolean),
 });
 
 /** User-only allowlist of non-loopback hosts agents may open in the F5 preview. */
@@ -301,13 +435,43 @@ export const PreviewExternalHosts = Schema.Array(
 ).check(Schema.isMaxLength(200));
 export type PreviewExternalHosts = typeof PreviewExternalHosts.Type;
 
+/**
+ * Repo-relative globs (`**`, `*`, `?`, trailing `/` for a directory) whose
+ * uncommitted changes Storage cleanup may discard when removing a worktree.
+ */
+export const WorktreeDisposablePaths = Schema.Array(
+  TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+).check(Schema.isMaxLength(100));
+export type WorktreeDisposablePaths = typeof WorktreeDisposablePaths.Type;
+
+export const ComputerUseExecutionMode = Schema.Literals(["foreground", "background"]);
+export type ComputerUseExecutionMode = typeof ComputerUseExecutionMode.Type;
+
+export const GitHubTransport = Schema.Literals(["http", "gh"]);
+export type GitHubTransport = typeof GitHubTransport.Type;
+
+export const AutoSettleAfterDays = Schema.NullOr(
+  Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 365 })),
+);
+
+export const ProjectProviderOverrides = Schema.Record(
+  ProviderInstanceId,
+  Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) }),
+);
+export type ProjectProviderOverrides = typeof ProjectProviderOverrides.Type;
+
 export const ProjectSettingsOverrides = Schema.Struct({
+  providerInstances: Schema.optionalKey(ProjectProviderOverrides),
+  autoSettleOnPullRequestMerge: Schema.optionalKey(Schema.Boolean),
+  autoSettleAfterDays: Schema.optionalKey(AutoSettleAfterDays),
+  autoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
   textGenerationModelSelection: Schema.optionalKey(ModelSelection),
+  threadTitleInstructions: Schema.optionalKey(TrimmedString),
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   enableClaudePromptSuggestions: Schema.optionalKey(Schema.Boolean),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
@@ -315,25 +479,55 @@ export const ProjectSettingsOverrides = Schema.Struct({
     Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
   ),
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
+  worktreeDisposablePaths: Schema.optionalKey(WorktreeDisposablePaths),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   previewExternalHosts: Schema.optionalKey(PreviewExternalHosts),
   enableClaudeInChrome: Schema.optionalKey(Schema.Boolean),
+  enableCodexChrome: Schema.optionalKey(Schema.Boolean),
   enableAgentComputerUse: Schema.optionalKey(Schema.Boolean),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
+  upstreamPorts: Schema.optionalKey(UpstreamPortsSettings),
 });
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
+// The rest record also visits known keys; keep the struct's decoded (or encoded) value for them.
+const keepStructValue = Combiner.first<readonly [string, unknown]>();
+const UnknownOverrideKeys = Schema.Record(Schema.String, Schema.Unknown, {
+  keyValueCombiner: { decode: keepStructValue, encode: keepStructValue },
+});
+
+// Whole-entry writers must round-trip unknown keys; keep the type closed to catch misspellings.
+export const keepUnknownOverrideKeys = <Entry extends Schema.Struct<Schema.Struct.Fields>>(
+  entry: Entry,
+): Schema.Codec<
+  Entry["Type"],
+  Entry["Encoded"],
+  Entry["DecodingServices"],
+  Entry["EncodingServices"]
+> => Schema.StructWithRest(entry, [UnknownOverrideKeys]);
+
 export const ServerSettings = Schema.Struct({
+  removeAgentCreditsOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  autoSettleOnPullRequestMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  autoSettleAfterDays: AutoSettleAfterDays.pipe(Schema.withDecodingDefault(() => null)),
+  autoSettleKeepPullRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
+  usageModelAliases: UsageModelAliases.pipe(Schema.withDecodingDefault(() => ({}))),
+  usageMonthlyBudget: Schema.NullOr(UsageMonthlyBudget).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  /** Background account-limit sampling for quota history and forecasts. */
+  usageBackgroundSampling: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoResumeUsageLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   resumeActiveTurnsAfterRestart: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   defaultRuntimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => "full-access" as const)),
   worktreeSubmodules: WorktreeSubmodules.pipe(
     Schema.withDecodingDefault(() => "recursive" as const),
   ),
-  projectSettingsOverrides: Schema.Record(ProjectId, ProjectSettingsOverrides).pipe(
-    Schema.withDecodingDefault(() => ({})),
-  ),
+  projectSettingsOverrides: Schema.Record(
+    ProjectId,
+    keepUnknownOverrideKeys(ProjectSettingsOverrides),
+  ).pipe(Schema.withDecodingDefault(() => ({}))),
   clientSettingMigrations: Schema.Record(Schema.String, IsoDateTime).pipe(
     Schema.withDecodingDefault(() => ({})),
   ),
@@ -346,11 +540,18 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(() => "local" as const satisfies ThreadEnvModeType),
   ),
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  /** Where "New project" creates folders. Empty uses `~/f5-projects` (suffixed per profile). */
+  projectsRoot: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(() => ({
       instanceId: ProviderInstanceId.make("codex"),
       model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
     })),
+  ),
+  /** Appended to the prompt for new and regenerated thread titles. */
+  threadTitleInstructions: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  reviewGuideModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(() => null),
   ),
   sessionNotesModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(() => ({
@@ -363,18 +564,54 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(() => null),
   ),
   sourceControlWriting: SourceControlWritingSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  scheduledBackupsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Hourly copy-on-write clones of the profile database; skipped where cloning is unsupported. */
+  databaseSnapshotsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   storageCleanup: StorageCleanupSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  storageDiscovery: StorageDiscoverySettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  /** Empty uses this profile's default worktrees folder; otherwise absolute or ~/… on this machine. */
+  worktreesDirectory: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  /** Server-maintained history keeps existing worktrees eligible for management. */
+  previousWorktreesDirectories: Schema.Array(TrimmedString).pipe(
+    Schema.withDecodingDefault(() => []),
+  ),
   /** Project-scopable worktree cleanup policy; null uses `storageCleanup.worktree`. */
   worktreeCleanup: Schema.NullOr(WorktreeCleanup).pipe(Schema.withDecodingDefault(() => null)),
-  /** Fast-forward clean default branches in the background. Off by default. */
+  /** Changes Storage cleanup may discard when removing a worktree. Empty discards nothing. */
+  worktreeDisposablePaths: WorktreeDisposablePaths.pipe(Schema.withDecodingDefault(() => [])),
+  /** Master switch for agent browser and computer tools. */
   enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   /** Non-loopback hosts agents may open in the preview. Empty keeps the preview localhost-only. */
   previewExternalHosts: PreviewExternalHosts.pipe(Schema.withDecodingDefault(() => [])),
   /** Launch Claude sessions with Claude in Chrome. Off by default. */
   enableClaudeInChrome: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
-  /** Allow agents to control the computer after per-turn approval. Off by default. */
-  enableAgentComputerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Let Codex use Chrome through the ChatGPT extension, via F5's proxy. Off by default. */
+  enableCodexChrome: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  computerUseBackend: Schema.Literals(["auto", "f5"]).pipe(
+    Schema.withDecodingDefault(() => "auto" as const),
+  ),
+  /**
+   * Global only. "background" lets agents act inside granted apps while the user works
+   * elsewhere; it is the default and forces F5's native backend. Foreground keeps the
+   * idle-only behaviour.
+   */
+  computerUseExecutionMode: ComputerUseExecutionMode.pipe(
+    Schema.withDecodingDefault(() => "background" as const),
+  ),
+  /** Global within this profile. Fast masking can miss fields omitted by accessibility. */
+  computerUsePasswordMasking: ComputerPasswordMasking.pipe(
+    Schema.withDecodingDefault(() => "fast" as const),
+  ),
+  /** Allow agents to request control of apps. Each app still requires approval. */
+  enableAgentComputerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Upstream tracking schedule and models. Local only; a checked-in file never sets it. */
+  upstreamPorts: UpstreamPortsSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  /**
+   * How GitHub API requests travel: f5's HTTP client, or `gh api` as before
+   * the HTTP move. "gh" is a fallback kept for one release.
+   */
+  githubTransport: GitHubTransport.pipe(Schema.withDecodingDefault(() => "http" as const)),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
   // of truth until `providerInstances` (below) lands per-driver migration
@@ -389,6 +626,7 @@ export const ServerSettings = Schema.Struct({
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     grok: GrokSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
+    muse: MuseSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -400,6 +638,15 @@ export const ServerSettings = Schema.Struct({
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
   prHub: PrHubSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  scheduledTasks: Schema.Struct({
+    epoch: Schema.Int.pipe(Schema.withDecodingDefault(() => 0)),
+    cutoverAt: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+    enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+    maxConcurrentRuns: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })).pipe(
+      Schema.withDecodingDefault(() => 2),
+    ),
+  }).pipe(Schema.withDecodingDefault(() => ({}))),
+  agentBridge: AgentBridgeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -449,6 +696,7 @@ const ClaudeSettingsPatch = Schema.Struct({
   enableFileCheckpointing: Schema.optionalKey(Schema.Boolean),
   nativeCompaction: Schema.optionalKey(Schema.Boolean),
   resumeCompactionPrompt: Schema.optionalKey(Schema.Boolean),
+  confineWritesToWorkspace: Schema.optionalKey(Schema.Boolean),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   homePath: Schema.optionalKey(Schema.String),
@@ -477,19 +725,36 @@ const GrokSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
+const MuseSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(Schema.String),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
+});
+
 const PrHubSettingsPatch = Schema.Struct({
+  discoverNotifications: Schema.optionalKey(Schema.Boolean),
   pollIntervalSeconds: Schema.optionalKey(PrHubPollIntervalSeconds),
   excludeRepos: Schema.optionalKey(Schema.Array(Schema.String)),
+  staleAfterDays: Schema.optionalKey(PrHubStaleAfterDays),
+  directReviewTeams: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  removeAgentCreditsOnMerge: Schema.optionalKey(Schema.Boolean),
+  autoSettleOnPullRequestMerge: Schema.optionalKey(Schema.Boolean),
+  autoSettleAfterDays: Schema.optionalKey(AutoSettleAfterDays),
+  autoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
+  /** Replaces every mapping. */
+  usageModelAliases: Schema.optionalKey(UsageModelAliases),
+  usageMonthlyBudget: Schema.optionalKey(Schema.NullOr(UsageMonthlyBudget)),
+  usageBackgroundSampling: Schema.optionalKey(Schema.Boolean),
   autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
   projectSettingsOverrides: Schema.optionalKey(
-    Schema.Record(ProjectId, Schema.NullOr(ProjectSettingsOverrides)),
+    Schema.Record(ProjectId, Schema.NullOr(keepUnknownOverrideKeys(ProjectSettingsOverrides))),
   ),
   gitAuthorName: Schema.optionalKey(Schema.String),
   gitAuthorEmail: Schema.optionalKey(Schema.String),
@@ -499,26 +764,50 @@ export const ServerSettingsPatch = Schema.Struct({
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
+  projectsRoot: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  threadTitleInstructions: Schema.optionalKey(TrimmedString),
   sessionNotesModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   prHubDefaultMergeMethod: Schema.optionalKey(
     Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
   ),
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
+  scheduledBackupsEnabled: Schema.optionalKey(Schema.Boolean),
+  databaseSnapshotsEnabled: Schema.optionalKey(Schema.Boolean),
   storageCleanup: Schema.optionalKey(StorageCleanupSettingsPatch),
+  storageDiscovery: Schema.optionalKey(StorageDiscoverySettings),
+  worktreesDirectory: Schema.optionalKey(TrimmedString),
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
+  worktreeDisposablePaths: Schema.optionalKey(WorktreeDisposablePaths),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   previewExternalHosts: Schema.optionalKey(PreviewExternalHosts),
   enableClaudeInChrome: Schema.optionalKey(Schema.Boolean),
+  enableCodexChrome: Schema.optionalKey(Schema.Boolean),
   enableAgentComputerUse: Schema.optionalKey(Schema.Boolean),
+  computerUseBackend: Schema.optionalKey(Schema.Literals(["auto", "f5"])),
+  computerUseExecutionMode: Schema.optionalKey(ComputerUseExecutionMode),
+  computerUsePasswordMasking: Schema.optionalKey(ComputerPasswordMasking),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
+  upstreamPorts: Schema.optionalKey(UpstreamPortsSettingsPatch),
+  githubTransport: Schema.optionalKey(GitHubTransport),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(Schema.String),
       otlpMetricsUrl: Schema.optionalKey(Schema.String),
+      otlpHeaders: Schema.optionalKey(OtlpHeaders),
     }),
   ),
   prHub: Schema.optionalKey(PrHubSettingsPatch),
+  scheduledTasks: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      maxConcurrentRuns: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })),
+      ),
+    }),
+  ),
+  agentBridge: Schema.optionalKey(AgentBridgeSettingsPatch),
   providers: Schema.optionalKey(
     Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),
@@ -526,6 +815,7 @@ export const ServerSettingsPatch = Schema.Struct({
       cursor: Schema.optionalKey(CursorSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
       grok: Schema.optionalKey(GrokSettingsPatch),
+      muse: Schema.optionalKey(MuseSettingsPatch),
       antigravity: Schema.optionalKey(
         Schema.Struct({
           enabled: Schema.optionalKey(Schema.Boolean),
@@ -544,22 +834,30 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
+  "providerInstances",
+  "autoSettleOnPullRequestMerge",
+  "autoSettleAfterDays",
+  "autoSettleKeepPullRequests",
   "resumeActiveTurnsAfterRestart",
   "autoResumeUsageLimitedThreads",
   "defaultRuntimeMode",
   "defaultThreadEnvMode",
   "worktreeSubmodules",
   "textGenerationModelSelection",
+  "threadTitleInstructions",
   "sourceControlWriting",
   "enableClaudePromptSuggestions",
   "enableAssistantStreaming",
   "prHubDefaultMergeMethod",
   "worktreeCleanup",
+  "worktreeDisposablePaths",
   "enableAgentBrowserAccess",
   "previewExternalHosts",
   "enableClaudeInChrome",
+  "enableCodexChrome",
   "enableAgentComputerUse",
   "autoPullDefaultBranch",
+  "upstreamPorts",
 ] as const satisfies ReadonlyArray<keyof ServerSettings>;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
 export const ProjectSettingSource = Schema.Literals([
@@ -570,10 +868,18 @@ export const ProjectSettingSource = Schema.Literals([
   "global",
   "default",
 ]);
+export const ProjectSkillScanWarning = Schema.Struct({
+  scope: ProjectSkillScope,
+  commandName: Schema.String,
+  path: Schema.String,
+  reason: Schema.String,
+});
+export type ProjectSkillScanWarning = typeof ProjectSkillScanWarning.Type;
 export const ProjectSettingsResult = Schema.Struct({
+  skillScanWarnings: Schema.optional(Schema.Array(ProjectSkillScanWarning)),
   settings: ServerSettings,
   sources: Schema.Record(Schema.Literals(PROJECT_SCOPED_SERVER_SETTING_KEYS), ProjectSettingSource),
-  overrides: ProjectSettingsOverrides,
+  overrides: keepUnknownOverrideKeys(ProjectSettingsOverrides),
 });
 export type ProjectSettingsResult = typeof ProjectSettingsResult.Type;
 export const MigrateClientSettingInput = Schema.Union([

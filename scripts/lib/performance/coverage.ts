@@ -9,6 +9,8 @@ const required = {
     "replay.cancel-after-1000-with-writer",
     "git.status-large-nested-submodules",
     "upload.decode-persist-release-8MiB",
+    "orchestration.assistant-stream",
+    "orchestration.assistant-stream-claude-uncoalesced",
   ],
   interactive: [
     "transport.slow-disconnecting-client",
@@ -17,6 +19,28 @@ const required = {
     "browser.composer-input",
     "browser.composer-input-streaming",
   ],
+} as const;
+
+/**
+ * Server-component resource bounds; the harness reports against these same values.
+ * The stream and read-model ceilings are about 3x the pre-P1 smoke baseline. The
+ * event-loop bound is the 100 ms threshold for the SQLite helper-process decision.
+ */
+export const SERVER_COMPONENT_BOUNDS = {
+  "terminal.historyBytes": 4194304,
+  "replay.pageEvents": 200,
+  "replay.pageSerializedBytes": 1048576,
+  "upload.decodedBuffersBytes": 83886080,
+  "sqlite.concurrentWriterFailures": 0,
+  "stream.deltaLatencyP50Ms": 250,
+  "stream.deltaLatencyP95Ms": 350,
+  "stream.eventRowsWritten": 6500,
+  "stream.domainEvents": 6500,
+  "stream.sqlStatements": 350000,
+  "stream.projectionSqlStatements": 200000,
+  "stream.eventLoopDelayP99Ms": 100,
+  "readModel.heapBytes": 157286400,
+  "readModel.rssBytes": 943718400,
 } as const;
 
 /** Measurement completeness is separate from passing the measured performance gates. */
@@ -48,13 +72,7 @@ export function validateCoverage(reports: readonly PerformanceReport[]): string[
     }
     const bounds: Record<string, number> =
       scope === "server-component"
-        ? {
-            "terminal.historyBytes": 4194304,
-            "replay.pageEvents": 200,
-            "replay.pageSerializedBytes": 1048576,
-            "upload.decodedBuffersBytes": 83886080,
-            "sqlite.concurrentWriterFailures": 0,
-          }
+        ? SERVER_COMPONENT_BOUNDS
         : {
             "transport.logicalBufferedBytes": 8388608,
             "transport.pendingFrames": 2000,

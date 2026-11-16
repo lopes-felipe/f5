@@ -1,33 +1,49 @@
+import {
+  TimelineHarness,
+  waitForTimelineLayout,
+  makeUserEntry,
+  makeAssistantEntry,
+  type TimelineHarnessApi,
+} from "../../test/timeline";
 // Production CSS is part of the behavior under test because LegendList's
 // internal measurement depends on Tailwind sizing utilities applied to each
 // row.
 import "../../index.css";
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import type { OrchestrationCommandExecution } from "@t3tools/contracts";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 import {
+  EventId,
   MessageId,
   type NativeApi,
+  type OrchestrationThreadActivity,
   type OrchestrationFileChangeSummary,
   ThreadId,
   TurnId,
-  type UserMessageSkillCall,
 } from "@t3tools/contracts";
 import type { LegendListRef } from "@legendapp/list/react";
-import { StrictMode, useRef, useState } from "react";
+import { Profiler, StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {} from "@vitest/browser-playwright"; // Types cdp() as a Playwright CDPSession.
 import { cdp, page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
-import type { deriveTimelineEntries } from "../../session-logic";
+import {
+  deriveWorkLogEntries,
+  deriveTimelineEntries,
+  type LiveWorkActivity,
+} from "../../session-logic";
 import { parsePersistedAppSettings } from "../../appSettings";
 import type { TurnDiffSummary } from "../../types";
 import { readTimelineScrollAnchor } from "./timelineScrollAnchors";
-import { MessagesTimeline } from "./MessagesTimeline";
-import { ComposerDock } from "./composer/ComposerDock";
-import type { ImageAttachmentActionItem } from "./imageAttachmentActions";
-import { WORK_LOG_PAGE_SIZE } from "./workLogConstants";
+import { replayWheelOnTimeline } from "./timelineMinimapWheel";
+import {
+  buildTimelineRowExternals,
+  buildTimelineRows,
+  createTimelineRowCache,
+  type TimelineRowExternalsInputs,
+} from "./MessagesTimeline";
 import { appendTerminalContextsToPrompt } from "../../lib/terminalContext";
 
 const reducedMotionStore = vi.hoisted(() => {
@@ -91,64 +107,6 @@ function makeQueryClient() {
   });
 }
 
-function makeUserEntry(
-  id: string,
-  text: string,
-  offsetSeconds: number,
-  options: {
-    skillCall?: UserMessageSkillCall;
-    attachments?: Array<{
-      type: "image";
-      id: string;
-      name: string;
-      mimeType: string;
-      sizeBytes: number;
-      previewUrl: string;
-    }>;
-  } = {},
-): TimelineEntry {
-  const createdAt = new Date(
-    Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
-  ).toISOString();
-  return {
-    id,
-    kind: "message",
-    createdAt,
-    message: {
-      id: id as MessageId,
-      role: "user",
-      text,
-      ...(options.skillCall !== undefined ? { skillCall: options.skillCall } : {}),
-      createdAt,
-      completedAt: createdAt,
-      streaming: false,
-      attachments: options.attachments ?? [],
-      reasoningText: null,
-    },
-  } as unknown as TimelineEntry;
-}
-
-function makeAssistantEntry(id: string, text: string, offsetSeconds: number): TimelineEntry {
-  const createdAt = new Date(
-    Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
-  ).toISOString();
-  return {
-    id,
-    kind: "message",
-    createdAt,
-    message: {
-      id: id as MessageId,
-      role: "assistant",
-      text,
-      createdAt,
-      completedAt: createdAt,
-      streaming: false,
-      attachments: [],
-      reasoningText: null,
-    },
-  } as unknown as TimelineEntry;
-}
-
 function makeReadWorkEntry(id: string, path: string, offsetSeconds: number): TimelineEntry {
   const createdAt = new Date(
     Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
@@ -202,206 +160,6 @@ function makeCommandEntry(
   } as unknown as TimelineEntry;
 }
 
-interface HarnessProps {
-  threadId?: ThreadId;
-  initialEntries: TimelineEntry[];
-  onIsAtEndChangeSpy: (value: boolean) => void;
-  onListRefChange?: (ref: LegendListRef | null) => void;
-  headerContent?: React.ReactNode;
-  initialHeight?: number;
-  initialIsWorking?: boolean;
-  initialActiveTurnStartedAt?: string | null;
-  initialExpandedCommandExecutions?: Record<string, boolean>;
-  queryClient?: QueryClient;
-  turnDiffSummaryByTurnId?: Map<TurnId, TurnDiffSummary>;
-  workspaceRoot?: string;
-  chatDiffContextOverrides?: Partial<{
-    threadId: ThreadId | null;
-    isGitRepo: boolean;
-    inferredCheckpointTurnCountByTurnId: Record<TurnId, number>;
-    expandedFileChangeDiffs: Record<string, boolean>;
-    fileChangeSummariesById: Record<string, OrchestrationFileChangeSummary>;
-  }>;
-  onOpenTurnDiff?: (turnId: TurnId, filePath?: string) => void;
-  onImageActionMenu?: (item: ImageAttachmentActionItem, position: { x: number; y: number }) => void;
-  usesCustomImageContextMenu?: boolean;
-  revertTurnCountByUserMessageId?: Map<MessageId, number>;
-  onRevertUserMessage?: (
-    messageId: MessageId,
-    restoreFiles?: boolean,
-    expectedLatestMessageId?: MessageId | null,
-  ) => void;
-  canRestoreFiles?: boolean;
-  revertDisabledReason?: string | null;
-  pendingRevert?: { targetMessageId: MessageId; label: string } | null;
-  revertReopenRequest?: { messageId: MessageId; restoreFiles: boolean; nonce: number } | null;
-  onRevertReopenHandled?: (nonce: number) => void;
-  latestMessageId?: MessageId | null;
-  initialNowIso?: string;
-  onWorkingRibbonFocusLost?: () => void;
-}
-
-interface TimelineHarnessApi {
-  setEntries: (entries: TimelineEntry[]) => void;
-  setHeaderContent: (content: React.ReactNode) => void;
-  setHeight: (height: number) => void;
-  /** Height of the content inside the harness's real composer dock. */
-  setDockHeight: (height: number) => void;
-  /** Remounts the timeline the way ChatView does on a thread switch. */
-  setThreadId: (threadId: ThreadId) => void;
-  setTimelineState: (nextState: {
-    entries?: TimelineEntry[];
-    isWorking?: boolean;
-    activeTurnStartedAt?: string | null;
-    nowIso?: string;
-  }) => void;
-}
-
-function TimelineHarness(
-  props: HarnessProps & {
-    // Parent drives the entry list via this setter so the test can push
-    // additions and simulate 0 → >0 transitions.
-    setApi?: (api: TimelineHarnessApi) => void;
-  },
-) {
-  const [entries, setEntries] = useState<TimelineEntry[]>(props.initialEntries);
-  const [height, setHeight] = useState(props.initialHeight ?? 400);
-  const [isWorking, setIsWorking] = useState(props.initialIsWorking ?? false);
-  const [activeTurnStartedAt, setActiveTurnStartedAt] = useState<string | null>(
-    props.initialActiveTurnStartedAt === undefined
-      ? "2026-03-04T12:00:00.000Z"
-      : props.initialActiveTurnStartedAt,
-  );
-  const [nowIso, setNowIso] = useState(props.initialNowIso ?? "2026-03-04T12:05:00.000Z");
-  const [dockHeight, setDockHeight] = useState(0);
-  const [threadId, setThreadId] = useState<ThreadId | undefined>(props.threadId);
-  const [headerContent, setHeaderContent] = useState<React.ReactNode>(props.headerContent ?? null);
-  const [expandedCommandExecutions, setExpandedCommandExecutions] = useState<
-    Record<string, boolean>
-  >(props.initialExpandedCommandExecutions ?? {});
-  const [expandedWorkGroups, setExpandedWorkGroups] = useState<Record<string, number>>({});
-  const [workGroupCollapseOverrides, setWorkGroupCollapseOverrides] = useState<
-    Record<string, boolean>
-  >({});
-  const [expandedFileChangeDiffs, setExpandedFileChangeDiffs] = useState<Record<string, boolean>>(
-    {},
-  );
-  const listRef = useRef<LegendListRef | null>(null);
-  const queryClientRef = useRef<QueryClient>(props.queryClient ?? makeQueryClient());
-  // Expose the list ref out through the callback so tests can observe the
-  // real LegendList ref the component received.
-  if (props.onListRefChange) {
-    props.onListRefChange(listRef.current);
-  }
-  if (props.setApi) {
-    props.setApi({
-      setEntries,
-      setHeaderContent,
-      setHeight,
-      setDockHeight,
-      setThreadId,
-      setTimelineState: (nextState) => {
-        if (nextState.entries !== undefined) setEntries(nextState.entries);
-        if (nextState.isWorking !== undefined) setIsWorking(nextState.isWorking);
-        if (nextState.nowIso !== undefined) setNowIso(nextState.nowIso);
-        if (Object.hasOwn(nextState, "activeTurnStartedAt")) {
-          setActiveTurnStartedAt(nextState.activeTurnStartedAt ?? null);
-        }
-      },
-    });
-  }
-
-  return (
-    <div
-      data-composer-dock-host
-      style={{ height, display: "flex", flexDirection: "column", position: "relative" }}
-    >
-      <QueryClientProvider client={queryClientRef.current}>
-        <MessagesTimeline
-          key={threadId}
-          {...(threadId ? { threadId } : {})}
-          {...(props.onWorkingRibbonFocusLost
-            ? { onWorkingRibbonFocusLost: props.onWorkingRibbonFocusLost }
-            : {})}
-          hasMessages={entries.length > 0}
-          isWorking={isWorking}
-          activeTurnStartedAt={activeTurnStartedAt}
-          listRef={listRef}
-          onIsAtEndChange={props.onIsAtEndChangeSpy}
-          timelineEntries={entries}
-          completionDividerBeforeEntryId={null}
-          completionSummary={null}
-          turnDiffSummaryByAssistantMessageId={new Map()}
-          turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId ?? new Map()}
-          nowIso={nowIso}
-          expandedWorkGroups={expandedWorkGroups}
-          onToggleWorkGroup={(groupId, paginatedEntryCount) => {
-            setExpandedWorkGroups((current) => {
-              const revealedEntries = current[groupId] ?? WORK_LOG_PAGE_SIZE;
-              return {
-                ...current,
-                [groupId]:
-                  revealedEntries >= paginatedEntryCount
-                    ? WORK_LOG_PAGE_SIZE
-                    : Math.min(paginatedEntryCount, revealedEntries + WORK_LOG_PAGE_SIZE),
-              };
-            });
-          }}
-          workGroupCollapseOverrides={workGroupCollapseOverrides}
-          onSetWorkGroupExpanded={(groupId, expanded) => {
-            setWorkGroupCollapseOverrides((current) => ({ ...current, [groupId]: expanded }));
-          }}
-          onOpenTurnDiff={props.onOpenTurnDiff ?? (() => {})}
-          revertTurnCountByUserMessageId={props.revertTurnCountByUserMessageId ?? new Map()}
-          onRevertUserMessage={props.onRevertUserMessage ?? (() => {})}
-          canRestoreFiles={props.canRestoreFiles}
-          isRevertingCheckpoint={false}
-          revertDisabledReason={props.revertDisabledReason ?? null}
-          pendingRevert={props.pendingRevert ?? null}
-          revertReopenRequest={props.revertReopenRequest ?? null}
-          onRevertReopenHandled={props.onRevertReopenHandled}
-          latestMessageId={props.latestMessageId ?? null}
-          onImageExpand={() => {}}
-          onImageActionMenu={props.onImageActionMenu}
-          usesCustomImageContextMenu={props.usesCustomImageContextMenu}
-          markdownCwd={undefined}
-          resolvedTheme="light"
-          timestampFormat="locale"
-          workspaceRoot={props.workspaceRoot}
-          expandedCommandExecutions={expandedCommandExecutions}
-          onToggleCommandExecution={(commandExecutionId) => {
-            setExpandedCommandExecutions((current) => ({
-              ...current,
-              [commandExecutionId]: !(current[commandExecutionId] ?? false),
-            }));
-          }}
-          allDirectoriesExpanded={false}
-          onToggleAllDirectories={() => {}}
-          listHeaderContent={headerContent}
-          chatDiffContext={{
-            threadId: INLINE_DIFF_THREAD_ID,
-            isGitRepo: true,
-            inferredCheckpointTurnCountByTurnId: {},
-            expandedFileChangeDiffs,
-            fileChangeSummariesById: {},
-            onToggleFileChangeDiff: (workEntryId) => {
-              setExpandedFileChangeDiffs((current) => ({
-                ...current,
-                [workEntryId]: !(current[workEntryId] ?? true),
-              }));
-            },
-            onOpenFileChangeDiff: () => {},
-            ...props.chatDiffContextOverrides,
-          }}
-        />
-      </QueryClientProvider>
-      <ComposerDock>
-        <div data-testid="harness-dock-content" style={{ height: dockHeight }} />
-      </ComposerDock>
-    </div>
-  );
-}
-
 function makeOverflowEntries(count: number): TimelineEntry[] {
   return Array.from({ length: count }, (_, index) =>
     index % 2 === 0
@@ -421,6 +179,7 @@ async function waitForScrollContainer(host: HTMLElement): Promise<HTMLElement> {
     expect(scrollContainer, "Unable to find the LegendList scroll container.").not.toBeNull();
     expect(scrollContainer!.scrollHeight).toBeGreaterThan(scrollContainer!.clientHeight);
   });
+  await waitForTimelineLayout(() => scrollContainer);
   return scrollContainer!;
 }
 
@@ -482,6 +241,41 @@ describe("MessagesTimeline (LegendList)", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("renders the actual skill name from persisted generic tool history", async () => {
+    const createdAt = "2026-03-04T12:00:01.000Z";
+    const [entry] = deriveWorkLogEntries(
+      [
+        {
+          id: EventId.makeUnsafe("skill-history"),
+          createdAt,
+          kind: "tool.completed",
+          summary: "Tool call completed",
+          tone: "tool",
+          turnId: TurnId.makeUnsafe("turn-1"),
+          payload: {
+            itemType: "dynamic_tool_call",
+            title: "Tool call",
+            providerItemId: "skill-call",
+            status: "completed",
+            data: { toolName: "Skill", input: { skill: "team:review" } },
+          },
+        },
+      ],
+      undefined,
+    );
+    expect(entry?.toolTitle).toBe("Skill: team:review");
+    await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("skill-user", "Review the patch", 0),
+          { id: entry!.id, kind: "work", createdAt, entry: entry! },
+        ]}
+        onIsAtEndChangeSpy={vi.fn()}
+      />,
+    );
+    await expect.element(page.getByText("Skill: team:review", { exact: true })).toBeVisible();
   });
 
   it("restores a thread reading position after navigating away", async () => {
@@ -568,6 +362,106 @@ describe("MessagesTimeline (LegendList)", () => {
     });
   });
 
+  it("puts prompts on the right and navigates completed answers from the left rail", async () => {
+    await page.viewport(1200, 896);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const entries = makeOverflowEntries(40).map((entry, index): TimelineEntry => {
+      if (entry.kind !== "message") return entry;
+      return {
+        ...entry,
+        message: {
+          ...entry.message,
+          turnId: TurnId.makeUnsafe(`rail-turn-${Math.floor(index / 2)}`),
+          ...(entry.message.role === "assistant"
+            ? { completedAt: new Date(Date.parse(entry.createdAt) + 1000).toISOString() }
+            : {}),
+        },
+      };
+    });
+    let listRef: LegendListRef | null = null;
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={entries}
+        initialHeight={360}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(next) => {
+          listRef = next;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const container = await waitForScrollContainer(host);
+      const userRail = host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail"]')!;
+      const answerRail = host.querySelector<HTMLElement>(
+        '[data-testid="timeline-assistant-rail"]',
+      )!;
+      expect(userRail.dataset.railSide).toBe("right");
+      expect(answerRail.dataset.railSide).toBe("left");
+      const strip = answerRail.querySelector<HTMLButtonElement>("button")!;
+      await scrollTimelineToOffset(listRef, container, container.scrollHeight);
+      const rect = strip.getBoundingClientRect();
+      strip.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          clientY: rect.top + 1,
+          clientX: rect.left + 1,
+        }),
+      );
+      await vi.waitFor(() => {
+        const answer = host.querySelector<HTMLElement>('[data-message-id="overflow-assistant-1"]');
+        expect(answer).not.toBeNull();
+        expect(isElementVisibleWithinContainer(answer!, container)).toBe(true);
+      });
+      await page.viewport(600, 896);
+      await vi.waitFor(() => {
+        const column = host.querySelector<HTMLElement>('[data-timeline-root="true"]')!;
+        const rightStrip = userRail.querySelector("button")!;
+        expect(strip.getBoundingClientRect().right).toBeLessThanOrEqual(
+          column.getBoundingClientRect().left,
+        );
+        expect(rightStrip.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+          column.getBoundingClientRect().right,
+        );
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("scrolls the timeline when the wheel turns over the turn rail or minimap", async () => {
+    await page.viewport(1200, 896);
+    const host = document.createElement("div");
+    document.body.append(host);
+    let listRef: LegendListRef | null = null;
+    await render(
+      <TimelineHarness
+        initialEntries={makeOverflowEntries(40)}
+        initialHeight={360}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(next) => {
+          listRef = next;
+        }}
+      />,
+      { container: host },
+    );
+    const container = await waitForScrollContainer(host);
+    await scrollTimelineToOffset(listRef, container, container.scrollHeight);
+    const targets = [
+      host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail-strip"]'),
+      host.querySelector<HTMLElement>('[aria-label="Conversation minimap"]'),
+    ];
+    for (const target of targets) {
+      expect(target).not.toBeNull();
+      const before = container.scrollTop;
+      const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -200 });
+      target!.dispatchEvent(wheel);
+      expect(wheel.defaultPrevented).toBe(true);
+      await vi.waitFor(() => expect(container.scrollTop).toBeLessThan(before));
+    }
+  });
+
   it("tracks the active turn-rail tick while scrolling", async () => {
     await page.viewport(1200, 896);
     const host = document.createElement("div");
@@ -627,8 +521,9 @@ describe("MessagesTimeline (LegendList)", () => {
     });
     const messageText = host.querySelector<HTMLElement>('[data-message-id="overflow-user-0"]');
     const contentColumn = host.querySelector<HTMLElement>('[data-timeline-root="true"]');
-    expect(strip!.getBoundingClientRect().right).toBeLessThanOrEqual(
-      contentColumn!.getBoundingClientRect().left,
+    expect(rail!.dataset.railSide).toBe("right");
+    expect(strip!.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      contentColumn!.getBoundingClientRect().right,
     );
     expect(getComputedStyle(messageText!).pointerEvents).not.toBe("none");
 
@@ -734,6 +629,55 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("keeps a prior-turn MCP app visible while ordinary work logs collapse", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const appEntry = makeReadWorkEntry("app-work", "unused", 2);
+    if (appEntry.kind !== "work") throw new Error("Expected work entry");
+    appEntry.entry = {
+      ...appEntry.entry,
+      label: "Weather app",
+      readPaths: [],
+      changedFiles: [],
+      mcpApp: {
+        reference: {
+          attachmentId: "weather-doc",
+          server: "weather",
+          tool: "forecast",
+          resourceUri: "ui://weather/app",
+        },
+        arguments: {},
+        result: { content: [] },
+      },
+    };
+    const screen = await render(
+      <TimelineHarness
+        threadId={INLINE_DIFF_THREAD_ID}
+        initialEntries={[
+          makeUserEntry("app-user-1", "Weather", 0),
+          makeReadWorkEntry("app-read", "src/weather.ts", 1),
+          appEntry,
+          makeAssistantEntry("app-answer", "Sunny", 3),
+          makeUserEntry("app-user-2", "Tomorrow?", 4),
+        ]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(
+          host.querySelector('[data-slot="work-group-summary"]')?.getAttribute("aria-expanded"),
+        ).toBe("false");
+        expect(host.textContent).toContain("Send a message to reconnect.");
+      });
+      expect(host.textContent).not.toContain("src/weather.ts");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("keeps prior work logs open when the collapse setting is off", async () => {
     persistAppSettings({ collapseCompletedWorkLogs: false });
     const host = document.createElement("div");
@@ -761,6 +705,247 @@ describe("MessagesTimeline (LegendList)", () => {
       host.remove();
     }
   });
+
+  it.each([
+    { surface: "computer", collapse: true },
+    { surface: "computer", collapse: false },
+    { surface: "preview", collapse: true },
+    { surface: "preview", collapse: false },
+  ] as const)(
+    "keeps $surface cards across turns and remounts with work-log collapse=$collapse",
+    async ({ surface, collapse }) => {
+      persistAppSettings({ collapseCompletedWorkLogs: collapse });
+      let host = document.createElement("div");
+      document.body.append(host);
+      let api: TimelineHarnessApi | null = null;
+      const toolPayload =
+        surface === "computer"
+          ? {
+              computerTool: true,
+              mcpServerName: "__f5_computer",
+              mcpToolName: "computer_click",
+              // Deliberately omit computerStep to cover older saved calls.
+            }
+          : { mcpServerName: "__f5_preview", mcpToolName: "preview_click" };
+      const call = (
+        id: string,
+        second: number,
+        kind: string,
+        payload: Record<string, unknown>,
+        turnId = "turn-1",
+      ): OrchestrationThreadActivity => ({
+        id: EventId.makeUnsafe(id),
+        turnId: TurnId.makeUnsafe(turnId),
+        createdAt: new Date(Date.UTC(2026, 2, 4, 12, 0, second)).toISOString(),
+        kind,
+        tone: "tool",
+        summary: "Computer",
+        payload: { itemType: "mcp_tool_call", ...toolPayload, ...payload },
+      });
+      const activities = [
+        call("run-start", 1, "tool.started", {
+          providerItemId: "first-call",
+          status: "inProgress",
+        }),
+        call("run-complete", 2, "tool.completed", { providerItemId: "first-call" }),
+        call("run-failed", 3, "tool.completed", {
+          providerItemId: "failed-call",
+          status: "failed",
+        }),
+        call("run-incomplete", 4, "tool.started", {
+          providerItemId: "incomplete-call",
+          status: "inProgress",
+        }),
+      ];
+      const messages = [
+        makeUserEntry("automation-user-1", "Use the computer", 0),
+        makeAssistantEntry("automation-answer-1", "Finished.", 5),
+      ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : []));
+      const entries = (latestTurn: string) =>
+        deriveTimelineEntries(
+          messages,
+          [],
+          deriveWorkLogEntries(activities, TurnId.makeUnsafe(latestTurn)),
+        );
+      const renderTimeline = (initialEntries: TimelineEntry[]) =>
+        render(
+          <TimelineHarness
+            initialEntries={initialEntries}
+            initialHeight={900}
+            onIsAtEndChangeSpy={() => {}}
+            setApi={(nextApi) => {
+              api = nextApi;
+            }}
+          />,
+          { container: host },
+        );
+      const cards = () =>
+        host.querySelectorAll<HTMLElement>('[data-testid="automation-session-card"]');
+      const firstCard = () => cards()[0]!;
+      const button = (card: HTMLElement, text: string) =>
+        page.elementLocator(card).getByRole("button", { name: text, exact: true });
+      const title = surface === "computer" ? "Used the computer" : "Used browser preview";
+      let screen = await renderTimeline(entries("turn-1"));
+      try {
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(1);
+          expect(firstCard().textContent).toContain(title);
+        });
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        messages.push(
+          ...[makeUserEntry("automation-user-2", "Another turn", 10)].flatMap((entry) =>
+            entry.kind === "message" ? [entry.message] : [],
+          ),
+        );
+        api!.setTimelineState({ entries: entries("turn-2"), isWorking: true });
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(1);
+          expect(firstCard().getAttribute("data-status")).toBe("done");
+          expect(firstCard().querySelector('[aria-label="Collapse"]')).toBeNull();
+        });
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        await button(firstCard(), "Show 3 steps").click();
+        await vi.waitFor(() => {
+          expect(firstCard().textContent).toContain("Clicking interrupted");
+          expect(firstCard().textContent).toContain("Clicking failed");
+        });
+
+        activities.push(
+          call("second-run", 12, "tool.completed", { status: "completed" }, "turn-2"),
+          {
+            id: EventId.makeUnsafe("provider-handoff"),
+            turnId: null,
+            createdAt: "2026-03-04T12:00:14.000Z",
+            kind: "provider.context-handoff",
+            tone: "info",
+            summary: "Context handed off from Codex to Claude",
+            payload: {},
+          },
+        );
+        messages.push(
+          ...[
+            makeAssistantEntry("automation-answer-2", "Finished again.", 13),
+            makeUserEntry("automation-user-3", "Continue with Claude", 15),
+          ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+        );
+        api!.setTimelineState({ entries: entries("turn-3"), isWorking: true });
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(2);
+        });
+        await expect.element(button(firstCard(), "Hide steps")).toBeVisible();
+        await expect.element(button(cards()[1]!, "Show 1 step")).toBeVisible();
+
+        await screen.unmount();
+        host.remove();
+        host = document.createElement("div");
+        document.body.append(host);
+        const restored: { activities: OrchestrationThreadActivity[]; messages: typeof messages } =
+          JSON.parse(JSON.stringify({ activities, messages }));
+        screen = await renderTimeline(
+          deriveTimelineEntries(
+            restored.messages,
+            [],
+            deriveWorkLogEntries(restored.activities, TurnId.makeUnsafe("turn-3")),
+          ),
+        );
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(2);
+          expect(firstCard().textContent).toContain(title);
+        });
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        await expect.element(button(cards()[1]!, "Show 1 step")).toBeVisible();
+        await button(firstCard(), "Show 3 steps").click();
+        await vi.waitFor(() => {
+          expect(firstCard().textContent).toContain("Clicking interrupted");
+        });
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
+
+  it.each(["computer", "preview"] as const)(
+    "keeps separate %s cards and their expansion when intervening work becomes historical",
+    async (surface) => {
+      const payload =
+        surface === "computer"
+          ? { computerTool: true, mcpToolName: "computer_click" }
+          : { mcpServerName: "__f5_preview", mcpToolName: "preview_click" };
+      const activities: OrchestrationThreadActivity[] = [
+        { itemType: "mcp_tool_call", providerItemId: "first", ...payload },
+        { itemType: "dynamic_tool_call", command: "echo between runs" },
+        { itemType: "mcp_tool_call", providerItemId: "second", ...payload },
+      ].map((callPayload, index) => ({
+        id: EventId.makeUnsafe("separate-call-" + index),
+        turnId: TurnId.makeUnsafe("turn-1"),
+        createdAt: new Date(Date.UTC(2026, 2, 4, 12, 0, index + 1)).toISOString(),
+        kind: "tool.completed",
+        tone: "tool",
+        summary: "Tool",
+        payload: callPayload,
+      }));
+      const messages = [
+        makeUserEntry("separate-user-1", "Use two runs", 0),
+        makeAssistantEntry("separate-answer", "Done.", 4),
+      ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : []));
+      const entries = (turn: string) =>
+        deriveTimelineEntries(
+          messages,
+          [],
+          deriveWorkLogEntries(activities, TurnId.makeUnsafe(turn)),
+        );
+      let api: TimelineHarnessApi | null = null;
+      const host = document.createElement("div");
+      document.body.append(host);
+      const screen = await render(
+        <TimelineHarness
+          initialEntries={entries("turn-1")}
+          initialHeight={900}
+          onIsAtEndChangeSpy={() => {}}
+          setApi={(nextApi) => {
+            api = nextApi;
+          }}
+        />,
+        { container: host },
+      );
+      const cards = () =>
+        host.querySelectorAll<HTMLElement>('[data-testid="automation-session-card"]');
+      try {
+        await vi.waitFor(() => expect(cards()).toHaveLength(2));
+        const first = cards()[0]!;
+        const second = cards()[1]!;
+        await page
+          .elementLocator(second)
+          .getByRole("button", { name: "Show 1 step", exact: true })
+          .click();
+        await expect
+          .element(page.elementLocator(second).getByRole("button", { name: "Hide steps" }))
+          .toBeVisible();
+        messages.push(
+          ...[makeUserEntry("separate-user-2", "Continue", 6)].flatMap((entry) =>
+            entry.kind === "message" ? [entry.message] : [],
+          ),
+        );
+        api!.setTimelineState({ entries: entries("turn-2"), isWorking: true });
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(2);
+          expect(cards()[0]).toBe(first);
+          expect(cards()[1]).toBe(second);
+          expect(host.textContent).not.toContain("echo between runs");
+        });
+        await expect
+          .element(page.elementLocator(first).getByRole("button", { name: "Show 1 step" }))
+          .toBeVisible();
+        await expect
+          .element(page.elementLocator(second).getByRole("button", { name: "Hide steps" }))
+          .toBeVisible();
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
 
   it("routes sent-image right-clicks to the F5 image action menu", async () => {
     const onImageActionMenu = vi.fn();
@@ -815,6 +1000,49 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("shows image-only messages as media instead of the hidden prompt", async () => {
+    const image = (id: string) => ({
+      type: "image" as const,
+      id,
+      name: `${id}.png`,
+      mimeType: "image/png",
+      sizeBytes: 128,
+      previewUrl: `/attachments/${id}`,
+    });
+    const lone = makeUserEntry("lone-image", IMAGE_ONLY_BOOTSTRAP_PROMPT, 0, {
+      attachments: [image("lone")],
+    });
+    const pair = makeUserEntry("image-pair", IMAGE_ONLY_BOOTSTRAP_PROMPT, 1, {
+      attachments: [image("left"), image("right")],
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness initialEntries={[lone, pair]} onIsAtEndChangeSpy={() => {}} />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelector('img[alt="right.png"]')).not.toBeNull();
+      });
+      expect(host.textContent).not.toContain(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+      const bubbles = host.querySelectorAll('[data-slot="user-message-bubble"]');
+      expect([...bubbles].map((bubble) => bubble.hasAttribute("data-media-only"))).toEqual([
+        true,
+        true,
+      ]);
+      expect(host.querySelector('img[alt="lone.png"]')!.getBoundingClientRect().height).toBe(192);
+      const collage = host.querySelector('img[alt="left.png"]')!.closest(".grid")!;
+      expect(collage.getBoundingClientRect().width).toBe(320);
+      expect(host.querySelector('img[alt="left.png"]')!.getBoundingClientRect().height).toBe(192);
+      expect(host.querySelector('button[aria-label="Copy message"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("preserves the native image context menu outside Electron", async () => {
     const onImageActionMenu = vi.fn();
     const entry = makeUserEntry("message-with-web-image", "See screenshot", 0, {
@@ -858,11 +1086,106 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
-  it("invokes scrollToEnd and flips isAtEnd on 0 → >0 row transitions", async () => {
-    // Upstream fix 33dadb5a: when the row count goes from 0 to >0 (new thread,
-    // first message), LegendList has already latched `initialScrollAtEnd`, so
-    // we must explicitly scroll to end and propagate isAtEnd=true again. This
-    // test exercises the requestAnimationFrame path inside MessagesTimeline.
+  it("keeps the measured end target when a tall thread loads into an empty pane", async () => {
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[]}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(next) => {
+          api = next;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      // Let the empty pane finish mounting before its history arrives.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const entries = Array.from({ length: 12 }, (_, index) =>
+        makeAssistantEntry(
+          "loaded-tall-" + index,
+          Array.from({ length: 60 }, (_, line) => "Paragraph " + index + "." + line).join("\n\n"),
+          index,
+        ),
+      );
+      api!.setEntries(entries);
+      await vi.waitFor(() => {
+        const viewport = host.querySelector<HTMLElement>(
+          '[data-slot="messages-scroll-container"]',
+        )!;
+        expect(viewport).not.toBeNull();
+        expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight);
+        expect(host.textContent).toContain("Paragraph 11.59");
+        expect(
+          viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop,
+        ).toBeLessThanOrEqual(1);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("settles when short history loads above very long replies", async () => {
+    let api: TimelineHarnessApi | null = null;
+    let nested = 0;
+    let maximumNested = 0;
+    const short = Array.from({ length: 80 }, (_, index) =>
+      makeAssistantEntry("history-short-" + index, "Short reply " + index, index),
+    );
+    const long = Array.from({ length: 4 }, (_, index) =>
+      makeAssistantEntry(
+        "history-long-" + index,
+        ("Long handbook paragraph. ".repeat(40) + "\n\n").repeat(60),
+        index + 80,
+      ),
+    );
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <Profiler
+        id="history"
+        onRender={(_id, phase) => {
+          nested = phase === "nested-update" ? nested + 1 : 0;
+          maximumNested = Math.max(maximumNested, nested);
+        }}
+      >
+        <TimelineHarness
+          initialEntries={long}
+          initialHeight={400}
+          onIsAtEndChangeSpy={() => {}}
+          setApi={(next) => {
+            api = next;
+          }}
+        />
+      </Profiler>,
+      { container: host },
+    );
+    try {
+      const viewport = await waitForScrollContainer(host);
+      await waitForTimelineLayout(() => viewport);
+      viewport.scrollTop = 0;
+      viewport.dispatchEvent(new Event("scroll"));
+      maximumNested = 0;
+      api!.setEntries([...short, ...long]);
+      await vi.waitFor(() => {
+        viewport.scrollTop = 0;
+        viewport.dispatchEvent(new Event("scroll"));
+        expect(host.textContent).toContain("Short reply 0");
+      });
+      await waitForTimelineLayout(() => viewport);
+      expect(maximumNested).toBeLessThan(8);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("flips isAtEnd on 0 → >0 row transitions", async () => {
+    // The initial measured target belongs to LegendList, while the timeline
+    // still reports that its first nonempty render is following the end.
     const isAtEndCalls: boolean[] = [];
     const scrollToEndSpy = vi.fn();
     let currentRef: LegendListRef | null = null;
@@ -918,6 +1241,39 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("keeps follow disabled by default even after reaching the bottom", async () => {
+    const initialEntries = makeOverflowEntries(16);
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={240}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(value) => {
+          api = value;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await waitForTimelineLayout(() => node);
+      const before = node.scrollTop;
+      api!.setEntries([
+        ...initialEntries,
+        makeAssistantEntry("default-off-tail", "New reply\n\n".repeat(30), 120),
+      ]);
+      await waitForTimelineLayout(() => node);
+      expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
+      expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeGreaterThan(40);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("auto-follows appended rows when the user is already at the end", async () => {
     const initialEntries = makeOverflowEntries(16);
     const isAtEndCalls: boolean[] = [];
@@ -927,6 +1283,7 @@ describe("MessagesTimeline (LegendList)", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
+        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={240}
         onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
@@ -982,6 +1339,7 @@ describe("MessagesTimeline (LegendList)", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
+        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={240}
         initialIsWorking
@@ -1096,6 +1454,126 @@ describe("MessagesTimeline (LegendList)", () => {
           ).toBe(false);
         }
       });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps a reader just above the bottom in place while the running reply grows", async () => {
+    const initialEntries = [
+      ...makeOverflowEntries(16),
+      makeAssistantEntry("streaming-tail", "Reply", 121),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    let currentRef: LegendListRef | null = null;
+    const isAtEndCalls: boolean[] = [];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={800}
+        initialIsWorking
+        onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+        onListRefChange={(ref) => {
+          currentRef = ref;
+        }}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await scrollTimelineToOffset(currentRef, node, node.scrollHeight - node.clientHeight - 65);
+      node.dispatchEvent(new WheelEvent("wheel", { deltaY: -65 }));
+      node.dispatchEvent(new Event("scroll"));
+      await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(false));
+      const before = node.scrollTop;
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "streaming-tail",
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await waitForTimelineLayout(() => node);
+      expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
+      expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeGreaterThan(40);
+      await scrollTimelineToOffset(currentRef, node, node.scrollHeight - node.clientHeight - 30);
+      node.dispatchEvent(new Event("scroll"));
+      await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(true));
+      const beforeContinuedStream = node.scrollHeight;
+      // Reaching the bottom does not enable following; the reader opts in.
+      api!.setAutoFollow(true);
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "streaming-tail",
+          Array.from({ length: 24 }, (_, index) => "Continued paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await vi.waitFor(() => {
+        expect(node.scrollHeight).toBeGreaterThan(beforeContinuedStream + 100);
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(40);
+        expect(isAtEndCalls.at(-1)).toBe(true);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("follows the tail from a scrolled-up position when a new turn requests it", async () => {
+    const initialEntries = makeOverflowEntries(16);
+    const isAtEndCalls: boolean[] = [];
+    let api: TimelineHarnessApi | null = null;
+    let currentRef: LegendListRef | null = null;
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={240}
+        onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+        onListRefChange={(ref) => {
+          currentRef = ref;
+        }}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+
+    try {
+      expect(api).not.toBeNull();
+
+      const scrollContainer = await waitForScrollContainer(host);
+      await scrollTimelineToOffset(currentRef, scrollContainer, 0);
+      scrollContainer.dispatchEvent(new Event("scroll"));
+      await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(false));
+
+      api!.followNewTurn([
+        ...initialEntries,
+        makeUserEntry("msg-user-followed-tail", "followed tail target", 121),
+      ]);
+
+      await vi.waitFor(
+        () => {
+          const appendedRow = host.querySelector<HTMLElement>(
+            '[data-message-id="msg-user-followed-tail"]',
+          );
+          expect(appendedRow, "The followed row should be rendered.").not.toBeNull();
+          expect(isElementVisibleWithinContainer(appendedRow!, scrollContainer)).toBe(true);
+        },
+        { timeout: 4_000 },
+      );
     } finally {
       await screen.unmount();
       host.remove();
@@ -1491,7 +1969,7 @@ describe("MessagesTimeline (LegendList)", () => {
       const popover = page.getByRole("dialog", { name: "Revert to before this message" });
       await vi.waitFor(() => {
         expect(popover.element().textContent).toContain("Removes this message.");
-        expect(popover.element().textContent).toContain("needs an isolated worktree");
+        expect(popover.element().textContent).toContain("needs an isolated workspace");
         expect(
           page.getByRole("button", { name: "Restore files" }).element().hasAttribute("disabled"),
         ).toBe(true);
@@ -1846,6 +2324,63 @@ describe("MessagesTimeline (LegendList)", () => {
       await vi.waitFor(() => {
         expect(getToggleButton()?.getAttribute("aria-expanded")).toBe("false");
         expect(getRow()?.textContent).not.toContain("Output");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("stays at the end while a command row at the end opens and closes", async () => {
+    const commandId = "command-toggle-at-end";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          ...makeOverflowEntries(16),
+          makeCommandEntry(commandId, {
+            output: Array.from({ length: 40 }, (_, line) => `line ${line}`).join("\n"),
+          }),
+        ]}
+        initialHeight={240}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+    const toggle = () =>
+      host.querySelector<HTMLButtonElement>(
+        `[data-timeline-row-id="${commandId}"] button[aria-expanded]`,
+      );
+    try {
+      const scrollContainer = await waitForScrollContainer(host);
+      const distanceFromEnd = () =>
+        scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
+      await vi.waitFor(() => {
+        expect(toggle()).not.toBeNull();
+        expect(distanceFromEnd()).toBeLessThan(8);
+      });
+      for (const expanded of ["true", "false"]) {
+        toggle()!.click();
+        await vi.waitFor(() => {
+          expect(toggle()?.getAttribute("aria-expanded")).toBe(expanded);
+          expect(distanceFromEnd()).toBeLessThan(8);
+        });
+      }
+
+      // Scrolled up, the toggled row holds its place instead of following the end.
+      // The previous disclosure pins the end for two layout frames. Finish that
+      // phase before establishing this separate scrolled-up precondition.
+      await waitForTimelineLayout(() => scrollContainer);
+      scrollContainer.scrollTop -= 120;
+      scrollContainer.dispatchEvent(new Event("scroll"));
+      await waitForTimelineLayout(() => scrollContainer);
+      const rowTop = toggle()!.getBoundingClientRect().top;
+      toggle()!.click();
+      await vi.waitFor(() => {
+        expect(toggle()?.getAttribute("aria-expanded")).toBe("true");
+        expect(Math.abs(toggle()!.getBoundingClientRect().top - rowTop)).toBeLessThan(2);
+        expect(distanceFromEnd()).toBeGreaterThan(100);
       });
     } finally {
       await screen.unmount();
@@ -2698,6 +3233,7 @@ describe("MessagesTimeline working ribbon", () => {
       initialNowIso?: string;
       initialActiveTurnStartedAt?: string | null;
       initialHeight?: number;
+      initialLiveActivity?: LiveWorkActivity;
       threadId?: ThreadId;
       strict?: boolean;
     } = {},
@@ -2716,6 +3252,9 @@ describe("MessagesTimeline working ribbon", () => {
           ? { initialActiveTurnStartedAt: options.initialActiveTurnStartedAt }
           : {})}
         {...(options.threadId ? { threadId: options.threadId } : {})}
+        {...(options.initialLiveActivity !== undefined
+          ? { initialLiveActivity: options.initialLiveActivity }
+          : {})}
         onIsAtEndChangeSpy={() => {}}
         onWorkingRibbonFocusLost={focusLost}
         setApi={(next) => {
@@ -2777,6 +3316,7 @@ describe("MessagesTimeline working ribbon", () => {
           makeReadWorkEntry("ribbon-footprint-read", "src/a.ts", 1),
         ],
         initialActiveTurnStartedAt: startedAt,
+        initialLiveActivity: { kind: "tool", providerItemId: null, title: "Read src/a.ts" },
       });
       const { host } = mounted;
       const measure = () => {
@@ -3279,21 +3819,41 @@ describe("MessagesTimeline working ribbon", () => {
     }
   });
 
-  it("tears down its loop and observers on release", async () => {
-    const tickFrames = new Map<number, number>();
+  function trackRibbonFrames() {
+    const pendingFrames = new Set<number>();
+    let tickCount = 0;
+    let maxPendingFrames = 0;
     const originalRequestAnimationFrame = window.requestAnimationFrame.bind(window);
-    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) =>
-      originalRequestAnimationFrame((now) => {
-        if (callback.name === "tick") tickFrames.set(now, (tickFrames.get(now) ?? 0) + 1);
+    const originalCancelAnimationFrame = window.cancelAnimationFrame.bind(window);
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      if (callback.name !== "tick") return originalRequestAnimationFrame(callback);
+      const frame = originalRequestAnimationFrame((now) => {
+        pendingFrames.delete(frame);
+        tickCount += 1;
         callback(now);
-      }),
-    );
-    const cancelSpy = vi.spyOn(window, "cancelAnimationFrame");
+      });
+      pendingFrames.add(frame);
+      maxPendingFrames = Math.max(maxPendingFrames, pendingFrames.size);
+      return frame;
+    });
+    const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
+      pendingFrames.delete(frame);
+      originalCancelAnimationFrame(frame);
+    });
+    return {
+      tickCount: () => tickCount,
+      pendingCount: () => pendingFrames.size,
+      maxPendingCount: () => maxPendingFrames,
+      cancelSpy,
+    };
+  }
+
+  it("tears down its loop and observers on release", async () => {
+    const { tickCount, pendingCount, cancelSpy } = trackRibbonFrames();
     const resizeDisconnectSpy = vi.spyOn(ResizeObserver.prototype, "disconnect");
     const mutationDisconnectSpy = vi.spyOn(MutationObserver.prototype, "disconnect");
     const mounted = await mountWorkingTimeline();
     const { host } = mounted;
-    const tickCount = () => [...tickFrames.values()].reduce((total, count) => total + count, 0);
     try {
       await grab(host);
       await vi.waitFor(() => {
@@ -3310,6 +3870,7 @@ describe("MessagesTimeline working ribbon", () => {
       expect(cancelSpy).toHaveBeenCalled();
       expect(resizeDisconnectSpy).toHaveBeenCalled();
       expect(mutationDisconnectSpy).toHaveBeenCalled();
+      expect(pendingCount()).toBe(0);
       const ticksAtRelease = tickCount();
       await nextFrames(5);
       expect(tickCount()).toBe(ticksAtRelease);
@@ -3319,25 +3880,577 @@ describe("MessagesTimeline working ribbon", () => {
   });
 
   it("runs a single loop under Strict Mode", async () => {
-    const tickFrames = new Map<number, number>();
-    const originalRequestAnimationFrame = window.requestAnimationFrame.bind(window);
-    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) =>
-      originalRequestAnimationFrame((now) => {
-        if (callback.name === "tick") tickFrames.set(now, (tickFrames.get(now) ?? 0) + 1);
-        callback(now);
-      }),
-    );
+    const { tickCount, pendingCount, maxPendingCount } = trackRibbonFrames();
     const mounted = await mountWorkingTimeline({ strict: true });
     const { host } = mounted;
     try {
       await grab(host);
       await nextFrames(8);
-      expect(tickFrames.size).toBeGreaterThan(3);
-      expect(Math.max(...tickFrames.values())).toBe(1);
+      expect(tickCount()).toBeGreaterThan(3);
+      // Count outstanding requests, independent of browser frame timestamps.
+      expect(maxPendingCount()).toBe(1);
+      expect(pendingCount()).toBe(1);
       expect(document.activeElement).toBe(stage(host));
       expect(mounted.focusLost).not.toHaveBeenCalled();
     } finally {
       await mounted.cleanup();
+    }
+  });
+});
+
+describe("MessagesTimeline row stability", () => {
+  const EMPTY_CHAT_DIFF_CONTEXT = {
+    threadId: null,
+    isGitRepo: false,
+    inferredCheckpointTurnCountByTurnId: {},
+    expandedFileChangeDiffs: {},
+    fileChangeSummariesById: {},
+    onToggleFileChangeDiff: () => {},
+    onOpenFileChangeDiff: () => {},
+  };
+
+  function externalsInputs(
+    overrides: Partial<TimelineRowExternalsInputs> = {},
+  ): TimelineRowExternalsInputs {
+    return {
+      threadId: null,
+      expandedWorkGroups: {},
+      workGroupCollapseOverrides: {},
+      turnDiffSummaryByTurnId: new Map(),
+      chatDiffContext: EMPTY_CHAT_DIFF_CONTEXT,
+      revertTurnCountByUserMessageId: new Map(),
+      revertPopover: null,
+      revertImpact: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      cacheMissByAssistantMessageId: new Map(),
+      changedFilesPresentationOverrides: {},
+      newestTurnDiffId: null,
+      expandedCommandExecutions: {},
+      ribbonActive: false,
+      ...overrides,
+    };
+  }
+
+  function buildRows(entries: TimelineEntry[], cache: ReturnType<typeof createTimelineRowCache>) {
+    return buildTimelineRows({
+      timelineEntries: entries,
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache,
+    });
+  }
+
+  function withTurnId(entry: TimelineEntry, turnId: TurnId): TimelineEntry {
+    if (entry.kind !== "work") throw new Error("expected a work entry");
+    return { ...entry, entry: { ...entry.entry, turnId } };
+  }
+
+  it("keeps earlier row objects and versions when the last message streams", () => {
+    const cache = createTimelineRowCache();
+    const user = makeUserEntry("row-user", "hello", 0);
+    const work = makeReadWorkEntry("row-work", "src/a.ts", 1);
+    const assistant = makeAssistantEntry("row-assistant", "Hel", 2);
+    const before = buildRows([user, work, assistant], cache);
+    const externalsBefore = buildTimelineRowExternals(before, externalsInputs(), new Map());
+
+    const grown = makeAssistantEntry("row-assistant", "Hello there", 2);
+    const after = buildRows([user, work, grown], cache);
+    const externalsAfter = buildTimelineRowExternals(after, externalsInputs(), externalsBefore);
+
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+    expect(after[2]).not.toBe(before[2]);
+    expect(externalsAfter.get("row-user")).toBe(externalsBefore.get("row-user"));
+    expect(externalsAfter.get("row-work")).toBe(externalsBefore.get("row-work"));
+    // Rebuilding the same entries returns the same array.
+    expect(buildRows([user, work, grown], cache)).toBe(after);
+  });
+
+  it("hands a missed turn's summary to its reply and nowhere else", () => {
+    const cache = createTimelineRowCache();
+    const user = makeUserEntry("row-user", "hello", 0);
+    const missed = makeAssistantEntry("row-missed", "Done.", 1);
+    const warm = makeAssistantEntry("row-warm", "Also done.", 2);
+    const rows = buildRows([user, missed, warm], cache);
+    const miss = {
+      turnId: TurnId.makeUnsafe("turn-missed"),
+      turnNumber: 2,
+      state: "miss" as const,
+      ratio: 0.02,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 500,
+      uncachedInputTokens: 0,
+      outputTokens: 20,
+      rewrittenTokens: 500,
+      idleMs: null,
+      completedAt: "2026-03-04T12:00:01.000Z",
+    };
+    const without = buildTimelineRowExternals(rows, externalsInputs(), new Map());
+    const withMiss = buildTimelineRowExternals(
+      rows,
+      externalsInputs({ cacheMissByAssistantMessageId: new Map([[missed.id as MessageId, miss]]) }),
+      without,
+    );
+    const externalsOf = (map: typeof without, id: string) => {
+      const externals = map.get(id)?.externals;
+      if (externals?.kind !== "assistant-message") throw new Error("expected an assistant row");
+      return externals;
+    };
+    expect(externalsOf(without, "row-missed").cacheMiss).toBeUndefined();
+    expect(externalsOf(withMiss, "row-missed").cacheMiss).toBe(miss);
+    expect(withMiss.get("row-missed")?.version).not.toBe(without.get("row-missed")?.version);
+    // The warm reply keeps its entry, so its row does not re-render.
+    expect(withMiss.get("row-warm")).toBe(without.get("row-warm"));
+    expect(externalsOf(withMiss, "row-warm").cacheMiss).toBeUndefined();
+  });
+
+  it("skips revert and checkpoint lookups while only message text streams", () => {
+    const cache = createTimelineRowCache();
+    const user = makeUserEntry("row-user", "hello", 0);
+    const assistant = makeAssistantEntry("row-assistant", "Hel", 1);
+    let revertLookups = 0;
+    class CountingMap<K, V> extends Map<K, V> {
+      override has(key: K): boolean {
+        revertLookups += 1;
+        return super.has(key);
+      }
+    }
+    const inputs = externalsInputs({
+      revertTurnCountByUserMessageId: new CountingMap([[user.id as MessageId, 0]]),
+    });
+    const before = buildRows([user, assistant], cache);
+    const externalsBefore = buildTimelineRowExternals(before, inputs, new Map());
+    expect(revertLookups).toBe(1);
+
+    const after = buildRows([user, makeAssistantEntry("row-assistant", "Hello there", 1)], cache);
+    const externalsAfter = buildTimelineRowExternals(after, inputs, externalsBefore, {
+      rows: before,
+      inputs,
+    });
+    expect(externalsAfter).toBe(externalsBefore);
+    expect(revertLookups).toBe(1);
+
+    // A new user message is structural, so rows are described again.
+    const next = buildRows(
+      [user, makeAssistantEntry("row-assistant", "Hello there", 1), makeUserEntry("u2", "more", 2)],
+      cache,
+    );
+    buildTimelineRowExternals(next, inputs, externalsAfter, { rows: after, inputs });
+    expect(revertLookups).toBe(3);
+  });
+
+  it("changes only the rows of the turn whose diff summary changed", () => {
+    const cache = createTimelineRowCache();
+    const turnA = TurnId.makeUnsafe("turn-a");
+    const turnB = TurnId.makeUnsafe("turn-b");
+    const rows = buildRows(
+      [
+        withTurnId(makeReadWorkEntry("work-a", "src/a.ts", 0), turnA),
+        makeUserEntry("user-between", "next", 1),
+        withTurnId(makeReadWorkEntry("work-b", "src/b.ts", 2), turnB),
+      ],
+      cache,
+    );
+    const summaryA = { turnId: turnA, completedAt: "2026-03-04T12:00:00.000Z", files: [] };
+    const externalsBefore = buildTimelineRowExternals(
+      rows,
+      externalsInputs({
+        turnDiffSummaryByTurnId: new Map([[turnA, summaryA as unknown as TurnDiffSummary]]),
+      }),
+      new Map(),
+    );
+    const nextSummaryA = { ...summaryA, checkpointTurnCount: 2 };
+    const externalsAfter = buildTimelineRowExternals(
+      rows,
+      externalsInputs({
+        turnDiffSummaryByTurnId: new Map([[turnA, nextSummaryA as unknown as TurnDiffSummary]]),
+      }),
+      externalsBefore,
+    );
+
+    expect(externalsAfter.get("work-a")?.version).not.toBe(externalsBefore.get("work-a")?.version);
+    expect(externalsAfter.get("work-b")).toBe(externalsBefore.get("work-b"));
+    expect(externalsAfter.get("user-between")).toBe(externalsBefore.get("user-between"));
+  });
+
+  it("keeps an earlier work group open while a subagent in it is still running", () => {
+    const agent = (status: string): TimelineEntry => {
+      const base = makeReadWorkEntry("agent-work", "src/a.ts", 1);
+      if (base.kind !== "work") throw new Error("expected a work entry");
+      return {
+        ...base,
+        entry: { ...base.entry, label: "Agent", subagentType: "Explore", status },
+      } as TimelineEntry;
+    };
+    const rows = (status: string) =>
+      buildRows(
+        [
+          makeUserEntry("agent-user", "first", 0),
+          agent(status),
+          makeUserEntry("agent-steer", "also check b", 2),
+        ],
+        createTimelineRowCache(),
+      ).find((row) => row.id === "agent-work");
+    expect(rows("inProgress")).toMatchObject({ kind: "work", isPriorTurn: false });
+    expect(rows("completed")).toMatchObject({ kind: "work", isPriorTurn: true });
+  });
+
+  it("prunes cached rows that a rewind removed", () => {
+    const cache = createTimelineRowCache();
+    const user = makeUserEntry("rewind-user", "first", 0);
+    const assistant = makeAssistantEntry("rewind-assistant", "reply", 1);
+    const later = makeUserEntry("rewind-later", "second", 2);
+    buildRows([user, assistant, later], cache);
+    expect([...cache.rows.keys()]).toEqual(["rewind-user", "rewind-assistant", "rewind-later"]);
+
+    const rewound = buildRows([user, assistant], cache);
+    expect(rewound.map((row) => row.id)).toEqual(["rewind-user", "rewind-assistant"]);
+    expect([...cache.rows.keys()]).toEqual(["rewind-user", "rewind-assistant"]);
+  });
+
+  it("re-renders only the streaming row and keeps earlier rows untouched", async () => {
+    let api: TimelineHarnessApi | null = null;
+    const user = makeUserEntry("render-user", "Question", 0);
+    const firstAnswer = makeAssistantEntry("render-first", "First answer", 1);
+    const followUp = makeUserEntry("render-follow-up", "Follow up", 2);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[user, firstAnswer, followUp, makeAssistantEntry("render-live", "Str", 3)]}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(next) => {
+          api = next;
+        }}
+      />,
+      { container: host },
+    );
+    const renderCount = (rowId: string) =>
+      host.querySelector<HTMLElement>(`[data-timeline-row-id="${rowId}"][data-render-count]`)
+        ?.dataset.renderCount;
+
+    try {
+      await vi.waitFor(() => {
+        expect(renderCount("render-first")).toBeDefined();
+        expect(renderCount("render-live")).toBeDefined();
+      });
+      const before = {
+        user: renderCount("render-user"),
+        first: renderCount("render-first"),
+        followUp: renderCount("render-follow-up"),
+        live: renderCount("render-live"),
+      };
+
+      for (const text of ["Strea", "Streami", "Streaming reply"]) {
+        api!.setEntries([user, firstAnswer, followUp, makeAssistantEntry("render-live", text, 3)]);
+        await vi.waitFor(() => {
+          expect(host.textContent).toContain(text);
+        });
+      }
+
+      expect(renderCount("render-user")).toBe(before.user);
+      expect(renderCount("render-first")).toBe(before.first);
+      expect(renderCount("render-follow-up")).toBe(before.followUp);
+      expect(Number(renderCount("render-live"))).toBeGreaterThan(Number(before.live));
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("renders a fallback for a malformed entry while other rows render", async () => {
+    const malformed = makeUserEntry("malformed-user", "broken", 1);
+    if (malformed.kind === "message") {
+      // A non-array attachment list makes the user row throw while rendering.
+      (malformed.message as { attachments: unknown }).attachments = 42;
+    }
+    const host = document.createElement("div");
+    document.body.append(host);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("healthy-user", "Healthy question", 0),
+          malformed,
+          makeAssistantEntry("healthy-assistant", "Healthy answer", 2),
+        ]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        const brokenRow = host.querySelector('[data-timeline-row-id="malformed-user"]');
+        expect(brokenRow?.textContent).toContain("This entry could not be displayed");
+        expect(brokenRow?.textContent).toContain("Copy error report");
+        expect(host.textContent).toContain("Healthy question");
+        expect(host.textContent).toContain("Healthy answer");
+      });
+    } finally {
+      consoleError.mockRestore();
+      await screen.unmount();
+      host.remove();
+    }
+  });
+});
+
+describe("MessagesTimeline HTML renders", () => {
+  const originalFetch = globalThis.fetch;
+  let pages: Record<string, string> = {};
+  beforeEach(() => {
+    localStorage.clear();
+    persistAppSettings();
+    pages = {};
+    (window as typeof window & { nativeApi?: NativeApi }).nativeApi = nativeApiMock;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const id = /\/attachments\/(html-[^/?]+)/.exec(String(input))?.[1];
+      return id && pages[id] !== undefined
+        ? Promise.resolve(new Response(pages[id], { headers: { "content-type": "text/html" } }))
+        : originalFetch(input, init);
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+  });
+
+  const makeHtmlRenderEntry = (id: string, page: string, offsetSeconds: number): TimelineEntry => {
+    pages[id] = page;
+    const createdAt = new Date(
+      Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
+    ).toISOString();
+    return {
+      id,
+      kind: "work",
+      createdAt,
+      entry: {
+        id,
+        createdAt,
+        label: "Chart",
+        tone: "tool",
+        htmlRender: { attachmentId: id, title: id, height: 120 },
+      },
+    } as unknown as TimelineEntry;
+  };
+  const frameFor = (host: HTMLElement, id: string) =>
+    host.querySelector<HTMLIFrameElement>(`iframe[title="${id}"]`);
+
+  it("stops following the tail when the wheel turns up over a page while a reply streams", async () => {
+    const initialEntries = [
+      ...makeOverflowEntries(16),
+      makeHtmlRenderEntry("html-follow", '<div style="height:300px">Chart</div>', 120),
+      makeAssistantEntry("follow-tail", "Reply", 121),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    const isAtEndCalls: boolean[] = [];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialAutoFollow
+        initialEntries={initialEntries}
+        initialHeight={800}
+        initialIsWorking
+        onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await vi.waitFor(() => {
+        expect(frameFor(host, "html-follow")?.getBoundingClientRect().height).toBe(316);
+        expect(distanceFromEnd()).toBeLessThan(8);
+      });
+      await userEvent.wheel(page.getByTitle("html-follow", { exact: true }), {
+        delta: { y: -200 },
+      });
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeGreaterThan(150));
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "follow-tail",
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      expect(distanceFromEnd()).toBeGreaterThan(150);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("stops following the tail when the wheel turns up over a paused page", async () => {
+    const initialEntries = [
+      ...makeOverflowEntries(16),
+      makeHtmlRenderEntry(
+        "html-paused",
+        "<style>body{min-height:100vh;margin:0}</style><p>Grows with its frame</p>",
+        120,
+      ),
+      makeAssistantEntry("paused-tail", "Reply", 121),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialAutoFollow
+        initialEntries={initialEntries}
+        initialHeight={800}
+        initialIsWorking
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await expect.element(page.getByRole("button", { name: "Retry sizing" })).toBeVisible();
+      // The notice grows the row after the thread settled, which LegendList does not follow.
+      node.scrollTop = node.scrollHeight;
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeLessThan(8));
+      await userEvent.wheel(page.getByTitle("html-paused", { exact: true }), {
+        delta: { y: -200 },
+      });
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeGreaterThan(150));
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "paused-tail",
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      expect(distanceFromEnd()).toBeGreaterThan(150);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("drops a pending disclosure pin when a page's wheel leaves the end", async () => {
+    const commandId = "command-under-render";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialAutoFollow
+        initialEntries={[
+          ...makeOverflowEntries(16),
+          makeHtmlRenderEntry("html-disclosure", '<div style="height:200px">Chart</div>', 120),
+          makeCommandEntry(commandId, {
+            output: Array.from({ length: 40 }, (_, line) => `line ${line}`).join("\n"),
+          }),
+        ]}
+        initialHeight={400}
+        initialIsWorking
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+    const toggle = () =>
+      host.querySelector<HTMLButtonElement>(
+        `[data-timeline-row-id="${commandId}"] button[aria-expanded]`,
+      );
+    try {
+      const node = await waitForScrollContainer(host);
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await vi.waitFor(() => {
+        expect(toggle()).not.toBeNull();
+        expect(distanceFromEnd()).toBeLessThan(8);
+      });
+      toggle()!.click();
+      // What the frame does with a forwarded wheel, while the disclosure still pins the end.
+      replayWheelOnTimeline({ x: 0, y: -300, mode: 0 }, node);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      expect(toggle()?.getAttribute("aria-expanded")).toBe("true");
+      expect(distanceFromEnd()).toBeGreaterThan(150);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps the reader's place when a page above the viewport grows past 3000px", async () => {
+    await page.viewport(1000, 800);
+    const host = document.createElement("div");
+    document.body.append(host);
+    let currentRef: LegendListRef | null = null;
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("anchor-user", "Show the chart", 0),
+          makeHtmlRenderEntry(
+            "html-grows",
+            "<div id=g style=\"height:200px\">Chart</div><script>addEventListener('message',e=>{if(e.data==='grow-test-page')document.getElementById('g').style.height='3200px'})</script>",
+            1,
+          ),
+          // More than the growth below the viewport: LegendList applies its anchor
+          // adjustment before the list grows, so the browser clamps it to the old end.
+          ...makeOverflowEntries(48),
+        ]}
+        initialHeight={500}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(ref) => {
+          currentRef = ref;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await scrollTimelineToOffset(currentRef, node, 0);
+      await vi.waitFor(() =>
+        expect(frameFor(host, "html-grows")?.getBoundingClientRect().height).toBe(216),
+      );
+      const frame = frameFor(host, "html-grows")!;
+      const frameBottom =
+        frame.getBoundingClientRect().bottom - node.getBoundingClientRect().top + node.scrollTop;
+      await scrollTimelineToOffset(currentRef, node, frameBottom + 40);
+      await waitForTimelineLayout(() => node);
+      const anchor = host.querySelector<HTMLElement>('[data-message-id="overflow-user-2"]')!;
+      expect(anchor).not.toBeNull();
+      const before = anchor.getBoundingClientRect().top;
+      const anchorTop = () =>
+        host
+          .querySelector<HTMLElement>('[data-message-id="overflow-user-2"]')!
+          .getBoundingClientRect().top;
+      // Grow only after capturing the anchor. Scrolling may recycle and reload
+      // the frame, so retry the idempotent request until its listener is ready.
+      // Frame height and the virtual list's scroll correction settle separately.
+      await vi.waitFor(
+        () => {
+          frameFor(host, "html-grows")?.contentWindow?.postMessage("grow-test-page", "*");
+          expect(frameFor(host, "html-grows")?.getBoundingClientRect().height).toBeGreaterThan(
+            3000,
+          );
+          expect(Math.abs(anchorTop() - before)).toBeLessThan(4);
+          expect(node.scrollTop).toBeGreaterThan(3000);
+        },
+        { timeout: 5000 },
+      );
+    } finally {
+      await screen.unmount();
+      host.remove();
     }
   });
 });

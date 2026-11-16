@@ -5,12 +5,13 @@ import * as path from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { exists, atomicJson, readJson } from "./files";
+import { exists, atomicJson, readJson, renameWithRetry } from "./files";
 import {
   cliTarget,
   parseRelease,
   selectArtifact,
   sha256File,
+  tarExecutable,
   versionToken,
   type CliRelease,
 } from "@t3tools/shared/cliRelease";
@@ -71,7 +72,8 @@ export async function fetchRelease(url: string): Promise<CliRelease> {
 }
 /** Reject links and traversal before the tar process can write anything. */
 export function validateArchiveListing(listing: string, verbose: string, stem: string): void {
-  const entries = listing.trimEnd().split("\n");
+  // Windows bsdtar may end lines with CRLF.
+  const entries = listing.trimEnd().split(/\r?\n/);
   if (!entries.length || entries.length > 100_000) throw new Error("Invalid archive size.");
   for (const entry of entries) {
     if (
@@ -86,7 +88,7 @@ export function validateArchiveListing(listing: string, verbose: string, stem: s
     )
       throw new Error("Unsafe archive path.");
   }
-  const rows = verbose.trimEnd().split("\n");
+  const rows = verbose.trimEnd().split(/\r?\n/);
   if (rows.length !== entries.length || rows.some((row) => row[0] !== "-" && row[0] !== "d"))
     throw new Error("Archives may contain only regular files and directories.");
   let expanded = 0;
@@ -173,16 +175,17 @@ export async function stageRelease(
     if (received !== artifact.size || (await sha256File(archive)) !== artifact.sha256)
       throw new Error("Release integrity verification failed.");
     const stem = `f5-${release.version}-${artifact.target}`;
-    const listing = await exec("tar", ["-tzf", archive], {
+    const tar = tarExecutable();
+    const listing = await exec(tar, ["-tzf", archive], {
       timeout: 60_000,
       maxBuffer: 32 * 1024 * 1024,
     });
-    const verbose = await exec("tar", ["-tvzf", archive], {
+    const verbose = await exec(tar, ["-tvzf", archive], {
       timeout: 60_000,
       maxBuffer: 32 * 1024 * 1024,
     });
     validateArchiveListing(listing.stdout, verbose.stdout, stem);
-    await exec("tar", ["-xzf", archive, "-C", staging], { timeout: 120_000, maxBuffer: 64 * 1024 });
+    await exec(tar, ["-xzf", archive, "-C", staging], { timeout: 120_000, maxBuffer: 64 * 1024 });
     const content = path.join(staging, stem);
     const metadata = await readJson(path.join(content, "runtime.json"));
     if (
@@ -200,17 +203,31 @@ export async function stageRelease(
       target: artifact.target,
     });
     await fs.mkdir(path.dirname(paths.directory), { recursive: true });
-    await fs.rename(content, paths.directory);
+    const onRetry = (error: NodeJS.ErrnoException) =>
+      progress(`Waiting for another program to release the runtime folder (${error.code})...`);
+    await renameWithRetry(content, paths.directory, { onRetry });
     try {
       await preflightRuntime(root, release.version);
     } catch (error) {
-      await fs.rename(paths.directory, path.join(root, `.rejected-${randomUUID()}`));
+      // Lead with why the runtime was rejected, not a cleanup failure that followed it.
+      try {
+        await renameWithRetry(paths.directory, path.join(root, `.rejected-${randomUUID()}`), {
+          onRetry,
+        });
+      } catch (cleanup) {
+        throw new AggregateError(
+          [error, cleanup],
+          `${error instanceof Error ? error.message : String(error)} (the rejected runtime ` +
+            `could not be moved aside: ${cleanup instanceof Error ? cleanup.message : String(cleanup)})`,
+        );
+      }
       throw error;
     }
     progress("Verified and prepared immutable runtime.");
     return release.version;
   } finally {
-    await fs.rm(staging, { recursive: true, force: true });
+    // Antivirus can briefly hold extracted files on Windows; retry so the real error surfaces.
+    await fs.rm(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
 /** Prefer the bundled Node, then validate an explicitly supplied/PATH runtime. */

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 
-import { UsageGetSummaryInput, UsageSummary } from "./usage";
+import {
+  ClaudeAccountUsage,
+  UsageConsumeResetCreditInput,
+  UsageConsumeResetCreditResult,
+  UsageGetSummaryInput,
+  UsageSummary,
+} from "./usage";
 
 describe("usage contracts", () => {
   it("decodes bounded summary requests", () => {
@@ -96,5 +102,51 @@ describe("usage contracts", () => {
 
     expect(decoded).not.toHaveProperty("codexAccount");
     expect(decoded.metrics.providerReportedCostUsd).toBeNull();
+  });
+  it("decodes Claude snapshots stored before limit resets", () => {
+    const stored = {
+      subscriptionLabel: "Max",
+      limitsAvailable: true,
+      windows: [],
+      extraUsage: null,
+    };
+    expect(Schema.decodeUnknownSync(ClaudeAccountUsage)(stored)).toEqual(stored);
+    const grant = {
+      id: "full_2026_11",
+      label: "Full reset",
+      kind: "full",
+      resetsLeft: 1,
+      resetsTotal: 1,
+      endsAt: "2026-12-10T22:00:00.000Z",
+      usableNow: true,
+      useRequiresLimit: false,
+      givesBackWeekly: false,
+      paused: false,
+      clears: ["five_hour"],
+      blocking: [],
+      unavailableReason: null,
+    };
+    const current = {
+      ...stored,
+      limitResets: { grants: [grant], nextGrantId: grant.id, cooldownUntil: null },
+    };
+    expect(Schema.decodeUnknownSync(ClaudeAccountUsage)(current)).toEqual(current);
+  });
+
+  it("accepts Claude grant ids and the unavailable outcome", () => {
+    const input = { providerInstanceId: "claude", idempotencyKey: "key", grantId: "fable" };
+    expect(Schema.decodeUnknownSync(UsageConsumeResetCreditInput)(input)).toEqual(input);
+    expect(() =>
+      Schema.decodeUnknownSync(UsageConsumeResetCreditInput)({ ...input, grantId: "Bad Id" }),
+    ).toThrow();
+    expect(
+      Schema.decodeUnknownSync(UsageConsumeResetCreditResult)({
+        outcome: "unavailable",
+        message: "Paused",
+      }),
+    ).toEqual({ outcome: "unavailable", message: "Paused" });
+    expect(Schema.decodeUnknownSync(UsageConsumeResetCreditResult)({ outcome: "reset" })).toEqual({
+      outcome: "reset",
+    });
   });
 });

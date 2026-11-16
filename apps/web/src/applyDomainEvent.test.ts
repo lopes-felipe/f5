@@ -1,3 +1,7 @@
+import { messageAttachmentSources } from "./lib/streamingTextRevision";
+import { createTimelineEntryCache, deriveTimelineEntries } from "./session-logic";
+import { createTimelineRowCache, buildTimelineRows } from "./components/chat/MessagesTimeline";
+import { summarizeInvestigationWorkflow } from "@t3tools/shared/workflowSummary";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -13,7 +17,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { roughTokenEstimateFromCharacters } from "@t3tools/shared/model";
 
-import { applyDomainEvent } from "./applyDomainEvent";
+import { applyDomainEvent, createDomainEventBatch } from "./applyDomainEvent";
 import type { AppState } from "./store";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Project, type Thread } from "./types";
 
@@ -123,7 +127,7 @@ function makeInvestigationWorkflow(now = "2026-04-01T09:05:00.000Z") {
     updatedAt: now,
     archivedAt: null,
     deletedAt: null,
-  } satisfies AppState["investigationWorkflows"][number];
+  } satisfies import("@t3tools/contracts").InvestigationWorkflow;
 }
 
 function makeState(overrides: Partial<AppState> = {}): AppState {
@@ -268,6 +272,40 @@ describe("applyDomainEvent", () => {
     });
   });
 
+  it("links PRs newest first and removes an unlinked PR", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const pr = (number: number) => ({
+      provider: "github" as const,
+      host: "github.com",
+      repository: "o/r",
+      number,
+      title: `PR ${number}`,
+      url: `https://github.com/o/r/pull/${number}`,
+    });
+    const meta = (
+      payload: Omit<
+        Extract<OrchestrationEvent, { type: "thread.meta-updated" }>["payload"],
+        "threadId" | "updatedAt"
+      >,
+      sequence: number,
+    ) =>
+      makeEvent(
+        "thread.meta-updated",
+        { threadId, updatedAt: "2026-04-01T09:05:00.000Z", ...payload },
+        { sequence },
+      );
+    let state = applyDomainEvent(makeState(), meta({ pullRequest: pr(1) }, 1));
+    state = applyDomainEvent(state, meta({ pullRequest: pr(2) }, 2));
+    state = applyDomainEvent(state, meta({ pullRequest: pr(1) }, 3));
+    expect(state.threads[0]?.pullRequests?.map((link) => link.number)).toEqual([1, 2]);
+
+    state = applyDomainEvent(state, meta({ pullRequestUnlinked: pr(2) }, 4));
+    expect(state.threads[0]?.pullRequests?.map((link) => link.number)).toEqual([1]);
+
+    const unchanged = applyDomainEvent(state, meta({ pullRequestUnlinked: pr(9) }, 5));
+    expect(unchanged.threads).toBe(state.threads);
+  });
+
   it("marks newly created threads as detail-ready", () => {
     const next = applyDomainEvent(
       makeState({ threads: [] }),
@@ -290,7 +328,7 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.messages).toEqual([]);
   });
 
-  it("merges assistant message deltas into the target thread", () => {
+  it("merges assistant deltas without settling an active turn when its item completes", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const turnId = TurnId.makeUnsafe("turn-1");
     const messageId = MessageId.makeUnsafe("assistant-1");
@@ -361,13 +399,30 @@ describe("applyDomainEvent", () => {
     ]);
     expect(afterComplete.threads[0]?.latestTurn).toEqual({
       turnId,
-      state: "completed",
+      state: "running",
       requestedAt: "2026-04-01T09:04:01.000Z",
       startedAt: "2026-04-01T09:04:01.000Z",
-      completedAt: "2026-04-01T09:04:02.000Z",
+      completedAt: null,
       assistantMessageId: messageId,
     });
     expect(afterComplete.threads[0]?.lastInteractionAt).toBe("2026-04-01T09:05:02.000Z");
+    const failed = applyDomainEvent(
+      afterComplete,
+      makeEvent("thread.session-set", {
+        threadId,
+        settledTurnId: turnId,
+        session: {
+          threadId,
+          providerName: "codex",
+          status: "error",
+          activeTurnId: null,
+          lastError: "Host exited",
+          runtimeMode: "full-access",
+          updatedAt: "2026-04-01T09:06:00.000Z",
+        },
+      }),
+    );
+    expect(failed.threads[0]?.latestTurn?.state).toBe("error");
   });
 
   it("estimates thread token usage from message traffic when the provider does not report it", () => {
@@ -406,6 +461,30 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.session?.tokenUsageSource).toBe("estimated");
   });
 
+  it("preserves automated authorship when a live message is updated", () => {
+    const payload = {
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      messageId: MessageId.makeUnsafe("automated-message"),
+      role: "user" as const,
+      text: "scheduled prompt",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T09:04:01.000Z",
+      updatedAt: "2026-04-01T09:04:01.000Z",
+    };
+    const sent = applyDomainEvent(
+      makeState(),
+      makeEvent("thread.message-sent", { ...payload, authorship: "automation" }),
+    );
+    expect(sent.threads[0]?.messages[0]?.authorship).toBe("automation");
+    const updated = applyDomainEvent(
+      sent,
+      makeEvent("thread.message-sent", { ...payload, text: "updated prompt" }),
+    );
+    expect(updated.threads[0]?.messages[0]?.authorship).toBe("automation");
+    expect(updated.threads[0]?.messages[0]?.text).toBe("updated prompt");
+  });
+
   it("maps skill call metadata from live message events", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const messageId = MessageId.makeUnsafe("user-skill-1");
@@ -427,6 +506,101 @@ describe("applyDomainEvent", () => {
     );
 
     expect(next.threads[0]?.messages[0]?.skillCall).toEqual({ name: "review" });
+  });
+
+  it("accumulates reasoning tokens on an assistant message and keeps them across deltas", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const messageId = MessageId.makeUnsafe("assistant:reasoning-1");
+    const turnId = TurnId.makeUnsafe("turn-1");
+    const sent = applyDomainEvent(
+      makeState(),
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId,
+        role: "assistant",
+        text: "Hello",
+        reasoningText: "Considering",
+        turnId,
+        streaming: true,
+        createdAt: "2026-04-01T09:04:01.000Z",
+        updatedAt: "2026-04-01T09:04:01.000Z",
+      }),
+    );
+    const reported = applyDomainEvent(
+      sent,
+      makeEvent(
+        "thread.message-reasoning-tokens-added",
+        {
+          threadId,
+          messageId,
+          turnId,
+          tokens: 400,
+          estimated: false,
+          updatedAt: "2026-04-01T09:04:02.000Z",
+        },
+        { sequence: 2 },
+      ),
+    );
+    const estimated = applyDomainEvent(
+      reported,
+      makeEvent(
+        "thread.message-reasoning-tokens-added",
+        {
+          threadId,
+          messageId,
+          turnId,
+          tokens: 100,
+          estimated: true,
+          updatedAt: "2026-04-01T09:04:03.000Z",
+        },
+        { sequence: 3 },
+      ),
+    );
+    const completed = applyDomainEvent(
+      estimated,
+      makeEvent(
+        "thread.message-sent",
+        {
+          threadId,
+          messageId,
+          role: "assistant",
+          text: "",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T09:04:04.000Z",
+          updatedAt: "2026-04-01T09:04:04.000Z",
+        },
+        { sequence: 4 },
+      ),
+    );
+
+    expect(reported.threads[0]?.messages[0]).toMatchObject({
+      reasoningTokens: 400,
+      reasoningTokensEstimated: false,
+    });
+    expect(completed.threads[0]?.messages[0]).toMatchObject({
+      text: "Hello",
+      reasoningTokens: 500,
+      reasoningTokensEstimated: true,
+      streaming: false,
+    });
+  });
+
+  it("ignores reasoning tokens for unknown messages", () => {
+    const state = makeState();
+    const next = applyDomainEvent(
+      state,
+      makeEvent("thread.message-reasoning-tokens-added", {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        messageId: MessageId.makeUnsafe("missing"),
+        turnId: TurnId.makeUnsafe("turn-1"),
+        tokens: 10,
+        estimated: false,
+        updatedAt: "2026-04-01T09:04:02.000Z",
+      }),
+    );
+
+    expect(next.threads).toBe(state.threads);
   });
 
   it("reuses live messages when skill call metadata is unchanged", () => {
@@ -578,6 +752,54 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.modelContextWindowTokens).toBe(258_400);
     expect(next.threads[0]?.session?.tokenUsageSource).toBe("provider");
   });
+
+  it.each(["ready", "error", "stopped"] as const)(
+    "settles the live turn when a session becomes %s",
+    (status) => {
+      const threadId = ThreadId.makeUnsafe("thread-1"),
+        turnId = TurnId.makeUnsafe("turn-1");
+      const state = makeState({
+        threads: [
+          makeThread({
+            latestTurn: {
+              turnId,
+              state: "running",
+              requestedAt: "2026-04-01T09:00:00.000Z",
+              startedAt: null,
+              completedAt: null,
+              assistantMessageId: null,
+            },
+          }),
+        ],
+      });
+      const payload = {
+        threadId,
+        settledTurnId: turnId,
+        session: {
+          threadId,
+          status,
+          providerName: "muse",
+          runtimeMode: "auto-accept-edits",
+          activeTurnId: null,
+          lastError: status === "error" ? "Host exited" : null,
+          updatedAt: "2026-04-01T09:06:00.000Z",
+        },
+      } as const;
+      const next = applyDomainEvent(state, makeEvent("thread.session-set", payload));
+      expect(next.threads[0]?.latestTurn).toMatchObject({
+        state: status === "ready" ? "completed" : status === "error" ? "error" : "interrupted",
+        completedAt: payload.session.updatedAt,
+      });
+      const unrelated = applyDomainEvent(
+        state,
+        makeEvent("thread.session-set", {
+          ...payload,
+          settledTurnId: TurnId.makeUnsafe("old-turn"),
+        }),
+      );
+      expect(unrelated.threads[0]?.latestTurn).toBe(state.threads[0]?.latestTurn);
+    },
+  );
 
   it("updates the mapped session state and thread error", () => {
     const turnId = TurnId.makeUnsafe("turn-2");
@@ -812,6 +1034,31 @@ describe("applyDomainEvent", () => {
     ]);
   });
 
+  it("keeps thread recency when the live reasoning status is upserted", () => {
+    const initialState = makeState({
+      threads: [makeThread({ lastInteractionAt: "2026-04-01T09:00:00.000Z" })],
+    });
+    const next = applyDomainEvent(
+      initialState,
+      makeEvent("thread.activity-appended", {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        activity: {
+          id: EventId.makeUnsafe("reasoning-status:thread-1:turn-1"),
+          tone: "info",
+          kind: "reasoning.status",
+          summary: "Thinking",
+          payload: { state: "active" },
+          turnId: TurnId.makeUnsafe("turn-1"),
+          createdAt: "2026-04-01T09:05:00.000Z",
+        },
+      }),
+    );
+    expect(next.threads[0]?.activities.map((activity) => activity.kind)).toEqual([
+      "reasoning.status",
+    ]);
+    expect(next.threads[0]?.lastInteractionAt).toBe("2026-04-01T09:00:00.000Z");
+  });
+
   it("replaces thread tasks from the event payload", () => {
     const next = applyDomainEvent(
       makeState({
@@ -854,6 +1101,29 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.tasksTurnId).toBe(TurnId.makeUnsafe("turn-2"));
     expect(next.threads[0]?.tasksUpdatedAt).toBe("2026-04-01T09:07:00.000Z");
     expect(next.threads[0]?.lastInteractionAt).toBe("2026-04-01T09:07:00.000Z");
+  });
+
+  it("uses verified delivery message bindings when reverting retried turns", () => {
+    const thread = makeThread();
+    const messages = ["abandoned", "accepted", "later"].map((id, index) => ({
+      id: MessageId.makeUnsafe(id),
+      role: "user" as const,
+      text: id,
+      attachments: [],
+      createdAt: `2026-10-22T12:00:0${index}.000Z`,
+      updatedAt: `2026-10-22T12:00:0${index}.000Z`,
+      streaming: false,
+    }));
+    const next = applyDomainEvent(
+      makeState({ threads: [{ ...thread, messages }] }),
+      makeEvent("thread.reverted", {
+        threadId: thread.id,
+        turnCount: 1,
+        retainedTurnIds: [TurnId.makeUnsafe("retried-turn")],
+        retainedMessageIds: [MessageId.makeUnsafe("accepted")],
+      }),
+    );
+    expect(next.threads[0]?.messages.map((message) => message.id)).toEqual(["accepted"]);
   });
 
   it("applies native task tracking and keeps retained-turn tasks across a revert", () => {
@@ -968,7 +1238,7 @@ describe("applyDomainEvent", () => {
       id: "workflow-1",
       projectId: ProjectId.makeUnsafe("project-2"),
       updatedAt: "2026-04-01T09:10:00.000Z",
-    } as unknown as AppState["planningWorkflows"][number];
+    } as unknown as import("@t3tools/contracts").PlanningWorkflow;
     const created = applyDomainEvent(
       makeState({ projects: [], threads: [] }),
       makeEvent("project.created", {
@@ -1029,7 +1299,7 @@ describe("applyDomainEvent", () => {
       ),
     );
 
-    expect(next.investigationWorkflows).toEqual([workflow]);
+    expect(next.investigationWorkflows).toEqual([summarizeInvestigationWorkflow(workflow)]);
   });
 
   it("applies revert by pruning reverted-turn data and clearing tasks", () => {
@@ -1299,6 +1569,49 @@ describe("applyDomainEvent", () => {
     expect(next).toBe(initialState);
   });
 
+  it("keeps a command description when a later record omits it", () => {
+    const commandExecutionId = "command-1" as Thread["commandExecutions"][number]["id"];
+    const recordCommand = (input: {
+      readonly sequence: number;
+      readonly description?: string;
+      readonly status: "running" | "completed";
+    }) =>
+      makeEvent(
+        "thread.command-execution-recorded",
+        {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          commandExecution: {
+            id: commandExecutionId,
+            turnId: TurnId.makeUnsafe("turn-1"),
+            providerItemId: null,
+            command: "df -h",
+            ...(input.description ? { description: input.description } : {}),
+            title: "Command run",
+            status: input.status,
+            detail: null,
+            exitCode: null,
+            startedAt: "2026-04-01T09:01:00.000Z",
+            completedAt: input.status === "completed" ? "2026-04-01T09:01:05.000Z" : null,
+            updatedAt: "2026-04-01T09:01:05.000Z",
+          },
+        },
+        { sequence: input.sequence },
+      );
+
+    const started = applyDomainEvent(
+      makeState({ threads: [makeThread({ commandExecutions: [] })] }),
+      recordCommand({ sequence: 1, description: "Check free disk space", status: "running" }),
+    );
+    const completed = applyDomainEvent(
+      started,
+      recordCommand({ sequence: 2, status: "completed" }),
+    );
+
+    expect(started.threads[0]?.commandExecutions[0]?.description).toBe("Check free disk space");
+    expect(completed.threads[0]?.commandExecutions[0]?.description).toBe("Check free disk space");
+    expect(completed.threads[0]?.commandExecutions[0]?.status).toBe("completed");
+  });
+
   it("buffers thread.message-sent while details are loading and the buffer is retained", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const turnId = TurnId.makeUnsafe("turn-1");
@@ -1438,6 +1751,46 @@ describe("applyDomainEvent", () => {
   });
 });
 
+it("keeps the actual same-turn reply when a synthetic checkpoint arrives", () => {
+  const turnId = TurnId.makeUnsafe("turn-final");
+  const replyId = MessageId.makeUnsafe("actual-final");
+  const thread = makeThread({
+    messages: [
+      {
+        id: replyId,
+        turnId,
+        role: "assistant",
+        text: "Final reply",
+        streaming: false,
+        createdAt: "2026-04-01T09:00:00.000Z",
+      },
+    ],
+    latestTurn: {
+      turnId,
+      state: "completed",
+      requestedAt: "2026-04-01T09:00:00.000Z",
+      startedAt: "2026-04-01T09:00:00.000Z",
+      completedAt: "2026-04-01T09:01:00.000Z",
+      assistantMessageId: replyId,
+    },
+  });
+  const next = applyDomainEvent(
+    makeState({ threads: [thread] }),
+    makeEvent("thread.turn-diff-completed", {
+      threadId: thread.id,
+      turnId,
+      checkpointTurnCount: 1,
+      checkpointRef: CheckpointRef.makeUnsafe("refs/f5/checkpoint/1"),
+      status: "ready",
+      files: [],
+      assistantMessageId: MessageId.makeUnsafe("assistant:toolu_missing"),
+      completedAt: "2026-04-01T09:02:00.000Z",
+    }),
+  );
+  expect(next.threads[0]?.latestTurn?.assistantMessageId).toBe(replyId);
+  expect(next.threads[0]?.turnDiffSummaries[0]?.assistantMessageId).toBe(replyId);
+});
+
 it.each(["running", "interrupted"] as const)(
   "keeps %s turn state when its checkpoint arrives",
   (state) => {
@@ -1468,3 +1821,152 @@ it.each(["running", "interrupted"] as const)(
     expect(next.threads[0]?.latestTurn?.completedAt).toBe(thread.latestTurn?.completedAt);
   },
 );
+
+it("removes only identified native rewind turns while preserving the active turn and unrelated history", () => {
+  const now = "2026-10-19T00:00:00.000Z";
+  const ids = ["other-provider", "kept-pi", "removed-pi", "native-command"].map((id) =>
+    TurnId.make(id),
+  );
+  const latestTurn = {
+    turnId: ids[3]!,
+    state: "running" as const,
+    requestedAt: now,
+    startedAt: now,
+    completedAt: null,
+    assistantMessageId: null,
+  };
+  const thread = makeThread({
+    latestTurn,
+    messages: ids.map((turnId, index) => ({
+      id: MessageId.make(`native-${index}`),
+      role: "assistant" as const,
+      text: turnId,
+      turnId,
+      streaming: false,
+      createdAt: now,
+    })),
+    activities: ids.map((turnId, index) => ({
+      id: EventId.make(`native-${index}`),
+      kind: "tool.completed",
+      tone: "tool" as const,
+      summary: turnId,
+      turnId,
+      payload: {},
+      createdAt: now,
+    })),
+  });
+  thread.messages.push({
+    id: MessageId.make("user-removed"),
+    role: "user",
+    text: "Removed prompt",
+    turnId: null,
+    streaming: false,
+    createdAt: now,
+  });
+  thread.messages.push({
+    id: MessageId.make("user-unlocated"),
+    role: "user",
+    text: "Preserve unlocated",
+    turnId: null,
+    streaming: false,
+    createdAt: now,
+  });
+  const event = makeEvent("thread.reverted", {
+    threadId: thread.id,
+    turnCount: 0,
+    nativeTurnId: ids[3]!,
+    removedTurnIds: [ids[2]!],
+    removedMessageIds: [MessageId.make("user-removed")],
+  });
+  const next = applyDomainEvent(makeState({ threads: [thread] }), event).threads[0]!;
+  expect(next.messages.map((message) => message.turnId)).toEqual([ids[0], ids[1], ids[3], null]);
+  expect(next.messages.at(-1)?.id).toBe("user-unlocated");
+  expect(next.activities.map((activity) => activity.turnId)).toEqual([ids[0], ids[1], ids[3]]);
+  expect(next.latestTurn).toBe(latestTurn);
+  expect(applyDomainEvent(makeState({ threads: [next] }), event).threads[0]?.messages).toEqual(
+    next.messages,
+  );
+});
+
+describe("streaming batch and timeline work", () => {
+  it("copies the thread collection once and reuses timeline structure for text-only updates", () => {
+    const fixed = {
+      id: MessageId.makeUnsafe("fixed"),
+      role: "user" as const,
+      text: "Earlier question",
+      streaming: false,
+      createdAt: "2026-04-01T09:00:00.000Z",
+    };
+    const original = makeState({ threads: [makeThread({ messages: [fixed] })] });
+    const attachments = messageAttachmentSources(original.threads[0]!.messages);
+    const id = MessageId.makeUnsafe("streaming");
+    const event = (text: string, sequence: number) =>
+      makeEvent(
+        "thread.message-sent",
+        {
+          threadId: original.threads[0]!.id,
+          messageId: id,
+          role: "assistant",
+          text,
+          turnId: null,
+          streaming: true,
+          createdAt: "2026-04-01T09:04:00.000Z",
+          updatedAt: "2026-04-01T09:04:00.000Z",
+        },
+        { sequence },
+      );
+    const batch = createDomainEventBatch();
+    let state = applyDomainEvent(original, event("A", 1), batch);
+    const owned = state.threads;
+    expect(owned).not.toBe(original.threads);
+    const plans: [] = [],
+      work: [] = [],
+      commands: [] = [];
+    const entries = createTimelineEntryCache();
+    const rows = createTimelineRowCache();
+    const derive = () =>
+      deriveTimelineEntries(state.threads[0]!.messages, plans, work, commands, entries);
+    const build = () =>
+      buildTimelineRows({
+        timelineEntries: derive(),
+        completionDividerBeforeEntryId: null,
+        completionSummary: null,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        liveActivity: null,
+        expandMcpToolCalls: false,
+        cache: rows,
+      });
+    const fixedRow = build()[0];
+    for (let index = 2; index < 20; index++) {
+      state = applyDomainEvent(state, event("a", index), batch);
+      expect(state.threads).toBe(owned);
+      const rendered = build();
+      expect(rendered[1]?.kind === "message" && rendered[1].message.text.length).toBe(index);
+      expect(rendered[0]).toBe(fixedRow);
+      expect(messageAttachmentSources(state.threads[0]!.messages)).toBe(attachments);
+    }
+    expect(original.threads[0]?.messages).toEqual([fixed]);
+    expect(entries.structuralDerivations).toBe(1);
+    expect(rows.structuralDerivations).toBe(1);
+    expect(entries.contentUpdates).toBe(18);
+    expect(rows.contentUpdates).toBe(18);
+    expect(state.detailCoverageByThreadId?.get(original.threads[0]!.id)?.latestMutation).toBe(19);
+    // History replacement gets a fresh structural identity and invalidates caches.
+    state = {
+      ...state,
+      threads: [
+        {
+          ...state.threads[0]!,
+          messages: state.threads[0]!.messages.map((message) => ({
+            ...message,
+            text: "replacement",
+          })),
+        },
+      ],
+    };
+    build();
+    expect(entries.structuralDerivations).toBe(2);
+    expect(rows.structuralDerivations).toBe(2);
+  });
+});

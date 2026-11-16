@@ -154,6 +154,9 @@ describe("TerminalSessionSnapshot", () => {
   it("accepts running snapshots", () => {
     expect(
       decodes(TerminalSessionSnapshot, {
+        epoch: "test",
+        generation: 1,
+        revision: 1,
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
         cwd: "/tmp/project",
@@ -173,6 +176,9 @@ describe("TerminalEvent", () => {
     expect(
       decodes(TerminalEvent, {
         type: "output",
+        epoch: "test",
+        generation: 1,
+        revision: 1,
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
         createdAt: new Date().toISOString(),
@@ -185,6 +191,9 @@ describe("TerminalEvent", () => {
     expect(
       decodes(TerminalEvent, {
         type: "exited",
+        epoch: "test",
+        generation: 1,
+        revision: 1,
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
         createdAt: new Date().toISOString(),
@@ -198,6 +207,9 @@ describe("TerminalEvent", () => {
     expect(
       decodes(TerminalEvent, {
         type: "activity",
+        epoch: "test",
+        generation: 1,
+        revision: 1,
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
         createdAt: new Date().toISOString(),

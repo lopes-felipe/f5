@@ -20,8 +20,9 @@ export function NextTurnQueueController() {
       useNextTurnQueueStore.getState().applySummary(summary);
     });
     if (connection.phase === "connected") {
+      // Maintenance, not a user action: yield ordinary slots to interactive reads.
       void queueApi
-        .summary()
+        .summary({ priority: "background" })
         .then((summary) => useNextTurnQueueStore.getState().applySummary(summary))
         .catch((error: unknown) => {
           console.error("Failed to synchronize the queued-turn summary", error);

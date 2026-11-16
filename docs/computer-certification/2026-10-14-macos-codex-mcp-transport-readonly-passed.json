@@ -1,0 +1,216 @@
+{
+  "reportVersion": 1,
+  "state": "passed",
+  "repositoryCommit": "3df3c60a885ed0a1c11a80edd960924fb83eb15b",
+  "workingTreeDirty": false,
+  "recordedAt": "2026-10-13T23:00:07.012Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "provider": "codex",
+  "runtimeMode": "approval-required",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "a4bdc0c5022c09bc98e13e3cbd526b1f2ded4ef0c235a627cf4926613813d629",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "c7675b2d36443756deb1fb666cf4be2eb3c1815f38181013e8e2481d70643393",
+    "observerSource": "ddd40b9d63aa138433bd80f3cbbe34cac95ca01373728291ad7f8ede5a66658e",
+    "transportObserverSource": "88da9c9eefcdfee6767c5f7a8695de27b726ef2d41a7542b16be268f2d5eb10b",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "26dea6aed6480fa4e3c93b2f51fc8ecf4216f7d78d69b070c42ddfc4d4cb26fc",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "17281f635c4f653e13d7dcbeb52e8570e6930a32e93414c0de713437e5abe95d",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "readOnlyTurnsCompleted": true,
+    "noComputerLeaseAcquired": true,
+    "threeCorrelatedMetadataResponses": true,
+    "approvalDiagnosticSameSession": true,
+    "approvalModeActuallySubmitted": true,
+    "noTaggedProviderErrors": true,
+    "hostAvailableAtEnd": true,
+    "noConsentRequested": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "submittedRuntimeModes": ["approval-required", "approval-required", "approval-required"],
+  "composerSubmissions": 3,
+  "approvalModeVerifiedTurns": 3,
+  "scope": "unsigned-real-electron-codex-mcp-transport-readonly-diagnostic",
+  "providerVersion": "0.162.1",
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "traceComplete": true,
+    "pendingResponses": 0,
+    "accessRequests": 0,
+    "accessAnswersForwarded": 0,
+    "accessAnswerSummaries": [],
+    "sessionGenerationsObserved": 1,
+    "requestSessions": [
+      {
+        "op": "listApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "listApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "listApps",
+        "sessionOrdinal": 1
+      }
+    ],
+    "backendRestarts": [],
+    "mcpTransport": [
+      {
+        "method": "initialize",
+        "sessionHeader": false,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "notification",
+        "sessionHeader": true,
+        "status": 202,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": false,
+        "completed": true,
+        "outcome": "accepted"
+      },
+      {
+        "method": "other",
+        "sessionHeader": true,
+        "status": 405,
+        "bounded": true,
+        "requestDecoded": false,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "http-error"
+      },
+      {
+        "method": "tools/list",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      }
+    ],
+    "mcpTransportOverflow": false,
+    "operations": [
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      }
+    ]
+  },
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Three genuine read-only provider turns in one approval-required session; no consent, lease, capture or input",
+    "Ten bounded HTTP receipts: initialize, notification, tools/list and six tool calls completed successfully; one other-method 405 receipt did not prevent these calls",
+    "Observer retains no tokens, arguments, images or error text; overflow false; cleanup confirmed",
+    "Diagnostic only; does not qualify action delivery, installed builds or any release gate"
+  ]
+}

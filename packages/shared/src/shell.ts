@@ -1,14 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import * as NodePath from "node:path";
 
 const PATH_CAPTURE_START = "__T3CODE_PATH_START__";
 const PATH_CAPTURE_END = "__T3CODE_PATH_END__";
 const SHELL_ENV_NAME_PATTERN = /^[A-Z0-9_]+$/;
-
-type ExecFileSyncLike = (
-  file: string,
-  args: ReadonlyArray<string>,
-  options: { encoding: "utf8"; timeout: number },
-) => string;
 
 export function extractPathFromShellOutput(output: string): string | null {
   const startIndex = output.indexOf(PATH_CAPTURE_START);
@@ -22,13 +17,6 @@ export function extractPathFromShellOutput(output: string): string | null {
   return pathValue.length > 0 ? pathValue : null;
 }
 
-export function readPathFromLoginShell(
-  shell: string,
-  execFile: ExecFileSyncLike = execFileSync,
-): string | undefined {
-  return readEnvironmentFromLoginShell(shell, ["PATH"], execFile).PATH;
-}
-
 function envCaptureStart(name: string): string {
   return `__T3CODE_ENV_${name}_START__`;
 }
@@ -37,11 +25,38 @@ function envCaptureEnd(name: string): string {
   return `__T3CODE_ENV_${name}_END__`;
 }
 
-function buildEnvironmentCaptureCommand(names: ReadonlyArray<string>): string {
+export function buildEnvironmentCaptureCommand(
+  shell: string,
+  names: ReadonlyArray<string>,
+): string {
+  // Nushell rejects the POSIX probe (`||`), so it reads its environment natively.
+  const isNushell = NodePath.basename(shell).toLowerCase().startsWith("nu");
+
   return names
     .map((name) => {
       if (!SHELL_ENV_NAME_PATTERN.test(name)) {
         throw new Error(`Unsupported environment variable name: ${name}`);
+      }
+
+      if (isNushell) {
+        // Without a configured conversion, Nu expands home paths only in a list PATH.
+        const defaultValue =
+          name === "PATH"
+            ? "if ($env.PATH? | describe | str starts-with 'list') { " +
+              "$env.PATH | each {|p| if ($p | str starts-with '~') { " +
+              "$p | path expand --no-symlink } else { $p } } | str join (char esep) " +
+              "} else { $env.PATH? | default '' }"
+            : `$env.${name}? | default ''`;
+        const value =
+          `if $env.${name}? == null { '' } else if ` +
+          `$env.ENV_CONVERSIONS?.${name}?.to_string? != null { ` +
+          `$env.${name} | do $env.ENV_CONVERSIONS.${name}.to_string $env.${name} ` +
+          `} else { ${defaultValue} }`;
+        return [
+          `print '${envCaptureStart(name)}'`,
+          `print (${value})`,
+          `print '${envCaptureEnd(name)}'`,
+        ].join("; ");
       }
 
       return [
@@ -77,23 +92,78 @@ function extractEnvironmentValue(output: string, name: string): string | undefin
 export type ShellEnvironmentReader = (
   shell: string,
   names: ReadonlyArray<string>,
-  execFile?: ExecFileSyncLike,
-) => Partial<Record<string, string>>;
+) => Partial<Record<string, string>> | Promise<Partial<Record<string, string>>>;
 
-export const readEnvironmentFromLoginShell: ShellEnvironmentReader = (
-  shell,
-  names,
-  execFile = execFileSync,
-) => {
-  if (names.length === 0) {
-    return {};
-  }
-
-  const output = execFile(shell, ["-ilc", buildEnvironmentCaptureCommand(names)], {
-    encoding: "utf8",
-    timeout: 5000,
+/** Startup probes must stop waiting even when the OS cannot reap a killed shell. */
+export async function readEnvironmentFromLoginShellAsync(
+  shell: string,
+  names: ReadonlyArray<string>,
+  execute: typeof spawn = spawn,
+): Promise<Partial<Record<string, string>>> {
+  if (names.length === 0) return {};
+  const command = buildEnvironmentCaptureCommand(shell, names);
+  const output = await new Promise<string>((resolve, reject) => {
+    let child: ReturnType<typeof spawn>;
+    let timedOut = false;
+    const killTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, 5000);
+    const timer = setTimeout(() => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+      reject(new Error("Login shell environment probe timed out."));
+    }, 6000);
+    try {
+      child = execute(shell, ["-ilc", command], {
+        detached: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      let stdout = "";
+      child.stdout!.setEncoding("utf8");
+      child.stdout!.on("data", (chunk: string) => {
+        stdout += chunk;
+        if (stdout.length > 1024 * 1024) {
+          child.kill("SIGKILL");
+          child.stdout?.destroy();
+          child.unref();
+          clearTimeout(timer);
+          clearTimeout(killTimer);
+          reject(new Error("Login shell environment output exceeded its limit."));
+        }
+      });
+      child.once("error", (error) => {
+        clearTimeout(timer);
+        clearTimeout(killTimer);
+        reject(error);
+      });
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        clearTimeout(killTimer);
+        if (code === 0) resolve(stdout);
+        else
+          reject(
+            new Error(
+              timedOut
+                ? "Login shell environment probe timed out."
+                : "Login shell environment probe failed.",
+            ),
+          );
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      clearTimeout(killTimer);
+      reject(error);
+    }
   });
+  return extractEnvironment(output, names);
+}
 
+function extractEnvironment(
+  output: string,
+  names: ReadonlyArray<string>,
+): Partial<Record<string, string>> {
   const environment: Partial<Record<string, string>> = {};
   for (const name of names) {
     const value = extractEnvironmentValue(output, name);
@@ -103,4 +173,4 @@ export const readEnvironmentFromLoginShell: ShellEnvironmentReader = (
   }
 
   return environment;
-};
+}

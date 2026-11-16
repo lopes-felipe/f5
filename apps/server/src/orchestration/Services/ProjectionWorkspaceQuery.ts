@@ -5,7 +5,7 @@
  * orchestration read model: that snapshot includes retained history for every
  * thread and is intentionally heavyweight.
  */
-import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import type { ProjectId, ProjectKind, ThreadId } from "@t3tools/contracts";
 import { Option, ServiceMap } from "effect";
 import type { Effect } from "effect";
 
@@ -13,13 +13,16 @@ import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 
 export interface ProjectionProjectWorkspace {
   readonly projectId: ProjectId;
+  readonly kind: ProjectKind;
   readonly workspaceRoot: string;
 }
 
 export interface ProjectionThreadWorkspace {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
+  /** The thread's own workspace: its scratch folder, worktree or project root. */
   readonly workspaceRoot: string;
+  readonly scratch: boolean;
 }
 
 export interface ProjectionWorkspaceQueryShape {

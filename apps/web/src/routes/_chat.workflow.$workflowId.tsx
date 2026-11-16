@@ -1,8 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { RouteErrorView } from "../components/RouteErrorView";
+
 import { StartupWorkflowRouteSkeleton } from "../components/StartupLoadingState";
 import { WorkflowView } from "../components/workflow/WorkflowView";
 import { SidebarInset } from "../components/ui/sidebar";
+import { useWorkflowDocumentTitle } from "../hooks/useDocumentTitle";
 import { useStartupReady } from "../lib/startupReady";
 
 function WorkflowRouteView() {
@@ -10,6 +13,7 @@ function WorkflowRouteView() {
   const workflowId = Route.useParams({
     select: (params) => params.workflowId,
   });
+  useWorkflowDocumentTitle("planning", workflowId);
 
   if (!startupReady) {
     return <StartupWorkflowRouteSkeleton kind="planning" />;
@@ -26,4 +30,5 @@ function WorkflowRouteView() {
 
 export const Route = createFileRoute("/_chat/workflow/$workflowId")({
   component: WorkflowRouteView,
+  errorComponent: RouteErrorView,
 });

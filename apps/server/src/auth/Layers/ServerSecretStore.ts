@@ -131,7 +131,25 @@ export const makeServerSecretStore = Effect.gen(function* () {
       ),
     );
 
+  const list: ServerSecretStoreShape["list"] = (prefix) =>
+    Effect.gen(function* () {
+      const names = yield* fileSystem.readDirectory(secretsDir);
+      const result: { name: string; modifiedAt: number }[] = [];
+      for (const filename of names) {
+        if (!filename.startsWith(prefix) || !filename.endsWith(".bin")) continue;
+        const stat = yield* fileSystem.stat(path.join(secretsDir, filename));
+        if (stat.type === "File" && stat.mtime !== undefined)
+          result.push({ name: filename.slice(0, -4), modifiedAt: stat.mtime.getTime() });
+      }
+      return result;
+    }).pipe(
+      Effect.mapError(
+        (cause) => new SecretStoreError({ message: "Failed to list secrets.", cause }),
+      ),
+    );
+
   return {
+    list,
     get,
     set,
     getOrCreateRandom,

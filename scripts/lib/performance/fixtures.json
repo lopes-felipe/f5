@@ -1,12 +1,46 @@
 {
   "version": 1,
   "seed": 290261,
+  "sqliteCheckpoint": { "walBytes": 41943040, "resolutionMs": 1, "maximumP99Ms": 50 },
   "epoch": "2026-09-01T00:00:00.000Z",
-  "chat": { "messages": 10000, "attachmentEvery": 200, "toolEvery": 1000, "toolBytes": 1048576 },
-  "streaming": { "threads": 10, "updatesPerSecondPerThread": 20 },
-  "terminal": { "count": 20, "chunksPerBatch": 40, "chunkBytes": 4096, "longLineBytes": 4325376 },
-  "replay": { "events": 20000, "slowPauseEvery": 200, "disconnectAfter": 1000 },
-  "repository": { "files": 10000, "directories": 100, "nestedRepositories": 3, "submodules": 2 },
+  "chat": {
+    "messages": 10000,
+    "attachmentEvery": 200,
+    "toolEvery": 1000,
+    "toolBytes": 1048576
+  },
+  "streaming": {
+    "threads": 10,
+    "updatesPerSecondPerThread": 20
+  },
+  "terminal": {
+    "count": 20,
+    "chunksPerBatch": 40,
+    "chunkBytes": 4096,
+    "longLineBytes": 4325376
+  },
+  "replay": {
+    "events": 20000,
+    "slowPauseEvery": 200,
+    "disconnectAfter": 1000
+  },
+  "assistantStream": {
+    "threads": 4,
+    "seededMessages": 2000,
+    "deltasPerStream": 500,
+    "minDeltaChars": 8,
+    "maxDeltaChars": 64,
+    "toolEvery": 50,
+    "readModelThreads": 500,
+    "readModelMessages": 300,
+    "maxInFlightDeltasPerStream": 32
+  },
+  "repository": {
+    "files": 10000,
+    "directories": 100,
+    "nestedRepositories": 3,
+    "submodules": 2
+  },
   "method": {
     "warmups": 5,
     "repetitions": 30,

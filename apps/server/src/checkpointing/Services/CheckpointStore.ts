@@ -34,12 +34,25 @@ export interface DiffCheckpointsInput {
   readonly fallbackFromToHead?: boolean;
   readonly options?: {
     readonly ignoreWhitespace?: boolean;
+    /**
+     * Leave out files a pull, merge or rebase brought in between the checkpoints. A file
+     * the turn also edited, committed or resolved stays whole. When the checkpoints carry
+     * no HEAD provenance, or the filter cannot run, the complete diff is returned.
+     */
+    readonly excludeGitImports?: boolean;
+    /**
+     * Minimize the patch (the default), as a reviewed diff wants. Callers that only count
+     * changed lines pass false: Git's configured algorithm is far cheaper on large,
+     * repetitive changes.
+     */
+    readonly minimal?: boolean;
   };
 }
 
 export interface DeleteCheckpointRefsInput {
   readonly cwd: string;
   readonly checkpointRefs: ReadonlyArray<CheckpointRef>;
+  readonly expectedOids?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -67,6 +80,12 @@ export interface CheckpointStoreShape {
     input: Omit<RestoreCheckpointInput, "fallbackToHead">,
   ) => Effect.Effect<boolean, CheckpointStoreError>;
 
+  /** Resolve an exact set of owned refs in one read-only Git invocation. */
+  readonly readCheckpointRefs: (input: {
+    readonly cwd: string;
+    readonly checkpointRefs: ReadonlyArray<CheckpointRef>;
+  }) => Effect.Effect<Readonly<Record<string, string>>, CheckpointStoreError>;
+
   /**
    * Restore workspace/staging state to a checkpoint.
    *
@@ -88,7 +107,7 @@ export interface CheckpointStoreShape {
   /**
    * Delete the provided checkpoint refs.
    *
-   * Best-effort delete: missing refs are tolerated.
+   * Checked transaction: missing refs are tolerated; changed expected refs fail atomically.
    */
   readonly deleteCheckpointRefs: (
     input: DeleteCheckpointRefsInput,

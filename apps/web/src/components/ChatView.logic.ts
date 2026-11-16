@@ -5,13 +5,12 @@ import {
   defaultInstanceIdForDriver,
   type DesktopBridge,
   ProviderDriverKind,
+  type ProviderInstanceId,
   ProjectId,
-  type ProjectSkill,
   type ProjectScript,
   type ProviderInteractionMode,
   type RuntimeMode,
   type ServerProvider,
-  type ServerProviderSkill,
   type ServerProviderModel,
   type ServerSettings,
   type ThreadTurnStartBootstrap,
@@ -19,20 +18,21 @@ import {
   type OrchestrationThreadActivity,
   ProviderKind,
   type ModelSelection,
-  type UserMessageSkillCall,
+  type ProviderModelOptions,
 } from "@t3tools/contracts";
 import { normalizeModelSlug, resolveSelectableModel } from "@t3tools/shared/model";
-import {
-  isReservedHostLocalSlashCommandName,
-  normalizeHostCompatibleRuntimeSlashCommandName,
-} from "@t3tools/shared/slashCommands";
+import { describeFastModeDisabledReason, refusedFastModeReason } from "@t3tools/shared/runtimeInfo";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import { type ChatMessage } from "../types";
+import { linkDerivedMessageList } from "../lib/streamingTextRevision";
 import { CLAUDE_SUBAGENT_MODEL_INHERIT, getAppModelOptions } from "../appSettings";
 import { type ComposerImageAttachment } from "../composerDraftStore";
 import { Schema } from "effect";
 import { sortModelsForProviderInstance } from "../modelOrdering";
 import { getDefaultServerModel } from "../providerModels";
+import { providerSelectionsToModelOptions } from "../providerModelOptions";
+import type { ThreadModelOptionsSeedRecord } from "../threadModelOptionsSeeds";
+import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import {
   filterTerminalContextsWithText,
   stripInlineTerminalContextPlaceholders,
@@ -40,9 +40,9 @@ import {
 } from "../lib/terminalContext";
 import { normalizeAttachedFilePaths, resolveAttachedFileReferencePath } from "../lib/attachedFiles";
 import { setupProjectScript } from "~/projectScripts";
-import { type ComposerCommandItem } from "./chat/ComposerCommandMenu";
 import type { ModelPickerModelOption } from "./chat/providerIconUtils";
 import { resolveRuntimeModelReport } from "./chat/runtimePresentation";
+import { resolveFallbackModelOptions, type ModelCatalogSettings } from "../modelSelection";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 
@@ -52,250 +52,70 @@ export const DISMISSED_PROVIDER_STATUS_KEY = "t3code:dismissed-provider-status-k
 
 export const DismissedProviderStatusSchema = Schema.NullOr(Schema.String);
 
-const HOST_LOCAL_SLASH_COMMAND_ITEMS = [
-  {
-    id: "slash:model",
-    type: "slash-command",
-    command: "model",
-    label: "/model",
-    description: "Switch response model for this thread",
-  },
-  {
-    id: "slash:plan",
-    type: "slash-command",
-    command: "plan",
-    label: "/plan",
-    description: "Switch this thread into plan mode",
-  },
-  {
-    id: "slash:default",
-    type: "slash-command",
-    command: "default",
-    label: "/default",
-    description: "Switch this thread back to normal chat mode",
-  },
-] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
-
-function normalizeComposerInsertedSkillName(value: string): string {
-  return value.trim().replace(/^\/+/, "");
+export {
+  resolveComposerNativeSlashCommands,
+  buildSlashComposerMenuItems,
+  buildComposerSkillReplacement,
+  rewriteComposerRuntimeSkillInvocationForSend,
+} from "@t3tools/shared/slashCommands";
+/**
+ * The queue intent for a send. A send that switches provider instances never
+ * steers into the running turn of the old session: it is queued instead, so the
+ * switch runs after that turn settles and re-checks the server's guards.
+ */
+export function resolveSubmissionIntent(input: {
+  readonly bootstrap: boolean;
+  readonly intent: "auto" | "queue-tail" | "queue-head" | "send-now" | "steer" | undefined;
+  readonly running: boolean;
+  readonly followUpBehavior: string;
+  readonly switchesProvider: boolean;
+}): "auto" | "queue-tail" | "queue-head" | "steer" {
+  if (input.bootstrap) return "auto";
+  if (input.intent === "send-now") return "queue-head";
+  if (input.intent === "steer") return input.switchesProvider ? "queue-head" : "steer";
+  if (
+    (input.intent === undefined || input.intent === "auto") &&
+    input.running &&
+    input.followUpBehavior === "steer" &&
+    !input.switchesProvider
+  )
+    return "steer";
+  return input.intent ?? "auto";
 }
-
-type RuntimeSlashCommands = NonNullable<CompactRuntimeConfiguredActivityPayload["slashCommands"]>;
 
 /**
- * Native commands for the composer: the live session's catalog when the
- * thread's session belongs to the selected instance, otherwise the selected
- * instance's own (private) catalog. Switching instance therefore drops the
- * previous instance's commands instead of mixing two private catalogs.
+ * Whether `/review` runs as Codex's native review on the live session. Not when
+ * another provider instance is selected: that send switches providers, and the
+ * review must not run on the session being left.
  */
-export function resolveComposerNativeSlashCommands(input: {
-  readonly runtimeSlashCommands: RuntimeSlashCommands | null | undefined;
-  readonly sessionInstanceId: string | null | undefined;
-  readonly selectedInstanceId: string | null | undefined;
-  readonly instanceSlashCommands: ServerProvider["slashCommands"] | null | undefined;
-}): { readonly commands: RuntimeSlashCommands; readonly source: "session" | "instance" } {
-  const sessionMatches =
-    !input.sessionInstanceId ||
-    !input.selectedInstanceId ||
-    input.sessionInstanceId === input.selectedInstanceId;
-  if (input.runtimeSlashCommands && sessionMatches) {
-    return { commands: input.runtimeSlashCommands, source: "session" };
-  }
-  return {
-    commands: (input.instanceSlashCommands ?? []).map((command) => ({
-      name: command.name,
-      description: command.description ?? `Run /${command.name}`,
-      ...(command.input?.hint ? { argumentHint: command.input.hint } : {}),
-    })),
-    source: "instance",
-  };
-}
-
-export function buildSlashComposerMenuItems(input: {
-  query: string;
-  runtimeSlashCommands?: RuntimeSlashCommands | null | undefined;
-  /** Where `runtimeSlashCommands` came from; defaults to the live session. */
-  runtimeSlashCommandsSource?: "session" | "instance";
-  provider?: ProviderKind | null | undefined;
-  projectSkills?: ReadonlyArray<ProjectSkill> | null | undefined;
-  providerSkills?: ReadonlyArray<ServerProviderSkill> | undefined;
-}): Array<Extract<ComposerCommandItem, { type: "slash-command" | "skill" }>> {
-  const seenSkillNames = new Set<string>();
-  const runtimeSource = input.runtimeSlashCommandsSource ?? "session";
-  const runtimeSkillItems: Array<Extract<ComposerCommandItem, { type: "skill" }>> = (
-    input.runtimeSlashCommands ?? []
-  ).flatMap((command) => {
-    const name = normalizeHostCompatibleRuntimeSlashCommandName(command.name);
-    // Host-reserved commands (/model, /plan, /default) stay F5's.
-    if (!name || isReservedHostLocalSlashCommandName(name) || seenSkillNames.has(name)) {
-      return [];
-    }
-    seenSkillNames.add(name);
-    return [
-      {
-        id: `skill:runtime:${name}`,
-        type: "skill" as const,
-        name,
-        label: `/${name}`,
-        description: command.description,
-        argumentHint: command.argumentHint ?? null,
-        source: runtimeSource,
-      },
-    ];
-  });
-
-  const projectSkillItems: Array<Extract<ComposerCommandItem, { type: "skill" }>> = (
-    input.provider ? (input.projectSkills ?? []) : []
-  )
-    .map((skill) => (input.provider ? (skill.providerVariants?.[input.provider] ?? skill) : skill))
-    .filter(
-      (skill) => skill.paths.length === 0 && (input.provider === "claudeAgent" || skill.sourcePath),
-    )
-    .flatMap((skill) => {
-      const name = normalizeHostCompatibleRuntimeSlashCommandName(skill.commandName);
-      if (!name || isReservedHostLocalSlashCommandName(name) || seenSkillNames.has(name)) {
-        return [];
-      }
-      // Native (session/instance) commands are authoritative when both sources
-      // publish the same menu name, so project skills only fill unclaimed names.
-      seenSkillNames.add(name);
-      return [
-        {
-          id: `skill:project:${name}`,
-          type: "skill" as const,
-          name,
-          label: `/${name}`,
-          description: skill.description,
-          argumentHint: skill.argumentHint,
-          source: "project" as const,
-        },
-      ];
-    });
-
-  // Instance skills only fill names neither native commands nor project files claimed.
-  const providerSkillItems = (input.providerSkills ?? []).flatMap((skill) => {
-    const name = normalizeHostCompatibleRuntimeSlashCommandName(skill.name);
-    if (!skill.enabled || !name || seenSkillNames.has(name)) return [];
-    seenSkillNames.add(name);
-    return [
-      {
-        id: `skill:provider:${name}`,
-        type: "skill" as const,
-        name,
-        label: `/${name}`,
-        description: skill.description ?? `Use ${name}`,
-        argumentHint: null,
-        source: "instance" as const,
-      },
-    ];
-  });
-  const query = input.query.trim().toLowerCase();
-  const slashItems = [
-    ...HOST_LOCAL_SLASH_COMMAND_ITEMS,
-    ...runtimeSkillItems,
-    ...projectSkillItems,
-    ...providerSkillItems,
-  ] satisfies Array<Extract<ComposerCommandItem, { type: "slash-command" | "skill" }>>;
-  if (!query) {
-    return slashItems;
-  }
-  return slashItems.filter((item) => {
-    if (item.type === "slash-command") {
-      return (
-        item.command.includes(query) ||
-        item.label.slice(1).includes(query) ||
-        item.description.toLowerCase().includes(query)
-      );
-    }
-    return (
-      item.name.includes(query) ||
-      item.label.slice(1).includes(query) ||
-      item.description.toLowerCase().includes(query)
-    );
-  });
-}
-
-export function buildComposerSkillReplacement(skillName: string, provider?: ProviderKind): string {
-  return `${provider === "codex" ? "$" : "/"}${normalizeComposerInsertedSkillName(skillName)} `;
-}
-
-export function rewriteComposerRuntimeSkillInvocationForSend(input: {
-  text: string;
-  provider: ProviderKind | null | undefined;
-  runtimeSlashCommands?:
-    | CompactRuntimeConfiguredActivityPayload["slashCommands"]
-    | null
-    | undefined;
-  projectSkills?: ReadonlyArray<ProjectSkill> | null | undefined;
-  providerSkills?: ReadonlyArray<ServerProviderSkill> | undefined;
-}): { text: string; skillCall: UserMessageSkillCall | undefined } {
-  const leadingCommandMatch = /^([/$])([^\s/$]+)(?=\s|$)/.exec(input.text);
-  if (!leadingCommandMatch) {
-    return { text: input.text, skillCall: undefined };
-  }
-
-  const leadingCommandName = normalizeHostCompatibleRuntimeSlashCommandName(
-    leadingCommandMatch[2] ?? "",
+export function shouldRunNativeReviewShortcut(input: {
+  readonly prompt: string;
+  readonly sessionProvider: string;
+  readonly sessionInstanceId: string | null;
+  readonly selectedInstanceId: string;
+  readonly nativeReviewSupported: boolean;
+}): boolean {
+  return (
+    /^\/review(?:\s|$)/.test(input.prompt.trim()) &&
+    input.sessionProvider === "codex" &&
+    input.sessionInstanceId === input.selectedInstanceId &&
+    input.nativeReviewSupported
   );
-  if (!leadingCommandName) {
-    return { text: input.text, skillCall: undefined };
-  }
+}
 
-  const knownRuntimeSkillNames = new Set(
-    (input.runtimeSlashCommands ?? [])
-      .map((command) => normalizeHostCompatibleRuntimeSlashCommandName(command.name))
-      .flatMap((name) => (name ? [name] : [])),
+export function shouldRunNativeAsideShortcut(input: {
+  readonly prompt: string;
+  readonly sessionProvider: string;
+  readonly sessionInstanceId: string | null;
+  readonly selectedInstanceId: string;
+  readonly nativeAsideSupported: boolean;
+}): boolean {
+  return (
+    /^\/aside(?:\s|$)/u.test(input.prompt.trim()) &&
+    input.sessionProvider === "codex" &&
+    input.sessionInstanceId === input.selectedInstanceId &&
+    input.nativeAsideSupported
   );
-  for (const skill of input.providerSkills ?? []) {
-    const name = normalizeHostCompatibleRuntimeSlashCommandName(skill.name);
-    if (skill.enabled && name) knownRuntimeSkillNames.add(name);
-  }
-  if (input.provider) {
-    for (const skill of input.projectSkills ?? []) {
-      if (skill.paths.length > 0 || (input.provider !== "claudeAgent" && !skill.sourcePath)) {
-        continue;
-      }
-      const name = normalizeHostCompatibleRuntimeSlashCommandName(skill.commandName);
-      if (name) {
-        knownRuntimeSkillNames.add(name);
-      }
-    }
-  }
-  if (!knownRuntimeSkillNames.has(leadingCommandName)) {
-    return { text: input.text, skillCall: undefined };
-  }
-
-  if (leadingCommandMatch[1] === "$" && input.provider !== "codex") {
-    return { text: input.text, skillCall: undefined };
-  }
-
-  const projectSkill = input.projectSkills
-    ?.map((skill) => (input.provider ? (skill.providerVariants?.[input.provider] ?? skill) : skill))
-    .find(
-      (skill) =>
-        skill.commandName === leadingCommandName &&
-        skill.paths.length === 0 &&
-        (input.provider === "claudeAgent" || skill.sourcePath),
-    );
-  const nativeKnown =
-    input.runtimeSlashCommands?.some((command) => command.name === leadingCommandName) ||
-    (!projectSkill &&
-      input.providerSkills?.some((skill) => skill.enabled && skill.name === leadingCommandName)) ||
-    (input.provider && projectSkill?.nativeProviders?.includes(input.provider)) ||
-    (input.provider === "claudeAgent" &&
-      (!projectSkill?.sourcePath || /(?:^|\/)\.claude\/skills\//.test(projectSkill.sourcePath)));
-  const text =
-    input.provider === "codex" && nativeKnown
-      ? `$${leadingCommandName}${input.text.slice(leadingCommandMatch[0].length)}`
-      : input.text;
-  // Old snapshots may still carry an absolute path. Never put it into a transcript.
-  const source = projectSkill?.sourcePath;
-  const portableSource = source && !/^(?:[A-Za-z]:[\\/]|\/)/.test(source) ? source : undefined;
-  const textWithPath =
-    projectSkill && !nativeKnown
-      ? `${text}\n\nUse the skill instructions ${portableSource ? `at ${JSON.stringify(portableSource)}` : `for ${JSON.stringify(leadingCommandName)}`}.`
-      : text;
-  return { text: textWithPath, skillCall: { name: leadingCommandName } };
 }
 
 export function shouldRenderTimelineContent(input: {
@@ -343,6 +163,87 @@ export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[
     previewUrls.push(attachment.previewUrl);
   }
   return previewUrls;
+}
+
+/**
+ * Indexes each user message for the timeline's revert triggers. Returns
+ * `previous` when nothing changed: streaming deltas replace the message list
+ * per token, and a new map would rebuild every timeline row's externals.
+ */
+export function buildRevertIndexByUserMessageId(
+  messages: ReadonlyArray<Pick<ChatMessage, "id" | "role">>,
+  previous: ReadonlyMap<ChatMessage["id"], number> | null = null,
+): ReadonlyMap<ChatMessage["id"], number> {
+  const next = new Map<ChatMessage["id"], number>();
+  for (const message of messages) {
+    if (message.role === "user") next.set(message.id, next.size);
+  }
+  if (previous === null || previous.size !== next.size) return next;
+  for (const [id, index] of next) {
+    if (previous.get(id) !== index) return next;
+  }
+  return previous;
+}
+
+const NO_PREVIEW_URLS: ReadonlyArray<string> = [];
+
+/**
+ * Server messages with blob preview handoffs applied and optimistic sends
+ * appended. While the server list only streams text and the overlays are
+ * unchanged, the result keeps the server list's structural identity and each
+ * unchanged message object, so the timeline keeps reusing entries and rows.
+ */
+export function deriveTimelineMessages(input: {
+  readonly serverMessages: ChatMessage[];
+  readonly attachmentPreviewHandoffByMessageId: Readonly<Record<string, ReadonlyArray<string>>>;
+  readonly optimisticUserMessages: ReadonlyArray<ChatMessage>;
+  readonly projectAttachmentPreviewHandoff: (
+    message: ChatMessage,
+    previewUrls: ReadonlyArray<string>,
+  ) => ChatMessage;
+}): ChatMessage[] {
+  const { serverMessages, attachmentPreviewHandoffByMessageId: handoffs } = input;
+  const withHandoff =
+    Object.keys(handoffs).length === 0
+      ? serverMessages
+      : serverMessages.map((message) =>
+          input.projectAttachmentPreviewHandoff(message, handoffs[message.id] ?? NO_PREVIEW_URLS),
+        );
+  let pendingMessages: ReadonlyArray<ChatMessage> = [];
+  if (input.optimisticUserMessages.length > 0) {
+    const serverIds = new Set(serverMessages.map((message) => message.id));
+    pendingMessages = input.optimisticUserMessages.filter((message) => !serverIds.has(message.id));
+  }
+  const next = pendingMessages.length === 0 ? withHandoff : [...withHandoff, ...pendingMessages];
+  return linkDerivedMessageList(serverMessages, next, [handoffs, ...pendingMessages]);
+}
+
+/**
+ * `applyUserMessageAttachmentPreviewHandoff`, but a source message projected
+ * with the same preview URLs returns the same object. Streaming re-runs the
+ * projection per token, and a fresh copy would rebuild that message's row.
+ */
+export function createAttachmentPreviewHandoffProjector(): (
+  message: ChatMessage,
+  previewUrls: ReadonlyArray<string>,
+) => ChatMessage {
+  const projected = new WeakMap<
+    ChatMessage,
+    { readonly previewUrls: ReadonlyArray<string>; readonly message: ChatMessage }
+  >();
+  return (message, previewUrls) => {
+    const cached = projected.get(message);
+    if (
+      cached &&
+      cached.previewUrls.length === previewUrls.length &&
+      cached.previewUrls.every((url, index) => url === previewUrls[index])
+    ) {
+      return cached.message;
+    }
+    const next = applyUserMessageAttachmentPreviewHandoff(message, previewUrls);
+    projected.set(message, { previewUrls, message: next });
+    return next;
+  };
 }
 
 export function applyUserMessageAttachmentPreviewHandoff(
@@ -517,6 +418,9 @@ export function resolveAttachedFileReferencePaths(input: {
 }
 
 export function buildFirstSendBootstrap(input: {
+  worktreeBranchName?: string | null;
+  runSetupScript?: boolean | null;
+  sharedFilesystemConfirmed?: boolean;
   isLocalDraftThread: boolean;
   projectId: ProjectId;
   projectCwd: string;
@@ -543,6 +447,7 @@ export function buildFirstSendBootstrap(input: {
         interactionMode: input.interactionMode,
         branch: input.thread.branch,
         worktreePath: input.thread.worktreePath,
+        ...(input.sharedFilesystemConfirmed ? { sharedFilesystemConfirmed: true } : {}),
         createdAt: input.thread.createdAt,
       }
     : undefined;
@@ -550,7 +455,12 @@ export function buildFirstSendBootstrap(input: {
     ? {
         projectCwd: input.projectCwd,
         baseBranch: input.baseBranchForWorktree,
-        branch: buildTemporaryWorktreeBranchName(),
+        branch: input.worktreeBranchName ?? buildTemporaryWorktreeBranchName(),
+        ...(input.worktreeBranchName ? { namingIntent: "explicit" as const } : {}),
+        ...(input.runSetupScript !== null && input.runSetupScript !== undefined
+          ? { runSetupScript: input.runSetupScript }
+          : {}),
+        requireWorktree: true,
       }
     : undefined;
 
@@ -558,7 +468,8 @@ export function buildFirstSendBootstrap(input: {
     return undefined;
   }
 
-  const shouldRunSetupScript = prepareWorktree && setupProjectScript(input.projectScripts);
+  const shouldRunSetupScript =
+    prepareWorktree && (input.runSetupScript ?? Boolean(setupProjectScript(input.projectScripts)));
 
   return {
     ...(createThread ? { createThread } : {}),
@@ -626,7 +537,11 @@ function getServerCustomModelsForProvider(
     );
   }
 
-  return serverSettings.providers[provider].customModels.map(customModelSlug);
+  return provider in serverSettings.providers
+    ? serverSettings.providers[provider as keyof typeof serverSettings.providers].customModels.map(
+        customModelSlug,
+      )
+    : [];
 }
 
 function getProviderCustomModelsForPicker(
@@ -668,6 +583,7 @@ function getLiveProviderModels(
 
 function toModelPickerOption(model: ServerProviderModel): ModelPickerOptionWithCustomFlag {
   return {
+    ...(model.isUnlisted !== undefined ? { isUnlisted: model.isUnlisted } : {}),
     slug: model.slug,
     name: model.name,
     ...(model.shortName ? { shortName: model.shortName } : {}),
@@ -724,6 +640,9 @@ export function getProviderDispatchModelsByProvider(
     opencode: modelsFor("opencode"),
     grok: modelsFor("grok"),
     antigravity: modelsFor("antigravity"),
+    muse: modelsFor("muse"),
+    acp: modelsFor("acp"),
+    pi: modelsFor("pi"),
   };
 }
 
@@ -805,6 +724,78 @@ export function resolveComposerPickerModel(input: {
   );
 }
 
+/**
+ * Reconciles the draft with the thread's persisted selection, so a thread
+ * created elsewhere (upstream ports, scheduled tasks, another client) keeps its
+ * effort instead of the composer dispatching the model default.
+ *
+ * Each selection is reconciled once: a later `null` draft is the user picking
+ * the default, not a missing seed. A new selection replaces the draft only while
+ * the draft still holds the previous seed; otherwise the user's choice wins.
+ * Returns null when there is nothing to record.
+ */
+export function resolveThreadModelOptionsSeed(input: {
+  readonly draftModelOptions: ProviderModelOptions | null;
+  readonly selectedModel: string;
+  readonly threadSelection: ModelSelection | null | undefined;
+  readonly selectedInstanceId: string;
+  readonly selectedProvider: ProviderKind;
+  readonly previous: ThreadModelOptionsSeedRecord | undefined;
+}): {
+  readonly seed: ProviderModelOptions | null;
+  readonly record: ThreadModelOptionsSeedRecord;
+} | null {
+  const selection = input.threadSelection;
+  if (!selection?.options?.length) return null;
+  if (selection.instanceId !== input.selectedInstanceId) return null;
+  if (selection.model !== input.selectedModel) return null;
+  const key = JSON.stringify([selection.instanceId, selection.model, selection.options]);
+  if (input.previous?.key === key) return null;
+  const options = providerSelectionsToModelOptions(input.selectedProvider, selection.options);
+  if (!options) return null;
+  const draft = input.draftModelOptions;
+  const follows = input.previous
+    ? input.previous.options !== null && areProviderModelOptionsEqual(draft, input.previous.options)
+    : draft === null;
+  const inSync = follows || areProviderModelOptionsEqual(draft, options);
+  return { seed: follows ? options : null, record: { key, options: inSync ? options : null } };
+}
+
+/** Seed inherited fallback options into the same draft the effort controls read.
+ * The existing seed record distinguishes an untouched draft from a later default-effort reset.
+ */
+export function resolveComposerModelOptionsSeed(
+  input: Parameters<typeof resolveThreadModelOptionsSeed>[0] & {
+    readonly fallback: boolean;
+    readonly requestedInstanceId: ProviderInstanceId | undefined;
+    readonly selectedInstanceId: ProviderInstanceId;
+    readonly projectSelection: ModelSelection | null | undefined;
+    readonly providers: ReadonlyArray<ServerProvider>;
+    readonly settings: ModelCatalogSettings;
+  },
+): ReturnType<typeof resolveThreadModelOptionsSeed> {
+  if (!input.fallback) return resolveThreadModelOptionsSeed(input);
+  const selection = input.threadSelection?.options?.length
+    ? input.threadSelection
+    : input.projectSelection;
+  // Inherit only from the instance the draft requested.
+  if (!selection || selection.instanceId !== input.requestedInstanceId) return null;
+  const options = resolveFallbackModelOptions({
+    ...input,
+    selectedDriver: ProviderDriverKind.make(input.selectedProvider),
+    selection,
+  });
+  if (!options) return null;
+  return resolveThreadModelOptionsSeed({
+    ...input,
+    threadSelection: {
+      instanceId: input.selectedInstanceId,
+      model: input.selectedModel,
+      options,
+    },
+  });
+}
+
 export function resolveClaudeSubagentModel(
   rawModel: string | null | undefined,
   availableModels: ReadonlyArray<{ readonly slug: string }>,
@@ -821,6 +812,19 @@ export function resolveClaudeSubagentModel(
 function readRerouteString(payload: Record<string, unknown> | null, key: string): string | null {
   const value = payload?.[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function fastModeEntry(
+  runtime: CompactRuntimeConfiguredActivityPayload | null,
+): ProviderRuntimeInfoEntry | null {
+  if (!runtime?.fastModeState) return null;
+  const reason = refusedFastModeReason(runtime);
+  return {
+    label: "Fast mode",
+    value: reason
+      ? `${runtime.fastModeState} (${describeFastModeDisabledReason(reason)})`
+      : runtime.fastModeState,
+  };
 }
 
 export function deriveProviderRuntimeInfoEntries(input: {
@@ -844,9 +848,7 @@ export function deriveProviderRuntimeInfoEntries(input: {
       input.configuredRuntime?.claudeCodeVersion
         ? { label: "Claude Code", value: input.configuredRuntime.claudeCodeVersion }
         : null,
-      input.configuredRuntime?.fastModeState
-        ? { label: "Fast mode", value: input.configuredRuntime.fastModeState }
-        : null,
+      fastModeEntry(input.configuredRuntime),
       input.configuredRuntime?.effort
         ? { label: "Effort", value: input.configuredRuntime.effort }
         : null,
@@ -905,9 +907,7 @@ export function deriveProviderRuntimeInfoEntries(input: {
       input.configuredRuntime?.contextWindow
         ? { label: "Context", value: input.configuredRuntime.contextWindow }
         : null,
-      input.configuredRuntime?.fastModeState
-        ? { label: "Fast mode", value: input.configuredRuntime.fastModeState }
-        : null,
+      fastModeEntry(input.configuredRuntime),
       input.configuredRuntime?.thinkingState
         ? { label: "Thinking", value: input.configuredRuntime.thinkingState }
         : null,

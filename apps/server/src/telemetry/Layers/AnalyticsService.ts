@@ -7,6 +7,11 @@ import { acquireInstanceLock } from "../../profiles/InstanceLock";
  * Persists a random installation-scoped anonymous id to state dir, buffers
  * events in memory, and flushes batches to PostHog over Effect HttpClient.
  *
+ * Telemetry is active only when `T3CODE_TELEMETRY_ENABLED` is not `false`
+ * and a non-empty `T3CODE_POSTHOG_KEY` is configured. There is no default
+ * key; when inactive the service is a no-op that buffers, locks and sends
+ * nothing.
+ *
  * @module AnalyticsServiceLive
  */
 
@@ -25,9 +30,7 @@ interface BufferedAnalyticsEvent {
 }
 
 const TelemetryEnvConfig = Config.all({
-  posthogKey: Config.string("T3CODE_POSTHOG_KEY").pipe(
-    Config.withDefault("phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m"),
-  ),
+  posthogKey: Config.string("T3CODE_POSTHOG_KEY").pipe(Config.withDefault("")),
   posthogHost: Config.string("T3CODE_POSTHOG_HOST").pipe(
     Config.withDefault("https://us.i.posthog.com"),
   ),
@@ -38,8 +41,19 @@ const TelemetryEnvConfig = Config.all({
   ),
 });
 
+const inactiveAnalyticsService: AnalyticsServiceShape = {
+  record: () => Effect.void,
+  flush: Effect.void,
+};
+
+export const isTelemetryActive = (config: {
+  readonly enabled: boolean;
+  readonly posthogKey: string;
+}): boolean => config.enabled && config.posthogKey.trim().length > 0;
+
 const makeAnalyticsService = Effect.gen(function* () {
   const telemetryConfig = yield* TelemetryEnvConfig.asEffect();
+  if (!isTelemetryActive(telemetryConfig)) return inactiveAnalyticsService;
   const httpClient = yield* HttpClient.HttpClient;
   const serverConfig = yield* ServerConfig;
   const identifier = yield* getTelemetryIdentifier;
@@ -51,14 +65,13 @@ const makeAnalyticsService = Effect.gen(function* () {
         ),
       )
     : undefined;
-  const heartbeatLease =
-    telemetryConfig.enabled && serverConfig.profilesRoot
-      ? yield* Effect.promise(() =>
-          acquireInstanceLock(
-            NodePath.join(serverConfig.profilesRoot!, "locks", "telemetry-heartbeat.lock.sqlite"),
-          ).catch(() => undefined),
-        )
-      : undefined;
+  const heartbeatLease = serverConfig.profilesRoot
+    ? yield* Effect.promise(() =>
+        acquireInstanceLock(
+          NodePath.join(serverConfig.profilesRoot!, "locks", "telemetry-heartbeat.lock.sqlite"),
+        ).catch(() => undefined),
+      )
+    : undefined;
   if (heartbeatLease) yield* Effect.addFinalizer(() => Effect.sync(heartbeatLease.release));
   const bufferRef = yield* Ref.make<ReadonlyArray<BufferedAnalyticsEvent>>([]);
   const clientType = serverConfig.mode === "desktop" ? "desktop-app" : "cli-web-client";
@@ -92,7 +105,7 @@ const makeAnalyticsService = Effect.gen(function* () {
 
   const sendBatch = (events: ReadonlyArray<BufferedAnalyticsEvent>) =>
     Effect.gen(function* () {
-      if (!telemetryConfig.enabled || !identifier) return;
+      if (!identifier) return;
 
       const payload = {
         api_key: telemetryConfig.posthogKey,
@@ -148,7 +161,7 @@ const makeAnalyticsService = Effect.gen(function* () {
 
   const record: AnalyticsServiceShape["record"] = Effect.fnUntraced(function* (event, properties) {
     if (event === "server.boot.heartbeat" && serverConfig.profilesRoot && !heartbeatLease) return;
-    if (!telemetryConfig.enabled || !identifier) return;
+    if (!identifier) return;
 
     const enqueueResult = yield* enqueueBufferedEvent(event, properties);
     if (enqueueResult.dropped) {

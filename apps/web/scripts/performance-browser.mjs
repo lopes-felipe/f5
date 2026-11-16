@@ -1,4 +1,5 @@
 import { chromium } from "playwright";
+import { installBrowserPerformanceCounters } from "../src/lib/browserPerformanceCollector.ts";
 import { writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -22,6 +23,7 @@ const context = await browser.newContext({
   viewport: config.viewport,
   reducedMotion: config.reducedMotion,
 });
+await context.addInitScript(installBrowserPerformanceCounters);
 await context.addInitScript(() => {
   window.__perfStartup = new Promise((resolve) => {
     const ready = () => {
@@ -48,6 +50,7 @@ const report = {
   memory: [],
   errors,
   loaded: {},
+  diagnostics: {},
 };
 const editor = page.locator('[contenteditable="true"]').first();
 const title = (id) =>
@@ -112,6 +115,22 @@ async function navigate(id) {
   await threadLink(id).click();
   await editor.waitFor();
   await painted();
+}
+async function settleTimeline() {
+  await page.evaluate(async () => {
+    let previous = "",
+      stable = 0;
+    const deadline = performance.now() + 10_000;
+    while (stable < 6) {
+      await new Promise(requestAnimationFrame);
+      const node = document.querySelector('[data-slot="messages-scroll-container"]');
+      const current = node ? `${node.scrollTop}:${node.scrollHeight}` : "";
+      stable = current && current === previous ? stable + 1 : 0;
+      previous = current;
+      if (performance.now() > deadline)
+        throw new Error("Timeline did not finish its initial scroll");
+    }
+  });
 }
 async function typeMeasurement() {
   await page.evaluate(() => {
@@ -207,7 +226,10 @@ try {
     .getByText(/Streaming frame/)
     .first()
     .waitFor();
+  const beforeStreaming = await page.evaluate(() => window.__f5PerformanceCounters.sample());
   await measure("browser.composer-input-streaming", typeMeasurement, clearEditor);
+  const afterStreaming = await page.evaluate(() => window.__f5PerformanceCounters.sample());
+  report.diagnostics.streaming = { before: beforeStreaming, after: afterStreaming };
   await clearEditor();
   await control("stop-streaming");
   if (minutes > 0) {
@@ -233,10 +255,137 @@ try {
     }
     await control("stop-soak");
   }
+  if (process.env.F5_PERF_LIFECYCLE === "1") {
+    const assert = (condition, message) => {
+      if (!condition) throw new Error(message);
+    };
+    await control("lifecycle-history");
+    for (let attempt = 0; attempt < 100 && !(await threadLink("perf-history").count()); attempt++) {
+      const more = page.getByRole("button", { name: "Show more", exact: true });
+      if (await more.count()) await more.click();
+      await delay(50);
+    }
+    await navigate("perf-history");
+    await row("perf-history-message-999").waitFor();
+    await settleTimeline();
+    await control("start-streaming");
+    await navigate("perf-stream-0");
+    await page
+      .getByText(/Streaming frame/)
+      .first()
+      .waitFor();
+    await navigate("perf-history");
+    await settleTimeline();
+    const beforeHistory = await page.evaluate(
+      () => window.__f5PerformanceCounters.sample().resources.store.retainedMessages,
+    );
+    const beforeHistoryStats = await control("stats");
+    await page.locator('[data-slot="messages-scroll-container"]').hover();
+    await page.mouse.wheel(0, -100_000);
+    await page.waitForFunction(
+      (before) => window.__f5PerformanceCounters.sample().resources.store.retainedMessages > before,
+      beforeHistory,
+    );
+    await page.waitForFunction(() => {
+      const anchor = window.__f5PerformanceCounters.lastHistoryAnchor;
+      const node = document.querySelector('[data-slot="messages-scroll-container"]');
+      if (!anchor?.rowId || !node) return false;
+      const row = Array.from(node.querySelectorAll("[data-timeline-row-id]")).find(
+        (row) => row.dataset.timelineRowId === anchor.rowId,
+      );
+      return (
+        row &&
+        Math.abs(row.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.top) <
+          3
+      );
+    });
+    const afterHistoryStats = await control("stats");
+    assert(
+      (afterHistoryStats.rpc["orchestration.getThreadHistoryPage"] ?? 0) >
+        (beforeHistoryStats.rpc["orchestration.getThreadHistoryPage"] ?? 0),
+      "History was not loaded while streaming",
+    );
+    assert(
+      afterHistoryStats.frames > beforeHistoryStats.frames,
+      "Streaming stalled during history loading",
+    );
+    await control("stop-streaming");
+    await navigate("perf-small");
+    await editor.fill("unfinished draft during provider failure");
+    const preservedDraft = await editor.innerText();
+    await control("lifecycle-start");
+    const stop = page.getByRole("button", { name: "Stop generation", exact: true });
+    await stop.waitFor();
+    const full = await control("lifecycle-saturate");
+    assert(full.entries === 1024, "Ordinary admission was not saturated");
+    await stop.click();
+    await stop.waitFor({ state: "hidden" });
+    let stats = (await control("stats")).lifecycle;
+    assert(
+      stats.entries === 1024 && stats.applied["thread.turn.interrupt"] === 1,
+      "Stop did not pass saturated ordinary admission exactly once",
+    );
+    assert((await editor.innerText()) === preservedDraft, "Stop discarded the draft");
+    await control("lifecycle-start");
+    await stop.waitFor();
+    await control("lifecycle-approval");
+    const approve = page.getByRole("button", { name: "Approve once", exact: true });
+    await approve.waitFor();
+    await approve.click();
+    await approve.waitFor({ state: "hidden" });
+    stats = (await control("stats")).lifecycle;
+    assert(
+      stats.entries === 1024 && stats.applied["thread.approval.respond"] === 1,
+      "Approval did not pass saturated ordinary admission exactly once",
+    );
+    await control("lifecycle-crash");
+    await page
+      .getByText("Provider crashed during the turn. Retry when ready.", { exact: true })
+      .waitFor();
+    await stop.waitFor({ state: "hidden" });
+    assert((await editor.innerText()) === preservedDraft, "Provider failure discarded the draft");
+    await editor.press("End");
+    await editor.pressSequentially(" still editable");
+    assert(
+      (await editor.innerText()).includes("still editable"),
+      "Provider failure blocked editing",
+    );
+    report.diagnostics.lifecycle = {
+      stop: true,
+      approval: true,
+      providerCrash: true,
+      draftPreserved: true,
+      historyLoaded: true,
+      historyAnchorPreserved: true,
+      switchingWhileStreaming: true,
+    };
+    await control("lifecycle-reset");
+  }
   report.loaded = await control("stats");
   if (errors.length) throw new Error(`Browser runtime errors: ${errors.join("\n")}`);
+  report.diagnostics.final = await page.evaluate(() => window.__f5PerformanceCounters.sample());
   writeFileSync(output, JSON.stringify(report), { flag: "wx" });
 } catch (error) {
+  console.error("Fixture diagnostics", await control("stats").catch(() => null));
+  console.error(
+    "History anchor diagnostics",
+    await page
+      .evaluate(() => {
+        const node = document.querySelector('[data-slot="messages-scroll-container"]');
+        const top = node?.getBoundingClientRect().top ?? 0;
+        return {
+          expected: window.__f5PerformanceCounters.lastHistoryAnchor,
+          scrollTop: node?.scrollTop,
+          rows: Array.from(node?.querySelectorAll("[data-timeline-row-id]") ?? [])
+            .map((row) => ({
+              id: row.dataset.timelineRowId,
+              top: row.getBoundingClientRect().top - top,
+            }))
+            .slice(0, 8),
+        };
+      })
+      .catch(() => null),
+  );
   console.error(
     await page
       .locator("body")

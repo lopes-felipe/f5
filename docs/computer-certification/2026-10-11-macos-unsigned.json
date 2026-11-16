@@ -1,0 +1,103 @@
+{
+  "evidenceVersion": 1,
+  "scope": "unsigned-development-rehearsal-not-release-certification",
+  "repositoryCommit": "7fdd563b456f5dc09cfe7a4234e94d3baf2b731f",
+  "workingTreeDirty": true,
+  "signingDeferredByUser": true,
+  "certified": false,
+  "rehearsal": {
+    "reportVersion": 1,
+    "recordedAt": "2026-10-11T14:52:58.321Z",
+    "platform": "darwin",
+    "arch": "arm64",
+    "osVersion": "27.0.0",
+    "helperSha256": "e80e11bb51c9420f35746686c4efddeb54d26b7448a793cea1081c7c5165cc02",
+    "scope": "unsigned-native-helper-only",
+    "signed": false,
+    "certified": false,
+    "checks": [
+      {
+        "name": "Granted fixture app activation",
+        "state": "passed",
+        "elapsedMs": 329
+      },
+      {
+        "name": "Real accessibility inspection and secure-value omission",
+        "state": "passed",
+        "elapsedMs": 24
+      },
+      {
+        "name": "Semantic press reaches the real app",
+        "state": "passed",
+        "elapsedMs": 546
+      },
+      {
+        "name": "Secure semantic setValue is refused",
+        "state": "passed",
+        "elapsedMs": 10
+      },
+      {
+        "name": "Revoked fixture inspect is refused",
+        "state": "passed",
+        "elapsedMs": 1
+      },
+      {
+        "name": "Unicode typing reaches only the fixture's editable field",
+        "state": "passed",
+        "elapsedMs": 736
+      },
+      {
+        "name": "Protected system chord is refused without emitting input",
+        "state": "passed",
+        "elapsedMs": 6
+      },
+      {
+        "name": "Focused secure field rejects keyboard typing",
+        "state": "passed",
+        "elapsedMs": 442
+      },
+      {
+        "name": "Coordinate click reaches the fixture in display model space",
+        "state": "failed",
+        "outcome": "TargetBlocked",
+        "blockKind": "system-ui",
+        "elapsedMs": 22
+      },
+      {
+        "name": "Permit expiry blocks the next real action",
+        "state": "passed",
+        "elapsedMs": 1252
+      }
+    ],
+    "physicalInterruption": false,
+    "remaining": [
+      "Provider-mediated app consent and real provider turns",
+      "Capture isolation and secure masking",
+      "Coordinate/drag/typing focus changes",
+      "Physical kill-chord latency and user-input interruption",
+      "Renderer/backend-stall stop path",
+      "Multiple profiles, overlays and mixed-DPI/fullscreen displays",
+      "Windows desktop runtime",
+      "Signed packaging and TCC attribution"
+    ]
+  },
+  "pointerDiagnostic": {
+    "observation": "Top rectangular candidate at the synthetic button is a Dock-owned surface",
+    "appId": "com.apple.dock",
+    "layer": 20,
+    "nativeBounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1728,
+      "height": 1117
+    },
+    "result": "Protected system-UI refusal retained; pointer functionality remains unvalidated"
+  },
+  "limitations": [
+    "Nine checks passed; coordinate input was refused and remains failed. The rehearsal exit code is 1.",
+    "Permit expiry was checked after the protected pointer refusal without retrying pointer input or resuming input.",
+    "No physical input interruption occurred during this run. It does not measure a real physical kill chord or latency.",
+    "No provider turn, capture isolation, Windows desktop execution, or signed installed-build attribution was certified.",
+    "All native, built-in provider and Chrome release gates remain closed."
+  ]
+}

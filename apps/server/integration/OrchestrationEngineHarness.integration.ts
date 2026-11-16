@@ -1,3 +1,6 @@
+import { ProviderSessionDirectory } from "../src/provider/Services/ProviderSessionDirectory.ts";
+import type { ProviderAdapterShape } from "../src/provider/Services/ProviderAdapter.ts";
+import type { ProviderAdapterError } from "../src/provider/Errors.ts";
 import { GitServiceLive } from "../src/git/Layers/GitService.ts";
 import fs from "node:fs";
 import os from "node:os";
@@ -7,8 +10,12 @@ import { execFileSync } from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ApprovalRequestId,
+  CommandId,
+  ThreadId,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
   ProjectId,
   type OrchestrationEvent,
+  type OrchestrationCommand,
   type OrchestrationThread,
 } from "@t3tools/contracts";
 import {
@@ -33,9 +40,12 @@ import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/La
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
 import { ProjectionCheckpointRepositoryLive } from "../src/persistence/Layers/ProjectionCheckpoints.ts";
 import { ProjectionTurnRepositoryLive } from "../src/persistence/Layers/ProjectionTurns.ts";
+import { ProjectionThreadCommandExecutionRepositoryLive } from "../src/persistence/Layers/ProjectionThreadCommandExecutions.ts";
+import { ThreadCommandExecutionQueryLive } from "../src/orchestration/Layers/ThreadCommandExecutionQuery.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../src/persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/ProviderSessionRuntime.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
+import { PersistenceSqlError } from "../src/persistence/Errors.ts";
 import { ProjectionCheckpointRepository } from "../src/persistence/Services/ProjectionCheckpoints.ts";
 import { ProjectionPendingApprovalRepository } from "../src/persistence/Services/ProjectionPendingApprovals.ts";
 import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
@@ -181,6 +191,7 @@ export interface OrchestrationIntegrationHarness {
   readonly engine: OrchestrationEngineShape;
   readonly snapshotQuery: ProjectionSnapshotQuery["Service"];
   readonly providerService: ProviderService["Service"];
+  readonly providerSessionDirectory: ProviderSessionDirectory["Service"];
   readonly checkpointStore: CheckpointStore["Service"];
   readonly checkpointRepository: ProjectionCheckpointRepository["Service"];
   readonly pendingApprovalRepository: ProjectionPendingApprovalRepository["Service"];
@@ -235,6 +246,12 @@ export interface OrchestrationIntegrationHarness {
 }
 
 interface MakeOrchestrationIntegrationHarnessOptions {
+  readonly adapter?: ProviderAdapterShape<ProviderAdapterError>;
+  /** Caller-owned directory supports crash/restart scenarios without fixture deletion. */
+  readonly rootDir?: string;
+  readonly startReactors?: boolean;
+  readonly beforeEngineDispatch?: (command: OrchestrationCommand) => Effect.Effect<void>;
+  readonly prepareAdapter?: (adapter: TestProviderAdapterHarness) => Effect.Effect<void>;
   readonly provider?: "codex";
   readonly realCodex?: boolean;
 }
@@ -245,32 +262,51 @@ export const makeOrchestrationIntegrationHarness = (
   Effect.gen(function* () {
     const sleep = (ms: number) => Effect.sleep(ms);
     const provider = options?.provider ?? "codex";
-    const useRealCodex = options?.realCodex === true;
-    const adapterHarness = useRealCodex
-      ? null
-      : yield* makeTestProviderAdapterHarness({
-          provider,
-        });
-    const fakeRegistry = adapterHarness
-      ? Layer.succeed(ProviderAdapterRegistry, {
-          ...makeAdapterRegistryMock({ [adapterHarness.provider]: adapterHarness.adapter }),
-        })
-      : null;
-    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-orchestration-integration-"));
+    const useRealCodex = options?.adapter === undefined && options?.realCodex === true;
+    const adapterHarness =
+      useRealCodex || options?.adapter
+        ? null
+        : yield* makeTestProviderAdapterHarness({
+            provider,
+          });
+    const fakeRegistry = options?.adapter
+      ? Layer.succeed(
+          ProviderAdapterRegistry,
+          makeAdapterRegistryMock({ [options.adapter.provider]: options.adapter }),
+        )
+      : adapterHarness
+        ? Layer.succeed(ProviderAdapterRegistry, {
+            ...makeAdapterRegistryMock({ [adapterHarness.provider]: adapterHarness.adapter }),
+          })
+        : null;
+    if (adapterHarness && options?.prepareAdapter) yield* options.prepareAdapter(adapterHarness);
+    const rootDir =
+      options?.rootDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3-orchestration-integration-"));
     const workspaceDir = path.join(rootDir, "workspace");
     const stateDir = path.join(rootDir, "state");
     const dbPath = path.join(stateDir, "state.sqlite");
     fs.mkdirSync(workspaceDir, { recursive: true });
     fs.mkdirSync(stateDir, { recursive: true });
-    initializeGitWorkspace(workspaceDir);
+    if (!fs.existsSync(path.join(workspaceDir, ".git"))) initializeGitWorkspace(workspaceDir);
 
     const persistenceLayer = makeSqlitePersistenceLive(dbPath);
-    const orchestrationLayer = OrchestrationEngineLive.pipe(
+    const baseOrchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
       Layer.provide(OrchestrationEventStoreLive),
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     );
+    const beforeDispatch = options?.beforeEngineDispatch;
+    const orchestrationLayer = beforeDispatch
+      ? Layer.effect(
+          OrchestrationEngineService,
+          Effect.map(OrchestrationEngineService.asEffect(), (engine) => ({
+            ...engine,
+            dispatch: (command: OrchestrationCommand) =>
+              beforeDispatch(command).pipe(Effect.andThen(engine.dispatch(command))),
+          })),
+        ).pipe(Layer.provide(baseOrchestrationLayer))
+      : baseOrchestrationLayer;
     const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
       Layer.provide(ProviderSessionRuntimeRepositoryLive),
     );
@@ -296,6 +332,14 @@ export const makeOrchestrationIntegrationHarness = (
           servers: {},
         }),
       readEffectiveStoredConfig: (projectId: ProjectId) =>
+        Effect.succeed({
+          projectId,
+          commonVersion: "mcp-version-test",
+          projectVersion: "mcp-version-test",
+          effectiveVersion: "mcp-version-test",
+          servers: {},
+        }),
+      readEffectiveRuntimeConfig: (projectId: ProjectId) =>
         Effect.succeed({
           projectId,
           commonVersion: "mcp-version-test",
@@ -378,6 +422,9 @@ export const makeOrchestrationIntegrationHarness = (
       RuntimeReceiptBusLive,
       ProviderTurnDeliveryRepositoryLive,
       ProjectionTurnRepositoryLive,
+      ThreadCommandExecutionQueryLive.pipe(
+        Layer.provideMerge(ProjectionThreadCommandExecutionRepositoryLive),
+      ),
     );
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
@@ -486,6 +533,10 @@ export const makeOrchestrationIntegrationHarness = (
     const providerService = yield* tryRuntimePromise("load ProviderService service", () =>
       runtime.runPromise(Effect.service(ProviderService)),
     ).pipe(Effect.orDie);
+    const providerSessionDirectory = yield* tryRuntimePromise(
+      "load ProviderSessionDirectory service",
+      () => runtime.runPromise(Effect.service(ProviderSessionDirectory)),
+    ).pipe(Effect.orDie);
     const checkpointStore = yield* tryRuntimePromise("load CheckpointStore service", () =>
       runtime.runPromise(Effect.service(CheckpointStore)),
     ).pipe(Effect.orDie);
@@ -502,9 +553,10 @@ export const makeOrchestrationIntegrationHarness = (
     ).pipe(Effect.orDie);
 
     const scope = yield* Scope.make("sequential");
-    yield* tryRuntimePromise("start OrchestrationReactor", () =>
-      runtime.runPromise(reactor.start.pipe(Scope.provide(scope))),
-    ).pipe(Effect.orDie);
+    if (options?.startReactors !== false)
+      yield* tryRuntimePromise("start OrchestrationReactor", () =>
+        runtime.runPromise(reactor.start.pipe(Scope.provide(scope))),
+      ).pipe(Effect.orDie);
     const receiptHistory = yield* Ref.make<ReadonlyArray<OrchestrationRuntimeReceipt>>([]);
     yield* Stream.runForEach(runtimeReceiptBus.stream, (receipt) =>
       Ref.update(receiptHistory, (history) => [...history, receipt]).pipe(Effect.asVoid),
@@ -517,13 +569,18 @@ export const makeOrchestrationIntegrationHarness = (
       timeoutMs,
     ) =>
       waitFor(
-        snapshotQuery
-          .getSnapshot()
-          .pipe(
-            Effect.map(
-              (snapshot) => snapshot.threads.find((thread) => thread.id === threadId) ?? null,
-            ),
+        snapshotQuery.getSnapshot().pipe(
+          // An expired read has rolled back and is explicitly retryable.
+          // Retry only this read, never the command or provider side effect.
+          Effect.retry({
+            times: 2,
+            schedule: Schedule.spaced("10 millis"),
+            while: (error) => Schema.is(PersistenceSqlError)(error) && error.retryable === true,
+          }),
+          Effect.map(
+            (snapshot) => snapshot.threads.find((thread) => thread.id === threadId) ?? null,
           ),
+        ),
         (thread): thread is OrchestrationThread => thread !== null && predicate(thread),
         `projected thread '${threadId}'`,
         timeoutMs,
@@ -641,7 +698,7 @@ export const makeOrchestrationIntegrationHarness = (
       yield* shutdown.pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            fs.rmSync(rootDir, { recursive: true, force: true });
+            if (!options?.rootDir) fs.rmSync(rootDir, { recursive: true, force: true });
           }),
         ),
       );
@@ -655,6 +712,7 @@ export const makeOrchestrationIntegrationHarness = (
       engine,
       snapshotQuery,
       providerService,
+      providerSessionDirectory,
       checkpointStore,
       checkpointRepository,
       pendingApprovalRepository,
@@ -664,4 +722,36 @@ export const makeOrchestrationIntegrationHarness = (
       waitForReceipt,
       dispose,
     } satisfies OrchestrationIntegrationHarness;
+  });
+
+/** Common aggregate seed for integration and chaos scenarios. */
+export const seedOrchestrationProjectAndThread = (
+  harness: OrchestrationIntegrationHarness,
+  branch: string | null = null,
+) =>
+  Effect.gen(function* () {
+    const createdAt = new Date().toISOString();
+    const projectId = ProjectId.makeUnsafe("project-1");
+    yield* harness.engine.dispatch({
+      type: "project.create",
+      commandId: CommandId.makeUnsafe("cmd-project-create"),
+      projectId,
+      title: "Integration Project",
+      workspaceRoot: harness.workspaceDir,
+      defaultModel: "gpt-5-codex",
+      createdAt,
+    });
+    yield* harness.engine.dispatch({
+      type: "thread.create",
+      commandId: CommandId.makeUnsafe("cmd-thread-create"),
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      projectId,
+      title: "Integration Thread",
+      model: "gpt-5-codex",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch,
+      worktreePath: null,
+      createdAt,
+    });
   });

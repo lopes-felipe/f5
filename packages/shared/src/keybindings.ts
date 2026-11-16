@@ -4,9 +4,11 @@ import {
   type KeybindingWhenNode,
   MAX_KEYBINDINGS_COUNT,
   MAX_WHEN_EXPRESSION_DEPTH,
+  MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   type ResolvedKeybindingRule,
   type ResolvedKeybindingsConfig,
+  UPSTREAM_KEYBINDING_COMMANDS,
 } from "@t3tools/contracts";
 
 type WhenToken =
@@ -17,7 +19,45 @@ type WhenToken =
   | { type: "lparen" }
   | { type: "rparen" };
 
+/** Upstream page list shortcuts; the list container provides `upstreamListFocus`. */
+const UPSTREAM_LIST_WHEN = "upstreamListFocus && !editableFocus && !dialogFocus";
+/** Default keys for `UPSTREAM_KEYBINDING_COMMANDS`, index for index. */
+const UPSTREAM_DEFAULT_KEYS = [
+  "j",
+  "k",
+  "x",
+  "shift+a",
+  "a",
+  "p",
+  "s",
+  "w",
+  "d",
+  "u",
+  "enter",
+  "o",
+  "shift+p",
+  "e",
+  "shift+j",
+  "shift+k",
+  "escape",
+  "]",
+  "[",
+  "/",
+  "z",
+] as const satisfies { readonly length: (typeof UPSTREAM_KEYBINDING_COMMANDS)["length"] };
+
 export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
+  { key: "f6", command: "workspace.focusNext" },
+  { key: "shift+f6", command: "workspace.focusPrevious" },
+  // Some browsers keep plain F6 for their own toolbars; mod+F6 reaches the page in all of them.
+  { key: "mod+f6", command: "workspace.focusNext" },
+  { key: "mod+shift+f6", command: "workspace.focusPrevious" },
+  { key: "mod+t", command: "rightPanel.tabMenu", when: "!terminalFocus && !dialogFocus" },
+  {
+    key: "mod+shift+t",
+    command: "rightPanel.reopenClosed",
+    when: "!terminalFocus && !dialogFocus",
+  },
   { key: "mod+[", command: "navigation.back", when: "!terminalFocus && !dialogFocus" },
   { key: "mod+]", command: "navigation.forward", when: "!terminalFocus && !dialogFocus" },
   {
@@ -44,6 +84,16 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
     key: "mod+shift+e",
     command: "composer.effort",
     when: "isElectron && !terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+alt+arrowup",
+    command: "composer.effortUp",
+    when: "!terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+alt+arrowdown",
+    command: "composer.effortDown",
+    when: "!terminalFocus && !dialogFocus",
   },
   {
     key: "mod+shift+a",
@@ -85,8 +135,13 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+n", command: "chat.new", when: "!terminalFocus" },
   { key: "mod+shift+n", command: "workflow.new", when: "!terminalFocus" },
   { key: "mod+enter", command: "chat.scrollToBottom", when: "!dialogFocus" },
+  { key: "mod+f", command: "chat.find", when: "!terminalFocus && !dialogFocus" },
   { key: "mod+shift+enter", command: "chat.queueTurn", when: "!dialogFocus" },
-  { key: "mod+alt+enter", command: "chat.steerTurn", when: "!dialogFocus" },
+  {
+    key: "mod+alt+enter",
+    command: "chat.sendAndNew",
+    when: "composerFocus && !newThreadComposer && !terminalFocus && !dialogFocus",
+  },
   { key: "alt+enter", command: "chat.queueTurnNext", when: "!dialogFocus" },
   {
     key: "mod+shift+v",
@@ -99,7 +154,28 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "ctrl+tab", command: "thread.switchRecentNext" },
   { key: "ctrl+shift+tab", command: "thread.switchRecentPrevious" },
   { key: "alt+tab", command: "model.switchRecent" },
+  {
+    key: "mod+alt+arrowright",
+    command: "model.favorite.next",
+    when: "!terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+alt+arrowleft",
+    command: "model.favorite.previous",
+    when: "!terminalFocus && !dialogFocus",
+  },
+  // Literal ctrl on every platform: macOS keeps cmd+N for the open picker's row
+  // jumps. Elsewhere ctrl+N is that same key, so the picker owns it while open.
+  // Browsers reserve ctrl+1..9 for tab switching, hence desktop-only.
+  ...MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
+    key: `ctrl+${index + 1}`,
+    command,
+    when: "isElectron && !terminalFocus && !dialogFocus && !modelPickerOpen",
+  })),
   { key: "mod+shift+p", command: "prHub.open", when: "!terminalFocus" },
+  { key: "mod+shift+h", command: "home.open", when: "!terminalFocus" },
+  // Not mod+shift+i: on Windows and Linux that chord opens DevTools in Electron and Chromium.
+  { key: "mod+shift+l", command: "notifications.toggle", when: "!terminalFocus" },
   { key: "mod+p", command: "palette.files", when: "!terminalFocus" },
   { key: "mod+shift+f", command: "projectContentSearch.toggle", when: "!terminalFocus" },
   { key: "mod+shift+m", command: "modelPicker.toggle", when: "!terminalFocus" },
@@ -110,7 +186,23 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   })),
   { key: "mod+k", command: "commandPalette.toggle", when: "!terminalFocus" },
   { key: "mod+/", command: "help.shortcuts", when: "!terminalFocus" },
+  { key: "mod+u", command: "usage.open", when: "!terminalFocus" },
+  // Usage page keys; the page ignores them while typing or in a popup.
+  { key: "t", command: "usage.tokens", when: "usagePageOpen" },
+  { key: "c", command: "usage.cost", when: "usagePageOpen" },
+  { key: "r", command: "usage.turns", when: "usagePageOpen" },
+  { key: "l", command: "usage.limits", when: "usagePageOpen" },
+  { key: "p", command: "usage.pricing", when: "usagePageOpen" },
+  { key: "1", command: "usage.period.day", when: "usagePageOpen" },
+  { key: "2", command: "usage.period.week", when: "usagePageOpen" },
+  { key: "3", command: "usage.period.month", when: "usagePageOpen" },
+  { key: "4", command: "usage.period.quarter", when: "usagePageOpen" },
   { key: "mod+enter", command: "chat.newBackground", when: "newThreadComposer && !dialogFocus" },
+  ...UPSTREAM_KEYBINDING_COMMANDS.map((command, index) => ({
+    key: UPSTREAM_DEFAULT_KEYS[index]!,
+    command,
+    when: UPSTREAM_LIST_WHEN,
+  })),
 ];
 
 export const OBSOLETE_DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [

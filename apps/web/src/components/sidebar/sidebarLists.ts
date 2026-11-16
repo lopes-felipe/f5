@@ -1,10 +1,10 @@
 import {
-  type CodeReviewWorkflow,
+  type CodeReviewWorkflowSummary as CodeReviewWorkflow,
   type CodeReviewWorkflowId,
   type GitStatusResult,
-  type InvestigationWorkflow,
+  type InvestigationWorkflowSummary as InvestigationWorkflow,
   type InvestigationWorkflowId,
-  type PlanningWorkflow,
+  type PlanningWorkflowSummary as PlanningWorkflow,
   type PlanningWorkflowId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -20,8 +20,14 @@ import {
   partitionThreadsByArchive,
   sortThreadsByActivity,
 } from "../../lib/threadOrdering";
+import {
+  summarizeThreadPullRequestState,
+  threadPullRequestStateColorClass,
+  threadPullRequestTooltipLines,
+  type ThreadPullRequestItem,
+} from "../../lib/threadPullRequests";
 import { workflowDisplayType } from "../../lib/workflowType";
-import type { Project, Thread } from "../../types";
+import type { Project, Thread, ThreadListItem } from "../../types";
 import { orderActiveSidebarThreads, projectSnoozedThreads } from "../Sidebar.pinSnooze.logic";
 import { deriveCodeReviewTimelinePhases } from "../workflow/codeReviewWorkflowSidebarTimeline";
 import { threadIdsForCodeReviewWorkflow } from "../workflow/codeReviewWorkflowUtils";
@@ -29,11 +35,17 @@ import { deriveInvestigationTimelinePhases } from "../workflow/investigationWork
 import { threadIdsForInvestigationWorkflow } from "../workflow/investigationWorkflowUtils";
 import { deriveTimelinePhases } from "../workflow/workflowSidebarTimeline";
 import {
+  currentStepFromPhases,
   overallStateFromPhases,
+  phaseSummariesFromPhases,
   threadLabelsFromPhases,
+  threadOrderFromPhases,
+  type WorkflowCurrentStep,
   type WorkflowOverallState,
+  type WorkflowPhaseSummary,
 } from "../workflow/workflowTimelineTypes";
 import { threadIdsForWorkflow } from "../workflow/workflowUtils";
+import { workflowActivityAt } from "./sidebarWorkflowGroups";
 
 export interface TerminalStatusIndicator {
   label: "Terminal process running";
@@ -42,10 +54,16 @@ export interface TerminalStatusIndicator {
 }
 
 export interface PrStatusIndicator {
+  /** The most actionable state across `items`: any open, else merged, else closed. */
+  state: "open" | "closed" | "merged";
   label: "PR open" | "PR closed" | "PR merged";
   colorClass: string;
   tooltip: string;
+  /** The top PR (open first, then newest). */
   url: string;
+  number: number;
+  /** Every PR of the thread, top first; never empty. */
+  items: ReadonlyArray<ThreadPullRequestItem>;
 }
 
 export type ThreadPr = GitStatusResult["pr"];
@@ -74,7 +92,7 @@ export type ArchivedSidebarItem =
       key: string;
       sortAt: string;
       createdAt: string;
-      thread: Thread;
+      thread: ThreadListItem;
     }
   | {
       kind: "workflow";
@@ -93,14 +111,22 @@ export interface SidebarWorkflowMeta {
   /** Role label per thread ("Branch A", "Merge"...). */
   threadLabels: ReadonlyMap<ThreadId, string>;
   overallState: WorkflowOverallState;
+  /** Non-skipped phases, for the row's phase strip. */
+  phases: readonly WorkflowPhaseSummary[];
+  /** The step a collapsed row names on its second line. */
+  currentStep: WorkflowCurrentStep | null;
+  /** Thread ids in pipeline order (first appearance in the phases' steps). */
+  threadOrder: readonly ThreadId[];
 }
 
-export interface ProjectSidebarLists {
+export interface ProjectSidebarLists<T extends ThreadListItem = ThreadListItem> {
   projectWorkflows: SidebarWorkflowEntry[];
-  workflowThreadsByKey: Map<string, Thread[]>;
+  workflowThreadsByKey: Map<string, T[]>;
   workflowMetaByKey: Map<string, SidebarWorkflowMeta>;
-  activeThreads: Thread[];
-  snoozedThreads: Thread[];
+  activeThreads: Array<T | Thread>;
+  scheduledThreads: T[];
+  snoozedThreads: T[];
+  settledThreads: T[];
   archivedSidebarItems: ArchivedSidebarItem[];
   projectDraftThreadId: ThreadId | null;
 }
@@ -109,22 +135,25 @@ export interface SidebarHoverFreezeSnapshot {
   workflowKeysByProjectId: Readonly<Record<string, readonly string[]>>;
   workflowThreadIdsByWorkflowKey: Readonly<Record<string, readonly ThreadId[]>>;
   activeThreadIdsByProjectId: Readonly<Record<string, readonly ThreadId[]>>;
+  scheduledThreadIdsByProjectId: Readonly<Record<string, readonly ThreadId[]>>;
   archivedItemKeysByProjectId: Readonly<Record<string, readonly string[]>>;
   attentionThreadIds: readonly ThreadId[];
+  /** The Recent view's item keys, in display order across its buckets. */
+  recentItemKeys: readonly string[];
 }
 
 export function workflowEntryKey(entry: SidebarWorkflowEntry): string {
   return `${entry.type}:${entry.workflow.id}`;
 }
 
-export function buildProjectSidebarLists(input: {
+export function buildProjectSidebarLists<T extends ThreadListItem>(input: {
   project: Project;
-  threads: ReadonlyArray<Thread>;
+  threads: ReadonlyArray<T>;
   planningWorkflows: ReadonlyArray<PlanningWorkflow>;
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>;
   investigationWorkflows: ReadonlyArray<InvestigationWorkflow>;
   draftThread: SidebarProjectDraftThread | null;
-}): ProjectSidebarLists {
+}): ProjectSidebarLists<T> {
   const {
     project,
     threads,
@@ -154,7 +183,7 @@ export function buildProjectSidebarLists(input: {
     activeWorkflows: activeProjectInvestigationWorkflows,
     archivedWorkflows: archivedProjectInvestigationWorkflows,
   } = partitionWorkflowsByArchive(allProjectInvestigationWorkflows);
-  const projectWorkflows = sortWorkflowEntriesByActivity([
+  const unsortedProjectWorkflows: SidebarWorkflowEntry[] = [
     ...activeProjectPlanningWorkflows.map((workflow) => ({
       workflow,
       type: "planning" as const,
@@ -167,7 +196,7 @@ export function buildProjectSidebarLists(input: {
       workflow,
       type: "investigation" as const,
     })),
-  ]);
+  ];
   const archivedProjectWorkflows = sortWorkflowEntriesByActivity([
     ...archivedProjectPlanningWorkflows.map((workflow) => ({
       workflow,
@@ -197,10 +226,18 @@ export function buildProjectSidebarLists(input: {
     }
   }
 
-  const workflowThreadsByKey = new Map(
-    projectWorkflows.map((entry) => [
+  const workflowMetaByKey = new Map(
+    unsortedProjectWorkflows.map((entry) => [
       workflowEntryKey(entry),
-      sortThreadsByActivity(
+      deriveSidebarWorkflowMeta(entry),
+    ]),
+  );
+
+  const workflowThreadsByKey = new Map(
+    unsortedProjectWorkflows.map((entry) => [
+      workflowEntryKey(entry),
+      orderThreadsByPipeline(
+        workflowMetaByKey.get(workflowEntryKey(entry))?.threadOrder ?? [],
         threads.filter((thread) => {
           if (thread.projectId !== project.id) {
             return false;
@@ -219,14 +256,38 @@ export function buildProjectSidebarLists(input: {
       ),
     ]),
   );
-
-  const workflowMetaByKey = new Map(
-    projectWorkflows.map((entry) => [workflowEntryKey(entry), deriveSidebarWorkflowMeta(entry)]),
+  const projectWorkflows = sortWorkflowEntriesByActivity(unsortedProjectWorkflows, (entry) =>
+    workflowActivityAt({
+      updatedAt: entry.workflow.updatedAt,
+      threads: workflowThreadsByKey.get(workflowEntryKey(entry)) ?? [],
+      finished: workflowMetaByKey.get(workflowEntryKey(entry))?.overallState === "completed",
+    }),
   );
 
   const persistedProjectThreads = threads.filter(
-    (thread) => thread.projectId === project.id && !workflowThreadIds.has(thread.id),
+    (thread) =>
+      thread.projectId === project.id &&
+      !workflowThreadIds.has(thread.id) &&
+      !thread.scheduledOrigin,
   );
+  const scheduledByActivity = sortThreadsByActivity(
+    threads.filter(
+      (thread) =>
+        thread.projectId === project.id &&
+        !workflowThreadIds.has(thread.id) &&
+        thread.scheduledOrigin,
+    ),
+  );
+  const scheduledThreads = [
+    ...orderActiveSidebarThreads({
+      threads: scheduledByActivity.filter((thread) => thread.archivedAt === null),
+      draftThreadId: null,
+    }),
+    ...scheduledByActivity.filter(
+      (thread) => thread.archivedAt === null && isSnoozedThread(thread),
+    ),
+    ...scheduledByActivity.filter((thread) => thread.archivedAt !== null),
+  ];
   const projectThreads = getProjectThreadsWithDraft({
     projectId: project.id,
     projectThreads: persistedProjectThreads,
@@ -263,17 +324,31 @@ export function buildProjectSidebarLists(input: {
       ? draftThread.threadId
       : null;
   const orderedActiveThreads = orderActiveSidebarThreads({
-    threads: activeThreads,
+    threads: activeThreads.filter((thread) => !thread.settledAt),
     draftThreadId: projectDraftThreadId,
   });
-  const snoozedThreads = projectSnoozedThreads(threads, project.id);
+  const snoozedThreads = projectSnoozedThreads(
+    threads.filter((thread) => !thread.settledAt && !thread.scheduledOrigin),
+    project.id,
+  );
+  const settledThreads = sortThreadsByActivity(
+    persistedProjectThreads.filter(
+      (thread) =>
+        thread.archivedAt === null &&
+        !!thread.settledAt &&
+        !thread.scheduledOrigin &&
+        !thread.scheduledOrigin,
+    ),
+  );
 
   return {
     projectWorkflows,
     workflowThreadsByKey,
     workflowMetaByKey,
     activeThreads: orderedActiveThreads,
+    scheduledThreads,
     snoozedThreads,
+    settledThreads,
     archivedSidebarItems,
     projectDraftThreadId,
   };
@@ -289,15 +364,40 @@ export function deriveSidebarWorkflowMeta(entry: SidebarWorkflowEntry): SidebarW
   return {
     threadLabels: threadLabelsFromPhases(phases),
     overallState: overallStateFromPhases(phases),
+    phases: phaseSummariesFromPhases(phases),
+    currentStep: currentStepFromPhases(phases),
+    threadOrder: threadOrderFromPhases(phases),
   };
 }
 
+/**
+ * A workflow's threads in pipeline order: those its phases name, in the order they first
+ * appear, then any others by recent activity.
+ */
+export function orderThreadsByPipeline<T extends ThreadListItem>(
+  threadOrder: readonly ThreadId[],
+  threads: readonly T[],
+): T[] {
+  const indexById = new Map(threadOrder.map((threadId, index) => [threadId, index] as const));
+  const ordered = threads
+    .filter((thread) => indexById.has(thread.id))
+    .toSorted((left, right) => indexById.get(left.id)! - indexById.get(right.id)!);
+  const unmatched = sortThreadsByActivity(threads.filter((thread) => !indexById.has(thread.id)));
+  return [...ordered, ...unmatched];
+}
+
+/**
+ * Newest activity first. Active workflows pass `activityOf` (see `workflowActivityAt`), since
+ * `updatedAt` moves on bookkeeping writes; archived ones, listed without threads, use it.
+ */
 function sortWorkflowEntriesByActivity(
   workflows: ReadonlyArray<SidebarWorkflowEntry>,
+  activityOf: (entry: SidebarWorkflowEntry) => string = (entry) => entry.workflow.updatedAt,
 ): SidebarWorkflowEntry[] {
+  const activityAt = new Map(workflows.map((entry) => [entry, activityOf(entry)]));
   return workflows.toSorted(
     (left, right) =>
-      right.workflow.updatedAt.localeCompare(left.workflow.updatedAt) ||
+      activityAt.get(right)!.localeCompare(activityAt.get(left)!) ||
       right.workflow.id.localeCompare(left.workflow.id),
   );
 }
@@ -370,34 +470,44 @@ export function terminalStatusFromRunningIds(
   };
 }
 
-export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
-  if (!pr) return null;
+const PR_STATE_LABEL = {
+  open: "PR open",
+  merged: "PR merged",
+  closed: "PR closed",
+} as const satisfies Record<PrStatusIndicator["state"], PrStatusIndicator["label"]>;
 
-  if (pr.state === "open") {
-    return {
-      label: "PR open",
-      colorClass: "text-success-foreground",
-      tooltip: `#${pr.number} PR open: ${pr.title}`,
-      url: pr.url,
-    };
+/** One indicator for all of a thread's PRs, colored by the most actionable state. */
+export function prStatusIndicator(
+  items: ReadonlyArray<ThreadPullRequestItem>,
+): PrStatusIndicator | null {
+  const top = items[0];
+  const state = summarizeThreadPullRequestState(items);
+  if (!top || !state) return null;
+  const label = PR_STATE_LABEL[state];
+  return {
+    state,
+    label,
+    colorClass: threadPullRequestStateColorClass(state),
+    tooltip:
+      items.length === 1
+        ? `#${top.number} ${label}: ${top.title}`
+        : threadPullRequestTooltipLines(items).join("\n"),
+    url: top.url,
+    number: top.number,
+    items,
+  };
+}
+
+/** A finished workflow's PR status tooltip: "PR #462 open", "Merged #462" or "PR #462 closed". */
+export function workflowPrLabel(pr: PrStatusIndicator): string {
+  switch (pr.state) {
+    case "open":
+      return `PR #${pr.number} open`;
+    case "merged":
+      return `Merged #${pr.number}`;
+    case "closed":
+      return `PR #${pr.number} closed`;
   }
-  if (pr.state === "closed") {
-    return {
-      label: "PR closed",
-      colorClass: "text-muted-foreground",
-      tooltip: `#${pr.number} PR closed: ${pr.title}`,
-      url: pr.url,
-    };
-  }
-  if (pr.state === "merged") {
-    return {
-      label: "PR merged",
-      colorClass: "text-attention-foreground",
-      tooltip: `#${pr.number} PR merged: ${pr.title}`,
-      url: pr.url,
-    };
-  }
-  return null;
 }
 
 const PINNED_THREAD_SORTABLE_PREFIX = "pinned-thread:";

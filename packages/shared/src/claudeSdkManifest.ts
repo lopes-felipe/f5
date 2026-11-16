@@ -1,5 +1,5 @@
 /** Pinned release certification; never float with the installed package. */
-export const CLAUDE_SDK_BASELINE_VERSION = "0.3.295";
+export const CLAUDE_SDK_BASELINE_VERSION = "0.3.317";
 export type ClaudeSdkDisposition = "canonical" | "diagnostics-only" | "ignored";
 
 export const CLAUDE_SDK_MESSAGE_DISPOSITIONS = {
@@ -34,6 +34,7 @@ export const CLAUDE_SDK_MESSAGE_DISPOSITIONS = {
   "system/permission_denied": "diagnostics-only",
   "system/plugin_install": "ignored",
   "system/session_state_changed": "canonical",
+  "system/session_writes_lost": "canonical", // Release 5: transcript/disk write loss.
   "system/status": "canonical",
   "system/task_notification": "canonical",
   "system/task_progress": "canonical",

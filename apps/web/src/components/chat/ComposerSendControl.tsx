@@ -1,3 +1,4 @@
+import { useWsConnectionState } from "~/wsConnectionState";
 import { ArrowUpIcon, ChevronDownIcon, LoaderCircleIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
@@ -10,6 +11,7 @@ type SendIntent = "auto" | "queue-tail" | "queue-head" | "send-now";
 
 export function ComposerSendControl({
   running,
+  unavailable = false,
   hasSendableContent,
   dispatchBlocked,
   connecting,
@@ -25,6 +27,7 @@ export function ComposerSendControl({
   onInterrupt,
 }: {
   readonly sendShortcutLabel?: string | undefined;
+  readonly unavailable?: boolean;
   readonly running: boolean;
   readonly hasSendableContent: boolean;
   readonly dispatchBlocked: boolean;
@@ -40,7 +43,8 @@ export function ComposerSendControl({
   readonly onInterrupt: () => void;
 }) {
   const full = itemCount >= maxItems;
-  const disabled = !hasSendableContent || dispatchBlocked || connecting || busy || full;
+  const disabled =
+    unavailable || !hasSendableContent || dispatchBlocked || connecting || busy || full;
   const likelyQueued = running || runnableQueueCount > 0;
   const textLabel = full
     ? "Queue full"
@@ -110,7 +114,9 @@ export function ComposerSendControl({
                   variant={running ? "outline" : "default"}
                   className="rounded-l-none rounded-r-full px-2"
                   aria-label="Queue options"
-                  disabled={!hasSendableContent || dispatchBlocked || connecting || busy}
+                  disabled={
+                    unavailable || !hasSendableContent || dispatchBlocked || connecting || busy
+                  }
                 />
               }
             >
@@ -128,17 +134,24 @@ export function ComposerSendControl({
           </Menu>
         ) : null}
       </div>
-      {running ? (
-        <button
-          type="button"
-          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive text-white outline-none transition-colors duration-(--duration-fast) hover:bg-destructive/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
-          onClick={onInterrupt}
-          aria-label="Stop generation"
-          title="Stop generation"
-        >
-          <span className="size-2.5 rounded-xs bg-current" />
-        </button>
-      ) : null}
+      {running ? <ComposerStopButton onInterrupt={onInterrupt} /> : null}
     </div>
+  );
+}
+
+/** Interrupts the running turn; disabled while the server connection is down. */
+export function ComposerStopButton({ onInterrupt }: { readonly onInterrupt: () => void }) {
+  const connection = useWsConnectionState();
+  return (
+    <button
+      type="button"
+      className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive text-white outline-none transition-colors duration-(--duration-fast) hover:bg-destructive/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+      disabled={connection.phase !== "connected"}
+      onClick={onInterrupt}
+      aria-label="Stop generation"
+      title="Stop generation"
+    >
+      <span className="size-2.5 rounded-xs bg-current" />
+    </button>
   );
 }

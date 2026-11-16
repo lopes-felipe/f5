@@ -1,15 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { useAppSettings } from "../../appSettings";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import { prHubOverviewQueryOptions } from "../../lib/prHubReactQuery";
-import { isAppWindowFocused, useNotificationPermissionState } from "../../notifications";
-import { formatPrNotificationTitle, showPrAttentionNotification } from "../../prHubNotifications";
+import { buildPrAttentionNotification } from "../../prHubNotifications";
 import { ensureNativeApi } from "../../nativeApi";
-import { onPrHubChanged, onServerConfigUpdated } from "../../wsNativeApi";
-import { toastManager } from "../ui/toast";
+import { notify } from "../../notificationCenter/notify";
+import {
+  createPrHubChangeSequence,
+  EMPTY_PR_HUB_CHANGE_BATCH,
+  isPrHubQueryStale,
+  mergePrHubChange,
+} from "../../lib/prHubInvalidation";
+import { onPrHubChanged, onServerConfigUpdated, onServerWelcome } from "../../wsNativeApi";
+import { prQueueSearchOpening } from "./prQueueSearch";
 
 export function PrAttentionNotificationControllerContent({
   navigateToPrHub,
@@ -26,23 +31,11 @@ export function PrAttentionNotificationControllerContent({
     const timer = window.setInterval(() => setLeaseTick((tick) => tick + 1), 30_000);
     return () => window.clearInterval(timer);
   }, []);
-  const { settings } = useAppSettings();
-  const permission = useNotificationPermissionState();
-  const [appFocused, setAppFocused] = useState(() => isAppWindowFocused());
-  const delivery = useRef({
-    appFocused,
-    permission,
-    enabled: settings.enablePrAttentionNotifications,
-    navigateToPrHub,
-  });
+  // `notify` decides between toast, OS notification and inbox; only navigation lives here.
+  const delivery = useRef({ navigateToPrHub });
   useEffect(() => {
-    delivery.current = {
-      appFocused,
-      permission,
-      enabled: settings.enablePrAttentionNotifications,
-      navigateToPrHub,
-    };
-  }, [appFocused, permission, settings.enablePrAttentionNotifications, navigateToPrHub]);
+    delivery.current = { navigateToPrHub };
+  }, [navigateToPrHub]);
   const mounted = useRef(false);
   const claimAgain = useRef(false);
   useEffect(() => {
@@ -54,45 +47,42 @@ export function PrAttentionNotificationControllerContent({
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let batch = EMPTY_PR_HUB_CHANGE_BATCH;
+    const sequence = createPrHubChangeSequence();
     const unsubscribeSettings = onServerConfigUpdated(() => {
       void queryClient.invalidateQueries({ queryKey: ["prHub"] });
     });
-    const unsubscribe = onPrHubChanged((event) => {
+    // Events sent while disconnected are gone; a new connection re-reads everything.
+    const unsubscribeWelcome = onServerWelcome(() => {
+      sequence.reset();
+      void queryClient.invalidateQueries({ queryKey: ["prHub"] });
+    });
+    const unsubscribe = onPrHubChanged((received) => {
+      // An event dropped on the way took its changed keys with it; re-read everything then.
+      const event = sequence.track(received);
       queryClient.removeQueries({
         predicate: (query) =>
           query.queryKey[0] === "prHub" && query.queryKey[2] !== event.accountGeneration,
       });
+      batch = mergePrHubChange(batch, event);
       if (timer) return;
       timer = setTimeout(() => {
         timer = undefined;
-        // Invalidate active reads once per burst. This also handles skipped revisions
-        // when the transport coalesces events or a subscriber reconnects.
-        void queryClient.invalidateQueries({ queryKey: ["prHub"] });
+        const pending = batch;
+        batch = EMPTY_PR_HUB_CHANGE_BATCH;
+        // Once per burst: the collection always, a single PR's reads only if it changed.
+        void queryClient.invalidateQueries({
+          predicate: (query) => isPrHubQueryStale(query.queryKey, pending),
+        });
       }, 250);
     });
     return () => {
       unsubscribe();
       unsubscribeSettings();
+      unsubscribeWelcome();
       if (timer) clearTimeout(timer);
     };
   }, [queryClient]);
-
-  useEffect(() => {
-    const syncFocusState = () => {
-      setAppFocused(isAppWindowFocused());
-    };
-
-    syncFocusState();
-    window.addEventListener("focus", syncFocusState);
-    window.addEventListener("blur", syncFocusState);
-    document.addEventListener("visibilitychange", syncFocusState);
-
-    return () => {
-      window.removeEventListener("focus", syncFocusState);
-      window.removeEventListener("blur", syncFocusState);
-      document.removeEventListener("visibilitychange", syncFocusState);
-    };
-  }, []);
 
   useEffect(() => {
     if (!accountGeneration || accountGeneration !== getPrHubAccountGeneration()) return;
@@ -111,39 +101,7 @@ export function PrAttentionNotificationControllerContent({
           batch.pullRequests.length === 0
         )
           return;
-        const pr = batch.pullRequests[0]!;
-        const grouped = batch.pullRequests.length > 1;
-        toastManager.add({
-          type: "warning",
-          title: grouped
-            ? `${batch.pullRequests.length} pull requests need your attention`
-            : formatPrNotificationTitle(pr),
-          description: grouped
-            ? batch.pullRequests
-                .map((item) => `${item.repository.nameWithOwner}#${item.number}`)
-                .join(", ")
-            : pr.nextAction,
-          actionProps: {
-            children: "View",
-            onClick: () => {
-              void delivery.current.navigateToPrHub(grouped ? undefined : pr.key);
-            },
-          },
-        });
-        if (
-          delivery.current.enabled &&
-          delivery.current.permission === "granted" &&
-          !delivery.current.appFocused &&
-          typeof window.Notification !== "undefined"
-        ) {
-          showPrAttentionNotification({
-            NotificationConstructor: window.Notification,
-            pullRequest: pr,
-            batch: { id: batch.batchId, count: batch.pullRequests.length },
-            focusWindow: () => window.focus(),
-            navigateToPrHub: (key) => delivery.current.navigateToPrHub(key),
-          });
-        }
+        notify(buildPrAttentionNotification(batch, delivery.current.navigateToPrHub));
         await api.acknowledgeNotifications({ accountGeneration, clientId, batchId: batch.batchId });
       })
       .catch(() => {
@@ -164,12 +122,13 @@ export function PrAttentionNotificationControllerContent({
 
 export default function PrAttentionNotificationController() {
   const navigate = useNavigate();
+  const router = useRouter();
   return (
     <PrAttentionNotificationControllerContent
       navigateToPrHub={(focusedPrKey) => {
         void navigate({
           to: "/pull-requests",
-          search: focusedPrKey ? { pr: focusedPrKey } : {},
+          search: prQueueSearchOpening(focusedPrKey, router.state.location),
         });
       }}
     />

@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   type OrchestrationMessage,
 } from "@t3tools/contracts";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 
 import { TextGenerationError } from "./git/Errors.ts";
 import {
@@ -18,9 +19,11 @@ import {
   resolveBestEffortGeneratedTitle,
   sanitizeThreadTitle,
   stripWrappingQuotes,
+  ThreadTitleRetryDelay,
   THREAD_TITLE_MAX_CHARS,
   THREAD_TITLE_REGENERATION_MAX_CONTEXT_CHARS,
   trimToMaxChars,
+  userMessageTitleText,
 } from "./threadTitle.ts";
 
 describe("trimToMaxChars", () => {
@@ -122,6 +125,21 @@ describe("formatThreadTitleRegenerationContext", () => {
     expect(context.text).toContain("request 7");
   });
 
+  it("names image-only messages by their images, not the prompt sent in their place", () => {
+    const context = formatThreadTitleRegenerationContext([
+      {
+        ...userMessage(1, IMAGE_ONLY_BOOTSTRAP_PROMPT),
+        attachments: [
+          { type: "image", id: "shot", name: "shot.png", mimeType: "image/png", sizeBytes: 1 },
+        ],
+      },
+    ]);
+    expect(context.text).toBe("First user message:\n[Image attachment without text]");
+    expect(context.attachments.map((attachment) => attachment.id)).toEqual(["shot"]);
+    expect(userMessageTitleText(` ${IMAGE_ONLY_BOOTSTRAP_PROMPT}\n`)).toBe("");
+    expect(userMessageTitleText(" Fix the login form ")).toBe("Fix the login form");
+  });
+
   it("preserves the beginning and latest context within the fixed budget", () => {
     const context = formatThreadTitleRegenerationContext([
       userMessage(1, `first-${"a".repeat(8_000)}`),
@@ -183,6 +201,7 @@ describe("resolveBestEffortGeneratedTitle", () => {
       resolveBestEffortGeneratedTitle({
         cwd: "/tmp/project",
         titleSourceText: "Plan title generation routing",
+        linkedContext: "team/repo#42: Fix native transport",
         attachments: [],
         titleGenerationModel: "ignored/title-model",
         titleGenerationModelSelection,
@@ -203,10 +222,39 @@ describe("resolveBestEffortGeneratedTitle", () => {
       expect.objectContaining({
         cwd: "/tmp/project",
         message: "Plan title generation routing",
+        linkedContext: "team/repo#42: Fix native transport",
         model: "custom/title-model",
         modelSelection: titleGenerationModelSelection,
       }),
     );
+  });
+
+  it("retries a transient title failure before falling back", async () => {
+    const generateThreadTitle = vi
+      .fn()
+      .mockImplementationOnce(() => Effect.fail(new Error("Claude CLI request timed out.")))
+      .mockImplementationOnce(() => Effect.fail(new Error("Claude CLI request timed out.")))
+      .mockImplementationOnce(() => Effect.succeed({ title: "Generated after retry" }));
+
+    const title = await Effect.runPromise(
+      resolveBestEffortGeneratedTitle({
+        cwd: "/tmp/project",
+        titleSourceText: "Plan the workflow",
+        attachments: [],
+        defaultTitle: "New thread",
+        textGeneration: {
+          generateCommitMessage: () => Effect.die("unsupported"),
+          generatePrContent: () => Effect.die("unsupported"),
+          generateBranchName: () => Effect.die("unsupported"),
+          generateThreadTitle,
+          generateStructuredJson: () => Effect.die("unsupported"),
+        },
+        logPrefix: "threadTitle test",
+      }).pipe(Effect.provideService(ThreadTitleRetryDelay, "1 millis")),
+    );
+
+    expect(title).toBe("Generated after retry");
+    expect(generateThreadTitle).toHaveBeenCalledTimes(3);
   });
 
   it.each(["gpt-5.3-codex", DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex])(

@@ -2,6 +2,7 @@ import type {
   CommandId,
   NextTurnQueueSnapshot,
   NextTurnQueueSummary,
+  RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
 import { create } from "zustand";
@@ -13,6 +14,14 @@ export interface OptimisticQueuedTurn {
   readonly createdAtMs: number;
 }
 
+/** An unsaved edit to a queued turn. */
+export interface QueueEditDraft {
+  readonly text: string;
+  readonly model: string;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: "default" | "plan";
+}
+
 export interface NextTurnQueueThreadState {
   readonly snapshot: NextTurnQueueSnapshot | null;
   readonly pendingOrder: ReadonlyArray<CommandId> | null;
@@ -20,6 +29,11 @@ export interface NextTurnQueueThreadState {
   readonly optimistic: ReadonlyArray<OptimisticQueuedTurn>;
   readonly hydrated: boolean;
   readonly syncError: string | null;
+  /**
+   * Kept here rather than in the row, so an edit survives the queue panel
+   * remounting (a status-chip popover closing, or the panel moving inline).
+   */
+  readonly editDrafts: Readonly<Partial<Record<CommandId, QueueEditDraft>>>;
 }
 
 export const EMPTY_QUEUE_THREAD_STATE: NextTurnQueueThreadState = Object.freeze({
@@ -29,6 +43,7 @@ export const EMPTY_QUEUE_THREAD_STATE: NextTurnQueueThreadState = Object.freeze(
   optimistic: Object.freeze([]),
   hydrated: false,
   syncError: null,
+  editDrafts: Object.freeze({}),
 });
 
 interface NextTurnQueueStoreState {
@@ -40,6 +55,11 @@ interface NextTurnQueueStoreState {
   readonly setHydrationError: (threadId: ThreadId, message: string | null) => void;
   readonly setPendingOrder: (threadId: ThreadId, order: ReadonlyArray<CommandId> | null) => void;
   readonly setItemBusy: (threadId: ThreadId, itemId: CommandId, busy: boolean) => void;
+  readonly setEditDraft: (
+    threadId: ThreadId,
+    itemId: CommandId,
+    draft: QueueEditDraft | null,
+  ) => void;
   readonly addOptimistic: (optimistic: OptimisticQueuedTurn) => void;
   readonly removeOptimistic: (threadId: ThreadId, submissionId: CommandId) => void;
   readonly expireStaleOptimistic: (nowMs?: number) => void;
@@ -50,6 +70,17 @@ function stateFor(
   threadId: ThreadId,
 ): NextTurnQueueThreadState {
   return byThreadId[threadId] ?? EMPTY_QUEUE_THREAD_STATE;
+}
+
+function pruneEditDrafts(
+  drafts: NextTurnQueueThreadState["editDrafts"],
+  liveIds: ReadonlySet<CommandId>,
+): NextTurnQueueThreadState["editDrafts"] {
+  const ids = Object.keys(drafts) as CommandId[];
+  if (ids.every((itemId) => liveIds.has(itemId))) return drafts;
+  return Object.fromEntries(
+    ids.filter((itemId) => liveIds.has(itemId)).map((itemId) => [itemId, drafts[itemId]]),
+  ) as NextTurnQueueThreadState["editDrafts"];
 }
 
 export const useNextTurnQueueStore = create<NextTurnQueueStoreState>((set) => ({
@@ -88,6 +119,7 @@ export const useNextTurnQueueStore = create<NextTurnQueueStoreState>((set) => ({
             optimistic: current.optimistic.filter((item) => !submissionIds.has(item.submissionId)),
             hydrated: true,
             syncError: null,
+            editDrafts: pruneEditDrafts(current.editDrafts, liveIds),
           },
         },
       };
@@ -138,6 +170,17 @@ export const useNextTurnQueueStore = create<NextTurnQueueStoreState>((set) => ({
           ...state.byThreadId,
           [threadId]: { ...current, busyItemIds: [...busyIds] },
         },
+      };
+    }),
+  setEditDraft: (threadId, itemId, draft) =>
+    set((state) => {
+      const current = stateFor(state.byThreadId, threadId);
+      if (draft === null && current.editDrafts[itemId] === undefined) return state;
+      const editDrafts = { ...current.editDrafts };
+      if (draft === null) delete editDrafts[itemId];
+      else editDrafts[itemId] = draft;
+      return {
+        byThreadId: { ...state.byThreadId, [threadId]: { ...current, editDrafts } },
       };
     }),
   addOptimistic: (optimistic) =>

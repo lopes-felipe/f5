@@ -1,0 +1,33 @@
+{
+  "reportVersion": 1,
+  "scope": "hosted-software-checks-only",
+  "repositoryCommit": "edee9ef4cacf6394fce26f2a7d26a8b705cb0931",
+  "runUrl": "https://github.com/lopes-felipe/f5/actions/runs/38449572024",
+  "state": "passed",
+  "jobs": [
+    {
+      "name": "Quality and full test suite",
+      "state": "passed",
+      "completedAt": "2026-10-13T18:57:09Z"
+    },
+    {
+      "name": "macOS profile storage and lifecycle checks",
+      "state": "passed",
+      "completedAt": "2026-10-13T18:50:04Z"
+    },
+    {
+      "name": "Windows build and integration suite",
+      "state": "passed",
+      "completedAt": "2026-10-13T19:07:31Z"
+    }
+  ],
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "These checks validate software at the recorded commit, including Windows helper publication refusal while an old file is open and successful publication after closure",
+    "No interactive Windows desktop, genuine consent, capture isolation or stop latency evidence",
+    "No signed installed candidate, notarization or macOS TCC attribution evidence",
+    "CodeRabbit skipped the large review; no focused security review is credited",
+    "Results do not transfer to later executable changes"
+  ]
+}

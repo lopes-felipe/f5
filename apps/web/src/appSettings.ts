@@ -1,6 +1,8 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { Effect, Option, Schema, SchemaTransformation } from "effect";
 import {
+  CLAUDE_SUBAGENT_EFFORT_OPTIONS,
+  type ClaudeSubagentEffort,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   PROJECT_LIST_ENTRIES_DEFAULT_LIMIT,
   PROJECT_LIST_ENTRIES_MAX_LIMIT,
@@ -10,8 +12,11 @@ import {
   type ProviderKind,
 } from "@t3tools/contracts";
 import { getDefaultModel, getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
+import { replaceEqualDeep } from "@tanstack/react-query";
 import {
+  dispatchLocalStorageChange,
   readLocalStorageRawItem,
+  setLocalStorageItem,
   subscribeLocalStorageKey,
   useLocalStorage,
 } from "./hooks/useLocalStorage";
@@ -33,6 +38,24 @@ import {
   normalizeFontFamilyPreference,
 } from "./appearanceSettings";
 import { DEFAULT_THEME_ID } from "./themePalette";
+import {
+  DEFAULT_NOTIFICATION_PREFERENCES,
+  deriveNotificationPreferences,
+  normalizeNotificationPreferences,
+  NotificationPreferencesSchema,
+  TOAST_POSITIONS,
+} from "./notificationCenter/preferences";
+import {
+  DEFAULT_SNOOZE_PRESETS,
+  MAX_SNOOZE_PRESETS,
+  normalizeSnoozePresets,
+  SnoozePresetSettingSchema,
+} from "./lib/snoozePresets";
+import {
+  MAX_PR_SAVED_VIEWS,
+  normalizePrSavedViews,
+  PrSavedViewSettingSchema,
+} from "./lib/prSavedViews";
 
 export const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const CURRENT_THEME_PALETTE_VERSION = 2 as const;
@@ -96,6 +119,10 @@ const DEFAULT_RUNTIME_WARNING_VISIBILITY: RuntimeWarningVisibility = "summarized
 export const SIDEBAR_THREAD_PREVIEW_COUNT_MIN = 1;
 export const SIDEBAR_THREAD_PREVIEW_COUNT_MAX = 15;
 export const SIDEBAR_THREAD_PREVIEW_COUNT_DEFAULT = 6;
+/** Days without activity before a sidebar thread folds into "N older"; 0 turns folding off. */
+export const SIDEBAR_OLDER_THREAD_DAYS_OPTIONS = [0, 3, 7, 14, 30] as const;
+export type SidebarOlderThreadDays = (typeof SIDEBAR_OLDER_THREAD_DAYS_OPTIONS)[number];
+export const SIDEBAR_OLDER_THREAD_DAYS_DEFAULT: SidebarOlderThreadDays = 7;
 export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN = 5_000;
 export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT = PROJECT_LIST_ENTRIES_DEFAULT_LIMIT;
 export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX = PROJECT_LIST_ENTRIES_MAX_LIMIT;
@@ -113,6 +140,9 @@ const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>
   opencode: new Set(getModelOptions("opencode").map((option) => option.slug)),
   grok: new Set(getModelOptions("grok").map((option) => option.slug)),
   antigravity: new Set(getModelOptions("antigravity").map((option) => option.slug)),
+  muse: new Set(getModelOptions("muse").map((option) => option.slug)),
+  acp: new Set(getModelOptions("acp").map((option) => option.slug)),
+  pi: new Set(getModelOptions("pi").map((option) => option.slug)),
 };
 
 type PersistedAppSettingsValue = Record<string, unknown> & {
@@ -143,8 +173,16 @@ const ClaudeProjectSettingsSchema = Schema.Struct({
   subagentModel: Schema.String.check(Schema.isMaxLength(MAX_CUSTOM_MODEL_LENGTH)).pipe(
     Schema.withConstructorDefault(() => Option.some(CLAUDE_SUBAGENT_MODEL_INHERIT)),
   ),
+  /** Absent keeps Claude's default (a sub-agent on another model uses that model's effort). */
+  subagentEffort: Schema.optionalKey(Schema.Literals(CLAUDE_SUBAGENT_EFFORT_OPTIONS)),
 });
 export type ClaudeProjectSettings = typeof ClaudeProjectSettingsSchema.Type;
+/** A sub-agent settings change; `subagentEffort: undefined` returns to Claude's default. */
+export interface ClaudeSubagentSettingsPatch {
+  readonly subagentsEnabled?: boolean;
+  readonly subagentModel?: string;
+  readonly subagentEffort?: ClaudeSubagentEffort | undefined;
+}
 
 const FavoriteModelSchema = Schema.Struct({
   providerKind: ProviderKindSchema,
@@ -252,6 +290,13 @@ function normalizeRuntimeWarningVisibility(value: unknown): RuntimeWarningVisibi
   return DEFAULT_RUNTIME_WARNING_VISIBILITY;
 }
 
+function normalizeSidebarOlderThreadDays(value: unknown): SidebarOlderThreadDays {
+  return (
+    SIDEBAR_OLDER_THREAD_DAYS_OPTIONS.find((option) => option === value) ??
+    SIDEBAR_OLDER_THREAD_DAYS_DEFAULT
+  );
+}
+
 function normalizeGitStatusAutoRefreshIntervalSeconds(value: unknown): number {
   if (typeof value === "boolean") {
     return value ? GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT : 0;
@@ -297,7 +342,14 @@ function normalizeOnboardingLiteStatus(value: unknown): OnboardingLiteStatus {
   return "eligible";
 }
 
+export const WINDOW_TITLE_DETAIL_OPTIONS = ["project", "thread"] as const;
+export type WindowTitleDetail = (typeof WINDOW_TITLE_DETAIL_OPTIONS)[number];
+
 export const AppSettingsSchema = Schema.Struct({
+  pullRequestLinksOpenInApp: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
+  ),
   linkOpenTarget: Schema.Literals(["system", "preview"]).pipe(
     Schema.withConstructorDefault(() => Option.some("system" as const)),
     Schema.withDecodingDefault(() => "system" as const),
@@ -328,13 +380,30 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(null)),
     Schema.withDecodingDefault(() => null),
   ),
-  usageTab: Schema.Literals(["activity", "limits"]).pipe(
+  usageTab: Schema.Literals(["activity", "limits", "pricing"]).pipe(
     Schema.withConstructorDefault(() => Option.some("activity" as const)),
     Schema.withDecodingDefault(() => "activity" as const),
+  ),
+  usageRange: Schema.Literals(["24h", "7d", "30d", "90d"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("7d" as const)),
+    Schema.withDecodingDefault(() => "7d" as const),
+  ),
+  // Stored as the hidden set so providers added later show by default.
+  usageHiddenProviders: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+    Schema.withDecodingDefault(() => []),
+  ),
+  sidebarUsagePinned: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
   ),
   composerCollapseOnScroll: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),
+  ),
+  autoFollowNewMessages: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
   ),
   composerRichTextEnabled: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
@@ -386,6 +455,13 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(false)),
   ),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
+  /** The choices every snooze menu offers, listed soonest first. */
+  snoozePresets: Schema.Array(SnoozePresetSettingSchema)
+    .check(Schema.isMaxLength(MAX_SNOOZE_PRESETS))
+    .pipe(
+      Schema.withConstructorDefault(() => Option.some(DEFAULT_SNOOZE_PRESETS)),
+      Schema.withDecodingDefault(() => DEFAULT_SNOOZE_PRESETS),
+    ),
   // Legacy persisted flag. The interval is the source of truth; normalizeAppSettings derives this.
   loadRemoteImagesInChat: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
@@ -401,6 +477,21 @@ export const AppSettingsSchema = Schema.Struct({
   ).pipe(
     Schema.withConstructorDefault(() => Option.some({})),
     Schema.withDecodingDefault(() => ({})),
+  ),
+  /** Searches and filters of the Pull requests queue kept as tabs. */
+  prHubSavedViews: Schema.Array(PrSavedViewSettingSchema)
+    .check(Schema.isMaxLength(MAX_PR_SAVED_VIEWS))
+    .pipe(
+      Schema.withConstructorDefault(() => Option.some([])),
+      Schema.withDecodingDefault(() => []),
+    ),
+  prHubShowBotComments: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
+  prHubShowResolvedComments: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
   ),
   prHubStalledAfterHours: Schema.Number.check(
     Schema.isInt(),
@@ -425,6 +516,26 @@ export const AppSettingsSchema = Schema.Struct({
   enablePrAttentionNotifications: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),
+  ),
+  // Per-source delivery. Replaces notificationMode, inAppThreadNotifications and
+  // enablePrAttentionNotifications, which stay readable for the migration only.
+  notificationPreferences: NotificationPreferencesSchema.pipe(
+    Schema.withConstructorDefault(() => Option.some(DEFAULT_NOTIFICATION_PREFERENCES)),
+    Schema.withDecodingDefault(() => DEFAULT_NOTIFICATION_PREFERENCES),
+  ),
+  /** An ISO time, "forever", or null when Do Not Disturb is off. */
+  doNotDisturbUntil: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some(null)),
+    Schema.withDecodingDefault(() => null),
+  ),
+  /** Approvals and input requests still come through during Do Not Disturb. */
+  dndAllowUrgent: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
+  ),
+  toastPosition: Schema.Literals(TOAST_POSITIONS).pipe(
+    Schema.withConstructorDefault(() => Option.some("top-right" as const)),
+    Schema.withDecodingDefault(() => "top-right" as const),
   ),
   showAgentCommandTranscripts: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
@@ -472,6 +583,10 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(() => "stacked" as const),
   ),
   sidebarThreadPreviewCount: SidebarThreadPreviewCountSchema,
+  sidebarOlderThreadDays: Schema.Literals(SIDEBAR_OLDER_THREAD_DAYS_OPTIONS).pipe(
+    Schema.withConstructorDefault(() => Option.some(SIDEBAR_OLDER_THREAD_DAYS_DEFAULT)),
+    Schema.withDecodingDefault(() => SIDEBAR_OLDER_THREAD_DAYS_DEFAULT),
+  ),
   showReasoningExpanded: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_SHOW_REASONING_EXPANDED)),
   ),
@@ -484,6 +599,20 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),
   ),
+  // Flag turns that missed the provider's prompt cache, and show the thread's
+  // cache history in the context meter tooltip.
+  showPromptCacheIndicator: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
+  ),
+  proactivePanelsEnabled: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
+  keepRunningThreadsSynced: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
   workLogMode: Schema.Literals(WORK_LOG_MODE_OPTIONS).pipe(
     Schema.withConstructorDefault(() => Option.some("essential" as const)),
     Schema.withDecodingDefault(() => "essential" as const),
@@ -495,6 +624,8 @@ export const AppSettingsSchema = Schema.Struct({
   showProviderRuntimeMetadata: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
   ),
+  // Layout only, so it is not one of the display profile keys.
+  compactChatLayout: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
   onboardingLiteStatus: Schema.Literals(["eligible", "dismissed", "completed", "reopened"]).pipe(
     Schema.withConstructorDefault(() => Option.some("eligible" as const)),
     Schema.withDecodingDefault(() => "eligible" as const),
@@ -504,6 +635,11 @@ export const AppSettingsSchema = Schema.Struct({
   timestampFormat: Schema.Literals(["locale", "12-hour", "24-hour"]).pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_TIMESTAMP_FORMAT)),
   ),
+  /** Window and tab titles show the project by default so thread titles stay out of screen shares. */
+  windowTitleDetail: Schema.Literals(WINDOW_TITLE_DETAIL_OPTIONS).pipe(
+    Schema.withConstructorDefault(() => Option.some("project" as const)),
+    Schema.withDecodingDefault(() => "project" as const),
+  ),
   favoriteModels: Schema.Array(FavoriteModelSchema).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
     Schema.withDecodingDefault(() => []),
@@ -512,6 +648,8 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.Struct({
       provider: ProviderInstanceId,
       model: TrimmedNonEmptyString,
+      /** Pinned reasoning effort; makes the favorite a model + effort preset. */
+      effort: Schema.optional(TrimmedNonEmptyString),
     }),
   ).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
@@ -542,6 +680,10 @@ export const AppSettingsSchema = Schema.Struct({
   ),
   customGrokModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  /** Sub-agent defaults for every project without its own `claudeProjectSettings` entry. */
+  claudeSubagentDefaults: ClaudeProjectSettingsSchema.pipe(
+    Schema.withConstructorDefault(() => Option.some(ClaudeProjectSettingsSchema.makeUnsafe({}))),
   ),
   claudeProjectSettings: Schema.Record(Schema.String, ClaudeProjectSettingsSchema).pipe(
     Schema.withConstructorDefault(() => Option.some({})),
@@ -666,6 +808,12 @@ function normalizeClaudeSubagentModel(value: string | null | undefined): string 
   return trimmed;
 }
 
+function claudeSubagentEffortEntry(value: unknown): { subagentEffort?: ClaudeSubagentEffort } {
+  return (CLAUDE_SUBAGENT_EFFORT_OPTIONS as ReadonlyArray<unknown>).includes(value)
+    ? { subagentEffort: value as ClaudeSubagentEffort }
+    : {};
+}
+
 function normalizeClaudeProjectSettingsRecord(
   value: Record<string, ClaudeProjectSettings>,
 ): Record<string, ClaudeProjectSettings> {
@@ -681,6 +829,7 @@ function normalizeClaudeProjectSettingsRecord(
           {
             subagentsEnabled: projectSettings.subagentsEnabled !== false,
             subagentModel: normalizeClaudeSubagentModel(projectSettings.subagentModel),
+            ...claudeSubagentEffortEntry(projectSettings.subagentEffort),
           } satisfies ClaudeProjectSettings,
         ] as const;
       })
@@ -776,6 +925,14 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
       notificationMode:
         runtimeMetadataMigrated.notificationMode ??
         (runtimeMetadataMigrated.enableThreadStatusNotifications === false ? "off" : "system"),
+      notificationPreferences:
+        normalizeNotificationPreferences(runtimeMetadataMigrated.notificationPreferences) ??
+        deriveNotificationPreferences(runtimeMetadataMigrated),
+      toastPosition: TOAST_POSITIONS.includes(
+        runtimeMetadataMigrated.toastPosition as (typeof TOAST_POSITIONS)[number],
+      )
+        ? runtimeMetadataMigrated.toastPosition
+        : "top-right",
       composerRichTextEnabled: runtimeMetadataMigrated.composerRichTextEnabled ?? false,
       // The first palette release used `f5-default` for the blue palette.
       // Move that implicit default to the restored black palette exactly once;
@@ -799,6 +956,10 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
           migrated.runtimeWarningVisibility,
         ),
         favoriteModels: normalizeFavoriteModels(migrated.favoriteModels),
+        sidebarOlderThreadDays: normalizeSidebarOlderThreadDays(migrated.sidebarOlderThreadDays),
+        // One bad stored option must not reset every other setting.
+        snoozePresets: normalizeSnoozePresets(migrated.snoozePresets ?? DEFAULT_SNOOZE_PRESETS),
+        prHubSavedViews: normalizePrSavedViews(migrated.prHubSavedViews),
         uiFontFamily: normalizeFontFamilyPreference(
           migrateRetiredFontFamily(runtimeMetadataMigrated, migrated.uiFontFamily),
         ),
@@ -1083,23 +1244,66 @@ export function getSlashModelOptions(
   });
 }
 
+/** The global sub-agent defaults, normalized. */
+export function getClaudeSubagentDefaults(
+  settings: Partial<Pick<AppSettings, "claudeSubagentDefaults">>,
+): ClaudeProjectSettings {
+  const defaults = settings.claudeSubagentDefaults;
+  if (!defaults) return DEFAULT_CLAUDE_PROJECT_SETTINGS;
+  return {
+    subagentsEnabled: defaults.subagentsEnabled !== false,
+    subagentModel: normalizeClaudeSubagentModel(defaults.subagentModel),
+    ...claudeSubagentEffortEntry(defaults.subagentEffort),
+  };
+}
+
+/** A project's own sub-agent settings, falling back to the global defaults. */
 export function getClaudeProjectSettings(
-  settings: Pick<AppSettings, "claudeProjectSettings">,
+  settings: Pick<AppSettings, "claudeProjectSettings"> &
+    Partial<Pick<AppSettings, "claudeSubagentDefaults">>,
   projectId: string | null | undefined,
 ): ClaudeProjectSettings {
-  if (!projectId) {
-    return DEFAULT_CLAUDE_PROJECT_SETTINGS;
-  }
-
-  const projectSettings = settings.claudeProjectSettings[projectId];
+  const projectSettings = projectId ? settings.claudeProjectSettings[projectId] : undefined;
   if (!projectSettings) {
-    return DEFAULT_CLAUDE_PROJECT_SETTINGS;
+    return getClaudeSubagentDefaults(settings);
   }
 
   return {
     subagentsEnabled: projectSettings.subagentsEnabled !== false,
     subagentModel: normalizeClaudeSubagentModel(projectSettings.subagentModel),
+    ...claudeSubagentEffortEntry(projectSettings.subagentEffort),
   };
+}
+
+function applyAppSettingsPatch(prev: AppSettings, patch: Partial<AppSettings>): AppSettings {
+  return normalizeAppSettings({
+    ...prev,
+    ...patch,
+    ...(patch.notificationMode === undefined && patch.enableThreadStatusNotifications !== undefined
+      ? {
+          notificationMode: patch.enableThreadStatusNotifications
+            ? ("system" as const)
+            : ("off" as const),
+        }
+      : {}),
+  });
+}
+
+/**
+ * Writes a settings patch without subscribing the caller to settings changes, for
+ * components that update settings but do not render from them.
+ */
+export function updateAppSettings(patch: Partial<AppSettings>): void {
+  try {
+    setLocalStorageItem(
+      APP_SETTINGS_STORAGE_KEY,
+      applyAppSettingsPatch(readAppSettingsSnapshot(), patch),
+      AppSettingsSchema,
+    );
+    dispatchLocalStorageChange(APP_SETTINGS_STORAGE_KEY);
+  } catch (error) {
+    console.error("[LOCALSTORAGE] Error:", error);
+  }
 }
 
 export function useAppSettings() {
@@ -1112,20 +1316,7 @@ export function useAppSettings() {
 
   const updateSettings = useCallback(
     (patch: Partial<AppSettings>) => {
-      setSettings((prev) =>
-        normalizeAppSettings({
-          ...prev,
-          ...patch,
-          ...(patch.notificationMode === undefined &&
-          patch.enableThreadStatusNotifications !== undefined
-            ? {
-                notificationMode: patch.enableThreadStatusNotifications
-                  ? ("system" as const)
-                  : ("off" as const),
-              }
-            : {}),
-        }),
-      );
+      setSettings((prev) => applyAppSettingsPatch(prev, patch));
     },
     [setSettings],
   );
@@ -1142,15 +1333,63 @@ export function useAppSettings() {
   } as const;
 }
 
+let appSettingsSnapshot: { raw: string | null; settings: AppSettings } | null = null;
+
+/**
+ * The persisted app settings, parsed once per stored value. The same object is
+ * returned until storage changes, so it can back `useSyncExternalStore`.
+ */
+export function readAppSettingsSnapshot(): AppSettings {
+  const raw = readLocalStorageRawItem(APP_SETTINGS_STORAGE_KEY);
+  if (appSettingsSnapshot?.raw !== raw) {
+    appSettingsSnapshot = { raw, settings: parsePersistedAppSettings(raw) };
+  }
+  return appSettingsSnapshot.settings;
+}
+
+export function subscribeAppSettings(listener: () => void): () => void {
+  return subscribeLocalStorageKey(APP_SETTINGS_STORAGE_KEY, listener);
+}
+
+/**
+ * App settings narrowed by `selector`. The component re-renders only when the selected
+ * value changes, compared structurally, so a write to an unrelated setting is free.
+ * Inline selectors re-run each render; structural sharing keeps their result stable.
+ */
+export function useAppSettingsSelector<T>(selector: (settings: AppSettings) => T): T {
+  const getSnapshot = useMemo(() => {
+    let selected: { settings: AppSettings; selector: unknown; value: T } | null = null;
+    return (activeSelector: (settings: AppSettings) => T): T => {
+      const settings = readAppSettingsSnapshot();
+      if (selected && selected.settings === settings && selected.selector === activeSelector) {
+        return selected.value;
+      }
+      const next = activeSelector(settings);
+      const value = selected ? replaceEqualDeep(selected.value, next) : next;
+      selected = { settings, selector: activeSelector, value };
+      return value;
+    };
+  }, []);
+  const getSelectedSnapshot = () => getSnapshot(selector);
+  return useSyncExternalStore(subscribeAppSettings, getSelectedSnapshot, getSelectedSnapshot);
+}
+
 /** Primitive selector for hot rendering paths; unrelated setting writes keep the same snapshot. */
 export function useDiffWordWrap(): boolean {
-  const subscribe = useCallback(
-    (listener: () => void) => subscribeLocalStorageKey(APP_SETTINGS_STORAGE_KEY, listener),
-    [],
+  const getSnapshot = useCallback(() => readAppSettingsSnapshot().diffWordWrap, []);
+  return useSyncExternalStore(
+    subscribeAppSettings,
+    getSnapshot,
+    () => DEFAULT_APP_SETTINGS.diffWordWrap,
   );
-  const getSnapshot = useCallback(
-    () => parsePersistedAppSettings(readLocalStorageRawItem(APP_SETTINGS_STORAGE_KEY)).diffWordWrap,
-    [],
+}
+
+/** Primitive selector so title updates ignore unrelated setting writes. */
+export function useWindowTitleDetail(): WindowTitleDetail {
+  const getSnapshot = useCallback(() => readAppSettingsSnapshot().windowTitleDetail, []);
+  return useSyncExternalStore(
+    subscribeAppSettings,
+    getSnapshot,
+    () => DEFAULT_APP_SETTINGS.windowTitleDetail,
   );
-  return useSyncExternalStore(subscribe, getSnapshot, () => DEFAULT_APP_SETTINGS.diffWordWrap);
 }

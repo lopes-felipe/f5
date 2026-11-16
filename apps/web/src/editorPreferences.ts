@@ -22,14 +22,54 @@ export function resolveAndPersistPreferredEditor(
   const stored = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
   if (stored && availableEditorIds.has(stored)) return stored;
   const editor = EDITORS.find((editor) => availableEditorIds.has(editor.id))?.id ?? null;
-  if (editor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
+  // An unavailable favorite may only be mid-update or briefly off PATH, so a
+  // one-off fallback must not replace the user's choice.
+  if (editor && !stored) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
   return editor ?? null;
 }
 
-export async function openInPreferredEditor(api: NativeApi, targetPath: string): Promise<EditorId> {
-  const { availableEditors } = await api.server.getConfig();
-  const editor = resolveAndPersistPreferredEditor(availableEditors);
-  if (!editor) throw new Error("No available editors found.");
-  await api.shell.openInEditor(targetPath, editor);
-  return editor;
+/**
+ * A target that still needs async work (a workspace lookup) is passed as `resolveTarget`. It runs
+ * after the grant is captured, so a slow lookup cannot outlive the click's gesture; the grant then
+ * cannot name the final path.
+ */
+export async function openInPreferredEditor(
+  api: NativeApi,
+  targetPath: string,
+  resolveTarget?: () => Promise<string>,
+): Promise<EditorId> {
+  return withEditorOpenAuthorization(
+    resolveTarget ? undefined : targetPath,
+    async (authorization) => {
+      const [{ availableEditors }, target] = await Promise.all([
+        api.server.getConfig(),
+        resolveTarget ? resolveTarget() : targetPath,
+      ]);
+      const editor = resolveAndPersistPreferredEditor(availableEditors);
+      if (!editor) throw new Error("No available editors found.");
+      if (authorization) await api.shell.openInEditor(target, editor, authorization);
+      else await api.shell.openInEditor(target, editor);
+      return editor;
+    },
+  );
+}
+
+/** Capture before async work; release unused grants for other editors and failed queries. */
+export async function withEditorOpenAuthorization<T>(
+  targetPath: string | undefined,
+  open: (authorization: string | undefined) => Promise<T>,
+): Promise<T> {
+  const bridge = typeof window !== "undefined" ? window.desktopBridge : undefined;
+  const authorization = await bridge?.prepareEditorOpen?.(targetPath);
+  try {
+    return await open(authorization);
+  } finally {
+    if (authorization && bridge?.releaseEditorOpen) {
+      try {
+        await bridge.releaseEditorOpen(authorization);
+      } catch {
+        // A closed renderer cannot release its grant; main still expires it.
+      }
+    }
+  }
 }

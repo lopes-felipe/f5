@@ -89,11 +89,14 @@ export function MarkdownArtifactActions({
     setIsSavingToWorkspace(true);
     void api.projects
       .writeFile({
+        condition: { type: "create" },
         cwd: workspaceRoot,
         relativePath,
         contents: saveContents,
       })
       .then((result) => {
+        if ("conflict" in result)
+          throw new Error("A file already exists at that path. Choose another path.");
         setIsSaveDialogOpen(false);
         toastManager.add({
           type: "success",

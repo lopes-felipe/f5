@@ -254,10 +254,7 @@ export function buildCodeReviewPrompt(
 }
 
 export function buildImplementationRevisionPromptSections(input: {
-  readonly requirementPrompt: string;
   readonly reviews: ReadonlyArray<ReviewInput>;
-  readonly targetSlot: WorkflowModelSlot;
-  readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
   const reviewSections = input.reviews.map(
     (review) => `## ${review.reviewerLabel}\n\n${review.reviewMarkdown}`,

@@ -112,6 +112,8 @@ export function buildCodeReviewWorkflowRecord(
     readonly reviewerB: WorkflowModelSlot;
     readonly consolidation: WorkflowModelSlot;
     readonly maxCostUsd?: number | undefined;
+    readonly pullRequest?: CodeReviewWorkflow["pullRequest"] | undefined;
+    readonly autoPost?: boolean | undefined;
     readonly createdAt: string;
   },
 ): CodeReviewWorkflow {
@@ -139,6 +141,9 @@ export function buildCodeReviewWorkflowRecord(
     templateVersion: input.templateVersion,
     reviewPrompt: input.reviewPrompt,
     branch: input.branch,
+    pullRequest: input.pullRequest ?? null,
+    autoPost: input.autoPost ?? false,
+    post: null,
     reviewerA: reviewer("Reviewer A", input.reviewerA, input.reviewThreadIdA),
     reviewerB: reviewer("Reviewer B", input.reviewerB, input.reviewThreadIdB),
     consolidation: {

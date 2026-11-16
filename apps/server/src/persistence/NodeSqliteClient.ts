@@ -10,9 +10,11 @@ import * as Cache from "effect/Cache";
 import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import { identity } from "effect/Function";
 import * as Layer from "effect/Layer";
+import * as Metric from "effect/Metric";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as ServiceMap from "effect/ServiceMap";
@@ -23,7 +25,55 @@ import type { Connection } from "effect/unstable/sql/SqlConnection";
 import { SqlError } from "effect/unstable/sql/SqlError";
 import * as Statement from "effect/unstable/sql/Statement";
 
+import {
+  PerformanceStageProbe,
+  sqlConnectionWaitDuration,
+  sqlExecutionDuration,
+} from "../observability/Metrics.ts";
+import { recordSlowSqlStatement, SLOW_SQL_STATEMENT_MS } from "../observability/serverHealth.ts";
+
+import { startCheckpointWorker } from "./sqliteCheckpointWorker.ts";
+import { reportDatabaseCorruption } from "./databaseHealth.ts";
+
 const ATTR_DB_SYSTEM_NAME = "db.system.name";
+
+const recordDuration = (
+  metric: Metric.Metric<Duration.Duration, unknown>,
+  startedAt: number,
+): Effect.Effect<void> => Metric.update(metric, Duration.millis(performance.now() - startedAt));
+
+/** Statements slower than this also log process RSS, to tell memory pressure from lock waits. */
+const VERY_SLOW_SQL_MS = 10_000;
+
+/** `startedAt` comes from `performance.now()`, `startedAtWall` from `Date.now()`. */
+const recordExecution = (
+  startedAt: number,
+  startedAtWall: number,
+  outcome: "success" | "failure",
+  sourceSQL: string,
+  probe?: ((stage: string, durationMs: number) => void) | null,
+) => {
+  const durationMs = performance.now() - startedAt;
+  probe?.("sqlite.execution", durationMs);
+  const metric = Metric.update(
+    Metric.withAttributes(sqlExecutionDuration, { outcome }),
+    Duration.millis(durationMs),
+  );
+  // SQL shape only: expandedSQL and bound parameters can contain private content.
+  if (durationMs > SLOW_SQL_STATEMENT_MS) recordSlowSqlStatement(sourceSQL, durationMs);
+  return durationMs > SLOW_SQL_STATEMENT_MS
+    ? Effect.andThen(
+        metric,
+        Effect.logWarning("slow sql statement", {
+          durationMs,
+          // Wall-clock time; far above durationMs means the host slept during the statement.
+          wallMs: Date.now() - startedAtWall,
+          ...(durationMs > VERY_SLOW_SQL_MS ? { rss: process.memoryUsage.rss() } : {}),
+          sql: sourceSQL.slice(0, 160),
+        }),
+      )
+    : metric;
+};
 
 export const TypeId: TypeId = "~local/sqlite-node/SqliteClient";
 
@@ -37,6 +87,7 @@ export const SqliteClient = ServiceMap.Service<Client.SqlClient>("t3/persistence
 export interface SqliteClientConfig {
   readonly filename: string;
   readonly readonly?: boolean | undefined;
+  readonly checkpointWorker?: boolean | undefined;
   readonly allowExtension?: boolean | undefined;
   readonly prepareCacheSize?: number | undefined;
   readonly prepareCacheTTL?: Duration.Input | undefined;
@@ -72,12 +123,55 @@ const checkNodeSqliteCompat = () => {
   return Effect.void;
 };
 
+/**
+ * SQLite keeps its copy of a statement's text and blob parameters until the
+ * statement is bound again or finalized, and `node:sqlite` cannot clear them.
+ * A cached statement would hold its last payload for as long as it stays
+ * cached, so executions binding more than this many string code units and
+ * blob bytes, or a named parameter behind a getter, get a throwaway statement
+ * instead.
+ */
+const LARGE_BINDING_SIZE = 64 * 1024;
+
+const bindingSize = (value: unknown): number => {
+  if (typeof value === "string") return value.length;
+  return ArrayBuffer.isView(value) ? value.byteLength : 0;
+};
+
+const hasLargeBinding = (params: ReadonlyArray<unknown>): boolean => {
+  try {
+    let size = 0;
+    for (const param of params) {
+      if (
+        (typeof param === "object" || typeof param === "function") &&
+        param !== null &&
+        !ArrayBuffer.isView(param)
+      ) {
+        // `node:sqlite` takes named parameters as one object, callable or not.
+        // Read data properties only: calling a getter here would run it twice.
+        for (const property of Object.values(Object.getOwnPropertyDescriptors(param))) {
+          if (!property.enumerable) continue;
+          if (!("value" in property)) return true;
+          size += bindingSize(property.value);
+        }
+      } else {
+        size += bindingSize(param);
+      }
+    }
+    return size > LARGE_BINDING_SIZE;
+  } catch {
+    // A parameter that cannot be measured is left for the statement to report.
+    return true;
+  }
+};
+
 const makeWithDatabase = (
   options: SqliteClientConfig,
   openDatabase: () => DatabaseSync,
 ): Effect.Effect<Client.SqlClient, never, Scope.Scope | Reactivity.Reactivity> =>
   Effect.gen(function* () {
     yield* checkNodeSqliteCompat();
+    const probe = yield* PerformanceStageProbe;
 
     const compiler = Statement.makeCompilerSqlite(options.transformQueryNames);
     const transformRows = options.transformResultNames
@@ -92,7 +186,14 @@ const makeWithDatabase = (
         Effect.sync(() => db.close()),
       );
 
-      db.exec("PRAGMA busy_timeout = 5000");
+      db.exec("PRAGMA busy_timeout = 5000; PRAGMA checkpoint_fullfsync = ON;");
+      const checkpoint =
+        options.checkpointWorker &&
+        !options.readonly &&
+        options.filename !== ":memory:" &&
+        options.filename !== ""
+          ? yield* startCheckpointWorker(options.filename, db)
+          : undefined;
 
       const statementReaderCache = new WeakMap<StatementSync, boolean>();
       const hasRows = (statement: StatementSync): boolean => {
@@ -105,15 +206,32 @@ const makeWithDatabase = (
         return value;
       };
 
-      const prepareCache = yield* Cache.make({
+      const sqlError = (cause: unknown, message: string) => {
+        if (
+          typeof cause === "object" &&
+          cause !== null &&
+          "errcode" in cause &&
+          typeof cause.errcode === "number" &&
+          !("errno" in cause)
+        ) {
+          Object.assign(cause, { errno: cause.errcode });
+        }
+        reportDatabaseCorruption(options.filename, cause);
+        return new SqlError({ cause, message });
+      };
+      const prepare = (sql: string) =>
+        Effect.try({
+          try: () => db.prepare(sql),
+          catch: (cause) => sqlError(cause, "Failed to prepare statement"),
+        });
+      const prepareCache = yield* Cache.makeWith({
         capacity: options.prepareCacheSize ?? 200,
-        timeToLive: options.prepareCacheTTL ?? Duration.minutes(10),
-        lookup: (sql: string) =>
-          Effect.try({
-            try: () => db.prepare(sql),
-            catch: (cause) => new SqlError({ cause, message: "Failed to prepare statement" }),
-          }),
+        timeToLive: (exit) =>
+          Exit.isSuccess(exit) ? (options.prepareCacheTTL ?? Duration.minutes(10)) : Duration.zero,
+        lookup: prepare,
       });
+      const statementFor = (sql: string, params: ReadonlyArray<unknown>) =>
+        hasLargeBinding(params) ? prepare(sql) : Cache.get(prepareCache, sql);
 
       const runStatement = (
         statement: StatementSync,
@@ -122,37 +240,75 @@ const makeWithDatabase = (
       ) =>
         Effect.withFiber<ReadonlyArray<any>, SqlError>((fiber) => {
           statement.setReadBigInts(Boolean(ServiceMap.get(fiber.services, Client.SafeIntegers)));
+          const startedAt = performance.now();
+          const startedAtWall = Date.now();
+          const executed = (result: ReadonlyArray<any>) =>
+            Effect.as(
+              recordExecution(startedAt, startedAtWall, "success", statement.sourceSQL, probe),
+              result,
+            );
           try {
             if (hasRows(statement)) {
-              return Effect.succeed(statement.all(...(params as any)));
+              return executed(statement.all(...(params as any)));
             }
-            const result = statement.run(...(params as any));
-            return Effect.succeed(raw ? (result as unknown as ReadonlyArray<any>) : []);
+            if (raw) {
+              const result = statement.run(...(params as any));
+              return executed(result as unknown as ReadonlyArray<any>);
+            }
+            // Some zero-column pragmas yield intermediate SQLITE_ROW steps.
+            // run() stops at the first one (incremental_vacuum frees one page),
+            // whereas all() drains to SQLITE_DONE. Keep the public no-row result.
+            statement.all(...(params as any));
+            return executed([]);
           } catch (cause) {
-            return Effect.fail(new SqlError({ cause, message: "Failed to execute statement" }));
+            // Failures are timed too: a busy-timeout stall ends in SQLITE_BUSY.
+            return Effect.andThen(
+              recordExecution(startedAt, startedAtWall, "failure", statement.sourceSQL, probe),
+              Effect.fail(sqlError(cause, "Failed to execute statement")),
+            );
           }
         });
 
       const run = (sql: string, params: ReadonlyArray<unknown>, raw = false) =>
-        Effect.flatMap(Cache.get(prepareCache, sql), (s) => runStatement(s, params, raw));
+        Effect.flatMap(statementFor(sql, params), (s) => runStatement(s, params, raw)).pipe(
+          Effect.ensuring(Effect.sync(() => checkpoint?.())),
+        );
 
       const runValues = (sql: string, params: ReadonlyArray<unknown>) =>
         Effect.acquireUseRelease(
-          Cache.get(prepareCache, sql),
+          statementFor(sql, params),
           (statement) =>
-            Effect.try({
-              try: () => {
-                if (hasRows(statement)) {
-                  statement.setReturnArrays(true);
-                  // Safe to cast to array after we've setReturnArrays(true)
-                  return statement.all(...(params as any)) as unknown as ReadonlyArray<
-                    ReadonlyArray<unknown>
-                  >;
-                }
-                statement.run(...(params as any));
-                return [];
-              },
-              catch: (cause) => new SqlError({ cause, message: "Failed to execute statement" }),
+            Effect.withFiber<ReadonlyArray<ReadonlyArray<unknown>>, SqlError>((fiber) => {
+              // A cached statement otherwise keeps whatever the last caller asked for.
+              statement.setReadBigInts(
+                Boolean(ServiceMap.get(fiber.services, Client.SafeIntegers)),
+              );
+              const startedAt = performance.now();
+              const startedAtWall = Date.now();
+              return Effect.try({
+                try: () => {
+                  if (hasRows(statement)) {
+                    statement.setReturnArrays(true);
+                    // Safe to cast to array after we've setReturnArrays(true)
+                    return statement.all(...(params as any)) as unknown as ReadonlyArray<
+                      ReadonlyArray<unknown>
+                    >;
+                  }
+                  statement.all(...(params as any));
+                  return [];
+                },
+                catch: (cause) => sqlError(cause, "Failed to execute statement"),
+              }).pipe(
+                Effect.onExit((exit) =>
+                  recordExecution(
+                    startedAt,
+                    startedAtWall,
+                    Exit.isSuccess(exit) ? "success" : "failure",
+                    sql,
+                    probe,
+                  ),
+                ),
+              );
             }),
           (statement) =>
             Effect.sync(() => {
@@ -160,7 +316,7 @@ const makeWithDatabase = (
                 statement.setReturnArrays(false);
               }
             }),
-        );
+        ).pipe(Effect.ensuring(Effect.sync(() => checkpoint?.())));
 
       return identity<Connection>({
         execute(sql, params, rowTransform) {
@@ -173,7 +329,9 @@ const makeWithDatabase = (
           return runValues(sql, params);
         },
         executeUnprepared(sql, params, rowTransform) {
-          const effect = runStatement(db.prepare(sql), params ?? [], false);
+          const effect = Effect.flatMap(prepare(sql), (statement) =>
+            runStatement(statement, params ?? [], false),
+          ).pipe(Effect.ensuring(Effect.sync(() => checkpoint?.())));
           return rowTransform ? Effect.map(effect, rowTransform) : effect;
         },
         executeStream(_sql, _params) {
@@ -185,13 +343,25 @@ const makeWithDatabase = (
     const semaphore = yield* Semaphore.make(1);
     const connection = yield* makeConnection;
 
-    const acquirer = semaphore.withPermits(1)(Effect.succeed(connection));
-    const transactionAcquirer = Effect.uninterruptibleMask((restore) => {
+    // A standalone statement can yield while preparing or transforming a result.
+    // Reserve through its scope just like transactions, so neither can enter the other.
+    const acquirer = Effect.uninterruptibleMask((restore) => {
       const fiber = Fiber.getCurrent()!;
       const scope = ServiceMap.getUnsafe(fiber.services, Scope.Scope);
+      const startedAt = performance.now();
       return Effect.as(
         Effect.tap(restore(semaphore.take(1)), () =>
-          Scope.addFinalizer(scope, semaphore.release(1)),
+          Scope.addFinalizer(scope, semaphore.release(1)).pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                const elapsed = performance.now() - startedAt;
+                probe?.("sqlite.admission", elapsed);
+                return Metric.update(sqlConnectionWaitDuration, Duration.millis(elapsed)).pipe(
+                  Effect.andThen(Effect.annotateCurrentSpan("db.connection.wait_ms", elapsed)),
+                );
+              }),
+            ),
+          ),
         ),
         connection,
       );
@@ -200,10 +370,12 @@ const makeWithDatabase = (
     return yield* Client.make({
       acquirer,
       compiler,
-      transactionAcquirer,
+      transactionAcquirer: acquirer,
+      beginTransaction: options.readonly ? "BEGIN" : "BEGIN IMMEDIATE",
       spanAttributes: [
         ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
         [ATTR_DB_SYSTEM_NAME, "sqlite"],
+        ["db.connection.role", options.readonly ? "reader" : "writer"],
       ],
       transformRows,
     });

@@ -1,3 +1,4 @@
+import { backgroundWorkSessionIdentity } from "../../provider/backgroundWorkIdentity.ts";
 import { nativeTaskWorkItemId } from "@t3tools/shared/nativeTaskIdentity";
 import {
   MAX_BACKGROUND_WORK_OUTPUT_BYTES,
@@ -129,6 +130,9 @@ function lifecycleItemTransition(
     status: terminalStatus ?? "running",
     active: terminalStatus === null,
     model: asString(data?.subagentModel) ?? asString(input?.model) ?? null,
+    ...(asString(data?.subagentEffort)
+      ? { effort: asString(data?.subagentEffort)!.slice(0, 64) }
+      : {}),
     // Updates often omit the type; keep the one recorded at start.
     ...(phase ? { phase } : {}),
     latestOutput: latestOutput ?? null,
@@ -148,8 +152,12 @@ function taskTransition(
     return {
       threadId: event.threadId,
       workItemId: nativeTaskWorkItemId(event.payload.taskId, event.payload.runId),
+      ...(event.payload.nativeParentSessionId
+        ? { nativeParentSessionId: event.payload.nativeParentSessionId }
+        : {}),
       provider: event.provider,
       ...(event.payload.model ? { model: event.payload.model } : {}),
+      ...(event.payload.effort !== undefined ? { effort: event.payload.effort } : {}),
       turnId: event.turnId ?? null,
       classification,
       ownership: ownershipForTask(taskType),
@@ -174,6 +182,7 @@ function taskTransition(
       workItemId: nativeTaskWorkItemId(event.payload.taskId, event.payload.runId),
       provider: event.provider,
       ...(event.payload.model ? { model: event.payload.model } : {}),
+      ...(event.payload.effort !== undefined ? { effort: event.payload.effort } : {}),
       turnId: event.turnId ?? null,
       status: "running",
       active: true,
@@ -294,12 +303,7 @@ const make = Effect.gen(function* () {
         const providerInstanceId =
           event.providerInstanceId ?? bindingValue?.providerInstanceId ?? null;
         const providerSessionIdentity = bindingValue
-          ? [
-              bindingValue.provider,
-              bindingValue.providerInstanceId ?? "default",
-              bindingValue.adapterKey ?? bindingValue.provider,
-              bindingValue.launchFingerprint ?? "default",
-            ].join("|")
+          ? backgroundWorkSessionIdentity(bindingValue)
           : `${event.provider}|${providerInstanceId ?? "default"}`;
         sessionIdentity = { providerInstanceId, providerSessionIdentity };
         if (sessionIdentityByThreadId.size >= 2_048) {
@@ -365,6 +369,7 @@ const make = Effect.gen(function* () {
     expireStale,
     listProtectedThreadIds,
     hasFreshProtectingWork: (input) => repository.hasFreshProtectingWork(input),
+    getOwnedEntries: (input) => repository.getOwnedEntries(input),
     changes: Stream.fromPubSub(changesPubSub),
   } satisfies ThreadBackgroundWorkShape;
 });

@@ -1,6 +1,38 @@
 import { describe, expect, it } from "vitest";
 
-import { parseTurnDiffFilesFromUnifiedDiff } from "./Diffs.ts";
+import {
+  batchLiteralPathspecs,
+  isGitImport,
+  parseNumstatPaths,
+  parseTurnDiffFilesFromUnifiedDiff,
+} from "./Diffs.ts";
+
+describe("git import filtering helpers", () => {
+  it("parses numstat records, keeping both sides of a rename", () => {
+    expect(
+      parseNumstatPaths("1\t2\ta.txt\0-\t-\timage.png\0" + "3\t0\t\0old.ts\0new.ts\0"),
+    ).toEqual([
+      { path: "a.txt" },
+      { path: "image.png" },
+      { path: "new.ts", previousPath: "old.ts" },
+    ]);
+  });
+
+  it("keeps a rename when either side was authored", () => {
+    const authored = new Set(["old.ts"]);
+    expect(isGitImport({ path: "new.ts", previousPath: "old.ts" }, authored)).toBe(false);
+    expect(isGitImport({ path: "pulled.ts" }, authored)).toBe(true);
+  });
+
+  it("batches literal pathspecs without splitting a rename", () => {
+    const long = "x".repeat(12_000);
+    expect(batchLiteralPathspecs([])).toEqual([]);
+    expect(batchLiteralPathspecs([[`${long}1`], [`${long}2`, `${long}3`]])).toEqual([
+      [`:(literal)${long}1`],
+      [`:(literal)${long}2`, `:(literal)${long}3`],
+    ]);
+  });
+});
 
 describe("parseTurnDiffFilesFromUnifiedDiff", () => {
   it("returns empty list for empty diff", () => {

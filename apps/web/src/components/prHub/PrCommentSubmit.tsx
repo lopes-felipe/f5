@@ -8,6 +8,7 @@ import { getPrHubAccountGeneration, getPrHubDraftIdentity } from "../../lib/prHu
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { PrOperationRecovery } from "./PrOperationRecovery";
+import { isPrSubmitShortcut } from "./prHubKeyboard";
 
 export function PrCommentSubmit({ prKey }: { prKey: PullRequestKey }) {
   const accountGeneration = getPrHubAccountGeneration();
@@ -53,6 +54,17 @@ export function PrCommentSubmit({ prKey }: { prKey: PullRequestKey }) {
       setBusy(false);
     }
   }
+  const previewDisabled =
+    busy || query.isFetching || Boolean(query.error) || !body.trim() || !accountGeneration;
+  const preview = () =>
+    void run(() =>
+      ensureNativeApi().prHub.prepareComment({
+        key: prKey,
+        accountGeneration: accountGeneration!,
+        id: crypto.randomUUID(),
+        body,
+      }),
+    );
   return (
     <div className="space-y-3">
       {operation?.errorMessage ? <p role="status">{operation.errorMessage}</p> : null}
@@ -135,23 +147,14 @@ export function PrCommentSubmit({ prKey }: { prKey: PullRequestKey }) {
             aria-label="PR timeline comment"
             value={body}
             onChange={(e) => setBody(e.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (!isPrSubmitShortcut(event)) return;
+              event.preventDefault();
+              if (!previewDisabled) preview();
+            }}
             disabled={busy || !getPrHubDraftIdentity()}
           />
-          <Button
-            disabled={
-              busy || query.isFetching || Boolean(query.error) || !body.trim() || !accountGeneration
-            }
-            onClick={() =>
-              void run(() =>
-                ensureNativeApi().prHub.prepareComment({
-                  key: prKey,
-                  accountGeneration: accountGeneration!,
-                  id: crypto.randomUUID(),
-                  body,
-                }),
-              )
-            }
-          >
+          <Button disabled={previewDisabled} onClick={preview}>
             Preview comment
           </Button>
           {query.error ? (

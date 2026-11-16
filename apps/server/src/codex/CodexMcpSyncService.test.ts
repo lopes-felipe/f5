@@ -20,6 +20,8 @@ describe("CodexMcpSyncService", () => {
           Effect.die(new Error("unused in CodexMcpSyncService tests")),
         readEffectiveStoredConfig: (_projectId: ProjectId) =>
           Effect.die(new Error("unused in CodexMcpSyncService tests")),
+        readEffectiveRuntimeConfig: (_projectId: ProjectId) =>
+          Effect.die(new Error("unused in CodexMcpSyncService tests")),
         readCommonConfig: () => Effect.die(new Error("unused in CodexMcpSyncService tests")),
         replaceCommonConfig: (_input) =>
           Effect.die(new Error("unused in CodexMcpSyncService tests")),

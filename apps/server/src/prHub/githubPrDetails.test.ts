@@ -54,16 +54,25 @@ function trackedPr(): TrackedPullRequest {
   };
 }
 
-function responseWithPullRequest(pullRequest: Record<string, unknown>) {
+function responseWithPullRequest(pullRequest: Record<string, unknown>, autoMergeAllowed = false) {
   return {
     data: {
-      repository: { pullRequest },
+      repository: { pullRequest, autoMergeAllowed },
       rateLimit: { remaining: 42, limit: 5_000, resetAt: "2026-01-03T00:00:00.000Z" },
     },
   };
 }
 
 describe("GitHub PR detail decoding", () => {
+  it.each([true, false])("refreshes the repository's auto-merge setting (%s)", (allowed) => {
+    const { detail } = decodeGitHubPrDetail(
+      responseWithPullRequest({ ...trackedPr(), state: "OPEN" }, allowed),
+      trackedPr(),
+    );
+    expect(detail.providerDetails.provider).toBe("github");
+    if (detail.providerDetails.provider === "github")
+      expect(detail.providerDetails.autoMergeAllowed).toBe(allowed);
+  });
   it("rejects partial GraphQL responses instead of treating missing fields as authoritative", () => {
     expect(() =>
       decodeGitHubPrDetail(
@@ -288,4 +297,158 @@ describe("GitHub PR detail decoding", () => {
       githubTimelineVariables({ owner: "octo", repo: "repo", number: 7, cursor: "not-base64" }),
     ).toThrow();
   });
+});
+
+it("retains required-check metadata for both check runs and legacy statuses", () => {
+  const result = decodeGitHubPrDetail(
+    responseWithPullRequest({
+      ...trackedPr(),
+      commits: {
+        nodes: [
+          {
+            commit: {
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    {
+                      __typename: "CheckRun",
+                      name: "required",
+                      status: "COMPLETED",
+                      conclusion: "SUCCESS",
+                      isRequired: true,
+                    },
+                    {
+                      __typename: "StatusContext",
+                      context: "optional",
+                      state: "SUCCESS",
+                      isRequired: false,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    }),
+    trackedPr(),
+  );
+  expect(result.detail.checks.map(({ name, required }) => ({ name, required }))).toEqual([
+    { name: "required", required: true },
+    { name: "optional", required: false },
+  ]);
+});
+it("lists failed and cancelled checks first and keeps GitHub's order within each group", () => {
+  const run = (name: string, status: string, conclusion: string | null) => ({
+    __typename: "CheckRun",
+    name,
+    status,
+    conclusion,
+  });
+  const result = decodeGitHubPrDetail(
+    responseWithPullRequest({
+      ...trackedPr(),
+      commits: {
+        nodes: [
+          {
+            commit: {
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    run("lint", "COMPLETED", "SUCCESS"),
+                    run("integration", "COMPLETED", "CANCELLED"),
+                    run("types", "IN_PROGRESS", null),
+                    { __typename: "StatusContext", context: "deploy", state: "ERROR" },
+                    run("unit", "COMPLETED", "FAILURE"),
+                    run("docs", "COMPLETED", "SKIPPED"),
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    }),
+    trackedPr(),
+  );
+  expect(result.detail.checks.map((check) => [check.name, check.status])).toEqual([
+    ["integration", "cancelled"],
+    ["deploy", "failure"],
+    ["unit", "failure"],
+    ["lint", "success"],
+    ["types", "pending"],
+    ["docs", "skipped"],
+  ]);
+});
+it("reads edited review activity without paging the PR commit history for a watch", () => {
+  const editedAt = "2026-10-19T12:00:00Z";
+  const result = decodeGitHubPrTimeline(
+    responseWithPullRequest({
+      comments: { nodes: [], pageInfo: { hasPreviousPage: false } },
+      reviews: {
+        nodes: [
+          {
+            id: "review",
+            body: "Updated",
+            state: "COMMENTED",
+            submittedAt: "2026-01-01T00:00:00Z",
+            lastEditedAt: editedAt,
+            author: { login: "bot" },
+            comments: { nodes: [], pageInfo: { hasNextPage: false } },
+          },
+        ],
+        pageInfo: { hasPreviousPage: false },
+      },
+      commits: { nodes: [], pageInfo: { hasPreviousPage: true, startCursor: "old-commits" } },
+    }),
+    undefined,
+    true,
+  );
+  expect(result.pageInfo.hasNextPage).toBe(false);
+  expect(result.entries[0]).toMatchObject({ id: "review", updatedAt: editedAt });
+  expect(
+    githubTimelineVariables({ owner: "org", repo: "repo", number: 1, commentsOnly: true })
+      .commitLimit,
+  ).toBe(1);
+});
+
+it("prefers the host's per-comment edit answer over authorship on both timeline copies", () => {
+  const comment = (id: string, viewerDidAuthor: boolean, viewerCanUpdate: boolean) => ({
+    id,
+    databaseId: 1,
+    body: "Remark",
+    createdAt: "2026-10-19T00:00:00Z",
+    viewerDidAuthor,
+    viewerCanUpdate,
+    author: { login: "alice" },
+  });
+  const page = decodeGitHubPrTimeline(
+    responseWithPullRequest({
+      comments: {
+        nodes: [comment("own-locked", true, false), comment("other-editable", false, true)],
+        pageInfo: { hasPreviousPage: false },
+      },
+      reviews: {
+        nodes: [
+          {
+            id: "review",
+            submittedAt: "2026-10-19T00:00:00Z",
+            comments: {
+              totalCount: 2,
+              nodes: [
+                comment("inline-own-locked", true, false),
+                comment("inline-other-editable", false, true),
+              ],
+            },
+          },
+        ],
+        pageInfo: { hasPreviousPage: false },
+      },
+      commits: { nodes: [], pageInfo: { hasPreviousPage: false } },
+    }),
+  );
+  for (const entry of page.entries) {
+    if (entry.type !== "comment" || entry.kind === "review") continue;
+    expect(entry.viewerCanUpdate).toBe(entry.id.endsWith("editable"));
+  }
 });

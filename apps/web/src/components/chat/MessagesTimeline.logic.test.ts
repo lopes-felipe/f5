@@ -1,8 +1,133 @@
 import { describe, expect, it } from "vitest";
 import {
+  describeDynamicToolEntry,
+  humanizeToolName,
+  mcpServerMonogram,
+  parseJsonObject,
+  summarizeToolInputPairs,
+  timelineIsAtEnd,
+} from "./MessagesTimeline.logic";
+
+describe("describeDynamicToolEntry", () => {
+  const tool = (detail: string, overrides: { itemType?: string; toolTitle?: string } = {}) =>
+    describeDynamicToolEntry({
+      itemType: (overrides.itemType ?? "dynamic_tool_call") as "dynamic_tool_call",
+      label: "Tool call",
+      toolTitle: overrides.toolTitle ?? "Tool call",
+      detail,
+    });
+
+  it("names the tool and previews its telling input field", () => {
+    expect(tool('ToolSearch: {"query":"select:ExitPlanMode","max_results":1}')).toEqual({
+      heading: "Tool search",
+      preview: "select:ExitPlanMode",
+      icon: "search",
+    });
+    expect(tool('WebFetch: {"url":"https://docs.example.com/api","prompt":"Summarize"}')).toEqual({
+      heading: "Web fetch",
+      preview: "docs.example.com/api",
+      icon: "web",
+    });
+    expect(tool('TaskCreate: {"subject":"Add Q&A card","description":"Long text"}')).toEqual({
+      heading: "Task create",
+      preview: "Add Q&A card",
+      icon: "tasks",
+    });
+  });
+
+  it("keeps plain-text details and falls back to key: value pairs", () => {
+    expect(tool("TodoWrite: 3 tasks")).toEqual({
+      heading: "Todo write",
+      preview: "3 tasks",
+      icon: "tasks",
+    });
+    expect(tool('Frobnicate: {"level":3,"dry":true,"mode":"fast","extra":"x"}')?.preview).toBe(
+      "level: 3 · dry: true · mode: fast",
+    );
+  });
+
+  it("reads the telling field out of cut-off JSON", () => {
+    expect(tool('Skill: {"skill":"run","args":"--very long \\"quoted\\"...')?.preview).toBe("run");
+    expect(tool('WebSearchTool: {"query":"effect schema unions and')?.preview).toBe(
+      "effect schema unions and",
+    );
+  });
+
+  it("previews what an AskUserQuestion call asked", () => {
+    expect(
+      tool('AskUserQuestion: {"questions":[{"question":"Layout?"},{"question":"History?"}]}')
+        ?.preview,
+    ).toBe("Layout? · History?");
+    expect(tool('AskUserQuestion: {"questions":[{"question":"How should tile...')?.preview).toBe(
+      "How should tile...",
+    );
+  });
+
+  it("requires a space after the tool name's colon", () => {
+    expect(tool("https://example.com/path")).toBeNull();
+    expect(tool("C:\\Users\\me\\file.txt")).toBeNull();
+  });
+
+  it("leaves named and non-generic rows alone", () => {
+    expect(tool('Read: {"file_path":"a.ts"}', { toolTitle: "Read file" })).toBeNull();
+    expect(tool("ToolSearch: x", { itemType: "mcp_tool_call" })).toBeNull();
+    expect(tool("no separator here")).toBeNull();
+  });
+});
+
+describe("tool naming helpers", () => {
+  it("humanizes tool names", () => {
+    expect(humanizeToolName("ToolSearch")).toBe("Tool search");
+    expect(humanizeToolName("mcp__f5_thread__html_render")).toBe("Html render");
+    expect(humanizeToolName("readMCPResource")).toBe("Read mcp resource");
+  });
+
+  it("refuses to parse JSON whose numbers would be rounded", () => {
+    expect(parseJsonObject('{"id":9007199254740993}')).toBeNull();
+    expect(parseJsonObject('{"id":-12345678901234567890}')).toBeNull();
+    expect(parseJsonObject('{"id":9.007199254740993e15}')).toBeNull();
+    expect(parseJsonObject('{"ratio":0.12345678901234567890123}')).toBeNull();
+    expect(parseJsonObject('{"big":1e400}')).toBeNull();
+    // Exact numbers in other spellings, and digits inside strings, still parse.
+    expect(
+      parseJsonObject(
+        '{"id":"9007199254740993","n":42,"half":5e-1,"one":1.0,"neg":-0.25,"e":"x1e999"}',
+      ),
+    ).toEqual({ id: "9007199254740993", n: 42, half: 0.5, one: 1, neg: -0.25, e: "x1e999" });
+    expect(parseJsonObject('{"q":"say \\"12345678901234567890\\""}')).toEqual({
+      q: 'say "12345678901234567890"',
+    });
+    expect(parseJsonObject('["not","an","object"]')).toBeNull();
+  });
+
+  it("builds MCP server monograms from up to two name segments", () => {
+    expect(mcpServerMonogram("f5_thread")).toBe("FT");
+    expect(mcpServerMonogram("github")).toBe("G");
+    expect(mcpServerMonogram("claudeAiDocs")).toBe("CA");
+  });
+
+  it("summarizes MCP input as quoted key: value pairs", () => {
+    expect(
+      summarizeToolInputPairs(
+        { title: "Card options", height: 780, nested: { a: 1 }, flag: false, more: "x" },
+        { quoteStrings: true },
+      ),
+    ).toBe('title: "Card options" · height: 780 · flag: false');
+    expect(summarizeToolInputPairs({ text: "a".repeat(80) })).toBe(`text: ${"a".repeat(59)}…`);
+    expect(summarizeToolInputPairs({ nested: {} })).toBeNull();
+  });
+});
+
+it("rearms following only in the last forty pixels, independently of viewport height", () => {
+  expect(timelineIsAtEnd({ contentLength: 5_000, scrollLength: 2_000, scroll: 2_970 })).toBe(true);
+  expect(timelineIsAtEnd({ contentLength: 5_000, scrollLength: 2_000, scroll: 2_900 })).toBe(false);
+  expect(timelineIsAtEnd({ contentLength: 500, scrollLength: 1_000, scroll: 0 })).toBe(true);
+});
+import {
   buildTimelineEntryRowIndexMap,
   computeMessageDurationStart,
   deriveTimelineTurnRailItems,
+  deriveTimelineAssistantRailItems,
   deriveCodexCollaborationResponseRows,
   findLastUserMessageRowIndex,
   findNearestMinimapMarkerIndex,
@@ -20,7 +145,9 @@ import {
   resolveTimelineTurnRailInteractiveWidth,
   resolveTimelineTurnRailTopPercent,
   sampleTimelineMinimapRowIndices,
+  TURN_RAIL_PREVIEW_DISPLAY_CHARS,
 } from "./MessagesTimeline.logic";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
 import { appendTerminalContextsToPrompt } from "../../lib/terminalContext";
 
@@ -241,6 +368,32 @@ describe("timeline row navigation mapping", () => {
 });
 
 describe("timeline turn rail", () => {
+  it("anchors the answer rail at completed replies, excluding commentary and tools", () => {
+    expect(
+      deriveTimelineAssistantRailItems([
+        { id: "u1", kind: "message", message: { role: "user", text: "Question" } },
+        { id: "thought", kind: "message", message: { role: "assistant", text: "Checking…" } },
+        { id: "tool", kind: "work" },
+        {
+          id: "answer",
+          kind: "message",
+          createdAt: "2026-03-17T19:12:00.000Z",
+          showCompletionDivider: true,
+          message: { role: "assistant", text: "Final answer" },
+        },
+        { id: "u2", kind: "message", message: { role: "user", text: "Follow-up" } },
+        { id: "streaming", kind: "message", message: { role: "assistant", text: "In progress" } },
+      ]),
+    ).toEqual([
+      {
+        id: "answer",
+        rowIndex: 3,
+        createdAt: "2026-03-17T19:12:00.000Z",
+        userText: "Question",
+        assistantText: "Final answer",
+      },
+    ]);
+  });
   it("resolves measured gutter geometry", () => {
     expect([47, 48, 0, Number.NaN].map(resolveTimelineTurnRailHasPersistentGutter)).toEqual([
       false,
@@ -285,9 +438,66 @@ describe("timeline turn rail", () => {
       { id: "u2", kind: "message", message: { role: "user", text: "Second" } },
     ]);
     expect(items).toEqual([
-      { id: "u1", rowIndex: 0, userText: "First question", assistantText: "Final answer" },
-      { id: "u2", rowIndex: 4, userText: "Second", assistantText: null },
+      {
+        id: "u1",
+        rowIndex: 0,
+        createdAt: null,
+        userText: "First question",
+        assistantText: "Final answer",
+      },
+      { id: "u2", rowIndex: 4, createdAt: null, userText: "Second", assistantText: null },
     ]);
+  });
+
+  it("previews an image-only turn by its images, not the prompt sent in their place", () => {
+    const [item] = deriveTimelineTurnRailItems([
+      {
+        id: "u1",
+        kind: "message",
+        message: {
+          role: "user",
+          text: IMAGE_ONLY_BOOTSTRAP_PROMPT,
+          attachments: [{ name: "login.png" }, { name: "error.png" }],
+        },
+      },
+    ]);
+    expect(item?.userText).toBe("login.png, error.png");
+  });
+
+  it("bounds previews and carries each turn's creation time", () => {
+    const longAnswer = `${"word ".repeat(2_000)}TAIL_BEYOND_THE_SOURCE_LIMIT`;
+    const [item] = deriveTimelineTurnRailItems([
+      {
+        id: "u1",
+        kind: "message",
+        createdAt: "2026-03-04T12:00:00.000Z",
+        message: { role: "user", text: "Question" },
+      },
+      { id: "a1", kind: "message", message: { role: "assistant", text: longAnswer } },
+    ]);
+    expect(item?.createdAt).toBe("2026-03-04T12:00:00.000Z");
+    expect(item?.assistantText?.length).toBe(TURN_RAIL_PREVIEW_DISPLAY_CHARS);
+    expect(item?.assistantText?.endsWith("…")).toBe(true);
+    expect(item?.assistantText).not.toContain("TAIL_BEYOND");
+  });
+
+  it("reuses previews for unchanged messages", () => {
+    let reads = 0;
+    const message = {
+      role: "assistant" as const,
+      get text() {
+        reads += 1;
+        return "Cached answer";
+      },
+    };
+    const rows = [
+      { id: "u1", kind: "message", message: { role: "user" as const, text: "Q" } },
+      { id: "a1", kind: "message", message },
+    ];
+    deriveTimelineTurnRailItems(rows);
+    const afterFirst = reads;
+    expect(deriveTimelineTurnRailItems(rows)[0]?.assistantText).toBe("Cached answer");
+    expect(reads).toBe(afterFirst);
   });
 
   it("strips terminal dumps and falls back through file and attachment names", () => {

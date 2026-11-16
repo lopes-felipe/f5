@@ -4,134 +4,386 @@ import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import Migration0001 from "../Migrations/001_OrchestrationEvents.ts";
+import Migration0005 from "../Migrations/005_Projections.ts";
 import Migration0068 from "../Migrations/068_UsageFacts.ts";
+import Migration0071 from "../Migrations/071_UsageEventTimeIndex.ts";
 import Migration0073 from "../Migrations/073_UsageFactRecordedAt.ts";
+import Migration0161 from "../Migrations/161_UsageNativeIdentity.ts";
+import Migration0162 from "../Migrations/162_UsageFactsThreadIndex.ts";
 import * as SqliteClient from "../NodeSqliteClient.ts";
 import { UsageFactRepository } from "../Services/UsageFacts.ts";
-import { UsageFactRepositoryLive } from "./UsageFacts.ts";
+import { makeUsageBucketStatements, UsageFactRepositoryLive } from "./UsageFacts.ts";
 
-it.layer(SqliteClient.layerMemory())("UsageFactRepository", (it) => {
-  it.effect("upserts facts idempotently and includes pre-coverage event-log costs", () =>
+const migrate = Effect.gen(function* () {
+  yield* Migration0001;
+  yield* Migration0005;
+  yield* Migration0068;
+  yield* Migration0071;
+  yield* Migration0073;
+  yield* Migration0161;
+});
+
+const insertLegacyCost = (input: {
+  readonly id: string;
+  readonly occurredAt: string;
+  readonly payload: unknown;
+}) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO orchestration_events (
+        event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+        command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+      ) VALUES (
+        ${input.id}, 'thread', 'stream', ${Math.floor(Math.random() * 1e9)},
+        'thread.session-set', ${input.occurredAt}, NULL, NULL, NULL, 'provider',
+        ${JSON.stringify(input.payload)}, '{}'
+      )
+    `;
+  });
+
+const insertThread = (threadId: string, projectId: string, title: string, deleted = false) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO projection_threads (
+        thread_id, project_id, title, model, created_at, last_interaction_at, updated_at, deleted_at
+      ) VALUES (
+        ${threadId}, ${projectId}, ${title}, 'model', '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
+        ${deleted ? "2026-02-01T00:00:00.000Z" : null}
+      )
+    `;
+  });
+
+const insertProject = (projectId: string, title: string, deleted = false) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO projection_projects (
+        project_id, title, workspace_root, scripts_json, created_at, updated_at, deleted_at
+      ) VALUES (
+        ${projectId}, ${title}, '/tmp', '[]', '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:00.000Z', ${deleted ? "2026-02-01T00:00:00.000Z" : null}
+      )
+    `;
+  });
+
+function fact(overrides: Partial<UsageTurnFact> & { readonly id: string }): UsageTurnFact {
+  const { id, ...rest } = overrides;
+  return {
+    turnId: TurnId.makeUnsafe(`turn-${id}`),
+    threadId: ThreadId.makeUnsafe("thread-1"),
+    projectId: ProjectId.makeUnsafe("project-1"),
+    provider: "codex",
+    providerInstanceId: null,
+    model: "gpt-5.6",
+    inputTokens: 80,
+    outputTokens: 20,
+    cacheReadTokens: 40,
+    cacheWriteTokens: null,
+    totalTokens: 100,
+    providerReportedCostUsd: null,
+    tokenProvenance: "provider-reported",
+    costProvenance: "unreported",
+    completedAt: "2026-08-12T10:30:00.000Z",
+    sourceEventId: EventId.makeUnsafe(`event-${id}`),
+    ...rest,
+  };
+}
+
+const day = (key: string) => ({
+  key,
+  startAt: `${key}T00:00:00.000Z`,
+  endAt: new Date(Date.parse(`${key}T00:00:00.000Z`) + 86_400_000).toISOString(),
+});
+
+it.layer(SqliteClient.layerMemory())("UsageFactRepository facts and legacy costs", (it) => {
+  it.effect("upserts facts idempotently and includes pre-cutover event-log costs", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE projection_projects (project_id TEXT PRIMARY KEY)`;
-      yield* sql`
-        CREATE TABLE projection_threads (
-          thread_id TEXT PRIMARY KEY,
-          project_id TEXT NOT NULL
-        )
-      `;
-      yield* Migration0001;
-      yield* Migration0068;
-      yield* Migration0073;
+      yield* migrate;
       yield* sql`
         UPDATE projection_usage_metadata
-        SET coverage_started_at = '2026-08-10T00:00:00.000Z'
+        SET coverage_started_at = '2026-08-10T00:00:00.000Z',
+            fact_cutover_at = '2026-08-10T00:00:00.000Z'
         WHERE singleton_id = 1
       `;
+      yield* insertThread("thread-1", "project-1", "Thread one");
+      yield* insertThread("thread-2", "project-2", "Thread two");
 
       const repository = yield* UsageFactRepository;
-      const fact: UsageTurnFact = {
-        turnId: TurnId.makeUnsafe("turn-current"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        projectId: ProjectId.makeUnsafe("project-1"),
-        provider: "codex",
-        providerInstanceId: null,
-        model: "gpt-5.6",
-        inputTokens: 80,
-        outputTokens: 20,
-        cacheReadTokens: 40,
-        cacheWriteTokens: null,
-        totalTokens: 100,
-        providerReportedCostUsd: null,
-        tokenProvenance: "provider-reported",
-        costProvenance: "unreported",
-        completedAt: "2026-08-12T10:30:00.000Z",
-        sourceEventId: EventId.makeUnsafe("event-current"),
-      };
-      yield* repository.record(fact);
-      yield* repository.record(fact);
-
-      yield* sql`
-        INSERT INTO orchestration_events (
-          event_id,
-          aggregate_kind,
-          stream_id,
-          stream_version,
-          event_type,
-          occurred_at,
-          command_id,
-          causation_event_id,
-          correlation_id,
-          actor_kind,
-          payload_json,
-          metadata_json
-        ) VALUES (
-          'legacy-cost-event',
-          'thread',
-          'thread-1',
-          1,
-          'thread.session-set',
-          '2026-08-09T08:30:00.000Z',
-          NULL,
-          NULL,
-          NULL,
-          'provider',
-          '{"session":{"providerName":"claudeAgent","turnCostUsd":0.75}}',
-          '{}'
-        )
-      `;
-
-      const rows = yield* repository.summarizeHourly({
-        startedAt: "2026-08-08T00:00:00.000Z",
-        endedAt: "2026-08-13T00:00:00.000Z",
+      const current = fact({ id: "current" });
+      yield* repository.record(current);
+      yield* repository.record(current);
+      // Exactly on a bucket boundary: belongs only to the later bucket.
+      yield* repository.record(
+        fact({
+          id: "boundary",
+          completedAt: "2026-08-12T00:00:00.000Z",
+          threadId: ThreadId.makeUnsafe("thread-2"),
+          projectId: ProjectId.makeUnsafe("project-2"),
+          inputTokens: 0,
+          outputTokens: null,
+          cacheReadTokens: null,
+          totalTokens: null,
+          tokenProvenance: "unreported",
+        }),
+      );
+      yield* insertLegacyCost({
+        id: "legacy-no-thread",
+        occurredAt: "2026-08-09T08:30:00.000Z",
+        payload: { session: { providerName: "claudeAgent", turnCostUsd: 0.75 } },
+      });
+      yield* insertLegacyCost({
+        id: "legacy-thread",
+        occurredAt: "2026-08-09T09:30:00.000Z",
+        payload: {
+          threadId: "thread-2",
+          session: { providerName: "claudeAgent", turnCostUsd: 0.25 },
+        },
+      });
+      yield* insertLegacyCost({
+        id: "legacy-no-cost",
+        occurredAt: "2026-08-09T10:30:00.000Z",
+        payload: { threadId: "thread-2", session: { providerName: "claudeAgent" } },
+      });
+      yield* insertLegacyCost({
+        id: "legacy-negative",
+        occurredAt: "2026-08-09T10:30:00.000Z",
+        payload: { session: { providerName: "claudeAgent", turnCostUsd: -1 } },
       });
 
-      assert.equal(rows.length, 2);
+      const buckets = ["2026-08-08", "2026-08-09", "2026-08-10", "2026-08-11", "2026-08-12"].map(
+        day,
+      );
+      const rows = yield* repository.summarizeBuckets({ buckets });
       for (const provider of ["codex", "claudeAgent", "cursor"] as const) {
-        const filtered = yield* repository.summarizeHourly({
-          startedAt: "2026-08-08T00:00:00.000Z",
-          endedAt: "2026-08-13T00:00:00.000Z",
-          provider,
-        });
+        const filtered = yield* repository.summarizeBuckets({ buckets, provider });
         assert.deepStrictEqual(
           filtered,
           rows.filter((row) => row.provider === provider),
         );
       }
+      // Hidden providers leave both facts and legacy cost events out.
+      assert.deepStrictEqual(
+        yield* repository.summarizeBuckets({ buckets, hiddenProviders: ["claudeAgent", "cursor"] }),
+        rows.filter((row) => row.provider === "codex"),
+      );
+      assert.isTrue(rows.some((row) => row.provider === "claudeAgent" && row.legacyCostEventCount));
+      const range = { startedAt: buckets[0]!.startAt, endedAt: buckets.at(-1)!.endAt };
+      const scopeRows = yield* repository.summarizeByScope(range);
+      assert.deepStrictEqual(
+        yield* repository.summarizeByScope({ ...range, hiddenProviders: ["claudeAgent"] }),
+        scopeRows.filter((row) => row.provider !== "claudeAgent"),
+      );
+      assert.isTrue(scopeRows.some((row) => row.provider === "claudeAgent"));
       assert.deepStrictEqual(
         rows.map((row) => ({
+          bucket: row.bucketKey,
           provider: row.provider,
           turns: row.turnCount,
+          recorded: row.recordedTurnCount,
+          legacy: row.legacyCostEventCount,
           tokens: row.totalTokens,
+          knownTotals: row.totalTokenTurnCount,
+          knownInputs: row.inputTokenTurnCount,
           cost: row.providerReportedCostUsd,
-          historical: row.historicalCostTurnCount,
         })),
         [
-          { provider: "codex", turns: 1, tokens: 100, cost: null, historical: 0 },
-          { provider: "claudeAgent", turns: 1, tokens: 0, cost: 0.75, historical: 1 },
+          {
+            bucket: "2026-08-12",
+            provider: "codex",
+            turns: 1,
+            recorded: 1,
+            legacy: 0,
+            tokens: 100,
+            knownTotals: 1,
+            knownInputs: 1,
+            cost: null,
+          },
+          {
+            bucket: "2026-08-12",
+            provider: "codex",
+            turns: 1,
+            recorded: 1,
+            legacy: 0,
+            tokens: 0,
+            knownTotals: 0,
+            knownInputs: 1,
+            cost: null,
+          },
+          {
+            bucket: "2026-08-09",
+            provider: "claudeAgent",
+            turns: 2,
+            recorded: 0,
+            legacy: 2,
+            tokens: 0,
+            knownTotals: 0,
+            knownInputs: 0,
+            cost: 1,
+          },
+        ].sort((left, right) => (left.legacy ? 1 : 0) - (right.legacy ? 1 : 0)),
+      );
+
+      const projectTwo = yield* repository.summarizeBuckets({
+        buckets,
+        projectId: ProjectId.makeUnsafe("project-2"),
+      });
+      assert.deepStrictEqual(
+        projectTwo.map((row) => [row.provider, row.turnCount, row.providerReportedCostUsd]),
+        [
+          ["codex", 1, null],
+          ["claudeAgent", 1, 0.25],
         ],
+      );
+
+      const scope = yield* repository.summarizeByScope({
+        startedAt: "2026-08-08T00:00:00.000Z",
+        endedAt: "2026-08-13T00:00:00.000Z",
+      });
+      assert.deepStrictEqual(
+        scope
+          .map((row): Array<string | number | null> => [row.threadId, row.projectId, row.turnCount])
+          .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+        [
+          ["thread-1", "project-1", 1],
+          ["thread-2", "project-2", 1],
+          ["thread-2", "project-2", 1],
+          [null, null, 1],
+        ].sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
       );
     }).pipe(Effect.provide(UsageFactRepositoryLive)),
   );
+});
 
+it.layer(SqliteClient.layerMemory())("UsageFactRepository scope titles", (it) => {
+  it.effect("reads titles and deletion state against the real projection schema", () =>
+    Effect.gen(function* () {
+      yield* migrate;
+      yield* insertProject("project-live", "  Live project ");
+      yield* insertProject("project-gone", "Removed", true);
+      yield* insertThread("thread-live", "project-live", "Live thread");
+      yield* insertThread("thread-gone", "project-gone", "Deleted thread", true);
+      yield* insertThread("thread-blank", "project-live", "   ");
+      const repository = yield* UsageFactRepository;
+
+      assert.deepStrictEqual(yield* repository.readScopeTitles({ threadIds: [], projectIds: [] }), {
+        threads: [],
+        projects: [],
+      });
+      const titles = yield* repository.readScopeTitles({
+        threadIds: ["thread-live", "thread-gone", "thread-blank", "thread-missing"],
+        projectIds: ["project-live", "project-gone", "project-missing"],
+      });
+      assert.deepStrictEqual(titles.projects, [
+        { id: "project-live", title: "Live project", deleted: false },
+        { id: "project-gone", title: "Removed", deleted: true },
+        { id: "project-missing", title: null, deleted: true, projectId: null },
+      ]);
+      assert.deepStrictEqual(titles.threads, [
+        { id: "thread-live", title: "Live thread", deleted: false, projectId: "project-live" },
+        { id: "thread-gone", title: "Deleted thread", deleted: true, projectId: "project-gone" },
+        { id: "thread-blank", title: null, deleted: false, projectId: "project-live" },
+        { id: "thread-missing", title: null, deleted: true, projectId: null },
+      ]);
+    }).pipe(Effect.provide(UsageFactRepositoryLive)),
+  );
+});
+
+it.layer(SqliteClient.layerMemory())("UsageFactRepository thread turns", (it) => {
+  it.effect("lists one thread's newest turns oldest first and skips unknown providers", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* migrate;
+      yield* Migration0162;
+      const repository = yield* UsageFactRepository;
+      const at = (minute: number) =>
+        `2026-08-12T10:${String(minute).padStart(2, "0")}:00.000Z` as const;
+      // Recorded out of order so the result order comes from completed_at.
+      yield* repository.record(fact({ id: "b", completedAt: at(2), cacheWriteTokens: 5 }));
+      yield* repository.record(fact({ id: "a", completedAt: at(1) }));
+      yield* repository.record(fact({ id: "c", completedAt: at(3) }));
+      yield* repository.record(
+        fact({ id: "other", completedAt: at(4), threadId: ThreadId.makeUnsafe("thread-2") }),
+      );
+      yield* repository.record(fact({ id: "gone", completedAt: at(5) }));
+      yield* sql`
+        UPDATE projection_turn_usage_facts SET provider_name = 'retired-provider'
+        WHERE turn_id = 'turn-gone'
+      `;
+      // Asides record usage on the thread, oldest and newest here, but are not turns.
+      for (const [id, minute] of [
+        ["early", 0],
+        ["late", 6],
+      ] as const) {
+        yield* repository.record(
+          fact({ id, completedAt: at(minute), turnId: TurnId.makeUnsafe(`aside:${id}`) }),
+        );
+      }
+
+      const all = yield* repository.listByThread({
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        limit: 10,
+      });
+      assert.deepStrictEqual(
+        all.turns.map((turn) => turn.turnId),
+        ["turn-a", "turn-b", "turn-c"],
+      );
+      assert.equal(all.firstTurnId, "turn-a");
+      assert.equal(all.earlierTurnCount, 0);
+      assert.deepStrictEqual(all.turns[1], {
+        turnId: TurnId.makeUnsafe("turn-b"),
+        provider: "codex",
+        model: "gpt-5.6",
+        inputTokens: 80,
+        outputTokens: 20,
+        cacheReadTokens: 40,
+        cacheWriteTokens: 5,
+        totalTokens: 100,
+        tokenProvenance: "provider-reported",
+        completedAt: at(2),
+      });
+
+      // The limit keeps the newest turns, still returned oldest first. The
+      // unknown-provider row counts toward the limit before it is dropped.
+      // The window no longer starts at the thread's first turn.
+      const newest = yield* repository.listByThread({
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        limit: 3,
+      });
+      assert.deepStrictEqual(
+        newest.turns.map((turn) => turn.turnId),
+        ["turn-b", "turn-c"],
+      );
+      assert.equal(newest.firstTurnId, "turn-a");
+      assert.equal(newest.earlierTurnCount, 1);
+
+      assert.deepStrictEqual(
+        yield* repository.listByThread({ threadId: ThreadId.makeUnsafe("thread-9"), limit: 10 }),
+        { turns: [], firstTurnId: null, earlierTurnCount: 0 },
+      );
+
+      const plan = yield* sql<{ detail: string }>`
+        EXPLAIN QUERY PLAN
+        SELECT turn_id FROM projection_turn_usage_facts
+        WHERE thread_id = 'thread-1' ORDER BY completed_at DESC LIMIT 500
+      `;
+      assert.isTrue(
+        plan.some((row) => row.detail.includes("projection_turn_usage_facts_thread_completed_idx")),
+      );
+    }).pipe(Effect.provide(UsageFactRepositoryLive)),
+  );
+});
+
+it.layer(SqliteClient.layerMemory())("UsageFactRepository at scale", (it) => {
   it.effect(
-    "aggregates a deterministic 100,000-fact 90-day fixture into bounded hourly rows",
+    "aggregates a deterministic 100,000-fact 90-day fixture into bounded rows",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`CREATE TABLE IF NOT EXISTS projection_projects (project_id TEXT PRIMARY KEY)`;
-        yield* sql`
-        CREATE TABLE IF NOT EXISTS projection_threads (
-          thread_id TEXT PRIMARY KEY,
-          project_id TEXT NOT NULL
-        )
-      `;
-        yield* Migration0001;
-        yield* Migration0068;
-        yield* Migration0073;
-        yield* sql`DELETE FROM projection_turn_usage_facts`;
-        yield* sql`DELETE FROM orchestration_events`;
+        yield* migrate;
         yield* sql`
         WITH RECURSIVE
           thousands(value) AS (
@@ -166,8 +418,8 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository", (it) => {
         )
         SELECT
           printf('benchmark-turn-%06d', value),
-          'benchmark-thread',
-          'benchmark-project',
+          printf('benchmark-thread-%04d', value % 5000),
+          printf('benchmark-project-%02d', (value % 5000) % 40),
           CASE value % 5
             WHEN 0 THEN 'codex'
             WHEN 1 THEN 'claudeAgent'
@@ -184,36 +436,80 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository", (it) => {
           'provider-reported',
           CASE WHEN value % 5 < 2 THEN 'provider-reported' ELSE 'unreported' END,
           strftime(
-            '%Y-%m-%dT%H:00:00.000Z',
+            '%Y-%m-%dT%H:%M:%fZ',
             '2026-08-15T00:00:00.000Z',
-            '-' || (value % 2160) || ' hours'
+            '-' || (value % 2160) || ' hours',
+            '-' || (value % 60) || ' minutes'
           ),
           printf('benchmark-event-%06d', value)
         FROM facts
       `;
         yield* sql`
           UPDATE projection_usage_metadata
-          SET coverage_started_at = '2026-05-17T00:00:00.000Z',
-              fact_cutover_at = '2026-05-17T00:00:00.000Z'
+          SET coverage_started_at = '2026-05-16T00:00:00.000Z',
+              fact_cutover_at = '2026-05-16T00:00:00.000Z'
           WHERE singleton_id = 1
         `;
 
         const repository = yield* UsageFactRepository;
-        const rows = yield* repository.summarizeHourly({
-          startedAt: "2026-05-17T00:00:00.000Z",
-          endedAt: "2026-08-15T01:00:00.000Z",
-        });
+        const buckets = Array.from({ length: 92 }, (_, index) =>
+          day(
+            new Date(Date.parse("2026-05-16T00:00:00.000Z") + index * 86_400_000)
+              .toISOString()
+              .slice(0, 10),
+          ),
+        );
+        const rows = yield* repository.summarizeBuckets({ buckets });
         const count = yield* sql<{ readonly count: number }>`
-        SELECT COUNT(*) AS count FROM projection_turn_usage_facts
-      `;
+          SELECT COUNT(*) AS count FROM projection_turn_usage_facts
+        `;
 
         assert.deepStrictEqual(count, [{ count: 100_000 }]);
-        assert.equal(rows.length, 2_160);
+        // Bounded by buckets x providers x pricing partitions, not by facts.
+        assert.isAtMost(rows.length, 92 * 5);
         assert.equal(
           rows.reduce((total, row) => total + row.turnCount, 0),
           100_000,
         );
+
+        const scope = yield* repository.summarizeByScope({
+          startedAt: buckets[0]!.startAt,
+          endedAt: buckets[91]!.endAt,
+        });
+        assert.equal(scope.length, 5_000);
+        assert.equal(
+          scope.reduce((total, row) => total + row.turnCount, 0),
+          100_000,
+        );
+        assert.equal(new Set(scope.map((row) => row.projectId)).size, 40);
+
+        const statements = makeUsageBucketStatements(sql, { buckets }, "2026-06-01T00:00:00.000Z");
+        const factPlan = yield* sql<{ readonly detail: string }>`
+          EXPLAIN QUERY PLAN ${statements.facts}
+        `;
+        const factDetails = factPlan.map((step) => step.detail);
+        const scanBuckets = factDetails.findIndex((detail) => /^SCAN b\b/.test(detail));
+        const searchFacts = factDetails.findIndex((detail) =>
+          detail.startsWith(
+            "SEARCH f USING INDEX projection_turn_usage_facts_completed_idx (completed_at>? AND completed_at<?)",
+          ),
+        );
+        assert.isAtLeast(scanBuckets, 0, factDetails.join("\n"));
+        assert.isAbove(searchFacts, scanBuckets, factDetails.join("\n"));
+
+        const legacyPlan = yield* sql<{ readonly detail: string }>`
+          EXPLAIN QUERY PLAN ${statements.legacy!}
+        `;
+        const legacyDetails = legacyPlan.map((step) => step.detail);
+        const scanLegacyBuckets = legacyDetails.findIndex((detail) => /^SCAN b\b/.test(detail));
+        const searchEvents = legacyDetails.findIndex((detail) =>
+          /^SEARCH e USING (COVERING )?INDEX idx_orch_events_type_occurred_at \(event_type=\? AND occurred_at>\? AND occurred_at<\?\)/.test(
+            detail,
+          ),
+        );
+        assert.isAtLeast(scanLegacyBuckets, 0, legacyDetails.join("\n"));
+        assert.isAbove(searchEvents, scanLegacyBuckets, legacyDetails.join("\n"));
       }).pipe(Effect.provide(UsageFactRepositoryLive)),
-    15_000,
+    30_000,
   );
 });

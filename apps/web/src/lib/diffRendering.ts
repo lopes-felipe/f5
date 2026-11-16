@@ -1,3 +1,13 @@
+import type { HighlighterTypes } from "@pierre/diffs";
+
+/**
+ * Always highlight with the Oniguruma WASM engine: the JS regex engine can
+ * backtrack catastrophically and hang the tokenizing thread. The shared
+ * highlighter is a first-caller-wins singleton, so every creation site must
+ * pass this value.
+ */
+export const PREFERRED_HIGHLIGHTER: HighlighterTypes = "shiki-wasm";
+
 export const DIFF_THEME_NAMES = {
   light: "pierre-light",
   dark: "pierre-dark",

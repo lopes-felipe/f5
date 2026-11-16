@@ -111,6 +111,9 @@ export type MarkProjectionTurnProcessingQuiescedInput =
   typeof MarkProjectionTurnProcessingQuiescedInput.Type;
 
 export interface ProjectionTurnRepositoryShape {
+  readonly listRecentPendingTurnStartThreadIds: (input: {
+    readonly since: string;
+  }) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
   /**
    * Inserts or updates the canonical row for a concrete `{threadId, turnId}` turn lifecycle state.
    */

@@ -1,3 +1,5 @@
+import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import Path from "node:path";
 import { Effect } from "effect";
 import { type ProjectId, type ServerSettings, type ThreadEnvMode } from "@t3tools/contracts";
@@ -41,3 +43,16 @@ export function isInsideProjectWorkspace(workspaceRoot: string, cwd: string): bo
     (!Path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${Path.sep}`))
   );
 }
+
+/** Resolve the most specific registered root or the project owning a linked worktree. */
+export const readProjectForCwd = (cwd: string) =>
+  Effect.gen(function* () {
+    const projects = yield* ProjectionProjectRepository;
+    const threads = yield* ProjectionThreadRepository;
+    const candidates = (yield* projects.listAll())
+      .filter((project) => project.deletedAt === null)
+      .toSorted((a, b) => b.workspaceRoot.length - a.workspaceRoot.length);
+    const root = candidates.find((project) => isInsideProjectWorkspace(project.workspaceRoot, cwd));
+    const linked = root ? [] : yield* threads.listProjectIdsByWorktreePath(cwd);
+    return root ?? candidates.find((project) => linked.includes(project.projectId));
+  });

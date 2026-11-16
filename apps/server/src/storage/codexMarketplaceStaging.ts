@@ -1,3 +1,4 @@
+import { storageLstat, storageReadDir } from "./diskUsage.ts";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 
@@ -12,8 +13,13 @@ import { Schema } from "effect";
 import { resolveCodexInstanceHomePaths } from "../provider/Drivers/CodexHomeLayout.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { buildAccountExecutionEnvironment } from "../providerProcessEnv.ts";
-import { recursiveSize } from "./diskUsage.ts";
-import { removeTreeIfSafe, type StoragePathWarningInput } from "./storagePathSafety.ts";
+import { recursiveSize, fileIdentity, type FileIdentity } from "./diskUsage.ts";
+import {
+  removeTreeIfSafe,
+  isPathWithinRoot,
+  type RemovalOutcome,
+  safeLstat,
+} from "./storagePathSafety.ts";
 
 /**
  * Codex upgrades a configured Git marketplace by cloning it into
@@ -39,6 +45,7 @@ export interface CodexMarketplaceLeftover {
   readonly path: string;
   readonly kind: "staging" | "backup";
   readonly mtimeMs: number;
+  readonly identity?: FileIdentity;
 }
 
 const CodexSettingsFromUnknown = Schema.decodeUnknownOption(CodexSettings);
@@ -93,17 +100,24 @@ export function resolveCodexLaunchHomes(input: {
 async function listPrefixedDirectories(
   directory: string,
   prefix: string,
-): Promise<Array<{ readonly path: string; readonly mtimeMs: number }>> {
-  const entries = await FS.readdir(directory, { withFileTypes: true }).catch(() => []);
-  const result: Array<{ readonly path: string; readonly mtimeMs: number }> = [];
+): Promise<
+  Array<{ readonly path: string; readonly mtimeMs: number; readonly identity: FileIdentity }>
+> {
+  const entries = await storageReadDir(directory, { withFileTypes: true }).catch(() => []);
+  const result: Array<{
+    readonly path: string;
+    readonly mtimeMs: number;
+    readonly identity: FileIdentity;
+  }> = [];
   for (const entry of entries) {
     if (!entry.name.startsWith(prefix) || !entry.isDirectory()) continue;
     const target = Path.join(directory, entry.name);
-    const stat = await FS.lstat(target).catch(() => null);
+    const stat = await storageLstat(target).catch(() => null);
     // Codex creates these dirs fresh with `tempfile` and never renames one
     // into place; moving the old root into a backup dir updates that dir's
     // mtime. So mtime is when the upgrade last touched it.
-    if (stat?.isDirectory()) result.push({ path: target, mtimeMs: stat.mtimeMs });
+    if (stat?.isDirectory())
+      result.push({ path: target, mtimeMs: stat.mtimeMs, identity: fileIdentity(stat) });
   }
   return result;
 }
@@ -149,10 +163,10 @@ async function hasMarketplaceManifest(root: string): Promise<boolean> {
  */
 async function isRedundantBackup(marketplacesRoot: string, backup: string): Promise<boolean> {
   const backupRoot = Path.join(backup, "root");
-  if ((await FS.lstat(backupRoot).catch(() => null)) === null) return true;
+  if ((await storageLstat(backupRoot).catch(() => null)) === null) return true;
   const identity = await readInstallIdentity(backupRoot);
   if (identity === null) return false;
-  const entries = await FS.readdir(marketplacesRoot, { withFileTypes: true }).catch(() => []);
+  const entries = await storageReadDir(marketplacesRoot, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     if (entry.name.startsWith(BACKUP_PREFIX)) continue;
@@ -209,8 +223,9 @@ export async function listCodexMarketplaceLeftovers(input: {
 
 export async function codexMarketplaceLeftoverBytes(
   leftover: CodexMarketplaceLeftover,
+  signal?: AbortSignal,
 ): Promise<number> {
-  return (await recursiveSize(leftover.path)).bytes;
+  return (await recursiveSize(leftover.path, signal ? { signal } : {})).bytes;
 }
 
 /**
@@ -219,12 +234,43 @@ export async function codexMarketplaceLeftoverBytes(
  */
 export async function removeCodexMarketplaceLeftover(
   leftover: CodexMarketplaceLeftover,
-): Promise<{ readonly reclaimedBytes: number; readonly warning?: StoragePathWarningInput }> {
+  expectedIdentity?: FileIdentity | null,
+  isCancelled?: () => boolean,
+): Promise<RemovalOutcome> {
+  if (!isPathWithinRoot({ root: leftover.root, target: leftover.path }))
+    return {
+      kind: "refused",
+      reason: "Path is outside the allowed storage cleanup root.",
+      reclaimedBytes: 0,
+      warning: { path: leftover.path, reason: "Path is outside the allowed storage cleanup root." },
+    };
+  if ((await safeLstat(leftover.path)) === null) return { kind: "absent", reclaimedBytes: 0 };
+  const stillEligible = (
+    await listCodexMarketplaceLeftovers({ homes: [leftover.home], nowMs: Date.now() })
+  ).some(
+    (candidate) =>
+      candidate.path === leftover.path &&
+      candidate.mtimeMs === leftover.mtimeMs &&
+      candidate.kind === leftover.kind,
+  );
+  if (!stillEligible)
+    return {
+      kind: "refused",
+      reason:
+        "Marketplace directory no longer meets the reviewed age, ownership, or source checks.",
+      reclaimedBytes: 0,
+      warning: {
+        path: leftover.path,
+        reason:
+          "Marketplace directory no longer meets the reviewed age, ownership, or source checks.",
+      },
+    };
   const bytes = await codexMarketplaceLeftoverBytes(leftover);
-  const result = await removeTreeIfSafe({ path: leftover.path, allowedRoot: leftover.root });
-  // `removeTreeIfSafe` reports the size of the directory entry itself, which
-  // is 0 on Windows; no warning means the tree is gone.
-  return result.warning
-    ? { reclaimedBytes: 0, warning: result.warning }
-    : { reclaimedBytes: bytes };
+  const result = await removeTreeIfSafe({
+    path: leftover.path,
+    allowedRoot: leftover.root,
+    expectedIdentity: expectedIdentity === undefined ? leftover.identity : expectedIdentity,
+    isCancelled,
+  });
+  return result.kind === "removed" ? { kind: "removed", bytes, reclaimedBytes: bytes } : result;
 }

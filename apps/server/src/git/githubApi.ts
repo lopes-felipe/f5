@@ -4,9 +4,13 @@ import {
   makeGitHubConditionalCache,
   type GitHubConditionalRead,
 } from "./githubConditionalCache.ts";
-import { githubRequestScheduler, type GitHubResource } from "./githubRequestScheduler.ts";
+import {
+  githubRequestScheduler,
+  GitHubSyncWait,
+  type GitHubResource,
+} from "./githubRequestScheduler.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { Effect, Semaphore, ServiceMap } from "effect";
+import { Effect, Option, Semaphore, ServiceMap } from "effect";
 import type { SourceControlRateLimit } from "@t3tools/contracts";
 
 import { GitHubCliError } from "./Errors.ts";
@@ -36,12 +40,22 @@ export interface GitHubApiResponse {
   readonly rateLimitResource: string | null;
 }
 
+/** An older `gh` has no flag for printing terminal text, so it cannot return a job log. */
+export const GITHUB_CLI_LOGS_UNSUPPORTED =
+  "The installed GitHub CLI (`gh`) is too old to print job logs.";
+
 export interface GitHubApiRequest {
   readonly cwd: string;
   readonly context: GitHubCredentialContext;
   readonly method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   readonly endpoint: string;
   readonly body?: unknown;
+  readonly accept?: "application/vnd.github.diff";
+  /**
+   * The response is terminal output, such as a job log: plain text that can hold escape
+   * sequences. The CLI refuses to print those unless it is told to.
+   */
+  readonly terminalText?: boolean;
   readonly query?: Readonly<Record<string, string | number | boolean>>;
   readonly cache?: GitHubConditionalRead;
   readonly ifNoneMatch?: string | undefined;
@@ -106,6 +120,20 @@ export function githubCredentialEnvironment(context: GitHubCredentialContext): N
   return tokenEnvironment(context.host, credential.token);
 }
 
+function isRateLimitedResponse(response: GitHubApiResponse): boolean {
+  return (
+    response.status === 429 ||
+    (response.status === 403 &&
+      (response.rateLimit.remaining === 0 || response.rateLimit.retryAfterSeconds != null)) ||
+    response.graphqlErrors.some(
+      (error) =>
+        typeof error === "object" &&
+        error !== null &&
+        (error as { type?: unknown }).type === "RATE_LIMITED",
+    )
+  );
+}
+
 function nonNegativeHeader(headers: Map<string, string>, name: string): number | null {
   const value = headers.get(name);
   if (value === undefined || !/^\d+$/.test(value)) return null;
@@ -127,7 +155,11 @@ class GitHubResponseParseError extends Error {
 }
 
 /** Parse exactly one --include response. Incomplete bodies are never empty successes. */
-export function parseGitHubApiResponse(output: string, now = Date.now()): GitHubApiResponse {
+export function parseGitHubApiResponse(
+  output: string,
+  now = Date.now(),
+  format: "json" | "text" = "json",
+): GitHubApiResponse {
   const statusMatch = /^HTTP\/\S+\s+(\d{3})(?:\s|$)/.exec(output.slice(0, 256));
   const separator = /\r?\n\r?\n/.exec(output);
   if (!separator || separator.index > 64 * 1024)
@@ -147,11 +179,11 @@ export function parseGitHubApiResponse(output: string, now = Date.now()): GitHub
     const value = line.slice(colon + 1).trim();
     headers.set(name, headers.has(name) ? `${headers.get(name)}, ${value}` : value);
   }
-  const rawBody = output.slice(separator.index + separator[0].length).trim();
+  const rawBody = output.slice(separator.index + separator[0].length);
   let body: unknown = null;
   if (status !== 204 && status !== 304) {
     try {
-      body = JSON.parse(rawBody);
+      body = format === "text" && status < 400 ? rawBody : JSON.parse(rawBody);
     } catch {
       // Gateways can return text/HTML errors. Preserve their HTTP status and
       // retry headers so callers and the scheduler can handle the failure.
@@ -214,8 +246,11 @@ export function makeGitHubApi(
   scheduler = githubRequestScheduler,
   resolveToken: (host: string, cwd: string) => Effect.Effect<string, GitHubCliError> = () =>
     Effect.succeed(""),
+  options: { readonly invalidateToken?: (host: string) => void } = {},
 ) {
   const rejectedCredentials = new Map<string, string>();
+  /** Per host, the fingerprint of a credential that verified through the GraphQL viewer. */
+  const viewerOnlyCredentials = new Map<string, string>();
   const accounts = new Map<string, GitHubCredentialContext>();
   const verifiedAt = new Map<string, number>();
   const identityLock = Semaphore.makeUnsafe(1);
@@ -255,6 +290,15 @@ export function makeGitHubApi(
               if (/[\r\n]/.test(value) || value.length > 4096)
                 throw new Error("Invalid conditional request header.");
               args.push("--header", `${name}: ${value}`);
+            }
+            if (input.accept !== undefined) {
+              if (input.accept !== "application/vnd.github.diff")
+                throw new Error("Invalid GitHub response format.");
+              args.push("--header", `Accept: ${input.accept}`);
+            }
+            if (input.terminalText) {
+              if (input.method !== "GET") throw new Error("Invalid GitHub response format.");
+              args.push("--allow-escape-sequences");
             }
             if (body !== undefined) args.push("--input", "-");
             const timeoutMs = input.timeoutMs ?? 45_000;
@@ -343,7 +387,12 @@ export function makeGitHubApi(
             );
           }
           return yield* Effect.try({
-            try: () => parseGitHubApiResponse(result.stdout),
+            try: () =>
+              parseGitHubApiResponse(
+                result.stdout,
+                Date.now(),
+                input.accept || input.terminalText ? "text" : "json",
+              ),
             catch: (cause) =>
               cause instanceof GitHubResponseParseError
                 ? cause
@@ -359,6 +408,16 @@ export function makeGitHubApi(
                   status: error.status,
                   category: error.category,
                 });
+                if (
+                  result.code !== 0 &&
+                  input.terminalText &&
+                  result.stderr.includes("unknown flag: --allow-escape-sequences")
+                )
+                  return yield* new GitHubCliError({
+                    operation: "request",
+                    kind: "generic",
+                    detail: GITHUB_CLI_LOGS_UNSUPPORTED,
+                  });
                 if (result.code !== 0) {
                   const normalized = normalizeGitHubCliError(
                     "request",
@@ -406,10 +465,24 @@ export function makeGitHubApi(
             }),
           ),
         );
-        return yield* scheduler.run(input.host, resource, recorded, {
+        const run = scheduler.run(input.host, resource, recorded, {
           searchPages,
           graphql: isGraphql,
         });
+        const response = yield* run;
+        const sync = Option.getOrElse(yield* Effect.serviceOption(GitHubSyncWait), () => false);
+        if (
+          sync &&
+          resource !== "write" &&
+          (response.status === 429 ||
+            (response.status === 403 &&
+              (response.rateLimit.remaining === 0 || response.rateLimit.retryAfterSeconds != null)))
+        ) {
+          // Re-admission waits for the recorded reset. Retry a read at most once;
+          // dispatched writes retain their original durable outcome.
+          return yield* run;
+        }
+        return response;
       }).pipe(
         Effect.mapError(
           (error) =>
@@ -427,21 +500,44 @@ export function makeGitHubApi(
   ): Effect.Effect<GitHubApiResponse, GitHubCliError> =>
     Effect.suspend(() => {
       const credential = credentials.get(input.context);
-      return credential
-        ? requestCaptured({
+      if (!credential)
+        return Effect.fail(
+          new GitHubCliError({
+            operation: "request",
+            kind: "unauthenticated",
+            detail: "Unverified GitHub credential context.",
+            requestDispatched: false,
+          }),
+        );
+      return Effect.gen(function* () {
+        const perform = () =>
+          requestCaptured({
             ...input,
             host: input.context.host,
             token: credential.token,
             expectedGeneration: input.context.generation,
-          })
-        : Effect.fail(
-            new GitHubCliError({
-              operation: "request",
-              kind: "unauthenticated",
-              detail: "Unverified GitHub credential context.",
-              requestDispatched: false,
-            }),
-          );
+          });
+        const response = yield* perform();
+        if (response.status !== 401) return response;
+        // A 401 is safe to retry once, but never redirect an operation to another account.
+        options.invalidateToken?.(input.context.host);
+        const replacement = (yield* resolveToken(input.context.host, input.cwd)).trim();
+        if (!replacement || replacement === credential.token) return response;
+        const refreshed = yield* getCredentialContext({ cwd: input.cwd, host: input.context.host });
+        const refreshedCredential = credentials.get(refreshed);
+        if (!refreshedCredential || refreshed.viewerId !== input.context.viewerId)
+          return yield* new GitHubCliError({
+            operation: "request",
+            kind: "forbidden",
+            detail: "The GitHub account changed during credential refresh. Nothing was retried.",
+          });
+        return yield* requestCaptured({
+          ...input,
+          host: refreshed.host,
+          token: refreshedCredential.token,
+          expectedGeneration: refreshed.generation,
+        });
+      });
     });
 
   const request = (input: GitHubApiRequest) => conditionalCache(input, requestUncached);
@@ -485,23 +581,50 @@ export function makeGitHubApi(
         Date.now() - (verifiedAt.get(host) ?? 0) < 60_000
       )
         return cached;
-      const verified = yield* requestCaptured({
+      // Some credentials (GitHub App and restricted tokens) cannot read /user but can still
+      // read pull requests, so a plain 403 verifies the same token through the GraphQL viewer.
+      // Its failures are this verification's failures, never a raw request error.
+      const readViewer = requestCaptured({
         cwd: input.cwd,
         host,
         token,
-        method: "GET",
-        endpoint: "user",
-      });
-      const viewer =
-        typeof verified.body === "object" && verified.body !== null
+        method: "POST",
+        endpoint: "graphql",
+        body: { query: "query { viewer { databaseId login } }" },
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new GitHubCliError({
+              operation: "credentials",
+              detail: error.detail,
+              ...(error.kind === undefined ? {} : { kind: error.kind }),
+              ...(error.rateLimit === undefined ? {} : { rateLimit: error.rateLimit }),
+            }),
+        ),
+      );
+      // A credential already known to need the viewer skips the /user read GitHub refuses.
+      let viaViewer = viewerOnlyCredentials.get(host) === fingerprint;
+      let verified = viaViewer
+        ? yield* readViewer
+        : yield* requestCaptured({ cwd: input.cwd, host, token, method: "GET", endpoint: "user" });
+      if (!viaViewer && verified.status === 403 && !isRateLimitedResponse(verified)) {
+        verified = yield* readViewer;
+        viaViewer = true;
+      }
+      const viewerNode = viaViewer
+        ? (verified.body as { data?: { viewer?: Record<string, unknown> } } | null)?.data?.viewer
+        : undefined;
+      // The decisive response (REST, or the GraphQL fallback) classifies a failure.
+      const rateLimited = isRateLimitedResponse(verified);
+      const viewer = !viaViewer
+        ? typeof verified.body === "object" && verified.body !== null
           ? (verified.body as Record<string, unknown>)
+          : null
+        : verified.graphqlErrors.length === 0 && viewerNode
+          ? { id: viewerNode.databaseId, login: viewerNode.login }
           : null;
-      if (verified.status !== 200) {
+      if (verified.status !== 200 || rateLimited) {
         if (verified.status === 401) rejectedCredentials.set(host, fingerprint);
-        const rateLimited =
-          verified.status === 429 ||
-          (verified.status === 403 &&
-            (verified.rateLimit.remaining === 0 || verified.rateLimit.retryAfterSeconds != null));
         return yield* Effect.fail(
           new GitHubCliError({
             operation: "credentials",
@@ -538,6 +661,8 @@ export function makeGitHubApi(
         );
       }
       rejectedCredentials.delete(host);
+      if (viaViewer) viewerOnlyCredentials.set(host, fingerprint);
+      else viewerOnlyCredentials.delete(host);
       const previous = accounts.get(host);
       const generation =
         previous?.viewerId === viewer.id && credentials.get(previous)?.fingerprint === fingerprint

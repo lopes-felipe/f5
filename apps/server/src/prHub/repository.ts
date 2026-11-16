@@ -1,4 +1,7 @@
 import { prHubRecoveryCandidates } from "./recovery.ts";
+import { applyPrHubRelevance } from "./relevance.ts";
+import { parsePrSeenBaseline, prChangesSinceSeen, prSeenBaseline } from "./seenBaseline.ts";
+import { PR_HUB_BACKLOG_ERROR_KIND } from "./refreshSchedule.ts";
 import { assertPrHubDiscoveryLease } from "./discoveryLease.ts";
 import { unknownMergeRequirements } from "./mergeRequirements.ts";
 import { createPrHubViewerActions, type PrHubViewerActionsContext } from "./viewerActions.ts";
@@ -73,6 +76,8 @@ export function createPrHubRepository(
   let monitoringExclusions = new Set<string>();
   let monitoringScopeSignature = "[]";
   const publicationLock = Semaphore.makeUnsafe(1);
+  // Numbers the change events of this hub so that a reader can tell when one was dropped.
+  let publicationSequence = 0;
   const advancePublicationRevision = sql<{
     revision: number;
   }>`UPDATE pr_hub_publication SET revision = revision + 1 WHERE id = 1 RETURNING revision`;
@@ -99,6 +104,7 @@ export function createPrHubRepository(
       yield* PubSub.publish(changePubSub, {
         ...invalidation,
         resyncRequired: invalidation.resyncRequired || scopeSignature !== monitoringScopeSignature,
+        sequence: ++publicationSequence,
       });
       monitoringExclusions = excluded;
       monitoringScopeSignature = scopeSignature;
@@ -190,7 +196,8 @@ export function createPrHubRepository(
           v.last_notified_fingerprint,
           v.snoozed_until,
           v.ignored_at,
-          v.no_longer_relevant_at
+          v.no_longer_relevant_at,
+          v.seen_baseline_json
         FROM pr_hub_viewer_state v
         INNER JOIN pr_hub_prs p
           ON p.provider_kind = v.provider_kind
@@ -306,12 +313,14 @@ export function createPrHubRepository(
               ...scope,
               status: "partial" as const,
               remainingTasks: unverifiedCount,
+              remainingHydrations: unverifiedCount,
               description: recoveryMessage,
             }
           : scope,
       );
-      return {
-        status: hasUnverifiedFacts ? "degraded" : (refresh?.status ?? "ok"),
+      const snapshot = {
+        // Saved rows awaiting revalidation are backlog the next poll continues, not a failure.
+        status: refresh?.status ?? "ok",
         account: viewer.context,
         viewerLogin: resolvedViewer,
         host,
@@ -327,13 +336,35 @@ export function createPrHubRepository(
         pullRequests: sortTrackedPrs(pullRequests),
         recentlyResolved: sortTrackedPrs(recentlyResolved),
         lastPolledAt: refresh?.last_polled_at ?? null,
-        ...(refresh?.error_kind ? { errorKind: refresh.error_kind } : {}),
+        ...(refresh?.error_kind
+          ? { errorKind: refresh.error_kind }
+          : hasUnverifiedFacts
+            ? { errorKind: PR_HUB_BACKLOG_ERROR_KIND }
+            : {}),
         ...(refresh?.error_message || recoveryMessage
           ? { errorMessage: [refresh?.error_message, recoveryMessage].filter(Boolean).join(" ") }
           : {}),
         coverage: effectiveCoverage,
         cappedBuckets: effectiveCoverage.flatMap((scope) => scope.limits ?? []),
       } satisfies PrHubSnapshot;
+      // What changed since each row was last seen depends on its section, set just above.
+      const baselines = new Map(
+        rows.map((row) => [keyFor(row.host, row.repo, row.number), row.seen_baseline_json]),
+      );
+      const withChanges = (pr: TrackedPullRequest): TrackedPullRequest => ({
+        ...pr,
+        changesSinceSeen: prChangesSinceSeen(
+          pr,
+          parsePrSeenBaseline(baselines.get(pr.key)),
+          resolvedViewer,
+        ),
+      });
+      const relevant = applyPrHubRelevance(snapshot, recoverySettings.prHub);
+      return {
+        ...relevant,
+        pullRequests: relevant.pullRequests.map(withChanges),
+        recentlyResolved: relevant.recentlyResolved.map(withChanges),
+      };
     }).pipe(
       Effect.catch((error) =>
         Effect.logWarning("failed to hydrate PR Hub snapshot", {
@@ -417,6 +448,10 @@ export function createPrHubRepository(
       const initialDiscovery = (yield* loadRefreshState(String(viewer.context.viewerId))) === null;
       for (const pr of pullRequests) {
         if (options.alreadyPersisted?.has(`${pr.repository.nameWithOwner}#${pr.number}`)) continue;
+        // A baseline taken before the first full read holds only the state. The full read
+        // completes it, so later activity has something to be compared with.
+        const completedBaseline =
+          pr.lastVerifiedAt != null ? JSON.stringify(prSeenBaseline(pr, now)) : null;
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* assertPrHubDiscoveryLease.pipe(Effect.provideService(SqlClient.SqlClient, sql));
@@ -526,7 +561,8 @@ export function createPrHubRepository(
             last_matched_at,
             no_longer_relevant_at,
             stale_inaccessible_count,
-            stale_inaccessible_at
+            stale_inaccessible_at,
+            seen_baseline_json
           )
           VALUES (
             ${pr.provider},
@@ -566,7 +602,11 @@ export function createPrHubRepository(
             ${now},
             ${null},
             ${0},
-            ${null}
+            ${null},
+            ${
+              // The first sync is a silent baseline: what it finds is not reported as new.
+              initialDiscovery ? JSON.stringify(prSeenBaseline(pr, now)) : null
+            }
           )
           ON CONFLICT (provider_kind, host, viewer_id, repo, number)
           DO UPDATE SET
@@ -576,8 +616,22 @@ export function createPrHubRepository(
                 pr_hub_viewer_state.last_seen_fingerprint = pr_hub_viewer_state.attention_fingerprint OR
                 pr_hub_viewer_state.last_notified_fingerprint = pr_hub_viewer_state.attention_fingerprint
               ) THEN excluded.attention_fingerprint
+              -- A team request that became the viewer's own only because its team was added
+              -- to "Teams whose review requests are mine" is not new activity: the request
+              -- was already there. Without this, promoting a team notifies every one of its
+              -- pending requests. A personal request carries the review_requested role.
+              WHEN pr_hub_viewer_state.attention_state = 'team_review_requested'
+                AND excluded.attention_state IN ('review_requested', 're_review_requested')
+                AND instr(excluded.roles_json, '"review_requested"') = 0
+              THEN excluded.attention_fingerprint
               ELSE pr_hub_viewer_state.last_seen_fingerprint END,
             attention_model_version = 2,
+            seen_baseline_json = CASE
+              WHEN ${completedBaseline} IS NOT NULL
+                AND json_valid(pr_hub_viewer_state.seen_baseline_json)
+                AND json_extract(pr_hub_viewer_state.seen_baseline_json, '$.checkRollup') IS NULL
+              THEN ${completedBaseline}
+              ELSE pr_hub_viewer_state.seen_baseline_json END,
             viewer_login = excluded.viewer_login,
             viewer_payload_json = excluded.viewer_payload_json,
             facts_verified = excluded.facts_verified,

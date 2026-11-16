@@ -9,7 +9,11 @@
     "T3CODE_LOG_THREAD_OPEN_TIMINGS",
     "T3CODE_LOG_PROJECTION_TIMINGS",
     "T3CODE_OBSERVABILITY_ENABLED",
+    "T3CODE_TELEMETRY_ENABLED",
+    "T3CODE_POSTHOG_KEY",
+    "T3CODE_POSTHOG_HOST",
     "F5_HOME",
+    "F5_COALESCE_STREAMING_DELTAS",
     "F5_STATE_DIR",
     "F5_PROFILE",
     "F5_GITHUB_OAUTH_CLIENT_ID",
@@ -20,6 +24,7 @@
     "F5_BACKUP_MAX_TEMPORARY_BYTES",
     "F5_BACKUP_MAX_EXPANSION_RATIO",
     "F5_BACKUP_MIN_FREE_BYTES",
+    "F5_RELEASE_REPOSITORY",
     "T3CODE_MODE",
     "T3CODE_PORT",
     "T3CODE_NO_BROWSER",
@@ -31,6 +36,8 @@
     "T3CODE_DESKTOP_WS_URL"
   ],
   "globalPassThroughEnv": [
+    "F5_COMPUTER_CONTROL_DEV",
+    "F5_COMPUTER_BACKGROUND_DEV",
     "PATH",
     "Path",
     "PATHEXT",
@@ -53,8 +60,9 @@
   ],
   "tasks": {
     "build": {
+      "passThroughEnv": ["NODE_OPTIONS"],
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", "dist-electron/**"]
+      "outputs": ["dist/**", "dist-electron/**", "dist-native/**"]
     },
     "dev": {
       "dependsOn": ["@t3tools/contracts#build"],
@@ -67,7 +75,18 @@
       "cache": false
     },
     "test": {
-      "passThroughEnv": ["F5_TEST_MAX_WORKERS", "F5_TEST_LOGS", "VITEST_MAX_WORKERS"],
+      "passThroughEnv": [
+        "F5_TEST_MAX_WORKERS",
+        "F5_TEST_LOGS",
+        "VITEST_MAX_WORKERS",
+        "F5_CI_REPORT_DIR",
+        "F5_CI_SUITE_ID",
+        "F5_CI_TEST_RETRY",
+        "GITHUB_JOB",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_WORKSPACE"
+      ],
       "cache": false,
       "outputs": []
     }

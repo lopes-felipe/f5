@@ -1,105 +1,49 @@
-import { PROFILES_SETTINGS_DESCRIPTORS } from "./categories/ProfilesSettings.descriptors";
-import { ProjectId } from "@t3tools/contracts";
+export * from "./settingsRouting";
 import {
-  ArchiveIcon,
-  BellIcon,
-  BotIcon,
-  FolderIcon,
-  HardDriveIcon,
-  InfoIcon,
-  type LucideIcon,
-  MonitorIcon,
-  PaletteIcon,
-  PlugIcon,
-  SlidersHorizontalIcon,
-  UsersIcon,
-} from "lucide-react";
-
+  LEGACY_SETTINGS_ITEM_ALIASES,
+  type SettingsCategory,
+  type SettingsScope,
+} from "./settingsRouting";
 import { ABOUT_SETTINGS_DESCRIPTORS } from "./categories/AboutSettings.descriptors";
+import { ACCOUNTS_SETTINGS_DESCRIPTORS } from "./categories/AccountsSettings.descriptors";
 import { APPEARANCE_SETTINGS_DESCRIPTORS } from "./categories/AppearanceSettings.descriptors";
 import { ARCHIVE_SETTINGS_DESCRIPTORS } from "./categories/ArchiveSettings.descriptors";
-import { DISPLAY_SETTINGS_DESCRIPTORS } from "./categories/DisplaySettings.descriptors";
+import { BROWSER_SETTINGS_DESCRIPTORS } from "./categories/BrowserComputerSettings.descriptors";
+import { CONVERSATION_SETTINGS_DESCRIPTORS } from "./categories/ConversationSettings.descriptors";
 import { GENERAL_SETTINGS_DESCRIPTORS } from "./categories/GeneralSettings.descriptors";
-import { INTEGRATIONS_SETTINGS_DESCRIPTORS } from "./categories/IntegrationsSettings.descriptors";
+import { GIT_SETTINGS_DESCRIPTORS } from "./categories/GitSettings.descriptors";
+import { KEYBOARD_SETTINGS_DESCRIPTORS } from "./categories/KeyboardSettings.descriptors";
 import { NOTIFICATIONS_SETTINGS_DESCRIPTORS } from "./categories/NotificationsSettings.descriptors";
+import { PROJECT_SETTINGS_DESCRIPTORS } from "./categories/ProjectSettings.descriptors";
 import { PROJECTS_SETTINGS_DESCRIPTORS } from "./categories/ProjectsSettings.descriptors";
 import { PROVIDERS_SETTINGS_DESCRIPTORS } from "./categories/ProvidersSettings.descriptors";
 import { STORAGE_SETTINGS_DESCRIPTORS } from "./categories/StorageSettings.descriptors";
-import { searchSettingsItems, type SettingsItemDescriptor } from "./settingsSearch";
+import { THREADS_SETTINGS_DESCRIPTORS } from "./categories/ThreadsSettings.descriptors";
+import { TOOLS_SETTINGS_DESCRIPTORS } from "./categories/ToolsSettings.descriptors";
+import {
+  searchSettingsItems,
+  settingsItemVisibleInScope,
+  type SettingsItemDescriptor,
+} from "./settingsSearch";
 
-export const SETTINGS_CATEGORIES = [
-  "general",
-  "profiles",
-  "appearance",
-  "display",
-  "notifications",
-  "providers",
-  "integrations",
-  "projects",
-  "archive",
-  "storage",
-  "about",
-] as const;
-
-export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
-
-export interface SettingsCategoryGroup {
-  readonly id: "app" | "interface" | "agents" | "data" | "about";
-  /** null renders the group without a heading (About stands alone). */
-  readonly label: string | null;
-  readonly categories: ReadonlyArray<SettingsCategory>;
-}
-
-/** Navigation groups, in `SETTINGS_CATEGORIES` order. */
-export const SETTINGS_CATEGORY_GROUPS: ReadonlyArray<SettingsCategoryGroup> = [
-  { id: "app", label: "App", categories: ["general", "profiles"] },
-  { id: "interface", label: "Interface", categories: ["appearance", "display", "notifications"] },
-  { id: "agents", label: "Agents", categories: ["providers", "integrations", "projects"] },
-  { id: "data", label: "Data", categories: ["archive", "storage"] },
-  { id: "about", label: null, categories: ["about"] },
-];
-
-export const SETTINGS_CATEGORY_ICONS = {
-  general: SlidersHorizontalIcon,
-  profiles: UsersIcon,
-  appearance: PaletteIcon,
-  display: MonitorIcon,
-  notifications: BellIcon,
-  providers: BotIcon,
-  integrations: PlugIcon,
-  projects: FolderIcon,
-  archive: ArchiveIcon,
-  storage: HardDriveIcon,
-  about: InfoIcon,
-} as const satisfies Record<SettingsCategory, LucideIcon>;
-
-export const SETTINGS_CATEGORY_LABELS = {
-  profiles: "Profiles",
-  general: "General",
-  appearance: "Appearance",
-  display: "Display",
-  notifications: "Notifications",
-  providers: "Providers & Models",
-  integrations: "Integrations",
-  projects: "Projects",
-  archive: "Archive",
-  storage: "Storage",
-  about: "About",
-} as const satisfies Record<SettingsCategory, string>;
-
-export const SETTINGS_ITEM_DESCRIPTORS = [
-  ...PROFILES_SETTINGS_DESCRIPTORS,
+export const SETTINGS_ITEM_DESCRIPTORS: ReadonlyArray<SettingsItemDescriptor> = [
   ...GENERAL_SETTINGS_DESCRIPTORS,
   ...APPEARANCE_SETTINGS_DESCRIPTORS,
-  ...DISPLAY_SETTINGS_DESCRIPTORS,
+  ...CONVERSATION_SETTINGS_DESCRIPTORS,
+  ...KEYBOARD_SETTINGS_DESCRIPTORS,
   ...NOTIFICATIONS_SETTINGS_DESCRIPTORS,
   ...PROVIDERS_SETTINGS_DESCRIPTORS,
-  ...INTEGRATIONS_SETTINGS_DESCRIPTORS,
+  ...THREADS_SETTINGS_DESCRIPTORS,
+  ...TOOLS_SETTINGS_DESCRIPTORS,
+  ...BROWSER_SETTINGS_DESCRIPTORS,
   ...PROJECTS_SETTINGS_DESCRIPTORS,
-  ...ARCHIVE_SETTINGS_DESCRIPTORS,
+  ...GIT_SETTINGS_DESCRIPTORS,
+  ...ACCOUNTS_SETTINGS_DESCRIPTORS,
   ...STORAGE_SETTINGS_DESCRIPTORS,
+  ...ARCHIVE_SETTINGS_DESCRIPTORS,
   ...ABOUT_SETTINGS_DESCRIPTORS,
-] satisfies ReadonlyArray<SettingsItemDescriptor>;
+  ...PROJECT_SETTINGS_DESCRIPTORS,
+];
 
 const SETTINGS_ITEM_BY_ID = new Map<string, SettingsItemDescriptor>();
 for (const descriptor of SETTINGS_ITEM_DESCRIPTORS) {
@@ -108,15 +52,12 @@ for (const descriptor of SETTINGS_ITEM_DESCRIPTORS) {
   }
   SETTINGS_ITEM_BY_ID.set(descriptor.id, descriptor);
 }
-const SETTINGS_ITEM_ALIASES = new Map<string, string>([["general.theme", "appearance.theme"]]);
-
-export function isSettingsCategory(value: unknown): value is SettingsCategory {
-  return typeof value === "string" && (SETTINGS_CATEGORIES as readonly string[]).includes(value);
-}
 
 export function getSettingsItemDescriptor(value: unknown): SettingsItemDescriptor | null {
   if (typeof value !== "string") return null;
-  const canonicalId = SETTINGS_ITEM_ALIASES.get(value) ?? value;
+  const canonicalId = Object.hasOwn(LEGACY_SETTINGS_ITEM_ALIASES, value)
+    ? LEGACY_SETTINGS_ITEM_ALIASES[value]!
+    : value;
   return SETTINGS_ITEM_BY_ID.get(canonicalId) ?? null;
 }
 
@@ -124,43 +65,14 @@ export function isSettingsItemId(value: unknown): value is string {
   return getSettingsItemDescriptor(value) !== null;
 }
 
-export function filterSettingsItems(query: string, limit?: number): SettingsItemDescriptor[] {
-  return searchSettingsItems(SETTINGS_ITEM_DESCRIPTORS, query, limit);
-}
-
-export function resolveSettingsProjectIdFromSearch(search: unknown): ProjectId | undefined {
-  const raw = (search as { projectId?: unknown } | null | undefined)?.projectId;
-  return typeof raw === "string" && raw.length > 0 && raw.length <= 256
-    ? ProjectId.makeUnsafe(raw)
-    : undefined;
-}
-
-export function resolveSettingsCategoryFromSearch(search: unknown): SettingsCategory {
-  const rawSearch = search as { category?: unknown; item?: unknown } | null | undefined;
-  const item = getSettingsItemDescriptor(rawSearch?.item);
-  if (item) return item.category;
-  const raw = rawSearch?.category;
-  return isSettingsCategory(raw) ? raw : "general";
-}
-
-export function resolveSettingsNavigationSearch(input: {
-  readonly pathname: string;
-  readonly search: unknown;
-}): {
-  readonly category: SettingsCategory;
-  readonly item?: string;
-  readonly projectId?: ProjectId;
-} {
-  if (input.pathname === "/settings") {
-    const rawSearch = input.search as { item?: unknown } | null | undefined;
-    const item = getSettingsItemDescriptor(rawSearch?.item);
-    const projectId = resolveSettingsProjectIdFromSearch(input.search);
-    return {
-      category: item?.category ?? resolveSettingsCategoryFromSearch(input.search),
-      ...(item ? { item: item.id } : {}),
-      ...(projectId ? { projectId } : {}),
-    };
-  }
-
-  return { category: "general" };
+export function filterSettingsItems(
+  query: string,
+  options: { readonly limit?: number; readonly scope?: SettingsScope } = {},
+): SettingsItemDescriptor[] {
+  const scope = options.scope ?? "global";
+  return searchSettingsItems(
+    SETTINGS_ITEM_DESCRIPTORS.filter((descriptor) => settingsItemVisibleInScope(descriptor, scope)),
+    query,
+    options.limit,
+  );
 }

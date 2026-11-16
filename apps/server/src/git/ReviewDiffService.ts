@@ -1,3 +1,5 @@
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { literalGitPathspec } from "@t3tools/shared/git";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +17,7 @@ import { Data, Effect } from "effect";
 
 import { runProcess, type ProcessRunResult } from "../processRunner.ts";
 import { REVIEW_PATCH_LIMIT_BYTES, truncatePatchAtFileBoundary } from "./patchTruncation.ts";
+import { branchNameFromHeadRef } from "./headBranch.ts";
 
 const STDERR_LIMIT_BYTES = 32 * 1024;
 const UNTRACKED_LIMIT_PATHS = 512;
@@ -63,6 +66,7 @@ function runGit(
         GIT_TERMINAL_PROMPT: "0",
         GIT_CONFIG_NOSYSTEM: "1",
         ...options?.env,
+        GIT_OPTIONAL_LOCKS: "0",
       },
     }).then(
       (result) => resume(Effect.succeed(result)),
@@ -99,7 +103,9 @@ function resolveThreadCwd(
   const project = readModel.projects.find((candidate) => candidate.id === thread.projectId);
   if (!project) return Effect.fail(failure("project_not_found", "Thread project not found."));
 
-  const registeredPath = thread.worktreePath ?? project.workspaceRoot;
+  const registeredPath = threadWorkspaceCwd(thread, project);
+  if (!registeredPath)
+    return Effect.fail(failure("workspace_invalid", "Thread workspace could not be resolved."));
   return Effect.tryPromise({
     try: () => canonicalRegisteredPath(registeredPath),
     catch: () => failure("workspace_invalid", "Thread workspace could not be resolved."),
@@ -115,33 +121,106 @@ function resolveCommit(cwd: string, ref: string, execution: ReviewDiffExecutionO
   ).pipe(Effect.map((result) => (result.code === 0 ? result.stdout.trim() : null)));
 }
 
-function resolveDefaultBaseRef(cwd: string, execution: ReviewDiffExecutionOptions) {
+// Qualify a base branch name to the exact ref it names, so a local branch or tag cannot shadow
+// it. A remote-tracking ref such as `upstream/main` wins, then `remote`'s copy, then the local
+// branch. Returns null when none exists.
+function qualifyBaseRef(
+  cwd: string,
+  name: string,
+  execution: ReviewDiffExecutionOptions,
+  remote?: string,
+) {
   return Effect.gen(function* () {
+    if (name.startsWith("refs/")) return null;
+    const candidates = [
+      ...(name.includes("/") ? [`refs/remotes/${name}`] : []),
+      ...(remote ? [`refs/remotes/${remote}/${name}`] : []),
+      `refs/heads/${name}`,
+    ];
+    for (const candidate of candidates) {
+      if ((yield* resolveCommit(cwd, candidate, execution)) !== null) return candidate;
+    }
+    return null;
+  });
+}
+
+// The branch's configured base (`gh-merge-base`), compared by its exact ref.
+function resolveConfiguredBaseRef(
+  cwd: string,
+  currentBranch: string,
+  execution: ReviewDiffExecutionOptions,
+) {
+  return Effect.gen(function* () {
+    const configured = yield* runGit(
+      cwd,
+      ["config", "--get", "--", `branch.${currentBranch}.gh-merge-base`],
+      undefined,
+      execution,
+    );
+    const baseRef = configured.code === 0 ? configured.stdout.trim() : "";
+    if (!baseRef || baseRef === currentBranch) return null;
+    return yield* qualifyBaseRef(cwd, baseRef, execution, "origin");
+  });
+}
+
+// The default branch may track a different remote than origin, such as a fork's
+// `upstream/main`. A lagging origin would otherwise add commits that are already upstream.
+function resolveTrackedRemoteBaseRef(cwd: string, execution: ReviewDiffExecutionOptions) {
+  return runGit(
+    cwd,
+    ["rev-parse", "--symbolic-full-name", "@{upstream}"],
+    undefined,
+    execution,
+  ).pipe(
+    Effect.map((result) => {
+      const ref = result.stdout.trim();
+      return result.code === 0 && ref.startsWith("refs/remotes/") ? ref : null;
+    }),
+  );
+}
+
+function resolveDefaultBaseRef(
+  cwd: string,
+  currentBranchName: string | null,
+  execution: ReviewDiffExecutionOptions,
+) {
+  return Effect.gen(function* () {
+    if (currentBranchName) {
+      const configuredBase = yield* resolveConfiguredBaseRef(cwd, currentBranchName, execution);
+      if (configuredBase !== null) return configuredBase;
+    }
+
+    let defaultBase: string | null = null;
     const remoteHead = yield* runGit(
       cwd,
       ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
       undefined,
       execution,
     );
-    if (remoteHead.code === 0 && remoteHead.stdout.trim()) return remoteHead.stdout.trim();
-
+    if (remoteHead.code === 0 && remoteHead.stdout.trim()) defaultBase = remoteHead.stdout.trim();
     for (const candidate of ["origin/main", "origin/master", "main", "master"]) {
-      if ((yield* resolveCommit(cwd, candidate, execution)) !== null) return candidate;
+      if (defaultBase !== null) break;
+      if ((yield* resolveCommit(cwd, candidate, execution)) !== null) defaultBase = candidate;
+    }
+    if (defaultBase !== null) {
+      const onDefaultBranch =
+        currentBranchName !== null &&
+        [
+          currentBranchName,
+          `origin/${currentBranchName}`,
+          `refs/remotes/origin/${currentBranchName}`,
+        ].includes(defaultBase);
+      return (
+        (onDefaultBranch ? yield* resolveTrackedRemoteBaseRef(cwd, execution) : null) ?? defaultBase
+      );
     }
 
-    const currentBranch = yield* runGit(
-      cwd,
-      ["symbolic-ref", "--quiet", "--short", "HEAD"],
-      undefined,
-      execution,
-    );
     const upstream = yield* runGit(
       cwd,
       ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
       undefined,
       execution,
     );
-    const currentBranchName = currentBranch.code === 0 ? currentBranch.stdout.trim() : "";
     const upstreamName = upstream.code === 0 ? upstream.stdout.trim() : "";
     if (
       upstreamName &&
@@ -155,8 +234,24 @@ function resolveDefaultBaseRef(cwd: string, execution: ReviewDiffExecutionOption
   });
 }
 
+function existingWorkingTreePaths(cwd: string, paths: ReadonlyArray<string>) {
+  return Effect.forEach(
+    [...new Set(paths)],
+    (candidate) =>
+      Effect.promise(() =>
+        lstat(path.join(cwd, candidate)).then(
+          () => candidate,
+          () => null,
+        ),
+      ),
+    { concurrency: 32 },
+  ).pipe(
+    Effect.map((paths) => paths.filter((candidate): candidate is string => candidate !== null)),
+  );
+}
+
 function makeWorkingTreePatch(
-  cwd: string,
+  workingDirectory: string,
   ignoreWhitespace: boolean,
   execution: ReviewDiffExecutionOptions,
 ): Effect.Effect<WorkingTreePatch | ReviewPreviewDiffFailure, Error> {
@@ -170,6 +265,16 @@ function makeWorkingTreePatch(
     }),
     (directory) =>
       Effect.gen(function* () {
+        // diff metadata is root-relative; use the same base for ls-files, lstat and index edits.
+        const root = yield* runGit(
+          workingDirectory,
+          ["rev-parse", "--show-toplevel"],
+          undefined,
+          execution,
+        );
+        const rootFailure = commandFailure(root);
+        if (rootFailure) return rootFailure;
+        const cwd = root.stdout.replace(/\r?\n$/, "");
         const indexPath = path.join(directory, `index-${randomUUID()}`);
         const env = { GIT_INDEX_FILE: indexPath };
         const readTree = yield* runGit(cwd, ["read-tree", "HEAD"], { env }, execution);
@@ -183,9 +288,20 @@ function makeWorkingTreePatch(
             stdoutLimit: UNTRACKED_LIMIT_BYTES,
           },
           execution,
+        ).pipe(
+          Effect.orElseSucceed(
+            (): ProcessRunResult => ({
+              stdout: "",
+              stderr: "Untracked discovery failed.",
+              code: 1,
+              signal: null,
+              timedOut: false,
+              aborted: false,
+            }),
+          ),
         );
         const untrackedFailure = commandFailure(untracked);
-        if (untrackedFailure) return untrackedFailure;
+        if (untracked.aborted) return untrackedFailure!;
         const stagedAdditions = yield* runGit(
           cwd,
           [
@@ -203,35 +319,82 @@ function makeWorkingTreePatch(
         );
         const stagedAdditionsFailure = commandFailure(stagedAdditions);
         if (stagedAdditionsFailure) return stagedAdditionsFailure;
-        const untrackedOutput = untracked.stdoutTruncated
-          ? untracked.stdout.slice(0, untracked.stdout.lastIndexOf("\0") + 1)
-          : untracked.stdout;
+        // Disable rename detection: a staged addition can otherwise hide its deleted source.
+        const stagedDeletions = yield* runGit(
+          cwd,
+          [
+            "diff",
+            "--cached",
+            "--no-renames",
+            "--name-only",
+            "--diff-filter=D",
+            "-z",
+            "HEAD",
+            "--",
+          ],
+          { stdoutLimit: UNTRACKED_LIMIT_BYTES },
+          execution,
+        );
+        const stagedDeletionsFailure = commandFailure(stagedDeletions);
+        if (stagedDeletionsFailure) return stagedDeletionsFailure;
+        const stagedDeletionsOutput = stagedDeletions.stdoutTruncated
+          ? stagedDeletions.stdout.slice(0, stagedDeletions.stdout.lastIndexOf("\0") + 1)
+          : stagedDeletions.stdout;
+        const stagedDeletionsTruncated = stagedDeletions.stdoutTruncated === true;
+        const deletedPaths = stagedDeletionsOutput.split("\0").filter(Boolean);
+        const deletedPathSet = new Set(deletedPaths);
+        // Start from HEAD, but preserve index deletions even if their files remain on disk.
+        // Missing files already appear deleted in the final diff without editing this index.
+        const existingDeletedPaths = yield* existingWorkingTreePaths(cwd, deletedPaths);
+        for (let offset = 0; offset < existingDeletedPaths.length; offset += 64) {
+          const remove = yield* runGit(
+            cwd,
+            [
+              "update-index",
+              "--force-remove",
+              "--",
+              ...existingDeletedPaths.slice(offset, offset + 64),
+            ],
+            { env },
+            execution,
+          );
+          const removeFailure = commandFailure(remove);
+          if (removeFailure) return removeFailure;
+        }
+        const untrackedUnavailable = untrackedFailure !== null;
+        const untrackedOutput = untrackedUnavailable
+          ? ""
+          : untracked.stdoutTruncated
+            ? untracked.stdout.slice(0, untracked.stdout.lastIndexOf("\0") + 1)
+            : untracked.stdout;
         const stagedAdditionsOutput = stagedAdditions.stdoutTruncated
           ? stagedAdditions.stdout.slice(0, stagedAdditions.stdout.lastIndexOf("\0") + 1)
           : stagedAdditions.stdout;
-        const allPaths = untrackedOutput.split("\0").filter(Boolean);
+        const allPaths = untrackedOutput
+          .split("\0")
+          .filter((candidate) => candidate.length > 0 && !deletedPathSet.has(candidate));
         const untrackedTruncated =
-          untracked.stdoutTruncated === true || allPaths.length > UNTRACKED_LIMIT_PATHS;
+          untrackedUnavailable ||
+          untracked.stdoutTruncated === true ||
+          allPaths.length > UNTRACKED_LIMIT_PATHS;
         const stagedAdditionPaths = stagedAdditionsOutput.split("\0").filter(Boolean);
         const stagedAdditionsTruncated = stagedAdditions.stdoutTruncated === true;
         const candidatePaths = [
           ...allPaths.slice(0, UNTRACKED_LIMIT_PATHS),
           ...stagedAdditionPaths,
         ];
-        const paths = (yield* Effect.promise(() =>
-          Promise.all(
-            [...new Set(candidatePaths)].map(async (candidate) =>
-              lstat(path.join(cwd, candidate)).then(
-                () => candidate,
-                () => null,
-              ),
-            ),
-          ),
-        )).filter((candidate): candidate is string => candidate !== null);
+        const paths = yield* existingWorkingTreePaths(cwd, candidatePaths);
         for (let offset = 0; offset < paths.length; offset += 64) {
           const add = yield* runGit(
             cwd,
-            ["add", "-N", "--", ...paths.slice(offset, offset + 64)],
+            [
+              "-c",
+              "core.sparseCheckout=false",
+              "add",
+              "-N",
+              "--",
+              ...paths.slice(offset, offset + 64).map(literalGitPathspec),
+            ],
             {
               env,
             },
@@ -246,6 +409,9 @@ function makeWorkingTreePatch(
           [
             "diff",
             "--binary",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
             "--src-prefix=a/",
             "--dst-prefix=b/",
             "--full-index",
@@ -264,12 +430,20 @@ function makeWorkingTreePatch(
         return {
           kind: "patch" as const,
           patch: bounded.patch,
-          truncated: bounded.truncated || untrackedTruncated || stagedAdditionsTruncated,
+          truncated:
+            bounded.truncated ||
+            untrackedTruncated ||
+            stagedAdditionsTruncated ||
+            stagedDeletionsTruncated,
           reason:
+            (untrackedUnavailable
+              ? "Untracked files were omitted because discovery failed or exceeded its output limit."
+              : null) ??
             (untrackedTruncated
               ? `Only the first ${UNTRACKED_LIMIT_PATHS} untracked paths were included.`
               : null) ??
             (stagedAdditionsTruncated ? "The staged additions list was truncated." : null) ??
+            (stagedDeletionsTruncated ? "The staged deletions list was truncated." : null) ??
             bounded.reason,
         };
       }),
@@ -323,18 +497,23 @@ export function getReviewPreviewDiff(
       return success;
     }
 
-    const branch = yield* runGit(
-      cwd,
-      ["symbolic-ref", "--quiet", "--short", "HEAD"],
-      undefined,
-      execution,
-    );
+    const branch = yield* runGit(cwd, ["symbolic-ref", "--quiet", "HEAD"], undefined, execution);
     if (!input.request.baseRef && branch.code !== 0) {
       return failure("detached_head", "Choose a base ref while HEAD is detached.");
     }
-    const baseRef = input.request.baseRef ?? (yield* resolveDefaultBaseRef(cwd, execution));
+    const baseRef =
+      input.request.baseRef ??
+      (yield* resolveDefaultBaseRef(
+        cwd,
+        branch.code === 0 ? branchNameFromHeadRef(branch.stdout) : null,
+        execution,
+      ));
     if (!baseRef) return failure("missing_base", "No branch-range base ref could be resolved.");
-    const baseCommit = yield* resolveCommit(cwd, baseRef, execution);
+    // An explicitly chosen branch is compared by its exact ref; other revisions resolve as given.
+    const comparisonRef = input.request.baseRef
+      ? ((yield* qualifyBaseRef(cwd, input.request.baseRef, execution)) ?? input.request.baseRef)
+      : baseRef;
+    const baseCommit = yield* resolveCommit(cwd, comparisonRef, execution);
     if (!baseCommit)
       return failure("invalid_ref", `Base ref does not resolve to a commit: ${baseRef}`);
 
@@ -343,6 +522,9 @@ export function getReviewPreviewDiff(
       [
         "diff",
         "--binary",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
         "--src-prefix=a/",
         "--dst-prefix=b/",
         "--full-index",

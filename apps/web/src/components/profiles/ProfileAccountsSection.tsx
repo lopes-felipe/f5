@@ -15,7 +15,7 @@ export function ProfileAccountsSection({ profile }: { readonly profile: ProfileS
   return (
     <section
       className="rounded-2xl border border-border bg-card"
-      data-settings-search-target="profiles.accounts"
+      data-settings-search-target="accounts.providers"
     >
       <div className="border-b border-border px-5 py-4">
         <h2 className="text-sm font-medium text-foreground">Accounts</h2>

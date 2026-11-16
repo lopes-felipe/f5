@@ -6,9 +6,11 @@ import {
   requiresDefaultBranchConfirmation,
   resolveAutoFeatureBranchName,
   resolveDefaultBranchActionDialogCopy,
+  resolveFeatureBranchUnavailableReason,
   resolveQuickAction,
   summarizeGitResult,
   shouldSavePullRequestLink,
+  withThreadPullRequests,
 } from "./GitActionsControl.logic";
 
 function status(overrides: Partial<GitStatusResult> = {}): GitStatusResult {
@@ -27,6 +29,34 @@ function status(overrides: Partial<GitStatusResult> = {}): GitStatusResult {
     ...overrides,
   };
 }
+
+describe("when: local changes are behind upstream", () => {
+  it.each([false, true])("offers Commit with an open PR: %s", (hasOpenPr) => {
+    const behind = status({
+      hasWorkingTreeChanges: true,
+      aheadCount: 1,
+      behindCount: 2,
+      pr: hasOpenPr
+        ? {
+            number: 13,
+            title: "Open PR",
+            url: "https://example.com/pr/13",
+            baseBranch: "main",
+            headBranch: "feature/test",
+            state: "open",
+          }
+        : null,
+    });
+    for (const isDefaultBranch of [false, true]) {
+      assert.deepEqual(resolveQuickAction(behind, false, isDefaultBranch), {
+        label: "Commit",
+        disabled: false,
+        kind: "run_action",
+        action: "commit",
+      });
+    }
+  });
+});
 
 describe("when: branch is clean and has an open PR", () => {
   it("resolveQuickAction opens the existing PR", () => {
@@ -448,15 +478,15 @@ describe("when: on default branch without open PR", () => {
 });
 
 describe("when: working tree has local changes and branch is behind upstream", () => {
-  it("resolveQuickAction still prefers commit, push, and create PR", () => {
+  it("resolveQuickAction offers commit without pushing", () => {
     const quick = resolveQuickAction(
       status({ hasWorkingTreeChanges: true, behindCount: 1 }),
       false,
     );
     assert.deepInclude(quick, {
       kind: "run_action",
-      action: "commit_push_pr",
-      label: "Commit, push & PR",
+      action: "commit",
+      label: "Commit",
     });
   });
 
@@ -653,7 +683,7 @@ describe("when: branch has no upstream configured", () => {
     assert.deepEqual(quick, {
       kind: "show_hint",
       label: "Push",
-      hint: 'Add an "origin" remote before pushing or creating a PR.',
+      hint: "Add a remote before pushing or creating a PR.",
       disabled: true,
     });
   });
@@ -805,6 +835,21 @@ describe("requiresDefaultBranchConfirmation", () => {
     assert.isTrue(requiresDefaultBranchConfirmation("commit_push", true));
     assert.isTrue(requiresDefaultBranchConfirmation("commit_push_pr", true));
     assert.isFalse(requiresDefaultBranchConfirmation("commit_push", false));
+  });
+});
+
+describe("resolveFeatureBranchUnavailableReason", () => {
+  it("blocks the feature branch when there is nothing to commit", () => {
+    assert.equal(
+      resolveFeatureBranchUnavailableReason({ branchName: "main", hasWorkingTreeChanges: false }),
+      "There are no changes to commit, so a feature branch can't be named. Create a branch yourself or continue on main.",
+    );
+  });
+
+  it("allows the feature branch when there are changes to commit", () => {
+    assert.isNull(
+      resolveFeatureBranchUnavailableReason({ branchName: "main", hasWorkingTreeChanges: true }),
+    );
   });
 });
 
@@ -1031,4 +1076,52 @@ it("only records new PR observations for server threads", () => {
       "https://github.com/owner/repo/pull/2",
     ),
   );
+});
+
+it("reports a changed commit context without presenting success", () => {
+  assert.deepEqual(
+    summarizeGitResult({
+      action: "commit_push_pr",
+      branch: { status: "skipped_not_requested" },
+      commit: {
+        status: "context_changed",
+        subject: "Keep suggestion",
+        suggestedMessage: "Keep suggestion\n\nFull body",
+      },
+      push: { status: "skipped_not_requested" },
+      pr: { status: "skipped_not_requested" },
+    }),
+    {
+      title: "Files or staging changed",
+      description: "Review the suggested message and current changes before trying again.",
+    },
+  );
+});
+
+describe("withThreadPullRequests", () => {
+  it("keeps the quick action when the thread has no PRs", () => {
+    const hint = { label: "Commit", disabled: true, kind: "show_hint" as const, hint: "x" };
+    assert.strictEqual(withThreadPullRequests(hint, 0), hint);
+  });
+
+  it("turns a disabled hint or View PR into a counted View PR", () => {
+    assert.deepEqual(
+      withThreadPullRequests({ label: "Push", disabled: true, kind: "show_hint", hint: "x" }, 2),
+      { label: "View PR", disabled: false, kind: "open_pr", pullRequestCount: 2 },
+    );
+    assert.deepEqual(
+      withThreadPullRequests({ label: "View PR", disabled: false, kind: "open_pr" }, 1),
+      { label: "View PR", disabled: false, kind: "open_pr", pullRequestCount: 1 },
+    );
+  });
+
+  it("keeps git work the user can do ahead of View PR", () => {
+    const push = {
+      label: "Push",
+      disabled: false,
+      kind: "run_action" as const,
+      action: "commit_push" as const,
+    };
+    assert.strictEqual(withThreadPullRequests(push, 3), push);
+  });
 });

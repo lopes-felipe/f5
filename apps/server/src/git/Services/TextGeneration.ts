@@ -74,7 +74,10 @@ export interface ThreadTitleGenerationInput {
   cwd: string;
   message: string;
   previousTitle?: string | undefined;
+  linkedContext?: string | undefined;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  /** The user's thread title instructions; empty or absent adds nothing. */
+  instructions?: string | undefined;
   model?: string;
   modelSelection?: ModelSelection;
 }
@@ -91,6 +94,12 @@ export interface StructuredJsonGenerationInput<S extends Schema.Top> {
   outputSchema: S;
   model?: string;
   modelSelection?: ModelSelection;
+  /**
+   * `no-workspace` requires a driver that runs with no tools, no MCP servers,
+   * no slash commands, and no access to the repository. Drivers that cannot
+   * guarantee it fail with `kind: "unsupported"`.
+   */
+  isolation?: "none" | "no-workspace";
 }
 
 export interface TextGenerationService {

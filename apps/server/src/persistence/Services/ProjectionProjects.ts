@@ -11,6 +11,7 @@ import {
   ModelSelection,
   ProjectIcon,
   ProjectId,
+  ProjectKind,
   ProjectScript,
   ThreadEnvMode,
 } from "@t3tools/contracts";
@@ -21,6 +22,7 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionProject = Schema.Struct({
   projectId: ProjectId,
+  kind: Schema.optional(ProjectKind).pipe(Schema.withDecodingDefault(() => "standard" as const)),
   title: Schema.String,
   workspaceRoot: Schema.String,
   defaultModel: Schema.NullOr(Schema.String),

@@ -1,5 +1,6 @@
 import * as OS from "node:os";
 import * as Path from "node:path";
+import { canonicalDesktopStateDir } from "@t3tools/shared/desktopAppControl";
 
 import { USERDATA_STATE_DIR_NAME, defaultF5UserdataStateDir } from "@t3tools/shared/appStatePaths";
 
@@ -9,6 +10,8 @@ export interface DesktopBackendEnvOptions {
   readonly stateDir: string;
   readonly stateDirSource: DesktopStateDirSource;
   readonly authToken: string;
+  /** Whether syncShellEnvironment actually captured PATH into the base env. */
+  readonly shellEnvironmentPrepared?: boolean;
 }
 
 export type DesktopStateDirSource = "explicit-state" | "home" | "default";
@@ -39,7 +42,7 @@ export function resolveDesktopStateDirConfig(
 
   const explicitStateDir = env.F5_STATE_DIR?.trim() || env.T3CODE_STATE_DIR?.trim();
   if (explicitStateDir) {
-    return { stateDir: explicitStateDir, source: "explicit-state" };
+    return { stateDir: canonicalDesktopStateDir(explicitStateDir), source: "explicit-state" };
   }
 
   const homeStateDir = resolveHomeStateDir(env.F5_HOME) || resolveHomeStateDir(env.T3CODE_HOME);
@@ -68,12 +71,18 @@ export function buildDesktopBackendEnv(
           T3CODE_STATE_DIR: options.stateDir,
         }
       : {};
+  // An inherited marker must not claim a PATH this desktop failed to capture.
+  const { F5_SHELL_ENVIRONMENT_PREPARED: _inheritedMarker, ...inheritedEnv } = baseEnv;
 
   return {
-    ...baseEnv,
+    ...inheritedEnv,
     F5_PROFILE: options.profileSlug ?? "default",
     T3CODE_MODE: "desktop",
     T3CODE_NO_BROWSER: "1",
+    // The backend starts after syncShellEnvironment. When it captured the
+    // login-shell or registry PATH, the server skips probing it again; after a
+    // timed-out probe the server runs its own PATH repair.
+    ...(options.shellEnvironmentPrepared ? { F5_SHELL_ENVIRONMENT_PREPARED: "1" } : {}),
     T3CODE_PORT: String(options.backendPort),
     ...stateDirEnv,
     T3CODE_AUTH_TOKEN: options.authToken,

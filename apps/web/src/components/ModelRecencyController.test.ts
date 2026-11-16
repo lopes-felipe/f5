@@ -1,7 +1,9 @@
 import { ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { useComposerDraftStore } from "../composerDraftStore";
+import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
+import { serverBootstrapFixture } from "../test/serverBootstrap";
 import { recordModelSelection, useModelPreferencesStore } from "../modelPreferencesStore";
 import { useStore } from "../store";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "../types";
@@ -45,6 +47,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 }
 
 describe("applyRecentModelSwap", () => {
+  afterEach(resetProtocolStateForTests);
   beforeEach(() => {
     if (
       typeof localStorage === "undefined" ||
@@ -135,7 +138,35 @@ describe("applyRecentModelSwap", () => {
     expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]).toBeUndefined();
   });
 
-  it("refuses to swap across providers once the thread's session is bound", () => {
+  it("swaps across providers on a started thread when the server hands context off", () => {
+    setServerBootstrap({
+      ...serverBootstrapFixture,
+      capabilities: [...serverBootstrapFixture.capabilities, "provider-context-handoff"],
+    });
+    useStore.setState({
+      threads: [
+        makeThread({
+          session: {
+            provider: "codex",
+            status: "running",
+            createdAt: "2026-04-16T00:00:00.000Z",
+            updatedAt: "2026-04-16T00:00:00.000Z",
+            orchestrationStatus: "running",
+          },
+        }),
+      ],
+    });
+    recordModelSelection("claudeAgent", "claude-opus-4-7", { claudeAgent: { effort: "max" } });
+    recordModelSelection("codex", "gpt-5.4", { codex: { reasoningEffort: "xhigh" } });
+
+    expect(applyRecentModelSwap(THREAD_ID)).toBe(true);
+    const draft = useComposerDraftStore.getState().draftsByThreadId[THREAD_ID];
+    expect(draft?.provider).toBe("claudeAgent");
+    expect(draft?.providerInstanceId).toBe("claudeAgent");
+    expect(draft?.model).toBe("claude-opus-4-7");
+  });
+
+  it("refuses to swap across providers once the thread's session is bound (older server)", () => {
     // Session is active on codex — the server can't hot-swap to claudeAgent.
     useStore.setState({
       threads: [

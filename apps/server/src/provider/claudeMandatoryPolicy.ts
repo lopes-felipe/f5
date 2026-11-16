@@ -1,10 +1,26 @@
 import * as NodePath from "node:path";
 
-import type { Options, PreToolUseHookInput } from "@anthropic-ai/claude-agent-sdk";
+import {
+  LEGACY_TOOL_NAME_ALIASES,
+  type Options,
+  type PreToolUseHookInput,
+} from "@anthropic-ai/claude-agent-sdk";
 
 /** Native delegation names in the certified Claude runtime. Task* CRUD is not delegation. */
 export const CLAUDE_DELEGATION_TOOLS = ["Agent", "Task"];
 const DELEGATION_ALIASES = new Set(["agent", "task", "subagent", "spawn_agent"]);
+
+const LEGACY_ALIASES_BY_LOWERCASE = new Map(
+  Object.entries(LEGACY_TOOL_NAME_ALIASES).map(([legacy, current]) => [
+    legacy.toLowerCase(),
+    current,
+  ]),
+);
+
+/** A former tool name (`KillBash`, `Task`) resolved to the name policy checks expect. */
+export function canonicalClaudeToolName(toolName: string): string {
+  return LEGACY_ALIASES_BY_LOWERCASE.get(toolName.trim().toLowerCase()) ?? toolName;
+}
 
 export interface McpToolProvenance {
   readonly name: string;
@@ -36,6 +52,11 @@ export interface ClaudeMandatoryPolicy {
   ) => Promise<string | undefined>;
   /** Where plan mode writes plan files (`<Claude config dir>/plans`). */
   readonly plansDirectory?: string | undefined;
+  /**
+   * Block the tool when the hook callback throws or times out (`onFailure: "block"`).
+   * Only for CLIs that report `hook_on_failure_supported`; the SDK refuses others.
+   */
+  readonly failClosed?: boolean | undefined;
 }
 
 export function evaluateClaudeMandatoryPolicy(
@@ -78,7 +99,13 @@ export function evaluateClaudeMandatoryPolicy(
   }
 }
 
-const WORKSPACE_MUTATION_TOOLS = new Set(["write", "edit", "multiedit", "notebookedit"]);
+/** Built-in file-editing tools; a rename in the SDK's BUILTIN_TOOL_NAMES fails CI. */
+export const CLAUDE_WORKSPACE_MUTATION_TOOLS = ["Write", "Edit", "NotebookEdit"] as const;
+// MultiEdit is gone from current runtimes; kept for older custom executables.
+const WORKSPACE_MUTATION_TOOLS = new Set([
+  ...CLAUDE_WORKSPACE_MUTATION_TOOLS.map((name) => name.toLowerCase()),
+  "multiedit",
+]);
 const PLAN_FILE_TOOLS = new Set(["write", "edit", "multiedit"]);
 
 /** Plan mode writes its plan file natively; that is not a workspace edit. */
@@ -129,11 +156,29 @@ export function evaluateClaudeMandatoryHookPolicy(
   const name = toolName.trim().toLowerCase();
   if (policy.subagentsEnabled === false && DELEGATION_ALIASES.has(name)) return reason;
   if (name === "exitplanmode" || name === "askuserquestion") return reason;
-  if (!WORKSPACE_MUTATION_TOOLS.has(name)) return undefined;
-  return PLAN_FILE_TOOLS.has(name) &&
-    targetsPlansDirectory(policy.plansDirectory, context?.toolInput, context?.cwd)
-    ? undefined
-    : reason;
+  return isClaudePlanModeWorkspaceEdit(toolName, context?.toolInput, {
+    plansDirectory: policy.plansDirectory,
+    cwd: context?.cwd,
+  })
+    ? reason
+    : undefined;
+}
+
+export const CLAUDE_PLAN_MODE_EDIT_DENIAL =
+  "Plan mode is read-only: file edits are not allowed until the plan is approved. Put changes in the plan instead.";
+
+/** True for a file edit that plan mode must not make (plan file writes excepted). */
+export function isClaudePlanModeWorkspaceEdit(
+  toolName: string,
+  toolInput: unknown,
+  context: { readonly plansDirectory: string | undefined; readonly cwd: string | undefined },
+): boolean {
+  const name = toolName.trim().toLowerCase();
+  if (!WORKSPACE_MUTATION_TOOLS.has(name)) return false;
+  return !(
+    PLAN_FILE_TOOLS.has(name) &&
+    targetsPlansDirectory(context.plansDirectory, toolInput, context.cwd)
+  );
 }
 
 /** Empty hook output preserves native permission evaluation; never return allow. */
@@ -153,17 +198,19 @@ export function claudeMandatoryPolicyOptions(
       PreToolUse: [
         ...(hooks?.PreToolUse ?? []),
         {
+          ...(policy.failClosed ? { onFailure: "block" as const } : {}),
           hooks: [
             async (input, _toolUseId, { signal }) => {
               if (input.hook_event_name !== "PreToolUse") return {};
-              let reason = evaluateClaudeMandatoryHookPolicy(policy, input.tool_name, {
+              const toolName = canonicalClaudeToolName(input.tool_name);
+              let reason = evaluateClaudeMandatoryHookPolicy(policy, toolName, {
                 toolInput: input.tool_input,
                 cwd: input.cwd,
                 mcpServer: input.mcp_server,
               });
               if (!reason && policy.evaluateDynamic) {
                 try {
-                  reason = await policy.evaluateDynamic(input.tool_name, input.mcp_server, {
+                  reason = await policy.evaluateDynamic(toolName, input.mcp_server, {
                     input,
                     signal,
                   });

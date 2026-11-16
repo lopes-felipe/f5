@@ -1,6 +1,7 @@
 import { Effect, Option, PubSub, Schema, Semaphore, Stream } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import {
+  DEFAULT_SERVER_SETTINGS,
   TrackedPullRequest,
   PrHubDetailResult,
   PrHubFilesPage,
@@ -13,6 +14,7 @@ import {
   type SourceControlPullRequestRef,
 } from "@t3tools/contracts";
 import {
+  formatSourceControlPullRequestKey,
   parseSourceControlPullRequestKey,
   parseSourceControlPullRequestUrl,
 } from "@t3tools/shared/sourceControl";
@@ -29,11 +31,14 @@ import {
   forgeReviewThreads,
   forgeComparison,
   forgeUserMatches,
+  forgeComments,
   record,
   text,
   login,
 } from "./forgeModel.ts";
 import { listPrHubPullRequests, prHubInvalidation, prHubOverview } from "./readModel.ts";
+import { applyPrHubRelevance } from "./relevance.ts";
+import { prHubSyncState } from "./syncState.ts";
 
 const PAGE_INFO = { hasNextPage: false, endCursor: null, truncated: false } as const;
 const MAX_TRACKED = 500;
@@ -184,6 +189,20 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             "The forge returned an invalid pull request identity.",
             "invalid_response",
           );
+        const previous = state.get(formatSourceControlPullRequestKey(ref));
+        // Comparison-only reads must not erase checks verified for the same head.
+        if (
+          detail.checks === undefined &&
+          previous &&
+          detail.headRefOid &&
+          previous.pr.headRefOid === detail.headRefOid
+        ) {
+          detail = {
+            ...detail,
+            checks: previous.detail.detail.checks,
+            checksComplete: !previous.detail.detail.truncatedSections?.includes("checks"),
+          };
+        }
         const normalized = forgeTracked(account, ref, detail, provider),
           old = state.get(normalized.key)?.pr;
         const pr = {
@@ -223,7 +242,7 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
       });
     const refreshOne = (ref: SourceControlPullRequestRef) =>
       Effect.gen(function* () {
-        const detail = yield* provider.getDetail(ref);
+        const detail = yield* provider.getDetail(ref, { checks: true });
         return yield* saveDetail(ref, detail);
       });
     const refreshNow: PrHubServiceShape["refreshNow"] = (input) =>
@@ -273,9 +292,12 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             }
             for (const detail of discovered.success.slice(0, 100)) {
               if (!Number.isInteger(detail.number) || detail.number < 1) continue;
-              const saved = yield* saveDetail({ ...ref, number: detail.number }, detail).pipe(
-                Effect.result,
-              );
+              const discoveredRef = { ...ref, number: detail.number };
+              const saved = yield* (
+                account.provider === "gitlab" || account.provider === "forgejo"
+                  ? refreshOne(discoveredRef)
+                  : saveDetail(discoveredRef, detail)
+              ).pipe(Effect.result);
               if (saved._tag === "Failure") failures++;
               else discoveredKeys.add(saved.success.key);
             }
@@ -345,6 +367,8 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               return {
                 ...cached.detail,
                 stale: true,
+                readErrorKind: read.failure.kind === "rate_limited" ? "rate_limited" : "failed",
+                ...(read.failure.rateLimit ? { rateLimit: read.failure.rateLimit } : {}),
                 warning: "Forge refresh failed; showing the last verified detail.",
               };
             return yield* read.failure;
@@ -497,13 +521,7 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               };
             return yield* read.failure;
           }
-          const comments = read.success.flatMap((value) =>
-            Array.isArray(value.notes)
-              ? value.notes.map(record)
-              : Array.isArray(value.comments)
-                ? value.comments.map(record)
-                : [value],
-          );
+          const comments = forgeComments(read.success);
           const entries: PrHubTimelinePage["entries"] = comments
             .filter((comment) => comment.system !== true)
             .map((comment) => ({
@@ -535,7 +553,9 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               reviewState: null,
               viewerCanUpdate:
                 provider.forgeCapabilities.edit.comment &&
-                forgeUserMatches(comment.author ?? comment.user, account) &&
+                (typeof comment.canEdit === "boolean"
+                  ? comment.canEdit
+                  : forgeUserMatches(comment.author ?? comment.user, account)) &&
                 !(account.provider === "forgejo" && nativeCommentIsInline(comment)) &&
                 (typeof comment.id === "number" || typeof comment.id === "string"),
               reactions: [],
@@ -633,15 +653,35 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
           catch: () => error("Could not inspect local repositories.", "generic"),
         });
       });
+    // Sections depend on the clock and on the viewer's settings (stale cutoff, promoted
+    // teams), so every read stamps them, as the GitHub hub does.
+    const relevantSnapshot = settings.getSettings.pipe(
+      Effect.map((current) => current.prHub),
+      Effect.catch(() => Effect.succeed(DEFAULT_SERVER_SETTINGS.prHub)),
+      Effect.map((prHub) => applyPrHubRelevance(snapshot(), prHub)),
+    );
     return {
       startMonitoring,
-      getSnapshot: Effect.sync(snapshot),
+      getSnapshot: relevantSnapshot,
       refreshNow,
       streamChanges: Stream.fromPubSub(changes),
       getOverview: (input) =>
-        Effect.sync(() => prHubOverview(snapshot(), String(revision), input.stalledBefore)),
+        relevantSnapshot.pipe(
+          Effect.map((current) => ({
+            ...prHubOverview(
+              current,
+              String(revision),
+              input.stalledBefore,
+              undefined,
+              input.savedQueries,
+            ),
+            sync: prHubSyncState(current, undefined, null),
+          })),
+        ),
       listPullRequests: (input) =>
-        Effect.sync(() => listPrHubPullRequests(snapshot(), String(revision), input)),
+        relevantSnapshot.pipe(
+          Effect.map((current) => listPrHubPullRequests(current, String(revision), input)),
+        ),
       track,
       getDetail,
       getFiles,
@@ -685,6 +725,42 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
         editLocal(input.key, input.accountGeneration, {
           ignoredAt: new Date().toISOString(),
         }),
+      unignore: (input) => editLocal(input.key, input.accountGeneration, { ignoredAt: null }),
+      // One publication for the whole selection. This hub keeps no seen state, so marking
+      // seen has nothing to store.
+      bulkUpdate: (input) =>
+        gate.withPermits(1)(
+          Effect.gen(function* () {
+            yield* assertGeneration(input.accountGeneration);
+            const until = input.until;
+            if (input.action === "snooze" && !(until && Date.parse(until) > Date.now()))
+              return yield* error("Choose a snooze time in the future.", "generic");
+            // Nothing to store and nothing changed, so nothing is written or published.
+            if (input.action === "mark_seen") return { updated: 0 };
+            const patch: Partial<TrackedPullRequest> =
+              input.action === "snooze"
+                ? { snoozedUntil: until ?? null }
+                : { ignoredAt: new Date().toISOString() };
+            const changed = [...new Set(input.keys)].flatMap((key) => {
+              const stored = state.get(key);
+              return stored ? [{ ...stored, pr: { ...stored.pr, ...patch } }] : [];
+            });
+            if (changed.length === 0) return { updated: 0 };
+            // All rows are stored or none is. Memory follows only once storage holds them,
+            // so a failed write leaves both as they were.
+            yield* sql
+              .withTransaction(Effect.forEach(changed, persist, { discard: true }))
+              .pipe(
+                Effect.mapError(() =>
+                  error("Could not persist the pull request snapshot.", "generic"),
+                ),
+              );
+            const previous = snapshot();
+            for (const next of changed) state.set(next.pr.key, next);
+            yield* publish(previous);
+            return { updated: changed.length };
+          }),
+        ),
       acknowledgeAttention: (input) =>
         editLocal(input.key, input.accountGeneration, {
           acknowledgedAt: new Date().toISOString(),

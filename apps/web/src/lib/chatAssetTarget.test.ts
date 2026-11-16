@@ -1,6 +1,87 @@
 import { expect, it } from "vitest";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { resolveChatAssetTarget } from "./chatAssetTarget";
+
+it("serves imported Codex images through attachments without granting CODEX_HOME reads", () => {
+  const filename = "thread-1-12345678-1234-1234-1234-123456789abc.png";
+  expect(resolveChatAssetTarget("/state/attachments/" + filename, "/workspace", [], [])).toEqual({
+    identity: { kind: "attachments" },
+    path: filename,
+  });
+  expect(
+    resolveChatAssetTarget("/home/me/.codex/generated_images/output.png", "/workspace", [], []),
+  ).toBeUndefined();
+});
+
+it.each(["image.png", "/state/scratch/one/image.png", "file:///state/scratch/one/image.png"])(
+  "resolves scratch media to its thread identity: %s",
+  (src) => {
+    const projects = [
+      { id: ProjectId.makeUnsafe("scratch"), kind: "scratch", cwd: "/state/scratch" },
+    ];
+    const threads = ["one", "two"].map((id) => ({
+      id: ThreadId.makeUnsafe(id),
+      worktreePath: null,
+      scratchPath: `/state/scratch/${id}`,
+    }));
+    expect(resolveChatAssetTarget(src, "/state/scratch/one", projects, threads)).toEqual({
+      identity: { kind: "thread", threadId: "one" },
+      path: "image.png",
+    });
+    expect(resolveChatAssetTarget("image.png", "/state/scratch/two", projects, threads)).toEqual({
+      identity: { kind: "thread", threadId: "two" },
+      path: "image.png",
+    });
+    expect(
+      resolveChatAssetTarget("../shared.png", "/state/scratch/one", projects, threads),
+    ).toBeUndefined();
+    expect(
+      resolveChatAssetTarget("/state/scratch/shared.png", "/state/scratch/one", projects, threads),
+    ).toBeUndefined();
+  },
+);
+
+it("resolves Windows and network scratch folders without a project identity", () => {
+  const projects = [
+    { id: ProjectId.makeUnsafe("scratch"), kind: "scratch", cwd: "C:\\state\\scratch" },
+  ];
+  const thread = {
+    id: ThreadId.makeUnsafe("one"),
+    worktreePath: null,
+    scratchPath: "C:\\state\\scratch\\one",
+  };
+  expect(
+    resolveChatAssetTarget("C:\\state\\scratch\\one\\image.png", thread.scratchPath, projects, [
+      thread,
+    ]),
+  ).toEqual({
+    identity: { kind: "thread", threadId: "one" },
+    path: "image.png",
+  });
+  const network = { ...thread, scratchPath: "//host/share/scratch/one" };
+  expect(
+    resolveChatAssetTarget(
+      "//host/share/scratch/one/image.png",
+      network.scratchPath,
+      [],
+      [network],
+    ),
+  ).toEqual({
+    identity: { kind: "thread", threadId: "one" },
+    path: "image.png",
+  });
+});
+it.each([
+  "//attacker/share/a.png",
+  String.raw`\\attacker\share\a.png`,
+  String.raw`/\attacker/share/a.png`,
+  "%5C%5Cattacker%5Cshare%5Ca.png",
+  "file://attacker/share/a.png",
+])("does not authorize foreign network media: %s", (src) => {
+  expect(
+    resolveChatAssetTarget(src, "/repo", [{ id: ProjectId.make("root"), cwd: "/repo" }], []),
+  ).toBeUndefined();
+});
 it("resolves relative and file URLs under the most specific root", () => {
   const projects = [
     { id: ProjectId.makeUnsafe("root"), cwd: "/repo" },

@@ -11,7 +11,8 @@ type ProviderDispatchSettings = Pick<
   | "claudeProjectSettings"
   | "codexBinaryPath"
   | "codexHomePath"
->;
+> &
+  Partial<Pick<AppSettings, "claudeSubagentDefaults">>;
 
 export function resolveProviderOptionsForDispatch(input: {
   readonly settings: ProviderDispatchSettings;
@@ -56,6 +57,7 @@ export function resolveProviderOptionsForDispatch(input: {
         projectSettings.subagentModel,
         input.availableModels,
       ),
+      ...(projectSettings.subagentEffort ? { subagentEffort: projectSettings.subagentEffort } : {}),
       ...(launchArgs ? { launchArgs } : {}),
     },
   };

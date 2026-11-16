@@ -14,7 +14,7 @@ import {
 } from "../../appSettings";
 import { SettingsRouteContext } from "./SettingsRouteContext";
 import type { SettingsRouteValue } from "./useSettingsRouteState";
-import { DisplaySettings } from "./categories/DisplaySettings";
+import { ConversationSettings as DisplaySettings } from "./categories/ConversationSettings";
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 

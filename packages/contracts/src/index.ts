@@ -1,4 +1,6 @@
 export * from "./nativeOperation";
+export * from "./threadTools";
+export * from "./pullRequestWatch";
 export * from "./baseSchemas";
 export { PendingUserInput } from "./userInput";
 export * from "./elicitation";
@@ -27,6 +29,7 @@ export * from "./preview";
 export * from "./previewAutomation";
 export * from "./computerAutomation";
 export * from "./orchestration";
+export * from "./threadSearch";
 export * from "./mcp";
 export * from "./mcpServer";
 export * from "./planningWorkflow";
@@ -38,6 +41,7 @@ export * from "./filesystem";
 export * from "./environment";
 export * from "./storage";
 export * from "./backgroundWork";
+export * from "./agentBridge";
 export * from "./checkedInProjectFile";
 export * from "./usage";
 
@@ -53,3 +57,15 @@ export * from "./prHubExtensions";
 export * from "./usageLimit";
 
 export * from "./runtimeInfo";
+
+export * from "./workflowSummary";
+
+export * from "./worktrees";
+
+export * from "./scheduledTasks";
+export * from "./upstreamPorts";
+
+export * from "./threadSettlement";
+
+export * from "./mcpApps";
+export * from "./desktopAppActivation";

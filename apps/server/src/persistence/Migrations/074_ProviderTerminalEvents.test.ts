@@ -45,7 +45,7 @@ it.layer(repositoryLayer)("ProviderTerminalEventRepository", (it) => {
       yield* repository.record(event);
       yield* repository.record(event);
       yield* repository.markFailed({ eventId: event.eventId, error: "projection failed" });
-      const pending = yield* repository.listPending;
+      const pending = yield* repository.listPendingPage;
       assert.equal(pending.length, 1);
       assert.equal(pending[0]?.attempt, 1);
       assert.equal(pending[0]?.lastError, "projection failed");
@@ -53,7 +53,7 @@ it.layer(repositoryLayer)("ProviderTerminalEventRepository", (it) => {
 
       yield* repository.markApplied(event.eventId);
       yield* repository.markApplied(event.eventId);
-      assert.deepStrictEqual(yield* repository.listPending, []);
+      assert.deepStrictEqual(yield* repository.listPendingPage, []);
     }),
   );
 });

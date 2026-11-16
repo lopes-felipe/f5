@@ -1,4 +1,5 @@
 import type { ProjectId } from "@t3tools/contracts";
+import { resolvePastedPath } from "@t3tools/shared/path";
 import { FolderIcon } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 
@@ -166,7 +167,7 @@ export function SidebarAddProjectForm({ controller }: { controller: AddProjectCo
           placeholder="/path/to/project"
           value={controller.newCwd}
           onChange={(event) => {
-            controller.setNewCwd(event.target.value);
+            controller.setNewCwd(resolvePastedPath(controller.newCwd, event.target.value));
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter") controller.handleAddProject();

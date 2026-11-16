@@ -90,6 +90,7 @@ layer("ProjectionWorkspaceQuery", (it) => {
 
       assert.deepEqual(Option.getOrNull(project), {
         projectId: ProjectId.makeUnsafe("project-live"),
+        kind: "standard",
         workspaceRoot: "/workspace/live",
       });
       assert.equal(Option.getOrNull(projectThread)?.workspaceRoot, "/workspace/live");

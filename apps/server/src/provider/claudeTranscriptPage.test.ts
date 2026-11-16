@@ -24,6 +24,18 @@ describe("bounded native transcript pages", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+  it("keeps a record containing U+2028 as one entry", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "f5-child-page-"));
+    try {
+      const file = path.join(directory, "agent.jsonl");
+      const record = { text: `a${String.fromCharCode(0x2028)}b` };
+      await writeFile(file, `${JSON.stringify(record)}\n{"id":2}\n`);
+      const page = await readClaudeTranscriptPage(file, 0, 3);
+      expect(page.entries).toEqual([record, { id: 2 }]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
   it("omits oversized and malformed entries and continues after them", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "f5-child-page-"));
     try {

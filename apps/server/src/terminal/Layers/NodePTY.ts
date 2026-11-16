@@ -128,8 +128,12 @@ export const NodePtyAdapterLive = Layer.effect(
               cwd: input.cwd,
               cols: input.cols,
               rows: input.rows,
-              env: input.env,
-              name: globalThis.process.platform === "win32" ? "xterm-color" : "xterm-256color",
+              // ConPTY ignores name, so supply TERM explicitly when it is absent.
+              env:
+                process.platform === "win32" && input.env.TERM === undefined
+                  ? { ...input.env, TERM: "xterm-256color" }
+                  : input.env,
+              name: "xterm-256color",
             }),
           catch: (cause) =>
             new PtySpawnError({

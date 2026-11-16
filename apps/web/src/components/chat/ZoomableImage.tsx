@@ -1,20 +1,43 @@
 import { MinusIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
-import { useRef, useState, type MouseEventHandler } from "react";
+import { useEffect, useRef, useState, type MouseEventHandler } from "react";
+import { isSvgPreview } from "@t3tools/shared/filePreview";
 import { Button } from "../ui/button";
+import { AttachmentImage } from "../AttachmentImage";
 
 /** The unscaled image stays fitted; panning never moves it entirely out of view. */
 export function ZoomableImage({
   src,
   name,
+  mimeType,
+  sourceBlob,
   onContextMenu,
 }: {
   src: string;
   name: string;
+  mimeType?: string | undefined;
+  sourceBlob?: Blob | undefined;
   onContextMenu: MouseEventHandler<HTMLImageElement>;
 }) {
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const imageRef = useRef<HTMLImageElement>(null);
+  const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
+  const [viewport, setViewport] = useState({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
+  useEffect(() => {
+    const resize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+  const vectorWidth =
+    isSvgPreview({ src, name, ...(mimeType ? { mimeType } : {}) }) && naturalSize.height > 0
+      ? Math.min(
+          viewport.width * 0.92 - (viewport.width >= 640 ? 96 : 0),
+          (viewport.height * 0.8 * naturalSize.width) / naturalSize.height,
+        )
+      : undefined;
   const drag = useRef<{
     id: number;
     x: number;
@@ -32,16 +55,26 @@ export function ZoomableImage({
         className="overflow-hidden rounded-lg border border-border/70 bg-white shadow-2xl"
         style={{ touchAction: "none" }}
       >
-        <img
+        <AttachmentImage
+          name={name}
+          mimeType={mimeType}
+          sourceBlob={sourceBlob}
           ref={imageRef}
           src={src}
           alt={name}
           draggable={false}
           className="max-h-[80vh] max-w-[92vw] select-none object-contain"
           style={{
+            width: vectorWidth,
             transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
             cursor: zoom > 1 ? "grab" : "zoom-in",
           }}
+          onLoad={(event) =>
+            setNaturalSize({
+              width: event.currentTarget.naturalWidth,
+              height: event.currentTarget.naturalHeight,
+            })
+          }
           onContextMenu={onContextMenu}
           onDoubleClick={() => changeZoom(zoom === 1 ? 2 : 1)}
           onPointerDown={(event) => {

@@ -1,4 +1,10 @@
-import { type McpServerStartupStatus, ProjectId } from "@t3tools/contracts";
+import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
+import {
+  type McpServerStartupStatus,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { Effect, Layer, Schema, ServiceMap } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
@@ -13,6 +19,9 @@ export interface McpRuntimeServerDiagnostic {
 export const ListLatestMcpRuntimeDiagnosticsInput = Schema.Struct({
   projectId: ProjectId,
   provider: Schema.String,
+  instanceId: Schema.optional(ProviderInstanceId),
+  threadId: Schema.optional(ThreadId),
+  sessionGeneration: Schema.optional(Schema.Number),
   configVersion: Schema.optional(Schema.String),
 });
 export type ListLatestMcpRuntimeDiagnosticsInput = typeof ListLatestMcpRuntimeDiagnosticsInput.Type;
@@ -41,6 +50,7 @@ function asMcpStartupStatus(value: string): McpServerStartupStatus | undefined {
     case "starting":
     case "ready":
     case "failed":
+    case "needs-auth":
     case "cancelled":
       return value;
     default:
@@ -48,9 +58,7 @@ function asMcpStartupStatus(value: string): McpServerStartupStatus | undefined {
   }
 }
 
-export function normalizeMcpRuntimeDiagnosticName(name: string): string {
-  return name.trim().toLowerCase();
-}
+export const normalizeMcpRuntimeDiagnosticName = mcpServerNameKey;
 
 export function indexMcpRuntimeServerDiagnostics(
   diagnostics: ReadonlyArray<McpRuntimeServerDiagnostic>,
@@ -92,14 +100,16 @@ const makeMcpRuntimeDiagnostics = Effect.gen(function* () {
   const listLatestRows = SqlSchema.findAll({
     Request: ListLatestMcpRuntimeDiagnosticsInput,
     Result: LatestMcpRuntimeDiagnosticRow,
-    execute: ({ projectId, provider, configVersion }) =>
+    execute: ({ projectId, provider, configVersion, instanceId, threadId, sessionGeneration }) =>
       sql`
         WITH runtime_threads AS (
-          SELECT thread_id
+          SELECT thread_id, provider_instance_id, runtime_payload_json
           FROM provider_session_runtime
           WHERE project_id = ${projectId}
             AND provider_name = ${provider}
-            AND status = 'running'
+            AND provider_instance_id = ${instanceId ?? null}
+            AND (${threadId ?? null} IS NULL OR thread_id = ${threadId ?? null})
+            AND (${sessionGeneration ?? null} IS NULL OR json_extract(runtime_payload_json, '$.sessionGeneration') = ${sessionGeneration ?? null})
             AND (${configVersion ?? null} IS NULL OR mcp_config_version = ${configVersion ?? null})
         ),
         ranked_mcp_statuses AS (
@@ -116,6 +126,9 @@ const makeMcpRuntimeDiagnostics = Effect.gen(function* () {
           FROM projection_thread_activities AS activity
           JOIN runtime_threads ON runtime_threads.thread_id = activity.thread_id
           WHERE activity.kind = 'mcp.status.updated'
+            AND json_extract(activity.payload_json, '$.providerInstanceId') = runtime_threads.provider_instance_id
+            AND json_type(activity.payload_json, '$.sessionGeneration') = 'integer'
+            AND json_extract(activity.payload_json, '$.sessionGeneration') = json_extract(runtime_threads.runtime_payload_json, '$.sessionGeneration')
             AND json_type(activity.payload_json, '$.name') = 'text'
             AND json_type(activity.payload_json, '$.status') = 'text'
         )

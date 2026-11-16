@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 
 import {
@@ -10,6 +11,7 @@ import {
 import { ProviderModelOptions } from "./model";
 import { ProviderKind } from "./providerKind";
 import { ProviderStartOptions } from "./providerStartOptions";
+import { WorkflowArchiveRestorations } from "./workflowArchive";
 
 export const PlanningWorkflowId = makeEntityId("PlanningWorkflowId");
 export type PlanningWorkflowId = typeof PlanningWorkflowId.Type;
@@ -129,6 +131,7 @@ export const WorkflowBranch = Schema.Struct({
   error: Schema.NullOr(Schema.String),
   errorStage: Schema.NullOr(WorkflowBranchErrorStage).pipe(Schema.withDecodingDefault(() => null)),
   retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  /** Turn whose captured output (document or proposed plan) was rejected for this stage. */
   rejectedDocumentTurnId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -151,6 +154,7 @@ export const WorkflowMerge = Schema.Struct({
   approvedPlanId: Schema.NullOr(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => null)),
   status: WorkflowMergeStatus,
   error: Schema.NullOr(Schema.String),
+  /** Turn whose captured output (document or proposed plan) was rejected for this stage. */
   rejectedDocumentTurnId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -165,7 +169,7 @@ export const WorkflowImplementation = Schema.Struct({
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
-  worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+  worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
   runtimeMode: Schema.optional(
@@ -269,7 +273,7 @@ export const PlanningWorkflow = Schema.Struct({
     Schema.withDecodingDefault(() => null),
   ),
   requirementPrompt: TrimmedNonEmptyString,
-  plansDirectory: TrimmedNonEmptyString,
+  plansDirectory: FilesystemPath,
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   branchA: WorkflowBranch,
   branchB: WorkflowBranch,
@@ -284,6 +288,7 @@ export const PlanningWorkflow = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
+  archiveRestorations: WorkflowArchiveRestorations,
   deletedAt: Schema.NullOr(IsoDateTime),
 });
 export type PlanningWorkflow = typeof PlanningWorkflow.Type;

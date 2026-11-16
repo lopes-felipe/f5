@@ -1,3 +1,5 @@
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { isPrHubRepositoryExcluded } from "../repositoryPolicy.ts";
 import { resolveLocalCheckout as discoverLocalCheckout } from "../localCheckout.ts";
 import { nextPrHubRefreshAt } from "../refreshSchedule.ts";
 import { GitHubCliError } from "../../git/Errors.ts";
@@ -19,6 +21,8 @@ import { GitHubRequestPriority, githubRequestScheduler } from "../../git/githubR
 import { mapGitHubCliError } from "../../sourceControl/GitHubSourceControlProvider.ts";
 import { PrHubDiscovery } from "../Services/PrHubDiscovery.ts";
 import { excludePrHubRepositories, listPrHubPullRequests, prHubOverview } from "../readModel.ts";
+import { applyPrHubRelevance } from "../relevance.ts";
+import { prHubSyncState } from "../syncState.ts";
 import { decodeUnresolvedThreads, GITHUB_UNRESOLVED_THREADS_QUERY } from "../reviewThreads.ts";
 
 import {
@@ -52,12 +56,15 @@ import {
 } from "../../sourceControl/SourceControlProvider.ts";
 import { discoverSourceControlProviderIdentities } from "../../sourceControl/discovery.ts";
 import { PrHubService, type PrHubServiceShape } from "../Services/PrHubService.ts";
+import { canViewerCommentOnPullRequest } from "../commentPermission.ts";
 import {
   decodeGitHubPrDetail,
   decodeGitHubPrTimeline,
   GITHUB_PR_DETAIL_QUERY,
+  GITHUB_PR_DETAIL_REQUESTED_REVIEWERS,
   GITHUB_PR_TIMELINE_QUERY,
   githubTimelineVariables,
+  isRefusedRequestedReviewersOnly,
 } from "../githubPrDetails.ts";
 
 import {
@@ -94,7 +101,9 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
     const providerKind = "github" as const;
     const cwd = accountCwd(serverConfig.cwd);
     const snapshotRef = yield* Ref.make<PrHubSnapshot | null>(null);
-    const changePubSub = yield* PubSub.sliding<PrHubChanged>(1);
+    // Room for a burst. Events that still do not fit are dropped oldest first, which the
+    // reader sees as a jump in their sequence numbers.
+    const changePubSub = yield* PubSub.sliding<PrHubChanged>(16);
     const actionRefreshPubSub = yield* PubSub.sliding<void>(1);
     const jobCoordinator = yield* PrHubJobCoordinator;
     const viewerRef = yield* Ref.make<ViewerIdentity | null>(null);
@@ -118,7 +127,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
           if (!roots.has(root)) projectRepositoryCache.delete(root);
         const candidates: PrHubLocalCheckoutCandidate[] = [];
         for (const project of allProjects) {
-          if (project.deletedAt !== null) continue;
+          if (project.deletedAt !== null || isScratchProject(project)) continue;
           let cached = projectRepositoryCache.get(project.workspaceRoot);
           if (!cached || Date.now() - cached.checkedAt >= 15 * 60_000) {
             const remotes = yield* git.listRemotes(project.workspaceRoot).pipe(
@@ -205,7 +214,13 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
             );
             const changed = JSON.stringify([...excluded].sort()) !== repository.scopeSignature();
             return (changed ? publishSnapshot(snapshot) : Effect.succeed(snapshot)).pipe(
-              Effect.map((current) => excludePrHubRepositories(current, excluded)),
+              Effect.map((current) =>
+                // Sections depend on the clock and on settings, so every read re-stamps them.
+                applyPrHubRelevance(
+                  excludePrHubRepositories(current, excluded),
+                  currentSettings.prHub,
+                ),
+              ),
             );
           }),
         ),
@@ -381,30 +396,33 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
             const provider = yield* sourceControlProviders.get(pr.provider);
             const { owner, repo } = yield* repositoryParts(pr);
             const cacheKey = pr.key;
+            const read = (requestedReviewers: number) =>
+              provider.query({
+                cwd,
+                host: pr.host,
+                document: GITHUB_PR_DETAIL_QUERY,
+                variables: { owner, repo, number: pr.number, requestedReviewers },
+              });
             return yield* readPrDetailCache({
               cache: detailCache,
               key: cacheKey,
               mode: input.mode ?? "if_stale",
-              fetch: provider
-                .query({
-                  cwd,
-                  host: pr.host,
-                  document: GITHUB_PR_DETAIL_QUERY,
-                  variables: { owner, repo, number: pr.number },
-                })
-                .pipe(
-                  Effect.flatMap((response) =>
-                    decodeDetailResponse(pr, "prHub.getDetail.decode", () => {
-                      const decoded = decodeGitHubPrDetail(response, pr);
-                      return {
-                        detail: decoded.detail,
-                        stale: false,
-                        refreshedAt: new Date().toISOString(),
-                        ...(decoded.rateLimit ? { rateLimit: decoded.rateLimit } : {}),
-                      } satisfies PrHubDetailResult;
-                    }),
-                  ),
+              fetch: read(GITHUB_PR_DETAIL_REQUESTED_REVIEWERS).pipe(
+                Effect.flatMap((response) =>
+                  isRefusedRequestedReviewersOnly(response) ? read(0) : Effect.succeed(response),
                 ),
+                Effect.flatMap((response) =>
+                  decodeDetailResponse(pr, "prHub.getDetail.decode", () => {
+                    const decoded = decodeGitHubPrDetail(response, pr);
+                    return {
+                      detail: decoded.detail,
+                      stale: false,
+                      refreshedAt: new Date().toISOString(),
+                      ...(decoded.rateLimit ? { rateLimit: decoded.rateLimit } : {}),
+                    } satisfies PrHubDetailResult;
+                  }),
+                ),
+              ),
             });
           }),
         ),
@@ -417,11 +435,17 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
             const provider = yield* sourceControlProviders.get(pr.provider);
             const { owner, repo } = yield* repositoryParts(pr);
             const variables = yield* decodeDetailResponse(pr, "prHub.getTimeline.cursor", () =>
-              githubTimelineVariables({ owner, repo, number: pr.number, cursor: input.cursor }),
+              githubTimelineVariables({
+                owner,
+                repo,
+                number: pr.number,
+                cursor: input.cursor,
+                commentsOnly: input.commentsOnly,
+              }),
             );
             return yield* readPrDetailCache({
               cache: timelineCache,
-              key: `${pr.key}|${input.cursor ?? "first"}`,
+              key: `${pr.key}|${input.cursor ?? "first"}|${input.commentsOnly ? "comments" : "all"}`,
               mode: input.mode ?? "if_stale",
               fetch: provider
                 .query({
@@ -433,7 +457,11 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
                 .pipe(
                   Effect.flatMap((response) =>
                     decodeDetailResponse(pr, "prHub.getTimeline.decode", () => {
-                      const decoded = decodeGitHubPrTimeline(response, input.cursor);
+                      const decoded = decodeGitHubPrTimeline(
+                        response,
+                        input.cursor,
+                        input.commentsOnly,
+                      );
                       return {
                         entries: [...decoded.entries],
                         pageInfo: decoded.pageInfo,
@@ -684,11 +712,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
           return yield* prHubActionError("GitHub returned an inconsistent pull request identity.");
         // Exclusion changes during an on-demand read take precedence over tracking.
         const latest = yield* settings.getSettings.pipe(Effect.orDie);
-        if (
-          latest.prHub.excludeRepos.some(
-            (repo) => repo.trim().toLowerCase() === ref.repository.toLowerCase(),
-          )
-        )
+        if (isPrHubRepositoryExcluded(latest, ref.repository))
           return yield* prHubActionError("This repository is excluded from PR monitoring.");
         const previous = yield* viewerStateMap(String(viewer.context.viewerId));
         const pr = {
@@ -696,6 +720,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
             normalized,
             viewer.login,
             previous.get(`${normalized.repository.nameWithOwner}#${ref.number}`),
+            latest.prHub,
           ),
           manuallyTracked: true,
         };
@@ -723,6 +748,8 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       snooze,
       unsnooze,
       ignore,
+      unignore,
+      bulkUpdate,
       clearData,
       claimNotifications,
       acknowledgeNotifications,
@@ -749,14 +776,22 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
               Effect.orDie,
               Effect.map((current) => {
                 const scheduler = githubRequestScheduler.status(host);
-                return {
-                  ...prHubOverview(snapshot, snapshot.revision ?? "0", input.stalledBefore),
+                const nextRefreshAt = nextPrHubRefreshAt(
+                  snapshot,
+                  current.prHub.pollIntervalSeconds,
                   scheduler,
-                  nextRefreshAt: nextPrHubRefreshAt(
+                );
+                return {
+                  ...prHubOverview(
                     snapshot,
-                    current.prHub.pollIntervalSeconds,
-                    scheduler,
+                    snapshot.revision ?? "0",
+                    input.stalledBefore,
+                    undefined,
+                    input.savedQueries,
                   ),
+                  scheduler,
+                  nextRefreshAt,
+                  sync: prHubSyncState(snapshot, scheduler, nextRefreshAt),
                 };
               }),
             ),
@@ -777,6 +812,8 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       snooze,
       unsnooze,
       ignore,
+      unignore,
+      bulkUpdate,
       acknowledgeAttention,
       markSeen,
       markNotified,
@@ -891,7 +928,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
                       .query({
                         cwd,
                         host: pr.host,
-                        document: `query F5WritePolicy($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { isArchived viewerPermission pullRequest(number:$number) { id state viewerCanComment viewerCanUpdate baseRefName baseRefOid headRefOid mergeable mergeStateStatus reviewDecision ${PR_HUB_BRANCH_REQUIREMENTS_FIELDS}
+                        document: `query F5WritePolicy($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { isArchived viewerPermission pullRequest(number:$number) { id state locked viewerCanUpdate baseRefName baseRefOid headRefOid mergeable mergeStateStatus reviewDecision ${PR_HUB_BRANCH_REQUIREMENTS_FIELDS}
                     commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { totalCount pageInfo { hasNextPage endCursor } nodes { ... on CheckRun { name conclusion status detailsUrl checkSuite { app { databaseId } } } ... on StatusContext { context state targetUrl } } } } } } }
                     reviewThreads(first:100) { totalCount pageInfo { hasNextPage endCursor } nodes { isResolved } }
                   } } }`,
@@ -910,7 +947,10 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
                       live?.state !== "OPEN" ||
                       (action === "update" || action === "merge"
                         ? live.viewerCanUpdate !== true
-                        : live.viewerCanComment !== true)
+                        : !canViewerCommentOnPullRequest({
+                            locked: live.locked,
+                            viewerPermission: repo.viewerPermission,
+                          }))
                     )
                       return yield* denied();
                     const expected = input.expectedComparison;
@@ -1002,6 +1042,9 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       snooze: (input) => withLocalAccount(operations.snooze(input), input.accountGeneration),
       unsnooze: (input) => withLocalAccount(operations.unsnooze(input), input.accountGeneration),
       ignore: (input) => withLocalAccount(operations.ignore(input), input.accountGeneration),
+      unignore: (input) => withLocalAccount(operations.unignore(input), input.accountGeneration),
+      bulkUpdate: (input) =>
+        withLocalAccount(operations.bulkUpdate(input), input.accountGeneration),
       approve: (input) => withPrAccount(operations.approve(input), input, true, "review"),
       requestChanges: (input) =>
         withPrAccount(operations.requestChanges(input), input, true, "review"),

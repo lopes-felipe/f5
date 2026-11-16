@@ -178,6 +178,7 @@ async function createHarness(input?: {
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
   const providerService: ProviderServiceShape = {
     startSession: () => unsupported(),
+    replaceSession: () => unsupported(),
     sendTurn: () => unsupported(),
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
@@ -185,6 +186,7 @@ async function createHarness(input?: {
     respondToElicitation: () => unsupported(),
     stopSession:
       input?.stopSession ?? (() => Effect.void as ReturnType<ProviderServiceShape["stopSession"]>),
+    listStartingWorkspaces: () => Effect.succeed([]),
     listSessions: () => Effect.succeed([]),
     ...(input?.nativeOperations ? { nativeOperations: input.nativeOperations } : {}),
     getSessionCapabilities: input?.getSessionCapabilities ?? (() => Effect.succeed(null)),

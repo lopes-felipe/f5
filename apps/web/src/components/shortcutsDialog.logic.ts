@@ -1,4 +1,5 @@
 import {
+  MODEL_FAVORITE_KEYBINDING_COMMANDS,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   STATIC_KEYBINDING_COMMANDS,
   type KeybindingCommand,
@@ -9,6 +10,7 @@ import { formatShortcutLabel } from "@t3tools/shared/keybindings";
 
 import { shortcutBindingForCommand } from "../keybindings";
 import { formatKeybindingCommandLabel } from "../lib/keybindingConflicts";
+import { PR_QUEUE_SHORTCUTS } from "./prHub/prQueueModel";
 
 type StaticKeybindingCommand = (typeof STATIC_KEYBINDING_COMMANDS)[number];
 
@@ -30,6 +32,8 @@ const WHEN_CONTEXT_LABELS: Readonly<Record<string, string>> = {
   dialogFocus: "In dialogs",
   composerFocus: "In composer",
   modelPickerOpen: "In model picker",
+  usagePageOpen: "On Usage",
+  upstreamListFocus: "In Upstream list",
 };
 
 /** Context keys the clause requires to be true (ignores negated and `or` branches). */
@@ -70,7 +74,10 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "palette.files",
       "projectContentSearch.toggle",
       "sidebar.toggle",
+      "home.open",
       "prHub.open",
+      "notifications.toggle",
+      "usage.open",
       "editor.openFavorite",
       "dialog.primaryAction",
     ],
@@ -79,6 +86,8 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
     id: "navigation",
     title: "Navigation",
     commands: [
+      "workspace.focusNext",
+      "workspace.focusPrevious",
       "navigation.back",
       "navigation.forward",
       "thread.switchRecentNext",
@@ -86,6 +95,7 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "chat.pageUp",
       "chat.pageDown",
       "chat.scrollToBottom",
+      "chat.find",
     ],
   },
   {
@@ -94,10 +104,13 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
     commands: [
       "chat.new",
       "chat.newLocal",
+      "chat.newScratch",
       "chat.newBackground",
+      "chat.sendAndNew",
       "workflow.new",
       "thread.stop",
       "thread.togglePin",
+      "thread.toggleSettled",
       "thread.copyReference",
       "thread.undo",
       "prHub.copyNumber",
@@ -113,6 +126,8 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "composer.stash",
       "composer.pasteAsText",
       "composer.effort",
+      "composer.effortUp",
+      "composer.effortDown",
       "composer.runtimeMode",
       "composer.envMode",
       "composer.branch",
@@ -127,6 +142,7 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "modelPicker.previousProvider",
       "modelPicker.nextProvider",
       "model.switchRecent",
+      ...MODEL_FAVORITE_KEYBINDING_COMMANDS,
     ],
   },
   {
@@ -139,6 +155,50 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "terminal.close",
       "diff.toggle",
       "rightPanel.closeTab",
+      "rightPanel.tabMenu",
+      "rightPanel.reopenClosed",
+    ],
+  },
+  {
+    id: "usage",
+    title: "Usage",
+    commands: [
+      "usage.tokens",
+      "usage.cost",
+      "usage.turns",
+      "usage.limits",
+      "usage.pricing",
+      "usage.period.day",
+      "usage.period.week",
+      "usage.period.month",
+      "usage.period.quarter",
+    ],
+  },
+  {
+    id: "upstream",
+    title: "Upstream page",
+    commands: [
+      "upstream.next",
+      "upstream.previous",
+      "upstream.toggleSelect",
+      "upstream.selectAll",
+      "upstream.acceptSuggestion",
+      "upstream.port",
+      "upstream.skip",
+      "upstream.watch",
+      "upstream.decline",
+      "upstream.reopen",
+      "upstream.openDetail",
+      "upstream.openUpstreamPr",
+      "upstream.startPort",
+      "upstream.equivalent",
+      "upstream.extendNext",
+      "upstream.extendPrevious",
+      "upstream.clearSelection",
+      "upstream.nextList",
+      "upstream.previousList",
+      "upstream.focusSearch",
+      "upstream.undo",
     ],
   },
 ];
@@ -168,6 +228,41 @@ function entryMatchesQuery(entry: ShortcutEntry, query: string): boolean {
     entry.command.toLowerCase().includes(query) ||
     entry.shortcut.toLowerCase().includes(query)
   );
+}
+
+/** Shortcuts that are not keybinding commands: single keys that only work on one page. */
+export interface FixedShortcutSection {
+  readonly id: string;
+  readonly title: string;
+  /** Where the keys work. */
+  readonly context: string;
+  readonly entries: ReadonlyArray<{ readonly keys: string; readonly label: string }>;
+}
+
+const FIXED_SHORTCUT_SECTIONS: ReadonlyArray<FixedShortcutSection> = [
+  {
+    id: "pull-requests",
+    title: "Pull requests",
+    context: "On the Pull requests page; these keys cannot be changed.",
+    entries: PR_QUEUE_SHORTCUTS,
+  },
+];
+
+/** The fixed sections, filtered like the configurable ones; a title match keeps a whole section. */
+export function buildFixedShortcutSections(rawQuery = ""): FixedShortcutSection[] {
+  const query = normalizeQuery(rawQuery);
+  if (!query) return [...FIXED_SHORTCUT_SECTIONS];
+  return FIXED_SHORTCUT_SECTIONS.map((section) =>
+    section.title.toLowerCase().includes(query)
+      ? section
+      : {
+          ...section,
+          entries: section.entries.filter(
+            (entry) =>
+              entry.label.toLowerCase().includes(query) || entry.keys.toLowerCase().includes(query),
+          ),
+        },
+  ).filter((section) => section.entries.length > 0);
 }
 
 /**

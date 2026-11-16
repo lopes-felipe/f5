@@ -17,14 +17,18 @@ export function projectScriptCwd(input: {
   return input.worktreePath ?? input.project.cwd;
 }
 
+/** Variables F5 sets for every project script and thread terminal. */
+export const PROJECT_SCRIPT_ENV_NAMES = ["T3CODE_PROJECT_ROOT", "T3CODE_WORKTREE_PATH"] as const;
+
 export function projectScriptRuntimeEnv(
   input: ProjectScriptRuntimeEnvInput,
 ): Record<string, string> {
+  const [projectRootName, worktreePathName] = PROJECT_SCRIPT_ENV_NAMES;
   const env: Record<string, string> = {
-    T3CODE_PROJECT_ROOT: input.project.cwd,
+    [projectRootName]: input.project.cwd,
   };
   if (input.worktreePath) {
-    env.T3CODE_WORKTREE_PATH = input.worktreePath;
+    env[worktreePathName] = input.worktreePath;
   }
   if (input.extraEnv) {
     return { ...env, ...input.extraEnv };

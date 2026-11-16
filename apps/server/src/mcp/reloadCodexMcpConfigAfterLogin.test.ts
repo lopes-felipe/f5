@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -16,33 +16,26 @@ describe("reloadCodexMcpConfigAfterLogin", () => {
     vi.restoreAllMocks();
   });
 
-  it("retries a transient post-login MCP reload failure", async () => {
-    let calls = 0;
-    const reloadMcpConfigForProject = vi.fn<ProviderServiceShape["reloadMcpConfigForProject"]>(
-      () => {
-        calls += 1;
-        return calls === 1
-          ? Effect.fail(
-              new ProviderValidationError({
-                operation: "reloadMcpConfigForProject",
-                issue: "token not ready",
-              }),
-            )
-          : Effect.succeed({ sessions: [] });
-      },
+  it("delegates account-targeted retry backoff to the service's session gate", async () => {
+    const reloadMcpConfigForProject = vi.fn<ProviderServiceShape["reloadMcpConfigForProject"]>(() =>
+      Effect.succeed({ sessions: [] }),
     );
-
-    const result = Effect.runPromise(
+    const instanceId = ProviderInstanceId.make("work");
+    const result = await Effect.runPromise(
       reloadCodexMcpConfigAfterLogin({
         providerService: { reloadMcpConfigForProject },
         projectId,
-        serverName: "Observability",
-        retryDelaysMs: [1],
+        instanceId,
+        retryDelaysMs: [1, 3],
       }),
     );
-
-    await expect(result).resolves.toBeUndefined();
-    expect(reloadMcpConfigForProject).toHaveBeenCalledTimes(2);
+    expect(result).toBeUndefined();
+    expect(reloadMcpConfigForProject).toHaveBeenCalledExactlyOnceWith({
+      provider: "codex",
+      projectId,
+      instanceId,
+      retryDelaysMs: [1, 3],
+    });
   });
 
   it("returns the manual retry message after all post-login reload attempts fail", async () => {
@@ -65,7 +58,7 @@ describe("reloadCodexMcpConfigAfterLogin", () => {
     );
 
     await expect(result).resolves.toBe(CODEX_MCP_LOGIN_RELOAD_FAILURE_MESSAGE);
-    expect(reloadMcpConfigForProject).toHaveBeenCalledTimes(3);
+    expect(reloadMcpConfigForProject).toHaveBeenCalledTimes(1);
   });
 
   it("treats a session that did not converge as a failed reload", async () => {
@@ -74,6 +67,11 @@ describe("reloadCodexMcpConfigAfterLogin", () => {
         sessions: [
           {
             threadId: ThreadId.makeUnsafe("thread-1"),
+            instanceId: "codex" as import("@t3tools/contracts").ProviderInstanceId,
+            generation: 0,
+            requestedVersion: "v1",
+            attemptedVersion: "v1",
+            disposition: "failed" as const,
             result: {
               converged: false,
               restartRequired: false,
@@ -95,17 +93,8 @@ describe("reloadCodexMcpConfigAfterLogin", () => {
     );
 
     await expect(result).resolves.toBe(CODEX_MCP_LOGIN_RELOAD_FAILURE_MESSAGE);
-    expect(reloadMcpConfigForProject).toHaveBeenCalledTimes(2);
-    // The service's own backoff is off, and only the last attempt warns.
-    expect(reloadMcpConfigForProject.mock.calls.map(([call]) => [call.retry, call.warn])).toEqual([
-      [false, false],
-      [false, true],
-    ]);
-    // The retry is limited to the session that still failed.
-    expect(reloadMcpConfigForProject.mock.calls.map(([call]) => call.threadIds)).toEqual([
-      undefined,
-      ["thread-1"],
-    ]);
+    expect(reloadMcpConfigForProject).toHaveBeenCalledTimes(1);
+    expect(reloadMcpConfigForProject.mock.calls[0]?.[0]).toMatchObject({ retryDelaysMs: [1] });
   });
 
   it("does not retry or report failure for a session that needs a restart", async () => {
@@ -114,6 +103,11 @@ describe("reloadCodexMcpConfigAfterLogin", () => {
         sessions: [
           {
             threadId: ThreadId.makeUnsafe("thread-1"),
+            instanceId: "codex" as import("@t3tools/contracts").ProviderInstanceId,
+            generation: 0,
+            requestedVersion: "v1",
+            attemptedVersion: "v1",
+            disposition: "failed" as const,
             result: {
               converged: false,
               restartRequired: true,

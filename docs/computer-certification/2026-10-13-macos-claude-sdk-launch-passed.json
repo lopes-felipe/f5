@@ -1,0 +1,28 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-12T22:08:23.258Z",
+  "scope": "read-only-claude-sdk-launch-preflight",
+  "platform": "darwin",
+  "arch": "arm64",
+  "repositoryCommit": "6826b08a0d61c9f92a58a9a7e74d318d68b6aff0",
+  "workingTreeDirty": false,
+  "launchSourceSha256": "bd2c5080f2bd154ef014bbc88559415e711ed73672c70225d9a60d3947b6af3a",
+  "cliSha256": "0116ee2e0a513900b633d9951367f18747686478e2b462805b8c31609f047f70",
+  "provider": "claude",
+  "state": "passed",
+  "authentication": {
+    "status": "authenticated",
+    "credentialFileCopied": false,
+    "selectedProfileSecureStorage": true
+  },
+  "sdkInitialized": true,
+  "selectedModelListed": true,
+  "providerTurnsStarted": 0,
+  "desktopActionsEmitted": 0,
+  "signed": false,
+  "certified": false,
+  "limitations": [
+    "SDK startup/account/model metadata only; no prompt, tool call, app consent, capture or OS input",
+    "Does not prove the Electron provider-to-desktop path or open a release gate"
+  ]
+}

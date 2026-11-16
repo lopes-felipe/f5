@@ -108,7 +108,10 @@ export class NetService extends ServiceMap.Service<NetService, NetServiceShape>(
         server.unref();
 
         server.once("error", (cause) => {
-          if (isErrnoExceptionWithCode(cause) && cause.code === "EADDRNOTAVAIL") {
+          if (
+            isErrnoExceptionWithCode(cause) &&
+            (cause.code === "EADDRNOTAVAIL" || cause.code === "EAFNOSUPPORT")
+          ) {
             settle(true);
             return;
           }

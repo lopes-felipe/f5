@@ -1,3 +1,4 @@
+import type { WorkerAdmissionError } from "@t3tools/shared/DrainableWorker";
 /**
  * NativeSessionCleanupReactor - Removes a provider's local transcript when
  * its F5 thread is permanently deleted.
@@ -15,7 +16,7 @@ export interface NativeSessionCleanupReactorShape {
   readonly start: Effect.Effect<void, never, Scope.Scope>;
 
   /** Resolves once every cleanup started so far has finished. For tests. */
-  readonly drain: Effect.Effect<void>;
+  readonly drain: Effect.Effect<void, WorkerAdmissionError>;
 }
 
 export class NativeSessionCleanupReactor extends ServiceMap.Service<

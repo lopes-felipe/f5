@@ -4,6 +4,9 @@ import {
   isKnownProviderKind,
   ProviderInstanceId,
   type ProviderKind,
+  type ProjectId,
+  ProjectSettingsOverrides,
+  type ServerProvider,
   type ModelSelection,
 } from "@t3tools/contracts";
 import { ServerSettings, type ServerSettingsPatch } from "@t3tools/contracts";
@@ -47,6 +50,51 @@ export function parsePersistedServerObservabilitySettings(
   } catch {
     return { otlpTracesUrl: undefined, otlpMetricsUrl: undefined };
   }
+}
+
+/** A project can enable or disable an installed instance without changing other projects. */
+export function resolveProjectProviderInstanceEnabled(
+  settings: Pick<ServerSettings, "providers" | "providerInstances" | "projectSettingsOverrides">,
+  projectId: ProjectId | null | undefined,
+  instanceId: ProviderInstanceId,
+): boolean {
+  const instance = Object.hasOwn(settings.providerInstances, instanceId)
+    ? settings.providerInstances[instanceId]
+    : undefined;
+  if (
+    !instance &&
+    (!isKnownProviderKind(instanceId) || !Object.hasOwn(settings.providers, instanceId))
+  )
+    return false;
+  const override =
+    projectId && Object.hasOwn(settings.projectSettingsOverrides, projectId)
+      ? settings.projectSettingsOverrides[projectId]?.providerInstances?.[instanceId]?.enabled
+      : undefined;
+  if (override !== undefined) return override;
+  if (instance) {
+    const config = instance.config;
+    const configured =
+      config &&
+      typeof config === "object" &&
+      "enabled" in config &&
+      typeof config.enabled === "boolean"
+        ? config.enabled
+        : undefined;
+    return instance.enabled ?? configured ?? true;
+  }
+  return settings.providers[instanceId as keyof typeof settings.providers]?.enabled ?? false;
+}
+
+/** Retains readiness/catalog information while projecting the chosen scope's enablement. */
+export function projectProviderSnapshots(
+  providers: ReadonlyArray<ServerProvider>,
+  settings: Pick<ServerSettings, "providers" | "providerInstances" | "projectSettingsOverrides">,
+  projectId?: ProjectId | null,
+): ReadonlyArray<ServerProvider> {
+  return providers.map((provider) => {
+    const enabled = resolveProjectProviderInstanceEnabled(settings, projectId, provider.instanceId);
+    return enabled === provider.enabled ? provider : { ...provider, enabled };
+  });
 }
 
 function shouldReplaceModelSelection(
@@ -117,7 +165,10 @@ function preserveRedactedProviderSecrets(
       continue;
     }
     const currentServerPassword = currentInstance.config.serverPassword;
-    if (typeof currentServerPassword !== "string" || currentServerPassword.length === 0) {
+    if (
+      typeof currentServerPassword !== "string" ||
+      (currentServerPassword.length === 0 && currentInstance.config.serverPasswordRedacted !== true)
+    ) {
       continue;
     }
     const nextInstance = providerInstances[providerInstanceId];
@@ -131,6 +182,9 @@ function preserveRedactedProviderSecrets(
         config: {
           ...nextInstance.config,
           serverPassword: currentServerPassword,
+          ...(currentInstance.config.serverPasswordRedacted === true
+            ? { serverPasswordRedacted: true }
+            : {}),
         },
       },
     };
@@ -139,6 +193,21 @@ function preserveRedactedProviderSecrets(
   return providerInstances === preserved.providerInstances
     ? preserved
     : { ...preserved, providerInstances };
+}
+
+const knownProjectOverrideKeys = new Set(Object.keys(ProjectSettingsOverrides.fields));
+
+/** False for override keys a newer version stored that this build round-trips but cannot show. */
+export function isKnownProjectOverrideKey(key: string): boolean {
+  return knownProjectOverrideKeys.has(key);
+}
+
+function pickOverrideKeys(entry: ProjectSettingsOverrides | undefined, known: boolean) {
+  return Object.fromEntries(
+    Object.entries<unknown>(entry ?? {}).filter(
+      ([key]) => isKnownProjectOverrideKey(key) === known,
+    ),
+  );
 }
 
 /**
@@ -154,7 +223,21 @@ export function applyServerSettingsPatch(
   let overrides = { ...current.projectSettingsOverrides };
   for (const [id, value] of Object.entries(overridePatch ?? {})) {
     if (value === null) delete overrides[id as keyof typeof overrides];
-    else overrides = { ...overrides, [id]: value };
+    else {
+      const previous = overrides[id as keyof typeof overrides];
+      // Other project controls send partial values. Only an explicit map (including
+      // an empty map) replaces the provider policy; a whole-project null resets it.
+      const providerInstances = value.providerInstances ?? previous?.providerInstances;
+      overrides = {
+        ...overrides,
+        [id]: {
+          // Preserve downgraded storage, but reject new unknown writes so clients can detect unsupported settings.
+          ...pickOverrideKeys(previous, false),
+          ...pickOverrideKeys(value, true),
+          ...(providerInstances === undefined ? {} : { providerInstances }),
+        },
+      };
+    }
   }
   const next = { ...deepMerge(current, rest), projectSettingsOverrides: overrides };
   const nextWithInstances =
@@ -165,11 +248,31 @@ export function applyServerSettingsPatch(
         }
       : next;
   // A cleanup policy is a tagged union: switching modes must not merge fields.
-  const nextWithReplacements =
-    patch.worktreeCleanup !== undefined
-      ? { ...nextWithInstances, worktreeCleanup: patch.worktreeCleanup }
-      : nextWithInstances;
-  const nextWithSecrets = preserveRedactedProviderSecrets(current, nextWithReplacements, patch);
+  // Model aliases are a whole map: merging would keep removed mappings.
+  const nextWithReplacements = {
+    ...nextWithInstances,
+    ...(patch.worktreeCleanup !== undefined ? { worktreeCleanup: patch.worktreeCleanup } : {}),
+    ...(patch.usageModelAliases !== undefined
+      ? { usageModelAliases: patch.usageModelAliases }
+      : {}),
+  };
+  // Upstream schedule, budget and auto-port fields merge; nullable model
+  // selections and the area policy map replace, not merge.
+  const upstreamPatch = patch.upstreamPorts;
+  const nextWithUpstream =
+    upstreamPatch !== undefined
+      ? {
+          ...nextWithReplacements,
+          upstreamPorts: {
+            ...current.upstreamPorts,
+            ...upstreamPatch,
+            schedule: { ...current.upstreamPorts.schedule, ...upstreamPatch.schedule },
+            budget: { ...current.upstreamPorts.budget, ...upstreamPatch.budget },
+            autoPort: { ...current.upstreamPorts.autoPort, ...upstreamPatch.autoPort },
+          },
+        }
+      : nextWithReplacements;
+  const nextWithSecrets = preserveRedactedProviderSecrets(current, nextWithUpstream, patch);
   let result = nextWithSecrets;
   for (const key of ["textGenerationModelSelection", "sessionNotesModelSelection"] as const) {
     const selectionPatch = patch[key];
@@ -194,41 +297,37 @@ export function applyServerSettingsPatch(
  * persisted preference is preserved for when a provider is re-enabled.
  */
 export function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  const selection = settings.textGenerationModelSelection;
-  const instanceConfig = settings.providerInstances[selection.instanceId];
-  if (instanceConfig !== undefined) {
-    return (instanceConfig.enabled ?? true) ? settings : fallbackTextGenerationProvider(settings);
-  }
-
-  if (
-    isKnownProviderKind(selection.instanceId) &&
-    settings.providers[selection.instanceId as ProviderKind]?.enabled
-  ) {
-    return settings;
-  }
-
-  return fallbackTextGenerationProvider(settings);
+  return resolveProjectProviderInstanceEnabled(
+    settings,
+    null,
+    settings.textGenerationModelSelection.instanceId,
+  )
+    ? settings
+    : fallbackTextGenerationProvider(settings);
 }
 
 function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  const fallbackEntry = Object.entries(settings.providers).find(([driver, provider]) => {
-    const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
-    return instance === undefined ? provider.enabled : (instance.enabled ?? true);
+  const candidates = [
+    ...Object.keys(settings.providers),
+    ...Object.keys(settings.providerInstances),
+  ];
+  const fallback = candidates.find((id) => {
+    const instanceId = ProviderInstanceId.make(id);
+    const driver = settings.providerInstances[instanceId]?.driver ?? id;
+    return (
+      isKnownProviderKind(driver) &&
+      resolveProjectProviderInstanceEnabled(settings, null, instanceId)
+    );
   });
-  const fallback =
-    fallbackEntry && isKnownProviderKind(fallbackEntry[0])
-      ? (fallbackEntry[0] as ProviderKind)
-      : undefined;
-  if (!fallback) {
-    return settings;
-  }
-
+  if (!fallback) return settings;
+  const instanceId = ProviderInstanceId.make(fallback);
+  const driver = settings.providerInstances[instanceId]?.driver ?? fallback;
   return {
     ...settings,
     textGenerationModelSelection: {
-      instanceId: ProviderInstanceId.make(fallback),
+      instanceId,
       model:
-        DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[fallback] ??
+        DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[driver as ProviderKind] ??
         DEFAULT_GIT_TEXT_GENERATION_MODEL,
     } satisfies ModelSelection,
   };

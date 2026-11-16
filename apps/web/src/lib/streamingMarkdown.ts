@@ -1,3 +1,5 @@
+import { recordBrowserWork } from "./performanceCounters";
+import { suffixSince, type TextRevision } from "./streamingTextRevision";
 export type StreamingMarkdownBlockKind =
   | "paragraph"
   | "heading"
@@ -9,6 +11,9 @@ export type StreamingMarkdownBlockKind =
 
 export interface StreamingMarkdownState {
   readonly text: string;
+  readonly textRevision?: TextRevision | undefined;
+  readonly parsedCharacters?: number;
+  readonly validatedCharacters?: number;
   readonly sealedBlocks: readonly string[];
   readonly activeBlock: string;
   readonly activeBlockKind: StreamingMarkdownBlockKind | null;
@@ -97,7 +102,7 @@ function isHorizontalRuleLine(content: string): boolean {
   return /^ {0,3}(?:([-*_])(?:\s*\1){2,})\s*$/.test(content);
 }
 
-function matchFence(
+export function matchFence(
   content: string,
 ): { readonly marker: "`" | "~"; readonly length: number } | null {
   const match = content.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
@@ -121,7 +126,7 @@ function matchFence(
   };
 }
 
-function isFenceClosingLine(
+export function isFenceClosingLine(
   content: string,
   fence: { readonly marker: "`" | "~"; readonly length: number },
 ): boolean {
@@ -132,6 +137,16 @@ function isFenceClosingLine(
   }
 
   return index >= fence.length && trimmedStart.slice(index).trim().length === 0;
+}
+
+/**
+ * Whether the fence that opens `block` has a closing line. A fence the stream ends on, or
+ * one followed by text the parser has not committed yet, is complete but still active.
+ */
+export function startsWithClosedFence(block: string): boolean {
+  const lines = splitLines(block);
+  const fence = matchFence(lines[0]?.content ?? "");
+  return fence !== null && lines.slice(1).some((line) => isFenceClosingLine(line.content, fence));
 }
 
 function isListLine(content: string): boolean {
@@ -460,12 +475,152 @@ function parseStreamingMarkdown(text: string): ParsedFragment {
   };
 }
 
+interface FenceProgress {
+  readonly marker: "`" | "~";
+  readonly length: number;
+  leading: number;
+  markers: number;
+  trailing: boolean;
+  invalid: boolean;
+}
+const stableParagraphs = new WeakSet<StreamingMarkdownState>();
+const fenceProgress = new WeakMap<StreamingMarkdownState, FenceProgress>();
+function scanFence(progress: FenceProgress, suffix: string): boolean {
+  for (const character of suffix) {
+    if (character === "\n") {
+      if (!progress.invalid && progress.markers >= progress.length) return false;
+      progress.leading = 0;
+      progress.markers = 0;
+      progress.trailing = false;
+      progress.invalid = false;
+    } else if (!progress.invalid) {
+      if (!progress.markers && character === " " && progress.leading < 3) progress.leading++;
+      else if (!progress.trailing && character === progress.marker) progress.markers++;
+      else if (progress.markers >= progress.length && /\s/u.test(character))
+        progress.trailing = true;
+      else progress.invalid = true;
+    }
+  }
+  return true;
+}
+interface BlockLineProgress {
+  readonly tail: string;
+  readonly compatible: boolean;
+}
+const blockLineProgress = new WeakMap<StreamingMarkdownState, BlockLineProgress>();
+function appendCompatibleLines(
+  previous: StreamingMarkdownState,
+  suffix: string,
+): { parsed: ParsedFragment; lines: BlockLineProgress; scannedCharacters: number } | null {
+  const kind = previous.activeBlockKind;
+  if (kind !== "list" && kind !== "blockquote" && kind !== "table") return null;
+  const compatibleLine = (line: string) =>
+    kind === "list"
+      ? isListLine(line) || isIndentedContinuationLine(line)
+      : kind === "blockquote"
+        ? isBlockquoteLine(line)
+        : looksLikeTableRow(line);
+  let before = blockLineProgress.get(previous);
+  let initialScan = 0;
+  if (!before) {
+    const lines = splitLines(previous.activeBlock);
+    // An unfinished table delimiter can still turn back into ordinary prose.
+    if (kind === "table" && lines.filter((line) => line.hasTerminator).length < 2) return null;
+    const last = lines.at(-1);
+    const tail = last?.hasTerminator ? "" : (last?.raw ?? "");
+    before = { tail, compatible: tail.length > 0 && compatibleLine(tail.replace(/\r$/u, "")) };
+    initialScan = previous.activeBlock.length;
+  }
+  let next: BlockLineProgress;
+  let scannedCharacters = initialScan + suffix.length;
+  if (!suffix.includes("\n")) {
+    const tail = before.tail + suffix;
+    if (!before.compatible && !compatibleLine(tail.replace(/\r$/u, ""))) return null;
+    next = { tail, compatible: true };
+  } else {
+    const lines = splitLines(before.tail + suffix);
+    scannedCharacters += before.tail.length;
+    for (let index = 0; index < lines.length; index++) {
+      if (index === 0 && before.compatible) continue;
+      if (!compatibleLine(lines[index]!.content)) return null;
+    }
+    const last = lines.at(-1);
+    next = {
+      tail: last?.hasTerminator ? "" : (last?.raw ?? ""),
+      compatible: Boolean(last && !last.hasTerminator),
+    };
+  }
+  return {
+    parsed: {
+      sealedBlocks: EMPTY_BLOCKS,
+      activeBlock: previous.activeBlock + suffix,
+      activeBlockKind: kind,
+    },
+    lines: next,
+    scannedCharacters,
+  };
+}
+
+/** Revisit the full active block only when its grammar can actually change. */
+function appendStableActive(
+  previous: StreamingMarkdownState,
+  suffix: string,
+): {
+  parsed: ParsedFragment;
+  fence?: FenceProgress;
+  paragraph?: true;
+  lines?: BlockLineProgress;
+  scannedCharacters?: number;
+} | null {
+  const compatible = appendCompatibleLines(previous, suffix);
+  if (compatible) return compatible;
+  if (previous.activeBlockKind === "paragraph" && !suffix.includes("\n")) {
+    const tailStart = stableParagraphs.has(previous)
+      ? 0
+      : previous.activeBlock.lastIndexOf("\n") + 1;
+    if (
+      stableParagraphs.has(previous) ||
+      /^ {0,3}[A-Za-z]/u.test(previous.activeBlock.slice(tailStart, tailStart + 4))
+    )
+      return {
+        paragraph: true,
+        parsed: {
+          sealedBlocks: EMPTY_BLOCKS,
+          activeBlock: previous.activeBlock + suffix,
+          activeBlockKind: "paragraph",
+        },
+      };
+  }
+  if (previous.activeBlockKind !== "fenced-code") return null;
+  let before = fenceProgress.get(previous);
+  if (!before) {
+    const openingEnd = previous.activeBlock.indexOf("\n");
+    if (openingEnd < 0) return null; // The opening fence can still grow/change.
+    const opening = matchFence(previous.activeBlock.slice(0, openingEnd));
+    if (!opening) return null;
+    before = { ...opening, leading: 0, markers: 0, trailing: false, invalid: false };
+    const lastLine = previous.activeBlock.slice(previous.activeBlock.lastIndexOf("\n") + 1);
+    if (!scanFence(before, lastLine)) return null;
+  }
+  const next = { ...before };
+  if (!scanFence(next, suffix)) return null;
+  return {
+    parsed: {
+      sealedBlocks: EMPTY_BLOCKS,
+      activeBlock: previous.activeBlock + suffix,
+      activeBlockKind: "fenced-code",
+    },
+    fence: next,
+  };
+}
+
 export function advanceStreamingMarkdown(
   previous: StreamingMarkdownState | null,
   nextText: string,
+  textRevision?: TextRevision,
 ): StreamingMarkdownState {
   if (previous && previous.text === nextText) {
-    return previous;
+    return previous.textRevision === textRevision ? previous : { ...previous, textRevision };
   }
 
   if (!previous) {
@@ -473,9 +628,13 @@ export function advanceStreamingMarkdown(
       return EMPTY_STREAMING_MARKDOWN_STATE;
     }
 
+    recordBrowserWork("markdownParsedCharacters", nextText.length);
     const parsed = parseStreamingMarkdown(nextText);
     return {
       text: nextText,
+      textRevision,
+      parsedCharacters: nextText.length,
+      validatedCharacters: 0,
       sealedBlocks: parsed.sealedBlocks,
       activeBlock: parsed.activeBlock,
       activeBlockKind: parsed.activeBlockKind,
@@ -483,10 +642,22 @@ export function advanceStreamingMarkdown(
     };
   }
 
-  if (!nextText.startsWith(previous.text)) {
+  const knownSuffix = suffixSince(previous.textRevision, textRevision);
+  // Revisions come only from reducer appends. Missing/expired provenance keeps
+  // the validated full-text path used for snapshots, replacements and rewinds.
+  if (
+    knownSuffix === null &&
+    (previous.textRevision !== undefined ||
+      textRevision !== undefined ||
+      !nextText.startsWith(previous.text))
+  ) {
+    recordBrowserWork("markdownParsedCharacters", nextText.length);
     const parsed = parseStreamingMarkdown(nextText);
     return {
       text: nextText,
+      textRevision,
+      parsedCharacters: nextText.length + (previous?.parsedCharacters ?? 0),
+      validatedCharacters: previous?.validatedCharacters ?? 0,
       sealedBlocks: parsed.sealedBlocks,
       activeBlock: parsed.activeBlock,
       activeBlockKind: parsed.activeBlockKind,
@@ -494,22 +665,42 @@ export function advanceStreamingMarkdown(
     };
   }
 
-  const suffix = nextText.slice(previous.text.length);
+  const suffix = knownSuffix ?? nextText.slice(previous.text.length);
   if (suffix.length === 0) {
     return previous;
   }
 
-  const parsed = parseStreamingMarkdown(`${previous.activeBlock}${suffix}`);
+  const incremental = appendStableActive(previous, suffix);
+  const parsed = incremental?.parsed ?? parseStreamingMarkdown(`${previous.activeBlock}${suffix}`);
   const sealedBlocks =
     parsed.sealedBlocks.length === 0
       ? previous.sealedBlocks
       : [...previous.sealedBlocks, ...parsed.sealedBlocks];
 
-  return {
+  recordBrowserWork(
+    "markdownParsedCharacters",
+    incremental
+      ? (incremental.scannedCharacters ?? suffix.length)
+      : previous.activeBlock.length + suffix.length,
+  );
+  recordBrowserWork("markdownValidatedCharacters", knownSuffix === null ? previous.text.length : 0);
+  const result: StreamingMarkdownState = {
     text: nextText,
+    textRevision,
+    parsedCharacters:
+      (previous.parsedCharacters ?? 0) +
+      (incremental
+        ? (incremental.scannedCharacters ?? suffix.length)
+        : previous.activeBlock.length + suffix.length),
+    validatedCharacters:
+      (previous.validatedCharacters ?? 0) + (knownSuffix === null ? previous.text.length : 0),
     sealedBlocks,
     activeBlock: parsed.activeBlock,
     activeBlockKind: parsed.activeBlockKind,
     needsFullRebuild: false,
   };
+  if (incremental?.lines) blockLineProgress.set(result, incremental.lines);
+  if (incremental?.fence) fenceProgress.set(result, incremental.fence);
+  if (incremental?.paragraph) stableParagraphs.add(result);
+  return result;
 }

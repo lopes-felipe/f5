@@ -1,8 +1,11 @@
-import { BrainIcon } from "lucide-react";
+import { BrainIcon, DatabaseIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
 
+import type { PromptCacheMeterView } from "../../../lib/useThreadCacheTurns";
+import { Popover, PopoverPopup, PopoverTrigger } from "../../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../ui/tooltip";
+import { PromptCacheHistory } from "../PromptCacheHistory";
 import {
   contextMeterTone,
   formatCompactTokens,
@@ -47,21 +50,124 @@ function ContextRing(props: { ratio: number; tone: ContextMeterTone }) {
   );
 }
 
+const HOVER_DELAY_MS = 150;
+
 /**
  * Context-window occupancy as a 16px ring in the composer footer. The tooltip
- * carries the exact numbers plus the live thinking-token estimate.
+ * carries the exact numbers plus the live thinking-token estimate. With
+ * `promptCache`, it also shows the thread's prompt cache history; that popup
+ * opens on hover like the tooltip but holds buttons, so it is a popover. An
+ * amber badge on the ring marks a last turn that missed the cache.
  */
-export function ContextMeter(props: { tokenUsage: ComposerTokenUsage; className?: string }) {
+export function ContextMeter(props: {
+  tokenUsage: ComposerTokenUsage;
+  promptCache?: PromptCacheMeterView | null;
+  className?: string;
+}) {
   const { tokenUsage } = props;
+  const promptCache = props.promptCache ?? null;
   const context = resolveContextUsage(tokenUsage);
   const thinkingTokens = resolveLiveThinkingTokens(tokenUsage);
-  if (!context && thinkingTokens === null) return null;
+  if (!context && thinkingTokens === null && !promptCache) return null;
 
   const tone = context ? contextMeterTone(context.ratio) : "muted";
   const sourceLabel = tokenUsageSourceLabel(tokenUsage.tokenUsageSource);
-  const ariaLabel = context
-    ? `Context window occupancy for ${tokenUsage.model}: ${context.label}`
-    : "Live thinking-token estimate";
+  const lastTurnMissed = promptCache?.summary.last?.state === "miss";
+  const ariaLabel = [
+    context
+      ? `Context window occupancy for ${tokenUsage.model}: ${context.label}`
+      : thinkingTokens !== null
+        ? "Live thinking-token estimate"
+        : "Prompt cache history",
+    lastTurnMissed ? "last turn missed the prompt cache" : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const triggerClassName = cn(
+    "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-2xs tabular-nums text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent",
+    props.className,
+  );
+
+  const triggerContent = (
+    <>
+      {context || promptCache ? (
+        <span className="relative inline-flex">
+          {context ? (
+            <ContextRing ratio={context.ratio} tone={tone} />
+          ) : (
+            <DatabaseIcon className="size-3.5" aria-hidden="true" />
+          )}
+          {lastTurnMissed ? (
+            <span
+              data-slot="prompt-cache-miss-badge"
+              aria-hidden="true"
+              className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-warning ring-2 ring-background"
+            />
+          ) : null}
+        </span>
+      ) : null}
+      {thinkingTokens !== null ? (
+        <span className="inline-flex items-center gap-1">
+          <BrainIcon className="size-3.5 text-faint-foreground" aria-hidden="true" />
+          {formatCompactTokens(thinkingTokens)} thinking
+        </span>
+      ) : null}
+    </>
+  );
+
+  const details = (
+    <div className="space-y-2 text-xs">
+      {context ? (
+        <div>
+          <p className="font-medium text-foreground">Context {context.label}</p>
+          <p className="text-muted-foreground">
+            Used: {formatExactTokens(context.usedTokens)} tokens
+          </p>
+          <p className="text-muted-foreground">
+            Window: {formatExactTokens(context.windowTokens)} tokens
+          </p>
+          <p className="text-muted-foreground">Model: {tokenUsage.model}</p>
+          {sourceLabel ? <p className="text-muted-foreground">Source: {sourceLabel}</p> : null}
+        </div>
+      ) : null}
+      {thinkingTokens !== null ? (
+        <div>
+          <p className="font-medium text-foreground">
+            Thinking: ~{formatExactTokens(thinkingTokens)} tokens
+          </p>
+          <p className="text-muted-foreground">
+            Approximate live estimate, not billed output tokens.
+          </p>
+        </div>
+      ) : null}
+      {promptCache ? (
+        <div className={context || thinkingTokens !== null ? "border-t border-border pt-2" : ""}>
+          <PromptCacheHistory view={promptCache} />
+        </div>
+      ) : null}
+    </div>
+  );
+
+  if (promptCache) {
+    return (
+      <Popover>
+        <PopoverTrigger
+          openOnHover
+          delay={HOVER_DELAY_MS}
+          closeDelay={HOVER_DELAY_MS}
+          aria-label={ariaLabel}
+          data-slot="context-meter"
+          data-tone={tone}
+          className={triggerClassName}
+        >
+          {triggerContent}
+        </PopoverTrigger>
+        <PopoverPopup side="top" sideOffset={6} className="w-72 leading-tight">
+          {details}
+        </PopoverPopup>
+      </Popover>
+    );
+  }
 
   return (
     <Tooltip>
@@ -72,47 +178,14 @@ export function ContextMeter(props: { tokenUsage: ComposerTokenUsage; className?
             aria-label={ariaLabel}
             data-slot="context-meter"
             data-tone={tone}
-            className={cn(
-              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-2xs tabular-nums text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
-              props.className,
-            )}
+            className={triggerClassName}
           />
         }
       >
-        {context ? <ContextRing ratio={context.ratio} tone={tone} /> : null}
-        {thinkingTokens !== null ? (
-          <span className="inline-flex items-center gap-1">
-            <BrainIcon className="size-3.5 text-faint-foreground" aria-hidden="true" />
-            {formatCompactTokens(thinkingTokens)} thinking
-          </span>
-        ) : null}
+        {triggerContent}
       </TooltipTrigger>
       <TooltipPopup side="top" className="max-w-72 leading-tight">
-        <div className="space-y-2 text-xs">
-          {context ? (
-            <div>
-              <p className="font-medium text-foreground">Context {context.label}</p>
-              <p className="text-muted-foreground">
-                Used: {formatExactTokens(context.usedTokens)} tokens
-              </p>
-              <p className="text-muted-foreground">
-                Window: {formatExactTokens(context.windowTokens)} tokens
-              </p>
-              <p className="text-muted-foreground">Model: {tokenUsage.model}</p>
-              {sourceLabel ? <p className="text-muted-foreground">Source: {sourceLabel}</p> : null}
-            </div>
-          ) : null}
-          {thinkingTokens !== null ? (
-            <div>
-              <p className="font-medium text-foreground">
-                Thinking: ~{formatExactTokens(thinkingTokens)} tokens
-              </p>
-              <p className="text-muted-foreground">
-                Approximate live estimate, not billed output tokens.
-              </p>
-            </div>
-          ) : null}
-        </div>
+        {details}
       </TooltipPopup>
     </Tooltip>
   );

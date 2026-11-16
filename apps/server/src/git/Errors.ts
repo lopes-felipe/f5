@@ -1,5 +1,5 @@
 import { GitCheckoutConflict, SourceControlRateLimit } from "@t3tools/contracts";
-import { Schema } from "effect";
+import { type PlatformError, Predicate, Schema } from "effect";
 import type { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 
 /**
@@ -16,6 +16,18 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
   override get message(): string {
     return `Git command failed in ${this.operation}: ${this.command} (${this.cwd}) - ${this.detail}`;
   }
+}
+
+/** The spawner checks cwd first, so ChildProcess NotFound identifies the git executable. */
+export function isMissingGitExecutable(error: GitCommandError): boolean {
+  if (!Predicate.isTagged(error.cause, "PlatformError")) return false;
+  const { reason } = error.cause as PlatformError.PlatformError;
+  return reason._tag === "NotFound" && reason.module === "ChildProcess";
+}
+
+/** Git never waits for `.git/config.lock`; a permission error with the same prefix is not this. */
+export function isGitConfigLockedError(error: GitCommandError): boolean {
+  return /could not lock config file .+: File exists/i.test(error.detail);
 }
 
 /**
@@ -49,11 +61,24 @@ export class GitHubCliError extends Schema.TaggedErrorClass<GitHubCliError>()("G
 /**
  * TextGenerationError - Commit or PR text generation failed.
  */
+/** Coarse failure class so callers can retry, split, or open a circuit. */
+export const TextGenerationErrorKind = Schema.Literals([
+  "timeout",
+  "invalid-output",
+  "unavailable",
+  "auth",
+  "limit",
+  "unsupported",
+  "generic",
+]);
+export type TextGenerationErrorKind = typeof TextGenerationErrorKind.Type;
+
 export class TextGenerationError extends Schema.TaggedErrorClass<TextGenerationError>()(
   "TextGenerationError",
   {
     operation: Schema.String,
     detail: Schema.String,
+    kind: Schema.optional(TextGenerationErrorKind),
     cause: Schema.optional(Schema.Defect),
   },
 ) {

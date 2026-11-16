@@ -1,0 +1,236 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-13T11:16:44.601Z",
+  "scope": "unsigned-real-electron-codex-main-frozen-physical-stop",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "repositoryCommit": "898c3874b12ff916c2d1b8115cd813e03e1153e1",
+  "workingTreeDirty": false,
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "fcaadcf45fac874a014d9794452146c25c8112d86ef07cef2b6f783c9b36bfc0",
+    "serverBundle": "aff9cea0b08a530f6e6704eaec8eef3d6a52367a736865cb0d81cb663a23c181",
+    "rendererIndex": "1d4bfc37a89eb6e3e4550360dc91bb8ad3752610eea988962a22843a7eee4754",
+    "rehearsalSource": "d27a21a401c7635ffe09b8dcbb0faa66cca5824d3b36992e90c3f8dd35962def",
+    "observerSource": "c8981ec95d88a05cb8e6f514d9c77822cbd655f05e5e162c151a4911522c03ed",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140",
+    "chordObservationSource": "83d29bc71f0165a4292dba4107c6792416db248464bca6b8149f1434ad315937"
+  },
+  "signed": false,
+  "certified": false,
+  "provider": "codex",
+  "runtimeMode": "full-access",
+  "state": "passed",
+  "interrupted": false,
+  "permissionStatus": {
+    "available": true,
+    "displays": [
+      {
+        "displayId": "3",
+        "geometryGeneration": "3:0.0:0.0:3337.0:1397.0:6674:2794:0.0",
+        "primary": true,
+        "nativeBounds": {
+          "x": 0,
+          "y": 0,
+          "width": 3337,
+          "height": 1397
+        },
+        "pixelSize": {
+          "width": 6674,
+          "height": 2794
+        },
+        "rotation": 0,
+        "modelSize": {
+          "width": 1456,
+          "height": 609
+        }
+      },
+      {
+        "displayId": "1",
+        "geometryGeneration": "1:902.0:1397.0:1728.0:1117.0:3456:2234:0.0",
+        "primary": false,
+        "nativeBounds": {
+          "x": 902,
+          "y": 1397,
+          "width": 1728,
+          "height": 1117
+        },
+        "pixelSize": {
+          "width": 3456,
+          "height": 2234
+        },
+        "rotation": 0,
+        "modelSize": {
+          "width": 1333,
+          "height": 862
+        }
+      }
+    ]
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": true,
+    "pauseObserved": true,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "activityMessages": 4,
+    "activityThumbnails": 0,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "accessRequests": 1,
+    "accessAnswersForwarded": 1,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "activateApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": false
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "type",
+        "outcome": "Interrupted",
+        "cause": "user-input"
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      }
+    ]
+  },
+  "threadObservation": {
+    "found": true,
+    "runtimeMode": "full-access",
+    "sessionRuntimeMode": "full-access",
+    "interactionMode": "default",
+    "turnState": "completed",
+    "pendingUserInputs": 0,
+    "hasUsageLimit": false,
+    "requestedInstance": "codex",
+    "sessionInstance": "codex",
+    "sessionErrorCode": "none"
+  },
+  "consentObservation": {
+    "requested": true,
+    "trustedClick": true,
+    "settled": true,
+    "allowed": true,
+    "fixtureGranted": true,
+    "cardHasError": false,
+    "dialogPresentInDom": true
+  },
+  "providerErrorCodes": [],
+  "toolOutcomeErrors": ["Interrupted"],
+  "thumbnailObservation": {
+    "visible": false,
+    "loaded": false
+  },
+  "fixtureObservation": {
+    "presses": 0,
+    "expectedSyntheticTextReceived": false
+  },
+  "stopMeasurement": {
+    "state": "passed",
+    "checks": {
+      "traceComplete": true,
+      "clocksValid": true,
+      "syntheticInputObserved": true,
+      "physicalInputRecognized": true,
+      "chordRecognized": true,
+      "promptedBeforeInterruption": true,
+      "typingActiveAtTrigger": true,
+      "physicalStopUnder100Ms": true,
+      "chordStopUnder100Ms": true,
+      "appDeliveryStoppedUnder100Ms": true,
+      "quietTailObserved": true,
+      "inFlightMutationInterrupted": true,
+      "pausedMutationRefused": true,
+      "leaseReleased": true,
+      "fixtureStillFrontmost": true,
+      "stallClockCalibrated": true,
+      "physicalAndChordDuringHostStall": true
+    },
+    "injectedKeyDowns": 27,
+    "injectedEvents": 54,
+    "chordEventsObserved": 1,
+    "chordEventToRecognitionDeltaMs": 0,
+    "physicalInputTailMs": 5.2,
+    "killChordTailMs": 0,
+    "appDeliveryTailMs": 10.5,
+    "physicalToChordMs": 70.6,
+    "hostStallDurationMs": 707.2,
+    "clockUncertaintyMs": 1.2,
+    "physicalRecognitionAfterStallStartMs": {
+      "min": 407.2,
+      "max": 408.4
+    },
+    "chordRecognitionAfterStallEndMs": {
+      "min": -229.4,
+      "max": -228.2
+    }
+  },
+  "chordObservation": {
+    "traceValid": true,
+    "monitorHealthy": true,
+    "prompted": true,
+    "chordObserved": true,
+    "frontmostReceiptObserved": true,
+    "fixtureStillFrontmost": true,
+    "candidates": [
+      {
+        "observer": "session",
+        "control": true,
+        "command": true,
+        "afterPromptMs": 475
+      }
+    ]
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "realConsentDialogVisible": true,
+    "realConsentSettledAllowed": true,
+    "humanTrustedConsent": true,
+    "consentTurnEmittedNoInput": true,
+    "realLeaseBannerVisible": true,
+    "actualElectronProcessFrozen": true,
+    "helperRecognizedChordAndMirroredPause": true,
+    "noSyntheticInputAfterStop": true,
+    "nativeStopMeasurementPassed": true
+  },
+  "limitations": [
+    "One real provider and one synthetic AppKit app, on the current display only",
+    "Human app consent and physical chord; UI Pause/Resume is excluded",
+    "No installed-build TCC attribution, signed packaging, multi-profile/display or complete real-app certification",
+    "SIGSTOP of one isolated Electron process; does not prove arbitrary deadlocks, signed packaging or Windows stop behavior",
+    "Provider built-in and Chrome gates remain closed; no image bytes, typed values, accessibility content or raw errors retained"
+  ]
+}

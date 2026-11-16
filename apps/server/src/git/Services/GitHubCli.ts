@@ -19,6 +19,7 @@ export interface GitHubPullRequestSummary {
   readonly baseRefName: string;
   readonly headRefName: string;
   readonly headRefOid?: string | null;
+  readonly updatedAt?: string | null;
   readonly state?: "open" | "closed" | "merged";
   readonly isCrossRepository?: boolean;
   readonly headRepositoryNameWithOwner?: string | null;
@@ -36,6 +37,8 @@ export interface GitHubMergePullRequestInput {
   readonly url: string;
   readonly method: "squash" | "merge" | "rebase";
   readonly expectedHeadOid?: string | undefined;
+  /** Internal override; stack merges retain the host-generated message. */
+  readonly removeAgentCreditsOnMerge?: boolean;
 }
 
 /**
@@ -67,6 +70,7 @@ export interface GitHubCliShape {
   readonly listOpenPullRequests: (input: {
     readonly cwd: string;
     readonly headSelector: string;
+    readonly state?: "open" | "all";
     readonly limit?: number;
   }) => Effect.Effect<ReadonlyArray<GitHubPullRequestSummary>, GitHubCliError>;
 

@@ -100,6 +100,17 @@ describe("reduceTaskToolLifecycle", () => {
     ]);
   });
 
+  it("prefers the description Claude stored over the TaskCreate input", () => {
+    const state = call(
+      empty,
+      "c",
+      "TaskCreate",
+      { subject: "Lint", description: "lint teh code" },
+      { task: { id: "7", subject: "Lint", description: "Lint the code" } },
+    );
+    expect(state.tasks[0]?.description).toBe("Lint the code");
+  });
+
   it("falls back to the subject when activeForm is absent", () => {
     const state = call(
       empty,

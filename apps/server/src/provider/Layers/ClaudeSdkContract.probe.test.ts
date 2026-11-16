@@ -1,13 +1,130 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
 import { query, type Options, type SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { ThreadId } from "@t3tools/contracts";
+import { CLAUDE_SDK_BASELINE_VERSION } from "@t3tools/shared/claudeSdkManifest";
 import { makePreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { forceClaudeChromeFlag, makeClaudePreviewMcpServer } from "./claudeAgentBrowser.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
+import { createClaudeQueryWithPrivateMcp } from "../claudeMcpStartup.ts";
+import { claudeMandatoryPolicyOptions } from "../claudeMandatoryPolicy.ts";
+import { buildClaudeFlagPermissions } from "../claudeFlagPermissions.ts";
+import { callClaudeMcpAppTool } from "../claudeMcpApps.ts";
+import { makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
+import { makeThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
+import { Effect } from "effect";
 
 async function* emptyPrompt(): AsyncGenerator<never> {}
 
+// Keeps stdin open: the SDK ends input once the prompt stream finishes.
+async function* openPrompt(signal: AbortSignal): AsyncGenerator<never> {
+  await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+  yield* [];
+}
+
+// The SDK does not export its package.json, so read it next to the resolved entry.
+function installedClaudeSdkVersion(): string {
+  const entry = createRequire(import.meta.url).resolve("@anthropic-ai/claude-agent-sdk");
+  const manifest = JSON.parse(
+    readFileSync(path.join(path.dirname(entry), "package.json"), "utf8"),
+  ) as { version: string };
+  return manifest.version;
+}
+
+beforeAll(() => {
+  const installed = installedClaudeSdkVersion();
+  if (installed !== CLAUDE_SDK_BASELINE_VERSION) {
+    throw new Error(
+      `Installed Claude SDK ${installed} does not match pinned ${CLAUDE_SDK_BASELINE_VERSION}; run bun install --frozen-lockfile`,
+    );
+  }
+});
+
 describe("Claude SDK host contract transport", () => {
+  it("declares F5 thread tools in-process without credentials in CLI arguments", async () => {
+    const broker = await Effect.runPromise(makeThreadMcpBroker);
+    const server = makeClaudeThreadMcpServer({
+      broker,
+      threadId: ThreadId.makeUnsafe("thread-probe"),
+      existingServerNames: new Set(["f5_thread"]),
+    });
+    let initialize: Record<string, unknown> | undefined;
+    let spawn: SpawnOptions | undefined;
+    const runtime = query({
+      prompt: emptyPrompt(),
+      options: {
+        persistSession: false,
+        mcpServers: { [server.serverName]: server.config },
+        spawnClaudeCodeProcess: (args) => {
+          spawn = args;
+          return new FakeClaudeCodeProcess((message, child) => {
+            if (respondToInitializeRequest(message, child))
+              initialize = message.request as Record<string, unknown>;
+          });
+        },
+      },
+    });
+    try {
+      await runtime.initializationResult();
+      expect(initialize?.sdkMcpServers).toEqual([server.serverName]);
+      expect(server.serverName).not.toBe("f5_thread");
+      expect(JSON.stringify(spawn?.args)).not.toContain("F5_THREAD_MCP_TOKEN");
+    } finally {
+      runtime.close();
+    }
+  });
+  it("transmits configured MCP headers and env over stdin while keeping actual CLI argv private", async () => {
+    const servers = {
+      remote: {
+        type: "http",
+        url: "https://example.invalid/mcp",
+        headers: { Authorization: "Bearer header-value-fixture" },
+      },
+      local: { type: "stdio", command: "node", env: { ACCESS_TOKEN: "env-value-fixture" } },
+    } satisfies NonNullable<Options["mcpServers"]>;
+    let spawn: SpawnOptions | undefined;
+    let applied: unknown;
+    const runtime = await createClaudeQueryWithPrivateMcp(
+      {
+        prompt: emptyPrompt(),
+        options: {
+          persistSession: false,
+          mcpServers: servers,
+          spawnClaudeCodeProcess: (args) => {
+            spawn = args;
+            return new FakeClaudeCodeProcess((message, child) => {
+              if (respondToInitializeRequest(message, child)) return;
+              if (
+                message.type === "control_request" &&
+                (message.request as { subtype?: string })?.subtype === "mcp_set_servers"
+              ) {
+                applied = (message.request as { servers: unknown }).servers;
+                child.emitJson({
+                  type: "control_response",
+                  response: {
+                    subtype: "success",
+                    request_id: message.request_id,
+                    response: { added: ["remote", "local"], removed: [], errors: {} },
+                  },
+                });
+              }
+            });
+          },
+        },
+      },
+      query,
+    );
+    try {
+      expect(applied).toEqual(servers);
+      expect(JSON.stringify(spawn!.args)).not.toContain("header-value-fixture");
+      expect(JSON.stringify(spawn!.args)).not.toContain("env-value-fixture");
+      expect(spawn!.args).not.toContain("--mcp-config");
+    } finally {
+      runtime.close();
+    }
+  });
   it.each([undefined, "550e8400-e29b-41d4-a716-446655440000"])(
     "serializes host instructions and mandatory flags (resume=%s)",
     async (resume) => {
@@ -96,4 +213,123 @@ describe("Claude SDK host contract transport", () => {
       }
     },
   );
+
+  it.each([true, false])(
+    "sends onFailure: block on F5's mandatory hook and requires CLI support (supported=%s)",
+    async (supported) => {
+      let initialize: Record<string, unknown> | undefined;
+      const runtime = query({
+        prompt: emptyPrompt(),
+        options: {
+          persistSession: false,
+          ...claudeMandatoryPolicyOptions({ failClosed: true }),
+          spawnClaudeCodeProcess: () =>
+            new FakeClaudeCodeProcess((message, child) => {
+              if (
+                respondToInitializeRequest(message, child, {
+                  hook_on_failure_supported: supported,
+                  hooks_applied: true,
+                })
+              )
+                initialize = message.request as Record<string, unknown>;
+            }),
+        },
+      });
+      try {
+        const result = runtime.initializationResult();
+        if (supported) await expect(result).resolves.toBeDefined();
+        else await expect(result).rejects.toThrow(/onFailure/);
+        const preToolUse = (initialize?.hooks as Record<string, Array<Record<string, unknown>>>)
+          ?.PreToolUse;
+        expect(preToolUse?.at(-1)?.onFailure).toBe("block");
+      } finally {
+        runtime.close();
+      }
+    },
+  );
+
+  it("encodes F5's read exemptions and write confinement as flag settings", async () => {
+    let spawn: SpawnOptions | undefined;
+    const permissions = buildClaudeFlagPermissions({
+      readExemptDirectories: ["/f5-probe/attachments", "/f5-probe/claude/plans"],
+      confineWritesToWorkspace: true,
+    });
+    const runtime = query({
+      prompt: emptyPrompt(),
+      options: {
+        persistSession: false,
+        settings: { permissions },
+        spawnClaudeCodeProcess: (args) => {
+          spawn = args;
+          return new FakeClaudeCodeProcess((message, child) => {
+            respondToInitializeRequest(message, child);
+          });
+        },
+      },
+    });
+    try {
+      await runtime.initializationResult();
+      const args = spawn!.args;
+      const settings = JSON.parse(args[args.indexOf("--settings") + 1]!) as {
+        permissions?: Record<string, unknown>;
+      };
+      expect(settings.permissions).toEqual({
+        blockReadsExemptPaths: [
+          path.resolve("/f5-probe/attachments"),
+          path.resolve("/f5-probe/claude/plans"),
+        ],
+        blockWritesOutsideWorkingDirectories: true,
+      });
+    } finally {
+      runtime.close();
+    }
+  });
+
+  it("keeps the internal Query.request that MCP App tool calls depend on", async () => {
+    let call: Record<string, unknown> | undefined;
+    const open = new AbortController();
+    const runtime = query({
+      prompt: openPrompt(open.signal),
+      options: {
+        persistSession: false,
+        spawnClaudeCodeProcess: () =>
+          new FakeClaudeCodeProcess((message, child) => {
+            if (respondToInitializeRequest(message, child)) return;
+            const request = message.request as Record<string, unknown> | undefined;
+            if (message.type === "control_request" && request?.subtype === "mcp_call") {
+              call = request;
+              child.emitJson({
+                type: "control_response",
+                response: {
+                  subtype: "success",
+                  request_id: message.request_id,
+                  response: { content: [{ type: "text", text: "app result" }] },
+                },
+              });
+            }
+          }),
+      },
+    });
+    try {
+      await runtime.initializationResult();
+      expect(typeof (runtime as unknown as { request?: unknown }).request).toBe("function");
+      const result = await callClaudeMcpAppTool({
+        query: runtime,
+        capabilities: new Set(["mcp_call_result_not_for_model_v1"]),
+        server: "apps",
+        tool: "show",
+        arguments: { id: 1 },
+      });
+      expect(call).toEqual({
+        subtype: "mcp_call",
+        tool: "mcp__apps__show",
+        arguments: { id: 1 },
+        result_not_for_model: true,
+      });
+      expect(result).toEqual({ content: [{ type: "text", text: "app result" }] });
+    } finally {
+      open.abort();
+      runtime.close();
+    }
+  });
 });

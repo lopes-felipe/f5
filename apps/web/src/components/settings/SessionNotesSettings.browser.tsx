@@ -21,6 +21,9 @@ vi.mock("../../hooks/useSettings", () => ({
   useSettings: () => ({ ...DEFAULT_UNIFIED_SETTINGS, sessionNotesModelSelection: state.selection }),
   useUpdateSettings: () => ({ updateSettings: state.update }),
 }));
+vi.mock("./SettingsRouteContext", () => ({
+  useSettingsRouteContext: () => ({ selectedProject: null }),
+}));
 const caps = createModelCapabilities({
   optionDescriptors: [
     {

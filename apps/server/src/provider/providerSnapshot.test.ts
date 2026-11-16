@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { ProviderDriverKind, type ModelCapabilities } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 
-import { providerModelsFromSettings, parseGenericCliVersion } from "./providerSnapshot.ts";
+import {
+  mergeReportedProviderModels,
+  providerModelsFromSettings,
+  parseGenericCliVersion,
+} from "./providerSnapshot.ts";
 
 const OPENCODE_CUSTOM_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [
@@ -76,4 +80,16 @@ it("publishes custom display names and explicit capabilities without changing th
       {},
     ),
   ).toEqual([{ slug: "builtin", name: "Official", isCustom: false, capabilities: null }]);
+});
+
+it("marks only absent noncustom models unlisted on complete catalogs", () => {
+  const models = [
+    { slug: "missing", name: "Missing", isCustom: false, capabilities: null },
+    { slug: "hidden", name: "Hidden", isCustom: false, capabilities: null },
+    { slug: "custom", name: "Custom", isCustom: true, capabilities: null },
+  ];
+  expect(
+    mergeReportedProviderModels(models, [], { complete: true, presentSlugs: ["hidden"] }),
+  ).toEqual([{ ...models[0], isUnlisted: true }, { ...models[1], isUnlisted: false }, models[2]]);
+  expect(mergeReportedProviderModels(models, [], { complete: false })).toEqual(models);
 });

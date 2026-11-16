@@ -1,0 +1,27 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-12T21:53:49.507Z",
+  "scope": "read-only-claude-isolated-account-preflight",
+  "platform": "darwin",
+  "arch": "arm64",
+  "repositoryCommit": "dc7487b8a2111b8762e14f484791d72323c212da",
+  "workingTreeDirty": false,
+  "launchSourceSha256": "1d1fb6619ecef4fc343465c5152c974041a573e2efc4b6976a18816841acb558",
+  "cliSha256": "0116ee2e0a513900b633d9951367f18747686478e2b462805b8c31609f047f70",
+  "provider": "claude",
+  "state": "ready",
+  "authentication": {
+    "status": "authenticated",
+    "credentialFileCopied": false,
+    "selectedProfileSecureStorage": true
+  },
+  "signed": false,
+  "certified": false,
+  "providerTurnsStarted": 0,
+  "desktopActionsEmitted": 0,
+  "limitations": [
+    "Only the explicitly selected profile credential scope was probed; no fallback to another account",
+    "A fresh isolated CLI probe does not establish the authentication state of an existing F5 session",
+    "No provider quota, app consent, screenshots, desktop input or computer-control certification"
+  ]
+}

@@ -4,8 +4,14 @@ import { Effect, Schema } from "effect";
 
 import { ORCHESTRATION_WS_CHANNELS, ORCHESTRATION_WS_METHODS } from "./orchestration";
 import { AGENTS_WS_CHANNELS, AGENTS_WS_METHODS } from "./backgroundWork";
+import { AGENT_BRIDGE_WS_CHANNELS } from "./agentBridge";
 import { PR_HUB_WS_CHANNELS, PR_HUB_WS_METHODS } from "./prHub";
-import { ServerValidateHarnessesResult } from "./server";
+import { UPSTREAM_PORTS_WS_CHANNELS } from "./upstreamPorts";
+import {
+  ServerProviderVersionAdvisory,
+  ServerRunProviderUpdateResult,
+  ServerValidateHarnessesResult,
+} from "./server";
 import {
   WebSocketRequest,
   WsResponse,
@@ -16,6 +22,37 @@ import {
 } from "./ws";
 
 const decodeWebSocketRequest = Schema.decodeUnknownEffect(WebSocketRequest);
+it("requires an entry for the conflict override while allowing project queue controls", () => {
+  const decode = Schema.decodeUnknownSync(WebSocketRequest);
+  for (const action of ["pause", "resume", "clear"])
+    assert.doesNotThrow(() =>
+      decode({
+        id: "queue",
+        body: { _tag: "upstreamPorts.controlPortQueue", projectId: "project", action },
+      }),
+    );
+  assert.doesNotThrow(() =>
+    decode({
+      id: "queue",
+      body: {
+        _tag: "upstreamPorts.controlPortQueue",
+        projectId: "project",
+        action: "ignore-conflicts",
+        entryId: "entry",
+      },
+    }),
+  );
+  assert.throws(() =>
+    decode({
+      id: "queue",
+      body: {
+        _tag: "upstreamPorts.controlPortQueue",
+        projectId: "project",
+        action: "ignore-conflicts",
+      },
+    }),
+  );
+});
 const decodeWsResponse = Schema.decodeUnknownEffect(WsResponse);
 const decodeServerValidateHarnessesResult = Schema.decodeUnknownEffect(
   ServerValidateHarnessesResult,
@@ -609,12 +646,15 @@ it.effect("accepts global git status invalidation push envelopes", () =>
 );
 
 it("registers every declared push channel in both transport schemas", () => {
-  const channels = Object.values({
-    ...WS_CHANNELS,
-    ...AGENTS_WS_CHANNELS,
-    ...ORCHESTRATION_WS_CHANNELS,
-    ...PR_HUB_WS_CHANNELS,
-  });
+  // Concatenate values: channel maps share key names such as `changed`.
+  const channels = [
+    WS_CHANNELS,
+    AGENTS_WS_CHANNELS,
+    AGENT_BRIDGE_WS_CHANNELS,
+    ORCHESTRATION_WS_CHANNELS,
+    PR_HUB_WS_CHANNELS,
+    UPSTREAM_PORTS_WS_CHANNELS,
+  ].flatMap((group) => Object.values(group) as string[]);
   // Do not derive expectations from WsPush: an omitted union member must fail this test.
   const registered = WsPush.members.map((member) => member.fields.channel.literal);
   assert.deepEqual([...registered].sort(), [...channels].sort());
@@ -674,4 +714,105 @@ it("registers every declared push channel in both transport schemas", () => {
     const encoded = Schema.encodeSync(WsPush)(message!);
     assert.equal(Schema.decodeUnknownSync(WsPush)(encoded).channel, channel);
   }
+});
+
+it("decodes provider update requests without accepting browser commands", () => {
+  for (const body of [
+    { _tag: WS_METHODS.serverRefreshProviders, instanceId: "codex" },
+    { _tag: WS_METHODS.serverCheckProviderUpdates },
+    { _tag: WS_METHODS.serverCheckProviderUpdates, instanceId: "codex" },
+    { _tag: WS_METHODS.serverRunProviderUpdate, instanceId: "codex" },
+  ]) {
+    assert.deepStrictEqual<unknown>(
+      Schema.decodeUnknownSync(WebSocketRequest)({ id: "update", body }).body,
+      body,
+    );
+  }
+  const parsed = Schema.decodeUnknownSync(WebSocketRequest)({
+    id: "update",
+    body: { _tag: WS_METHODS.serverRunProviderUpdate, instanceId: "codex", command: "arbitrary" },
+  });
+  assert.deepStrictEqual<unknown>(parsed.body, {
+    _tag: WS_METHODS.serverRunProviderUpdate,
+    instanceId: "codex",
+  });
+});
+it("round-trips provider update progress and visible failure metadata", () => {
+  for (const status of ["bundled", "manual", "check_failed"] as const) {
+    const value = {
+      status,
+      currentVersion: "1.0.0",
+      latestVersion: "1.1.0",
+      updateCommand: {
+        executable: "/brew",
+        args: ["upgrade", "codex"],
+        channel: "homebrew",
+        shell: "posix",
+        pathPrepend: "/brew/bin",
+      },
+      checkedAt: "2026-10-17T00:00:00.000Z",
+      message: "Check failed",
+      retryAt: "2026-10-17T01:00:00.000Z",
+      failedAt: "2026-10-17T00:01:00.000Z",
+      installChannel: "homebrew",
+      executablePath: "/bin/codex",
+      installKey: "hash",
+      canRunUpdate: true,
+      updateAvailable: true,
+      sharedWith: ["other"],
+      activeUpdate: { startedAt: "2026-10-17T00:01:00.000Z", targetVersion: "1.1.0" },
+    };
+    assert.deepStrictEqual<unknown>(
+      Schema.decodeUnknownSync(ServerProviderVersionAdvisory)(value),
+      value,
+    );
+  }
+  const result = {
+    instanceId: "codex",
+    outcome: "failed",
+    previousVersion: "1.0.0",
+    currentVersion: null,
+    exitCode: null,
+    timedOut: false,
+    output: "could not start",
+    outputTruncated: false,
+    providers: [],
+  };
+  assert.deepStrictEqual<unknown>(
+    Schema.decodeUnknownSync(ServerRunProviderUpdateResult)(result),
+    result,
+  );
+});
+
+it("wires MCP feature requests and rejects executable or home overrides", () => {
+  const requests = [
+    { _tag: WS_METHODS.mcpListImportCandidates, projectId: "project", instanceId: "codex" },
+    {
+      _tag: WS_METHODS.mcpProbeServer,
+      serverName: "draft",
+      server: { type: "http", url: "http://localhost/mcp" },
+    },
+  ];
+  for (const body of requests) {
+    assert.doesNotThrow(() => Schema.decodeUnknownSync(WebSocketRequest)({ id: "feature", body }));
+    for (const field of ["binaryPath", "homePath"])
+      assert.throws(() =>
+        Schema.decodeUnknownSync(WebSocketRequest)({
+          id: "feature",
+          body: { ...body, [field]: "/other-account" },
+        }),
+      );
+  }
+  assert.doesNotThrow(() =>
+    Schema.decodeUnknownSync(WebSocketRequest)({
+      id: "secret",
+      body: { _tag: WS_METHODS.mcpStoreSecret, value: "private" },
+    }),
+  );
+  assert.throws(() =>
+    Schema.decodeUnknownSync(WebSocketRequest)({
+      id: "secret",
+      body: { _tag: WS_METHODS.mcpStoreSecret, value: "x".repeat(16385) },
+    }),
+  );
 });

@@ -1,4 +1,6 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
+import { ComputerBackendSelection } from "./computerAutomation";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderModelOptions } from "./model";
 import { ProviderInstanceId } from "./providerInstance";
@@ -46,7 +48,7 @@ export const ProviderSession = Schema.Struct({
   providerInstanceId: Schema.optional(ProviderInstanceId),
   status: ProviderSessionStatus,
   runtimeMode: RuntimeMode,
-  cwd: Schema.optional(TrimmedNonEmptyStringSchema),
+  cwd: Schema.optional(FilesystemPath),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   threadId: ThreadId,
   resumeCursor: Schema.optional(Schema.Unknown),
@@ -56,6 +58,10 @@ export const ProviderSession = Schema.Struct({
   lastError: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Set by ProviderService for the session generation it started or resumed. */
   capabilities: Schema.optional(ProviderSessionCapabilities),
+  computerBackendSelection: Schema.optional(ComputerBackendSelection),
+  computerToolsInstalled: Schema.optional(Schema.Boolean),
+  computerConfigurationFingerprint: Schema.optional(Schema.String),
+  chromeConfigurationFingerprint: Schema.optionalKey(Schema.String),
 });
 export type ProviderSession = typeof ProviderSession.Type;
 
@@ -64,7 +70,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   projectId: Schema.optional(ProjectId),
   provider: Schema.optional(ProviderKind),
   providerInstanceId: Schema.optional(ProviderInstanceId),
-  cwd: Schema.optional(TrimmedNonEmptyStringSchema),
+  cwd: Schema.optional(FilesystemPath),
   projectTitle: Schema.optional(TrimmedNonEmptyStringSchema),
   threadTitle: Schema.optional(TrimmedNonEmptyStringSchema),
   turnCount: Schema.optional(NonNegativeInt),
@@ -81,6 +87,8 @@ export const ProviderSessionStartInput = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
   workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
+  /** Started for an automation's turn: nobody is there to answer a consent dialog. */
+  unattended: Schema.optional(Schema.Boolean),
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
@@ -90,6 +98,13 @@ export const ProviderSessionStartInput = Schema.Struct({
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
 export const ProviderSendTurnInput = Schema.Struct({
+  /** Internal queue admission for already-buffered native output; never a new prompt. */
+  continuationRequestId: Schema.optional(
+    TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(128)),
+  ),
+
+  /** Server-supplied latest app state; kept separate from the user message limit. */
+  mcpAppContext: Schema.optional(Schema.String.check(Schema.isMaxLength(256 * 1024))),
   /** Server-controlled attribution; never accepts native SDK origin objects. */
   submissionSource: Schema.optional(Schema.Literals(["human", "automation"])),
   threadId: ThreadId,
@@ -110,6 +125,12 @@ export const ProviderSendTurnInput = Schema.Struct({
   workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
+
+/**
+ * Thread activity recorded when a provider switch handed the conversation to
+ * the next agent. Its payload carries endpoints, modes and counts, never text.
+ */
+export const PROVIDER_CONTEXT_HANDOFF_ACTIVITY_KIND = "provider.context-handoff";
 
 export const ProviderTurnStartResult = Schema.Struct({
   threadId: ThreadId,
@@ -147,6 +168,7 @@ export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputI
 const ProviderEventKind = Schema.Literals(["session", "notification", "request", "error"]);
 
 export const ProviderEvent = Schema.Struct({
+  sessionGeneration: Schema.optional(NonNegativeInt),
   id: EventId,
   kind: ProviderEventKind,
   provider: ProviderKind,

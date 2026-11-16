@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { resolveCodexCommand } from "../../provider/codexExecutable.ts";
 
 import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
+import { terminateOnRelease } from "../../spawn/terminateOnRelease.ts";
 
 import {
   type CodexSettings,
+  type ModelCapabilities,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   type ModelSelection,
 } from "@t3tools/contracts";
@@ -14,6 +17,8 @@ import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
 import {
   getModelSelectionStringOptionValue,
   resolveCodexReasoningEffortForModel,
+  resolveModelCapabilities,
+  resolveSupportedEffort,
 } from "@t3tools/shared/model";
 import { formatAttachmentMetadata } from "@t3tools/shared/attachmentMetadata";
 
@@ -32,6 +37,8 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  threadTitleInstructionRules,
+  threadTitleLinkedContextSections,
 } from "../Prompts.ts";
 import {
   type BranchNameGenerationInput,
@@ -42,32 +49,89 @@ import {
   type TextGenerationShape,
   TextGeneration,
 } from "../Services/TextGeneration.ts";
+import { classifyCliFailureKind } from "../Utils.ts";
 
 const DEFAULT_CODEX_REASONING_EFFORT = "low";
 const CODEX_TIMEOUT_MS = 180_000;
+const CODEX_MCP_LIST_TIMEOUT_MS = 10_000;
+const decodeCodexMcpServers = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Array(Schema.Struct({ name: Schema.String, enabled: Schema.Boolean })),
+  ),
+);
+
+/**
+ * The `--config` value that turns off each MCP server Codex would start.
+ * `mcp_servers={}` merges into the user's servers rather than replacing them,
+ * so each is named; quoting the name keeps one with a dot a single key.
+ */
+export function codexMcpServersOffConfig(names: ReadonlyArray<string>): string | null {
+  return names.length === 0
+    ? null
+    : `mcp_servers={${names.map((name) => `${JSON.stringify(name)}={enabled=false}`).join(",")}}`;
+}
 
 export function resolveCodexTextGenerationReasoningEffort(
   model: string,
   modelSelection: ModelSelection | undefined,
   reasoningEffort?: string,
-): string {
-  return resolveCodexReasoningEffortForModel(
-    model,
+  reported?: ModelCapabilities | null,
+): string | undefined {
+  const requested =
     reasoningEffort ??
-      getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
-      DEFAULT_CODEX_REASONING_EFFORT,
-  );
+    getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
+    DEFAULT_CODEX_REASONING_EFFORT;
+  if (reported?.source === "reported") {
+    const capabilities = resolveModelCapabilities("codex", model, reported);
+    return resolveSupportedEffort(capabilities, requested) ?? capabilities.defaultEffort;
+  }
+  return resolveCodexReasoningEffortForModel(model, requested);
 }
 
-function toCodexOutputJsonSchema(schema: Schema.Top): unknown {
+const STRUCTURAL_JSON_SCHEMA_KEYS = new Set([
+  "type",
+  "properties",
+  "items",
+  "$ref",
+  "anyOf",
+  "oneOf",
+  "allOf",
+]);
+
+/**
+ * Effect emits each `.check(...)` as an `allOf` member (for example
+ * `{ type: "integer", allOf: [{ minimum: 1 }] }`), which OpenAI strict
+ * structured output rejects. Fold members that only add keyword constraints
+ * into their parent; anything else is left for the API to judge.
+ */
+function foldKeywordAllOf(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(foldKeywordAllOf);
+  if (typeof node !== "object" || node === null) return node;
+  const folded: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node)) folded[key] = foldKeywordAllOf(value);
+  const members = folded.allOf;
+  if (!Array.isArray(members)) return folded;
+  const { allOf: _allOf, ...merged } = folded;
+  for (const member of members) {
+    if (typeof member !== "object" || member === null || Array.isArray(member)) return folded;
+    for (const [key, value] of Object.entries(member)) {
+      if (STRUCTURAL_JSON_SCHEMA_KEYS.has(key)) return folded;
+      if (key in merged && JSON.stringify(merged[key]) !== JSON.stringify(value)) return folded;
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+export function toCodexOutputJsonSchema(schema: Schema.Top): unknown {
   const document = Schema.toJsonSchemaDocument(schema);
   if (document.definitions && Object.keys(document.definitions).length > 0) {
-    return {
+    return foldKeywordAllOf({
       ...document.schema,
       $defs: document.definitions,
-    };
+    });
   }
-  return document.schema;
+  return foldKeywordAllOf(document.schema);
 }
 
 function normalizeCodexError(
@@ -89,6 +153,7 @@ function normalizeCodexError(
       return new TextGenerationError({
         operation,
         detail: "Codex CLI (`codex`) is required but not available on PATH.",
+        kind: "unavailable",
         cause: error,
       });
     }
@@ -136,6 +201,7 @@ function sanitizePrTitle(raw: string): string {
 export const makeCodexTextGeneration = (
   codexSettings?: Pick<CodexSettings, "binaryPath" | "homePath" | "launchArgs">,
   processEnvironment: NodeJS.ProcessEnv = process.env,
+  resolveCapabilities?: (model: string) => Effect.Effect<ModelCapabilities | null | undefined>,
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -226,6 +292,51 @@ export const makeCodexTextGeneration = (
         return { imagePaths };
       });
 
+    /**
+     * The MCP servers Codex would start for this configuration, by name. Text
+     * generation goes ahead with none listed if Codex cannot list them.
+     */
+    const listEnabledMcpServers = (input: {
+      readonly binary: string;
+      readonly cwd: string;
+      readonly environment: NodeJS.ProcessEnv;
+      readonly launchArgs: ReadonlyArray<string>;
+    }): Effect.Effect<ReadonlyArray<string>> =>
+      Effect.gen(function* () {
+        const invocation = yield* resolveInvocationEffect(
+          input.binary,
+          prependCodexCliTelemetryDisabledConfig([...input.launchArgs, "mcp", "list", "--json"], {
+            managedCredentials: input.environment.F5_PROFILE_ISOLATED === "1",
+          }),
+          input.environment,
+          { cwd: input.cwd },
+        );
+        const child = yield* commandSpawner
+          .spawn(
+            ChildProcess.make(invocation.file, [...invocation.args], {
+              cwd: input.cwd,
+              env: input.environment,
+            }),
+          )
+          .pipe(Effect.tap(terminateOnRelease), Effect.uninterruptible);
+        const [stdout, exitCode] = yield* Effect.all(
+          [child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+          { concurrency: "unbounded" },
+        );
+        if (Number(exitCode) !== 0) return yield* Effect.fail("exit" as const);
+        const servers = yield* decodeCodexMcpServers(stdout);
+        return servers.filter((server) => server.enabled).map((server) => server.name);
+      }).pipe(
+        Effect.scoped,
+        Effect.timeoutOption(CODEX_MCP_LIST_TIMEOUT_MS),
+        Effect.map(Option.getOrElse((): ReadonlyArray<string> => [])),
+        Effect.catch((cause) =>
+          Effect.logWarning("codex mcp list failed; text generation keeps its MCP servers", {
+            cause: String(cause),
+          }).pipe(Effect.as<ReadonlyArray<string>>([])),
+        ),
+      );
+
     const runCodexJson = <S extends Schema.Top>({
       operation,
       cwd,
@@ -253,6 +364,7 @@ export const makeCodexTextGeneration = (
           selectedModel,
           modelSelection,
           reasoningEffort,
+          resolveCapabilities ? yield* resolveCapabilities(selectedModel) : undefined,
         );
         const schemaPath = yield* writeTempFile(
           operation,
@@ -295,6 +407,24 @@ export const makeCodexTextGeneration = (
               dropped: launchArgs.dropped,
             });
           }
+          const binary = yield* Effect.try({
+            try: () => resolveCodexCommand(codexSettings?.binaryPath),
+            catch: (cause) => normalizeCodexError(operation, cause, "Bundled Codex is unavailable"),
+          });
+          // Text generation never uses MCP tools. Each server the user's config
+          // would start is turned off by name, after the user's launch args so
+          // they cannot turn it back on.
+          const mcpServersOff = codexMcpServersOffConfig(
+            yield* listEnabledMcpServers({
+              binary,
+              cwd,
+              environment,
+              // `codex mcp` rejects --strict-config; the overrides still apply.
+              launchArgs: [...CODEX_PLUGINS_DISABLED_CONFIG_ARGS, ...launchArgs.argv].filter(
+                (arg) => arg !== "--strict-config",
+              ),
+            }),
+          );
           const args = prependCodexCliTelemetryDisabledConfig(
             [
               // Text generation never uses plugins; skip plugin startup tasks
@@ -302,6 +432,7 @@ export const makeCodexTextGeneration = (
               // the process ends before it finishes.
               ...CODEX_PLUGINS_DISABLED_CONFIG_ARGS,
               ...launchArgs.argv,
+              ...(mcpServersOff ? ["--config", mcpServersOff] : []),
               "exec",
               "--ephemeral",
               "--skip-git-repo-check",
@@ -309,8 +440,9 @@ export const makeCodexTextGeneration = (
               "read-only",
               "--model",
               selectedModel,
-              "--config",
-              `model_reasoning_effort="${selectedReasoningEffort}"`,
+              ...(selectedReasoningEffort
+                ? ["--config", `model_reasoning_effort="${selectedReasoningEffort}"`]
+                : []),
               "--output-schema",
               schemaPath,
               "--output-last-message",
@@ -320,12 +452,9 @@ export const makeCodexTextGeneration = (
             ],
             { managedCredentials: environment.F5_PROFILE_ISOLATED === "1" },
           );
-          const invocation = yield* resolveInvocationEffect(
-            codexSettings?.binaryPath || "codex",
-            args,
-            environment,
-            { cwd },
-          ).pipe(
+          const invocation = yield* resolveInvocationEffect(binary, args, environment, {
+            cwd,
+          }).pipe(
             Effect.mapError((cause) =>
               normalizeCodexError(operation, cause, "Failed to resolve Codex CLI process"),
             ),
@@ -338,13 +467,13 @@ export const makeCodexTextGeneration = (
             },
           });
 
-          const child = yield* commandSpawner
-            .spawn(command)
-            .pipe(
-              Effect.mapError((cause) =>
-                normalizeCodexError(operation, cause, "Failed to spawn Codex CLI process"),
-              ),
-            );
+          const child = yield* commandSpawner.spawn(command).pipe(
+            Effect.mapError((cause) =>
+              normalizeCodexError(operation, cause, "Failed to spawn Codex CLI process"),
+            ),
+            Effect.tap(terminateOnRelease),
+            Effect.uninterruptible,
+          );
 
           const [stdout, stderr, exitCode] = yield* Effect.all(
             [
@@ -370,6 +499,7 @@ export const makeCodexTextGeneration = (
                 detail.length > 0
                   ? `Codex CLI command failed: ${detail}`
                   : `Codex CLI command failed with code ${exitCode}.`,
+              kind: classifyCliFailureKind(detail),
             });
           }
         });
@@ -389,7 +519,11 @@ export const makeCodexTextGeneration = (
               Option.match({
                 onNone: () =>
                   Effect.fail(
-                    new TextGenerationError({ operation, detail: "Codex CLI request timed out." }),
+                    new TextGenerationError({
+                      operation,
+                      detail: "Codex CLI request timed out.",
+                      kind: "timeout",
+                    }),
                   ),
                 onSome: () => Effect.void,
               }),
@@ -411,6 +545,7 @@ export const makeCodexTextGeneration = (
                 new TextGenerationError({
                   operation,
                   detail: "Codex returned invalid structured output.",
+                  kind: "invalid-output",
                   cause,
                 }),
               ),
@@ -537,9 +672,11 @@ export const makeCodexTextGeneration = (
           "- No trailing punctuation.",
           "- Be specific, but do not copy the full prompt verbatim.",
           "- If images are attached, use them as primary context for visual or UI issues.",
+          ...threadTitleInstructionRules(input.instructions).map((rule) => `- ${rule}`),
           "",
           input.previousTitle !== undefined ? "Thread contents:" : "User message:",
           limitSection(input.message, 8_000),
+          ...threadTitleLinkedContextSections(input.linkedContext),
         ];
         if (attachmentLines.length > 0) {
           promptSections.push(
@@ -579,14 +716,23 @@ export const makeCodexTextGeneration = (
       });
 
     const generateStructuredJson: TextGenerationShape["generateStructuredJson"] = (input) =>
-      runCodexJson({
-        operation: input.operation,
-        cwd: input.cwd,
-        prompt: input.prompt,
-        outputSchemaJson: input.outputSchema,
-        ...(input.model ? { model: input.model } : {}),
-        ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
-      });
+      // `exec -s read-only` can still read the filesystem.
+      input.isolation === "no-workspace"
+        ? Effect.fail(
+            new TextGenerationError({
+              operation: input.operation,
+              detail: "Codex cannot run without workspace access.",
+              kind: "unsupported",
+            }),
+          )
+        : runCodexJson({
+            operation: input.operation,
+            cwd: input.cwd,
+            prompt: input.prompt,
+            outputSchemaJson: input.outputSchema,
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+          });
 
     return {
       generateCommitMessage,

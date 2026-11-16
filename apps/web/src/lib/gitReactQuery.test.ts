@@ -1,6 +1,13 @@
+import { ProjectId } from "@t3tools/contracts";
 import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const listBranches = vi.hoisted(() => vi.fn());
+const status = vi.hoisted(() => vi.fn());
+vi.mock("../nativeApi", () => ({ ensureNativeApi: () => ({ git: { listBranches, status } }) }));
+
 import {
+  worktreesListQueryOptions,
   gitBranchesQueryOptions,
   gitQueryKeys,
   gitMutationKeys,
@@ -9,9 +16,33 @@ import {
   gitRunStackedActionMutationOptions,
   gitStatusQueryOptions,
   invalidateGitQueries,
+  applyTurnGitStatus,
+  refreshCheckedOutGitBranch,
 } from "./gitReactQuery";
+import { rpcQueryContext } from "./rpcQueryContext";
 
 describe("gitMutationKeys", () => {
+  it("refreshes divergence in both caches without fetching or losing PR metadata", () => {
+    const client = new QueryClient();
+    const previous = { branch: "feature", aheadCount: 2, behindCount: 0, pr: { number: 1 } };
+    client.setQueryData(gitQueryKeys.status("/repo"), previous);
+    client.setQueryData([...gitQueryKeys.status("/repo"), "local"], previous);
+    applyTurnGitStatus(client, "/repo", {
+      ...previous,
+      aheadCount: 0,
+      behindCount: 3,
+      pr: null,
+    } as never);
+    expect(client.getQueryData(gitQueryKeys.status("/repo"))).toMatchObject({
+      aheadCount: 0,
+      behindCount: 3,
+      pr: { number: 1 },
+    });
+    expect(client.getQueryData([...gitQueryKeys.status("/repo"), "local"])).toMatchObject({
+      behindCount: 3,
+    });
+    expect(status).not.toHaveBeenCalled();
+  });
   it("scopes stacked action keys by cwd", () => {
     expect(gitMutationKeys.runStackedAction("/repo/a")).not.toEqual(
       gitMutationKeys.runStackedAction("/repo/b"),
@@ -99,6 +130,50 @@ describe("invalidateGitQueries", () => {
 });
 
 describe("gitStatusQueryOptions", () => {
+  it("publishes local status while remote status is pending", async () => {
+    const local = { branch: "feature", pr: null };
+    let resolveRemote!: (value: unknown) => void;
+    status.mockResolvedValueOnce(local).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRemote = resolve;
+        }),
+    );
+    const client = new QueryClient();
+    const options = gitStatusQueryOptions({ cwd: "/local-first" });
+    const pending = client.fetchQuery(options);
+    await vi.waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+    expect(status.mock.calls[0]?.[0]).toEqual({
+      cwd: "/local-first",
+      includeRemote: false,
+      includePullRequest: false,
+    });
+    expect(client.getQueryData(options.queryKey)).toEqual(local);
+    resolveRemote({ ...local, pr: { number: 7 } });
+    await pending;
+    expect(client.getQueryData(options.queryKey)).toMatchObject({ pr: { number: 7 } });
+  });
+  it("keeps local-only status under its own key that cwd invalidation still covers", async () => {
+    const local = gitStatusQueryOptions({ cwd: "/repo/a", includeRemote: false });
+    const full = gitStatusQueryOptions({ cwd: "/repo/a" });
+    expect(local.queryKey).not.toEqual(full.queryKey);
+    expect(local.queryKey.slice(0, full.queryKey.length)).toEqual(full.queryKey);
+
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(local.queryKey, {
+      branch: "main",
+      pr: null,
+      hasWorkingTreeChanges: false,
+      workingTree: { files: [], insertions: 0, deletions: 0 },
+      hasUpstream: false,
+      aheadCount: 0,
+      behindCount: 0,
+      changeRequest: null,
+    });
+    await invalidateGitQueries(queryClient, { cwd: "/repo/a" });
+    expect(queryClient.getQueryState(local.queryKey)?.isInvalidated).toBe(true);
+  });
+
   it("keeps background refresh behavior enabled by default", () => {
     const options = gitStatusQueryOptions({ cwd: "/repo/a", autoRefresh: true });
 
@@ -129,15 +204,60 @@ describe("gitStatusQueryOptions", () => {
     expect(options.refetchOnWindowFocus).toBe("always");
     expect(options.refetchOnReconnect).toBe("always");
   });
+
+  it("lets sidebar rows respect staleTime on focus and reconnect as background reads", () => {
+    const options = gitStatusQueryOptions({
+      cwd: "/repo/a",
+      autoRefresh: true,
+      staleTimeMs: 30_000,
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      priority: "background",
+    });
+
+    expect(options.refetchOnWindowFocus).toBe(true);
+    expect(options.refetchOnReconnect).toBe(true);
+    expect(options.meta).toEqual({ priority: "background" });
+  });
+
+  it("refreshes a loaded status in the background and loads the first one interactively", async () => {
+    const queryClient = new QueryClient();
+    const options = gitStatusQueryOptions({ cwd: "/repo/a", autoRefresh: true });
+    expect(options.meta).toEqual({ priority: "refresh-background" });
+    expect(
+      rpcQueryContext(
+        {
+          client: queryClient,
+          queryKey: options.queryKey,
+          signal: new AbortController().signal,
+          meta: options.meta,
+        },
+        { forwardSignal: false },
+      ),
+    ).toEqual({ priority: "interactive" });
+    queryClient.setQueryData(options.queryKey, {} as never);
+    expect(
+      rpcQueryContext(
+        {
+          client: queryClient,
+          queryKey: options.queryKey,
+          signal: new AbortController().signal,
+          meta: options.meta,
+        },
+        { forwardSignal: false },
+      ),
+    ).toEqual({ priority: "background" });
+  });
 });
 
 describe("gitBranchesQueryOptions", () => {
-  it("keeps branch refresh behavior enabled by default", () => {
+  it("refreshes branches on reconnect without polling and collects idle queries", () => {
     const options = gitBranchesQueryOptions({ cwd: "/repo/a", autoRefresh: true });
 
-    expect(options.refetchInterval).toBe(60_000);
-    expect(options.refetchOnWindowFocus).toBe(true);
-    expect(options.refetchOnReconnect).toBe(true);
+    expect(options.refetchInterval).toBe(false);
+    expect(options.refetchOnWindowFocus).toBe(false);
+    expect(options.refetchOnReconnect).toBe("always");
+    expect(options.gcTime).toBe(30_000);
   });
 
   it("disables branch interval, focus, and reconnect refreshes when auto-refresh is off", () => {
@@ -147,5 +267,139 @@ describe("gitBranchesQueryOptions", () => {
     expect(options.refetchInterval).toBe(false);
     expect(options.refetchOnWindowFocus).toBe(false);
     expect(options.refetchOnReconnect).toBe(false);
+  });
+});
+
+describe("worktreesListQueryOptions", () => {
+  it("scopes inventories by project, only refreshes stale results on focus, and never polls", () => {
+    const a = worktreesListQueryOptions(ProjectId.makeUnsafe("a"));
+    const b = worktreesListQueryOptions(ProjectId.makeUnsafe("b"));
+    expect(a.queryKey).not.toEqual(b.queryKey);
+    expect(a.queryKey).not.toEqual(worktreesListQueryOptions().queryKey);
+    expect(a.staleTime).toBe(30_000);
+    expect(a.refetchOnWindowFocus).toBe(true);
+    expect(a.refetchInterval).toBe(false);
+  });
+});
+
+describe("refreshCheckedOutGitBranch", () => {
+  const status = {
+    branch: "main",
+    hasWorkingTreeChanges: true,
+    workingTree: { files: [], insertions: 2, deletions: 1 },
+    hasUpstream: true,
+    aheadCount: 1,
+    behindCount: 3,
+    pr: {
+      number: 7,
+      title: "Main PR",
+      url: "https://example.test/pr/7",
+      baseBranch: "main",
+      headBranch: "main",
+      state: "open" as const,
+    },
+    changeRequest: null,
+  };
+  const refs = (current: string | null) => ({
+    isRepo: true,
+    hasOriginRemote: true,
+    branches: [
+      {
+        name: "origin/feature",
+        isRemote: true,
+        current: false,
+        isDefault: false,
+        worktreePath: null,
+      },
+      { name: "main", current: current === "main", isDefault: true, worktreePath: null },
+      { name: "feature", current: current === "feature", isDefault: false, worktreePath: null },
+    ],
+  });
+  const moved = (branch: string | null) => ({
+    ...status,
+    branch,
+    hasUpstream: false,
+    aheadCount: 0,
+    behindCount: 0,
+    pr: null,
+    changeRequest: null,
+  });
+  const statusKey = gitQueryKeys.status("/repo/a");
+  const localStatusKey = [...statusKey, "local"];
+
+  it("moves cached statuses to the checked-out branch and clears its remote state", async () => {
+    listBranches.mockResolvedValueOnce(refs("feature"));
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(statusKey, status);
+    queryClient.setQueryData(localStatusKey, status);
+
+    await refreshCheckedOutGitBranch(queryClient, "/repo/a");
+
+    expect(listBranches).toHaveBeenLastCalledWith({ cwd: "/repo/a", refresh: true });
+    expect(queryClient.getQueryData(statusKey)).toEqual(moved("feature"));
+    expect(queryClient.getQueryData(localStatusKey)).toEqual(moved("feature"));
+  });
+
+  it("keeps the cached status when the branch did not change", async () => {
+    listBranches.mockResolvedValueOnce(refs("main"));
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(statusKey, status);
+
+    await refreshCheckedOutGitBranch(queryClient, "/repo/a");
+
+    expect(queryClient.getQueryData(statusKey)).toBe(status);
+  });
+
+  it("changes nothing when the refs read fails, even with older cached refs", async () => {
+    listBranches.mockRejectedValueOnce(new Error("index.lock exists"));
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(gitQueryKeys.branches("/repo/a"), refs("feature"));
+    queryClient.setQueryData(statusKey, status);
+
+    await refreshCheckedOutGitBranch(queryClient, "/repo/a");
+
+    expect(queryClient.getQueryData(statusKey)).toBe(status);
+  });
+
+  it("clears the previous branch when HEAD is detached", async () => {
+    listBranches.mockResolvedValueOnce(refs(null));
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(statusKey, status);
+
+    await refreshCheckedOutGitBranch(queryClient, "/repo/a");
+
+    expect(queryClient.getQueryData(statusKey)).toEqual(moved(null));
+  });
+
+  it("does not let a status read from before the refresh restore the previous branch", async () => {
+    listBranches.mockResolvedValueOnce(refs("feature"));
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(statusKey, status);
+    let resolveStale!: (value: typeof status) => void;
+    const staleRead = queryClient
+      .fetchQuery({
+        queryKey: statusKey,
+        queryFn: () => new Promise<typeof status>((resolve) => (resolveStale = resolve)),
+        staleTime: 0,
+      })
+      .catch(() => null);
+
+    await refreshCheckedOutGitBranch(queryClient, "/repo/a");
+    resolveStale(status);
+    await staleRead;
+
+    expect(queryClient.getQueryData(statusKey)).toEqual(moved("feature"));
+  });
+});
+
+describe("gitStatusQueryOptions without auto-refresh", () => {
+  it("reads local status only, so opening a checkout never fetches the upstream", () => {
+    expect(gitStatusQueryOptions({ cwd: "/repo/a", autoRefresh: false }).queryKey).toEqual([
+      ...gitQueryKeys.status("/repo/a"),
+      "local",
+    ]);
+    expect(gitStatusQueryOptions({ cwd: "/repo/a", autoRefresh: true }).queryKey).toEqual(
+      gitQueryKeys.status("/repo/a"),
+    );
   });
 });

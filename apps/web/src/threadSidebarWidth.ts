@@ -4,6 +4,11 @@ export const THREAD_SIDEBAR_MAX_WIDTH_PX = 32 * 16;
 export const THREAD_MAIN_PANEL_MIN_WIDTH_PX = 32 * 16;
 export const THREAD_SIDEBAR_DEFAULT_WIDTH_PX = 16 * 16;
 
+export function threadSidebarMobileBreakpoint(sidebarWidth: number): number {
+  // Preserve md-based chrome and reserve the inset's horizontal spacing.
+  return Math.max(768, sidebarWidth + THREAD_MAIN_PANEL_MIN_WIDTH_PX + 16);
+}
+
 export function clampThreadSidebarWidth(width: number): number {
   return Math.max(THREAD_SIDEBAR_MIN_WIDTH_PX, Math.min(width, THREAD_SIDEBAR_MAX_WIDTH_PX));
 }

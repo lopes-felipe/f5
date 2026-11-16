@@ -1,16 +1,28 @@
+import { createReportedCodexModelCapabilities } from "@t3tools/shared/model";
 import { delimiter } from "node:path";
 import { writeCliCommand } from "../../testUtils/cli.ts";
+import { awaitProcessExit, awaitStalledCli, stalledCliSource } from "../../testUtils/stalledCli.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Path } from "effect";
-import { expect } from "vitest";
+import { Cause, Effect, Exit, Fiber, FileSystem, Layer, Path, Schema } from "effect";
+import { TestClock } from "effect/testing";
+import { expect, vi } from "vitest";
+// These process fixtures supply a fake CLI on PATH. Resolver behavior is covered
+// separately; keep their structured-output and cancellation tests offline.
+vi.mock("../../provider/codexExecutable.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../provider/codexExecutable.ts")>()),
+  resolveCodexCommand: (binary?: string) => binary?.trim() || "codex",
+}));
 
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { PositiveInt, ProviderInstanceId } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { ReviewGuideModelOutput } from "../../prHub/pullRequestReviewGuideNormalize.ts";
 import {
   CodexTextGenerationLive,
+  makeCodexTextGeneration,
   resolveCodexTextGenerationReasoningEffort,
+  toCodexOutputJsonSchema,
 } from "./CodexTextGeneration.ts";
 import { TextGenerationError } from "../Errors.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
@@ -21,7 +33,7 @@ const makeCodexTextGenerationTestLayer = (stateDir: string) =>
     Layer.provideMerge(NodeServices.layer),
   );
 
-function makeFakeCodexBinary(dir: string) {
+function makeFakeCodexBinary(dir: string, stall?: FakeCodexStall) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const binDir = path.join(dir, "bin");
@@ -31,15 +43,36 @@ function makeFakeCodexBinary(dir: string) {
 const fs = require("node:fs");
 const env = process.env;
 const args = process.argv.slice(2);
+const isMcpList = args.includes("mcp") && args.includes("list");
+${
+  stall === undefined
+    ? ""
+    : `if (isMcpList === ${stall.command === "mcp list"}) {${stalledCliSource(stall.pidPath)}return;}`
+}
+if (isMcpList) {
+  if (env.T3_FAKE_CODEX_MCP_LOG) fs.appendFileSync(env.T3_FAKE_CODEX_MCP_LOG, args.join(" ") + "\\n");
+  process.stdout.write(env.T3_FAKE_CODEX_MCP_LIST ?? "[]");
+  process.exit(0);
+}
 const input = fs.readFileSync(0, "utf8");
 function fail(message, code) { console.error(message); process.exit(code); }
 const schemaIndex = args.indexOf("--output-schema");
 if (schemaIndex < 0 || !args[schemaIndex + 1]) fail("missing --output-schema input", 7);
 const schema = JSON.parse(fs.readFileSync(args[schemaIndex + 1], "utf8"));
-if (schema.additionalProperties !== false) fail("output schema must disallow additional properties", 7);
-for (const key of Object.keys(schema.properties ?? {})) {
-  if (!schema.required?.includes(key)) fail("output schema must require every property: " + key, 7);
-}
+// Mirrors the OpenAI strict structured-output rules Codex enforces.
+(function checkStrict(node) {
+  if (Array.isArray(node)) return node.forEach(checkStrict);
+  if (typeof node !== "object" || node === null) return;
+  if ("allOf" in node) fail("output schema must not use allOf in strict mode", 7);
+  if (node.properties) {
+    if (node.additionalProperties !== false) fail("output schema must disallow additional properties", 7);
+    for (const key of Object.keys(node.properties)) {
+      if (!node.required?.includes(key)) fail("output schema must require every property: " + key, 7);
+    }
+    Object.values(node.properties).forEach(checkStrict);
+  }
+  for (const [key, value] of Object.entries(node)) if (key !== "properties") checkStrict(value);
+})(schema);
 if (env.T3_FAKE_CODEX_REQUIRE_IMAGE === "1" && (!args.includes("--image") || !args[args.indexOf("--image") + 1])) fail("missing --image input", 2);
 if (env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK === "1" && !args.includes("--skip-git-repo-check")) fail("missing --skip-git-repo-check", 5);
 if (env.T3_FAKE_CODEX_STDIN_MUST_CONTAIN && !input.includes(env.T3_FAKE_CODEX_STDIN_MUST_CONTAIN)) fail("stdin missing expected content", 3);
@@ -55,9 +88,15 @@ process.exitCode = Number(env.T3_FAKE_CODEX_EXIT_CODE ?? 0);
   });
 }
 
+interface FakeCodexStall {
+  readonly command: "exec" | "mcp list";
+  readonly pidPath: string;
+}
+
 function withFakeCodexEnv<A, E, R>(
   input: {
     output: string;
+    stall?: FakeCodexStall;
     exitCode?: number;
     stderr?: string;
     requireImage?: boolean;
@@ -72,7 +111,7 @@ function withFakeCodexEnv<A, E, R>(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-codex-text-" });
-      const binDir = yield* makeFakeCodexBinary(tempDir);
+      const binDir = yield* makeFakeCodexBinary(tempDir, input.stall);
       const previousPath = process.env.PATH;
       const previousOutput = process.env.T3_FAKE_CODEX_OUTPUT_B64;
       const previousExitCode = process.env.T3_FAKE_CODEX_EXIT_CODE;
@@ -212,6 +251,68 @@ it("clamps unsupported Astra reasoning efforts before invoking the CLI", () => {
 });
 
 it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
+  for (const command of ["exec", "mcp list"] as const) {
+    it.effect(`kills a stalled ${command} CLI that ignores SIGTERM on interruption`, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-codex-stall-" });
+        const pidPath = path.join(dir, "codex.pid");
+        yield* withFakeCodexEnv(
+          { output: "", stall: { command, pidPath } },
+          Effect.gen(function* () {
+            const textGeneration = yield* TextGeneration;
+            const fiber = yield* textGeneration
+              .generateThreadTitle({
+                cwd: process.cwd(),
+                message: "Name this thread",
+                modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+              })
+              .pipe(Effect.forkScoped);
+            const pid = yield* awaitStalledCli(pidPath);
+
+            const interrupted = yield* Fiber.interrupt(fiber).pipe(Effect.forkScoped);
+            yield* awaitProcessExit(pid, TestClock.adjust("100 millis"));
+            yield* Fiber.join(interrupted);
+            const exit = yield* Fiber.await(fiber);
+            expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+          }),
+        );
+      }),
+    );
+  }
+
+  for (const effort of ["high", undefined] as const) {
+    it.effect(`uses reported auxiliary effort controls: ${effort ?? "none"}`, () =>
+      withFakeCodexEnv(
+        {
+          output: JSON.stringify({ subject: "Use reported model", body: "" }),
+          argsMustContain: effort
+            ? 'model_reasoning_effort="high"'
+            : "--model gpt-reported --output-schema",
+        },
+        Effect.gen(function* () {
+          const textGeneration = yield* makeCodexTextGeneration(undefined, process.env, () =>
+            Effect.succeed(
+              createReportedCodexModelCapabilities({
+                model: "gpt-reported",
+                supportedReasoningEfforts: effort ? [{ reasoningEffort: effort }] : [],
+              }),
+            ),
+          );
+          const result = yield* textGeneration.generateCommitMessage({
+            cwd: process.cwd(),
+            branch: null,
+            stagedSummary: "M file",
+            stagedPatch: "diff",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-reported" },
+          });
+          expect(result.subject).toBe("Use reported model");
+        }),
+      ),
+    );
+  }
+
   it.effect("generates and sanitizes commit messages without branch by default", () =>
     withFakeCodexEnv(
       {
@@ -262,7 +363,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
         });
 
         expect(generated.subject).toBe("Add important change");
-        expect(generated.branch).toBe("feature/fix/important-system-change");
+        expect(generated.branch).toBe("fix/important-system-change");
       }),
     ),
   );
@@ -283,6 +384,31 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
         });
         expect(generated.subject).toBe("Add important change");
       }),
+    ),
+  );
+
+  it.effect("turns off each MCP server the user's Codex config would start", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ subject: "Add important change", body: "" }),
+        argsMustContain:
+          '--config mcp_servers={"github"={enabled=false},"my.server"={enabled=false}} exec',
+      },
+      Effect.gen(function* () {
+        process.env.T3_FAKE_CODEX_MCP_LIST = JSON.stringify([
+          { name: "github", enabled: true },
+          { name: "off", enabled: false },
+          { name: "my.server", enabled: true },
+        ]);
+        const textGeneration = yield* TextGeneration;
+        const generated = yield* textGeneration.generateCommitMessage({
+          cwd: process.cwd(),
+          branch: "feature/codex-effect",
+          stagedSummary: "M README.md",
+          stagedPatch: "diff --git a/README.md b/README.md",
+        });
+        expect(generated.subject).toBe("Add important change");
+      }).pipe(Effect.ensuring(Effect.sync(() => delete process.env.T3_FAKE_CODEX_MCP_LIST))),
     ),
   );
 
@@ -524,6 +650,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
           needsRefinement: false,
         }),
         requireSkipGitRepoCheck: true,
+        stdinMustContain: "team/repo#42: Fix native transport",
       },
       Effect.gen(function* () {
         const textGeneration = yield* TextGeneration;
@@ -531,10 +658,30 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
         const generated = yield* textGeneration.generateThreadTitle({
           cwd: process.cwd(),
           message: "Fix the sidebar sizing regression in the desktop layout.",
+          linkedContext: "team/repo#42: Fix native transport",
           model: "gpt-5.3-codex",
         });
 
         expect(generated.title).toBe("Fix sidebar sizing");
+      }),
+    ),
+  );
+
+  it.effect("sends thread title instructions to the Codex prompt", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ title: "Reconnect failures", needsRefinement: false }),
+        stdinMustContain: "- Additional instructions:\nUse two to four words.",
+      },
+      Effect.gen(function* () {
+        const textGeneration = yield* TextGeneration;
+        const generated = yield* textGeneration.generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Investigate reconnect failures",
+          instructions: "Use two to four words.",
+        });
+
+        expect(generated.title).toBe("Reconnect failures");
       }),
     ),
   );
@@ -751,4 +898,47 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       }),
     ),
   );
+
+  it.effect("sends the review guide schema in strict form and decodes a nullable file note", () => {
+    const output = {
+      stops: [
+        {
+          title: "Settings layout",
+          summary: "Widens the editor.",
+          attention: null,
+          excerpts: [{ path: "a.ts", side: "new", start: 1, end: 5, caption: "" }],
+          files: [{ path: "a.ts", note: null }],
+          notes: [],
+          questions: ["Does it wrap?"],
+        },
+      ],
+    };
+    return withFakeCodexEnv(
+      { output: JSON.stringify(output) },
+      Effect.gen(function* () {
+        const textGeneration = yield* TextGeneration;
+
+        const generated = yield* textGeneration.generateStructuredJson({
+          operation: "prHub.reviewGuide",
+          cwd: process.cwd(),
+          prompt: "Write a review guide.",
+          outputSchema: ReviewGuideModelOutput,
+        });
+
+        expect(generated).toEqual(output);
+      }),
+    );
+  });
+});
+
+it("folds checked constraints into their schema instead of emitting allOf", () => {
+  expect(toCodexOutputJsonSchema(Schema.Struct({ line: PositiveInt }))).toEqual({
+    type: "object",
+    properties: { line: { type: "integer", minimum: 1 } },
+    required: ["line"],
+    additionalProperties: false,
+  });
+  expect(
+    toCodexOutputJsonSchema(Schema.Array(Schema.String).check(Schema.isMaxLength(32))),
+  ).toEqual({ type: "array", items: { type: "string" }, maxItems: 32 });
 });

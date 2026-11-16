@@ -2,47 +2,51 @@ import { writeCliCommand } from "./testUtils/cli.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { assertSuccess } from "@effect/vitest/utils";
 import { Effect, FileSystem, Metric, Path } from "effect";
-import { expect, it as vitestIt } from "vitest";
+import { afterEach, beforeEach, describe, expect, it as vitestIt, vi } from "vitest";
+import * as commandResolution from "./spawn/resolveCommand.ts";
 
 import {
   Open,
   OpenLive,
   isCommandAvailable,
+  isEditorShim,
   launchDetached,
+  launchedAppEnvironment,
   resolveAvailableEditors,
+  resolveBrowserLaunch,
   resolveEditorLaunch,
   resolveFileManagerRevealLaunch,
 } from "./open";
+
+// An empty PATH on linux, which has no app-bundle lookup, so launches fall back
+// to bare commands regardless of what this host has installed.
+const NO_EDITOR_ENV: NodeJS.ProcessEnv = { PATH: "" };
 
 it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
   it.effect("returns commands for command-based editors", () =>
     Effect.gen(function* () {
       const antigravityLaunch = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "antigravity" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
+      // `agy` is the standalone Antigravity CLI; the IDE launches as `antigravity-ide`.
       assert.deepEqual(antigravityLaunch, {
-        command: "agy",
+        command: "antigravity-ide",
         args: ["/tmp/workspace"],
-      });
-
-      const cursorLaunch = yield* resolveEditorLaunch(
-        { cwd: "/tmp/workspace", editor: "cursor" },
-        "darwin",
-      );
-      assert.deepEqual(cursorLaunch, {
-        command: "cursor",
-        args: ["--classic", "/tmp/workspace"],
       });
 
       const traeLaunch = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "trae" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(traeLaunch, {
         command: "trae",
@@ -51,7 +55,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const vscodeLaunch = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "vscode" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(vscodeLaunch, {
         command: "code",
@@ -60,7 +65,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const vscodeInsidersLaunch = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "vscode-insiders" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(vscodeInsidersLaunch, {
         command: "code-insiders",
@@ -69,7 +75,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const vscodiumLaunch = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "vscodium" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(vscodiumLaunch, {
         command: "codium",
@@ -78,7 +85,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const zedLaunch = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "zed" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(zedLaunch, {
         command: "zed",
@@ -87,7 +95,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const ideaLaunch = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "idea" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(ideaLaunch, {
         command: "idea",
@@ -96,7 +105,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const kiroLaunch = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "kiro" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(kiroLaunch, {
         command: "kiro",
@@ -105,29 +115,51 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
     }),
   );
 
+  // Cursor never falls back to a bare `cursor`, which could be the Agent shim, so
+  // these cases need a resolvable CLI. Simulated win32 PATH lookup works on any host.
+  it.effect("launches a resolved Cursor CLI with Cursor's arguments", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-open-test-" });
+      yield* fs.writeFileString(path.join(dir, "cursor.CMD"), "@echo off\r\n");
+      const env = { PATH: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+      const command = path.join(dir, "cursor.CMD");
+
+      for (const [cwd, args] of [
+        ["/tmp/workspace", ["--classic", "/tmp/workspace"]],
+        ["/tmp/workspace/AGENTS.md:48", ["--classic", "--goto", "/tmp/workspace/AGENTS.md:48"]],
+        [
+          "/tmp/workspace/src/open.ts:71:5",
+          ["--classic", "--goto", "/tmp/workspace/src/open.ts:71:5"],
+        ],
+      ] as const) {
+        const launch = yield* resolveEditorLaunch({ cwd, editor: "cursor" }, "win32", env);
+        assert.deepEqual(launch, { command, args: [...args] });
+      }
+    }),
+  );
+
+  it.effect("reports Cursor as not found instead of launching a bare command", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveEditorLaunch(
+        { cwd: "/tmp/workspace", editor: "cursor" },
+        "linux",
+        NO_EDITOR_ENV,
+      ).pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure.message, "Editor command not found: cursor");
+      }
+    }),
+  );
+
   it.effect("applies editor-specific navigation arguments", () =>
     Effect.gen(function* () {
-      const lineOnly = yield* resolveEditorLaunch(
-        { cwd: "/tmp/workspace/AGENTS.md:48", editor: "cursor" },
-        "darwin",
-      );
-      assert.deepEqual(lineOnly, {
-        command: "cursor",
-        args: ["--classic", "--goto", "/tmp/workspace/AGENTS.md:48"],
-      });
-
-      const lineAndColumn = yield* resolveEditorLaunch(
-        { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "cursor" },
-        "darwin",
-      );
-      assert.deepEqual(lineAndColumn, {
-        command: "cursor",
-        args: ["--classic", "--goto", "/tmp/workspace/src/open.ts:71:5"],
-      });
-
       const traeLineAndColumn = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "trae" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(traeLineAndColumn, {
         command: "trae",
@@ -136,7 +168,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const vscodeLineAndColumn = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "vscode" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(vscodeLineAndColumn, {
         command: "code",
@@ -145,7 +178,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const vscodeInsidersLineAndColumn = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "vscode-insiders" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(vscodeInsidersLineAndColumn, {
         command: "code-insiders",
@@ -154,7 +188,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const vscodiumLineAndColumn = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "vscodium" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(vscodiumLineAndColumn, {
         command: "codium",
@@ -163,7 +198,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const zedLineAndColumn = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "zed" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(zedLineAndColumn, {
         command: "zed",
@@ -172,7 +208,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const kiroLineAndColumn = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "kiro" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(kiroLineAndColumn, {
         command: "kiro",
@@ -181,7 +218,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const ideaLineOnly = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace/AGENTS.md:48", editor: "idea" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(ideaLineOnly, {
         command: "idea",
@@ -190,7 +228,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       const ideaLineAndColumn = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "idea" },
-        "darwin",
+        "linux",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(ideaLineAndColumn, {
         command: "idea",
@@ -200,6 +239,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       const windowsIdeaLineAndColumn = yield* resolveEditorLaunch(
         { cwd: "C:\\workspace\\src\\open.ts:71:5", editor: "idea" },
         "win32",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(windowsIdeaLineAndColumn, {
         command: "idea",
@@ -226,7 +266,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
           },
         );
         assert.deepEqual(launch, {
-          command: "idea64.exe",
+          command: path.join(dir, "idea64.exe"),
           args: ["--line", "71", "--column", "5", "C:\\workspace\\src\\open.ts"],
         });
       }),
@@ -237,6 +277,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       const launch1 = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "file-manager" },
         "darwin",
+        NO_EDITOR_ENV,
       );
       assert.deepEqual(launch1, {
         command: "open",
@@ -280,6 +321,91 @@ it("builds platform-specific file reveal commands", () => {
 });
 
 it.layer(NodeServices.layer)("launchDetached", (it) => {
+  it.effect("accepts Explorer-style exit 1 for reveals and file-manager opens", () =>
+    Effect.gen(function* () {
+      for (const target of ["/select,C:\\repo\\report.json", "C:\\repo"]) {
+        const result = yield* launchDetached(
+          { command: process.execPath, args: ["-e", "process.exit(1)", target] },
+          false,
+        ).pipe(Effect.result);
+        assertSuccess(result, undefined);
+      }
+    }),
+  );
+  it.effect("reports an early editor CLI failure without retaining a stderr pipe", () =>
+    Effect.gen(function* () {
+      const result = yield* launchDetached({
+        command: process.execPath,
+        args: ["-e", "console.error('Cannot connect to editor'); process.exit(7)"],
+      }).pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(result.failure.message, /Editor launcher exited with code 7: /);
+      }
+    }),
+  );
+  // Mutates the worker's process.env; relies on this file's tests running sequentially.
+  it.effect("launched apps do not inherit ELECTRON_RUN_AS_NODE", () =>
+    Effect.gen(function* () {
+      const previous = {
+        runAsNode: process.env.ELECTRON_RUN_AS_NODE,
+        sentinel: process.env.F5_OPEN_TEST_SENTINEL,
+      };
+      process.env.ELECTRON_RUN_AS_NODE = "1";
+      process.env.F5_OPEN_TEST_SENTINEL = "kept";
+      const result = yield* launchDetached({
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.exit(process.env.ELECTRON_RUN_AS_NODE === undefined && process.env.F5_OPEN_TEST_SENTINEL === 'kept' ? 0 : 7)",
+        ],
+      }).pipe(
+        Effect.result,
+        Effect.ensuring(
+          Effect.sync(() => {
+            for (const [key, value] of [
+              ["ELECTRON_RUN_AS_NODE", previous.runAsNode],
+              ["F5_OPEN_TEST_SENTINEL", previous.sentinel],
+            ] as const) {
+              if (value === undefined) delete process.env[key];
+              else process.env[key] = value;
+            }
+          }),
+        ),
+      );
+      assertSuccess(result, undefined);
+    }),
+  );
+
+  vitestIt("strips ELECTRON_RUN_AS_NODE in any case and keeps other variables", () => {
+    expect(
+      launchedAppEnvironment({
+        PATH: "/bin",
+        ELECTRON_RUN_AS_NODE: "1",
+        electron_run_as_node: "1",
+      }),
+    ).toEqual({ PATH: "/bin" });
+  });
+
+  vitestIt("opens the browser without the variable when F5 runs as Node", () => {
+    const runAsNode = { ELECTRON_RUN_AS_NODE: "1" };
+    const url = "http://127.0.0.1:3773/#token=a%26b";
+    expect(resolveBrowserLaunch(url, "darwin", runAsNode, "25.0.0")).toEqual({
+      command: "open",
+      args: [url],
+    });
+    expect(resolveBrowserLaunch(url, "linux", runAsNode, "6.8.0-generic")).toEqual({
+      command: "xdg-open",
+      args: [url],
+    });
+    // `open` keeps the platforms whose launchers do not pass this environment on.
+    expect(resolveBrowserLaunch(url, "win32", runAsNode, "10.0.26100")).toBeNull();
+    expect(
+      resolveBrowserLaunch(url, "linux", runAsNode, "5.15.167.4-microsoft-standard-WSL2"),
+    ).toBeNull();
+    expect(resolveBrowserLaunch(url, "linux", { PATH: "/bin" }, "6.8.0-generic")).toBeNull();
+  });
+
   it.effect("resolves when command can be spawned", () =>
     Effect.gen(function* () {
       const result = yield* launchDetached({
@@ -300,6 +426,25 @@ it.layer(NodeServices.layer)("launchDetached", (it) => {
     }),
   );
 });
+
+vitestIt(
+  "a detached child can keep writing stderr after its launcher process exits",
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "f5-detached-stderr-"));
+    const marker = path.join(root, "survived.txt");
+    const child = `setTimeout(() => process.stderr.write('still running\\n', (error) => { if (!error) require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ok'); }), 1600)`;
+    const modulePath = path.resolve("src/open.ts");
+    const parent = `import { Effect } from 'effect'; import { launchDetached } from ${JSON.stringify(modulePath)}; await Effect.runPromise(launchDetached({command:${JSON.stringify(process.execPath)},args:['-e',${JSON.stringify(child)}]})); process.exit(0);`;
+    try {
+      await promisify(execFile)("bun", ["-e", parent], { timeout: 10_000 });
+      await expect.poll(() => fs.existsSync(marker), { timeout: 5000 }).toBe(true);
+      expect(fs.readFileSync(marker, "utf8")).toBe("ok");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+  15_000,
+);
 
 vitestIt.skipIf(process.platform !== "win32")(
   "launchDetached preserves metacharacters when launching a Windows cmd shim",
@@ -335,8 +480,25 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-open-observability-"));
       const cursorCommand = path.join(tempDir, "cursor");
       writeCliCommand(cursorCommand, "process.exit(0)");
+      const fileManagerCommand = path.join(
+        tempDir,
+        process.platform === "win32"
+          ? "explorer"
+          : process.platform === "darwin"
+            ? "open"
+            : "xdg-open",
+      );
+      writeCliCommand(fileManagerCommand, "process.exit(1)");
 
       const originalPath = process.env.PATH ?? "";
+      const isAvailable = commandResolution.isCommandAvailable;
+      // An installed /Applications/Cursor.app is a valid fallback even with PATH empty.
+      // Model an unavailable editor without launching an application on the test host.
+      const availability = vi
+        .spyOn(commandResolution, "isCommandAvailable")
+        .mockImplementation((command, options) =>
+          process.env.PATH === "" ? false : isAvailable(command, options),
+        );
       try {
         process.env.PATH = `${tempDir}${path.delimiter}${originalPath}`;
         const open = yield* Open;
@@ -345,16 +507,22 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
           cwd: "/tmp/workspace",
           editor: "cursor",
         });
+        yield* open.openInEditor({ cwd: "/tmp/workspace", editor: "file-manager" });
+        yield* open.revealInFileManager("/tmp/workspace/report.json");
 
         process.env.PATH = "";
-        yield* Effect.exit(
-          open.openInEditor({
-            cwd: "/tmp/workspace",
-            editor: "cursor",
-          }),
-        );
+        yield* Effect.exit(open.openInEditor({ cwd: "/tmp/workspace", editor: "cursor" }));
 
         const snapshots = yield* Metric.snapshot;
+        assert.equal(
+          snapshots.some(
+            (snapshot) =>
+              snapshot.id === "t3_editor_launch_total" &&
+              snapshot.attributes?.editorId === "file-manager" &&
+              snapshot.attributes?.outcome === "success",
+          ),
+          true,
+        );
         assert.equal(
           snapshots.some(
             (snapshot) =>
@@ -374,7 +542,47 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
           true,
         );
       } finally {
+        availability.mockRestore();
         process.env.PATH = originalPath;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(OpenLive)),
+  );
+
+  // Mutates the worker's process.env; relies on this file's tests running sequentially.
+  it.effect.skipIf(
+    process.platform === "win32" || os.release().toLowerCase().includes("microsoft"),
+  )("opens the browser without ELECTRON_RUN_AS_NODE", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-open-browser-"));
+      const output = path.join(tempDir, "launch.json");
+      writeCliCommand(
+        path.join(tempDir, process.platform === "darwin" ? "open" : "xdg-open"),
+        `require("node:fs").writeFileSync(process.env.F5_OPEN_TEST_OUTPUT, JSON.stringify({ runAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null, target: process.argv[2] }))`,
+      );
+      const previous = {
+        PATH: process.env.PATH,
+        ELECTRON_RUN_AS_NODE: process.env.ELECTRON_RUN_AS_NODE,
+        F5_OPEN_TEST_OUTPUT: process.env.F5_OPEN_TEST_OUTPUT,
+      };
+      try {
+        process.env.PATH = `${tempDir}${path.delimiter}${previous.PATH ?? ""}`;
+        process.env.ELECTRON_RUN_AS_NODE = "1";
+        process.env.F5_OPEN_TEST_OUTPUT = output;
+        const open = yield* Open;
+        yield* open.openBrowser("http://127.0.0.1:3773/");
+        for (let attempt = 0; attempt < 100 && !fs.existsSync(output); attempt += 1) {
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+        }
+        assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")), {
+          runAsNode: null,
+          target: "http://127.0.0.1:3773/",
+        });
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     }).pipe(Effect.provide(OpenLive)),
@@ -489,4 +697,99 @@ vitestIt("detects and launches a macOS app-bundled editor without PATH installat
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
+});
+
+describe("editor launcher shims", () => {
+  // Abridged copy of the `~/.local/bin/cursor` script Cursor Agent installs.
+  const CURSOR_AGENT_SHIM = `#!/bin/sh
+set -eu
+OTHER_CURSOR=$(find_cursor || true)
+if [ -n "\${OTHER_CURSOR:-}" ]; then
+  exec "$OTHER_CURSOR" "$@"
+else
+  echo "Error: No Cursor IDE installation found. Use 'cursor agent' or 'agent' to run the agent." 1>&2
+  exit 1
+fi
+`;
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "f5-editor-shim-"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const writeExecutable = (filePath: string, contents: string, mode = 0o755) => {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, contents, { mode });
+    fs.chmodSync(filePath, mode);
+    return filePath;
+  };
+  const launch = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) =>
+    Effect.runPromise(
+      resolveEditorLaunch({ editor: "cursor", cwd: "/repo/file.ts:4" }, platform, env),
+    );
+
+  // These fixtures use POSIX PATH lookup (":"-separated, no PATHEXT), which
+  // cannot express a Windows temp directory such as C:\Users\...
+  const posixIt = vitestIt.skipIf(process.platform === "win32");
+
+  posixIt("does not offer Cursor when only the Cursor Agent shim is on PATH", () => {
+    writeExecutable(path.join(root, "shim/cursor"), CURSOR_AGENT_SHIM);
+    const env = { HOME: path.join(root, "home"), PATH: path.join(root, "shim") };
+    expect(resolveAvailableEditors("linux", env)).not.toContain("cursor");
+  });
+
+  vitestIt.skipIf(
+    process.platform === "win32" ||
+      fs.existsSync("/Applications/Cursor.app") ||
+      fs.existsSync(path.join(os.homedir(), "Applications/Cursor.app")),
+  )("does not offer Cursor on macOS when only the shim is installed", () => {
+    writeExecutable(path.join(root, "shim/cursor"), CURSOR_AGENT_SHIM);
+    const env = { HOME: path.join(root, "home"), PATH: path.join(root, "shim") };
+    expect(resolveAvailableEditors("darwin", env)).not.toContain("cursor");
+  });
+
+  posixIt("launches a real cursor later on PATH by its absolute path", async () => {
+    writeExecutable(path.join(root, "shim/cursor"), CURSOR_AGENT_SHIM);
+    const real = writeExecutable(path.join(root, "real/cursor"), "#!/bin/sh\nexit 0\n");
+    const env = { PATH: `${path.join(root, "shim")}:${path.join(root, "real")}` };
+    expect(resolveAvailableEditors("linux", env)).toContain("cursor");
+    expect(await launch(env, "linux")).toEqual({
+      command: real,
+      args: ["--classic", "--goto", "/repo/file.ts:4"],
+    });
+  });
+
+  vitestIt("falls back to the Cursor app bundle CLI on macOS", async () => {
+    writeExecutable(path.join(root, "shim/cursor"), CURSOR_AGENT_SHIM);
+    const home = path.join(root, "home");
+    const bundled = writeExecutable(
+      path.join(home, "Applications/Cursor.app/Contents/Resources/app/bin/cursor"),
+      "#!/bin/sh\nexit 0\n",
+    );
+    const env = { HOME: home, PATH: path.join(root, "shim") };
+    expect(resolveAvailableEditors("darwin", env)).toContain("cursor");
+    expect((await launch(env, "darwin")).command).toBe(bundled);
+  });
+
+  vitestIt("only treats small scripts with the marker as shims", () => {
+    const shim = writeExecutable(path.join(root, "a/cursor"), CURSOR_AGENT_SHIM);
+    const oversized = writeExecutable(
+      path.join(root, "b/cursor"),
+      `${CURSOR_AGENT_SHIM}${"#".repeat(8192)}\n`,
+    );
+    expect(isEditorShim("cursor", shim)).toBe(true);
+    expect(isEditorShim("vscode", shim)).toBe(false);
+    expect(isEditorShim("cursor", oversized)).toBe(false);
+    expect(isEditorShim("cursor", path.join(root, "missing"))).toBe(false);
+  });
+
+  // Windows ignores mode bits, so only POSIX can make the file unreadable.
+  vitestIt.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "does not treat an unreadable script as a shim",
+    () => {
+      const unreadable = writeExecutable(path.join(root, "c/cursor"), CURSOR_AGENT_SHIM, 0o111);
+      expect(isEditorShim("cursor", unreadable)).toBe(false);
+    },
+  );
 });

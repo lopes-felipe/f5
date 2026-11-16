@@ -1,7 +1,11 @@
 import { compareCliVersions } from "../cliVersion.ts";
 import { describe, expect, it } from "vitest";
+import { it as effectIt } from "@effect/vitest";
+import * as TestClock from "effect/testing/TestClock";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Layer, Sink, Stream } from "effect";
+import { Effect, FileSystem, Layer, Sink, Stream } from "effect";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import {
@@ -13,6 +17,7 @@ import { getReasoningEffortOptions } from "@t3tools/shared/model";
 
 import {
   checkClaudeProviderStatus,
+  claudeSessionModelGateMessage,
   getClaudeModelCapabilities,
   makePendingClaudeProvider,
   resolveClaudeApiModelId,
@@ -23,6 +28,45 @@ import {
 } from "./ClaudeProvider.ts";
 
 const encoder = new TextEncoder();
+
+// Keep provider probes deterministic even when user or managed Claude settings define a proxy.
+const isolatedNodeServices = Layer.effect(
+  FileSystem.FileSystem,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return { ...fs, readFileString: () => Effect.succeed("{}") };
+  }),
+).pipe(Layer.provideMerge(NodeServices.layer));
+
+effectIt.effect.each([
+  { delay: "19 seconds", elapsed: "19 seconds", status: "ready" },
+  { delay: "1 minute", elapsed: "21 seconds", status: "error" },
+] as const)("bounds slow Claude version probes ($delay)", ({ delay, elapsed, status }) =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const spawner = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const args = (command as unknown as { args: ReadonlyArray<string> }).args;
+        return args[0] === "--version"
+          ? Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.sleep(delay)),
+              Effect.as(mockHandle({ stdout: "claude 2.1.0\n", stderr: "", code: 0 })),
+            )
+          : Effect.succeed(mockHandle({ stdout: '{"loggedIn":true}', stderr: "", code: 0 }));
+      }),
+    );
+    const fiber = yield* checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
+      Effect.provide(Layer.merge(isolatedNodeServices, spawner)),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(started);
+    yield* TestClock.adjust(elapsed);
+    const result = yield* Fiber.join(fiber);
+    expect(result.status).toBe(status);
+    expect(result.version).toBe(status === "ready" ? "2.1.0" : null);
+  }),
+);
 
 function mockHandle(result: { stdout: string; stderr: string; code: number }) {
   return ChildProcessSpawner.makeHandle({
@@ -39,7 +83,7 @@ function mockHandle(result: { stdout: string; stderr: string; code: number }) {
   });
 }
 
-function mockClaudeVersionLayer(version: string, auth = '{"loggedIn":true}') {
+function mockClaudeVersionLayer(version: string, auth = '{"loggedIn":true}', code = 0) {
   return Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) => {
@@ -56,7 +100,7 @@ function mockClaudeVersionLayer(version: string, auth = '{"loggedIn":true}') {
           }),
         );
       }
-      return Effect.succeed(mockHandle({ stdout: `claude ${version}\n`, stderr: "", code: 0 }));
+      return Effect.succeed(mockHandle({ stdout: `claude ${version}\n`, stderr: "", code }));
     }),
   );
 }
@@ -98,26 +142,54 @@ const capabilitiesProbe = () =>
 function runStatusForVersion(version: string) {
   return Effect.runPromise(
     checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
-      Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer(version))),
+      Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeVersionLayer(version))),
     ),
   );
 }
 
+it("runs the version and auth probes in the given directory", async () => {
+  const cwds: Array<string | undefined> = [];
+  const spawner = Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const cmd = command as unknown as {
+        args: ReadonlyArray<string>;
+        options?: { cwd?: string };
+      };
+      cwds.push(cmd.options?.cwd);
+      return Effect.succeed(
+        mockHandle({
+          stdout: cmd.args[0] === "--version" ? "claude 2.1.0\n" : '{"loggedIn":true}',
+          stderr: "",
+          code: 0,
+        }),
+      );
+    }),
+  );
+  await Effect.runPromise(
+    checkClaudeProviderStatus(claudeSettings, capabilitiesProbe, {}, "/state/dir").pipe(
+      Effect.provide(Layer.merge(isolatedNodeServices, spawner)),
+    ),
+  );
+  expect(cwds).toEqual(["/state/dir", "/state/dir"]);
+});
+
 function runStatusForVersionWithSettings(version: string, settings: ClaudeSettings) {
   return Effect.runPromise(
     checkClaudeProviderStatus(settings, capabilitiesProbe).pipe(
-      Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer(version))),
+      Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeVersionLayer(version))),
     ),
   );
 }
 
 function modelSlugs(snapshot: Awaited<ReturnType<typeof runStatusForVersion>>) {
-  return snapshot.models.map((model) => model.slug);
+  return snapshot.models.filter((model) => !model.isUnlisted).map((model) => model.slug);
 }
 
 function expectGatedModelsVisible(slugs: ReadonlyArray<string>) {
   expect(slugs).toContain("claude-opus-5-5");
   expect(slugs).toContain("claude-opus-5");
+  expect(slugs).toContain("claude-fable-5-2");
   expect(slugs).toContain("claude-fable-5-1");
   expect(slugs).toContain("claude-fable-5");
   expect(slugs).toContain("claude-sonnet-5");
@@ -126,6 +198,26 @@ function expectGatedModelsVisible(slugs: ReadonlyArray<string>) {
 }
 
 describe("checkClaudeProviderStatus", () => {
+  it.each(["2.1.289", "2.1.290"])("gates Fable 5.2 and its aliases at %s", async (version) => {
+    const snapshot = await runStatusForVersionWithSettings(version, {
+      ...claudeSettings,
+      customModels: [
+        "fable",
+        "claude-fable",
+        "fable-5.2",
+        "fable-5-2",
+        "claude-fable-5.2",
+        "claude-fable-5-2[1m]",
+        "fable-5.1",
+      ],
+    });
+    const slugs = modelSlugs(snapshot);
+    expect(slugs.filter((slug) => slug === "claude-fable-5-2")).toHaveLength(
+      version === "2.1.290" ? 1 : 0,
+    );
+    expect(slugs.filter((slug) => slug === "claude-fable-5-1")).toHaveLength(1);
+  });
+
   it.each(["2.1.279", "2.1.280"])("gates Opus 5.5 and bare aliases at %s", async (version) => {
     const snapshot = await runStatusForVersionWithSettings(version, {
       ...claudeSettings,
@@ -145,13 +237,12 @@ describe("checkClaudeProviderStatus", () => {
     );
     expect(slugs[0]).toBe(version === "2.1.280" ? "claude-opus-5-5" : "claude-opus-5");
     expect(slugs.filter((slug) => slug === "claude-opus-5")).toHaveLength(1);
-    if (version === "2.1.280") expect(snapshot.message).toBeUndefined();
-    else expect(snapshot.message).toContain("Claude Opus 5.5. Upgrade to v2.1.280");
+    expect(snapshot.message).toContain("Claude Sonnet 5.5. Upgrade to v2.1.299");
   });
 
   it("keeps Fable 5.1 visible between the Fable and Opus 5.5 gates", async () => {
     const snapshot = await runStatusForVersion("2.1.260");
-    expect(snapshot.message).toContain("Claude Opus 5.5");
+    expect(snapshot.message).toContain("Claude Sonnet 5.5");
     expect(modelSlugs(snapshot)).toContain("claude-fable-5-1");
     expect(modelSlugs(snapshot)).not.toContain("claude-opus-5-5");
   });
@@ -161,13 +252,56 @@ describe("checkClaudeProviderStatus", () => {
     ['{"unexpected":"response"}', "unknown"],
   ])("does not treat SDK initialization as a login: %s", async (auth, expected) => {
     const snapshot = await Effect.runPromise(
-      checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
-        Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.257", auth))),
+      checkClaudeProviderStatus(claudeSettings, capabilitiesProbe, {}).pipe(
+        Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeVersionLayer("2.1.257", auth))),
       ),
     );
     expect(snapshot.auth.status).toBe(expected);
     expect(snapshot.auth.email).toBeUndefined();
     expect(snapshot.status).not.toBe("ready");
+  });
+  const accountlessCapabilities = () =>
+    Effect.succeed({
+      email: undefined,
+      subscriptionType: undefined,
+      tokenSource: undefined,
+      slashCommands: [],
+    });
+  const runLoggedOutStatus = (environment: NodeJS.ProcessEnv) =>
+    Effect.runPromise(
+      checkClaudeProviderStatus(claudeSettings, accountlessCapabilities, environment).pipe(
+        Effect.provide(
+          Layer.merge(
+            isolatedNodeServices,
+            mockClaudeVersionLayer("2.1.257", '{"loggedIn":false,"authMethod":"none"}'),
+          ),
+        ),
+      ),
+    );
+  it.each(["https://proxy.example/api", "http://localhost:8080"])(
+    "keeps Claude ready behind the custom API endpoint %s",
+    async (baseUrl) => {
+      const snapshot = await runLoggedOutStatus({ ANTHROPIC_BASE_URL: baseUrl });
+      expect(snapshot.status).toBe("ready");
+      expect(snapshot.auth).toMatchObject({
+        status: "authenticated",
+        type: "customEndpoint",
+        label: "Custom API endpoint",
+      });
+    },
+  );
+  it.each([
+    "",
+    "https://api.anthropic.com",
+    "https://api.anthropic.com:8443",
+    "openrouter.ai/api",
+    "localhost:8080",
+    "ftp://proxy.example",
+  ])("keeps Claude logged out when the endpoint is %j", async (baseUrl) => {
+    const snapshot = await runLoggedOutStatus({ ANTHROPIC_BASE_URL: baseUrl });
+    expect(snapshot.status).toBe("error");
+    expect(snapshot.auth.status).toBe("unauthenticated");
+    expect(snapshot.auth.type).toBeUndefined();
   });
   it.each(["2.1.256", "2.1.257"])("gates Fable 5.1 and custom aliases at %s", async (version) => {
     const snapshot = await runStatusForVersionWithSettings(version, {
@@ -191,7 +325,7 @@ describe("checkClaudeProviderStatus", () => {
 
     expect(snapshot.status).toBe("ready");
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.169 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
+      "Claude Code v2.1.169 is too old for Claude Sonnet 5.5. Upgrade to v2.1.299 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).toEqual([
       "claude-opus-4-8",
@@ -208,7 +342,7 @@ describe("checkClaudeProviderStatus", () => {
 
     expect(snapshot.status).toBe("ready");
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.153 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
+      "Claude Code v2.1.153 is too old for Claude Sonnet 5.5. Upgrade to v2.1.299 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).toEqual([
       "claude-opus-4-7",
@@ -223,7 +357,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.110");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.110 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
+      "Claude Code v2.1.110 is too old for Claude Sonnet 5.5. Upgrade to v2.1.299 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).toEqual([
       "claude-opus-4-6",
@@ -237,7 +371,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.154");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.154 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
+      "Claude Code v2.1.154 is too old for Claude Sonnet 5.5. Upgrade to v2.1.299 or newer to access it.",
     );
     expect(modelSlugs(snapshot).slice(0, 2)).toEqual(["claude-opus-4-8", "claude-opus-4-7"]);
   });
@@ -246,7 +380,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.219");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.219 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
+      "Claude Code v2.1.219 is too old for Claude Sonnet 5.5. Upgrade to v2.1.299 or newer to access it.",
     );
     expect(modelSlugs(snapshot)[0]).toBe("claude-fable-5");
     expect(modelSlugs(snapshot)).not.toContain("claude-opus-5");
@@ -255,7 +389,7 @@ describe("checkClaudeProviderStatus", () => {
   it("exposes Claude Opus 5 first at Claude Code v2.1.220", async () => {
     const snapshot = await runStatusForVersion("2.1.220");
 
-    expect(snapshot.message).toContain("Claude Opus 5.5");
+    expect(snapshot.message).toContain("Claude Sonnet 5.5");
     expect(modelSlugs(snapshot).slice(0, 4)).toEqual([
       "claude-opus-5",
       "claude-fable-5",
@@ -267,14 +401,14 @@ describe("checkClaudeProviderStatus", () => {
   it("preserves verified authentication and the upgrade hint when capability probing fails", async () => {
     const snapshot = await Effect.runPromise(
       checkClaudeProviderStatus(claudeSettings, () => Effect.sync(() => undefined)).pipe(
-        Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.219"))),
+        Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeVersionLayer("2.1.219"))),
       ),
     );
 
     expect(snapshot.status).toBe("ready");
     expect(snapshot.auth.status).toBe("authenticated");
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.219 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
+      "Claude Code v2.1.219 is too old for Claude Sonnet 5.5. Upgrade to v2.1.299 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).not.toContain("claude-opus-5");
   });
@@ -290,7 +424,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.170");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.170 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
+      "Claude Code v2.1.170 is too old for Claude Sonnet 5.5. Upgrade to v2.1.299 or newer to access it.",
     );
     expect(modelSlugs(snapshot).slice(0, 3)).toEqual([
       "claude-fable-5",
@@ -302,7 +436,7 @@ describe("checkClaudeProviderStatus", () => {
   it("keeps gated models visible in disabled provider snapshots when the version is unknown", async () => {
     const snapshot = await Effect.runPromise(
       checkClaudeProviderStatus({ ...claudeSettings, enabled: false }, capabilitiesProbe).pipe(
-        Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.170"))),
+        Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeVersionLayer("2.1.170"))),
       ),
     );
 
@@ -313,7 +447,7 @@ describe("checkClaudeProviderStatus", () => {
   it("keeps gated models visible in spawn-failure snapshots when the version is unknown", async () => {
     const snapshot = await Effect.runPromise(
       checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
-        Effect.provide(Layer.merge(NodeServices.layer, mockClaudeSpawnFailureLayer("boom"))),
+        Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeSpawnFailureLayer("boom"))),
       ),
     );
 
@@ -355,17 +489,18 @@ describe("makePendingClaudeProvider", () => {
     expect(new Set(slugs)).toEqual(
       new Set(MODEL_OPTIONS_BY_PROVIDER.claudeAgent.map((model) => model.slug)),
     );
-    expect(slugs.slice(0, 5)).toEqual([
+    expect(slugs.slice(0, 6)).toEqual([
       "claude-opus-5-5",
       "claude-opus-5",
+      "claude-fable-5-2",
       "claude-fable-5-1",
       "claude-fable-5",
-      "claude-sonnet-5",
+      "claude-sonnet-5-5",
     ]);
     expect(VERSION_GATED_CLAUDE_MODELS[0]).toEqual({
-      slug: "claude-opus-5-5",
-      name: "Claude Opus 5.5",
-      minVersion: "2.1.280",
+      slug: "claude-sonnet-5-5",
+      name: "Claude Sonnet 5.5",
+      minVersion: "2.1.299",
     });
   });
 
@@ -389,7 +524,7 @@ describe("makePendingClaudeProvider", () => {
 });
 
 describe("getClaudeModelCapabilities", () => {
-  it("uses only effort for Fable 5.1 and strips stale context suffixes on the wire", () => {
+  it("uses only effort for Fable 5.2 and strips stale context suffixes on the wire", () => {
     const caps = getClaudeModelCapabilities("fable");
     expect(caps.optionDescriptors?.map((descriptor) => descriptor.id)).toEqual(["effort"]);
     expect(resolveClaudeEffort(caps, undefined)).toBe("high");
@@ -402,7 +537,7 @@ describe("getClaudeModelCapabilities", () => {
         model: "fable[200k]",
         options: [{ id: "contextWindow", value: "1m" }],
       }),
-    ).toBe("claude-fable-5-1");
+    ).toBe("claude-fable-5-2");
   });
   it("keeps Opus 5 descriptors aligned with shared metadata", () => {
     const caps = getClaudeModelCapabilities("claude-opus-5");
@@ -445,11 +580,12 @@ describe("getClaudeModelCapabilities", () => {
   });
 
   it("derives corrected Opus 4.x Fast Mode descriptors from shared metadata", () => {
+    // Opus 4.8 fast mode is deprecated (removed 2026-11-30); only an executable report enables it.
     expect(
       getClaudeModelCapabilities("claude-opus-4-8").optionDescriptors?.map(
         (descriptor) => descriptor.id,
       ),
-    ).toEqual(["effort", "fastMode", "contextWindow"]);
+    ).toEqual(["effort", "contextWindow"]);
     expect(
       getClaudeModelCapabilities("claude-opus-4-6").optionDescriptors?.map(
         (descriptor) => descriptor.id,
@@ -500,6 +636,17 @@ describe("resolveClaudeApiModelId", () => {
 });
 
 describe("Claude version gates", () => {
+  it.each(["fable", "claude-fable", "fable[200k]"])(
+    "warns saved sessions using %s below the Fable 5.2 version gate",
+    (model) => {
+      expect(claudeSessionModelGateMessage(model, "2.1.289")).toBe(
+        "This session runs Claude Code v2.1.289, which is too old for Claude Fable 5.2. Upgrade to v2.1.290 or newer.",
+      );
+      expect(claudeSessionModelGateMessage(model, "2.1.290")).toBeUndefined();
+      expect(claudeSessionModelGateMessage(model, undefined)).toBeUndefined();
+    },
+  );
+
   it("orders minimum versions descending so the first failing gate recommends a sufficient upgrade", () => {
     for (let i = 1; i < VERSION_GATED_CLAUDE_MODELS.length; i++) {
       expect(
@@ -531,4 +678,58 @@ describe("parseClaudeInitializationModels", () => {
     ]);
     expect(models[0]?.capabilities.source).toBe("reported");
   });
+});
+
+describe("current Claude catalog", () => {
+  it.each(["2.1.298", "2.1.299"])("keeps version-gated slugs resolvable on %s", async (version) => {
+    const snapshot = await runStatusForVersion(version);
+    for (const slug of ["claude-sonnet-5-5", "claude-haiku-5-5"]) {
+      expect(snapshot.models.find((model) => model.slug === slug)?.isUnlisted === true).toBe(
+        version === "2.1.298",
+      );
+    }
+    expect(snapshot.modelCatalog?.status).toBe("menu");
+  });
+  it("lists every gated model without an upgrade advisory on the bundled 2.1.317", async () => {
+    const snapshot = await runStatusForVersion("2.1.317");
+    for (const gate of VERSION_GATED_CLAUDE_MODELS)
+      expect(snapshot.models.find((model) => model.slug === gate.slug)?.isUnlisted).not.toBe(true);
+    expect(snapshot.message ?? "").not.toContain("too old");
+  });
+  it("warns a session whose observed runtime is older than its model needs", () => {
+    expect(claudeSessionModelGateMessage("claude-sonnet-5-5", "2.1.298")).toBe(
+      "This session runs Claude Code v2.1.298, which is too old for Claude Sonnet 5.5. Upgrade to v2.1.299 or newer.",
+    );
+    expect(claudeSessionModelGateMessage("claude-sonnet-5-5", "2.1.317")).toBeUndefined();
+    expect(claudeSessionModelGateMessage("claude-sonnet-5-5", undefined)).toBeUndefined();
+  });
+  it("ignores unresolved bare aliases and formats resolved aliases", () => {
+    expect(
+      parseClaudeInitializationModels([
+        { value: "haiku", displayName: "Default", description: "" },
+        { value: "sonnet", displayName: "Default", description: "" },
+        {
+          value: "default",
+          resolvedModel: "claude-opus-6",
+          displayName: "Default (recommended)",
+          description: "",
+        },
+      ]).map((model) => [model.slug, model.name]),
+    ).toEqual([["claude-opus-6", "Claude Opus 6"]]);
+  });
+});
+
+it("reports catalog failure on a known-version CLI error instead of switching to legacy retention", async () => {
+  const snapshot = await Effect.runPromise(
+    checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
+      Effect.provide(
+        Layer.merge(
+          isolatedNodeServices,
+          mockClaudeVersionLayer("2.1.298", '{"loggedIn":true}', 1),
+        ),
+      ),
+    ),
+  );
+  expect(snapshot.version).toBe("2.1.298");
+  expect(snapshot.modelCatalog?.status).toBe("failed");
 });

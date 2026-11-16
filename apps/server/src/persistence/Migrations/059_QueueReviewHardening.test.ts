@@ -46,6 +46,8 @@ layer("059_QueueReviewHardening", (it) => {
       `;
       assert.deepStrictEqual(indexes, [
         { name: "idx_provider_turn_deliveries_actionable" },
+        { name: "idx_provider_turn_deliveries_boundary" },
+        { name: "idx_provider_turn_deliveries_pending_thread" },
         { name: "idx_provider_turn_deliveries_thread" },
         { name: "idx_provider_turn_deliveries_unprojected" },
       ]);

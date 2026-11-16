@@ -12,5 +12,10 @@
       }
     ]
   },
-  "include": ["**/*.ts"]
+  "include": [
+    "**/*.ts",
+    "../apps/server/src/provider/codexExecutable.ts",
+    "../apps/server/src/spawn/asarExecutable.ts",
+    "../apps/server/src/spawn/resolveCommand.ts"
+  ]
 }

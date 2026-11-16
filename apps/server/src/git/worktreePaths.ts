@@ -6,20 +6,21 @@ export function resolveDefaultWorktreesDir(homeDir?: string): string {
   return Path.join(defaultF5BaseDir(homeDir), "worktrees");
 }
 
-export function sanitizeWorktreeBranchPathSegment(branch: string): string {
-  return branch.replace(/\//g, "-");
+/** Portable, bounded labels; hashes retain the exact repository/branch identity. */
+export function worktreePathSlug(value: string): string {
+  return (
+    value
+      .replace(/[^a-zA-Z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 32) || "wt"
+  );
 }
 
-export function resolveDefaultWorktreePath(input: {
-  readonly worktreesDir: string;
-  readonly cwd: string;
-  readonly branch: string;
-}): string {
-  return Path.join(
-    input.worktreesDir,
-    Path.basename(input.cwd),
-    sanitizeWorktreeBranchPathSegment(input.branch),
-  );
+export function worktreePathExceedsWindowsLimit(
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "win32" && value.length > 180;
 }
 
 /** Resolve symlinked ancestors even when a registered worktree directory is gone. */
@@ -39,6 +40,4 @@ export async function canonicalWorktreePath(value: string): Promise<string> {
   }
 }
 
-export function isTemporaryWorktreeBranch(branch: string): boolean {
-  return /^t3code\/[0-9a-f]{8}$/.test(branch.trim().toLowerCase());
-}
+export { isTemporaryWorktreeBranch } from "@t3tools/shared/worktree";

@@ -7,7 +7,9 @@ import {
   TrimmedNonEmptyString,
   makeEntityId,
 } from "./baseSchemas";
+import { WorkflowStageDispatchCommandId } from "./codeReviewWorkflow";
 import { WorkflowModelSlot, WorkflowStepStatus } from "./planningWorkflow";
+import { WorkflowArchiveRestorations } from "./workflowArchive";
 
 export const InvestigationWorkflowId = makeEntityId("InvestigationWorkflowId");
 export type InvestigationWorkflowId = typeof InvestigationWorkflowId.Type;
@@ -46,6 +48,9 @@ export const InvestigationInvestigator = Schema.Struct({
   investigationRetryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   crossReviewRetryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   selfReviewRetryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
+  investigationDispatchCommandId: WorkflowStageDispatchCommandId,
+  crossReviewDispatchCommandId: WorkflowStageDispatchCommandId,
+  selfReviewDispatchCommandId: WorkflowStageDispatchCommandId,
   updatedAt: IsoDateTime,
 });
 export type InvestigationInvestigator = typeof InvestigationInvestigator.Type;
@@ -58,6 +63,7 @@ export const InvestigationSynthesis = Schema.Struct({
   pinnedAssistantMessageId: Schema.NullOr(TrimmedNonEmptyString),
   error: Schema.NullOr(Schema.String),
   retryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
+  dispatchCommandId: WorkflowStageDispatchCommandId,
   updatedAt: IsoDateTime,
 });
 export type InvestigationSynthesis = typeof InvestigationSynthesis.Type;
@@ -84,6 +90,7 @@ export const InvestigationWorkflow = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
+  archiveRestorations: WorkflowArchiveRestorations,
   deletedAt: Schema.NullOr(IsoDateTime),
 });
 export type InvestigationWorkflow = typeof InvestigationWorkflow.Type;

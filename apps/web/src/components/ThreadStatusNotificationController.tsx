@@ -1,111 +1,83 @@
-import {
-  createNotificationSound,
-  needsThreadAttention,
-  setThreadAttentionBadge,
-} from "../threadAttention";
+import { ensureNativeApi } from "../nativeApi";
+import { usePendingComputerAccessRequests } from "../hooks/usePendingComputerAccessRequests";
+import { needsThreadAttention, setThreadAttentionBadge } from "../threadAttention";
 import { toastManager } from "./ui/toast";
 import { threadStatusLabel } from "../threadStatus";
-import { BellIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
 import type { ThreadId } from "@t3tools/contracts";
 
-import { useAppSettings } from "../appSettings";
+import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { useStore } from "../store";
-import { resolveThreadStatusForThread, type ThreadStatus } from "../threadStatus";
+import { useThreadSummaries } from "../threadSelectors";
+import type { ThreadStatus } from "../threadStatus";
 import {
   diffThreadStatusNotifications,
   dismissThreadStatusNotificationPrompt,
+  formatThreadStatusNotificationBody,
   getThreadStatusNotificationPermissionState,
-  isAppWindowFocused,
   markThreadStatusNotificationPromptShown,
   requestThreadStatusNotificationPermission,
   resetThreadStatusNotificationPrompt,
-  shouldDispatchThreadStatusNotification,
-  showThreadStatusNotification,
+  threadNotificationIcon,
   useThreadStatusNotificationPermissionState,
   useThreadStatusNotificationPromptState,
 } from "../threadStatusNotifications";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
-import { Button } from "./ui/button";
 import { isSnoozedThread } from "../lib/threadOrdering";
+import { loadInlineApproval } from "../notificationCenter/inlineApproval";
+import { notify, resolveThreadAttention } from "../notificationCenter/notify";
 
-export function ThreadStatusNotificationControllerContent({
-  navigateToThread,
-}: {
-  navigateToThread: (threadId: ThreadId) => void | Promise<void>;
-}) {
+/** Statuses whose toast waits for the user and must be closed once the thread moves on. */
+function isWaitingStatus(status: ThreadStatus | undefined): boolean {
+  return status === "pending-approval" || status === "awaiting-input";
+}
+
+function selectNotificationSettings(settings: AppSettings) {
+  return {
+    systemEnabled: settings.notificationPreferences.thread.system,
+    showAttentionBadge: settings.showAttentionBadge,
+  };
+}
+
+function threadSeverity(status: ThreadStatus) {
+  if (status === "failed") return "error" as const;
+  if (status === "completed") return "success" as const;
+  return "attention" as const;
+}
+
+/**
+ * Turns thread status changes into notifications (toast, OS, sound and inbox via `notify`),
+ * keeps the dock badge in sync, and offers the OS permission prompt.
+ */
+export function ThreadStatusNotificationControllerContent() {
   const threadsHydrated = useStore((store) => store.threadsHydrated);
-  const threads = useStore((store) => store.threads);
+  const threads = useThreadSummaries();
+  const pendingComputerRequests = usePendingComputerAccessRequests();
+  const computerPending = [...new Set(pendingComputerRequests.map((request) => request.threadId))]
+    .sort()
+    .join(",");
   const projects = useStore((store) => store.projects);
-  const { settings } = useAppSettings();
-  const systemEnabled =
-    settings.notificationMode === "system" || settings.notificationMode === "system-and-sound";
-  const soundEnabled =
-    settings.notificationMode === "sound" || settings.notificationMode === "system-and-sound";
-  const sound = useRef<ReturnType<typeof createNotificationSound> | null>(null);
-  useEffect(() => {
-    const unlock = () => {
-      sound.current ??= createNotificationSound();
-      sound.current.unlock();
-    };
-    window.addEventListener("f5:unlock-notification-sound", unlock);
-    return () => {
-      window.removeEventListener("f5:unlock-notification-sound", unlock);
-      sound.current?.dispose();
-      sound.current = null;
-    };
-  }, []);
-  useEffect(() => {
-    if (!soundEnabled) return;
-    const player = sound.current ?? createNotificationSound();
-    sound.current = player;
-    const unlock = () => player.unlock();
-    window.addEventListener("pointerdown", unlock);
-    window.addEventListener("keydown", unlock);
-    return () => {
-      window.removeEventListener("pointerdown", unlock);
-      window.removeEventListener("keydown", unlock);
-      player.dispose();
-      sound.current = null;
-    };
-  }, [soundEnabled]);
+  const settings = useAppSettingsSelector(selectNotificationSettings);
+  const systemEnabled = settings.systemEnabled;
   const permission = useThreadStatusNotificationPermissionState();
   const promptState = useThreadStatusNotificationPromptState();
   const previousStatusByThreadIdRef = useRef<Map<ThreadId, ThreadStatus> | null>(null);
+  const transitionGenerationRef = useRef(new Map<ThreadId, number>());
   const previousNotificationsEnabledRef = useRef(systemEnabled);
   const promptVisibleForSessionRef = useRef(false);
-  const [appFocused, setAppFocused] = useState(() => isAppWindowFocused());
   const [promptVisible, setPromptVisible] = useState(false);
 
   const threadStatusSnapshots = useMemo(() => {
+    const computerThreads = new Set(computerPending.split(","));
     const projectNameById = new Map(projects.map((project) => [project.id, project.name] as const));
 
     return threads.map((thread) => ({
       threadId: thread.id,
       threadTitle: thread.title,
       projectName: projectNameById.get(thread.projectId) ?? null,
-      status: resolveThreadStatusForThread(thread),
+      status: computerThreads.has(thread.id) ? ("pending-approval" as const) : thread.status,
       snoozed: isSnoozedThread(thread) || Boolean(thread.archivedAt),
     }));
-  }, [projects, threads]);
-
-  useEffect(() => {
-    const syncFocusState = () => {
-      setAppFocused(isAppWindowFocused());
-    };
-
-    syncFocusState();
-    window.addEventListener("focus", syncFocusState);
-    window.addEventListener("blur", syncFocusState);
-    document.addEventListener("visibilitychange", syncFocusState);
-
-    return () => {
-      window.removeEventListener("focus", syncFocusState);
-      window.removeEventListener("blur", syncFocusState);
-      document.removeEventListener("visibilitychange", syncFocusState);
-    };
-  }, []);
+  }, [projects, threads, computerPending]);
 
   useEffect(() => {
     const count =
@@ -165,139 +137,130 @@ export function ThreadStatusNotificationControllerContent({
       return;
     }
 
+    const previous = previousStatusByThreadIdRef.current;
     const { nextStatusByThreadId, transitions } = diffThreadStatusNotifications(
-      previousStatusByThreadIdRef.current,
+      previous,
       threadStatusSnapshots,
     );
     previousStatusByThreadIdRef.current = nextStatusByThreadId;
 
-    let sounded = false;
-    for (const transition of transitions) {
-      if (needsThreadAttention(transition.status)) {
-        if (soundEnabled && !appFocused && !sounded) {
-          sound.current?.play();
-          sounded = true;
-        }
-        if (settings.inAppThreadNotifications) {
-          toastManager.add({
-            title: threadStatusLabel(transition.status) ?? "Thread update",
-            description: [transition.projectName, transition.threadTitle]
-              .filter(Boolean)
-              .join(" · "),
-            type: "info",
-            data: { threadStatus: transition.status },
-            actionProps: {
-              children: "View",
-              onClick: () => {
-                void navigateToThread(transition.threadId);
-              },
-            },
-          });
+    // A request answered anywhere (here, the chat, another client) retires its toast.
+    if (previous) {
+      for (const [threadId, status] of previous) {
+        if (isWaitingStatus(status) && nextStatusByThreadId.get(threadId) !== status) {
+          resolveThreadAttention(threadId);
         }
       }
-      if (
-        !shouldDispatchThreadStatusNotification({
-          enabled: systemEnabled,
-          permission,
-          appFocused,
-          status: transition.status,
-        })
-      ) {
-        continue;
-      }
-
-      if (typeof window === "undefined" || typeof window.Notification === "undefined") {
-        continue;
-      }
-
-      showThreadStatusNotification({
-        NotificationConstructor: window.Notification,
-        transition,
-        silent: soundEnabled,
-        focusWindow: () => {
-          window.focus();
-        },
-        navigateToThread,
-      });
     }
-  }, [
-    appFocused,
-    navigateToThread,
-    permission,
-    systemEnabled,
-    soundEnabled,
-    settings.inAppThreadNotifications,
-    threadStatusSnapshots,
-    threadsHydrated,
-  ]);
 
-  const shouldShowPrompt = promptVisible;
+    const computerThreads = new Set(computerPending.split(","));
+    for (const transition of transitions) {
+      const generation = (transitionGenerationRef.current.get(transition.threadId) ?? 0) + 1;
+      transitionGenerationRef.current.set(transition.threadId, generation);
+      // The lookups below take time; a newer transition (or the same status ending) makes this
+      // one stale, and notifying then would leave a toast for a request that is already gone.
+      const isCurrent = () =>
+        transitionGenerationRef.current.get(transition.threadId) === generation &&
+        previousStatusByThreadIdRef.current?.get(transition.threadId) === transition.status;
+      void (async () => {
+        // Only statuses that need the user notify; "working" and "connecting" never did in-app.
+        if (!needsThreadAttention(transition.status)) return;
+        const thread = useStore.getState().threads.find((t) => t.id === transition.threadId);
+        const turnId = thread?.latestTurn?.turnId;
+        // Scheduled runs notify through their own outbox; skip the duplicate thread notice.
+        // Background conversations load without activities, so a bound conversation's
+        // scheduled turn is only known to the server.
+        if (thread && turnId) {
+          try {
+            const result = await ensureNativeApi().scheduledTasks.findRunForTurn({
+              threadId: thread.id,
+              turnId,
+            });
+            if (result.runId) return;
+          } catch {
+            /* Preserve ordinary notifications when lineage cannot be read. */
+          }
+        }
+        // Computer access requests are answered in their own card, never inline.
+        const approval =
+          transition.status === "pending-approval" && !computerThreads.has(transition.threadId)
+            ? await loadInlineApproval(transition.threadId)
+            : null;
+        if (!isCurrent()) return;
+        const icon = threadNotificationIcon(transition.status);
+        notify({
+          source: "thread",
+          severity: threadSeverity(transition.status),
+          title: threadStatusLabel(transition.status) ?? "Thread update",
+          sourceLabel: formatThreadStatusNotificationBody(transition),
+          threadId: transition.threadId,
+          threadStatus: transition.status,
+          urgent:
+            transition.status === "pending-approval" || transition.status === "awaiting-input",
+          dedupeKey: `thread:${transition.threadId}:${transition.status}`,
+          target: { kind: "thread", threadId: transition.threadId },
+          openLabel: "Open thread",
+          ...(approval
+            ? { approval, ...(approval.detail ? { detail: approval.detail } : {}) }
+            : {}),
+          os: {
+            tag: transition.threadId,
+            body: formatThreadStatusNotificationBody(transition),
+            ...(icon ? { icon } : {}),
+          },
+        });
+      })().catch(() => undefined);
+    }
+  }, [computerPending, threadStatusSnapshots, threadsHydrated]);
 
-  if (!shouldShowPrompt) {
-    return null;
-  }
+  // The permission prompt is a persistent toast so it shares the stack and the look.
+  useEffect(() => {
+    if (!promptVisible) return;
+    let settled = false;
+    const hide = (dismiss: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (dismiss) dismissThreadStatusNotificationPrompt();
+      promptVisibleForSessionRef.current = false;
+      setPromptVisible(false);
+    };
+    const id = toastManager.add({
+      type: "info",
+      title: "Thread notifications are available",
+      description:
+        "Get notified when a thread needs approval or input, or finishes, while F5 is in the background.",
+      timeout: 0,
+      data: {
+        source: "system",
+        dedupeKey: "thread-notification-permission-prompt",
+        actions: [
+          {
+            label: "Not now",
+            onClick: () => hide(true),
+          },
+          {
+            label: "Enable notifications",
+            variant: "primary",
+            onClick: () =>
+              requestThreadStatusNotificationPermission()
+                .then((nextPermission) => hide(nextPermission !== "granted"))
+                .catch(() => hide(true)),
+          },
+        ],
+      },
+      // Closing the toast with its × counts as "Not now".
+      onClose: () => hide(true),
+    });
+    return () => {
+      // Unmounting or hiding by state must not record a dismissal.
+      settled = true;
+      toastManager.close(id);
+    };
+  }, [promptVisible]);
 
-  return (
-    <div className="pointer-events-none fixed right-4 bottom-4 z-40 w-[min(28rem,calc(100vw-2rem))] sm:right-6 sm:bottom-6">
-      <Alert
-        variant="info"
-        className="pointer-events-auto border-info/40 bg-card/96 shadow-xl shadow-black/8 backdrop-blur"
-      >
-        <BellIcon />
-        <AlertTitle>Thread notifications are available</AlertTitle>
-        <AlertDescription>
-          Get local notifications when a thread needs approval, input, or completes while the app is
-          in the background.
-        </AlertDescription>
-        <AlertAction>
-          <Button
-            size="xs"
-            onClick={() => {
-              void requestThreadStatusNotificationPermission()
-                .then((nextPermission) => {
-                  if (nextPermission !== "granted") {
-                    dismissThreadStatusNotificationPrompt();
-                  }
-                  promptVisibleForSessionRef.current = false;
-                  setPromptVisible(false);
-                })
-                .catch(() => {
-                  dismissThreadStatusNotificationPrompt();
-                  promptVisibleForSessionRef.current = false;
-                  setPromptVisible(false);
-                });
-            }}
-          >
-            Enable notifications
-          </Button>
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={() => {
-              dismissThreadStatusNotificationPrompt();
-              promptVisibleForSessionRef.current = false;
-              setPromptVisible(false);
-            }}
-          >
-            Dismiss
-          </Button>
-        </AlertAction>
-      </Alert>
-    </div>
-  );
+  return null;
 }
 
 export default function ThreadStatusNotificationController() {
-  const navigate = useNavigate();
-
-  return (
-    <ThreadStatusNotificationControllerContent
-      navigateToThread={(threadId) => {
-        void navigate({
-          to: "/$threadId",
-          params: { threadId },
-        });
-      }}
-    />
-  );
+  return <ThreadStatusNotificationControllerContent />;
 }

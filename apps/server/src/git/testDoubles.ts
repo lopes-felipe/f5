@@ -29,15 +29,38 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
 } {
   const recorded = Object.fromEntries(
     [
+      "readMoveSnapshot",
+      "copyMoveUntracked",
+      "stashCreate",
+      "stashApplySha",
+      "stashPushAll",
+      "setMoveRef",
+      "deleteMoveRef",
+      "cleanMoveCopies",
       "status",
       "statusDetails",
+      "cleanupSafetyProbe",
       "prepareCommitContext",
       "commit",
+      "commitPrepared",
       "pushCurrentBranch",
       "branchExists",
       "ensureWorktree",
+      "allocateWorktreePath",
+      "readWorktreePreparation",
+      "resolveAvailableBranchName",
+      "isValidBranchName",
+      "fastForwardTo",
+      "initializeWorktreeSubmodules",
+      "listWorktrees",
+      "isDirty",
+      "inspectCheckout",
+      "inspectCheckoutIdentity",
+      "resolveCheckoutTarget",
+      "clearMissingRegistration",
       "readRangeContext",
       "readDefaultBranch",
+      "readAdvertisedDefaultBranch",
       "readConfigValue",
       "listRemotes",
       "listBranches",
@@ -65,12 +88,70 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       "cloneRepository",
       "listLocalBranchNames",
     ].map((method) => [method, []]),
-  ) as unknown as { [K in keyof GitCoreShape]: Array<ReadonlyArray<unknown>> };
+  ) as unknown as { [K in keyof GitCoreShape]-?: Array<ReadonlyArray<unknown>> };
 
   const implementations: GitCoreShape = {
+    readMoveSnapshot: () =>
+      Effect.succeed({
+        baseSha: "abc123",
+        trackedStashSha: null,
+        trackedTree: null,
+        indexTree: null,
+        untracked: [],
+        copiedFileCount: 0,
+      }),
+    copyMoveUntracked: () => Effect.void,
+    stashCreate: () => Effect.succeed(null),
+    stashApplySha: () => Effect.void,
+    stashPushAll: () => Effect.void,
+    setMoveRef: () => Effect.void,
+    deleteMoveRef: () => Effect.void,
+    cleanMoveCopies: () => Effect.void,
+    isDirty: () => Effect.succeed(false),
+    cleanupSafetyProbe: () =>
+      Effect.succeed({
+        hasTrackedChanges: false,
+        hasUntrackedChanges: false,
+        ignoredEntries: [],
+        ignoredTruncated: false,
+      }),
+    readWorktreePreparation: () => Effect.succeed(null),
+    allocateWorktreePath: ({ cwd, branch }) =>
+      Effect.succeed(`${cwd}/worktrees/${branch.replaceAll("/", "-")}`),
+    resolveAvailableBranchName: (_cwd, name) => Effect.succeed(name),
+    isValidBranchName: () => Effect.succeed(true),
     cloneRepository: () => Effect.void,
+    fastForwardTo: () => Effect.void,
+    initializeWorktreeSubmodules: () => Effect.void,
     branchExists: () => Effect.succeed(true),
-    ensureWorktree: () => Effect.void,
+    ensureWorktree: () => Effect.succeed({ recreated: false }),
+    listWorktrees: () => Effect.succeed([]),
+    clearMissingRegistration: () => Effect.void,
+    inspectCheckoutIdentity: (path) => implementations.inspectCheckout(path),
+    resolveCheckoutTarget: (input) =>
+      Effect.succeed({
+        branch: input.branch,
+        headSha: "abc123",
+        checkoutArgs: ["checkout", input.branch],
+      }),
+    inspectCheckout: (path) =>
+      Effect.succeed({
+        canonicalRoot: path,
+        commonDir: `${path}/.git`,
+        registration: null,
+        headSha: "abc123",
+        branch: "feature/test",
+        operation: null,
+        hasInitializedSubmodules: false,
+        hasTrackedChanges: false,
+        hasUntrackedChanges: false,
+        ignoredEntries: [],
+        ignoredTruncated: false,
+        upstreamRef: null,
+        upstreamSha: null,
+        aheadCount: null,
+        behindCount: null,
+      }),
     status: (_input) =>
       Effect.succeed({
         ...DEFAULT_STATUS_DETAILS,
@@ -81,6 +162,7 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     statusDetails: () => Effect.succeed(DEFAULT_STATUS_DETAILS),
     prepareCommitContext: () => Effect.succeed(null),
     commit: () => Effect.succeed({ commitSha: "abc123" }),
+    commitPrepared: () => Effect.succeed({ status: "created", commitSha: "abc123" }),
     pushCurrentBranch: (_cwd, fallbackBranch) =>
       Effect.succeed({
         status: "pushed",
@@ -91,6 +173,8 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     readRangeContext: () =>
       Effect.succeed({ commitSummary: "abc change", diffSummary: "1 file", diffPatch: "+change" }),
     readDefaultBranch: () => Effect.succeed(null),
+    readAdvertisedDefaultBranch: (cwd) =>
+      implementations.readDefaultBranch(cwd).pipe(Effect.orElseSucceed(() => null)),
     readConfigValue: () => Effect.succeed(null),
     listRemotes: () =>
       Effect.succeed([{ name: "origin", url: "https://github.com/t3tools/f5.git" }]),
@@ -142,6 +226,94 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
   };
 
   const service: GitCoreShape = {
+    readMoveSnapshot: (cwd) => {
+      record("readMoveSnapshot", [cwd]);
+      return implementations.readMoveSnapshot(cwd);
+    },
+    copyMoveUntracked: (source, target, files) => {
+      record("copyMoveUntracked", [source, target, files]);
+      return implementations.copyMoveUntracked(source, target, files);
+    },
+    stashCreate: (cwd) => {
+      record("stashCreate", [cwd]);
+      return implementations.stashCreate(cwd);
+    },
+    stashApplySha: (cwd, sha) => {
+      record("stashApplySha", [cwd, sha]);
+      return implementations.stashApplySha(cwd, sha);
+    },
+    stashPushAll: (cwd, message) => {
+      record("stashPushAll", [cwd, message]);
+      return implementations.stashPushAll(cwd, message);
+    },
+    setMoveRef: (cwd, ref, sha) => {
+      record("setMoveRef", [cwd, ref, sha]);
+      return implementations.setMoveRef(cwd, ref, sha);
+    },
+    deleteMoveRef: (cwd, ref, sha) => {
+      record("deleteMoveRef", [cwd, ref, sha]);
+      return implementations.deleteMoveRef(cwd, ref, sha);
+    },
+    cleanMoveCopies: (cwd, snapshot) => {
+      record("cleanMoveCopies", [cwd, snapshot]);
+      return implementations.cleanMoveCopies(cwd, snapshot);
+    },
+
+    isDirty: (cwd) => {
+      record("isDirty", [cwd]);
+      return implementations.isDirty(cwd);
+    },
+    cleanupSafetyProbe: (cwd) => {
+      record("cleanupSafetyProbe", [cwd]);
+      return implementations.cleanupSafetyProbe(cwd);
+    },
+    fastForwardTo: (cwd, sha, expectedBranch) => {
+      record(
+        "fastForwardTo",
+        expectedBranch === undefined ? [cwd, sha] : [cwd, sha, expectedBranch],
+      );
+      return implementations.fastForwardTo(cwd, sha, expectedBranch);
+    },
+    initializeWorktreeSubmodules: (path, policy) => {
+      record("initializeWorktreeSubmodules", [path, policy]);
+      return implementations.initializeWorktreeSubmodules(path, policy);
+    },
+    listWorktrees: (cwd) => {
+      record("listWorktrees", [cwd]);
+      return implementations.listWorktrees(cwd);
+    },
+    resolveCheckoutTarget: (input) => {
+      record("resolveCheckoutTarget", [input]);
+      return implementations.resolveCheckoutTarget(input);
+    },
+    inspectCheckoutIdentity: (path) => {
+      record("inspectCheckoutIdentity", [path]);
+      return implementations.inspectCheckoutIdentity(path);
+    },
+    inspectCheckout: (path, options) => {
+      record("inspectCheckout", [path, options]);
+      return implementations.inspectCheckout(path, options);
+    },
+    clearMissingRegistration: (cwd, path) => {
+      record("clearMissingRegistration", [cwd, path]);
+      return implementations.clearMissingRegistration(cwd, path);
+    },
+    readWorktreePreparation: (path) => {
+      record("readWorktreePreparation", [path]);
+      return implementations.readWorktreePreparation(path);
+    },
+    allocateWorktreePath: (input) => {
+      record("allocateWorktreePath", [input]);
+      return implementations.allocateWorktreePath(input);
+    },
+    resolveAvailableBranchName: (cwd, name) => {
+      record("resolveAvailableBranchName", [cwd, name]);
+      return implementations.resolveAvailableBranchName(cwd, name);
+    },
+    isValidBranchName: (name) => {
+      record("isValidBranchName", [name]);
+      return implementations.isValidBranchName(name);
+    },
     cloneRepository: (input) => {
       record("cloneRepository", [input]);
       return implementations.cloneRepository(input);
@@ -166,6 +338,10 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       record("prepareCommitContext", [cwd, filePaths]);
       return implementations.prepareCommitContext(cwd, filePaths);
     },
+    commitPrepared: (cwd, subject, body, context, options) => {
+      record("commitPrepared", [cwd, subject, body, context, options]);
+      return implementations.commitPrepared(cwd, subject, body, context, options);
+    },
     commit: (cwd, subject, body) => {
       record("commit", [cwd, subject, body]);
       return implementations.commit(cwd, subject, body);
@@ -181,6 +357,10 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     readDefaultBranch: (cwd) => {
       record("readDefaultBranch", [cwd]);
       return implementations.readDefaultBranch(cwd);
+    },
+    readAdvertisedDefaultBranch: (cwd) => {
+      record("readAdvertisedDefaultBranch", [cwd]);
+      return implementations.readAdvertisedDefaultBranch(cwd);
     },
     readConfigValue: (cwd, key) => {
       record("readConfigValue", [cwd, key]);
@@ -407,6 +587,8 @@ export const makeGitProjectRepositories = (
     Layer.succeed(ProjectionThreadRepository, {
       listByProjectId: () => Effect.succeed([]),
       listProjectIdsByWorktreePath: () => Effect.succeed([]),
+      touchActivity: () => Effect.void,
+      getActivityState: () => Effect.succeed(Option.none()),
       getById: () => Effect.succeed(Option.none()),
       upsert: () => Effect.void,
       deleteById: () => Effect.void,

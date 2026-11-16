@@ -1,4 +1,5 @@
 import { javascriptRuntimeExecutable } from "@t3tools/shared/hostRuntime";
+import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import { profileGithubEnvironment } from "./profileGithubEnvironment";
 import { appendGitConfigPairs } from "./gitConfigEnvironment";
 import { assertExecutionDirectory } from "../profiles/executionDirectory";
@@ -70,7 +71,7 @@ async function resolveNetworkRemote(
   if (!remote.includes(":") && !remote.includes("/") && !remote.includes("\\")) {
     const result = await runProcess(
       "git",
-      ["remote", "get-url", "--all", ...(operation === "push" ? ["--push"] : []), remote],
+      ["remote", "get-url", "--all", ...(operation === "push" ? ["--push"] : []), "--", remote],
       {
         cwd: cwd,
         env: environment,
@@ -185,7 +186,7 @@ export async function profileGitEnvironment(input: {
     const remote = await resolveNetworkRemote(input.cwd, input.args, environment);
     if (remote.includes("\n"))
       throw new Error("Use a single HTTPS remote URL for profile-authenticated operations.");
-    if (remote.startsWith("ssh:") || /^[^/]+@[^:]+:/.test(remote))
+    if (isSshRemoteUrl(remote))
       throw new Error(
         "Profile-authenticated Git operations require an HTTPS GitHub remote. Update the remote URL to HTTPS.",
       );

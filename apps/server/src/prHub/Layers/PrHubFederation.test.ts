@@ -6,6 +6,7 @@ import { makePrHubAccountRouter, type PrHubAccountRuntime } from "./PrHubFederat
 import type { ForgeProvider } from "../../sourceControl/ForgeSourceControlProvider.ts";
 import type { PrHubServiceShape } from "../Services/PrHubService.ts";
 import { SourceControlProviderError } from "../../sourceControl/SourceControlProvider.ts";
+import { prHubPeekErrorCode } from "../prHubPeekError.ts";
 
 const alice: ForgeAccount = {
   id: "alice",
@@ -72,6 +73,21 @@ function setup() {
 }
 const refKey = (repository: string, host = "ghe.example.com") => `github:${host}/${repository}#7`;
 describe("PR Hub account router", () => {
+  it.each([
+    [{ accountId: "absent" }, "PrHubAccountChanged"],
+    [{ accountId: "alice", key: refKey("org/alice", "github.com") }, "PrHubAccountMismatch"],
+    [{ accountId: "alice", key: refKey("org/bob") }, "PrHubAccountMismatch"],
+    [{ accountId: "alice", accountGeneration: "old-generation" }, "PrHubAccountChanged"],
+  ])("preserves stable peek codes for routing failure %j", async (input, expected) => {
+    const { router } = setup();
+    const code = await Effect.runPromise(
+      router(input).pipe(
+        Effect.map(() => undefined),
+        Effect.catch((error) => Effect.succeed(prHubPeekErrorCode(error))),
+      ),
+    );
+    expect(code).toBe(expected);
+  });
   it("checks repository routing even when the caller supplies an explicit account", async () => {
     const { router } = setup();
     expect(

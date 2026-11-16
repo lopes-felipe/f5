@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 
 import { parseGlobalSearchQuery } from "../lib/globalSearchQuery";
-import type { Project, Thread } from "../types";
+import type { Project, ThreadListItem } from "../types";
 import {
   buildThreadActionItems,
+  type CommandPaletteThread,
   filterCommandPaletteGroups,
   type CommandPaletteActionItem,
 } from "./CommandPalette.logic";
@@ -11,10 +12,11 @@ import {
 export function buildSidebarThreadSearchItems(input: {
   query: string;
   projects: ReadonlyArray<Project>;
-  threads: ReadonlyArray<Thread>;
-  activeThreadId?: Thread["id"];
+  threads: ReadonlyArray<CommandPaletteThread>;
+  activeThreadId?: ThreadListItem["id"];
   icon: ReactNode;
-  runThread: (thread: Thread) => Promise<void>;
+  runThread: (thread: ThreadListItem) => Promise<void>;
+  activityAtOf?: (thread: ThreadListItem) => string | null | undefined;
   limit?: number;
 }): CommandPaletteActionItem[] {
   const parsed = parseGlobalSearchQuery(input.query);
@@ -39,6 +41,7 @@ export function buildSidebarThreadSearchItems(input: {
     projectTitleById,
     icon: input.icon,
     runThread: input.runThread,
+    ...(input.activityAtOf ? { activityAtOf: input.activityAtOf } : {}),
   });
   const filteredItems =
     parsed.text.length === 0

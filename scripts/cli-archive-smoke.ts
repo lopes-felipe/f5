@@ -7,7 +7,9 @@ import * as os from "node:os";
 import * as net from "node:net";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { cliTarget, parseRelease, sha256File } from "@t3tools/shared/cliRelease";
+import { cliTarget, parseRelease, sha256File, tarExecutable } from "@t3tools/shared/cliRelease";
+import { installedCliSmoke } from "./cli-installed-upgrade-smoke.ts";
+import { waitForCliBootstrap } from "./cli-smoke-readiness.ts";
 const exec = promisify(execFile);
 const [archive, manifestFile] = process.argv.slice(2);
 if (!archive || !manifestFile) throw new Error("Usage: cli-archive-smoke.ts ARCHIVE MANIFEST");
@@ -22,15 +24,19 @@ if (
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "f5-cli-smoke-"));
 let child: ReturnType<typeof spawn> | undefined;
 try {
-  await exec("tar", ["-xzf", path.resolve(archive), "-C", directory]);
+  await exec(tarExecutable(), ["-xzf", path.resolve(archive), "-C", directory]);
   const runtime = path.join(directory, `f5-${release.version}-${artifact.target}`);
   const executable = path.join(runtime, process.platform === "win32" ? "f5.exe" : "f5");
   const emptyPath = path.join(directory, "empty-path");
   await fs.mkdir(emptyPath);
   const home = path.join(directory, "home");
   await fs.mkdir(home);
+  // Windows names it `Path`; drop every casing so the child cannot inherit the real one.
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "PATH"),
+  );
   const env = {
-    ...process.env,
+    ...inherited,
     PATH: emptyPath,
     SHELL: path.join(emptyPath, "no-login-shell"),
     HOME: home,
@@ -76,39 +82,32 @@ try {
     console.error(error.message);
   });
   await log.close();
-  let ready = false;
-  for (let attempt = 0; attempt < 120; attempt++) {
-    if (child.exitCode !== null || child.signalCode !== null)
-      throw new Error(
-        "Standalone server exited: " +
-          (await fs.readFile(path.join(directory, "server.log"), "utf8")),
-      );
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/bootstrap`, {
-        signal: AbortSignal.timeout(1000),
-      });
-      if (response.ok) {
-        const body: unknown = await response.json();
-        if (body && typeof body === "object" && "protocolVersion" in body) {
-          ready = true;
-          break;
-        }
-      }
-    } catch {
-      /* Wait for migrations/acquisitions. */
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  if (!ready)
-    throw new Error(
-      "Standalone server did not become ready: " +
-        (await fs.readFile(path.join(directory, "server.log"), "utf8")),
-    );
+  const owned = child;
+  await waitForCliBootstrap(
+    `http://127.0.0.1:${port}`,
+    () => owned.exitCode !== null || owned.signalCode !== null,
+    () => fs.readFile(path.join(directory, "server.log"), "utf8"),
+  );
   const web = await fetch(`http://127.0.0.1:${port}/`);
   if (!web.ok || !(await web.text()).includes("<html"))
     throw new Error("Standalone web assets are unavailable.");
+  // Exercises the owned child with no Node/Bun or provider CLIs on PATH.
+  const backup = await fetch(`http://127.0.0.1:${port}/api/storage/backup`, {
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!backup.ok || backup.headers.get("content-type") !== "application/x-f5-backup")
+    throw new Error(`Standalone maintenance export failed: ${await backup.text()}`);
+  const backupBytes = Buffer.from(await backup.arrayBuffer());
+  if (
+    backupBytes.length === 0 ||
+    backupBytes.length !== Number(backup.headers.get("content-length"))
+  )
+    throw new Error("Standalone backup download is incomplete.");
+  await fs.writeFile(path.join(directory, "standalone.f5backup"), backupBytes);
+  if (process.env.GITHUB_ACTIONS === "true")
+    await installedCliSmoke(executable, archive, release, path.join(directory, "installed"));
   console.log(
-    `Standalone clean-PATH smoke passed for ${artifact.target}: server, migrations, web assets, native PTY and native search. Artifacts: ${directory}`,
+    `Standalone clean-PATH smoke passed for ${artifact.target}: server, migrations, web assets, native PTY, native search and backup maintenance. Artifacts: ${directory}`,
   );
 } finally {
   if (child && child.exitCode === null && child.signalCode === null) {

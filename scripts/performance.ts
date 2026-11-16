@@ -8,7 +8,22 @@ import { validateCoverage } from "./lib/performance/coverage.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const args = process.argv.slice(2);
-if (args[0] === "coverage") {
+if (args[0] === "computer-tasks") {
+  const run = spawnSync("bun", ["scripts/performance-computer.mjs", ...args.slice(1)], {
+    cwd: root,
+    stdio: "inherit",
+  });
+  if (run.error) throw run.error;
+  process.exitCode = run.status ?? 1;
+} else if (args[0] === "computer") {
+  const run = spawnSync(
+    "bun",
+    ["apps/desktop/src/computer/rehearseInspectMacos.ts", ...args.slice(1), "--performance"],
+    { cwd: root, stdio: "inherit" },
+  );
+  if (run.error) throw run.error;
+  process.exitCode = run.status ?? 1;
+} else if (args[0] === "coverage") {
   if (args.length !== 3)
     throw new Error("Usage: bun scripts/performance.ts coverage <server.json> <interactive.json>");
   const reports = args
@@ -40,10 +55,11 @@ if (args[0] === "coverage") {
     );
 } else {
   const interactive = args[0] === "interactive";
-  if (interactive) args.shift();
+  const checkpoint = args[0] === "sqlite-checkpoint";
+  if (interactive || checkpoint) args.shift();
   if (args.some((arg) => arg !== "--smoke" && !arg.startsWith("--output=")))
     throw new Error(
-      "Usage: bun scripts/performance.ts [interactive] [--smoke] [--output=<new-report.json>]",
+      "Usage: bun scripts/performance.ts [interactive|sqlite-checkpoint] [--smoke] [--output=<new-report.json>]",
     );
   const smoke = args.includes("--smoke");
   const output = path.resolve(
@@ -70,6 +86,7 @@ if (args[0] === "coverage") {
         F5_PERF_REPORT: output,
         F5_PERF_SMOKE: smoke ? "1" : "0",
         F5_PERF_INTERACTIVE: interactive ? "1" : "0",
+        F5_PERF_SQLITE_CHECKPOINT: checkpoint ? "1" : "0",
         F5_PERF_MEMORY_MINUTES: interactive && !smoke ? "10" : "0",
       },
     },

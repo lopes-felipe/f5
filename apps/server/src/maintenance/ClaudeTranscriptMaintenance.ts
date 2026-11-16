@@ -8,7 +8,7 @@ import {
   beginClaudeTranscriptMaintenance,
   findClaudeTranscript,
 } from "../provider/claudeTranscript.ts";
-import { resolveClaudeConfigDir } from "../provider/Layers/ClaudeAdapter.ts";
+import { resolveClaudeConfigDir } from "../provider/Drivers/ClaudeHome.ts";
 import { readPersistedCwd } from "../provider/runtimePayload.ts";
 import { withProviderThreadAccess } from "../provider/providerThreadAccess.ts";
 import type { ProviderSessionDirectoryShape } from "../provider/Services/ProviderSessionDirectory.ts";
@@ -98,7 +98,9 @@ export function getClaudeTranscriptMaintenance(input: MaintenanceInput) {
         : false;
       return {
         canRepair:
-          metadata.missingResumePoint !== undefined || inspection.reason === "missing_resume_point",
+          metadata.missingResumePoint !== undefined ||
+          metadata.transcriptFork !== undefined ||
+          inspection.reason !== "eligible",
         ...(undoAvailable ? { backupId } : {}),
       };
     }),
@@ -166,6 +168,7 @@ export function runClaudeTranscriptMaintenance(input: MaintenanceInput, backupId
         );
         const recovered: Record<string, unknown> = { ...result.resumeCursor };
         delete recovered.missingResumePoint;
+        delete recovered.transcriptFork;
         yield* input.directory.upsert({
           threadId: input.threadId,
           provider: "claudeAgent",
@@ -174,6 +177,8 @@ export function runClaudeTranscriptMaintenance(input: MaintenanceInput, backupId
         return {
           ...("backupId" in result ? { backupId: result.backupId } : {}),
           restoredMessages: result.restoredMessages,
+          quarantinedBranchMessages: result.quarantinedBranchMessages,
+          quarantinedMalformedLines: result.quarantinedMalformedLines,
           status: result.status,
         };
       }).pipe(Effect.ensuring(Effect.sync(release)));

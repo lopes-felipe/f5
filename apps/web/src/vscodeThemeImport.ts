@@ -1,22 +1,33 @@
-import { converter, parse } from "culori";
+import { converter, formatHex, parse, wcagContrast } from "culori";
 import { strFromU8, unzipSync } from "fflate";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 
 import {
   createCustomThemeDefinition,
+  generateThemeTokens,
   MAX_THEME_DEFINITION_BYTES,
+  MIN_BODY_TEXT_CONTRAST,
+  normalizeThemeParameters,
   parseSafeThemeColor,
   parseThemeDefinitionV1,
   type ThemeDefinitionV1,
+  type ThemeParameters,
   type ThemeTokenName,
+  type ThemeVariant,
 } from "./themePalette";
 import { randomUUID } from "./lib/utils";
 
 export const MAX_THEME_IMPORT_BYTES = 10 * 1024 * 1024;
 const MAX_VSCODE_THEME_BYTES = 1024 * 1024;
 const MAX_VSIX_PACKAGE_BYTES = 256 * 1024;
+/**
+ * Focus rings, switch tracks and input borders must clear this contrast floor
+ * against every surface or state they sit next to, or they disappear.
+ */
+const MIN_CONTROL_SEPARATION = 1.1;
 const decoder = new TextDecoder();
 const toOklch = converter("oklch");
+const toRgb = converter("rgb");
 
 interface VsCodeThemeDocument {
   readonly name?: unknown;
@@ -68,11 +79,7 @@ const VSCODE_COLOR_TOKEN_MAP = {
   "editorGroupHeader.tabsBackground": ["muted"],
   "editor.selectionBackground": ["accent"],
   "editor.selectionForeground": ["accent-foreground"],
-  "button.background": ["primary", "ring"],
-  "button.foreground": ["primary-foreground"],
-  focusBorder: ["ring"],
   "panel.border": ["border"],
-  "input.background": ["input"],
   errorForeground: ["destructive", "destructive-foreground"],
 } as const satisfies Readonly<Record<string, readonly ThemeTokenName[]>>;
 
@@ -83,9 +90,16 @@ function scopesFromTokenColor(value: unknown): readonly string[] {
   return [];
 }
 
-function mapTokenColors(value: unknown): Partial<Record<ThemeTokenName, string>> {
-  if (!Array.isArray(value)) return {};
+interface MappedTokenColors {
+  readonly overrides: Partial<Record<ThemeTokenName, string>>;
+  /** The keyword color, an accent candidate for `primary` and `ring`. */
+  readonly keyword: string | undefined;
+}
+
+function mapTokenColors(value: unknown): MappedTokenColors {
+  if (!Array.isArray(value)) return { overrides: {}, keyword: undefined };
   const mapped: Partial<Record<ThemeTokenName, string>> = {};
+  let keyword: string | undefined;
   for (const entry of value) {
     if (!isRecord(entry) || !isRecord(entry.settings)) continue;
     const color = readSafeColor(entry.settings.foreground);
@@ -95,30 +109,162 @@ function mapTokenColors(value: unknown): Partial<Record<ThemeTokenName, string>>
       mapped["muted-foreground"] ??= color;
     }
     if (scopes.some((scope) => scope.includes("keyword") || scope.includes("storage.type"))) {
-      mapped.primary ??= color;
-      mapped.ring ??= color;
+      keyword ??= color;
     }
     if (scopes.some((scope) => scope.includes("string"))) {
       mapped.success ??= color;
       mapped["success-foreground"] ??= color;
     }
   }
-  return mapped;
+  return { overrides: mapped, keyword };
 }
 
-function baseParametersFromColors(colors: Readonly<Partial<Record<ThemeTokenName, string>>>): {
-  baseHue: number;
-  chroma: number;
-  contrast: number;
-} {
-  const seed = colors.primary ?? colors.ring;
+/** Composites a translucent color over an opaque backdrop. */
+function flattenOver(color: string, backdrop: string): string {
+  const top = toRgb(parse(color));
+  const bottom = toRgb(parse(backdrop));
+  const alpha = top?.alpha ?? 1;
+  if (!top || !bottom || alpha >= 1) return color;
+  const blend = (front: number, back: number) => front * alpha + back * (1 - alpha);
+  return formatHex({
+    mode: "rgb",
+    r: blend(top.r, bottom.r),
+    g: blend(top.g, bottom.g),
+    b: blend(top.b, bottom.b),
+  });
+}
+
+function standsApart(color: string, surfaces: readonly (string | undefined)[]): boolean {
+  return surfaces.every(
+    (surface) => surface === undefined || wcagContrast(color, surface) >= MIN_CONTROL_SEPARATION,
+  );
+}
+
+/**
+ * The first candidate that, once flattened over `canvas`, stays distinct from
+ * every listed surface. Unset surfaces are skipped.
+ */
+function firstApart(
+  candidates: readonly (string | undefined)[],
+  canvas: string,
+  surfaces: readonly (string | undefined)[],
+): string | undefined {
+  for (const candidate of candidates) {
+    if (candidate === undefined) continue;
+    const flattened = flattenOver(candidate, canvas);
+    if (standsApart(flattened, surfaces)) return flattened;
+  }
+  return undefined;
+}
+
+/**
+ * Normalized so the tokens checked at import match the ones rendered from the
+ * stored (rounded) parameters.
+ */
+function baseParametersFromSeed(seed: string | undefined): ThemeParameters {
   const parsed = seed ? parse(seed) : undefined;
   const converted = parsed ? toOklch(parsed) : undefined;
-  return {
+  return normalizeThemeParameters({
     baseHue: typeof converted?.h === "number" ? converted.h : 264,
     chroma: typeof converted?.c === "number" ? Math.max(0.06, Math.min(0.24, converted.c)) : 0.16,
     contrast: 1,
-  };
+  });
+}
+
+interface ControlColorSources {
+  readonly keyword: string | undefined;
+  readonly focusBorder: string | undefined;
+  readonly buttonBackground: string | undefined;
+  readonly buttonForeground: string | undefined;
+  readonly inputBackground: string | undefined;
+  readonly inputBorder: string | undefined;
+}
+
+type ControlTokenName = "primary" | "primary-foreground" | "ring" | "input";
+
+function isReadableOn(text: string, fill: string): boolean {
+  return wcagContrast(flattenOver(text, fill), fill) >= MIN_BODY_TEXT_CONTRAST;
+}
+
+/**
+ * Resolves `ring` (focus), `primary` (checked switch track), its foreground,
+ * and `input` (unchecked switch track, input borders). VS Code themes often
+ * set these workbench keys to transparent or to the editor background, so an
+ * authored color is accepted only when it stays distinct from the surfaces
+ * next to it; otherwise the next candidate, then the generated value, then
+ * black or white.
+ */
+function resolveControlColors(
+  surfaces: Readonly<Partial<Record<ThemeTokenName, string>>>,
+  variant: ThemeVariant,
+  sources: ControlColorSources,
+): {
+  readonly parameters: ThemeParameters;
+  readonly controls: Partial<Record<ControlTokenName, string>>;
+} {
+  // The generated background's lightness does not depend on hue or chroma, so
+  // any parameters give a usable stand-in when the file sets no background.
+  const fallbackCanvas = generateThemeTokens(baseParametersFromSeed(undefined), variant).background;
+  const canvas = surfaces.background
+    ? flattenOver(surfaces.background, fallbackCanvas)
+    : fallbackCanvas;
+
+  // The hue comes from the theme's accent even when that color is later
+  // rejected next to the raised surface, which needs the parameters first.
+  const seed = firstApart(
+    [sources.keyword, sources.buttonBackground, sources.focusBorder],
+    canvas,
+    [canvas],
+  );
+  const parameters = baseParametersFromSeed(seed);
+  const generated = generateThemeTokens(parameters, variant);
+  const raised = surfaces.popover ? flattenOver(surfaces.popover, canvas) : generated.popover;
+  const accentSurfaces = [canvas, raised];
+
+  const ring = firstApart(
+    [sources.keyword, sources.focusBorder, sources.buttonBackground],
+    canvas,
+    accentSurfaces,
+  );
+  const primary = firstApart([sources.keyword, sources.buttonBackground], canvas, accentSurfaces);
+
+  const controls: Partial<Record<ControlTokenName, string>> = {};
+  if (ring) controls.ring = ring;
+  else if (!standsApart(generated.ring, accentSurfaces)) {
+    controls.ring = firstApart(["#ffffff", "#000000"], canvas, accentSurfaces) ?? "#ffffff";
+  }
+  if (primary) controls.primary = primary;
+  else if (!standsApart(generated.primary, accentSurfaces)) {
+    controls.primary = controls.ring ?? generated.ring;
+  }
+
+  // `button.foreground` was chosen for `button.background`; keep it on any
+  // other fill only when it is still readable there.
+  const resolvedPrimary = controls.primary ?? generated.primary;
+  const primaryIsButton =
+    primary !== undefined &&
+    sources.buttonBackground !== undefined &&
+    primary === flattenOver(sources.buttonBackground, canvas);
+  if (
+    sources.buttonForeground &&
+    (primaryIsButton || isReadableOn(sources.buttonForeground, resolvedPrimary))
+  ) {
+    controls["primary-foreground"] = sources.buttonForeground;
+  } else if (!isReadableOn(generated["primary-foreground"], resolvedPrimary)) {
+    controls["primary-foreground"] =
+      wcagContrast("#ffffff", resolvedPrimary) >= wcagContrast("#000000", resolvedPrimary)
+        ? "#ffffff"
+        : "#000000";
+  }
+
+  const inputSurfaces = [canvas, resolvedPrimary];
+  const input = firstApart([sources.inputBackground, sources.inputBorder], canvas, inputSurfaces);
+  if (input) controls.input = input;
+  else if (!standsApart(generated.input, inputSurfaces)) {
+    controls.input =
+      firstApart([generated.border, "#000000", "#ffffff"], canvas, inputSurfaces) ?? "#808080";
+  }
+  return { parameters, controls };
 }
 
 export function importVsCodeThemeDocument(
@@ -138,16 +284,29 @@ export function importVsCodeThemeDocument(
     if (!color) continue;
     for (const target of targets) overrides[target] = color;
   }
-  Object.assign(overrides, mapTokenColors(document.tokenColors));
-  if (Object.keys(overrides).length === 0) {
+  const tokenColors = mapTokenColors(document.tokenColors);
+  Object.assign(overrides, tokenColors.overrides);
+  const controlSources: ControlColorSources = {
+    keyword: tokenColors.keyword,
+    focusBorder: readSafeColor(colors.focusBorder),
+    buttonBackground: readSafeColor(colors["button.background"]),
+    buttonForeground: readSafeColor(colors["button.foreground"]),
+    inputBackground: readSafeColor(colors["input.background"]),
+    inputBorder: readSafeColor(colors["input.border"]),
+  };
+  if (
+    Object.keys(overrides).length === 0 &&
+    Object.values(controlSources).every((color) => color === undefined)
+  ) {
     throw new Error("The VS Code theme has no supported color or token-color entries.");
   }
   const variant = document.type === "light" || document.type === "hcLight" ? "light" : "dark";
+  const { parameters, controls } = resolveControlColors(overrides, variant, controlSources);
   return createCustomThemeDefinition({
     id: sanitizeThemeId(name),
     name,
-    parameters: baseParametersFromColors(overrides),
-    overrides: { [variant]: overrides },
+    parameters,
+    overrides: { [variant]: { ...overrides, ...controls } },
   });
 }
 

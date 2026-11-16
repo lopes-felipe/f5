@@ -6,6 +6,9 @@ import { ServerConfig } from "../../config";
 import { ServerSettingsService } from "../../serverSettings";
 import { ServerSecretStore } from "../../auth/Services/ServerSecretStore";
 import { profileGitEnvironment } from "../profileGitEnvironment";
+import { managedGitProcessEnvironment } from "../gitProcessEnvironment.ts";
+import { resolveGitExecutable, runsGitWithoutConsole } from "../../spawn/resolveCommand.ts";
+import { terminateOnRelease } from "../../spawn/terminateOnRelease.ts";
 /**
  * Git process helpers - Effect-native git execution with typed errors.
  *
@@ -14,7 +17,7 @@ import { profileGitEnvironment } from "../profileGitEnvironment";
  *
  * @module GitServiceLive
  */
-import { Effect, Layer, Option, Schema, Stream } from "effect";
+import { Effect, Layer, Option, Schema, Semaphore, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { GitCommandError } from "../Errors.ts";
 import {
@@ -26,6 +29,14 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
+/**
+ * Short commands share these slots across every service instance, so a burst
+ * (status polling across many threads) cannot spawn unbounded processes and
+ * stall the server. Longer or unbounded commands bypass the pool: a slow push
+ * or clone never holds a slot that short commands wait on. Queue time does not
+ * count toward a command's timeout.
+ */
+const gitProcesses = Semaphore.makeUnsafe(8);
 
 function quoteGitCommand(args: ReadonlyArray<string>): string {
   return `git ${args.join(" ")}`;
@@ -138,13 +149,23 @@ const makeGitService = Effect.gen(function* () {
           })
         : { ...process.env, ...input.env };
 
-      Object.assign(environment, NONINTERACTIVE_GIT_ENV, { SSH_ASKPASS_REQUIRE: "force" });
+      const protectedEnvironment = yield* Effect.try({
+        try: () => managedGitProcessEnvironment(environment),
+        catch: toGitCommandError(commandInput, "Invalid Git process configuration."),
+      });
+      Object.assign(environment, protectedEnvironment);
+      Object.assign(environment, NONINTERACTIVE_GIT_ENV, {
+        SSH_ASKPASS_REQUIRE: "force",
+        // Required mutation locks still apply. Passive reads must not write a
+        // refreshed index beside a user's own Git operation or generation.
+        GIT_OPTIONAL_LOCKS: "0",
+      });
       if (["fetch", "push", "pull", "ls-remote", "clone"].includes(input.args[0] ?? "")) {
         const configured = environment.GIT_SSH_COMMAND
           ? null
           : yield* Effect.tryPromise({
               try: () =>
-                runProcess("git", ["config", "--get", "core.sshCommand"], {
+                runProcess("git", ["config", "--get", "--", "core.sshCommand"], {
                   cwd: input.cwd,
                   env: environment,
                   allowNonZeroExit: true,
@@ -162,29 +183,85 @@ const makeGitService = Effect.gen(function* () {
           : `${ssh} -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3`;
       }
 
-      const child = yield* commandSpawner
-        .spawn(
-          ChildProcess.make("git", commandInput.args, {
+      // The pinned Effect NodeSink does not handle stdin "error" events. Git may
+      // close input before a checkpoint write completes (especially on shutdown).
+      // Use the shared native runner for input-fed commands and await its shutdown
+      // before releasing the repository's calling scope.
+      const runNative = Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const controller = new AbortController();
+          const pending = runProcess(resolveGitExecutable(environment), commandInput.args, {
             cwd: commandInput.cwd,
             env: environment,
-            ...(input.stdin === undefined
-              ? {}
-              : { stdin: Stream.make(new TextEncoder().encode(input.stdin)) }),
-          }),
-        )
-        .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));
-
-      const [stdout, stderr, exitCode] = yield* Effect.all(
-        [
-          collectOutput(commandInput, child.stdout, maxOutputBytes, input.onStdoutChunk),
-          collectOutput(commandInput, child.stderr, maxOutputBytes, input.onStderrChunk),
-          child.exitCode.pipe(
-            Effect.map((value) => Number(value)),
-            Effect.mapError(toGitCommandError(commandInput, "failed to report exit code.")),
+            stdin: input.stdin,
+            timeoutMs: null, // The enclosing Effect owns the command deadline.
+            allowNonZeroExit: true,
+            maxBufferBytes: maxOutputBytes,
+            onStdoutChunk: input.onStdoutChunk,
+            onStderrChunk: input.onStderrChunk,
+            signal: controller.signal,
+          });
+          return { controller, pending };
+        }),
+        ({ pending }) =>
+          Effect.tryPromise({
+            try: () => pending,
+            catch: toGitCommandError(commandInput, "native command failed."),
+          }).pipe(
+            Effect.flatMap((result) =>
+              result.signal
+                ? Effect.fail(
+                    toGitCommandError(
+                      commandInput,
+                      "failed to report exit code.",
+                    )(new Error("Git process exited with signal " + result.signal)),
+                  )
+                : Effect.succeed([result.stdout, result.stderr, result.code ?? 1] as const),
+            ),
           ),
-        ],
-        { concurrency: "unbounded" },
+        ({ controller, pending }) =>
+          Effect.promise(async () => {
+            controller.abort();
+            await pending.catch(() => {});
+          }),
       );
+      const runWithoutInput = Effect.gen(function* () {
+        const child = yield* commandSpawner
+          .spawn(
+            ChildProcess.make(resolveGitExecutable(environment), commandInput.args, {
+              cwd: commandInput.cwd,
+              env: environment,
+            }),
+          )
+          .pipe(
+            Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")),
+            // Hooks, credential helpers and ssh can ignore SIGTERM on timeout.
+            Effect.tap(terminateOnRelease),
+            Effect.uninterruptible,
+          );
+
+        return yield* Effect.all(
+          [
+            collectOutput(commandInput, child.stdout, maxOutputBytes, input.onStdoutChunk),
+            collectOutput(commandInput, child.stderr, maxOutputBytes, input.onStderrChunk),
+            child.exitCode.pipe(
+              Effect.map((value) => Number(value)),
+              Effect.mapError(toGitCommandError(commandInput, "failed to report exit code.")),
+            ),
+          ],
+          { concurrency: "unbounded" },
+        );
+      });
+      // The pinned Effect spawner cannot forward windowsHide. Native spawning sets both
+      // windowsHide and detached, avoiding a console host for these exact Windows reads.
+      const useNativeRunner =
+        input.stdin !== undefined ||
+        runsGitWithoutConsole(
+          process.platform,
+          resolveGitExecutable(environment),
+          commandInput.args,
+        );
+      const [stdout, stderr, exitCode] = yield* useNativeRunner ? runNative : runWithoutInput;
 
       if (!input.allowNonZeroExit && exitCode !== 0) {
         const trimmedStderr = stderr.trim();
@@ -204,7 +281,7 @@ const makeGitService = Effect.gen(function* () {
 
     if (timeoutMs === null) return yield* commandEffect.pipe(Effect.scoped);
 
-    return yield* commandEffect.pipe(
+    const timed = commandEffect.pipe(
       Effect.scoped,
       Effect.timeoutOption(timeoutMs),
       Effect.flatMap((result) =>
@@ -222,6 +299,7 @@ const makeGitService = Effect.gen(function* () {
         }),
       ),
     );
+    return yield* timeoutMs > DEFAULT_TIMEOUT_MS ? timed : gitProcesses.withPermits(1)(timed);
   });
 
   return {

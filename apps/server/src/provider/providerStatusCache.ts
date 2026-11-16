@@ -25,6 +25,9 @@ const mergeProviderModels = (
   cachedModels: ReadonlyArray<ServerProvider["models"][number]>,
 ): ReadonlyArray<ServerProvider["models"][number]> => {
   const fallbackSlugs = new Set(fallbackModels.map((model) => model.slug));
+  const cachedBySlug = new Map(
+    cachedModels.filter((model) => !model.isCustom).map((model) => [model.slug, model] as const),
+  );
   const reportedBySlug = new Map(
     cachedModels
       .filter((model) => !model.isCustom && isReportedModel(model))
@@ -32,8 +35,13 @@ const mergeProviderModels = (
   );
   return [
     ...fallbackModels.map((model) => {
+      const cached = model.isCustom ? undefined : cachedBySlug.get(model.slug);
       const reported = model.isCustom ? undefined : reportedBySlug.get(model.slug);
-      return reported ? { ...model, capabilities: reported.capabilities } : model;
+      return {
+        ...model,
+        ...(reported ? { capabilities: reported.capabilities } : {}),
+        ...(cached?.isUnlisted !== undefined ? { isUnlisted: cached.isUnlisted } : {}),
+      };
     }),
     ...cachedModels.filter((model) => !model.isCustom && !fallbackSlugs.has(model.slug)),
   ];
@@ -81,6 +89,9 @@ export const hydrateCachedProvider = (input: {
     status: input.cachedProvider.status,
     auth: input.cachedProvider.auth,
     checkedAt: input.cachedProvider.checkedAt,
+    ...(input.cachedProvider.modelCatalog
+      ? { modelCatalog: input.cachedProvider.modelCatalog }
+      : {}),
     ...(input.cachedProvider.probeOutcome
       ? { probeOutcome: input.cachedProvider.probeOutcome }
       : {}),

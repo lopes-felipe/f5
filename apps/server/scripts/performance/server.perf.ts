@@ -21,7 +21,7 @@ import { ensureAttachmentSchema } from "../../src/persistence/Migrations/Attachm
 import { makeAttachmentUploads } from "../../src/attachmentUploads.ts";
 import * as NodeSqlite from "../../src/persistence/NodeSqliteClient.ts";
 import { ServerConfig } from "../../src/config.ts";
-import { GitCoreLive } from "../../src/git/Layers/GitCore.ts";
+import { GitCoreTestLive as GitCoreLive } from "../../src/git/testLayers.ts";
 import { GitServiceLive } from "../../src/git/Layers/GitService.ts";
 import { GitCore } from "../../src/git/Services/GitCore.ts";
 import { OrchestrationEventStore } from "../../src/persistence/Services/OrchestrationEventStore.ts";
@@ -29,6 +29,7 @@ import { OrchestrationEventStoreLive } from "../../src/persistence/Layers/Orches
 import { makeSqlitePersistenceLive } from "../../src/persistence/Layers/Sqlite.ts";
 import { TerminalManagerRuntime } from "../../src/terminal/Layers/Manager.ts";
 import type { PtyProcess, PtyExitEvent } from "../../src/terminal/Services/PTY.ts";
+import { measureAssistantStream, measureReadModelMemory } from "./assistantStream.ts";
 import {
   fixture,
   repositoryFile,
@@ -40,6 +41,8 @@ import {
   maximumObservation,
   type PerformanceReport,
 } from "../../../../scripts/lib/performance/report.ts";
+
+import { measureCompaction } from "./compaction.ts";
 
 const root = fileURLToPath(new URL("../../../..", import.meta.url));
 
@@ -390,12 +393,36 @@ it("records server component performance with deterministic workloads", async ()
     expect(readFileSync(path.join(repository, ".gitmodules"), "utf8")).toContain("modules/sub-1");
   } finally {
     readSpy.mockRestore();
-    terminals.dispose();
+    await terminals.dispose();
     await uploadRuntime.dispose();
     await persistence.dispose();
     await gitRuntime.dispose();
     rmSync(directory, { recursive: true, force: true });
   }
+  // Runs after the replay spy above is restored; it installs its own statement counters.
+  const stream = await measureAssistantStream(method);
+  report.measurements["orchestration.assistant-stream"] = stream.samples;
+  report.observations.push(...stream.observations, ...(await measureReadModelMemory()));
+  const claude = await measureAssistantStream(method, "claudeAgent");
+  report.measurements["orchestration.assistant-stream-claude-uncoalesced"] = claude.samples;
+  const compactionDirectory = mkdtempSync(path.join(tmpdir(), "f5-compaction-perf-"));
+  let compaction;
+  try {
+    compaction = await measureCompaction(path.join(compactionDirectory, "state.sqlite"), method);
+  } finally {
+    rmSync(compactionDirectory, { recursive: true, force: true });
+  }
+  report.measurements["sqlite.compaction-50000-event-group"] = compaction.samples;
+  report.diagnostics = Object.fromEntries([
+    ...Object.entries(compaction.diagnostics).map(
+      ([key, value]) => [`compaction.${key}`, value] as const,
+    ),
+    ...Object.entries(stream.diagnostics).map(([key, value]) => [`codex.${key}`, value] as const),
+    ...Object.entries(claude.diagnostics).map(
+      ([key, value]) => [`claudeAgent.uncoalesced.${key}`, value] as const,
+    ),
+  ]);
   mkdirSync(path.dirname(output), { recursive: true });
   writeFileSync(output, JSON.stringify(report, null, 2) + "\n", { flag: "wx" });
-}, 600_000);
+  // The streaming scenario alone takes roughly 40 s per repetition before P1.
+}, 3_600_000);

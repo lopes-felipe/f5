@@ -1,16 +1,31 @@
+import { projectLatestTurnSession } from "@t3tools/shared/turnStateTransitions";
+import { pendingActivityWindow } from "@t3tools/shared/pendingActivityWindow";
+import { resolveTurnAssistantMessage } from "@t3tools/shared/turnAssistantMessage";
+import { updateThreadPullRequestLinks } from "@t3tools/shared/sourceControl";
+import { recordMessageAppend, recordMessageListChange } from "./lib/streamingTextRevision";
+import { detailEntityKey, detailEventIsCovered } from "./orchestration/detailCoverage";
+import {
+  reconcileNativeHistoryProjection,
+  retainNativeTurnRows,
+} from "@t3tools/shared/nativeHistoryReconciliation";
+import {
+  summarizePlanningWorkflow,
+  summarizeCodeReviewWorkflow,
+  summarizeInvestigationWorkflow,
+} from "@t3tools/shared/workflowSummary";
+import { resolveProjectModel } from "./orchestrationState";
 import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
 import { projectPendingUserInputs } from "@t3tools/shared/pendingUserInputs";
+import { REASONING_STATUS_ACTIVITY_KIND } from "@t3tools/shared/orchestrationActivityPayload";
 import {
-  DEFAULT_MODEL_BY_PROVIDER,
   type OrchestrationEvent,
-  type PlanningWorkflow,
+  type PlanningWorkflowSummary as PlanningWorkflow,
   type ProjectMemory,
 } from "@t3tools/contracts";
 import {
   estimateModelContextWindowTokens,
   estimateContextTokensAfterMessageUpdate,
   estimateMessageContextCharacters,
-  resolveModelSlug,
   roughTokenEstimateFromCharacters,
 } from "@t3tools/shared/model";
 
@@ -42,11 +57,24 @@ import type {
   TurnDiffSummary,
 } from "./types";
 
-function updateThread(
+function updateThreadCollection(
   threads: Thread[],
   threadId: Thread["id"],
   updater: (thread: Thread) => Thread,
+  batch?: DomainEventBatch,
 ): Thread[] {
+  if (batch) {
+    const index = threads.findIndex((thread) => thread.id === threadId);
+    if (index < 0) return threads;
+    const previous = threads[index]!;
+    const next = updater(previous);
+    if (previous === next) return threads;
+    const result = batch.owned.has(threads) ? threads : threads.slice();
+    batch.owned.add(result);
+    batch.changed = true;
+    result[index] = next;
+    return result;
+  }
   let changed = false;
   const nextThreads = threads.map((thread) => {
     if (thread.id !== threadId) {
@@ -206,6 +234,7 @@ function upsertMessage(
 ): Thread["messages"] {
   const existingIndex = messages.findIndex((entry) => entry.id === payload.messageId);
   const existing = existingIndex >= 0 ? messages[existingIndex] : undefined;
+  const authorship = payload.authorship ?? existing?.authorship;
   const attachments = mapMessageAttachmentsFromReadModel(
     payload.attachments,
     existing?.attachments,
@@ -230,6 +259,7 @@ function upsertMessage(
     existing &&
     existing.role === payload.role &&
     existing.text === nextText &&
+    existing.authorship === authorship &&
     existing.reasoningText === nextReasoningText &&
     areUnknownEqual(existing.skillCall, payload.skillCall) &&
     (existing.turnId ?? null) === payload.turnId &&
@@ -245,7 +275,14 @@ function upsertMessage(
     id: payload.messageId,
     role: payload.role,
     text: nextText,
+    ...(authorship !== undefined ? { authorship } : {}),
     ...(nextReasoningText !== undefined ? { reasoningText: nextReasoningText } : {}),
+    ...(existing?.reasoningTokens !== undefined
+      ? { reasoningTokens: existing.reasoningTokens }
+      : {}),
+    ...(existing?.reasoningTokensEstimated !== undefined
+      ? { reasoningTokensEstimated: existing.reasoningTokensEstimated }
+      : {}),
     ...(payload.skillCall !== undefined ? { skillCall: payload.skillCall } : {}),
     ...(payload.turnId !== null ? { turnId: payload.turnId } : {}),
     createdAt: existing?.createdAt ?? payload.createdAt,
@@ -254,13 +291,42 @@ function upsertMessage(
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
   };
 
+  if (existing && payload.streaming) {
+    recordMessageAppend(existing, nextMessage, payload.text, payload.reasoningText ?? "");
+  }
   if (existingIndex < 0) {
-    return [...messages, nextMessage].slice(-MAX_THREAD_MESSAGES);
+    const next = [...messages, nextMessage].slice(-MAX_THREAD_MESSAGES);
+    recordMessageListChange(messages, next, existing, nextMessage);
+    return next;
   }
 
   const nextMessages = [...messages];
   nextMessages[existingIndex] = nextMessage;
+  recordMessageListChange(messages, nextMessages, existing, nextMessage);
   return arraysShallowEqual(nextMessages, messages) ? messages : nextMessages;
+}
+
+function addMessageReasoningTokens(
+  messages: Thread["messages"],
+  payload: Extract<
+    OrchestrationEvent,
+    { type: "thread.message-reasoning-tokens-added" }
+  >["payload"],
+): Thread["messages"] {
+  const existingIndex = messages.findIndex((entry) => entry.id === payload.messageId);
+  const existing = existingIndex >= 0 ? messages[existingIndex] : undefined;
+  if (!existing || payload.tokens === 0) return messages;
+  const nextMessage: ChatMessage = {
+    ...existing,
+    reasoningTokens: (existing.reasoningTokens ?? 0) + payload.tokens,
+    reasoningTokensEstimated: (existing.reasoningTokensEstimated ?? false) || payload.estimated,
+  };
+  // Empty suffixes carry the text revisions over, so rendered markdown is kept.
+  recordMessageAppend(existing, nextMessage, "", "");
+  const nextMessages = [...messages];
+  nextMessages[existingIndex] = nextMessage;
+  recordMessageListChange(messages, nextMessages, existing, nextMessage);
+  return nextMessages;
 }
 
 function messageCharacters(message: Pick<ChatMessage, "text" | "reasoningText" | "attachments">) {
@@ -292,6 +358,12 @@ function updateLatestTurnFromMessage(
   }
 
   const previous = thread.latestTurn?.turnId === payload.turnId ? thread.latestTurn : null;
+  // Item completion does not settle its still-active provider turn.
+  if (previous && thread.session?.activeTurnId === payload.turnId) {
+    return previous.assistantMessageId === payload.messageId
+      ? previous
+      : { ...previous, assistantMessageId: payload.messageId };
+  }
   const nextState = payload.streaming
     ? previous?.state === "interrupted"
       ? "interrupted"
@@ -497,9 +569,10 @@ function upsertActivity(
       ? [...activities, nextActivity]
       : activities.map((entry, index) => (index === existingIndex ? nextActivity : entry));
 
-  const orderedActivities = nextActivities
-    .toSorted(compareThreadActivities)
-    .slice(-MAX_THREAD_ACTIVITIES);
+  const orderedActivities = pendingActivityWindow(
+    nextActivities.toSorted(compareThreadActivities),
+    MAX_THREAD_ACTIVITIES,
+  );
   return arraysShallowEqual(orderedActivities, activities) ? activities : orderedActivities;
 }
 
@@ -515,6 +588,7 @@ function upsertCommandExecution(
     return commandExecutions;
   }
   const nextCwd = event.payload.commandExecution.cwd ?? existing?.cwd;
+  const nextDescription = event.payload.commandExecution.description ?? existing?.description;
   const nextCommandExecution = {
     id: event.payload.commandExecution.id,
     threadId: event.payload.threadId,
@@ -522,6 +596,7 @@ function upsertCommandExecution(
     providerItemId: event.payload.commandExecution.providerItemId,
     command: event.payload.commandExecution.command,
     ...(nextCwd !== undefined ? { cwd: nextCwd } : {}),
+    ...(nextDescription !== undefined ? { description: nextDescription } : {}),
     title: event.payload.commandExecution.title,
     status: event.payload.commandExecution.status,
     detail: event.payload.commandExecution.detail,
@@ -540,6 +615,7 @@ function upsertCommandExecution(
     existing.providerItemId === nextCommandExecution.providerItemId &&
     existing.command === nextCommandExecution.command &&
     (existing.cwd ?? undefined) === nextCommandExecution.cwd &&
+    (existing.description ?? undefined) === nextCommandExecution.description &&
     existing.title === nextCommandExecution.title &&
     existing.status === nextCommandExecution.status &&
     existing.detail === nextCommandExecution.detail &&
@@ -592,10 +668,27 @@ function enqueueThreadDetailEvent(
   }
 
   const detailEventBufferByThreadId = new Map(state.detailEventBufferByThreadId);
-  detailEventBufferByThreadId.set(threadId, {
-    ...existingBuffer,
-    events: [...existing, event],
-  });
+  const bytes = existingBuffer.bytes ?? 0;
+  const eventBytes = new TextEncoder().encode(JSON.stringify(event)).byteLength;
+  if (
+    existingBuffer.overflowSequence !== undefined ||
+    existing.length >= 2_000 ||
+    bytes + eventBytes > 32 * 1024 * 1024
+  ) {
+    // A truncated buffer cannot be replayed. Its watermark fences outstanding
+    // hydration and makes the RPC path request a fresh, complete tail instead.
+    detailEventBufferByThreadId.set(threadId, {
+      ...existingBuffer,
+      events: [],
+      bytes: 0,
+      overflowSequence: Math.max(existingBuffer.overflowSequence ?? 0, event.sequence),
+    });
+  } else
+    detailEventBufferByThreadId.set(threadId, {
+      ...existingBuffer,
+      bytes: bytes + eventBytes,
+      events: [...existing, event],
+    });
   return { ...state, detailEventBufferByThreadId };
 }
 
@@ -604,6 +697,7 @@ function gateThreadDetailMutations(
   threadId: Thread["id"],
   event: OrchestrationEvent,
 ): { state: AppState; applyDetailMutations: boolean } {
+  if (detailEventIsCovered(state, threadId, event)) return { state, applyDetailMutations: false };
   const thread = state.threads.find((entry) => entry.id === threadId);
   if (!thread || thread.detailsLoaded) {
     return { state, applyDetailMutations: true };
@@ -617,7 +711,52 @@ function gateThreadDetailMutations(
   };
 }
 
-export function applyDomainEvent(state: AppState, event: OrchestrationEvent): AppState {
+/** An owned array is private to one synchronous Zustand update, never the input state. */
+interface DomainEventBatch {
+  readonly owned: WeakSet<Thread[]>;
+  changed: boolean;
+}
+export function createDomainEventBatch(): DomainEventBatch {
+  return { owned: new WeakSet(), changed: false };
+}
+
+export function applyDomainEvent(
+  state: AppState,
+  event: OrchestrationEvent,
+  batch?: DomainEventBatch,
+): AppState {
+  if (batch) batch.changed = false;
+  let next = reduceDomainEvent(state, event, batch);
+  if (next === state && batch?.changed) next = { ...state };
+  if (event.aggregateKind !== "thread") return next;
+  const threadId = event.aggregateId as Thread["id"];
+  const key = detailEntityKey(event);
+  if (next === state && state.threads.find((thread) => thread.id === threadId)?.detailsLoaded)
+    return state;
+  if (key === null && event.type !== "thread.deleted" && event.type !== "thread.reverted")
+    return next;
+  const coverage = new Map(next.detailCoverageByThreadId);
+  if (event.type === "thread.deleted" || event.type === "thread.reverted")
+    coverage.delete(threadId);
+  else if (next.threads.some((thread) => thread.id === threadId)) {
+    const existing = coverage.get(threadId);
+    coverage.set(threadId, {
+      tailSequence: existing?.tailSequence ?? 0,
+      entities: existing?.entities ?? new Map(),
+      latestMutation: Math.max(existing?.latestMutation ?? 0, event.sequence),
+    });
+  }
+  next = { ...next, detailCoverageByThreadId: coverage };
+  return next;
+}
+
+function reduceDomainEvent(
+  state: AppState,
+  event: OrchestrationEvent,
+  batch?: DomainEventBatch,
+): AppState {
+  const updateThread = (threads: Thread[], id: Thread["id"], update: (thread: Thread) => Thread) =>
+    updateThreadCollection(threads, id, update, batch);
   switch (event.type) {
     case "project.created": {
       const existingIndex = state.projects.findIndex(
@@ -628,9 +767,13 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
       }
       const nextProject: Project = {
         id: event.payload.projectId,
+        kind: event.payload.kind,
         name: event.payload.title,
         cwd: event.payload.workspaceRoot,
-        model: resolveModelSlug(event.payload.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
+        model: resolveProjectModel(
+          event.payload.defaultModel,
+          event.payload.defaultModelSelection?.instanceId,
+        ),
         createdAt: event.payload.createdAt,
         expanded: true,
         defaultEnvMode: event.payload.defaultEnvMode ?? null,
@@ -647,7 +790,10 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
       const projects = updateProject(state.projects, event.payload.projectId, (project) => {
         const model =
           event.payload.defaultModel !== undefined
-            ? resolveModelSlug(event.payload.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex)
+            ? resolveProjectModel(
+                event.payload.defaultModel,
+                event.payload.defaultModelSelection?.instanceId,
+              )
             : project.model;
         const scripts =
           event.payload.scripts !== undefined
@@ -717,7 +863,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
     case "project.workflow-upserted": {
       const planningWorkflows = upsertPlanningWorkflow(
         state.planningWorkflows,
-        event.payload.workflow,
+        summarizePlanningWorkflow(event.payload.workflow),
       );
       return planningWorkflows === state.planningWorkflows
         ? state
@@ -735,7 +881,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
     case "project.code-review-workflow-upserted": {
       const codeReviewWorkflows = upsertCodeReviewWorkflow(
         state.codeReviewWorkflows,
-        event.payload.workflow,
+        summarizeCodeReviewWorkflow(event.payload.workflow),
       );
       return codeReviewWorkflows === state.codeReviewWorkflows
         ? state
@@ -755,7 +901,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
     case "project.debug-workflow-upserted": {
       const investigationWorkflows = upsertInvestigationWorkflow(
         state.investigationWorkflows,
-        event.payload.workflow,
+        summarizeInvestigationWorkflow(event.payload.workflow),
       );
       return investigationWorkflows === state.investigationWorkflows
         ? state
@@ -785,6 +931,8 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         codexThreadId: null,
         projectId: event.payload.projectId,
         title: event.payload.title,
+        scheduledOrigin: event.payload.scheduledOrigin ?? null,
+        ...(event.payload.pullRequest ? { pullRequests: [event.payload.pullRequest] } : {}),
         model: resolveThreadModel({
           model: event.payload.model,
           sessionProviderName: null,
@@ -817,6 +965,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         lastVisitedAt: event.payload.createdAt,
         branch: event.payload.branch,
         worktreePath: event.payload.worktreePath,
+        scratchPath: event.payload.scratchPath,
         compaction: null,
         turnDiffSummaries: [],
         activities: [],
@@ -849,6 +998,30 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
       return threads === state.threads ? state : { ...state, threads };
     }
 
+    case "thread.settled": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
+        ...thread,
+        settledAt: event.payload.settledAt,
+        settledBy: event.payload.settledBy,
+      }));
+      return threads === state.threads ? state : { ...state, threads };
+    }
+    case "thread.unsettled": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
+        ...thread,
+        settledAt: null,
+        settledBy: null,
+        lastInteractionAt: event.occurredAt,
+      }));
+      return threads === state.threads ? state : { ...state, threads };
+    }
+    case "thread.auto-settle-changed": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
+        ...thread,
+        autoSettleDisabled: !event.payload.enabled,
+      }));
+      return threads === state.threads ? state : { ...state, threads };
+    }
     case "thread.archived": {
       const threads = updateThread(state.threads, event.payload.threadId, (thread) =>
         thread.archivedAt === event.payload.archivedAt &&
@@ -859,6 +1032,8 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           : {
               ...thread,
               archivedAt: event.payload.archivedAt,
+              settledAt: null,
+              settledBy: null,
               pinnedAt: null,
               pinOrderKey: null,
               snoozedUntil: null,
@@ -967,7 +1142,15 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           event.payload.modelSelection !== undefined
             ? event.payload.modelSelection
             : thread.modelSelection;
+        const pullRequests =
+          event.payload.pullRequest || event.payload.pullRequestUnlinked
+            ? updateThreadPullRequestLinks(thread.pullRequests, {
+                link: event.payload.pullRequest,
+                unlink: event.payload.pullRequestUnlinked,
+              })
+            : thread.pullRequests;
         if (
+          pullRequests === thread.pullRequests &&
           (event.payload.title ?? thread.title) === thread.title &&
           (event.payload.titleSource ?? thread.titleSource) === thread.titleSource &&
           (event.payload.titleRevision ?? thread.titleRevision) === thread.titleRevision &&
@@ -1011,6 +1194,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           ...(event.payload.worktreePath !== undefined
             ? { worktreePath: event.payload.worktreePath }
             : {}),
+          ...(pullRequests !== thread.pullRequests ? { pullRequests } : {}),
         };
       });
       return threads === state.threads ? state : { ...state, threads };
@@ -1066,6 +1250,18 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           : { ...thread, interactionMode: event.payload.interactionMode },
       );
       return threads === state.threads ? state : { ...state, threads };
+    }
+
+    case "thread.message-reasoning-tokens-added": {
+      const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
+      if (!detailGate.applyDetailMutations) return detailGate.state;
+      const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
+        const messages = addMessageReasoningTokens(thread.messages, event.payload);
+        return messages === thread.messages ? thread : { ...thread, messages };
+      });
+      return threads === detailGate.state.threads
+        ? detailGate.state
+        : { ...detailGate.state, threads };
     }
 
     case "thread.message-sent": {
@@ -1279,6 +1475,28 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
             lastInteractionAt: event.occurredAt,
           };
         }
+        if (event.payload.removedTurnIds) {
+          const removed = new Set(event.payload.removedTurnIds);
+          return {
+            ...thread,
+            ...reconcileNativeHistoryProjection(
+              thread,
+              removed,
+              new Set(event.payload.removedMessageIds ?? []),
+            ),
+            pendingUserInputs,
+            turnDiffSummaries: retainNativeTurnRows(thread.turnDiffSummaries, removed),
+            commandExecutions: retainNativeTurnRows(thread.commandExecutions, removed),
+            estimatedThinkingTokens: null,
+            session: thread.session
+              ? (() => {
+                  const { tokenUsageSource: _source, ...session } = thread.session;
+                  return session;
+                })()
+              : null,
+            lastInteractionAt: event.occurredAt,
+          };
+        }
         const turnDiffSummaries = thread.turnDiffSummaries
           .filter(
             (summary) =>
@@ -1296,6 +1514,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           thread.messages,
           retainedTurnIds,
           event.payload.turnCount,
+          event.payload.retainedMessageIds,
         ).slice(-MAX_THREAD_MESSAGES);
         const proposedPlans = retainThreadProposedPlansAfterRevert(
           thread.proposedPlans,
@@ -1305,10 +1524,10 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           thread.commandExecutions,
           retainedTurnIds,
         );
-        const activities = retainThreadActivitiesAfterRevert(
-          thread.activities,
-          retainedTurnIds,
-        ).slice(-MAX_THREAD_ACTIVITIES);
+        const activities = pendingActivityWindow(
+          retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds),
+          MAX_THREAD_ACTIVITIES,
+        );
         const latestTurnSummary = turnDiffSummaries.at(-1) ?? null;
         const latestTurnStatus =
           latestTurnSummary?.status === "missing" || latestTurnSummary?.status === "error"
@@ -1388,26 +1607,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           event.payload.session.estimatedThinkingTokens ?? thread.estimatedThinkingTokens;
         const nextModelContextWindowTokens =
           event.payload.session.modelContextWindowTokens ?? thread.modelContextWindowTokens;
-        const latestTurn =
-          event.payload.session.status === "running" && event.payload.session.activeTurnId !== null
-            ? {
-                turnId: event.payload.session.activeTurnId,
-                state: "running" as const,
-                requestedAt:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? thread.latestTurn.requestedAt
-                    : event.payload.session.updatedAt,
-                startedAt:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? (thread.latestTurn.startedAt ?? event.payload.session.updatedAt)
-                    : event.payload.session.updatedAt,
-                completedAt: null,
-                assistantMessageId:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? thread.latestTurn.assistantMessageId
-                    : null,
-              }
-            : thread.latestTurn;
+        const latestTurn = projectLatestTurnSession(thread.latestTurn, event.payload);
         const error = visibleThreadSessionError(event.payload.threadId, event.payload.session);
         const pendingUserInputs = projectPendingUserInputs(thread.pendingUserInputs ?? [], event);
         if (
@@ -1442,8 +1642,17 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
     }
 
     case "thread.proposed-plan-upserted": {
-      const threads = updateThread(state.threads, event.payload.threadId, (thread) => {
-        const proposedPlans = upsertProposedPlan(thread.proposedPlans, event.payload.proposedPlan);
+      // Plans are detail entities: an older tail must not overwrite a newer
+      // plan. Unlike turn diffs, a thread without loaded details still applies
+      // upserts, because its plans came with the startup snapshot. While its
+      // tail hydrates, the upsert is applied now and also buffered for replay
+      // over the tail, so a failed or cancelled hydration does not lose it.
+      const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
+      const applyPlan = !detailEventIsCovered(state, event.payload.threadId, event);
+      const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
+        const proposedPlans = applyPlan
+          ? upsertProposedPlan(thread.proposedPlans, event.payload.proposedPlan)
+          : thread.proposedPlans;
         if (
           proposedPlans === thread.proposedPlans &&
           thread.lastInteractionAt === event.occurredAt
@@ -1456,14 +1665,25 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           lastInteractionAt: event.occurredAt,
         };
       });
-      return threads === state.threads ? state : { ...state, threads };
+      return threads === detailGate.state.threads
+        ? detailGate.state
+        : { ...detailGate.state, threads };
     }
 
     case "thread.turn-diff-completed": {
       const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
       const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
+        const assistantMessageId =
+          resolveTurnAssistantMessage(thread.messages, event.payload.turnId)?.id ??
+          (thread.latestTurn?.turnId === event.payload.turnId
+            ? thread.latestTurn.assistantMessageId
+            : null) ??
+          event.payload.assistantMessageId;
         const turnDiffSummaries = detailGate.applyDetailMutations
-          ? upsertTurnDiffSummary(thread.turnDiffSummaries, event.payload)
+          ? upsertTurnDiffSummary(thread.turnDiffSummaries, {
+              ...event.payload,
+              assistantMessageId,
+            })
           : thread.turnDiffSummaries;
         if (turnDiffSummaries === null) {
           return thread;
@@ -1475,8 +1695,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         const latestTurn = preserveTurn
           ? {
               ...previousTurn,
-              assistantMessageId:
-                event.payload.assistantMessageId ?? previousTurn.assistantMessageId,
+              assistantMessageId: assistantMessageId ?? previousTurn.assistantMessageId,
             }
           : ({
               turnId: event.payload.turnId,
@@ -1490,7 +1709,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
                   ? (previousTurn.startedAt ?? event.payload.completedAt)
                   : event.payload.completedAt,
               completedAt: event.payload.completedAt,
-              assistantMessageId: event.payload.assistantMessageId,
+              assistantMessageId,
             } satisfies NonNullable<Thread["latestTurn"]>);
         if (
           turnDiffSummaries === thread.turnDiffSummaries &&
@@ -1535,15 +1754,22 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
 
     case "thread.activity-appended": {
       const threads = updateThread(state.threads, event.payload.threadId, (thread) => {
-        const activities = upsertActivity(thread.activities, event.payload.activity);
-        if (activities === thread.activities && thread.lastInteractionAt === event.occurredAt) {
+        const activities = detailEventIsCovered(state, event.payload.threadId, event)
+          ? thread.activities
+          : upsertActivity(thread.activities, event.payload.activity);
+        // The live reasoning status must not reorder threads or mark them unread.
+        const lastInteractionAt =
+          event.payload.activity.kind === REASONING_STATUS_ACTIVITY_KIND
+            ? thread.lastInteractionAt
+            : event.occurredAt;
+        if (activities === thread.activities && thread.lastInteractionAt === lastInteractionAt) {
           return thread;
         }
         return {
           ...thread,
           ...(activities !== thread.activities ? { activities } : {}),
           pendingUserInputs: projectPendingUserInputs(thread.pendingUserInputs ?? [], event),
-          lastInteractionAt: event.occurredAt,
+          lastInteractionAt,
         };
       });
       return threads === state.threads ? state : { ...state, threads };
@@ -1645,6 +1871,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
     }
 
     case "thread.command-execution-output-appended":
+    case "thread.command-execution-output-reconciled":
     case "thread.file-change-recorded":
     case "thread.usage-recorded":
       return state;

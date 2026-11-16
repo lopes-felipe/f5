@@ -12,21 +12,22 @@ import type {
 } from "@t3tools/contracts";
 
 export const GITHUB_PR_DETAIL_QUERY = `
-query F5PrDetail($owner:String!,$repo:String!,$number:Int!){
+query F5PrDetail($owner:String!,$repo:String!,$number:Int!,$requestedReviewers:Int!){
   repository(owner:$owner,name:$repo){
+    autoMergeAllowed
     pullRequest(number:$number){
       id title body url state isDraft mergeable mergeStateStatus
       additions deletions changedFiles headRefName baseRefName headRefOid baseRefOid
       createdAt updatedAt mergedAt closedAt viewerCanUpdate viewerDidAuthor
       author { login avatarUrl ... on User { name } }
       labels(first:50){ totalCount pageInfo { hasNextPage } nodes { name color } }
-      reviewRequests(first:50){ totalCount pageInfo { hasNextPage } nodes { requestedReviewer { __typename ... on User { login name avatarUrl } ... on Team { slug name avatarUrl } } } }
+      reviewRequests(first:$requestedReviewers){ totalCount pageInfo { hasNextPage } nodes { requestedReviewer { __typename ... on User { login name avatarUrl } ... on Team { slug name avatarUrl } } } }
       latestReviews(first:50){ totalCount pageInfo { hasNextPage } nodes { author { login avatarUrl ... on User { name } } } }
       reactionGroups { content viewerHasReacted users(first:20){ totalCount nodes { login } } }
       commits(last:1){ nodes { commit { statusCheckRollup { contexts(first:100){ totalCount pageInfo { hasNextPage } nodes {
         __typename
-        ... on CheckRun { name status conclusion detailsUrl }
-        ... on StatusContext { context state description targetUrl }
+        ... on CheckRun { name status conclusion detailsUrl isRequired(pullRequestNumber:$number) }
+        ... on StatusContext { context state description targetUrl isRequired(pullRequestNumber:$number) }
       } } } } } }
     }
   }
@@ -37,14 +38,14 @@ export const GITHUB_PR_TIMELINE_QUERY = `
 query F5PrTimeline($owner:String!,$repo:String!,$number:Int!,$issueLimit:Int!,$issueCursor:String,$reviewLimit:Int!,$reviewCursor:String,$commitLimit:Int!,$commitCursor:String){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
-      comments(last:$issueLimit,before:$issueCursor){
-        nodes { id databaseId body createdAt updatedAt url viewerDidAuthor author { login avatarUrl ... on User { name } } reactionGroups { content viewerHasReacted users(first:20){ totalCount nodes { login } } } }
+      comments(last:$issueLimit,before:$issueCursor,orderBy:{field:UPDATED_AT,direction:ASC}){
+        nodes { id databaseId body createdAt updatedAt url viewerDidAuthor viewerCanUpdate authorAssociation author { login avatarUrl ... on User { name } } reactionGroups { content viewerHasReacted users(first:20){ totalCount nodes { login } } } }
         pageInfo { hasPreviousPage startCursor }
       }
       reviews(last:$reviewLimit,before:$reviewCursor){
         nodes {
-          id body state submittedAt url author { login avatarUrl ... on User { name } }
-          comments(first:25){ totalCount nodes { id databaseId body createdAt updatedAt url path line originalLine viewerDidAuthor author { login avatarUrl ... on User { name } } reactionGroups { content viewerHasReacted users(first:20){ totalCount nodes { login } } } } }
+          id body state submittedAt lastEditedAt url authorAssociation author { login avatarUrl ... on User { name } }
+          comments(first:25){ totalCount nodes { id databaseId body createdAt updatedAt url path line originalLine viewerDidAuthor viewerCanUpdate authorAssociation author { login avatarUrl ... on User { name } } reactionGroups { content viewerHasReacted users(first:20){ totalCount nodes { login } } } } }
         }
         pageInfo { hasPreviousPage startCursor }
       }
@@ -129,6 +130,12 @@ function actorOf(value: unknown): PrHubActor | null {
   };
 }
 
+function associationOf(node: Record<string, unknown>): { authorAssociation?: string } {
+  return typeof node.authorAssociation === "string"
+    ? { authorAssociation: node.authorAssociation }
+    : {};
+}
+
 const REACTION_FROM_GITHUB: Readonly<Record<string, PrHubReactionContent | undefined>> = {
   THUMBS_UP: "+1",
   THUMBS_DOWN: "-1",
@@ -193,7 +200,15 @@ function mergeableOf(value: unknown): PrHubDetail["mergeable"] {
   }
 }
 
-function checkOf(value: UnknownRecord): PrHubCheck | null {
+/** Failed and cancelled checks first; the host's order is kept within each group. */
+export function sortChecks(checks: ReadonlyArray<PrHubCheck>): ReadonlyArray<PrHubCheck> {
+  const needsAttention = (check: PrHubCheck) =>
+    check.status === "failure" || check.status === "cancelled";
+  return checks.toSorted((a, b) => Number(needsAttention(b)) - Number(needsAttention(a)));
+}
+
+/** One node of a commit's status check rollup: a check run or a commit status. */
+export function checkOf(value: UnknownRecord): PrHubCheck | null {
   if (value.__typename === "CheckRun") {
     const conclusion = stringOf(value.conclusion).toUpperCase();
     const status = stringOf(value.status).toUpperCase();
@@ -210,6 +225,7 @@ function checkOf(value: UnknownRecord): PrHubCheck | null {
                 ? "skipped"
                 : "failure";
     return {
+      ...(typeof value.isRequired === "boolean" ? { required: value.isRequired } : {}),
       name: stringOf(value.name, "Check"),
       status: normalized,
       description: nullableString(value.conclusion),
@@ -219,6 +235,7 @@ function checkOf(value: UnknownRecord): PrHubCheck | null {
   if (value.__typename === "StatusContext") {
     const state = stringOf(value.state).toUpperCase();
     return {
+      ...(typeof value.isRequired === "boolean" ? { required: value.isRequired } : {}),
       name: stringOf(value.context, "Status"),
       status:
         state === "SUCCESS"
@@ -243,6 +260,38 @@ function rateLimitOf(root: UnknownRecord): SourceControlRateLimit | undefined {
     limit: nonNegativeInt(rate.limit),
     resetAt: nullableString(rate.resetAt),
   };
+}
+
+/** Requested reviewers the detail read asks for; a refused reviewer retries with none. */
+export const GITHUB_PR_DETAIL_REQUESTED_REVIEWERS = 50;
+
+/**
+ * GitHub can answer FORBIDDEN for a requested reviewer the reader cannot see (for example a
+ * team in another organization). When those are the only errors, the rest of the pull request
+ * is readable by asking for no requested reviewers.
+ */
+export function isRefusedRequestedReviewersOnly(response: unknown): boolean {
+  const errors = recordOrNull(response)?.errors;
+  return (
+    Array.isArray(errors) &&
+    errors.length > 0 &&
+    errors.every((error) => {
+      const record = recordOrNull(error);
+      const path = record?.path;
+      return (
+        record?.type === "FORBIDDEN" &&
+        Array.isArray(path) &&
+        path.length === 6 &&
+        path[0] === "repository" &&
+        path[1] === "pullRequest" &&
+        path[2] === "reviewRequests" &&
+        path[3] === "nodes" &&
+        Number.isInteger(path[4]) &&
+        (path[4] as number) >= 0 &&
+        path[5] === "requestedReviewer"
+      );
+    })
+  );
 }
 
 function pullRequestOf(response: unknown): {
@@ -289,9 +338,11 @@ export function decodeGitHubPrDetail(
   const commit = recordOrNull(latestCommit?.commit);
   const statusRollup = recordOrNull(commit?.statusCheckRollup);
   const contexts = recordOrNull(statusRollup?.contexts);
-  const checks = nodesOf(contexts)
-    .map(checkOf)
-    .filter((check) => check !== null);
+  const checks = sortChecks(
+    nodesOf(contexts)
+      .map(checkOf)
+      .filter((check) => check !== null),
+  );
   const truncatedSections: Array<"labels" | "reviewers" | "checks"> = [];
   if (connectionIsTruncated(pr.labels)) truncatedSections.push("labels");
   if (connectionIsTruncated(pr.reviewRequests) || connectionIsTruncated(pr.latestReviews)) {
@@ -305,6 +356,7 @@ export function decodeGitHubPrDetail(
       provider: "github",
       nodeId: nullableString(pr.id) ?? tracked.nodeId,
       mergeStateStatus: stringOf(pr.mergeStateStatus, tracked.mergeStateStatus),
+      autoMergeAllowed: recordOrNull(root.repository)?.autoMergeAllowed === true,
       headRefOid: nullableString(pr.headRefOid) ?? tracked.headRefOid,
       baseRefOid: nullableString(pr.baseRefOid),
       viewerCanUpdate: pr.viewerCanUpdate === true,
@@ -396,6 +448,7 @@ export function githubTimelineVariables(input: {
   readonly repo: string;
   readonly number: number;
   readonly cursor?: string | undefined;
+  readonly commentsOnly?: boolean | undefined;
 }): Readonly<Record<string, string | number>> {
   const cursor = decodeTimelineCursor(input.cursor);
   return {
@@ -404,7 +457,7 @@ export function githubTimelineVariables(input: {
     number: input.number,
     issueLimit: cursor.issueDone ? 1 : 25,
     reviewLimit: cursor.reviewDone ? 1 : 25,
-    commitLimit: cursor.commitDone ? 1 : 25,
+    commitLimit: input.commentsOnly || cursor.commitDone ? 1 : 25,
     ...(cursor.issueBefore ? { issueCursor: cursor.issueBefore } : {}),
     ...(cursor.reviewBefore ? { reviewCursor: cursor.reviewBefore } : {}),
     ...(cursor.commitBefore ? { commitCursor: cursor.commitBefore } : {}),
@@ -414,11 +467,15 @@ export function githubTimelineVariables(input: {
 export function decodeGitHubPrTimeline(
   response: unknown,
   inputCursor?: string | undefined,
+  commentsOnly = false,
 ): {
   readonly entries: ReadonlyArray<PrHubTimelineEntry>;
   readonly pageInfo: SourceControlPageInfo;
 } {
-  const previous = decodeTimelineCursor(inputCursor);
+  const previous = {
+    ...decodeTimelineCursor(inputCursor),
+    ...(commentsOnly ? { commitDone: true } : {}),
+  };
   const { root, pr } = pullRequestOf(response);
   const issueComments = recordOrNull(pr.comments);
   const reviews = recordOrNull(pr.reviews);
@@ -436,6 +493,7 @@ export function decodeGitHubPrTimeline(
             : nullableString(comment.databaseId),
         kind: "issue-comment",
         author: actorOf(comment.author),
+        ...associationOf(comment),
         body: stringOf(comment.body),
         createdAt: stringOf(comment.createdAt),
         updatedAt: nullableString(comment.updatedAt),
@@ -443,7 +501,10 @@ export function decodeGitHubPrTimeline(
         path: null,
         line: null,
         reviewState: null,
-        viewerCanUpdate: comment.viewerDidAuthor === true,
+        viewerCanUpdate:
+          typeof comment.viewerCanUpdate === "boolean"
+            ? comment.viewerCanUpdate
+            : comment.viewerDidAuthor === true,
         reactions: reactionsOf(comment.reactionGroups),
       });
     }
@@ -458,9 +519,10 @@ export function decodeGitHubPrTimeline(
         databaseId: null,
         kind: "review",
         author: actorOf(review.author),
+        ...associationOf(review),
         body: stringOf(review.body),
         createdAt: submittedAt,
-        updatedAt: null,
+        updatedAt: nullableString(review.lastEditedAt),
         url: nullableString(review.url),
         path: null,
         line: null,
@@ -479,6 +541,7 @@ export function decodeGitHubPrTimeline(
               : nullableString(comment.databaseId),
           kind: "review-comment",
           author: actorOf(comment.author),
+          ...associationOf(comment),
           body: stringOf(comment.body),
           createdAt: stringOf(comment.createdAt, submittedAt),
           updatedAt: nullableString(comment.updatedAt),
@@ -491,7 +554,10 @@ export function decodeGitHubPrTimeline(
                 ? nonNegativeInt(comment.originalLine)
                 : null,
           reviewState: nullableString(review.state),
-          viewerCanUpdate: comment.viewerDidAuthor === true,
+          viewerCanUpdate:
+            typeof comment.viewerCanUpdate === "boolean"
+              ? comment.viewerCanUpdate
+              : comment.viewerDidAuthor === true,
           reactions: reactionsOf(comment.reactionGroups),
         });
       }

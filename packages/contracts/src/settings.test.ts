@@ -1,16 +1,146 @@
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 
+import { ProjectId } from "./baseSchemas";
 import { ProviderInstanceId } from "./providerInstance";
 import {
   ClientSettingsSchema,
   DEFAULT_SERVER_SETTINGS,
+  PROJECT_SCOPED_SERVER_SETTING_KEYS,
+  ProjectSettingsResult,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings";
 
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
+const decodeProjectSettingsResult = Schema.decodeUnknownSync(ProjectSettingsResult);
+
+describe("usageMonthlyBudget", () => {
+  it("defaults to no budget and accepts a cost, token, or cleared budget", () => {
+    expect(decodeServerSettings({}).usageMonthlyBudget).toBeNull();
+    expect(DEFAULT_SERVER_SETTINGS.usageMonthlyBudget).toBeNull();
+    expect(
+      decodeServerSettings({ usageMonthlyBudget: { costUsd: 100, tokens: null } })
+        .usageMonthlyBudget,
+    ).toEqual({ costUsd: 100, tokens: null });
+    expect(decodeServerSettingsPatch({ usageMonthlyBudget: null })).toEqual({
+      usageMonthlyBudget: null,
+    });
+    expect(() =>
+      decodeServerSettingsPatch({ usageMonthlyBudget: { costUsd: -1, tokens: null } }),
+    ).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({ usageMonthlyBudget: { costUsd: null, tokens: 1.5 } }),
+    ).toThrow();
+  });
+});
+
+describe("ServerSettings project overrides across versions", () => {
+  const projectId = ProjectId.make("project-a");
+
+  it("sends back an override key from a newer server when an older client edits the entry", () => {
+    // As an older client reads a newer server's settings, with one key it does not know.
+    const entry = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: { autoPullDefaultBranch: true, addedByNewerServer: { mode: "kept" } },
+      },
+    }).projectSettingsOverrides[projectId];
+
+    const sent = encodeServerSettingsPatch({
+      projectSettingsOverrides: { [projectId]: { ...entry, autoPullDefaultBranch: false } },
+    });
+
+    expect(decodeServerSettingsPatch(sent).projectSettingsOverrides?.[projectId]).toEqual({
+      autoPullDefaultBranch: false,
+      addedByNewerServer: { mode: "kept" },
+    });
+  });
+
+  it("keeps unknown keys in the project settings overrides an editor starts from", () => {
+    const result = decodeProjectSettingsResult({
+      settings: {},
+      sources: Object.fromEntries(PROJECT_SCOPED_SERVER_SETTING_KEYS.map((key) => [key, "global"])),
+      overrides: { autoPullDefaultBranch: true, addedByNewerServer: 3 },
+    });
+    expect(result.overrides).toEqual({ autoPullDefaultBranch: true, addedByNewerServer: 3 });
+  });
+
+  it("keeps a known key's transformed value next to an unknown key", () => {
+    const entry = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: {
+          textGenerationModelSelection: { provider: "codex", model: "gpt-5.4" },
+          addedByNewerServer: 3,
+        },
+      },
+    }).projectSettingsOverrides[projectId];
+    expect(entry).toEqual({
+      textGenerationModelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      addedByNewerServer: 3,
+    });
+    expect(
+      decodeServerSettingsPatch(
+        encodeServerSettingsPatch({ projectSettingsOverrides: { [projectId]: entry! } }),
+      ).projectSettingsOverrides?.[projectId],
+    ).toEqual(entry);
+  });
+
+  it("still rejects an invalid known override key", () => {
+    expect(() =>
+      decodeServerSettings({
+        projectSettingsOverrides: { [projectId]: { autoPullDefaultBranch: "yes" } },
+      }),
+    ).toThrow();
+  });
+});
+
+describe("ServerSettings computer defaults", () => {
+  it("enables background computer use for new and unset settings", () => {
+    for (const settings of [DEFAULT_SERVER_SETTINGS, decodeServerSettings({})]) {
+      expect(settings.enableAgentComputerUse).toBe(true);
+      expect(settings.computerUseExecutionMode).toBe("background");
+    }
+  });
+
+  it("preserves saved disablement, foreground selection and project overrides", () => {
+    const settings = decodeServerSettings({
+      enableAgentComputerUse: false,
+      computerUseExecutionMode: "foreground",
+      projectSettingsOverrides: { "project-a": { enableAgentComputerUse: false } },
+    });
+    expect(settings.enableAgentComputerUse).toBe(false);
+    expect(settings.computerUseExecutionMode).toBe("foreground");
+    expect(
+      settings.projectSettingsOverrides[ProjectId.make("project-a")]?.enableAgentComputerUse,
+    ).toBe(false);
+    expect(decodeServerSettingsPatch({ enableAgentComputerUse: false })).toEqual({
+      enableAgentComputerUse: false,
+    });
+    expect(decodeServerSettingsPatch({ computerUseExecutionMode: "foreground" })).toEqual({
+      computerUseExecutionMode: "foreground",
+    });
+  });
+});
+
+describe("ServerSettings.computerUsePasswordMasking", () => {
+  it("defaults new and legacy settings to fast and preserves conservative settings", () => {
+    expect(DEFAULT_SERVER_SETTINGS.computerUsePasswordMasking).toBe("fast");
+    expect(decodeServerSettings({}).computerUsePasswordMasking).toBe("fast");
+    expect(
+      decodeServerSettings({ computerUsePasswordMasking: "conservative" })
+        .computerUsePasswordMasking,
+    ).toBe("conservative");
+    expect(decodeServerSettingsPatch({ computerUsePasswordMasking: "conservative" })).toEqual({
+      computerUsePasswordMasking: "conservative",
+    });
+    for (const computerUsePasswordMasking of ["off", "", null, true]) {
+      expect(() => decodeServerSettings({ computerUsePasswordMasking })).toThrow();
+      expect(() => decodeServerSettingsPatch({ computerUsePasswordMasking })).toThrow();
+    }
+  });
+});
 
 describe("ServerSettings.sourceControlWriting", () => {
   it("decodes legacy settings with safe defaults", () => {
@@ -55,6 +185,35 @@ describe("ServerSettings.sourceControlWriting", () => {
         generatePrContent: false,
       },
     });
+  });
+});
+
+describe("ServerSettings.storageCleanup.worktree.minIdleHours", () => {
+  it("defaults existing global and project rules to a 24-hour wait", () => {
+    const settings = decodeServerSettings({
+      storageCleanup: { worktree: { unchanged: true } },
+      projectSettingsOverrides: {
+        "project-1": { worktreeCleanup: { mode: "custom", rules: { onMerge: true } } },
+      },
+    });
+    expect(settings.storageCleanup.worktree.minIdleHours).toBe(24);
+    const override =
+      settings.projectSettingsOverrides[ProjectId.makeUnsafe("project-1")]?.worktreeCleanup;
+    expect(override?.mode === "custom" ? override.rules.minIdleHours : null).toBe(24);
+  });
+
+  it("accepts whole hours from 1 to 720 in patches", () => {
+    expect(
+      decodeServerSettingsPatch({ storageCleanup: { worktree: { minIdleHours: 6 } } }),
+    ).toEqual({ storageCleanup: { worktree: { minIdleHours: 6 } } });
+    for (const minIdleHours of [0, 721, 1.5]) {
+      expect(() =>
+        decodeServerSettingsPatch({ storageCleanup: { worktree: { minIdleHours } } }),
+      ).toThrow();
+      expect(() =>
+        decodeServerSettings({ storageCleanup: { worktree: { minIdleHours } } }),
+      ).toThrow();
+    }
   });
 });
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
@@ -166,4 +325,49 @@ describe("ClientSettings.dismissedProviderUpdateAdvisories", () => {
       "2.0.0",
     );
   });
+});
+
+describe("ClientSettings.favorites", () => {
+  it("decodes legacy model-only favorites and pinned-effort presets", () => {
+    const favorites = [
+      { provider: "codex", model: "gpt-5.5" },
+      { provider: "claudeAgent", model: "claude-opus-5-5", effort: "high" },
+      { provider: "claudeAgent", model: "claude-opus-5-5", effort: "xhigh" },
+    ];
+    expect(decodeClientSettings({ favorites }).favorites).toEqual(favorites);
+  });
+});
+
+describe("thread settlement opt-ins", () => {
+  it("decodes legacy settings with automatic settlement and cleanup disabled", () => {
+    const settings = decodeServerSettings({});
+    expect(settings.autoSettleOnPullRequestMerge).toBe(false);
+    expect(settings.autoSettleAfterDays).toBeNull();
+    expect(settings.autoSettleKeepPullRequests).toBe(true);
+    expect(settings.storageCleanup.worktree.onSettle).toBe(false);
+  });
+  it("preserves on-settle cleanup in a partial settings patch", () => {
+    expect(
+      decodeServerSettingsPatch({ storageCleanup: { worktree: { onSettle: true } } }).storageCleanup
+        ?.worktree?.onSettle,
+    ).toBe(true);
+  });
+  it("bounds inactivity settlement days", () => {
+    for (const days of [0, 366, 1.5])
+      expect(() => decodeServerSettingsPatch({ autoSettleAfterDays: days })).toThrow();
+    for (const days of [1, 365, null])
+      expect(decodeServerSettingsPatch({ autoSettleAfterDays: days }).autoSettleAfterDays).toBe(
+        days,
+      );
+  });
+});
+
+it("keeps merge-message attribution changes off by default and accepts explicit patches", () => {
+  expect(decodeServerSettings({}).removeAgentCreditsOnMerge).toBe(false);
+  expect(
+    decodeServerSettingsPatch({ removeAgentCreditsOnMerge: true }).removeAgentCreditsOnMerge,
+  ).toBe(true);
+  expect(
+    decodeServerSettingsPatch({ removeAgentCreditsOnMerge: false }).removeAgentCreditsOnMerge,
+  ).toBe(false);
 });

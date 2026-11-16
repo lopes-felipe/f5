@@ -108,8 +108,11 @@ export async function runDistributionCommand(args: readonly string[]): Promise<b
   if (command === "runtime-preflight") {
     // Exercise the native modules, not just their presence in the archive.
     await nativePreflight();
-    console.log(JSON.stringify({ version, target: cliTarget(), launcherProtocol: 1 }));
-    return true;
+    const report = `${JSON.stringify({ version, target: cliTarget(), launcherProtocol: 1 })}\n`;
+    await new Promise<void>((resolve) => process.stdout.write(report, () => resolve()));
+    // On Windows, node-pty 1.1.0 keeps its ConPTY handle and conout worker thread
+    // alive after the shell exits, so this one-shot check would otherwise never exit.
+    process.exit(0);
   }
   const options = args.slice(1);
   if (options.includes("--help")) {

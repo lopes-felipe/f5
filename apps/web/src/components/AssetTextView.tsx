@@ -1,8 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
 import ChatMarkdown from "./ChatMarkdown";
+import { lazy, Suspense } from "react";
+const LargeTextViewer = lazy(() => import("./files/LargeTextViewer"));
 
 /** Preview text is bounded independently of the 50 MiB download limit. */
-export function AssetTextView({ url, markdown }: { url: string; markdown: boolean }) {
+export function AssetTextView({
+  url,
+  markdown,
+  name = "file.txt",
+}: {
+  url: string;
+  markdown: boolean;
+  name?: string;
+}) {
   const result = useQuery({
     queryKey: ["asset-text", url],
     queryFn: async ({ signal }) => {
@@ -33,7 +43,19 @@ export function AssetTextView({ url, markdown }: { url: string; markdown: boolea
       }
     },
     staleTime: 25 * 60 * 1000,
+    enabled: markdown,
   });
+  if (!markdown || result.data?.truncated)
+    return (
+      <Suspense fallback={<p>Loading preview…</p>}>
+        <LargeTextViewer
+          key={url}
+          src={url}
+          name={name}
+          delimiter={/\.csv$/i.test(name) ? "," : /\.tsv$/i.test(name) ? "\t" : null}
+        />
+      </Suspense>
+    );
   if (result.isError) return <p role="alert">Unable to read this attachment.</p>;
   if (!result.data) return <p>Loading preview…</p>;
   return (

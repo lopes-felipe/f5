@@ -1,0 +1,7 @@
+{
+  "upstream": {
+    "repository": "https://github.com/pingdotgg/t3code.git",
+    "remote": "upstream",
+    "branch": "main"
+  }
+}

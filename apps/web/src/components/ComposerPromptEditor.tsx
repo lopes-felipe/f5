@@ -1,9 +1,18 @@
 import {
+  ComposerPullRequestReferenceNode,
+  $createPullRequestReferenceNode,
+} from "./chat/composer/ComposerPullRequestReferenceNode";
+import {
+  ComposerThreadReferenceNode,
+  $createThreadReferenceNode,
+} from "./chat/composer/ComposerThreadReferenceNode";
+import {
   ComposerAssistantQuoteNode,
   $createAssistantQuoteNode,
   type AssistantQuote,
 } from "./chat/composer/ComposerAssistantQuoteNode";
 import { ComposerMarkdownStylePlugin } from "./chat/composer/ComposerMarkdownStylePlugin";
+import { markdownContinuation } from "./chat/composer/markdownContinuation";
 import { LexicalComposer, type InitialConfigType } from "@lexical/react/LexicalComposer";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
@@ -13,6 +22,8 @@ import { OnChangePlugin } from "@lexical/react/LexicalOnChangePlugin";
 import { PlainTextPlugin } from "@lexical/react/LexicalPlainTextPlugin";
 import {
   $applyNodeReplacement,
+  $addUpdateTag,
+  HISTORY_PUSH_TAG,
   $createRangeSelection,
   $getSelection,
   $setSelection,
@@ -284,11 +295,18 @@ function $createComposerTerminalContextNode(
   return $applyNodeReplacement(new ComposerTerminalContextNode(context));
 }
 
-type ComposerInlineTokenNode = ComposerMentionNode | ComposerTerminalContextNode;
+type ComposerInlineTokenNode =
+  | ComposerMentionNode
+  | ComposerTerminalContextNode
+  | ComposerPullRequestReferenceNode
+  | ComposerThreadReferenceNode;
 
 function isComposerInlineTokenNode(candidate: unknown): candidate is ComposerInlineTokenNode {
   return (
-    candidate instanceof ComposerMentionNode || candidate instanceof ComposerTerminalContextNode
+    candidate instanceof ComposerMentionNode ||
+    candidate instanceof ComposerTerminalContextNode ||
+    candidate instanceof ComposerPullRequestReferenceNode ||
+    candidate instanceof ComposerThreadReferenceNode
   );
 }
 
@@ -621,6 +639,14 @@ function $setComposerEditorPrompt(
 
   const segments = splitPromptIntoComposerSegments(prompt, terminalContexts, mentions);
   for (const segment of segments) {
+    if (segment.type === "pull-request") {
+      paragraph.append($createPullRequestReferenceNode(segment.raw));
+      continue;
+    }
+    if (segment.type === "thread-reference") {
+      paragraph.append($createThreadReferenceNode(segment.raw));
+      continue;
+    }
     if (segment.type === "mention") {
       paragraph.append($createComposerMentionNode(segment.path, segment.raw, segment.id));
       continue;
@@ -676,6 +702,13 @@ interface ComposerPromptEditorProps {
   disabled: boolean;
   placeholder: string;
   className?: string;
+  /** The editable element's id, for controls that point at it. */
+  id?: string | undefined;
+  ariaLabel?: string | undefined;
+  /** Identifies an editor with suggestions, even while its list is closed. */
+  suggestionListId?: string | undefined;
+  /** References the highlighted option only while its list is rendered. */
+  activeSuggestionId?: string | undefined;
   onRemoveTerminalContext: (contextId: string) => void;
   onChange: (
     nextValue: string,
@@ -756,7 +789,40 @@ function ComposerCommandKeyPlugin(props: {
     );
     const unregisterEnter = editor.registerCommand(
       KEY_ENTER_COMMAND,
-      (event) => handleCommand("Enter", event),
+      (event) => {
+        if (handleCommand("Enter", event)) return true;
+        if (
+          !event ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.altKey ||
+          isKeyboardEventComposing(event, isComposingRef.current) ||
+          editor.isComposing()
+        )
+          return false;
+        const selection = $getSelection();
+        if (!$isRangeSelection(selection) || !selection.isCollapsed()) return false;
+        const edit = markdownContinuation(
+          $getRoot().getTextContent(),
+          $readExpandedSelectionOffsetFromEditorState(0),
+        );
+        if (!edit) return false;
+        event.preventDefault();
+        $addUpdateTag(HISTORY_PUSH_TAG);
+        if (edit.removeBefore > 0) {
+          const end = {
+            key: selection.anchor.key,
+            offset: selection.anchor.offset,
+            type: selection.anchor.type,
+          };
+          $setSelectionAtComposerOffset($readSelectionOffsetFromEditorState(0) - edit.removeBefore);
+          const range = $getSelection();
+          if (!$isRangeSelection(range)) return false;
+          range.focus.set(end.key, end.offset, end.type);
+          range.insertRawText(edit.text);
+        } else selection.insertRawText(edit.text);
+        return true;
+      },
       COMMAND_PRIORITY_HIGH,
     );
     const unregisterEscape = editor.registerCommand(
@@ -1042,6 +1108,10 @@ function ComposerPromptEditorInner({
   disabled,
   placeholder,
   className,
+  id,
+  ariaLabel,
+  suggestionListId,
+  activeSuggestionId,
   onRemoveTerminalContext,
   onChange,
   onCommandKeyDown,
@@ -1296,10 +1366,22 @@ function ComposerPromptEditorInner({
           contentEditable={
             <ContentEditable
               className={cn(
-                "block max-h-[200px] min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent leading-relaxed text-foreground focus:outline-none",
+                "block max-h-[var(--composer-editor-max-height,200px)] min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent leading-relaxed text-foreground focus:outline-none",
                 className,
               )}
+              {...(id ? { id } : {})}
               data-testid="composer-editor"
+              ariaMultiline
+              {...(ariaLabel ? { ariaLabel } : {})}
+              {...(suggestionListId
+                ? {
+                    ariaAutoComplete: "list" as const,
+                    "aria-haspopup": "listbox" as const,
+                    ...(activeSuggestionId
+                      ? { ariaControls: suggestionListId, ariaActiveDescendant: activeSuggestionId }
+                      : {}),
+                  }
+                : {})}
               aria-placeholder={placeholder}
               placeholder={<span />}
               onPaste={onPaste}
@@ -1340,6 +1422,10 @@ export const ComposerPromptEditor = forwardRef<
     disabled,
     placeholder,
     className,
+    id,
+    ariaLabel,
+    suggestionListId,
+    activeSuggestionId,
     onRemoveTerminalContext,
     onChange,
     onCommandKeyDown,
@@ -1354,7 +1440,13 @@ export const ComposerPromptEditor = forwardRef<
     () => ({
       namespace: "t3tools-composer-editor",
       editable: true,
-      nodes: [ComposerMentionNode, ComposerTerminalContextNode, ComposerAssistantQuoteNode],
+      nodes: [
+        ComposerMentionNode,
+        ComposerTerminalContextNode,
+        ComposerAssistantQuoteNode,
+        ComposerPullRequestReferenceNode,
+        ComposerThreadReferenceNode,
+      ],
       editorState: () => {
         $setComposerEditorPrompt(
           initialValueRef.current,
@@ -1379,6 +1471,10 @@ export const ComposerPromptEditor = forwardRef<
         terminalContexts={terminalContexts}
         disabled={disabled}
         placeholder={placeholder}
+        id={id}
+        ariaLabel={ariaLabel}
+        suggestionListId={suggestionListId}
+        activeSuggestionId={activeSuggestionId}
         onRemoveTerminalContext={onRemoveTerminalContext}
         onChange={onChange}
         onPaste={onPaste}

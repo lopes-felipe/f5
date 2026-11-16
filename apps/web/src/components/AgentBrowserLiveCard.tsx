@@ -16,7 +16,7 @@ import {
   useAgentBrowserActivityStore,
 } from "../agentBrowserActivityStore";
 import { cn } from "../lib/utils";
-import { readNativeApi } from "../nativeApi";
+import { pausePreviewThread } from "./computerControls";
 import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
 import {
   describeAgentBrowserCapabilities,
@@ -101,10 +101,7 @@ export function AgentBrowserLiveCard(props: { readonly threadId: ThreadId }) {
 
   if (!activity || previewVisible || !isAgentBrowserActive(activity, now)) return null;
   const setPaused = (paused: boolean) => {
-    useAgentBrowserActivityStore.getState().setPaused(props.threadId, paused);
-    void readNativeApi()
-      ?.preview.automation.setPaused({ threadId: props.threadId, paused })
-      .catch(() => undefined);
+    void pausePreviewThread(props.threadId, paused).catch(() => undefined);
   };
   return (
     <div

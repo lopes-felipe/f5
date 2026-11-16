@@ -62,6 +62,23 @@ it("measures the production renderer, real WS backpressure and native terminal s
   if (!existsSync(path.join(root, "apps/web/dist/index.html")))
     throw new Error("Build apps/web first");
   const method = smoke ? { ...fixture.method, warmups: 1, repetitions: 2 } : fixture.method;
+  // Full qualification requires real process activity, not merely PTY output.
+  // Fail before the ten-minute soak on restricted hosts. Older pinned builds
+  // predate the shared process-table module and retain their original probe path.
+  if (
+    !smoke &&
+    existsSync(fileURLToPath(new URL("../../src/terminal/processTable.ts", import.meta.url)))
+  ) {
+    try {
+      const { readTerminalProcessTable } = await import("../../src/terminal/processTable.ts");
+      await readTerminalProcessTable();
+    } catch (cause) {
+      throw new Error(
+        "Full interactive measurements require native terminal process-table access. Run on a host that permits the production process probe.",
+        { cause },
+      );
+    }
+  }
   const directory = mkdtempSync(path.join(tmpdir(), "f5-interactive-perf-"));
   // Old pinned builds predate the protocol constant; their welcome fixture uses v1.
   const protocolVersion = (Contracts as { F5_PROTOCOL_VERSION?: number }).F5_PROTOCOL_VERSION ?? 1;
@@ -148,6 +165,14 @@ it("measures the production renderer, real WS backpressure and native terminal s
     await pumpPromise;
     totalStreamMs += performance.now() - streamStartedAt;
   };
+  const lifecycle =
+    process.env.F5_PERF_LIFECYCLE === "1"
+      ? await Effect.runPromise(
+          (await import("./browserLifecycle.ts")).makeBrowserLifecycle(data, (event) =>
+            Effect.runPromise(bus.publishAll("orchestration.domainEvent", event)),
+          ),
+        )
+      : undefined;
   const inputs = Array.from({ length: fixture.terminal.count }, (_, i) => ({
     threadId: `native-${i}`,
     cwd: directory,
@@ -174,6 +199,16 @@ it("measures the production renderer, real WS backpressure and native terminal s
         if (request.method !== "POST") {
           response.writeHead(405).end();
           return;
+        }
+        if (pathname.startsWith("/_perf/lifecycle-")) {
+          if (!lifecycle) throw new Error("Lifecycle scenarios are disabled");
+          if (pathname === "/_perf/lifecycle-history") {
+            data.addHistoryThread();
+            for (const client of Effect.runSync(Ref.get(clients)))
+              client.close(1001, "fixture reconnect");
+            return json({ ok: true });
+          }
+          return json(await lifecycle.control(pathname.slice("/_perf/lifecycle-".length)));
         }
         switch (pathname) {
           case "/_perf/start-streaming":
@@ -238,6 +273,7 @@ it("measures the production renderer, real WS backpressure and native terminal s
               achievedUpdatesPerSecondPerThread: frames / (totalStreamMs / 1000),
               rpc: Object.fromEntries(requests),
               unknownMethods: [...data.unknownMethods],
+              lifecycle: lifecycle?.stats(),
             });
           default:
             throw new Error(`Unknown control ${pathname}`);
@@ -308,9 +344,22 @@ it("measures the production renderer, real WS backpressure and native terminal s
       const request = JSON.parse(String(raw));
       const tag = String(request.body?._tag);
       requests.set(tag, (requests.get(tag) ?? 0) + 1);
-      void Effect.runPromise(
-        controller.send(socket, JSON.stringify({ id: request.id, result: data.rpc(request.body) })),
-      );
+      void (async () => {
+        const result =
+          lifecycle && tag === "orchestration.dispatchCommand"
+            ? await lifecycle.dispatch(request.body.command)
+            : data.rpc(request.body);
+        await Effect.runPromise(
+          controller.send(socket, JSON.stringify({ id: request.id, result })),
+        );
+      })().catch((error) => {
+        void Effect.runPromise(
+          controller.send(
+            socket,
+            JSON.stringify({ id: request.id, error: { message: String(error) } }),
+          ),
+        );
+      });
     });
   });
   const writer = fork(
@@ -335,6 +384,7 @@ it("measures the production renderer, real WS backpressure and native terminal s
     writer: writerStats,
     notMeasured: [] as string[],
     fixtureStats: {},
+    diagnostics: {} as Record<string, number>,
   };
   try {
     await once(writer, "message", { signal: AbortSignal.timeout(10000) });
@@ -397,6 +447,14 @@ it("measures the production renderer, real WS backpressure and native terminal s
     report.metadata.browser = browser.browser;
     report.metadata.browserConfig = browser.config;
     report.fixtureStats = browser.loaded;
+    const final = browser.diagnostics?.final;
+    for (const group of ["work", "gauges"])
+      for (const [name, value] of Object.entries(final?.[group] ?? {}))
+        if (typeof value === "number") report.diagnostics[`browser.${group}.${name}`] = value;
+    for (const [family, values] of Object.entries(final?.resources ?? {}))
+      for (const [name, value] of Object.entries(values as Record<string, unknown>))
+        if (typeof value === "number")
+          report.diagnostics[`browser.resources.${family}.${name}`] = value;
     report.observations.push(
       maximumObservation(
         "browser.composerInputP95Ms",
@@ -455,7 +513,7 @@ it("measures the production renderer, real WS backpressure and native terminal s
       await writerExited;
     }
     for (const input of inputs) await terminals.close(input);
-    terminals.dispose();
+    await terminals.dispose();
     await native.dispose();
     for (const socket of allSockets) socket.terminate();
     await new Promise<void>((resolve) => wss.close(() => resolve()));

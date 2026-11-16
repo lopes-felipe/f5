@@ -183,6 +183,23 @@ describe("stuck turn repair inspection", () => {
       reason: "eligible",
       event: { eventId: "native-codex-completed", turnId: "turn-repair" },
     });
+    // Valid JSON without the newline may be the tail of an interrupted batch.
+    fs.writeFileSync(
+      path.join(providerLogsDir, "thread-repair.log"),
+      `[2026-08-18T08:00:00.000Z] NTIVE: ${JSON.stringify(nativeEvent)}`,
+    );
+    expect((await inspectStuckTurns({ dbPath, providerLogsDir }))[0]?.reason).toBe(
+      "missing_terminal_event",
+    );
+    fs.writeFileSync(
+      path.join(providerLogsDir, "_global.log"),
+      `[2026-08-18T08:00:00.000Z] CANON: ${JSON.stringify(completedEvent)}`,
+    );
+    expect((await inspectStuckTurns({ dbPath, providerLogsDir }))[0]?.reason).toBe(
+      "missing_terminal_event",
+    );
+    fs.appendFileSync(path.join(providerLogsDir, "_global.log"), "\n");
+    expect((await inspectStuckTurns({ dbPath, providerLogsDir }))[0]?.reason).toBe("eligible");
   });
 
   it("selects a queued terminal turn with a stale active pointer without log evidence", async () => {

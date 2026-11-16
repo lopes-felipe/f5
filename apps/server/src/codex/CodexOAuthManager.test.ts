@@ -10,6 +10,7 @@ import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectMcpConfigService } from "../mcp/ProjectMcpConfigService.ts";
+import * as ProviderAccountProbes from "../profiles/ProviderAccountService.ts";
 import type { ProviderServiceShape } from "../provider/Services/ProviderService.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import type { CodexControlClient } from "./CodexControlClient.ts";
@@ -72,12 +73,14 @@ function makeProviderServiceStub(input?: {
 
   return {
     startSession: (_threadId, _input) => unused(),
+    replaceSession: () => unused(),
     sendTurn: (_input) => unused(),
     interruptTurn: (_input) => unused(),
     respondToRequest: (_input) => unused(),
     respondToUserInput: (_input) => unused(),
     respondToElicitation: (_input) => unused(),
     stopSession: (_input) => unused(),
+    listStartingWorkspaces: () => Effect.succeed([]),
     listSessions: () => Effect.succeed([] satisfies ReadonlyArray<ProviderSession>),
     getSessionCapabilities: () => Effect.succeed(null),
     assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
@@ -101,6 +104,8 @@ const makeProjectMcpConfigServiceStub = (input?: {
     readProjectStoredConfig: (_projectId: ProjectId) =>
       Effect.die(new Error("unused in CodexOAuthManager tests")),
     readEffectiveStoredConfig: (_projectId: ProjectId) =>
+      Effect.die(new Error("unused in CodexOAuthManager tests")),
+    readEffectiveRuntimeConfig: (_projectId: ProjectId) =>
       Effect.die(new Error("unused in CodexOAuthManager tests")),
     readCommonConfig: () => Effect.die(new Error("unused in CodexOAuthManager tests")),
     replaceCommonConfig: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
@@ -259,6 +264,9 @@ describe("CodexOAuthManager", () => {
   });
 
   it("passes stored OAuth callback settings into the Codex OAuth control client", async () => {
+    // Settings forwarding must not depend on another local login's port.
+    // ProviderAccountService tests cover actual port ownership separately.
+    const probe = vi.spyOn(ProviderAccountProbes, "assertOAuthPortAvailable").mockResolvedValue();
     const client = new FakeOauthClient();
     let capturedInput: CodexOauthClientAccessInput | undefined;
 
@@ -296,6 +304,7 @@ describe("CodexOAuthManager", () => {
       );
 
       expect(pending.status).toBe("pending");
+      expect(probe).toHaveBeenCalledExactlyOnceWith(3118);
       expect(capturedInput?.mcpOAuthCallbackPort).toBe(3118);
       expect(capturedInput?.mcpOAuthCallbackUrl).toBe("https://callback.example.test/callback");
     });

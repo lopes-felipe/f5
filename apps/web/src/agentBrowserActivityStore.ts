@@ -1,3 +1,4 @@
+import { AGENT_ACTIVITY_WINDOW_MS } from "./agentActivityWindow";
 import type {
   PreviewAutomationActionGeometry,
   PreviewAutomationOperation,
@@ -6,7 +7,7 @@ import type {
 import { create } from "zustand";
 
 /** How long after its last action an agent still counts as "using the browser". */
-export const AGENT_BROWSER_ACTIVE_WINDOW_MS = 15_000;
+export const AGENT_BROWSER_ACTIVE_WINDOW_MS = AGENT_ACTIVITY_WINDOW_MS;
 
 export type AgentBrowserActionStatus = "running" | "succeeded" | "failed" | "interrupted";
 

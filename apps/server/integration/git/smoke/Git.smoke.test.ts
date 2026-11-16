@@ -8,7 +8,7 @@ import { Effect, Layer } from "effect";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { ServerConfig, type ServerConfigShape } from "../../../src/config.ts";
-import { GitCoreLive } from "../../../src/git/Layers/GitCore.ts";
+import { GitCoreTestLive as GitCoreLive } from "../../../src/git/testLayers.ts";
 import { GitServiceLive } from "../../../src/git/Layers/GitService.ts";
 import { makeGitManager } from "../../../src/git/Layers/GitManager.ts";
 import { GitCore, type GitCoreShape } from "../../../src/git/Services/GitCore.ts";
@@ -148,8 +148,17 @@ describe.concurrent("real Git smoke", () => {
     fs.writeFileSync(path.join(cwd, "README.md"), "updated\n", "utf8");
     fs.writeFileSync(path.join(cwd, "ignored.txt"), "ignored\n", "utf8");
 
+    const indexBefore = fs.readFileSync(path.join(cwd, ".git", "index"));
     const context = await Effect.runPromise(core.prepareCommitContext(cwd, ["README.md"]));
-    const commit = await Effect.runPromise(core.commit(cwd, "Update readme", "Smoke coverage"));
+    expect(fs.readFileSync(path.join(cwd, ".git", "index"))).toEqual(indexBefore);
+    expect(
+      await git(service, cwd, ["--no-optional-locks", "diff", "--cached", "--name-only"]),
+    ).toBe("");
+    expect(fs.readFileSync(path.join(cwd, ".git", "index"))).toEqual(indexBefore);
+    const commit = await Effect.runPromise(
+      core.commitPrepared(cwd, "Update readme", "Smoke coverage", context!),
+    );
+    if (commit.status !== "created") throw new Error("Commit context unexpectedly changed.");
     const range = await Effect.runPromise(core.readRangeContext(cwd, "HEAD~1"));
 
     expect(context?.stagedPatch).toContain("updated");
@@ -158,7 +167,7 @@ describe.concurrent("real Git smoke", () => {
     expect(await git(service, cwd, ["status", "--short"])).toBe("?? ignored.txt");
   });
 
-  it("creates and force-removes a dirty worktree", async () => {
+  it("preserves a dirty worktree even with force, then removes it after committing", async () => {
     const { git: service, core } = await makeServices();
     const cwd = await initRepository(service, core);
     const worktreePath = makeTempDirectory("f5-git-smoke-worktree-");
@@ -173,11 +182,79 @@ describe.concurrent("real Git smoke", () => {
       }),
     );
     fs.writeFileSync(path.join(worktreePath, "dirty.txt"), "dirty\n", "utf8");
-    await Effect.runPromise(core.removeWorktree({ cwd, path: worktreePath, force: true }));
+    await expect(
+      Effect.runPromise(core.removeWorktree({ cwd, path: worktreePath, force: true })),
+    ).rejects.toThrow("local changes");
+    expect(fs.readFileSync(path.join(worktreePath, "dirty.txt"), "utf8")).toBe("dirty\n");
+    await git(service, worktreePath, ["add", "dirty.txt"]);
+    await git(service, worktreePath, ["commit", "-m", "Preserve worktree changes"]);
+    await Effect.runPromise(core.removeWorktree({ cwd, path: worktreePath }));
 
     expect(created.worktree.branch).toBe("feature/worktree");
     expect(fs.existsSync(worktreePath)).toBe(false);
   });
+
+  // Four worktree removal attempts and their rechecks spawn enough Git processes to
+  // pass 15s on Windows runners.
+  it("rechecks ignored approvals at the Git removal boundary without overriding local changes", async () => {
+    const { git: service, core } = await makeServices();
+    const cwd = await initRepository(service, core);
+    fs.writeFileSync(path.join(cwd, ".gitignore"), ".env\n.env.local\n");
+    await git(service, cwd, ["add", ".gitignore"]);
+    await git(service, cwd, ["commit", "-m", "Ignore config"]);
+    const worktreePath = makeTempDirectory("f5-ignored-boundary-");
+    fs.rmSync(worktreePath, { recursive: true, force: true });
+    await Effect.runPromise(
+      core.createWorktree({
+        cwd,
+        branch: "main",
+        newBranch: "ignored-boundary",
+        path: worktreePath,
+      }),
+    );
+    fs.writeFileSync(path.join(worktreePath, ".env"), "reviewed");
+    await expect(
+      Effect.runPromise(core.removeWorktree({ cwd, path: worktreePath })),
+    ).rejects.toThrow("protected ignored files");
+    fs.writeFileSync(path.join(worktreePath, ".env.local"), "new");
+    await expect(
+      Effect.runPromise(
+        core.removeWorktree({
+          cwd,
+          path: worktreePath,
+          ignoredFiles: { kind: "manual", approvedEntries: [".env"] },
+        }),
+      ),
+    ).rejects.toThrow("protected ignored files");
+    const approvedIgnoredEntries = [".env", ".env.local"];
+    fs.writeFileSync(path.join(worktreePath, "README.md"), "uncommitted");
+    await expect(
+      Effect.runPromise(
+        core.removeWorktree({
+          cwd,
+          path: worktreePath,
+          ignoredFiles: { kind: "manual", approvedEntries: approvedIgnoredEntries },
+        }),
+      ),
+    ).rejects.toThrow("local changes");
+    // Commit the tracked edit so the remaining removal is only of approved ignored files.
+    await git(service, worktreePath, ["add", "README.md"]);
+    await git(service, worktreePath, ["commit", "-m", "Preserve edit"]);
+    await Effect.runPromise(
+      core.removeWorktree({
+        cwd,
+        path: worktreePath,
+        ignoredFiles: {
+          kind: "manual",
+          approvedEntries: approvedIgnoredEntries,
+        },
+      }),
+    );
+    expect(fs.existsSync(worktreePath)).toBe(false);
+    expect(
+      await git(service, cwd, ["rev-parse", "--verify", "refs/heads/ignored-boundary"]),
+    ).toMatch(/^[0-9a-f]{40}$/);
+  }, 45_000);
 
   it("sets upstream on local push and skips a second up-to-date push", async () => {
     const { git: service, core } = await makeServices();
@@ -190,7 +267,9 @@ describe.concurrent("real Git smoke", () => {
 
     expect(first).toMatchObject({ status: "pushed", branch: "main", setUpstream: true });
     expect(second).toMatchObject({ status: "skipped_up_to_date", branch: "main" });
-    expect(await git(service, remote, ["rev-parse", "refs/heads/main"])).toMatch(/^[0-9a-f]{40}$/u);
+    expect(await git(service, remote, ["--git-dir=.", "rev-parse", "refs/heads/main"])).toMatch(
+      /^[0-9a-f]{40}$/u,
+    );
   });
 
   it("pulls a commit created by another clone", async () => {
@@ -222,7 +301,7 @@ describe.concurrent("real Git smoke", () => {
     const headSha = await git(service, cwd, ["rev-parse", "HEAD"]);
     await git(service, cwd, ["remote", "add", "origin", remote]);
     await git(service, cwd, ["push", "origin", "HEAD:main"]);
-    await git(service, remote, ["update-ref", "refs/pull/7/head", headSha]);
+    await git(service, remote, ["--git-dir=.", "update-ref", "refs/pull/7/head", headSha]);
 
     await Effect.runPromise(
       core.fetchPullRequestBranch({ cwd, prNumber: 7, branch: "review/pr-7" }),
@@ -274,7 +353,11 @@ describe.concurrent("real Git smoke", () => {
       pr: { status: "created", number: 91 },
     });
     expect(
-      await git(service, remote, ["rev-parse", "refs/heads/feature/generated-commit"]),
+      await git(service, remote, [
+        "--git-dir=.",
+        "rev-parse",
+        "refs/heads/feature/generated-commit",
+      ]),
     ).toMatch(/^[0-9a-f]{40}$/u);
   });
 });

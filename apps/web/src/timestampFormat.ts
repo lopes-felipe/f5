@@ -73,6 +73,11 @@ export function formatTimestamp(isoDate: string, timestampFormat: TimestampForma
   );
 }
 
+/** A time of day without its date, in the user's timestamp format. */
+export function formatTimeOfDay(date: Date, timestampFormat: TimestampFormat): string {
+  return getTimestampFormatter(timestampFormat, false).format(date);
+}
+
 export function formatShortTimestamp(isoDate: string, timestampFormat: TimestampFormat): string {
   const date = new Date(isoDate);
   return getTimestampFormatter(timestampFormat, false, isOlderCalendarDay(date, new Date())).format(

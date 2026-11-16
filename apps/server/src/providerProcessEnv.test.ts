@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as Path from "node:path";
 import { fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
+import { browserOpenEnabled } from "./browser/BrowserOpenLauncher";
 import {
   buildAccountExecutionEnvironment,
   assertAccountEnvironmentOverrides,
@@ -9,6 +10,20 @@ import {
 } from "./providerProcessEnv";
 
 describe("buildProviderChildProcessEnv", () => {
+  it("strips Codex package-manager hints from inherited and overridden environments", () => {
+    expect(
+      buildProviderChildProcessEnv(
+        {
+          PATH: "/bin",
+          CODEX_MANAGED_BY_NPM: "1",
+          CODEX_MANAGED_BY_BUN: "1",
+          CODEX_MANAGED_BY_PNPM: "1",
+          CODEX_MANAGED_PACKAGE_ROOT: "/package",
+        },
+        { codex_managed_by_npm: "1" },
+      ),
+    ).toEqual({ PATH: "/bin" });
+  });
   it("replaces differently-cased inherited variables on Windows", () => {
     const env = buildProviderChildProcessEnv(
       { ANTHROPIC_API_KEY: "ambient" },
@@ -29,6 +44,27 @@ describe("buildProviderChildProcessEnv", () => {
       PATH: "/usr/bin",
       HOME: "/Users/tester",
     });
+  });
+
+  it("never passes an inherited browser-open token to F5's children", () => {
+    expect(
+      buildProviderChildProcessEnv({
+        PATH: "/usr/bin",
+        F5_BROWSER_OPEN_TOKEN: "another-f5",
+        f5_browser_open_token: "lowercase",
+      }),
+    ).toEqual({ PATH: "/usr/bin" });
+  });
+
+  it("never passes the backend's own auth token to F5's children", () => {
+    expect(
+      buildProviderChildProcessEnv({
+        PATH: "/usr/bin",
+        T3CODE_AUTH_TOKEN: "backend-credential",
+        t3code_auth_token: "lowercase",
+        T3CODE_CODEX_LAUNCH_ARGS: "--legacy",
+      }),
+    ).toEqual({ PATH: "/usr/bin", T3CODE_CODEX_LAUNCH_ARGS: "--legacy" });
   });
 
   it("treats env keys case-insensitively and applies overrides", () => {
@@ -73,10 +109,36 @@ describe("profile account execution", () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
-    expect(env.PATH).toBe(Path.join(stateDir, "github-bin") + Path.delimiter + "tools");
+    expect(env.PATH).toBe(
+      (browserOpenEnabled() ? Path.join(stateDir, "browser-bin") + Path.delimiter : "") +
+        Path.join(stateDir, "github-bin") +
+        Path.delimiter +
+        "tools",
+    );
     expect(env.CODEX_HOME).toBe(Path.join(stateDir, "provider-homes", "codex"));
     expect(env.HOME).toBe(env.USERPROFILE);
     expect(env.F5_PROFILE_ISOLATED).toBe("1");
+  });
+  it("marks agent and terminal processes for the Agent Bridge recursion guard", () => {
+    for (const isDefault of [true, false]) {
+      for (const purpose of ["provider", "terminal"] as const)
+        expect(
+          buildAccountExecutionEnvironment({
+            purpose,
+            stateDir,
+            profile: { ...profile, isDefault },
+            baseEnv,
+          }).F5_AGENT_PROCESS,
+        ).toBe("1");
+      expect(
+        buildAccountExecutionEnvironment({
+          purpose: "git",
+          stateDir,
+          profile: { ...profile, isDefault },
+          baseEnv,
+        }).F5_AGENT_PROCESS,
+      ).toBeUndefined();
+    }
   });
   it("lets deliberate instance API credentials win and preserves Default inheritance", () => {
     expect(
@@ -98,6 +160,48 @@ describe("profile account execution", () => {
     expect(env.CODEX_HOME).toBe("machine-home");
     expect(env.F5_PROFILE_ISOLATED).toBeUndefined();
   });
+  it("passes project script variables to isolated terminals", () => {
+    const env = buildAccountExecutionEnvironment({
+      purpose: "terminal",
+      stateDir,
+      profile,
+      baseEnv: { ...baseEnv, T3CODE_FOO: "inherited" },
+      overrides: { T3CODE_PROJECT_ROOT: "/repo", T3CODE_WORKTREE_PATH: "/repo-worktree" },
+    });
+    expect(env.T3CODE_PROJECT_ROOT).toBe("/repo");
+    expect(env.T3CODE_WORKTREE_PATH).toBe("/repo-worktree");
+    expect(env.T3CODE_FOO).toBeUndefined();
+    expect(env.HOME).toBe(Path.join(stateDir, "provider-homes", "claude"));
+  });
+  it("still rejects other reserved overrides and instance project script variables", () => {
+    expect(() =>
+      buildAccountExecutionEnvironment({
+        purpose: "terminal",
+        stateDir,
+        profile,
+        baseEnv,
+        overrides: { T3CODE_PROJECT_ROOT: "/repo", HOME: "escape" },
+      }),
+    ).toThrow(/HOME is reserved/);
+    expect(() =>
+      buildAccountExecutionEnvironment({
+        purpose: "terminal",
+        stateDir,
+        profile,
+        baseEnv,
+        overrides: { T3CODE_OTHER: "escape" },
+      }),
+    ).toThrow(/reserved/);
+    expect(() =>
+      buildAccountExecutionEnvironment({
+        purpose: "provider",
+        stateDir,
+        profile,
+        baseEnv,
+        instance: [{ name: "T3CODE_PROJECT_ROOT", value: "/repo", sensitive: false }],
+      }),
+    ).toThrow(/reserved/);
+  });
   it.each([
     "home",
     "UsErPrOfIlE",
@@ -108,6 +212,58 @@ describe("profile account execution", () => {
   ])("rejects reserved override %s", (key) => {
     expect(() => assertAccountEnvironmentOverrides({ [key]: "escape" })).toThrow(/reserved/);
   });
+});
+
+describe("profile browser environment", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+  it.each([
+    ["darwin", "ipc", true],
+    ["darwin", "", false],
+    ["linux", "ipc", false],
+    ["win32", "ipc", false],
+  ] as const)("injects the launcher only for desktop macOS (%s, %s)", (platform, host, enabled) => {
+    vi.stubEnv("F5_DESKTOP_COMPUTER_HOST", host);
+    vi.stubGlobal(
+      "process",
+      new Proxy(process, {
+        get: (target, key) => (key === "platform" ? platform : Reflect.get(target, key)),
+      }),
+    );
+    const stateDir = Path.resolve("browser-env-test");
+    for (const purpose of ["provider", "terminal"] as const) {
+      const env = buildAccountExecutionEnvironment({
+        purpose,
+        stateDir,
+        profile: undefined,
+        baseEnv: { PATH: "/usr/bin", BROWSER: "user-browser" },
+      });
+      expect(env.BROWSER).toBe(
+        enabled ? Path.join(stateDir, "browser-bin", "f5-open-url") : "user-browser",
+      );
+      expect(env.PATH?.split(Path.delimiter).slice(0, enabled ? 2 : 1)).toEqual(
+        (enabled ? ["browser-bin", "github-bin"] : ["github-bin"]).map((name) =>
+          Path.join(stateDir, name),
+        ),
+      );
+    }
+  });
+});
+
+it("keeps the backend auth token from every Default-profile child", () => {
+  const stateDir = Path.resolve("default-profile");
+  for (const purpose of ["provider", "terminal", "git", "account"] as const) {
+    const env = buildAccountExecutionEnvironment({
+      purpose,
+      stateDir,
+      profile: fallbackDefaultProfile(stateDir),
+      baseEnv: { HOME: "machine", T3CODE_AUTH_TOKEN: "backend-credential" },
+    });
+    expect(env.T3CODE_AUTH_TOKEN).toBeUndefined();
+    expect(env.HOME).toBe("machine");
+  }
 });
 
 it("preserves Default reserved overrides and deliberate telemetry endpoints", () => {
@@ -166,4 +322,29 @@ it("removes standalone launcher state from inherited and overridden provider env
     F5_UPDATE_ID: "update",
   };
   expect(buildProviderChildProcessEnv(values, values)).toEqual({ PATH: "/user/node" });
+});
+
+it("isolates Pi configuration and multi-provider credentials while retaining explicit instance keys", () => {
+  const stateDir = Path.join(Path.sep, "tmp", "pi-profile");
+  const input = {
+    purpose: "provider" as const,
+    profile: { ...fallbackDefaultProfile(stateDir), isDefault: false },
+    stateDir,
+    baseEnv: {
+      PI_CODING_AGENT_DIR: "/private/other-account",
+      OPENROUTER_API_KEY: "ambient",
+      AWS_PROFILE: "ambient",
+    },
+    instance: [{ name: "OPENROUTER_API_KEY", value: "explicit", sensitive: true }],
+  };
+  const env = buildAccountExecutionEnvironment(input);
+  expect(env.PI_CODING_AGENT_DIR).toBeUndefined();
+  expect(env.AWS_PROFILE).toBeUndefined();
+  expect(env.OPENROUTER_API_KEY).toBe("explicit");
+  expect(() =>
+    buildAccountExecutionEnvironment({
+      ...input,
+      instance: [{ name: "PI_CODING_AGENT_DIR", value: "/other", sensitive: false }],
+    }),
+  ).toThrow("reserved");
 });

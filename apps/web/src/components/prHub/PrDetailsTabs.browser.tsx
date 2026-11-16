@@ -207,9 +207,9 @@ afterEach(async () => {
   savedOperation = null;
 });
 
-async function renderTabs() {
+async function renderTabs(timelineOverride?: PrHubTimelinePage) {
   const detail = detailResult();
-  const timeline = timelinePage();
+  const timeline = timelineOverride ?? timelinePage();
   const mutationResult: PrHubDetailMutationResult = { detail, timeline };
   nativeApiRef.updateComment.mockResolvedValue(mutationResult);
   nativeApiRef.setReaction.mockResolvedValue(mutationResult);
@@ -247,7 +247,32 @@ async function renderTabs() {
     prHub: {
       getDetail: vi.fn().mockResolvedValue(detail),
       getTimeline: vi.fn().mockResolvedValue(timeline),
+      getReviewThreads: vi.fn().mockResolvedValue({
+        threads: [],
+        pageInfo: { hasNextPage: false, endCursor: null, truncated: false },
+        comparisonVersion: "comparison",
+        refreshedAt: "2026-01-02T00:00:00.000Z",
+      }),
       getFiles: vi.fn().mockResolvedValue(filesPage()),
+      getChecks: vi.fn().mockResolvedValue({
+        headOid: "head",
+        truncated: false,
+        refreshedAt: "2026-01-02T00:00:00.000Z",
+        checks: [
+          {
+            id: "501",
+            name: "build",
+            status: "success",
+            description: null,
+            url: null,
+            workflow: "CI",
+            workflowRunId: "9",
+            startedAt: null,
+            completedAt: null,
+            logAvailable: true,
+          },
+        ],
+      }),
       getReviewOperation: vi.fn().mockImplementation(() => Promise.resolve(savedOperation)),
       prepareReview: nativeApiRef.prepareReview,
       submitReview: nativeApiRef.submitReview,
@@ -276,18 +301,67 @@ async function renderTabs() {
   });
   active = await render(
     <QueryClientProvider client={queryClient}>
-      <PrDetailsTabs pr={makePr()} summary={<p>Snapshot summary</p>} />
+      <div style={{ height: 600, display: "flex", flexDirection: "column" }}>
+        <PrDetailsTabs pr={makePr()} />
+      </div>
     </QueryClientProvider>,
   );
 }
 
 describe("PrDetailsTabs", () => {
+  it("keeps trailing tabs reachable in a narrow panel", async () => {
+    await renderTabs();
+    const root = document.querySelector<HTMLElement>("[data-pr-detail-tabs]")!;
+    root.parentElement!.style.width = "260px";
+    const strip = page.getByRole("tablist").element();
+    await expect.poll(() => strip.scrollWidth > strip.clientWidth).toBe(true);
+    await page.getByRole("tab", { name: "Guide · Beta", exact: true }).click();
+    await expect
+      .element(page.getByRole("tab", { name: "Guide · Beta", exact: true }))
+      .toHaveAttribute("aria-selected", "true");
+    expect(strip.scrollLeft).toBeGreaterThan(0);
+  });
+  it("mounts only nearby events for a large timeline and reaches distant rows", async () => {
+    const timeline = timelinePage();
+    const first = timeline.entries[0]!;
+    const entries = Array.from({ length: 1000 }, (_, index) => ({
+      ...first,
+      id: "virtual-" + index,
+      ...(first.type === "comment" ? { body: "Timeline comment " + index } : {}),
+    }));
+    await renderTabs({ ...timeline, entries });
+    await page.getByRole("tab", { name: "Conversation", exact: true }).click();
+    await expect.element(page.getByText("Timeline comment 0", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Edit comment", exact: true }).first().click();
+    await userEvent.fill(page.getByRole("textbox"), "Unsaved draft survives eviction");
+    expect(
+      document.querySelectorAll(
+        'section[aria-label="Conversation"] article, [aria-label="Conversation"] article',
+      ).length,
+    ).toBeLessThan(200);
+    const panel = page.getByRole("tabpanel", { name: "Conversation" }).element();
+    const scroller = [...panel.querySelectorAll<HTMLElement>("*")].find(
+      (element) =>
+        element.scrollHeight > element.clientHeight &&
+        ["auto", "scroll"].includes(getComputedStyle(element).overflowY),
+    )!;
+    scroller.scrollTop = scroller.scrollHeight;
+    scroller.dispatchEvent(new Event("scroll"));
+    await expect.element(page.getByText("Timeline comment 999", { exact: true })).toBeVisible();
+    expect(page.getByRole("textbox").query()).toBeNull();
+    scroller.scrollTop = 0;
+    scroller.dispatchEvent(new Event("scroll"));
+    await expect.element(page.getByRole("textbox")).toHaveValue("Unsaved draft survives eviction");
+    expect(panel.getBoundingClientRect().height).toBeLessThan(600);
+  });
   it("loads summary, timeline, and file detail without leaving the PR surface", async () => {
     await renderTabs();
     await expect.element(page.getByText("Detailed description")).toBeInTheDocument();
-    await expect.element(page.getByText("build")).toBeInTheDocument();
 
-    await page.getByRole("tab", { name: "Timeline" }).click();
+    await page.getByRole("tab", { name: "Checks", exact: true }).click();
+    await expect.element(page.getByText("build", { exact: true })).toBeInTheDocument();
+
+    await page.getByRole("tab", { name: "Conversation" }).click();
     await expect.element(page.getByText("Original comment")).toBeInTheDocument();
 
     await page.getByRole("tab", { name: "Files (1)" }).click();
@@ -460,7 +534,7 @@ describe("PrDetailsTabs", () => {
       thread.isResolved = input.resolved;
       return Promise.resolve(thread);
     });
-    await page.getByRole("tab", { name: "Review threads", exact: true }).click();
+    await page.getByRole("tab", { name: "Threads", exact: true }).click();
     await expect.element(page.getByText("Explain this", { exact: true })).toBeInTheDocument();
     await page.getByRole("button", { name: "Reply", exact: true }).click();
     await userEvent.type(
@@ -482,17 +556,147 @@ describe("PrDetailsTabs", () => {
       .toHaveValue("");
     expect(api.replyReviewThread).toHaveBeenCalledTimes(1);
     await page.getByRole("button", { name: "Resolve conversation" }).click();
-    await expect
-      .element(page.getByRole("button", { name: "Reopen conversation" }))
-      .toBeInTheDocument();
     expect(api.setReviewThreadState).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: "thread-1", resolved: true }),
     );
+    // Resolved threads are hidden by default; showing them offers the reopen action.
+    await expect
+      .element(page.getByText("No loaded threads match these filters."))
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Filter comments" }).click();
+    await page.getByRole("menuitemcheckbox", { name: "Resolved threads" }).click();
+    await expect
+      .element(page.getByRole("button", { name: "Reopen conversation" }))
+      .toBeInTheDocument();
+  });
+
+  it("keeps review thread replies with their finding and folds resolved threads", async () => {
+    await renderTabs();
+    const reviewComment = (id: string, body: string, createdAt: string) => ({
+      type: "comment" as const,
+      id,
+      databaseId: null,
+      kind: "review-comment" as const,
+      author: { login: id, name: null, avatarUrl: null },
+      body,
+      createdAt,
+      updatedAt: null,
+      url: `https://github.com/octo/repo/pull/1#${id}`,
+      path: "src/detail.ts",
+      line: 2,
+      reviewState: "COMMENTED",
+      viewerCanUpdate: false,
+      reactions: [],
+    });
+    const threadComment = (id: string) => ({
+      id,
+      author: id,
+      bodyText: `Thread copy of ${id}`,
+      url: `https://github.com/octo/repo/pull/1#${id}`,
+      createdAt: null,
+      updatedAt: null,
+      outdated: false,
+      diffHunk: null,
+    });
+    const api = nativeApiRef.current!.prHub;
+    api.getTimeline = vi.fn().mockResolvedValue({
+      ...timelinePage("Unrelated comment"),
+      entries: [
+        reviewComment("late", "Late reply", "2026-01-05T00:00:00.000Z"),
+        reviewComment("reply", "Fixed in the next commit", "2026-01-04T00:00:00.000Z"),
+        ...timelinePage("Unrelated comment").entries,
+        {
+          ...reviewComment("dropped", "Dismissed nit", "2026-01-01T00:00:00.000Z"),
+          reviewState: "DISMISSED",
+        },
+        reviewComment("finding", "Explain this", "2026-01-01T00:00:00.000Z"),
+        reviewComment("settled", "Old nit", "2026-01-01T00:00:00.000Z"),
+      ],
+    });
+    const pageInfo = (endCursor: string | null) => ({
+      hasNextPage: endCursor !== null,
+      endCursor,
+      truncated: false,
+    });
+    const threadsPage = (threads: ReadonlyArray<unknown>, endCursor: string | null = null) => ({
+      threads,
+      pageInfo: pageInfo(endCursor),
+      comparisonVersion: "comparison",
+      refreshedAt: "2026-01-05T00:00:00.000Z",
+    });
+    const settledThread = {
+      id: "thread-2",
+      path: "src/other.ts",
+      line: 9,
+      originalLine: 9,
+      isResolved: true,
+      comments: [threadComment("settled")],
+      // The threads read stops at the first comments of a long thread.
+      commentsPageInfo: pageInfo("more-comments"),
+    };
+    api.getReviewThreads = vi.fn().mockImplementation(async (input) => {
+      if (input.threadId === "thread-2")
+        return threadsPage([
+          {
+            ...settledThread,
+            comments: ["settled", "late"].map(threadComment),
+            commentsPageInfo: pageInfo(null),
+          },
+        ]);
+      if (input.cursor === "threads-2")
+        return threadsPage([
+          {
+            id: "thread-3",
+            path: "src/gone.ts",
+            line: 4,
+            originalLine: 4,
+            isResolved: false,
+            comments: [threadComment("dropped")],
+          },
+        ]);
+      return threadsPage(
+        [
+          {
+            id: "thread-1",
+            path: "src/detail.ts",
+            line: 2,
+            originalLine: 2,
+            isResolved: false,
+            comments: ["finding", "reply", "missing"].map(threadComment),
+          },
+          settledThread,
+        ],
+        "threads-2",
+      );
+    });
+
+    await page.getByRole("tab", { name: "Conversation" }).click();
+    const thread = page.getByRole("region", { name: "Review thread on src/detail.ts" });
+    await expect.element(thread.getByText("Fixed in the next commit")).toBeInTheDocument();
+    await expect.element(thread.getByText("Explain this")).toBeInTheDocument();
+    // A thread comment the timeline has not loaded is shown from the thread's own copy.
+    await expect.element(thread.getByText("Thread copy of missing")).toBeInTheDocument();
+    const text = (await thread.element().textContent) ?? "";
+    expect(text.indexOf("Explain this")).toBeLessThan(text.indexOf("Fixed in the next commit"));
+
+    // Threads on a later page group too, and a dismissed finding folds like a resolved one.
+    const dismissed = page.getByRole("region", { name: "Review thread on src/gone.ts" });
+    await expect.element(dismissed.getByText("Review dismissed")).toBeInTheDocument();
+    await expect.element(page.getByText("Dismissed nit")).not.toBeInTheDocument();
+
+    // A long resolved thread is completed, so its late reply folds with the finding.
+    const resolved = page.getByRole("region", { name: "Review thread on src/other.ts" });
+    await expect.element(resolved.getByText("Resolved")).toBeInTheDocument();
+    await expect.element(page.getByText("Late reply")).not.toBeInTheDocument();
+    await expect.element(resolved.getByText("More replies")).not.toBeInTheDocument();
+    await resolved.getByRole("button", { name: /src\/other\.ts:9/ }).click();
+    await expect.element(resolved.getByText("Old nit")).toBeInTheDocument();
+    await expect.element(resolved.getByText("Late reply")).toBeInTheDocument();
   });
 
   it("retains an edited comment draft when the remote mutation fails", async () => {
     await renderTabs();
-    await page.getByRole("tab", { name: "Timeline" }).click();
+    await page.getByRole("tab", { name: "Conversation" }).click();
     await expect.element(page.getByText("Original comment")).toBeInTheDocument();
     nativeApiRef.updateComment.mockRejectedValueOnce(new Error("GitHub rejected the edit"));
 

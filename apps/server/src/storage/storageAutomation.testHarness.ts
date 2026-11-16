@@ -8,14 +8,18 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
   OrchestrationProject,
   OrchestrationThread,
+  OrchestrationCommand,
+  QueueReasonCode,
   ProjectId,
   ServerSettings,
+  StorageCleanupCategoryResult,
   ThreadId,
 } from "@t3tools/contracts";
-import { Effect, Layer, Option, Stream } from "effect";
+import { Effect, Layer, Option, Scope, Stream } from "effect";
 
 import { ServerConfig } from "../config.ts";
-import { GitCoreLive } from "../git/Layers/GitCore.ts";
+import { ProfileRegistryStore } from "../profiles/ProfileRegistryStore.ts";
+import { GitCoreTestLive as GitCoreLive, WorktreePreparationsTestLive } from "../git/testLayers.ts";
 import { GitServiceLive } from "../git/Layers/GitService.ts";
 import { NextTurnQueueStore } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -27,6 +31,7 @@ import { TerminalManager, type TerminalSessionSummary } from "../terminal/Servic
 import {
   type AutomaticThreadPurgeResult,
   type DatabaseSpaceResult,
+  type InactiveWorktreePreview,
   StorageMaintenance,
 } from "./StorageMaintenance.ts";
 
@@ -39,6 +44,15 @@ export interface AutomationWorld {
   terminals: TerminalSessionSummary[];
   sessions: Array<{ threadId: string; cwd: string; status: string }>;
   queuedThreadIds: Set<string>;
+  queueStates: Map<
+    string,
+    {
+      revision: number;
+      paused: boolean;
+      pauseReasonCode: QueueReasonCode | null;
+      worktreeBlockToken: string | null;
+    }
+  >;
   /** Threads with a turn start accepted but not yet delivered to the provider. */
   pendingTurnStarts: Set<string>;
   /** Incremented on every read-model read, so race tests can tell when a pass reached removal. */
@@ -49,6 +63,10 @@ export interface AutomationWorld {
   purgeResult: AutomaticThreadPurgeResult;
   /** Result the stubbed `reclaimDatabaseSpace` returns. */
   spaceResult: DatabaseSpaceResult;
+  /** Result the stubbed `cleanInactiveWorktreesAutomatically` returns. */
+  inactiveWorktreeResults: ReadonlyArray<StorageCleanupCategoryResult> | null;
+  /** Result the stubbed `previewInactiveWorktrees` returns. */
+  inactiveWorktreePreviews: ReadonlyArray<InactiveWorktreePreview>;
 }
 
 export const makeWorld = (): AutomationWorld => ({
@@ -57,11 +75,14 @@ export const makeWorld = (): AutomationWorld => ({
   terminals: [],
   sessions: [],
   queuedThreadIds: new Set(),
+  queueStates: new Map(),
   pendingTurnStarts: new Set(),
   readModelReads: 0,
   maintenanceCalls: [],
   purgeResult: { purgedThreadIds: [], archivedThreadIds: [], reclaimedBytes: 0, warnings: [] },
   spaceResult: { action: "none", reclaimedBytes: 0 },
+  inactiveWorktreeResults: [],
+  inactiveWorktreePreviews: [],
 });
 
 export function git(cwd: string, ...args: string[]): string {
@@ -168,17 +189,82 @@ export function automationLayer(
         world.readModelReads++;
         return { projects: world.projects, threads: world.threads } as never;
       }),
+    dispatch: (command: OrchestrationCommand) =>
+      Effect.sync(() => {
+        if (command.type === "thread.meta.update")
+          world.threads = world.threads.map((thread) =>
+            thread.id === command.threadId
+              ? {
+                  ...thread,
+                  ...(command.branch !== undefined ? { branch: command.branch } : {}),
+                  ...(command.worktreePath !== undefined
+                    ? { worktreePath: command.worktreePath }
+                    : {}),
+                }
+              : thread,
+          );
+        return { sequence: 1 };
+      }),
     streamDomainEvents: Stream.empty,
+    acquireMaintenanceLock: () => Scope.make("sequential"),
   } as never);
   const terminals = Layer.succeed(TerminalManager, {
     listSessions: Effect.sync(() => world.terminals),
+    close: ({ threadId }: { threadId: string }) =>
+      Effect.sync(() => {
+        world.terminals = world.terminals.filter((terminal) => terminal.threadId !== threadId);
+      }),
   } as never);
   const providers = Layer.succeed(ProviderService, {
     listSessions: () => Effect.sync(() => world.sessions),
+    stopSession: ({ threadId }: { threadId: string }) =>
+      Effect.sync(() => {
+        world.sessions = world.sessions.filter((session) => session.threadId !== threadId);
+      }),
   } as never);
+  const queueState = (id: string) => {
+    const state = world.queueStates.get(id) ?? {
+      revision: 0,
+      paused: false,
+      pauseReasonCode: null,
+      worktreeBlockToken: null,
+    };
+    world.queueStates.set(id, state);
+    return state;
+  };
   const queue = Layer.succeed(NextTurnQueueStore, {
+    setWorktreeBlockToken: (input: {
+      threadId: string;
+      token: string | null;
+      expectedToken?: string | null;
+    }) =>
+      Effect.sync(() => {
+        const state = queueState(input.threadId);
+        if (input.expectedToken === undefined || input.expectedToken === state.worktreeBlockToken) {
+          state.worktreeBlockToken = input.token;
+          state.revision++;
+        }
+      }),
+    setPaused: (input: { threadId: string; paused: boolean; reasonCode?: QueueReasonCode }) =>
+      Effect.sync(() => {
+        const state = queueState(input.threadId);
+        state.paused = input.paused;
+        state.pauseReasonCode = input.reasonCode ?? null;
+        state.revision++;
+      }),
+    readWorkspaceClaims: (threadIds: ReadonlyArray<ThreadId>) =>
+      Effect.sync(() =>
+        threadIds.map((threadId) => ({
+          threadId,
+          hasQueuedWork: world.queuedThreadIds.has(threadId),
+          worktreeBlockToken: queueState(threadId).worktreeBlockToken,
+        })),
+      ),
     listByThread: (threadId: string) =>
-      Effect.sync(() => ({ items: world.queuedThreadIds.has(threadId) ? [{}] : [] })),
+      Effect.sync(() => ({
+        items: world.queuedThreadIds.has(threadId) ? [{}] : [],
+        state: queueState(threadId),
+      })),
   } as never);
   const turns = Layer.succeed(ProjectionTurnRepository, {
     getPendingTurnStartByThreadId: ({ threadId }: { readonly threadId: string }) =>
@@ -192,6 +278,7 @@ export function automationLayer(
       return result();
     });
   const maintenance = Layer.succeed(StorageMaintenance, {
+    noteStorageMutated: Effect.void,
     purgeThreads: (input: unknown) => call("purgeThreads", input, () => world.purgeResult),
     reclaimDatabaseSpace: (input: unknown) =>
       call("reclaimDatabaseSpace", input, () => world.spaceResult),
@@ -204,8 +291,16 @@ export function automationLayer(
         perTargetReclaimed: [],
         warnings: [],
       })),
+    cleanInactiveWorktreesAutomatically: (input: unknown) =>
+      call("cleanInactiveWorktreesAutomatically", input, () => world.inactiveWorktreeResults),
+    previewInactiveWorktrees: call(
+      "previewInactiveWorktrees",
+      undefined,
+      () => world.inactiveWorktreePreviews,
+    ),
   } as never);
   return Layer.mergeAll(
+    WorktreePreparationsTestLive,
     GitCoreLive.pipe(Layer.provideMerge(GitServiceLive)),
     engine,
     terminals,
@@ -216,7 +311,16 @@ export function automationLayer(
     ServerSettingsService.layerTest(isolatedSettings as never),
     SqlitePersistenceMemory,
   ).pipe(
-    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix })),
+    Layer.provideMerge(
+      Layer.effect(
+        ServerConfig,
+        Effect.gen(function* () {
+          const config = yield* ServerConfig;
+          yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+          return config;
+        }),
+      ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix }))),
+    ),
     Layer.provideMerge(NodeServices.layer),
   );
 }

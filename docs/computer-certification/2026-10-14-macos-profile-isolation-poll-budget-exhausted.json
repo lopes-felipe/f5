@@ -1,0 +1,2566 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-codex-profile-isolation",
+  "state": "failed",
+  "repositoryCommit": "ab0a5c35750c186c242a9ea3e9f51f1546bf53d4",
+  "workingTreeDirty": false,
+  "recordedAt": "2026-10-14T15:31:21.385Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "provider": "codex",
+  "runtimeMode": "full-access",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "a4bdc0c5022c09bc98e13e3cbd526b1f2ded4ef0c235a627cf4926613813d629",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "6c3355aafd9a1bc45e6f07d60866a8a0742d1006b48fd2d6e8161f46d79ed1da",
+    "observerSource": "df0feb8ec80af3ca5cba1e8bb0b3149d7d6d8c7564ece11aa4630b7d602380f0",
+    "transportObserverSource": "88da9c9eefcdfee6767c5f7a8695de27b726ef2d41a7542b16be268f2d5eb10b",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "a3b8c3d877aa24fd44168bc82fa39208f54e5358e197264ca0470861680baa49",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "17281f635c4f653e13d7dcbeb52e8570e6930a32e93414c0de713437e5abe95d",
+    "profileIsolationSource": "19052f26ab435e483eaf8681179e4dc0e1152baebe0b91426004a299f2988824",
+    "profileIsolationObserverSource": "c2c4a2a85318abee0178cdb181da4c2d6a36dc2b610908ddb3d84ceb7ce1ded1",
+    "profileIsolationEvidenceSource": "66b376e7b1477b6fd45d4de0a06d788b8642a5c69df87b0c09e701d7a1a366a9",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "07ee3fb76cdb4b55566bf0ff5b76f052bc72da6e1a4de1b9d86a20673f147b3b",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "two-real-profiles": true,
+    "genuine-consents": true,
+    "lease-contention": false,
+    "exact-release": false,
+    "anonymous-banner": true,
+    "no-foreign-activity": true,
+    "no-foreign-images": false,
+    "no-foreign-grants": true,
+    "credential-files-unchanged": false,
+    "device-lock": true,
+    "native-actions": false,
+    "stop-and-grants": false,
+    "human-finish": false,
+    "cleanup": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "failureStage": "profile-1-contention",
+  "failureCode": "incomplete-receipt",
+  "profileIsolationObservation": {
+    "consents": [
+      {
+        "trustedReview": true,
+        "visible": true,
+        "allowed": true,
+        "settled": true,
+        "remembered": false
+      },
+      {
+        "trustedReview": true,
+        "visible": true,
+        "allowed": true,
+        "settled": true,
+        "remembered": false
+      }
+    ],
+    "submissions": [
+      {
+        "profileOrdinal": 1,
+        "phase": "consent",
+        "disposition": "started"
+      },
+      {
+        "profileOrdinal": 2,
+        "phase": "consent",
+        "disposition": "started"
+      },
+      {
+        "profileOrdinal": 1,
+        "phase": "owner",
+        "disposition": "started"
+      },
+      {
+        "profileOrdinal": 2,
+        "phase": "contender",
+        "disposition": "started"
+      }
+    ],
+    "bothChatSurfacesReady": true,
+    "distinctRendererProfiles": true,
+    "distinctBackendProcesses": true,
+    "isolatedProviderHomes": true,
+    "secondHelperReason": "other-instance",
+    "helperMonitorBaseline": {
+      "physicalSignals": 0,
+      "chordSignals": 0,
+      "permitExpirations": 0,
+      "unhealthyHeartbeats": 0
+    },
+    "channels": {
+      "configured": true,
+      "traceComplete": true,
+      "profiles": [
+        {
+          "held": false,
+          "anonymousBanners": 1,
+          "ownBanners": 1,
+          "ownActivities": 2,
+          "ownImages": 1,
+          "busy": 0,
+          "grants": 1,
+          "ownWsActivities": 2,
+          "ownWsImages": 1,
+          "foreignActivity": false,
+          "foreignImages": false,
+          "foreignGrants": false,
+          "foreignIdentity": false,
+          "invalidBanner": false,
+          "busyWhileForeignHeld": false,
+          "native": {
+            "responses": {
+              "nativeCaptureSucceeded": false,
+              "nativeInspectionSucceeded": true,
+              "nativeInputSucceeded": false
+            },
+            "held": false,
+            "leaseObserved": true,
+            "pauseObserved": true,
+            "resumeObserved": false,
+            "captureResponses": 0,
+            "inspectionResponses": 40,
+            "activityMessages": 2,
+            "activityThumbnails": 1,
+            "toolOutcomeErrors": [],
+            "traceComplete": true,
+            "pendingResponses": 0,
+            "accessRequests": 1,
+            "accessAnswersForwarded": 1,
+            "accessAnswerSummaries": [
+              {
+                "kind": "apps",
+                "appCount": 1,
+                "allowed": 1,
+                "remembered": 0
+              }
+            ],
+            "sessionGenerationsObserved": 1,
+            "requestSessions": [
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "activateApp",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "inspect",
+                "sessionOrdinal": 1
+              }
+            ],
+            "backendRestarts": [],
+            "backendLifecycle": [],
+            "mcpTransport": [],
+            "mcpTransportOverflow": false,
+            "grantChanges": 84,
+            "lastGrantCount": 1,
+            "operations": [
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "leaseAcquire",
+                "outcome": "ok"
+              },
+              {
+                "op": "activateApp",
+                "outcome": "ok",
+                "actionCompleted": true,
+                "actionCaptureSucceeded": true
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "inspect",
+                "outcome": "ok",
+                "accessible": true,
+                "nodes": 15
+              }
+            ]
+          }
+        },
+        {
+          "held": false,
+          "anonymousBanners": 1,
+          "ownBanners": 1,
+          "ownActivities": 2,
+          "ownImages": 0,
+          "busy": 0,
+          "grants": 1,
+          "ownWsActivities": 2,
+          "ownWsImages": 0,
+          "foreignActivity": false,
+          "foreignImages": false,
+          "foreignGrants": false,
+          "foreignIdentity": false,
+          "invalidBanner": false,
+          "busyWhileForeignHeld": false,
+          "native": {
+            "responses": {
+              "nativeCaptureSucceeded": false,
+              "nativeInspectionSucceeded": false,
+              "nativeInputSucceeded": false
+            },
+            "hostStatus": {
+              "available": true
+            },
+            "held": false,
+            "leaseObserved": true,
+            "pauseObserved": true,
+            "resumeObserved": false,
+            "captureResponses": 0,
+            "inspectionResponses": 0,
+            "activityMessages": 2,
+            "activityThumbnails": 0,
+            "toolOutcomeErrors": [],
+            "traceComplete": true,
+            "pendingResponses": 0,
+            "accessRequests": 1,
+            "accessAnswersForwarded": 1,
+            "accessAnswerSummaries": [
+              {
+                "kind": "apps",
+                "appCount": 1,
+                "allowed": 1,
+                "remembered": 0
+              }
+            ],
+            "sessionGenerationsObserved": 1,
+            "requestSessions": [
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "resolveApps",
+                "sessionOrdinal": 1
+              },
+              {
+                "op": "activateApp",
+                "sessionOrdinal": 1
+              }
+            ],
+            "backendRestarts": [],
+            "backendLifecycle": [],
+            "mcpTransport": [],
+            "mcpTransportOverflow": false,
+            "grantChanges": 4,
+            "lastGrantCount": 1,
+            "operations": [
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "resolveApps",
+                "outcome": "ok"
+              },
+              {
+                "op": "leaseAcquire",
+                "outcome": "ok"
+              },
+              {
+                "op": "activateApp",
+                "outcome": "ok",
+                "actionCompleted": true,
+                "actionCaptureSucceeded": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "helperMonitorAtFailure": {
+      "physicalSignals": 0,
+      "chordSignals": 0,
+      "permitExpirations": 0,
+      "unhealthyHeartbeats": 0
+    },
+    "providerProgress": [
+      {
+        "threadObserved": true,
+        "turnState": "completed",
+        "runtimeMode": "full-access",
+        "sessionErrorCode": "none",
+        "activityCounts": {
+          "observed": true,
+          "boundedOrMalformed": false,
+          "turns": [
+            {
+              "turnOrdinal": 1,
+              "toolStarted": 0,
+              "toolCompleted": 0,
+              "toolFailed": 0,
+              "toolDeclined": 0,
+              "approvalsRequested": 0,
+              "approvalsResolved": 0,
+              "approvalsAccepted": 0,
+              "approvalsDeclined": 0,
+              "approvalsCancelled": 0,
+              "approvalsUnknown": 0,
+              "userInputsRequested": 0,
+              "userInputsResolved": 0,
+              "other": 10
+            },
+            {
+              "turnOrdinal": 2,
+              "toolStarted": 2,
+              "toolCompleted": 2,
+              "toolFailed": 0,
+              "toolDeclined": 0,
+              "approvalsRequested": 0,
+              "approvalsResolved": 0,
+              "approvalsAccepted": 0,
+              "approvalsDeclined": 0,
+              "approvalsCancelled": 0,
+              "approvalsUnknown": 0,
+              "userInputsRequested": 0,
+              "userInputsResolved": 0,
+              "other": 1
+            },
+            {
+              "turnOrdinal": 3,
+              "toolStarted": 41,
+              "toolCompleted": 41,
+              "toolFailed": 0,
+              "toolDeclined": 0,
+              "approvalsRequested": 0,
+              "approvalsResolved": 0,
+              "approvalsAccepted": 0,
+              "approvalsDeclined": 0,
+              "approvalsCancelled": 0,
+              "approvalsUnknown": 0,
+              "userInputsRequested": 0,
+              "userInputsResolved": 0,
+              "other": 1
+            }
+          ]
+        }
+      },
+      {
+        "threadObserved": true,
+        "turnState": "completed",
+        "runtimeMode": "full-access",
+        "sessionErrorCode": "none",
+        "activityCounts": {
+          "observed": true,
+          "boundedOrMalformed": false,
+          "turns": [
+            {
+              "turnOrdinal": 1,
+              "toolStarted": 0,
+              "toolCompleted": 0,
+              "toolFailed": 0,
+              "toolDeclined": 0,
+              "approvalsRequested": 0,
+              "approvalsResolved": 0,
+              "approvalsAccepted": 0,
+              "approvalsDeclined": 0,
+              "approvalsCancelled": 0,
+              "approvalsUnknown": 0,
+              "userInputsRequested": 0,
+              "userInputsResolved": 0,
+              "other": 10
+            },
+            {
+              "turnOrdinal": 2,
+              "toolStarted": 2,
+              "toolCompleted": 2,
+              "toolFailed": 0,
+              "toolDeclined": 0,
+              "approvalsRequested": 0,
+              "approvalsResolved": 0,
+              "approvalsAccepted": 0,
+              "approvalsDeclined": 0,
+              "approvalsCancelled": 0,
+              "approvalsUnknown": 0,
+              "userInputsRequested": 0,
+              "userInputsResolved": 0,
+              "other": 0
+            },
+            {
+              "turnOrdinal": 3,
+              "toolStarted": 1,
+              "toolCompleted": 1,
+              "toolFailed": 0,
+              "toolDeclined": 0,
+              "approvalsRequested": 0,
+              "approvalsResolved": 0,
+              "approvalsAccepted": 0,
+              "approvalsDeclined": 0,
+              "approvalsCancelled": 0,
+              "approvalsUnknown": 0,
+              "userInputsRequested": 0,
+              "userInputsResolved": 0,
+              "other": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": true,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": true,
+    "pauseObserved": true,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 40,
+    "activityMessages": 4,
+    "activityThumbnails": 1,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "pendingResponses": 0,
+    "accessRequests": 2,
+    "accessAnswersForwarded": 2,
+    "accessAnswerSummaries": [
+      {
+        "kind": "apps",
+        "appCount": 1,
+        "allowed": 1,
+        "remembered": 0
+      },
+      {
+        "kind": "apps",
+        "appCount": 1,
+        "allowed": 1,
+        "remembered": 0
+      }
+    ],
+    "sessionGenerationsObserved": 2,
+    "requestSessions": [
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 2
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "activateApp",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 2
+      },
+      {
+        "op": "activateApp",
+        "sessionOrdinal": 2
+      }
+    ],
+    "backendRestarts": [],
+    "backendLifecycle": [],
+    "mcpTransport": [
+      {
+        "method": "initialize",
+        "sessionHeader": false,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "notification",
+        "sessionHeader": true,
+        "status": 202,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": false,
+        "completed": true,
+        "outcome": "accepted"
+      },
+      {
+        "method": "other",
+        "sessionHeader": true,
+        "status": 405,
+        "bounded": true,
+        "requestDecoded": false,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "http-error"
+      },
+      {
+        "method": "tools/list",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "initialize",
+        "sessionHeader": false,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "notification",
+        "sessionHeader": true,
+        "status": 202,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": false,
+        "completed": true,
+        "outcome": "accepted"
+      },
+      {
+        "method": "other",
+        "sessionHeader": true,
+        "status": 405,
+        "bounded": true,
+        "requestDecoded": false,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "http-error"
+      },
+      {
+        "method": "tools/list",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      },
+      {
+        "method": "tools/call",
+        "sessionHeader": true,
+        "status": 200,
+        "bounded": true,
+        "requestDecoded": true,
+        "responseDecoded": true,
+        "completed": true,
+        "outcome": "ok"
+      }
+    ],
+    "mcpTransportOverflow": false,
+    "grantChanges": 88,
+    "lastGrantCount": 1,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "activateApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": true
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "activateApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": false
+      }
+    ]
+  },
+  "admission": {
+    "version": 1,
+    "suiteId": "10192551-c913-494e-8337-8395301500db",
+    "scenario": "profile-isolation",
+    "attempt": 1,
+    "identityHash": "9c4a761fdbf3c8fca4c02eb9652bec5cdd93c197586d2043c41feaf8511a462b",
+    "state": "failed",
+    "evidenceKind": "provider-desktop",
+    "startedAt": "2026-10-14T15:29:06.415Z",
+    "finishedAt": "2026-10-14T15:31:21.575Z",
+    "checks": {
+      "realElectronPermissionsAvailable": true,
+      "two-real-profiles": true,
+      "genuine-consents": true,
+      "lease-contention": false,
+      "exact-release": false,
+      "anonymous-banner": true,
+      "no-foreign-activity": true,
+      "no-foreign-images": false,
+      "no-foreign-grants": true,
+      "credential-files-unchanged": false,
+      "device-lock": true,
+      "native-actions": false,
+      "stop-and-grants": false,
+      "human-finish": false,
+      "cleanup": true,
+      "receipt.two-real-profiles": true,
+      "receipt.genuine-consents": true,
+      "receipt.lease-contention": false,
+      "receipt.exact-release": false,
+      "receipt.anonymous-banner": true,
+      "receipt.no-foreign-activity": true,
+      "receipt.no-foreign-images": false,
+      "receipt.no-foreign-grants": true,
+      "receipt.credential-files-unchanged": false,
+      "receipt.device-lock": true,
+      "receipt.native-actions": false,
+      "receipt.stop-and-grants": false,
+      "receipt.human-finish": false,
+      "receipt.cleanup": true
+    },
+    "measurements": {},
+    "cleanup": "confirmed",
+    "reason": "command-failed",
+    "evidenceSha256": "d1a69acf4576653197b095ad398716b764a27d8b1cf1be489c0b759f0eb0f6eb"
+  },
+  "providerVersion": "0.162.1",
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Both genuine consents and device-lock check succeeded; owner activation, capture and own IPC/client thumbnail observed",
+    "Owner completed all 40 inspection polls before contender activation, which legitimately acquired the released lease; no Busy observed, so contention fails",
+    "Anonymous banners and no foreign activity/images/grants/identity observed; missing positive second-owner image receipts prevent complete acceptance",
+    "No physical-input, kill-chord, permit-expiration or unhealthy-heartbeat signals between baseline and failure diagnostics",
+    "No pointer, typing or semantic mutation requested; two authorized app activations occurred; cleanup confirmed",
+    "Failed attempt preserved; no automatic retry or public gate change"
+  ]
+}

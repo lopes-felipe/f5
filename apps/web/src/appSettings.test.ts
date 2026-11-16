@@ -34,6 +34,22 @@ const _displayProfileKeyTypecheck: Pick<AppSettings, DisplayProfileKey> =
   parsePersistedAppSettings(null);
 void _displayProfileKeyTypecheck;
 
+it("keeps proactive panels off for old profiles and persists an opt-in", () => {
+  expect(parsePersistedAppSettings(null).proactivePanelsEnabled).toBe(false);
+  expect(
+    parsePersistedAppSettings(JSON.stringify({ proactivePanelsEnabled: true }))
+      .proactivePanelsEnabled,
+  ).toBe(true);
+});
+
+it("keeps background running-thread sync off until opted in", () => {
+  expect(parsePersistedAppSettings(null).keepRunningThreadsSynced).toBe(false);
+  expect(
+    parsePersistedAppSettings(JSON.stringify({ keepRunningThreadsSynced: true }))
+      .keepRunningThreadsSynced,
+  ).toBe(true);
+});
+
 function toggledProfileValue(
   settings: AppSettings,
   key: DisplayProfileKey,
@@ -45,6 +61,17 @@ function toggledProfileValue(
 }
 
 describe("parsePersistedAppSettings", () => {
+  it("keeps favorite presets with and without a pinned effort", () => {
+    const favorites = [
+      { provider: "claudeAgent", model: "claude-opus-5-5", effort: "high" },
+      { provider: "claudeAgent", model: "claude-opus-5-5", effort: "xhigh" },
+      { provider: "codex", model: "gpt-5.5" },
+    ];
+    const parsed = parsePersistedAppSettings(JSON.stringify({ favorites }));
+    expect(parsed.favorites).toEqual(favorites);
+    expect(parsePersistedAppSettings(JSON.stringify(parsed)).favorites).toEqual(favorites);
+  });
+
   it("defaults and preserves local palette selections and opaque invalid theme sources", () => {
     expect(parsePersistedAppSettings(null).themeId).toBe("f5-black");
     const customThemes = [{ version: 99, raw: "keep me" }];
@@ -53,6 +80,20 @@ describe("parsePersistedAppSettings", () => {
     );
     expect(parsed.themeId).toBe("custom-local");
     expect(parsed.customThemes).toEqual(customThemes);
+  });
+
+  it("falls back to the default idle-fold age without resetting other settings", () => {
+    for (const stored of [5, "7", null]) {
+      const parsed = parsePersistedAppSettings(
+        JSON.stringify({ themeId: "custom-local", sidebarOlderThreadDays: stored }),
+      );
+      expect(parsed.sidebarOlderThreadDays).toBe(7);
+      expect(parsed.themeId).toBe("custom-local");
+    }
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ sidebarOlderThreadDays: 0 }))
+        .sidebarOlderThreadDays,
+    ).toBe(0);
   });
 
   it("migrates the former implicit blue default to black only once", () => {
@@ -192,6 +233,17 @@ describe("parsePersistedAppSettings", () => {
 
   it("defaults provider runtime metadata visibility to false", () => {
     expect(parsePersistedAppSettings(null).showProviderRuntimeMetadata).toBe(false);
+  });
+
+  it("defaults the compact chat layout to on, including for settings saved before it", () => {
+    expect(parsePersistedAppSettings(null).compactChatLayout).toBe(true);
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ showProviderRuntimeMetadata: true }))
+        .compactChatLayout,
+    ).toBe(true);
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ compactChatLayout: false })).compactChatLayout,
+    ).toBe(false);
   });
 
   it("defaults onboarding lite status to eligible", () => {
@@ -510,6 +562,30 @@ describe("parsePersistedAppSettings", () => {
     });
   });
 
+  it("falls back to the global sub-agent defaults for projects without an override", () => {
+    const parsed = parsePersistedAppSettings(
+      JSON.stringify({
+        claudeSubagentDefaults: { subagentsEnabled: false, subagentModel: "claude-sonnet-5-5" },
+        claudeProjectSettings: {
+          "project-1": { subagentsEnabled: true, subagentModel: "inherit" },
+        },
+      }),
+    );
+
+    expect(getClaudeProjectSettings(parsed, "project-2")).toEqual({
+      subagentsEnabled: false,
+      subagentModel: "claude-sonnet-5-5",
+    });
+    expect(getClaudeProjectSettings(parsed, "project-1")).toEqual({
+      subagentsEnabled: true,
+      subagentModel: "inherit",
+    });
+    expect(getClaudeProjectSettings(parsePersistedAppSettings(null), "project-3")).toEqual({
+      subagentsEnabled: true,
+      subagentModel: "inherit",
+    });
+  });
+
   it("restores persisted runtime warning visibility values", () => {
     expect(
       parsePersistedAppSettings(
@@ -703,6 +779,8 @@ describe("getAppModelOptions", () => {
     expect(options.map((option) => option.slug)).toEqual([
       "gpt-6.1-sol",
       "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -758,23 +836,26 @@ describe("getAppModelOptions", () => {
   it("preserves Claude built-in ordering and deduplicates custom aliases", () => {
     const options = getAppModelOptions("claudeAgent", ["fable", "fable-5.1", "claude-fable-5-1"]);
     expect(options[2]).toMatchObject({
-      slug: "claude-fable-5-1",
-      name: "Claude Fable 5.1",
+      slug: "claude-fable-5-2",
+      name: "Claude Fable 5.2",
       isCustom: false,
     });
     expect(options.filter((option) => option.slug === "claude-fable-5-1")).toHaveLength(1);
 
-    expect(options.slice(0, 11).map((option) => option.slug)).toEqual([
+    expect(options.slice(0, 14).map((option) => option.slug)).toEqual([
       "claude-opus-5-5",
       "claude-opus-5",
+      "claude-fable-5-2",
       "claude-fable-5-1",
       "claude-fable-5",
+      "claude-sonnet-5-5",
+      "claude-sonnet-5",
       "claude-opus-4-8",
       "claude-opus-4-7",
       "claude-opus-4-6",
       "claude-opus-4-5",
-      "claude-sonnet-5",
       "claude-sonnet-4-6",
+      "claude-haiku-5-5",
       "claude-haiku-4-5",
     ]);
   });

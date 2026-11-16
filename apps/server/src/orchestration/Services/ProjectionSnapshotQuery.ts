@@ -1,3 +1,4 @@
+import type { RetainedThreadDetails } from "../deciderReadModel.ts";
 /**
  * ProjectionSnapshotQuery - Read-model snapshot query service interface.
  *
@@ -7,6 +8,8 @@
  * @module ProjectionSnapshotQuery
  */
 import type {
+  ThreadSearchInput,
+  ThreadSearchResult,
   OrchestrationGetThreadHistoryPageInput,
   OrchestrationGetStartupSnapshotInput,
   OrchestrationGetStartupSnapshotResult,
@@ -18,6 +21,7 @@ import type {
   OrchestrationGetThreadDetailsInput,
   OrchestrationThreadDetails,
   OrchestrationReadModel,
+  ThreadId,
 } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
@@ -28,6 +32,18 @@ import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  readonly searchThread: (
+    input: ThreadSearchInput,
+  ) => Effect.Effect<ThreadSearchResult, ProjectionRepositoryError>;
+  /** Internal decider fallback; uses the same retention limits as live state. */
+  readonly getRetainedThreadDetails?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RetainedThreadDetails, ProjectionRepositoryError>;
+  /** The activities part of `getRetainedThreadDetails`, without messages and plans. */
+  readonly getRetainedThreadActivities?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RetainedThreadDetails["activities"], ProjectionRepositoryError>;
+
   /**
    * Read the latest orchestration projection snapshot.
    *
@@ -42,11 +58,15 @@ export interface ProjectionSnapshotQueryShape {
    *
    * Preserves full thread metadata while bounding historical collections to
    * the same limits enforced by the live projector.
+   *
+   * `omitArchivedActivities` leaves archived threads with their worktree-setup
+   * activity only and flags them `activitiesOmitted`. The engine sets it and
+   * loads the rest on demand through `getRetainedThreadActivities`; other
+   * callers get every thread's activities.
    */
-  readonly getBootstrapSnapshot: () => Effect.Effect<
-    OrchestrationReadModel,
-    ProjectionRepositoryError
-  >;
+  readonly getBootstrapSnapshot: (options?: {
+    readonly omitArchivedActivities?: boolean;
+  }) => Effect.Effect<OrchestrationReadModel, ProjectionRepositoryError>;
 
   /**
    * Read the lightweight startup snapshot used for first paint.

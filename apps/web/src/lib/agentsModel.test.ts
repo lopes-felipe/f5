@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentTypeLabel,
+  resolveAgentProviderName,
   buildAgentActivityIndex,
   countAgentsByStatus,
   deriveAgentsPanelModel,
@@ -278,6 +279,39 @@ function derive(entries: ReadonlyArray<AgentsSnapshot["entries"][number]>) {
 }
 
 describe("agents panel model", () => {
+  it("counts live agents from earlier turns while the parent is idle or working on a later turn", () => {
+    const model = derive([
+      workEntry({
+        workItemId: "older-live",
+        turnId: TurnId.make("earlier-turn"),
+        status: "running",
+        active: true,
+        completedAt: null,
+      }),
+      workEntry({
+        workItemId: "current-live",
+        turnId: TURN_ID,
+        status: "running",
+        active: true,
+        completedAt: null,
+      }),
+      workEntry({
+        workItemId: "older-done",
+        turnId: TurnId.make("earlier-turn"),
+        status: "completed",
+        active: false,
+      }),
+    ]);
+    expect(model.liveCount).toBe(2);
+    expect(model.threads[0]?.liveCount).toBe(2);
+    expect(
+      model.agents
+        .filter((entry) => entry.live)
+        .map((entry) => entry.nativeWorkItemId)
+        .toSorted(),
+    ).toEqual(["current-live", "older-live"]);
+  });
+
   it("prefers the durable title and humanizes the type only as a fallback", () => {
     const model = derive([
       workEntry({ workItemId: "titled", phase: "local_bash", title: "Run browser suite" }),
@@ -390,4 +424,49 @@ describe("agents panel model", () => {
       "other-shell",
     ]);
   });
+});
+
+it("retains the provider instance that owns a durable background task", () => {
+  const model = deriveAgentsPanelModel({
+    snapshot: snapshot(),
+    activityIndex: buildAgentActivityIndex([source]),
+    threads: [source],
+  });
+  expect(
+    model.agents.find((agent) => agent.workItemIds.includes("provider-parent"))?.providerInstanceId,
+  ).toBe(ProviderInstanceId.make("claude-default"));
+});
+
+it("resolves only the task's recorded provider instance and driver", () => {
+  const id = ProviderInstanceId.make("claude_work");
+  const instances = new Map([[id, { driverKind: "claudeAgent", displayName: "Claude · Work" }]]);
+  expect(
+    resolveAgentProviderName({ provider: "claudeAgent", providerInstanceId: id }, instances),
+  ).toBe("Claude · Work");
+  expect(
+    resolveAgentProviderName({ provider: "codex", providerInstanceId: id }, instances),
+  ).toBeUndefined();
+  expect(
+    resolveAgentProviderName({ provider: "claudeAgent", providerInstanceId: null }, instances),
+  ).toBeUndefined();
+  expect(
+    resolveAgentProviderName(
+      { provider: "claudeAgent", providerInstanceId: ProviderInstanceId.make("removed") },
+      instances,
+    ),
+  ).toBeUndefined();
+});
+
+it("formats native subagent paths as display names while preserving shell titles", () => {
+  const title = "Subagent: /root/coordinator/review_api";
+  const model = derive([
+    workEntry({ workItemId: "agent-title", kind: "agent", title }),
+    workEntry({ workItemId: "shell-title", kind: "shell", title }),
+  ]);
+  expect(model.agents.find((agent) => agent.nativeWorkItemId === "agent-title")?.title).toBe(
+    "Review Api",
+  );
+  expect(model.backgroundTasks.find((task) => task.nativeWorkItemId === "shell-title")?.title).toBe(
+    title,
+  );
 });

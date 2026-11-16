@@ -5,9 +5,9 @@ import { MAX_PINNED_THREADS, type ThreadId } from "@t3tools/contracts";
 import { newCommandId } from "./lib/utils";
 import { isSnoozedThread } from "./lib/threadOrdering";
 import { ensureNativeApi } from "./nativeApi";
-import type { Thread } from "./types";
+import type { Thread, ThreadListItem } from "./types";
 
-export function orderedPinnedThreadIds(threads: ReadonlyArray<Thread>): ThreadId[] {
+export function orderedPinnedThreadIds(threads: ReadonlyArray<ThreadListItem>): ThreadId[] {
   return threads
     .filter(
       (thread) =>
@@ -59,7 +59,7 @@ export async function importLegacyPinnedThreads(input: {
 
 export async function toggleThreadPin(input: {
   readonly threadId: ThreadId;
-  readonly threads: ReadonlyArray<Thread>;
+  readonly threads: ReadonlyArray<ThreadListItem>;
   readonly expectedRevision: number;
 }): Promise<void> {
   const current = orderedPinnedThreadIds(input.threads);

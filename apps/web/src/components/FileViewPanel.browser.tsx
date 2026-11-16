@@ -1,26 +1,63 @@
+import {
+  noteWsConnectionOpened,
+  noteWsSynchronized,
+  resetWsConnectionStateForTests,
+} from "../wsConnectionState";
 import "../index.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import type { ReactNode } from "react";
 import FileViewPanel from "./FileViewPanel";
+import { OpenInPicker } from "./chat/OpenInPicker";
+import { selectFilePreviewVisible } from "../rightPanelStore";
 import { providerQueryKeys } from "../lib/providerReactQuery";
+import { serverConfigQueryOptions } from "../lib/serverReactQuery";
+import { resetWorkspaceWatchForTests, startWorkspaceWatchSync } from "../lib/workspaceWatch";
+import type {
+  ProjectWatchedPathsChangedPayload,
+  ResolvedKeybindingsConfig,
+} from "@t3tools/contracts";
+
+const editorKeybindings: ResolvedKeybindingsConfig = [
+  {
+    command: "editor.openFavorite",
+    shortcut: {
+      key: "o",
+      modKey: true,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+    },
+  },
+];
 
 const route = vi.hoisted(() => ({ fileViewPath: "app.ts" }));
-const api = vi.hoisted(() => ({ readFile: vi.fn(), writeFile: vi.fn() }));
+const project = vi.hoisted(() => ({ id: "project-1" as string | null }));
+const api = vi.hoisted(() => ({
+  readFile: vi.fn(),
+  writeFile: vi.fn(),
+  setWatchedPaths: vi.fn(),
+  onWatchedPathsChanged: vi.fn(),
+  openInEditor: vi.fn(),
+  revealInFileManager: vi.fn(),
+  getConfig: vi.fn(),
+}));
 vi.mock("../nativeApi", () => ({
-  ensureNativeApi: () => ({ projects: api }),
-  readNativeApi: () => ({ projects: api }),
+  ensureNativeApi: () => ({ projects: api, shell: api, server: api }),
+  readNativeApi: () => ({ projects: api, shell: api, server: api }),
 }));
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
+  useRouter: () => null,
   useParams: ({ select }: { select: (v: unknown) => unknown }) => select({ threadId: "thread-1" }),
   useSearch: ({ select }: { select: (v: unknown) => unknown }) => select(route),
 }));
 vi.mock("../store", () => ({
   useStore: (select: (v: unknown) => unknown) =>
     select({
-      threads: [{ id: "thread-1", projectId: "project-1", worktreePath: "/repo" }],
+      threads: [{ id: "thread-1", projectId: project.id, worktreePath: "/repo" }],
       projects: [{ id: "project-1", cwd: "/repo" }],
     }),
 }));
@@ -40,9 +77,355 @@ vi.mock("./DiffPanelShell", () => ({
   DiffPanelLoadingState: () => <div>Loading</div>,
 }));
 vi.mock("@pierre/diffs/react", () => ({ File: () => <div>Rendered file</div> }));
+beforeEach(() => {
+  noteWsConnectionOpened();
+  noteWsSynchronized();
+});
+it.each(["source.zig", "flake.nix", "main.tf", "config.hcl", "schema.proto", "script"])(
+  "keeps unknown text file %s readable and editable",
+  async (name) => {
+    route.fileViewPath = name;
+    api.getConfig.mockResolvedValue({ availableEditors: ["vscode"], keybindings: [] });
+    api.readFile.mockResolvedValue({
+      relativePath: name,
+      contents: "source text",
+      byteLength: 11,
+      truncated: false,
+      contentSha256: "a".repeat(64),
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = await render(
+      <QueryClientProvider client={client}>
+        <FileViewPanel mode="sheet" />
+      </QueryClientProvider>,
+    );
+    try {
+      await expect
+        .poll(() => api.readFile.mock.calls.some(([input]) => input.relativePath === name))
+        .toBe(true);
+      await expect
+        .element(view.getByRole("button", { name: "Edit file", exact: true }))
+        .toBeEnabled();
+      expect(document.body.textContent).not.toContain("Binary file");
+    } finally {
+      await view.unmount();
+      client.clear();
+    }
+  },
+);
+
+it.each([
+  ["src/app.ts", "/repo/src/app.ts", "/repo", "src/app.ts"],
+  ["/tmp/external/report.json", "/tmp/external/report.json", "/tmp/external", "report.json"],
+])(
+  "opens %s in VS Code and reveals the actual file",
+  async (file, absolutePath, cwd, relativePath) => {
+    route.fileViewPath = file;
+    api.readFile.mockResolvedValue({
+      relativePath,
+      contents: "{}",
+      byteLength: 2,
+      truncated: false,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <FileViewPanel mode="sheet" />
+      </QueryClientProvider>,
+    );
+    try {
+      await screen.getByRole("button", { name: "Open in VS Code", exact: true }).click();
+      await expect.poll(() => api.openInEditor.mock.calls).toEqual([[absolutePath, "vscode"]]);
+      await screen.getByRole("button", { name: "Reveal in file manager", exact: true }).click();
+      await expect
+        .poll(() => api.revealInFileManager.mock.calls)
+        .toEqual([
+          [
+            {
+              projectId: "project-1",
+              threadId: "thread-1",
+              ...(file.startsWith("/") ? { cwd } : {}),
+              relativePath,
+              kind: "file",
+            },
+          ],
+        ]);
+    } finally {
+      await screen.unmount();
+      client.clear();
+    }
+  },
+);
 afterEach(() => {
   vi.clearAllMocks();
   route.fileViewPath = "app.ts";
+  project.id = "project-1";
+  localStorage.removeItem("t3code:last-editor");
+  vi.restoreAllMocks();
+});
+
+it.each(["MacIntel", "Linux"])(
+  "opens one target on %s as file previews mount and unmount",
+  async (platform) => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    const config = { availableEditors: ["vscode"], keybindings: editorKeybindings };
+    api.getConfig.mockResolvedValue(config);
+    api.readFile.mockResolvedValue({
+      relativePath: "app.ts",
+      contents: "{}",
+      byteLength: 2,
+      truncated: false,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(serverConfigQueryOptions().queryKey, config as never);
+    const content = (preview: boolean, visible = true) => {
+      const filePreviewVisible = selectFilePreviewVisible({
+        isOpen: visible,
+        activeSurfaceId: preview ? "file:app.ts" : null,
+        surfaces: preview ? [{ id: "file:app.ts", kind: "file", relativePath: "app.ts" }] : [],
+      });
+      return (
+        <QueryClientProvider client={client}>
+          <OpenInPicker
+            keybindings={editorKeybindings}
+            availableEditors={["vscode"]}
+            openInCwd="/repo"
+            enableShortcut={!filePreviewVisible}
+          />
+          {/* A second workspace listener must also respect the handled event. */}
+          <OpenInPicker
+            keybindings={editorKeybindings}
+            availableEditors={["vscode"]}
+            openInCwd="/repo"
+            enableShortcut={!filePreviewVisible}
+          />
+          {preview && <FileViewPanel mode="sheet" openInShortcutEnabled={filePreviewVisible} />}
+        </QueryClientProvider>
+      );
+    };
+    const screen = await render(content(false));
+    const pressOpen = (handled = false) => {
+      const event = new KeyboardEvent("keydown", {
+        key: "o",
+        metaKey: platform === "MacIntel",
+        ctrlKey: platform !== "MacIntel",
+        bubbles: true,
+        cancelable: true,
+      });
+      if (handled) event.preventDefault();
+      document.body.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    };
+    try {
+      for (const [preview, visible] of [
+        [false, true],
+        [true, true],
+        [true, false],
+        [true, true],
+        [false, true],
+      ] as const) {
+        await screen.rerender(content(preview, visible));
+        api.openInEditor.mockClear();
+        pressOpen();
+        await expect
+          .poll(() => api.openInEditor.mock.calls)
+          .toEqual([[preview && visible ? "/repo/app.ts" : "/repo", "vscode"]]);
+        api.openInEditor.mockClear();
+        pressOpen(true);
+        expect(api.openInEditor).not.toHaveBeenCalled();
+      }
+    } finally {
+      await screen.unmount();
+      client.clear();
+    }
+  },
+);
+
+it.each(["connecting", "synchronizing", "file-action-unavailable"] as const)(
+  "a visible preview never falls back to the workspace while %s",
+  async (state) => {
+    if (state === "connecting") resetWsConnectionStateForTests();
+    if (state === "synchronizing") noteWsConnectionOpened();
+    const unavailable = state === "file-action-unavailable";
+    if (unavailable) project.id = null;
+    localStorage.setItem(
+      "t3code:last-editor",
+      JSON.stringify(unavailable ? "file-manager" : "vscode"),
+    );
+    const config = {
+      availableEditors: [unavailable ? "file-manager" : "vscode"],
+      keybindings: editorKeybindings,
+    };
+    api.getConfig.mockResolvedValue(config);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(serverConfigQueryOptions().queryKey, config as never);
+    // An external preview without a workspace/project cannot reveal in the file manager.
+    route.fileViewPath = "/tmp/report.json";
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <OpenInPicker
+          keybindings={editorKeybindings}
+          availableEditors={["vscode"]}
+          openInCwd="/repo"
+          enableShortcut={false}
+        />
+        <FileViewPanel mode="sheet" />
+      </QueryClientProvider>,
+    );
+    try {
+      if (unavailable) {
+        await expect
+          .element(screen.getByRole("button", { name: "Reveal in file manager", exact: true }))
+          .toBeDisabled();
+      }
+      const event = new KeyboardEvent("keydown", {
+        key: "o",
+        ctrlKey: !navigator.platform.startsWith("Mac"),
+        metaKey: navigator.platform.startsWith("Mac"),
+        bubbles: true,
+        cancelable: true,
+      });
+      document.body.dispatchEvent(event);
+      if (!unavailable) {
+        await expect
+          .poll(() => api.openInEditor.mock.calls)
+          .toEqual([["/tmp/report.json", "vscode"]]);
+      } else {
+        expect(api.openInEditor).not.toHaveBeenCalled();
+        expect(api.revealInFileManager).not.toHaveBeenCalled();
+      }
+    } finally {
+      await screen.unmount();
+      client.clear();
+    }
+  },
+);
+
+it("captures the workspace shortcut before a focused terminal stops propagation", async () => {
+  const screen = await render(
+    <>
+      <OpenInPicker
+        keybindings={editorKeybindings}
+        availableEditors={["vscode"]}
+        openInCwd="/repo"
+      />
+      <input aria-label="Terminal input" onKeyDown={(event) => event.stopPropagation()} />
+    </>,
+  );
+  try {
+    const terminal = screen.getByRole("textbox").element() as HTMLInputElement;
+    terminal.focus();
+    terminal.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "o",
+        ctrlKey: !navigator.platform.startsWith("Mac"),
+        metaKey: navigator.platform.startsWith("Mac"),
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await expect.poll(() => api.openInEditor.mock.calls).toEqual([["/repo", "vscode"]]);
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("uses the configured preferred editor while retaining an explicit VS Code action", async () => {
+  localStorage.setItem("t3code:last-editor", JSON.stringify("zed"));
+  api.getConfig.mockResolvedValue({ availableEditors: ["vscode", "zed"] });
+  api.readFile.mockResolvedValue({
+    relativePath: "app.ts",
+    contents: "{}",
+    byteLength: 2,
+    truncated: false,
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <FileViewPanel mode="sheet" />
+    </QueryClientProvider>,
+  );
+  try {
+    await screen.getByRole("button", { name: "Open in preferred editor", exact: true }).click();
+    await expect.poll(() => api.openInEditor.mock.calls).toEqual([["/repo/app.ts", "zed"]]);
+    await expect
+      .element(screen.getByRole("button", { name: "Open in VS Code", exact: true }))
+      .toBeVisible();
+  } finally {
+    await screen.unmount();
+    client.clear();
+  }
+});
+
+async function renderWithPreferredFileManager() {
+  localStorage.setItem("t3code:last-editor", JSON.stringify("file-manager"));
+  const config = { availableEditors: ["vscode", "file-manager"] };
+  api.getConfig.mockResolvedValue(config);
+  api.readFile.mockResolvedValue({
+    relativePath: "app.ts",
+    contents: "{}",
+    byteLength: 2,
+    truncated: false,
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The app loads the server config at startup, before any file view opens.
+  client.setQueryData(serverConfigQueryOptions().queryKey, config as never);
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <FileViewPanel mode="sheet" />
+    </QueryClientProvider>,
+  );
+  return { client, screen };
+}
+
+it("reveals the file when the preferred editor is the file manager", async () => {
+  const { client, screen } = await renderWithPreferredFileManager();
+  try {
+    await screen.getByRole("button", { name: "Open in preferred editor", exact: true }).click();
+    await expect
+      .poll(() => api.revealInFileManager.mock.calls)
+      .toEqual([
+        [{ projectId: "project-1", threadId: "thread-1", relativePath: "app.ts", kind: "file" }],
+      ]);
+    expect(api.openInEditor).not.toHaveBeenCalled();
+  } finally {
+    await screen.unmount();
+    client.clear();
+  }
+});
+
+it("spends the desktop click gesture on the reveal itself", async () => {
+  // Like the preload, every native file action consumes the click's single gesture.
+  let gesture = false;
+  const takeGesture = () => {
+    const trusted = gesture;
+    gesture = false;
+    return trusted;
+  };
+  const revealed: string[] = [];
+  const bridge = {
+    prepareEditorOpen: vi.fn(async () => (takeGesture() ? "token" : undefined)),
+    releaseEditorOpen: vi.fn(async () => {}),
+    revealFile: vi.fn(async (filePath: string) => {
+      if (!takeGesture()) throw new Error("File actions require a user gesture.");
+      revealed.push(filePath);
+    }),
+  };
+  vi.stubGlobal("desktopBridge", bridge);
+  const { client, screen } = await renderWithPreferredFileManager();
+  try {
+    const button = screen.getByRole("button", { name: "Open in preferred editor", exact: true });
+    await expect.element(button).toBeEnabled();
+    gesture = true;
+    await button.click();
+    await expect.poll(() => revealed).toEqual(["/repo/app.ts"]);
+    expect(bridge.prepareEditorOpen).not.toHaveBeenCalled();
+    expect(api.openInEditor).not.toHaveBeenCalled();
+  } finally {
+    await screen.unmount();
+    client.clear();
+    vi.unstubAllGlobals();
+  }
 });
 
 it("preserves the draft base and blocks saves when a refetch arrives during editing", async () => {
@@ -92,7 +475,10 @@ it("preserves the draft base and blocks saves when a refetch arrives during edit
     await screen.getByRole("textbox").fill("merged edit");
     await screen.getByRole("button", { name: "Save file", exact: true }).click();
     expect(api.writeFile).toHaveBeenCalledWith(
-      expect.objectContaining({ contents: "merged edit", expectedContentSha256: "agent-hash" }),
+      expect.objectContaining({
+        contents: "merged edit",
+        condition: { type: "match", contentSha256: "agent-hash" },
+      }),
     );
   } finally {
     await screen.unmount();
@@ -153,3 +539,153 @@ it("ignores a save response from an earlier visit to the same file", async () =>
     client.clear();
   }
 });
+
+it("keeps canonical draft identity after save and recovers edits typed afterward", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  route.fileViewPath = "stable-key.ts";
+  const key = providerQueryKeys.fileContent({ cwd: "/repo", relativePath: route.fileViewPath });
+  const original = {
+    relativePath: route.fileViewPath,
+    workspaceIdentity: "/canonical/repo",
+    fileIdentity: "/canonical/repo/stable-key.ts",
+    contents: "base",
+    byteLength: 4,
+    truncated: false,
+    contentSha256: "base-hash",
+  };
+  api.readFile.mockResolvedValue(original);
+  api.writeFile.mockResolvedValue({
+    relativePath: route.fileViewPath,
+    byteLength: 5,
+    contentSha256: "saved-hash",
+  });
+  client.setQueryData(key, original);
+  const view = () => (
+    <QueryClientProvider client={client}>
+      <FileViewPanel mode="sheet" />
+    </QueryClientProvider>
+  );
+  let screen = await render(view());
+  try {
+    await screen.getByRole("button", { name: "Edit file", exact: true }).click();
+    await screen.getByRole("textbox").fill("saved");
+    await screen.getByRole("button", { name: "Save file", exact: true }).click();
+    await expect
+      .poll(() => client.getQueryData(key))
+      .toEqual(
+        expect.objectContaining({
+          ...original,
+          contents: "saved",
+          byteLength: 5,
+          contentSha256: "saved-hash",
+        }),
+      );
+    await screen.getByRole("textbox").fill("recover after save");
+    await expect
+      .poll(async () => {
+        const { editorDrafts, editorFileKey } = await import("../editorDrafts");
+        return (
+          await editorDrafts.list(
+            editorFileKey("default", original.workspaceIdentity, original.fileIdentity),
+          )
+        ).some((draft) => draft.text === "recover after save");
+      })
+      .toBe(true);
+    await screen.unmount();
+    api.readFile.mockResolvedValue({ ...original, contents: "saved", contentSha256: "saved-hash" });
+    screen = await render(view());
+    await screen.getByRole("button", { name: "Recover", exact: true }).click();
+    await expect.element(screen.getByRole("textbox")).toHaveValue("recover after save");
+  } finally {
+    await screen.unmount();
+    client.clear();
+  }
+});
+
+it("watches the open file and turns an external edit into a conflict for a dirty draft", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const original = {
+    relativePath: "app.ts",
+    contents: "original",
+    byteLength: 8,
+    truncated: false,
+    contentSha256: "old-hash",
+  };
+  const external = { ...original, contents: "external edit", contentSha256: "external-hash" };
+  let pushChange: ((payload: ProjectWatchedPathsChangedPayload) => void) | undefined;
+  api.onWatchedPathsChanged.mockImplementation(
+    (listener: (payload: ProjectWatchedPathsChangedPayload) => void) => {
+      pushChange = listener;
+      return () => undefined;
+    },
+  );
+  api.setWatchedPaths.mockResolvedValue({ watched: 1, degraded: false, rejected: [] });
+  api.readFile.mockResolvedValue(original);
+  const stopWatching = startWorkspaceWatchSync(client);
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <FileViewPanel mode="sheet" />
+    </QueryClientProvider>,
+  );
+  try {
+    await vi.waitFor(() =>
+      expect(api.setWatchedPaths).toHaveBeenCalledWith({
+        cwd: "/repo",
+        files: ["app.ts"],
+        directories: [],
+      }),
+    );
+    await screen.getByRole("button", { name: "Edit file", exact: true }).click();
+    await screen.getByRole("textbox", { name: "File source editor" }).fill("my unsaved draft");
+    const readsBefore = api.readFile.mock.calls.length;
+
+    api.readFile.mockResolvedValue(external);
+    pushChange!({
+      cwd: "/repo",
+      changes: [{ relativePath: "app.ts", kind: "file", change: "changed", revision: 1 }],
+      degraded: false,
+    });
+
+    await vi.waitFor(() => expect(api.readFile.mock.calls.length).toBeGreaterThan(readsBefore));
+    await expect
+      .element(screen.getByText("File changed outside this editor", { exact: true }))
+      .toBeVisible();
+    await expect.element(screen.getByRole("textbox")).toHaveValue("my unsaved draft");
+  } finally {
+    await screen.unmount();
+    stopWatching();
+    resetWorkspaceWatchForTests();
+    client.clear();
+  }
+});
+
+it.each([
+  ["src/missing.ts", "/repo", "src/missing.ts", "in workspace folder /repo"],
+  ["/tmp/export/missing.json", "/tmp/export", "missing.json", "in folder /tmp/export"],
+])(
+  "shows the actual read directory when %s cannot be read",
+  async (file, cwd, relativePath, folder) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    route.fileViewPath = file;
+    api.setWatchedPaths.mockResolvedValue({ watched: 1, degraded: false, rejected: [] });
+    api.onWatchedPathsChanged.mockReturnValue(() => undefined);
+    api.readFile.mockRejectedValue(new Error("File not found."));
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <FileViewPanel mode="sheet" />
+      </QueryClientProvider>,
+    );
+    try {
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain("File not found.");
+        expect(text).toContain(`Attempted path ${relativePath} ${folder}`);
+        if (file.startsWith("/")) expect(text).not.toContain("in workspace folder /repo");
+      });
+      expect(api.readFile).toHaveBeenCalledWith({ cwd, relativePath });
+    } finally {
+      await screen.unmount();
+      client.clear();
+    }
+  },
+);

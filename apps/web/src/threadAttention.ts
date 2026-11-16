@@ -1,9 +1,11 @@
+import { setDocumentAttentionCount } from "./lib/documentTitle";
 import type { ThreadStatus } from "./threadStatus";
 
 export function needsThreadAttention(status: ThreadStatus): boolean {
   return (
     status === "pending-approval" ||
     status === "awaiting-input" ||
+    status === "failed" ||
     status === "plan-ready" ||
     status === "completed"
   );
@@ -45,6 +47,8 @@ export function createNotificationSound() {
 }
 
 export function setThreadAttentionBadge(count: number) {
+  // The desktop shell composes the native window title from the page title.
+  setDocumentAttentionCount(count);
   if (window.desktopBridge?.setAttentionBadge) {
     void window.desktopBridge.setAttentionBadge(count).catch(() => {});
     return;
@@ -56,8 +60,6 @@ export function setThreadAttentionBadge(count: number) {
   const operation =
     count > 0 ? badgeNavigator.setAppBadge?.(count) : badgeNavigator.clearAppBadge?.();
   void operation?.catch(() => {});
-  const title = document.title.replace(/^\(\d+\) /, "");
-  document.title = count > 0 ? `(${count}) ${title}` : title;
 }
 
 /** Run synchronously in the settings gesture so browser audio permission carries through. */

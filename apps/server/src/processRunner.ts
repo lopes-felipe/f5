@@ -1,20 +1,33 @@
-import { type ChildProcess as ChildProcessHandle, spawn } from "node:child_process";
+import {
+  type ChildProcess as ChildProcessHandle,
+  type ChildProcessWithoutNullStreams,
+  spawn,
+} from "node:child_process";
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 
-import { resolveInvocation } from "./spawn/resolveCommand.ts";
+import {
+  resolveExecutable,
+  resolveInvocation,
+  runsGitWithoutConsole,
+} from "./spawn/resolveCommand.ts";
+import { resolveProfileGithubLauncher } from "./git/GithubCliLauncher";
+import { isManagedGitCommand, managedGitProcessEnvironment } from "./git/gitProcessEnvironment.ts";
 
 export interface ProcessRunOptions {
   cwd?: string | undefined;
-  timeoutMs?: number | undefined;
+  timeoutMs?: number | null | undefined;
   env: NodeJS.ProcessEnv;
   stdin?: string | undefined;
   allowNonZeroExit?: boolean | undefined;
   maxBufferBytes?: number | undefined;
   maxStdoutBytes?: number | undefined;
   maxStderrBytes?: number | undefined;
-  outputMode?: "error" | "truncate" | undefined;
+  outputMode?: "error" | "truncate" | "tail" | undefined;
   signal?: AbortSignal | undefined;
+  /** Stream complete output while retaining only a bounded diagnostic tail. */
+  onStdoutChunk?: ((chunk: Uint8Array) => void) | undefined;
+  onStderrChunk?: ((chunk: Uint8Array) => void) | undefined;
 }
 
 export interface ProcessRunResult {
@@ -106,6 +119,52 @@ function killChild(child: ChildProcessHandle, signal: NodeJS.Signals = "SIGTERM"
   killProcessTree(child, { isGroupLeader: process.platform !== "win32", signal });
 }
 
+interface LiveRun {
+  readonly child: ChildProcessHandle;
+  /** SIGTERM the group, escalating to SIGKILL after the grace period. */
+  readonly terminate: () => void;
+  readonly settled: Promise<void>;
+}
+
+// Children run detached in their own process group, so nothing reaches them
+// when the backend stops. Callers that are interrupted abort the run, but do
+// not wait for it, so the backend can exit before the SIGKILL timer fires.
+const liveRuns = new Set<LiveRun>();
+let exitHookInstalled = false;
+
+function trackRun(run: LiveRun): void {
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    // Last resort, and synchronous: the event loop is gone once "exit" fires.
+    process.on("exit", killRunningProcessGroups);
+  }
+  liveRuns.add(run);
+}
+
+/** SIGKILL every running command's process group. */
+export function killRunningProcessGroups(): void {
+  for (const run of liveRuns) killChild(run.child, "SIGKILL");
+}
+
+/**
+ * Stop every running command during backend shutdown: SIGTERM now, SIGKILL
+ * after the usual grace period, and SIGKILL whatever remains at `deadline`.
+ */
+export async function terminateRunningProcesses(deadline: number): Promise<void> {
+  const runs = [...liveRuns];
+  if (runs.length === 0) return;
+  for (const run of runs) run.terminate();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.all(runs.map((run) => run.settled)),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  for (const run of runs) if (liveRuns.has(run)) killChild(run.child, "SIGKILL");
+}
+
 function appendChunkWithinLimit(
   target: string,
   currentBytes: number,
@@ -139,25 +198,49 @@ export async function runProcess(
   args: readonly string[],
   options: ProcessRunOptions,
 ): Promise<ProcessRunResult> {
-  const timeoutMs = options.timeoutMs ?? 60_000;
+  const timeoutMs = options.timeoutMs === undefined ? 60_000 : options.timeoutMs;
   const maxBufferBytes = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
   const maxStdoutBytes = options.maxStdoutBytes ?? maxBufferBytes;
   const maxStderrBytes = options.maxStderrBytes ?? maxBufferBytes;
   const outputMode = options.outputMode ?? "error";
-  const environment = options.env;
+  const environment = isManagedGitCommand(command)
+    ? managedGitProcessEnvironment(options.env)
+    : options.env;
   await ensureWindowsPathHydrated(environment);
-  const invocation = resolveInvocation(command, args, environment, { cwd: options.cwd });
+  const executable =
+    process.platform === "win32"
+      ? resolveExecutable(command, environment, { cwd: options.cwd })
+      : null;
+  const profileLauncher = executable ? resolveProfileGithubLauncher(executable, environment) : null;
+  const invocation = profileLauncher
+    ? { file: profileLauncher.runtime, args: [profileLauncher.script, ...args] }
+    : resolveInvocation(command, args, environment, { cwd: options.cwd });
+  const spawnEnvironment = profileLauncher
+    ? { ...environment, ELECTRON_RUN_AS_NODE: "1" }
+    : environment;
 
+  const consoleFreeGit = runsGitWithoutConsole(process.platform, invocation.file, invocation.args);
   return new Promise<ProcessRunResult>((resolve, reject) => {
-    const child = spawn(invocation.file, [...invocation.args], {
-      cwd: options.cwd,
-      env: environment,
-      stdio: "pipe",
-      detached: process.platform !== "win32",
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(invocation.file, [...invocation.args], {
+        cwd: options.cwd,
+        env: spawnEnvironment,
+        stdio: "pipe",
+        detached: process.platform !== "win32" || consoleFreeGit,
+        ...(consoleFreeGit ? { windowsHide: true } : {}),
+      });
+    } catch (error) {
+      // Node throws some spawn failures synchronously, e.g. ENOTDIR when a
+      // PATH entry or cwd component is a file. Report them like async ones.
+      reject(normalizeSpawnError(command, args, error));
+      return;
+    }
 
     let stdout = "";
     let stderr = "";
+    let stdoutTail: Buffer = Buffer.alloc(0);
+    let stderrTail: Buffer = Buffer.alloc(0);
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let stdoutTruncated = false;
@@ -165,44 +248,127 @@ export async function runProcess(
     let timedOut = false;
     let aborted = false;
     let settled = false;
+    let processFailure: Error | null = null;
     let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      killChild(child, "SIGTERM");
-      forceKillTimer = setTimeout(() => {
-        killChild(child, "SIGKILL");
-      }, 1_000);
-    }, timeoutMs);
-
-    const abortHandler = () => {
-      aborted = true;
-      killChild(child, "SIGTERM");
-      forceKillTimer = setTimeout(() => killChild(child, "SIGKILL"), 1_000);
+    let drainTimer: ReturnType<typeof setTimeout> | null = null;
+    let terminating = false;
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
+    let markSettled!: () => void;
+    const run: LiveRun = {
+      child,
+      terminate: () => terminateProcessGroup(),
+      settled: new Promise<void>((resolve) => {
+        markSettled = resolve;
+      }),
     };
-    options.signal?.addEventListener("abort", abortHandler, { once: true });
-    if (options.signal?.aborted) abortHandler();
+    trackRun(run);
 
     const finalize = (callback: () => void): void => {
       if (settled) return;
       settled = true;
+      liveRuns.delete(run);
+      markSettled();
       clearTimeout(timeoutTimer);
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-      }
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      if (drainTimer) clearTimeout(drainTimer);
       options.signal?.removeEventListener("abort", abortHandler);
       callback();
     };
+    const finish = () => {
+      const result: ProcessRunResult = {
+        stdout: options.onStdoutChunk
+          ? stdout
+          : outputMode === "tail"
+            ? stdoutTail.toString()
+            : stdout,
+        stderr: options.onStderrChunk
+          ? stderr
+          : outputMode === "tail"
+            ? stderrTail.toString()
+            : stderr,
+        code: exitCode,
+        signal: exitSignal,
+        timedOut,
+        aborted,
+        stdoutTruncated,
+        stderrTruncated,
+      };
+      finalize(() => {
+        if (processFailure) reject(processFailure);
+        else if (!options.allowNonZeroExit && (timedOut || (exitCode !== null && exitCode !== 0)))
+          reject(normalizeExitError(command, args, result));
+        else resolve(result);
+      });
+    };
+    const drainPipes = () => {
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      finish();
+    };
+    const terminateProcessGroup = () => {
+      if (terminating || settled) return;
+      terminating = true;
+      clearTimeout(timeoutTimer);
+      killChild(child, "SIGTERM");
+      forceKillTimer = setTimeout(() => {
+        killChild(child, "SIGKILL");
+        // An escaped daemon can retain our pipes after its process group is gone.
+        // Bound pipe draining too, so cancellation always settles and releases callers.
+        if (drainTimer) clearTimeout(drainTimer);
+        drainTimer = setTimeout(drainPipes, 100);
+      }, 1_000);
+    };
+    const timeoutTimer =
+      timeoutMs === null
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            terminateProcessGroup();
+          }, timeoutMs);
+    const abortHandler = () => {
+      aborted = true;
+      terminateProcessGroup();
+    };
+    options.signal?.addEventListener("abort", abortHandler, { once: true });
+    if (options.signal?.aborted) abortHandler();
 
     const fail = (error: Error): void => {
-      killChild(child, "SIGTERM");
-      finalize(() => {
-        reject(error);
-      });
+      processFailure ??= error;
+      terminateProcessGroup();
     };
 
     const appendOutput = (stream: "stdout" | "stderr", chunk: Buffer | string): Error | null => {
+      if (processFailure) return null;
       const chunkBuffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      const consume = stream === "stdout" ? options.onStdoutChunk : options.onStderrChunk;
+      if (consume) {
+        try {
+          consume(chunkBuffer);
+        } catch (error) {
+          return error instanceof Error ? error : new Error(String(error));
+        }
+        if (stream === "stdout") stdout = (stdout + chunkBuffer.toString()).slice(-4096);
+        else stderr = (stderr + chunkBuffer.toString()).slice(-4096);
+        return null;
+      }
+      if (outputMode === "tail") {
+        const previous = stream === "stdout" ? stdoutTail : stderrTail;
+        const limit = stream === "stdout" ? maxStdoutBytes : maxStderrBytes;
+        const combined = Buffer.concat([previous, chunkBuffer]);
+        const dropped = combined.length > limit;
+        const tail = combined.subarray(Math.max(0, combined.length - limit));
+        if (stream === "stdout") {
+          stdoutTail = tail;
+          stdoutTruncated ||= dropped;
+        } else {
+          stderrTail = tail;
+          stderrTruncated ||= dropped;
+        }
+        return null;
+      }
       const text = chunkBuffer.toString();
       const byteLength = chunkBuffer.length;
       if (stream === "stdout") {
@@ -255,32 +421,32 @@ export async function runProcess(
       });
     });
 
+    child.once("exit", (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
+      if (!terminating) {
+        // The command has completed; inherited pipes must not turn its success into a timeout.
+        clearTimeout(timeoutTimer);
+        drainTimer = setTimeout(() => {
+          killChild(child, "SIGKILL");
+          drainPipes();
+        }, 1000);
+      }
+    });
     child.once("close", (code, signal) => {
-      const result: ProcessRunResult = {
-        stdout,
-        stderr,
-        code,
-        signal,
-        timedOut,
-        aborted,
-        stdoutTruncated,
-        stderrTruncated,
-      };
-
-      finalize(() => {
-        if (!options.allowNonZeroExit && (timedOut || (code !== null && code !== 0))) {
-          reject(normalizeExitError(command, args, result));
-          return;
-        }
-        resolve(result);
-      });
+      exitCode = code;
+      exitSignal = signal;
+      // Closing the parent must not strand descendants which ignored SIGTERM.
+      // Escalate any remaining group immediately; an ordinary exit incurs no delay.
+      if (terminating) killChild(child, "SIGKILL");
+      finish();
     });
 
     child.stdin.once("error", (error) => {
       fail(normalizeStdinError(command, args, error));
     });
 
-    if (options.stdin !== undefined) {
+    if (options.stdin !== undefined && options.stdin.length > 0) {
       child.stdin.write(options.stdin, (error) => {
         if (error) {
           fail(normalizeStdinError(command, args, error));

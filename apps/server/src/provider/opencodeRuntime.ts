@@ -1,3 +1,4 @@
+import { ServerShutdown } from "../shutdown.ts";
 import { normalizeSupportedSlashCommands } from "./supportedSlashCommands.ts";
 import { pathToFileURL } from "node:url";
 
@@ -30,6 +31,7 @@ import {
   Predicate as P,
   Ref,
   Result,
+  Schedule,
   Scope,
   ServiceMap,
   Stream,
@@ -70,6 +72,7 @@ export class OpenCodeRuntimeError extends Data.TaggedError(OPENCODE_RUNTIME_ERRO
   readonly operation: string;
   readonly cause?: unknown;
   readonly detail: string;
+  readonly reason?: "databaseLocked";
 }> {
   static readonly is = (u: unknown): u is OpenCodeRuntimeError =>
     P.isTagged(u, OPENCODE_RUNTIME_ERROR_TAG);
@@ -77,7 +80,10 @@ export class OpenCodeRuntimeError extends Data.TaggedError(OPENCODE_RUNTIME_ERRO
 
 export function openCodeRuntimeErrorDetail(cause: unknown): string {
   if (OpenCodeRuntimeError.is(cause)) return cause.detail;
-  if (cause instanceof Error && cause.message.trim().length > 0) return cause.message.trim();
+  // Effect's TimeoutError can be constructed without a message, so `message`
+  // is not guaranteed to be a string on every Error that reaches here.
+  if (cause instanceof Error && typeof cause.message === "string" && cause.message.trim())
+    return cause.message.trim();
   if (cause && typeof cause === "object") {
     // SDK v2 throws { response, request, error? } shapes — extract what's useful
     const anyCause = cause as Record<string, unknown>;
@@ -156,6 +162,8 @@ export interface OpenCodeRuntimeShape {
     readonly baseUrl: string;
     readonly directory: string;
     readonly serverPassword?: string;
+    /** Cancels every SDK fetch when this owned server/session disappears. */
+    readonly signal?: AbortSignal;
   }) => OpencodeClient;
   readonly loadOpenCodeInventory: (
     client: OpencodeClient,
@@ -213,10 +221,14 @@ export function toOpenCodeFileParts(input: {
     switch (attachment.type) {
       case "file":
       case "image": {
+        // OpenCode inlines only text/plain itself. Other text types (HTML, Markdown, CSV)
+        // reach the model API as raw file parts, which Anthropic and OpenAI reject, so they
+        // ride only as the file path in the attachment context.
+        const mimeType = attachment.mimeType.trim().toLowerCase();
         if (
           attachment.type === "file" &&
-          !attachment.mimeType.startsWith("text/") &&
-          attachment.mimeType !== "application/pdf"
+          mimeType !== "text/plain" &&
+          mimeType !== "application/pdf"
         )
           continue;
         const attachmentPath = input.resolveAttachmentPath(attachment);
@@ -294,6 +306,60 @@ export function buildOpenCodeWorkflowPermissionRules(
     },
     { permission: "bash", pattern: "*", action: "deny" },
     { permission: "edit", pattern: "*", action: "deny" },
+  ];
+}
+
+type PermissionRule = PermissionRuleset[number];
+
+function permissionRuleEquals(left: PermissionRule, right: PermissionRule): boolean {
+  return (
+    left.permission === right.permission &&
+    left.pattern === right.pattern &&
+    left.action === right.action
+  );
+}
+
+export function permissionRulesetEquals(
+  left: PermissionRuleset,
+  right: PermissionRuleset,
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((rule, index) => permissionRuleEquals(rule, right[index]!))
+  );
+}
+
+let f5OwnedPermissionRules: PermissionRuleset | undefined;
+
+/** Every rule F5 can write into a session, across runtime modes and workflow profiles. */
+function getF5OwnedPermissionRules(): PermissionRuleset {
+  f5OwnedPermissionRules ??= [
+    ...(["approval-required", "auto-accept-edits", "full-access"] as const).flatMap((mode) =>
+      buildOpenCodePermissionRules(mode),
+    ),
+    ...(["attended-readonly", "unattended-readonly"] as const).flatMap((profile) =>
+      buildOpenCodeWorkflowPermissionRules(profile),
+    ),
+  ];
+  return f5OwnedPermissionRules;
+}
+
+/**
+ * OpenCode copies parent rules into a subagent session only when it creates it, so a
+ * resumed subagent keeps the rules of the mode it started in. Rebuild its rules from
+ * the parent's current rules and keep only the child's own (agent) restrictions, which
+ * stay last so they still win. Any rule F5 can write counts as inherited.
+ */
+export function buildOpenCodeChildPermissionRules(
+  parentRules: PermissionRuleset,
+  childRules: PermissionRuleset,
+): PermissionRuleset {
+  const owned = getF5OwnedPermissionRules();
+  return [
+    ...parentRules,
+    ...childRules.filter(
+      (rule) => !owned.some((ownedRule) => permissionRuleEquals(rule, ownedRule)),
+    ),
   ];
 }
 
@@ -446,7 +512,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       ),
     );
 
-  const startOpenCodeServerProcess: OpenCodeRuntimeShape["startOpenCodeServerProcess"] = (input) =>
+  const startServerAttempt: OpenCodeRuntimeShape["startOpenCodeServerProcess"] = (input) =>
     Effect.gen(function* () {
       // Bind this server's lifetime to the caller's scope. When the caller's
       // scope closes, the spawned child is killed and all associated fibers
@@ -503,7 +569,17 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
       const killOpenCodeProcessGroup = (signal: NodeJS.Signals) =>
         process.platform === "win32"
-          ? child.kill({ killSignal: signal, forceKillAfter: "1 second" }).pipe(Effect.asVoid)
+          ? Effect.suspend(() =>
+              child
+                .kill({
+                  killSignal: signal,
+                  forceKillAfter: Math.max(
+                    1,
+                    Math.min(1_000, (shutdown?.deadline ?? Date.now() + 1_000) - Date.now() - 50),
+                  ),
+                })
+                .pipe(Effect.asVoid),
+            )
           : Effect.sync(() => {
               try {
                 process.kill(-Number(child.pid), signal);
@@ -513,8 +589,18 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
                 // any serve process left in that group.
               }
             });
+      const shutdown = Option.getOrUndefined(yield* Effect.serviceOption(ServerShutdown));
       const terminateChild = killOpenCodeProcessGroup("SIGTERM").pipe(
-        Effect.andThen(Effect.sleep("1 second")),
+        Effect.andThen(
+          Effect.suspend(() =>
+            Effect.sleep(
+              Math.min(
+                1_000,
+                Math.max(0, (shutdown?.deadline ?? Date.now() + 1_000) - Date.now() - 50),
+              ),
+            ),
+          ),
+        ),
         Effect.andThen(killOpenCodeProcessGroup("SIGKILL")),
         Effect.ignore,
       );
@@ -552,6 +638,13 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       const exitFiber = yield* child.exitCode.pipe(
         Effect.flatMap((code) =>
           Effect.gen(function* () {
+            // Descendants can hold inherited pipes open after the direct child exits.
+            const drained = yield* Fiber.joinAll([stdoutFiber, stderrFiber]).pipe(
+              Effect.timeoutOption("500 millis"),
+            );
+            if (Option.isNone(drained)) {
+              yield* Fiber.interruptAll([stdoutFiber, stderrFiber]);
+            }
             const stdout = yield* Ref.get(stdoutRef);
             const stderr = yield* Ref.get(stderrRef);
             const exitCode = Number(code);
@@ -559,6 +652,9 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
               readyDeferred,
               new OpenCodeRuntimeError({
                 operation: "startOpenCodeServerProcess",
+                ...(/SQLITE_BUSY|database is locked/i.test(stderr)
+                  ? { reason: "databaseLocked" as const }
+                  : {}),
                 detail: [
                   `OpenCode server exited before startup completed (code: ${String(exitCode)}).`,
                   stdout.trim() ? `stdout:\n${stdout.trim()}` : null,
@@ -611,6 +707,28 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       } satisfies OpenCodeServerProcess;
     });
 
+  const startOpenCodeServerProcess: OpenCodeRuntimeShape["startOpenCodeServerProcess"] = (input) =>
+    Effect.gen(function* () {
+      const ownerScope = yield* Scope.Scope;
+      const attempt = Effect.gen(function* () {
+        const attemptScope = yield* Scope.fork(ownerScope);
+        return yield* startServerAttempt(input).pipe(
+          Effect.provideService(Scope.Scope, attemptScope),
+          Effect.onExit((exit) =>
+            Exit.isFailure(exit) ? Scope.close(attemptScope, exit) : Effect.void,
+          ),
+        );
+      });
+      // Instances share opencode.db; only database locks benefit from another launch.
+      return yield* attempt.pipe(
+        Effect.retry({
+          times: 3,
+          schedule: Schedule.spaced("250 millis"),
+          while: (error) => error.reason === "databaseLocked",
+        }),
+      );
+    });
+
   const connectToOpenCodeServer: OpenCodeRuntimeShape["connectToOpenCodeServer"] = (input) => {
     const serverUrl = input.serverUrl?.trim();
     if (serverUrl) {
@@ -641,6 +759,22 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     createOpencodeClient({
       baseUrl: input.baseUrl,
       directory: input.directory,
+      ...(input.signal
+        ? {
+            fetch: Object.assign(
+              (request: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+                const source =
+                  request instanceof Request
+                    ? new Request(request, init)
+                    : new Request(String(request), init);
+                // Hand the signal to fetch itself. A Request built around it follows the signal
+                // only weakly, so a garbage collection mid-request would drop the abort.
+                return fetch(source, { signal: AbortSignal.any([source.signal, input.signal!]) });
+              },
+              { preconnect: fetch.preconnect },
+            ),
+          }
+        : {}),
       ...(input.serverPassword
         ? {
             headers: {

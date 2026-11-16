@@ -2,7 +2,7 @@ import { formatAttachmentMetadata } from "@t3tools/shared/attachmentMetadata";
 
 import type { ProviderResolvedAttachment } from "./Services/ProviderAdapter.ts";
 
-function escapeRuntimeContextLine(value: string): string {
+export function escapeRuntimeContextLine(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
@@ -23,7 +23,7 @@ export function buildProviderAttachmentRuntimeContext(
   return [
     "<f5-attachment-context>",
     "Attachments are saved at the local paths listed below for best-effort access.",
-    "Some images are also supplied inline; files and images beyond the inline limit are available by path. The active sandbox may prevent opening a path.",
+    "Supported images and PDFs may also be supplied inline; other files and attachments beyond the inline limits are available by path. The active sandbox may prevent opening a path.",
     ...lines.map(escapeRuntimeContextLine),
     "</f5-attachment-context>",
   ].join("\n");

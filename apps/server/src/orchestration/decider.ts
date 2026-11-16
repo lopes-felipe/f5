@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
-import { CommandId, MessageId } from "@t3tools/contracts";
+import { CommandId, EventId, MessageId } from "@t3tools/contracts";
+import { answerMessageIdFor } from "@t3tools/shared/answerDelivery";
 import {
   MAX_PINNED_THREADS,
   SCRIPT_RUN_COMMAND_PATTERN,
@@ -11,13 +12,31 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
+import { withEventBase } from "./eventBase.ts";
+import {
+  decideWorkflowArchive,
+  decideWorkflowDelete,
+  requireAttachableWorkflowThreads,
+  retainedWorkflowThreadIds,
+  workflowEntries,
+} from "./workflowArchiveLifecycle.ts";
 import {
   documentWorkflowForThread,
   defaultDocumentReaderSlot,
   isDocumentWorkflow,
 } from "@t3tools/shared/documentWorkflow";
+import {
+  SCRATCH_PROJECT_TITLE,
+  isScratchProject,
+  isScratchThreadFolder,
+} from "@t3tools/shared/scratchProject";
 
-import { OrchestrationCommandInvariantError, ThreadTurnAlreadyActiveError } from "./Errors.ts";
+import { canonicalJson } from "../canonicalJsonHash.ts";
+import {
+  OrchestrationCommandInvariantError,
+  ThreadSettingsChangedError,
+  ThreadTurnAlreadyActiveError,
+} from "./Errors.ts";
 import {
   listThreadsByProjectId,
   requireProject,
@@ -39,6 +58,25 @@ const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
 export const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
 
+/** The scratch project is server-owned: its folder, actions, memories and skills stay fixed. */
+function scratchProjectRefusal(commandType: string, what: string) {
+  return new OrchestrationCommandInvariantError({
+    commandType,
+    detail: `The home for threads without a project cannot change ${what}.`,
+  });
+}
+
+const requireNonScratchProject = Effect.fnUntraced(function* (
+  readModel: OrchestrationReadModel,
+  command: OrchestrationCommand,
+  projectId: ProjectId,
+  what: string,
+) {
+  const project = yield* requireProject({ readModel, command, projectId });
+  if (isScratchProject(project)) return yield* scratchProjectRefusal(command.type, what);
+  return project;
+});
+
 function unsupportedWorkflowBehaviorMessage(input: {
   readonly templateId: string;
   readonly templateVersion: number;
@@ -53,37 +91,6 @@ function unsupportedWorkflowBehaviorMessage(input: {
   } catch (cause) {
     return cause instanceof Error ? cause.message : "Unsupported planning workflow template.";
   }
-}
-
-const defaultMetadata: Omit<OrchestrationEvent, "sequence" | "type" | "payload"> = {
-  eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
-  aggregateKind: "thread",
-  aggregateId: "" as OrchestrationEvent["aggregateId"],
-  occurredAt: nowIso(),
-  commandId: null,
-  causationEventId: null,
-  correlationId: null,
-  metadata: {},
-};
-
-function withEventBase(
-  input: Pick<OrchestrationCommand, "commandId"> & {
-    readonly aggregateKind: OrchestrationEvent["aggregateKind"];
-    readonly aggregateId: OrchestrationEvent["aggregateId"];
-    readonly occurredAt: string;
-    readonly metadata?: OrchestrationEvent["metadata"];
-  },
-): Omit<OrchestrationEvent, "sequence" | "type" | "payload"> {
-  return {
-    ...defaultMetadata,
-    eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
-    aggregateKind: input.aggregateKind,
-    aggregateId: input.aggregateId,
-    occurredAt: input.occurredAt,
-    commandId: input.commandId,
-    correlationId: input.commandId,
-    metadata: input.metadata ?? {},
-  };
 }
 
 function makeThreadUnsnoozedEvent(input: {
@@ -106,17 +113,19 @@ function makeThreadUnsnoozedEvent(input: {
   };
 }
 
-export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
+const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
   providerInstances = [],
+  nativeRemovedMessageIds = [],
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  readonly nativeRemovedMessageIds?: readonly import("@t3tools/contracts").MessageId[];
   readonly providerInstances?: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver">>;
 }): Effect.fn.Return<
   Omit<OrchestrationEvent, "sequence"> | ReadonlyArray<Omit<OrchestrationEvent, "sequence">>,
-  OrchestrationCommandInvariantError | ThreadTurnAlreadyActiveError
+  OrchestrationCommandInvariantError | ThreadTurnAlreadyActiveError | ThreadSettingsChangedError
 > {
   switch (command.type) {
     case "project.create": {
@@ -136,9 +145,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "project.created",
         payload: {
           projectId: command.projectId,
+          kind: "standard",
           title: command.title,
           workspaceRoot: command.workspaceRoot,
-          defaultModel: command.defaultModel ?? null,
+          defaultModel: command.defaultModelSelection?.model ?? command.defaultModel ?? null,
+          defaultModelSelection: command.defaultModelSelection ?? null,
           defaultEnvMode: command.defaultEnvMode ?? null,
           icon: command.icon ?? null,
           scripts: [],
@@ -148,12 +159,51 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
-    case "project.meta.update": {
-      yield* requireProject({
+    case "project.scratch.create": {
+      yield* requireProjectAbsent({
         readModel,
         command,
         projectId: command.projectId,
       });
+      if (readModel.projects.some((project) => isScratchProject(project) && !project.deletedAt))
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This profile already has a home for threads without a project.",
+        });
+      return {
+        ...withEventBase({
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "project.created",
+        payload: {
+          projectId: command.projectId,
+          kind: "scratch",
+          title: SCRATCH_PROJECT_TITLE,
+          workspaceRoot: command.workspaceRoot,
+          defaultModel: null,
+          defaultEnvMode: null,
+          icon: { type: "lucide", glyph: "folder", color: "gray" },
+          scripts: [],
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "project.meta.update": {
+      const project = yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      if (
+        isScratchProject(project) &&
+        (command.workspaceRoot !== undefined || command.scripts !== undefined)
+      )
+        return yield* scratchProjectRefusal(command.type, "its folder or actions");
       if (command.scripts !== undefined) {
         const oldIds = new Set(
           readModel.projects
@@ -197,11 +247,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.delete": {
-      yield* requireProject({
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
       });
+      if (isScratchProject(project)) return yield* scratchProjectRefusal(command.type, "it");
       const activeChildThreadCount = listThreadsByProjectId(readModel, command.projectId).filter(
         (thread) => thread.deletedAt === null,
       ).length;
@@ -228,11 +279,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.memory.save": {
-      yield* requireProject({
-        readModel,
-        command,
-        projectId: command.projectId,
-      });
+      yield* requireNonScratchProject(readModel, command, command.projectId, "memories");
       const existing = readModel.projects
         .find((project) => project.id === command.projectId)
         ?.memories.find((memory) => memory.id === command.memoryId && memory.deletedAt === null);
@@ -269,11 +316,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.memory.update": {
-      yield* requireProject({
-        readModel,
-        command,
-        projectId: command.projectId,
-      });
+      yield* requireNonScratchProject(readModel, command, command.projectId, "memories");
       const existing = readModel.projects
         .find((project) => project.id === command.projectId)
         ?.memories.find((memory) => memory.id === command.memoryId && memory.deletedAt === null);
@@ -307,11 +350,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.memory.delete": {
-      yield* requireProject({
-        readModel,
-        command,
-        projectId: command.projectId,
-      });
+      yield* requireNonScratchProject(readModel, command, command.projectId, "memories");
       const existing = readModel.projects
         .find((project) => project.id === command.projectId)
         ?.memories.find((memory) => memory.id === command.memoryId && memory.deletedAt === null);
@@ -338,11 +377,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.skills.replace": {
-      yield* requireProject({
-        readModel,
-        command,
-        projectId: command.projectId,
-      });
+      yield* requireNonScratchProject(readModel, command, command.projectId, "skills");
       const mismatchedSkill = command.skills.find((skill) => skill.projectId !== command.projectId);
       if (mismatchedSkill) {
         return yield* new OrchestrationCommandInvariantError({
@@ -367,6 +402,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.workflow.create": {
+      yield* requireAttachableWorkflowThreads(readModel, command, [
+        command.authorThreadIdA,
+        command.authorThreadIdB,
+      ]);
       yield* requireProject({
         readModel,
         command,
@@ -483,23 +522,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Workflow '${command.workflowId}' does not exist.`,
         });
       }
-      return {
-        ...withEventBase({
-          aggregateKind: "project",
-          aggregateId: command.projectId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        }),
-        type: "project.workflow-deleted",
-        payload: {
-          projectId: command.projectId,
-          workflowId: command.workflowId,
-          deletedAt: command.createdAt,
+      return yield* decideWorkflowDelete({
+        entry: { kind: "planning", workflow },
+        readModel,
+        command,
+        deleteThreads: command.deleteThreads,
+        event: {
+          ...withEventBase({
+            aggregateKind: "project",
+            aggregateId: command.projectId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "project.workflow-deleted",
+          payload: {
+            projectId: command.projectId,
+            workflowId: command.workflowId,
+            deletedAt: command.createdAt,
+          },
         },
-      };
+      });
     }
 
     case "project.code-review-workflow.create": {
+      yield* requireAttachableWorkflowThreads(readModel, command, [
+        command.reviewerThreadIdA,
+        command.reviewerThreadIdB,
+      ]);
       yield* requireProject({
         readModel,
         command,
@@ -551,6 +600,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             reviewerB: command.reviewerB,
             consolidation: command.consolidation,
             maxCostUsd: command.maxCostUsd ?? undefined,
+            pullRequest: command.pullRequest ?? null,
+            autoPost: command.autoPost ?? false,
             createdAt: command.createdAt,
           }),
         },
@@ -559,6 +610,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "project.investigation-workflow.create":
     case "project.debug-workflow.create": {
+      yield* requireAttachableWorkflowThreads(readModel, command, [
+        command.investigationThreadIdA,
+        command.investigationThreadIdB,
+      ]);
       yield* requireProject({
         readModel,
         command,
@@ -627,7 +682,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.create": {
-      yield* requireProject({
+      if (
+        workflowEntries(readModel).some(
+          (entry) =>
+            entry.workflow.deletedAt === null &&
+            entry.workflow.archivedAt !== null &&
+            entry.threadIds.includes(command.threadId),
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Restore the owning workflow before creating its thread.",
+        });
+      }
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
@@ -637,6 +705,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const scratchPath = command.scratchPath ?? null;
+      if (isScratchProject(project)) {
+        // The engine allocates the folder before dispatch; without one a scratch thread
+        // would have no workspace of its own, so creation fails closed.
+        if (
+          scratchPath === null ||
+          !isScratchThreadFolder(project.workspaceRoot, scratchPath) ||
+          command.worktreePath !== null ||
+          command.branch !== null
+        )
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A thread without a project needs its own folder and no branch or worktree.",
+          });
+      } else if (scratchPath !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only threads without a project have a scratch folder.",
+        });
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -657,7 +745,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          scratchPath,
           threadReferences: command.threadReferences ?? [],
+          ...(command.scheduledOrigin ? { scheduledOrigin: command.scheduledOrigin } : {}),
           ...(command.pullRequest ? { pullRequest: command.pullRequest } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
@@ -666,6 +756,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
+      if (
+        command.expectedArchivedAt !== undefined &&
+        retainedWorkflowThreadIds(readModel).has(command.threadId)
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Delete the owning workflow before permanently purging its threads.",
+        });
       const thread = yield* requireThread({
         readModel,
         command,
@@ -707,12 +805,108 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.settle": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // The reason is shown to the user, so it names what to clear first.
+      const blocker = thread.deletedAt
+        ? "This thread was deleted."
+        : (thread.pendingUserInputs?.length ?? 0) > 0
+          ? "This thread is waiting on a question. Answer it before settling."
+          : thread.session?.activeTurnId ||
+              thread.latestTurn?.state === "running" ||
+              (thread.latestTurn?.completedAt && thread.latestTurn.processingQuiescedAt === null) ||
+              ["running", "starting"].includes(thread.session?.status ?? "")
+            ? "This thread is still running. Stop it before settling."
+            : thread.pinnedAt
+              ? "This thread is pinned. Unpin it before settling."
+              : thread.snoozedUntil &&
+                  Date.parse(thread.snoozedUntil) > Date.parse(command.createdAt)
+                ? "This thread is snoozed. Wake it before settling."
+                : null;
+      if (blocker !== null)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: blocker,
+        });
+      if (command.expectedUpdatedAt !== undefined && command.expectedUpdatedAt !== thread.updatedAt)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The thread changed before settlement. Retry with the current thread.",
+        });
+      if (command.settledBy === "auto" && thread.autoSettleDisabled)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Automatic settlement is disabled for this thread.",
+        });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.settled",
+        payload: {
+          threadId: command.threadId,
+          settledAt: command.settledAt ?? command.createdAt,
+          settledBy: command.settledBy ?? "user",
+        },
+      };
+    }
+    case "thread.unsettle": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.unsettled",
+        payload: { threadId: command.threadId, reason: command.reason ?? "user" },
+      };
+    }
+    case "thread.auto-settle.set": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.auto-settle-changed",
+        payload: { threadId: command.threadId, enabled: command.enabled },
+      };
+    }
+
     case "thread.archive": {
       const thread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (command.cleanupExpectation) {
+        const expected = command.cleanupExpectation;
+        if (
+          thread.worktreePath !== expected.worktreePath ||
+          thread.lastInteractionAt !== expected.lastInteractionAt ||
+          (thread.session?.updatedAt ?? null) !== expected.sessionUpdatedAt ||
+          (thread.session?.activeTurnId !== null && thread.session?.activeTurnId !== undefined) ||
+          thread.session?.status === "starting" ||
+          thread.session?.status === "running"
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail:
+              "Conversation changed or started work before storage cleanup. Rescan before archiving.",
+          });
+        }
+      }
       const pinRevision = thread.pinnedAt != null ? (readModel.pinRevision ?? 0) + 1 : undefined;
       return {
         ...withEventBase({
@@ -731,6 +925,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.unarchive": {
+      if (
+        workflowEntries(readModel).some(
+          (entry) =>
+            entry.workflow.deletedAt === null &&
+            entry.workflow.archivedAt !== null &&
+            entry.threadIds.includes(command.threadId),
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Restore the owning workflow before unarchiving this thread.",
+        });
+      }
       yield* requireThreadArchived({
         readModel,
         command,
@@ -957,6 +1164,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       if (
+        isScratchProject(readModel.projects.find((project) => project.id === thread.projectId)) &&
+        (command.branch != null || command.worktreePath != null)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Threads without a project cannot have a branch or worktree.",
+        });
+      }
+      if (command.pullRequest !== undefined && command.pullRequestUnlink !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A metadata update cannot link and unlink a pull request at once.",
+        });
+      }
+      if (
         command.expectedArchivedAt !== undefined &&
         thread.archivedAt !== command.expectedArchivedAt
       ) {
@@ -1018,6 +1240,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           ...(command.pullRequest ? { pullRequest: command.pullRequest } : {}),
+          ...(command.pullRequestUnlink ? { pullRequestUnlinked: command.pullRequestUnlink } : {}),
           ...(command.title !== undefined
             ? {
                 title: command.title,
@@ -1255,7 +1478,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "thread.turn.steer":
     case "thread.turn.start": {
-      const targetThread = yield* requireThread({
+      if (
+        workflowEntries(readModel).some(
+          (entry) =>
+            entry.workflow.deletedAt === null &&
+            entry.workflow.archivedAt !== null &&
+            entry.threadIds.includes(command.threadId),
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Restore the owning workflow before starting a turn.",
+        });
+      }
+      const targetThread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
@@ -1274,6 +1510,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandType: command.type,
           detail: "The active turn, model, or mode changed before steering.",
         });
+      }
+      // Checked with acceptance so a later model or access change cannot be reverted.
+      if (
+        command.requireCurrentSettings === true &&
+        (targetThread.runtimeMode !== command.runtimeMode ||
+          targetThread.interactionMode !== command.interactionMode ||
+          (command.modelSelection !== undefined &&
+            canonicalJson(targetThread.modelSelection) !== canonicalJson(command.modelSelection)))
+      ) {
+        return yield* new ThreadSettingsChangedError({ threadId: command.threadId });
       }
       const threadIsBusy =
         targetThread.latestTurn?.state === "running" ||
@@ -1463,6 +1709,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { expectedSessionGeneration: command.expectedSessionGeneration }
             : {}),
           ...(command.presentation ? { presentation: command.presentation } : {}),
+          ...(command.continuationRequestId
+            ? { continuationRequestId: command.continuationRequestId }
+            : {}),
           threadId: command.threadId,
           messageId: command.message.messageId,
           ...(command.provider !== undefined ? { provider: command.provider } : {}),
@@ -1530,7 +1779,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      return {
+      const requested: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1548,6 +1797,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      // The database resolves an approval when the answer is accepted. Persist
+      // the same closing fact for live models, history and reconnect replay.
+      return [
+        requested,
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+            metadata: { requestId: command.requestId },
+          }),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: command.threadId,
+            activity: {
+              id: EventId.makeUnsafe("approval-answer:" + command.commandId),
+              turnId: null,
+              tone: "info",
+              kind: "approval.response-submitted",
+              summary: "Approval answer submitted",
+              payload: { requestId: command.requestId, decision: command.decision },
+              createdAt: command.createdAt,
+            },
+          },
+        },
+      ];
     }
 
     case "thread.user-input.dismiss":
@@ -1583,7 +1859,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               commandId: CommandId.makeUnsafe(`answer-delivery:${command.commandId}`),
               threadId: thread.id,
               message: {
-                messageId: MessageId.makeUnsafe(`answer:${command.commandId}`),
+                messageId: MessageId.makeUnsafe(answerMessageIdFor(command.commandId)),
                 role: "user" as const,
                 text: JSON.stringify(answers),
                 attachments,
@@ -1613,7 +1889,39 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      if (pending?.responseMode === "message") return resolved;
+      if (pending?.responseMode === "message") {
+        // No provider resolution follows a message-mode answer, so record the
+        // timeline's Q&A row here. Attachments stay on the delivered message.
+        const answerMessageId = queueCommand?.message.messageId;
+        const resolvedActivity: Omit<OrchestrationEvent, "sequence"> = {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            commandId: command.commandId,
+            occurredAt: command.createdAt,
+            metadata: { requestId: command.requestId },
+          }),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: thread.id,
+            activity: {
+              id: EventId.makeUnsafe(`user-input-resolved:${command.commandId}`),
+              tone: "info",
+              kind: "user-input.resolved",
+              summary: dismissed ? "User input dismissed" : "User input submitted",
+              payload: {
+                requestId: command.requestId,
+                resolution: dismissed ? "dismissed" : "answered",
+                answers,
+                ...(answerMessageId ? { answerMessageId } : {}),
+              },
+              turnId: pending.turnId,
+              createdAt: command.createdAt,
+            },
+          },
+        };
+        return [resolved, resolvedActivity];
+      }
       return [
         resolved,
         {
@@ -1784,6 +2092,47 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.message.assistant.reconcile": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const existing = thread.messages.find((message) => message.id === command.messageId);
+      if (
+        thread.latestTurn?.turnId !== command.turnId ||
+        (existing?.text ?? null) !== command.expectedText ||
+        (existing?.reasoningText ?? "") !== command.expectedReasoningText ||
+        (existing && (existing.role !== "assistant" || existing.turnId !== command.turnId))
+      )
+        return [];
+      if (
+        existing &&
+        !existing.streaming &&
+        existing.text === command.text &&
+        (existing.reasoningText ?? "") === command.reasoningText
+      )
+        return [];
+      return [
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.message-sent",
+          payload: {
+            threadId: command.threadId,
+            messageId: command.messageId,
+            role: "assistant",
+            text: command.text,
+            ...(command.reasoningText ? { reasoningText: command.reasoningText } : {}),
+            turnId: command.turnId,
+            streaming: false,
+            createdAt: existing?.createdAt ?? command.createdAt,
+            updatedAt: command.createdAt,
+          },
+        },
+      ];
+    }
+
     case "thread.message.assistant.delta": {
       const targetThread = yield* requireThread({
         readModel,
@@ -1878,6 +2227,36 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         : messageEvent;
     }
 
+    case "thread.message.reasoning-tokens.add": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const existing = thread.messages.find((message) => message.id === command.messageId);
+      if (!existing || existing.role !== "assistant") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Assistant message '${command.messageId}' does not exist on thread '${command.threadId}'.`,
+        });
+      }
+      // Counts are metadata, so they still apply after the message completes.
+      if (command.tokens === 0) return [];
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.message-reasoning-tokens-added",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          turnId: command.turnId,
+          tokens: command.tokens,
+          estimated: command.estimated,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.proposed-plan.upsert": {
       yield* requireThread({
         readModel,
@@ -1957,6 +2336,43 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.native-history.reconcile": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (
+        thread.deletedAt ||
+        thread.archivedAt ||
+        thread.session?.providerName !== "pi" ||
+        thread.session.providerInstanceId !== command.providerInstanceId ||
+        thread.session.status !== "running" ||
+        thread.session.activeTurnId !== command.expectedTurnId ||
+        thread.latestTurn?.turnId !== command.expectedTurnId ||
+        command.removedTurnIds.includes(command.expectedTurnId)
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The native history owner changed before reconciliation.",
+        });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.reverted",
+        payload: {
+          threadId: command.threadId,
+          turnCount: Math.max(
+            0,
+            ...thread.checkpoints.map((checkpoint) => checkpoint.checkpointTurnCount),
+          ),
+          removedTurnIds: [...new Set(command.removedTurnIds)],
+          removedMessageIds: [...new Set(nativeRemovedMessageIds)],
+          nativeTurnId: command.expectedTurnId,
+        },
+      };
+    }
+
     case "thread.revert.complete": {
       yield* requireThread({
         readModel,
@@ -1975,6 +2391,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           turnCount: command.turnCount,
           ...(command.operationId ? { operationId: command.operationId } : {}),
+          ...(command.retainedMessageIds ? { retainedMessageIds: command.retainedMessageIds } : {}),
           ...(command.retainedTurnIds ? { retainedTurnIds: command.retainedTurnIds } : {}),
         },
       };
@@ -2220,6 +2637,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.command-execution.output.reconcile": {
+      // Output is not in the read model: the projection applies the
+      // replacement only while the row's last update is the expected one.
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.command-execution-output-reconciled",
+        payload: {
+          threadId: command.threadId,
+          commandExecutionId: command.commandExecutionId,
+          expectedLastUpdatedSequence: command.expectedLastUpdatedSequence,
+          output: command.output,
+          outputTruncated: command.outputTruncated,
+          updatedAt: command.updatedAt,
+        },
+      };
+    }
+
     case "thread.file-change.record": {
       yield* requireThread({
         readModel,
@@ -2241,6 +2685,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "project.workflow.archive":
+    case "project.workflow.unarchive": {
+      yield* requireProject({ readModel, command, projectId: command.projectId });
+      const entry = workflowEntries(readModel).find(
+        (entry) =>
+          entry.kind === command.workflowKind &&
+          entry.workflow.id === command.workflowId &&
+          entry.workflow.projectId === command.projectId &&
+          entry.workflow.deletedAt === null,
+      );
+      if (!entry)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Workflow does not exist.",
+        });
+      return yield* decideWorkflowArchive({
+        entry,
+        readModel,
+        command,
+        occurredAt: command.createdAt,
+        operation: command.type === "project.workflow.archive" ? "archive" : "unarchive",
+      });
+    }
+
     case "project.workflow.upsert": {
       yield* requireProject({
         readModel,
@@ -2259,19 +2727,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "Workflow branches must preserve branch ids 'a' and 'b'.",
         });
       }
-      return {
-        ...withEventBase({
-          aggregateKind: "project",
-          aggregateId: command.projectId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        }),
-        type: "project.workflow-upserted",
-        payload: {
-          projectId: command.projectId,
-          workflow: command.workflow,
-        },
-      };
+      return yield* decideWorkflowArchive({
+        entry: { kind: "planning", workflow: command.workflow },
+        readModel,
+        command,
+        occurredAt: command.createdAt,
+        operation: "preserve",
+      });
     }
 
     case "project.code-review-workflow.upsert": {
@@ -2286,19 +2748,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "Workflow project id must match the enclosing project aggregate.",
         });
       }
-      return {
-        ...withEventBase({
-          aggregateKind: "project",
-          aggregateId: command.projectId,
-          occurredAt: command.updatedAt,
-          commandId: command.commandId,
-        }),
-        type: "project.code-review-workflow-upserted",
-        payload: {
-          projectId: command.projectId,
-          workflow: command.workflow,
-        },
-      };
+      return yield* decideWorkflowArchive({
+        entry: { kind: "codeReview", workflow: command.workflow },
+        readModel,
+        command,
+        occurredAt: command.updatedAt,
+        operation: "preserve",
+      });
     }
 
     case "project.code-review-workflow.delete": {
@@ -2316,20 +2772,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Code review workflow '${command.workflowId}' does not exist.`,
         });
       }
-      return {
-        ...withEventBase({
-          aggregateKind: "project",
-          aggregateId: command.projectId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        }),
-        type: "project.code-review-workflow-deleted",
-        payload: {
-          projectId: command.projectId,
-          workflowId: command.workflowId,
-          deletedAt: command.createdAt,
+      return yield* decideWorkflowDelete({
+        entry: { kind: "codeReview", workflow },
+        readModel,
+        command,
+        deleteThreads: command.deleteThreads,
+        event: {
+          ...withEventBase({
+            aggregateKind: "project",
+            aggregateId: command.projectId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "project.code-review-workflow-deleted",
+          payload: {
+            projectId: command.projectId,
+            workflowId: command.workflowId,
+            deletedAt: command.createdAt,
+          },
         },
-      };
+      });
     }
 
     case "project.investigation-workflow.upsert":
@@ -2345,19 +2807,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "Workflow project id must match the enclosing project aggregate.",
         });
       }
-      return {
-        ...withEventBase({
-          aggregateKind: "project",
-          aggregateId: command.projectId,
-          occurredAt: command.updatedAt,
-          commandId: command.commandId,
-        }),
-        type: "project.investigation-workflow-upserted",
-        payload: {
-          projectId: command.projectId,
-          workflow: command.workflow,
-        },
-      };
+      return yield* decideWorkflowArchive({
+        entry: { kind: "investigation", workflow: command.workflow },
+        readModel,
+        command,
+        occurredAt: command.updatedAt,
+        operation: "preserve",
+      });
     }
 
     case "project.investigation-workflow.delete":
@@ -2376,20 +2832,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Investigation workflow '${command.workflowId}' does not exist.`,
         });
       }
-      return {
-        ...withEventBase({
-          aggregateKind: "project",
-          aggregateId: command.projectId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        }),
-        type: "project.investigation-workflow-deleted",
-        payload: {
-          projectId: command.projectId,
-          workflowId: command.workflowId,
-          deletedAt: command.createdAt,
+      return yield* decideWorkflowDelete({
+        entry: { kind: "investigation", workflow },
+        readModel,
+        command,
+        deleteThreads: command.deleteThreads,
+        event: {
+          ...withEventBase({
+            aggregateKind: "project",
+            aggregateId: command.projectId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "project.investigation-workflow-deleted",
+          payload: {
+            projectId: command.projectId,
+            workflowId: command.workflowId,
+            deletedAt: command.createdAt,
+          },
         },
-      };
+      });
     }
 
     default: {
@@ -2401,4 +2863,43 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
     }
   }
+});
+
+/** Wake is part of the same accepted command and replay stream as the new work. */
+export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* (
+  input: Parameters<typeof decideCommand>[0],
+) {
+  const result = yield* decideCommand(input);
+  const events = Array.isArray(result) ? result : [result];
+  const command = input.command;
+  if (!("threadId" in command)) return result;
+  const thread = input.readModel.threads.find((thread) => thread.id === command.threadId);
+  if (
+    !thread?.settledAt ||
+    !events.some(
+      (event) =>
+        event.type === "thread.message-sent" ||
+        event.type === "thread.turn-start-requested" ||
+        event.type === "thread.unsnoozed" ||
+        (event.type === "thread.session-set" &&
+          (event.payload.session.activeTurnId ||
+            ["starting", "running"].includes(event.payload.session.status))),
+    )
+  )
+    return result;
+  const event = events[0]!;
+  const wake: Omit<OrchestrationEvent, "sequence"> = {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: command.threadId,
+      commandId: command.commandId,
+      occurredAt: event.occurredAt,
+    }),
+    type: "thread.unsettled",
+    payload: {
+      threadId: command.threadId,
+      reason: events.some((event) => event.type === "thread.unsnoozed") ? "wake" : "activity",
+    },
+  };
+  return [wake, ...events];
 });

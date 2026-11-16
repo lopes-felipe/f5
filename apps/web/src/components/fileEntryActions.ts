@@ -41,10 +41,12 @@ export async function showFileEntryContextMenu(input: {
   position: { x: number; y: number };
   onAddToChat: (relativePath: string) => boolean;
 }): Promise<void> {
-  const action = await input.api.contextMenu.show(itemsForEntry(input.entry.kind), input.position);
+  const absolutePath = resolvePathLinkTarget(input.entry.path, input.cwd);
+  const action = await input.api.contextMenu.show(itemsForEntry(input.entry.kind), input.position, {
+    editorTarget: absolutePath,
+  });
   if (action === null) return;
 
-  const absolutePath = resolvePathLinkTarget(input.entry.path, input.cwd);
   try {
     switch (action) {
       case "add-to-chat":

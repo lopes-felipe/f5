@@ -1,4 +1,5 @@
 import type { McpProjectServersConfig } from "@t3tools/contracts";
+import { mcpServerNameKey } from "./mcpServerName";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -20,16 +21,23 @@ function sortJsonForStableStringify(value: unknown): unknown {
   );
 }
 
-function stableMcpServersJson(servers: McpProjectServersConfig): string {
+export function stableMcpServersJson(servers: McpProjectServersConfig): string {
   return JSON.stringify(sortJsonForStableStringify(servers));
 }
 
 export function mergeMcpServerLayers(input: {
   readonly common?: McpProjectServersConfig | null;
   readonly project?: McpProjectServersConfig | null;
+  readonly disabledCommon?: ReadonlyArray<string> | undefined;
 }): McpProjectServersConfig {
+  const disabled = new Set(input.disabledCommon?.map(mcpServerNameKey));
   return {
-    ...input.common,
+    ...Object.fromEntries(
+      Object.entries(input.common ?? {}).map(([name, server]) => [
+        name,
+        disabled.has(mcpServerNameKey(name)) ? { ...server, enabled: false } : server,
+      ]),
+    ),
     ...input.project,
   };
 }

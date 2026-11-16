@@ -2,6 +2,8 @@ import type { GlobalSearchResult } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 
+import { requestDiffFileReveal } from "../diffFileReveal";
+
 export function useOpenGlobalSearchResult(): (result: GlobalSearchResult) => Promise<void> {
   const navigate = useNavigate();
 
@@ -19,6 +21,7 @@ export function useOpenGlobalSearchResult(): (result: GlobalSearchResult) => Pro
       }
       if (!result.threadId) return;
       if (result.kind === "fileChange" && result.fileChangeId) {
+        if (result.path) requestDiffFileReveal();
         await navigate({
           to: "/$threadId",
           params: { threadId: result.threadId },

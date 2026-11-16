@@ -1,12 +1,17 @@
+import { ScheduledOriginBadge } from "../scheduled/ScheduledOriginBadge";
+import { ContextMenuIcon } from "../ContextMenuIcon";
+import { ThreadSettlementControl } from "../thread/ThreadSettlementControl";
+import { ThreadAutomationsButton } from "../scheduled/ThreadAutomationsButton";
 import { ThreadPrLinks } from "../prHub/ThreadPrLinks";
 import {
   type EditorId,
   type ProjectId,
+  type ProjectKind,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
   type ThreadId,
 } from "@t3tools/contracts";
-import { memo, useState, type ComponentType } from "react";
+import { memo, useState, type ComponentType, type MouseEvent, type ReactNode } from "react";
 import GitActionsControl from "../GitActionsControl";
 import {
   BotIcon,
@@ -16,7 +21,9 @@ import {
   FilesIcon,
   Globe2Icon,
   PanelRightIcon,
+  PlayIcon,
   SettingsIcon,
+  SlidersHorizontalIcon,
   SquarePenIcon,
   TerminalSquareIcon,
 } from "lucide-react";
@@ -33,10 +40,14 @@ import {
   MenuItem,
   MenuPopup,
   MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
   MenuTrigger,
 } from "../ui/menu";
 import { Separator } from "../ui/separator";
 import { ToolbarToggle } from "../ui/toolbar-toggle";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { InlineTitleEditor } from "../InlineTitleEditor";
 import { ProjectIcon } from "../ProjectIcon";
 import type { ThreadActionId, ThreadActionMenuItem } from "../../hooks/useThreadActionController";
@@ -46,26 +57,51 @@ import {
   type WorkflowTypeValue,
 } from "../../lib/workflowType";
 import { cn } from "../../lib/utils";
+import { showLocalPathContextMenu } from "../../lib/localPathContextMenu";
 import type { ThreadStatusPill } from "../../threadStatus";
 import type { Project } from "../../types";
+import { ProjectPicker } from "../ProjectPicker";
+import type { ComposerProjectPickerControls } from "./composer/composerControls";
 import type { RightPanelSurfaceHeaderState } from "../../rightPanelStore";
+import {
+  DISPLAY_PROFILE_CUSTOM_WARNING,
+  DISPLAY_PROFILE_LABELS,
+  DISPLAY_PROFILE_NAMES,
+  displayProfilePatchFor,
+  getDisplayProfile,
+  updateAppSettings,
+  useAppSettingsSelector,
+} from "../../appSettings";
 
 interface ChatHeaderProps {
   activeThreadId: ThreadId;
   isServerThread: boolean;
   activeThreadTitle: string;
   nativeGoalSummary?: string | undefined;
+  scheduledOrigin?: import("@t3tools/contracts").ScheduledOrigin | null | undefined;
   activeProjectId?: ProjectId | undefined;
+  activeProjectKind?: ProjectKind | undefined;
   activeProjectIcon?: Project["icon"] | undefined;
   activeProjectName: string | undefined;
+  activeProjectCwd?: string | undefined;
+  /**
+   * Unsent drafts can still change project: the crumb becomes a project picker
+   * instead of the project actions menu.
+   */
+  projectPicker?: ComposerProjectPickerControls | undefined;
   onNewThreadInProject?: (() => void) | undefined;
   onOpenProjectSettings?: (() => void) | undefined;
+  /** Opens Settings → Project → Actions, the only entry point while a project has no actions. */
+  onOpenProjectActions?: (() => void) | undefined;
   workflowTitle?: string | undefined;
   workflowType?: WorkflowTypeValue | undefined;
   onOpenWorkflow?: (() => void) | undefined;
   threadStatus?: ThreadStatusPill | null | undefined;
+  /** Runtime info and details, folded in from their own row (compact chat layout). */
+  runtimeControls?: ReactNode;
   isGitRepo: boolean;
   openInCwd: string | null;
+  openInShortcutEnabled: boolean;
   activeProjectScripts: ProjectScript[] | undefined;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
@@ -94,6 +130,11 @@ interface ChatHeaderProps {
   onToggleAgents: () => void;
   onTogglePreview: () => void;
   onToggleDiff: () => void;
+  /**
+   * Receives the stable element the timeline portals its "Conversation
+   * navigation" control into, so turn data never flows through header props.
+   */
+  navigationHostRef?: ((node: HTMLElement | null) => void) | undefined;
 }
 
 interface PanelToggleSpec {
@@ -118,17 +159,24 @@ export const ChatHeader = memo(function ChatHeader({
   isServerThread,
   activeThreadTitle,
   nativeGoalSummary,
+  scheduledOrigin,
   activeProjectId,
+  activeProjectKind,
   activeProjectIcon,
   activeProjectName,
+  activeProjectCwd,
+  projectPicker,
   onNewThreadInProject,
   onOpenProjectSettings,
+  onOpenProjectActions,
   workflowTitle,
   workflowType,
   onOpenWorkflow,
   threadStatus,
+  runtimeControls,
   isGitRepo,
   openInCwd,
+  openInShortcutEnabled,
   activeProjectScripts,
   preferredScriptId,
   keybindings,
@@ -157,7 +205,9 @@ export const ChatHeader = memo(function ChatHeader({
   onToggleAgents,
   onTogglePreview,
   onToggleDiff,
+  navigationHostRef,
 }: ChatHeaderProps) {
+  "use memo";
   const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
   const isRenaming = renamingThreadId === activeThreadId;
   const agentsWorkingLabel =
@@ -175,7 +225,10 @@ export const ChatHeader = memo(function ChatHeader({
       shortcutLabel: null,
       state: filesState,
       disabled: !workspaceFilesAvailable,
-      disabledReason: "Workspace files are unavailable until this thread has an active project.",
+      disabledReason:
+        activeProjectKind === "scratch"
+          ? "Workspace files are available after the first message creates the thread's folder."
+          : "Workspace files are unavailable because the project's folder is missing.",
       onToggle: onToggleFiles,
     },
     {
@@ -228,11 +281,20 @@ export const ChatHeader = memo(function ChatHeader({
     shortcutLabel: terminalToggleShortcutLabel,
     state: terminalOpen ? "active" : "closed",
     disabled: !terminalAvailable,
-    disabledReason: "Terminal is unavailable until this thread has an active project.",
+    disabledReason:
+      activeProjectKind === "scratch"
+        ? "Terminal is available after the first message creates the thread's folder."
+        : "Terminal is unavailable because the project's folder is missing.",
     onToggle: onToggleTerminal,
   };
 
   const WorkflowIcon = workflowType ? WORKFLOW_TYPE_ICON[workflowType] : null;
+  const handleProjectContextMenu = (event: MouseEvent<HTMLElement>) => {
+    if (!activeProjectCwd || activeProjectKind === "scratch") return;
+    event.preventDefault();
+    event.stopPropagation();
+    void showLocalPathContextMenu(activeProjectCwd, { x: event.clientX, y: event.clientY });
+  };
 
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
@@ -240,9 +302,20 @@ export const ChatHeader = memo(function ChatHeader({
         aria-label="Breadcrumb"
         className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden"
       >
-        {activeProjectName && onNewThreadInProject && onOpenProjectSettings ? (
+        {projectPicker ? (
+          <ProjectPicker
+            projects={projectPicker.projects}
+            selection={projectPicker.selection}
+            onSelect={projectPicker.onSelect}
+            disabled={projectPicker.disabled ?? false}
+            allowNone
+            trigger="crumb"
+            onContextMenu={handleProjectContextMenu}
+          />
+        ) : activeProjectName && onNewThreadInProject && onOpenProjectSettings ? (
           <Menu>
             <MenuTrigger
+              onContextMenu={handleProjectContextMenu}
               render={
                 <button
                   type="button"
@@ -254,6 +327,7 @@ export const ChatHeader = memo(function ChatHeader({
               {activeProjectId ? (
                 <ProjectIcon
                   projectId={activeProjectId}
+                  kind={activeProjectKind}
                   name={activeProjectName}
                   icon={activeProjectIcon}
                   className="size-4 shrink-0"
@@ -270,13 +344,23 @@ export const ChatHeader = memo(function ChatHeader({
                 <SettingsIcon aria-hidden="true" />
                 Project settings
               </MenuItem>
+              {onOpenProjectActions ? (
+                <MenuItem onClick={onOpenProjectActions}>
+                  <PlayIcon aria-hidden="true" />
+                  Manage actions
+                </MenuItem>
+              ) : null}
             </MenuPopup>
           </Menu>
         ) : activeProjectName ? (
-          <span className="flex min-w-0 shrink items-center gap-1.5 px-1 text-ui text-muted-foreground">
+          <span
+            className="flex min-w-0 shrink items-center gap-1.5 px-1 text-ui text-muted-foreground"
+            onContextMenu={handleProjectContextMenu}
+          >
             {activeProjectId ? (
               <ProjectIcon
                 projectId={activeProjectId}
+                kind={activeProjectKind}
                 name={activeProjectName}
                 icon={activeProjectIcon}
                 className="size-4 shrink-0"
@@ -285,7 +369,7 @@ export const ChatHeader = memo(function ChatHeader({
             <span className="truncate">{activeProjectName}</span>
           </span>
         ) : null}
-        {activeProjectName ? CRUMB_SEPARATOR : null}
+        {projectPicker || activeProjectName ? CRUMB_SEPARATOR : null}
         {workflowTitle && onOpenWorkflow ? (
           <>
             <button
@@ -329,6 +413,7 @@ export const ChatHeader = memo(function ChatHeader({
             {activeThreadTitle}
           </h2>
         )}
+        <ScheduledOriginBadge origin={scheduledOrigin} />
         {nativeGoalSummary && (
           <span
             className="max-w-64 truncate text-xs text-muted-foreground"
@@ -337,7 +422,13 @@ export const ChatHeader = memo(function ChatHeader({
             {nativeGoalSummary}
           </span>
         )}
-        {isServerThread ? <ThreadPrLinks threadId={activeThreadId} /> : null}
+        {isServerThread ? (
+          <>
+            <ThreadPrLinks threadId={activeThreadId} />
+            <ThreadAutomationsButton threadId={activeThreadId} />
+            <ThreadSettlementControl threadId={activeThreadId} />
+          </>
+        ) : null}
         {threadStatus ? (
           <ThreadStatusPillBadge
             pill={threadStatus}
@@ -357,6 +448,11 @@ export const ChatHeader = memo(function ChatHeader({
           threadId={activeThreadId}
           className="@xl/header-actions:hidden"
         />
+        {runtimeControls ? (
+          <div data-slot="header-runtime-controls" className="flex shrink-0 items-center gap-1">
+            {runtimeControls}
+          </div>
+        ) : null}
       </nav>
       <div className="flex shrink-0 items-center justify-end gap-2">
         {activeProjectScripts && (
@@ -375,6 +471,7 @@ export const ChatHeader = memo(function ChatHeader({
             keybindings={keybindings}
             availableEditors={availableEditors}
             openInCwd={openInCwd}
+            enableShortcut={openInShortcutEnabled}
           />
         )}
         {activeProjectName && (
@@ -387,6 +484,39 @@ export const ChatHeader = memo(function ChatHeader({
         {activeProjectName ? (
           <Separator orientation="vertical" className="mx-0.5 h-4 self-center" />
         ) : null}
+        <div
+          role="group"
+          aria-label="Conversation view"
+          className="flex items-center gap-px rounded-lg border border-border/70 bg-muted/40 p-0.5"
+        >
+          {navigationHostRef ? (
+            <span ref={navigationHostRef} className="contents" data-conversation-navigation-host />
+          ) : null}
+          <Menu>
+            <Tooltip>
+              <MenuTrigger
+                render={
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label="Display density"
+                        className="text-muted-foreground"
+                      />
+                    }
+                  />
+                }
+              >
+                <SlidersHorizontalIcon aria-hidden="true" className="size-4" />
+              </MenuTrigger>
+              <TooltipPopup side="bottom">Display density</TooltipPopup>
+            </Tooltip>
+            <DisplayDensityMenu />
+          </Menu>
+        </div>
+        <Separator orientation="vertical" className="mx-0.5 h-4 self-center" />
         <div className="hidden items-center gap-2 @xl/header-actions:flex">
           <div
             role="group"
@@ -401,25 +531,32 @@ export const ChatHeader = memo(function ChatHeader({
           <PanelToggle panel={terminalPanel} />
         </div>
         <Menu>
-          <MenuTrigger
-            render={
-              <Button
-                type="button"
-                size="icon-sm"
-                variant="ghost"
-                aria-label="Panels"
-                className="relative text-muted-foreground @xl/header-actions:hidden"
-              />
-            }
-          >
-            <PanelRightIcon aria-hidden="true" className="size-4" />
-            {liveAgentCount > 0 ? (
-              <span
-                aria-hidden="true"
-                className="absolute -top-1 -right-1 size-2 rounded-full bg-info"
-              />
-            ) : null}
-          </MenuTrigger>
+          <Tooltip>
+            <MenuTrigger
+              render={
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label="Panels"
+                      className="relative text-muted-foreground @xl/header-actions:hidden"
+                    />
+                  }
+                />
+              }
+            >
+              <PanelRightIcon aria-hidden="true" className="size-4" />
+              {liveAgentCount > 0 ? (
+                <span
+                  aria-hidden="true"
+                  className="absolute -top-1 -right-1 size-2 rounded-full bg-info"
+                />
+              ) : null}
+            </MenuTrigger>
+            <TooltipPopup side="bottom">Panels</TooltipPopup>
+          </Tooltip>
           <MenuPopup side="bottom" align="end" className="min-w-52">
             <MenuGroup>
               <MenuGroupLabel>Side panel</MenuGroupLabel>
@@ -435,36 +572,38 @@ export const ChatHeader = memo(function ChatHeader({
           </MenuPopup>
         </Menu>
         <Menu>
-          <MenuTrigger
-            render={
-              <Button
-                type="button"
-                size="icon-sm"
-                variant="ghost"
-                aria-label="Thread actions"
-                title="Thread actions"
-                className="text-muted-foreground"
-              />
-            }
-          >
-            <EllipsisIcon aria-hidden="true" className="size-4" />
-          </MenuTrigger>
+          <Tooltip>
+            <MenuTrigger
+              render={
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label="Thread actions"
+                      className="text-muted-foreground"
+                    />
+                  }
+                />
+              }
+            >
+              <EllipsisIcon aria-hidden="true" className="size-4" />
+            </MenuTrigger>
+            <TooltipPopup side="bottom">Thread actions</TooltipPopup>
+          </Tooltip>
           <MenuPopup side="bottom" align="end">
-            {threadActionItems.map((item, index) => (
+            {threadActionItems.map((item) => (
               <ThreadActionMenuEntry
                 key={item.id}
                 item={item}
-                separatorBefore={
-                  item.destructive === true &&
-                  index > 0 &&
-                  threadActionItems[index - 1]?.destructive !== true
-                }
-                onSelect={() => {
-                  if (item.id === "rename") {
+                separatorBefore={item.separatorBefore === true}
+                onSelect={(id) => {
+                  if (id === "rename") {
                     setRenamingThreadId(activeThreadId);
                     return;
                   }
-                  onThreadAction(item.id);
+                  onThreadAction(id);
                 }}
               />
             ))}
@@ -474,6 +613,31 @@ export const ChatHeader = memo(function ChatHeader({
     </div>
   );
 });
+
+function DisplayDensityMenu() {
+  const profile = useAppSettingsSelector(getDisplayProfile);
+  return (
+    <MenuPopup side="bottom" align="end">
+      <MenuGroup>
+        <MenuGroupLabel>Display density{profile === "custom" ? " · Custom" : ""}</MenuGroupLabel>
+        {profile === "custom" ? (
+          <p className="max-w-56 px-2 py-1 text-xs text-muted-foreground">
+            {DISPLAY_PROFILE_CUSTOM_WARNING}
+          </p>
+        ) : null}
+        {DISPLAY_PROFILE_NAMES.map((name) => (
+          <MenuCheckboxItem
+            key={name}
+            checked={profile === name}
+            onCheckedChange={() => updateAppSettings(displayProfilePatchFor(name))}
+          >
+            {DISPLAY_PROFILE_LABELS[name]}
+          </MenuCheckboxItem>
+        ))}
+      </MenuGroup>
+    </MenuPopup>
+  );
+}
 
 function PanelToggle(props: { panel: PanelToggleSpec; variant?: "default" | "segmented" }) {
   const { panel } = props;
@@ -529,18 +693,38 @@ function PanelMenuItem(props: { panel: PanelToggleSpec }) {
 function ThreadActionMenuEntry(props: {
   item: ThreadActionMenuItem;
   separatorBefore: boolean;
-  onSelect: () => void;
+  onSelect: (id: ThreadActionId) => void;
 }) {
   return (
     <>
       {props.separatorBefore ? <MenuSeparator /> : null}
-      <MenuItem
-        disabled={props.item.disabled}
-        variant={props.item.destructive ? "destructive" : "default"}
-        onClick={props.onSelect}
-      >
-        {props.item.label}
-      </MenuItem>
+      {props.item.children ? (
+        <MenuSub>
+          <MenuSubTrigger disabled={props.item.disabled}>
+            <ContextMenuIcon name={props.item.icon} />
+            {props.item.label}
+          </MenuSubTrigger>
+          <MenuSubPopup>
+            {props.item.children.map((item) => (
+              <ThreadActionMenuEntry
+                key={item.id}
+                item={item}
+                separatorBefore={item.separatorBefore === true}
+                onSelect={props.onSelect}
+              />
+            ))}
+          </MenuSubPopup>
+        </MenuSub>
+      ) : (
+        <MenuItem
+          disabled={props.item.disabled}
+          variant={props.item.destructive ? "destructive" : "default"}
+          onClick={() => props.onSelect(props.item.id)}
+        >
+          <ContextMenuIcon name={props.item.icon} />
+          {props.item.label}
+        </MenuItem>
+      )}
     </>
   );
 }

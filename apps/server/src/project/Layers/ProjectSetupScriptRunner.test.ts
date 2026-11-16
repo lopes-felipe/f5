@@ -82,6 +82,9 @@ function makeReadModel(withSetupScript: boolean): OrchestrationReadModel {
 function makeTerminalManagerMocks() {
   const open = vi.fn((input) =>
     Effect.succeed({
+      epoch: "test",
+      generation: 1,
+      revision: 1,
       threadId: input.threadId,
       terminalId: input.terminalId ?? "default",
       cwd: input.cwd,
@@ -96,12 +99,16 @@ function makeTerminalManagerMocks() {
   const write = vi.fn(() => Effect.void);
 
   const terminalManager: TerminalManagerShape = {
+    snapshot: () => Effect.succeed(null),
     open,
     write,
     resize: () => Effect.void,
     clear: () => Effect.void,
     restart: (input) =>
       Effect.succeed({
+        epoch: "test",
+        generation: 1,
+        revision: 1,
         threadId: input.threadId,
         terminalId: input.terminalId ?? "default",
         cwd: input.cwd,
@@ -258,6 +265,7 @@ describe("ProjectSetupScriptRunnerLive", () => {
       cwd: "/repo/project/.worktrees/thread-1",
     });
     expect(terminal.open).toHaveBeenCalledWith({
+      stopOnSettle: false,
       threadId: ThreadId.makeUnsafe("thread-1"),
       terminalId: "setup-setup",
       cwd: "/repo/project/.worktrees/thread-1",

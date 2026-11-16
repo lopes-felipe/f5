@@ -12,11 +12,12 @@ import { emptyGitProjectRepositories } from "../testDoubles";
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Stream } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { ForgeAccounts, type ForgeAccountsShape } from "../../sourceControl/accountRouting.ts";
 import { makeGitManager } from "./GitManager.ts";
+import { GitWorkspaceSwitch } from "../workspaceSwitch.ts";
 import { GitCommandError, GitHubCliError } from "../Errors.ts";
 import { GitCore, type GitCoreShape, type GitStatusDetails } from "../Services/GitCore.ts";
 import { GitHubCli } from "../Services/GitHubCli.ts";
@@ -179,37 +180,126 @@ describe("GitManager unit", () => {
     expect(github.calls).toEqual([]);
   });
 
-  it("adds current pull-request metadata to Git status", async () => {
-    const { manager } = await makeManager({
+  it.each([true, false])(
+    "keeps branch PR metadata with includeRemote=%s",
+    async (includeRemote) => {
+      const { manager, git } = await makeManager({
+        gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
+        gitHub: {
+          pullRequests: [
+            {
+              number: 42,
+              title: "Fast tests",
+              url: "https://github.com/t3tools/f5/pull/42",
+              baseRefName: "main",
+              headRefName: "feature/test",
+              headRefOid: "abc123",
+              state: "open",
+            },
+          ],
+        },
+      });
+
+      const status = await Effect.runPromise(manager.status({ cwd, includeRemote }));
+      expect(git.calls.statusDetails).toHaveLength(1);
+      expect(git.calls.inspectCheckoutIdentity).toHaveLength(1);
+
+      expect(status.pr).toEqual({
+        number: 42,
+        title: "Fast tests",
+        url: "https://github.com/t3tools/f5/pull/42",
+        baseBranch: "main",
+        headBranch: "feature/test",
+        headOid: "abc123",
+        state: "open",
+      });
+      expect(status.changeRequest).toMatchObject({
+        id: "42",
+        provider: { kind: "github", remoteName: "origin" },
+      });
+    },
+  );
+  it("skips forge lookups only for an explicit interim scan", async () => {
+    const { manager, github, git } = await makeManager({
       gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
+    });
+    const result = await Effect.runPromise(
+      manager.status({ cwd, includeRemote: false, includePullRequest: false }),
+    );
+    expect(result.branch).toBe(cleanStatus.branch);
+    expect(result.pr).toBeNull();
+    expect(github.calls).toEqual([]);
+    expect(git.calls.statusDetails).toHaveLength(1);
+    expect(git.calls.inspectCheckoutIdentity).toHaveLength(0);
+  });
+  it("rejects remote metadata when the checked-out branch changes during the lookup", async () => {
+    let reads = 0;
+    const { manager } = await makeManager({
+      gitCore: {
+        statusDetails: () =>
+          Effect.succeed({
+            ...cleanStatus,
+            branch: reads++ === 0 ? cleanStatus.branch : "next-branch",
+          }),
+        inspectCheckoutIdentity: () =>
+          Effect.succeed({ canonicalRoot: cwd, commonDir: cwd, branch: "next-branch" }),
+      },
       gitHub: {
         pullRequests: [
           {
             number: 42,
-            title: "Fast tests",
+            title: "Old branch",
             url: "https://github.com/t3tools/f5/pull/42",
             baseRefName: "main",
-            headRefName: "feature/test",
+            headRefName: cleanStatus.branch!,
+            headRefOid: "abc",
             state: "open",
           },
         ],
       },
     });
+    const result = await Effect.runPromise(manager.status({ cwd }));
+    expect(result.branch).toBe("next-branch");
+    expect(result.pr).toBeNull();
+  });
 
-    const status = await Effect.runPromise(manager.status({ cwd }));
-
-    expect(status.pr).toEqual({
+  it("announces a pull request once when status sees it change state", async () => {
+    const pr = {
       number: 42,
       title: "Fast tests",
       url: "https://github.com/t3tools/f5/pull/42",
-      baseBranch: "main",
-      headBranch: "feature/test",
-      state: "open",
+      baseRefName: "main",
+      headRefName: "feature/test",
+      headRefOid: "abc123",
+      state: "open" as "open" | "merged",
+    };
+    const { manager } = await makeManager({
+      gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
+      gitHub: {
+        get pullRequests() {
+          return [{ ...pr }];
+        },
+      },
     });
-    expect(status.changeRequest).toMatchObject({
-      id: "42",
-      provider: { kind: "github", remoteName: "origin" },
-    });
+    const seen = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const changes: string[] = [];
+          yield* Stream.runForEach(manager.pullRequestStateChanges!, (url) =>
+            Effect.sync(() => changes.push(url)),
+          ).pipe(Effect.forkScoped);
+          yield* Effect.sleep("10 millis");
+          yield* manager.status({ cwd });
+          pr.state = "merged";
+          yield* manager.status({ cwd });
+          yield* manager.status({ cwd });
+          yield* Effect.sleep("10 millis");
+          return changes;
+        }),
+      ),
+    );
+    // An open first read is not news; the merge is, once.
+    expect([...seen]).toEqual(["https://github.com/t3tools/f5/pull/42"]);
   });
 
   it("fails closed instead of dispatching GitHub operations for unsupported remotes", async () => {
@@ -259,6 +349,51 @@ describe("GitManager unit", () => {
     expect(status.branch).toBe("feature/test");
   });
 
+  it("keeps the last known PR through a deferred lookup and clears it on a found-none read", async () => {
+    const github = makeFakeGitHubCli();
+    const pr = {
+      number: 42,
+      title: "Fast tests",
+      url: "https://github.com/t3tools/f5/pull/42",
+      baseRefName: "main",
+      headRefName: "feature/test",
+      state: "open" as const,
+    };
+    let mode: "found" | "rate-limited" | "none" = "found";
+    const flakyGithub = {
+      ...github.service,
+      listOpenPullRequests: () =>
+        mode === "rate-limited"
+          ? Effect.fail(
+              new GitHubCliError({
+                operation: "schedule",
+                kind: "rate_limited",
+                detail: "GitHub requests are waiting for the retry window.",
+              }),
+            )
+          : Effect.succeed(mode === "found" ? [pr] : []),
+    };
+    const git = makeFakeGitCore({ statusDetails: () => Effect.succeed(cleanStatus) });
+    const layer = Layer.mergeAll(
+      Layer.succeed(GitCore, git.service),
+      Layer.succeed(GitHubCli, flakyGithub),
+      Layer.succeed(TextGeneration, makeFakeTextGeneration()),
+      Layer.succeed(ServerConfig, makeServerConfig()),
+      ServerSettingsService.layerTest(),
+      emptyGitProjectRepositories,
+      NodeServices.layer,
+    );
+    const manager = await Effect.runPromise(makeGitManager.pipe(Effect.provide(layer)));
+
+    expect((await Effect.runPromise(manager.status({ cwd }))).pr?.number).toBe(42);
+    mode = "rate-limited";
+    expect((await Effect.runPromise(manager.status({ cwd }))).pr?.number).toBe(42);
+    mode = "none";
+    expect((await Effect.runPromise(manager.status({ cwd }))).pr).toBeNull();
+    mode = "rate-limited";
+    expect((await Effect.runPromise(manager.status({ cwd }))).pr).toBeNull();
+  });
+
   it("skips commit cleanly when no staged context exists", async () => {
     const { manager, git } = await makeManager({
       gitCore: {
@@ -289,7 +424,9 @@ describe("GitManager unit", () => {
       commitSha: "abc123",
       subject: "Generated commit",
     });
-    expect(git.calls.commit).toEqual([[cwd, "Generated commit", "Generated body"]]);
+    expect(git.calls.commitPrepared.map((args) => args.slice(0, 3))).toEqual([
+      [cwd, "Generated commit", "Generated body"],
+    ]);
   });
 
   it("forwards selected files and preserves a custom subject/body", async () => {
@@ -311,7 +448,41 @@ describe("GitManager unit", () => {
     );
 
     expect(git.calls.prepareCommitContext).toEqual([[cwd, ["src/selected.ts"]]]);
-    expect(git.calls.commit).toEqual([[cwd, "Custom subject", "Custom body"]]);
+    expect(git.calls.commitPrepared.map((args) => args.slice(0, 3))).toEqual([
+      [cwd, "Custom subject", "Custom body"],
+    ]);
+  });
+
+  it("retains the suggestion and stops the entire action when commit context changed", async () => {
+    const { manager, git, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(dirtyStatus),
+        prepareCommitContext: () =>
+          Effect.succeed({ stagedSummary: "selected", stagedPatch: "+selected" }),
+        commitPrepared: () => Effect.succeed({ status: "context_changed" }),
+      },
+    });
+    const result = await Effect.runPromise(
+      manager.runStackedAction({
+        cwd,
+        action: "commit_push_pr",
+        featureBranch: true,
+        commitMessage: "Keep this suggestion\n\nThe full body remains available.",
+      }),
+    );
+    expect(result.commit).toEqual({
+      status: "context_changed",
+      subject: "Keep this suggestion",
+      suggestedMessage: "Keep this suggestion\n\nThe full body remains available.",
+    });
+    expect(result.branch.status).toBe("skipped_not_requested");
+    expect(result.push.status).toBe("skipped_not_requested");
+    expect(result.pr.status).toBe("skipped_not_requested");
+    expect(git.calls.commit).toHaveLength(0);
+    expect(git.calls.createBranch).toHaveLength(0);
+    expect(git.calls.checkoutBranch).toHaveLength(0);
+    expect(git.calls.pushCurrentBranch).toHaveLength(0);
+    expect(github.calls).toHaveLength(0);
   });
 
   it("creates and checks out a collision-safe feature branch before committing", async () => {
@@ -330,10 +501,47 @@ describe("GitManager unit", () => {
     );
 
     expect(result.branch).toEqual({ status: "created", name: "feature/generated-commit-2" });
-    expect(git.calls.createBranch).toEqual([[{ cwd, branch: "feature/generated-commit-2" }]]);
-    expect(git.calls.checkoutBranch).toEqual([[{ cwd, branch: "feature/generated-commit-2" }]]);
+    expect(git.calls.createBranch).toHaveLength(0);
+    expect(git.calls.checkoutBranch).toHaveLength(0);
+    expect(git.calls.commitPrepared[0]?.[4]).toEqual({ newBranch: "feature/generated-commit-2" });
     expect(git.calls.pushCurrentBranch).toEqual([[cwd, "feature/generated-commit-2"]]);
   });
+
+  it.each(["created", "context_changed"] as const)(
+    "uses the workspace transition before a generated-branch commit (%s)",
+    async (status) => {
+      const order: string[] = [];
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(dirtyStatus),
+          prepareCommitContext: () =>
+            Effect.succeed({ stagedSummary: "change", stagedPatch: "+change" }),
+          commitPrepared: () =>
+            Effect.sync(() => {
+              order.push("commit");
+              return status === "created" ? { status, commitSha: "a".repeat(40) } : { status };
+            }),
+        },
+      });
+      const switched: unknown[] = [];
+      const result = await Effect.runPromise(
+        manager.runStackedAction({ cwd, action: "commit_push", featureBranch: true }).pipe(
+          Effect.provideService(GitWorkspaceSwitch, (input) =>
+            Effect.sync(() => {
+              order.push("switch");
+              switched.push(input);
+            }),
+          ),
+        ),
+      );
+      expect(order).toEqual(["switch", "commit"]);
+      expect(switched).toEqual([{ cwd, branch: "feature/generated-commit", create: true }]);
+      expect(git.calls.commitPrepared[0]?.[4]).toBeUndefined();
+      expect(git.calls.createBranch).toHaveLength(0);
+      expect(result.branch).toEqual({ status: "created", name: "feature/generated-commit" });
+      if (status === "context_changed") expect(git.calls.pushCurrentBranch).toHaveLength(0);
+    },
+  );
 
   it("rejects push actions from detached HEAD before mutating Git", async () => {
     const { manager, git } = await makeManager({
@@ -399,6 +607,61 @@ describe("GitManager unit", () => {
     expect(git.calls.readRangeContext).toEqual([[cwd, "main"]]);
   });
 
+  it("reports a created PR when its follow-up lookup fails", async () => {
+    const { manager, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        prepareCommitContext: () => Effect.succeed(null),
+      },
+    });
+    const lookup = vi
+      .spyOn(github.service, "listOpenPullRequests")
+      .mockReturnValueOnce(Effect.succeed([]))
+      .mockReturnValueOnce(
+        Effect.fail(
+          new GitHubCliError({
+            operation: "listOpenPullRequests",
+            detail: "GitHub API rate limit exceeded.",
+          }),
+        ),
+      );
+
+    const result = await Effect.runPromise(
+      manager.runStackedAction({ cwd, action: "commit_push_pr" }),
+    );
+
+    expect(github.calls).toContain("createPullRequest:main:feature/test");
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(result.pr).toEqual({
+      status: "created",
+      baseBranch: "main",
+      headBranch: "feature/test",
+      title: "Generated pull request",
+    });
+  });
+
+  it("fails before creating a PR when the initial lookup fails", async () => {
+    const { manager, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        prepareCommitContext: () => Effect.succeed(null),
+      },
+    });
+    vi.spyOn(github.service, "listOpenPullRequests").mockReturnValue(
+      Effect.fail(
+        new GitHubCliError({
+          operation: "listOpenPullRequests",
+          detail: "GitHub API rate limit exceeded.",
+        }),
+      ),
+    );
+
+    await expect(
+      Effect.runPromise(manager.runStackedAction({ cwd, action: "commit_push_pr" })),
+    ).rejects.toThrow("rate limit");
+    expect(github.calls.some((call) => call.startsWith("createPullRequest:"))).toBe(false);
+  });
+
   it("normalizes number references when resolving a pull request", async () => {
     const { manager, github } = await makeManager();
 
@@ -408,8 +671,8 @@ describe("GitManager unit", () => {
     expect(github.calls).toContain("getPullRequest:42");
   });
 
-  it("prepares a local PR thread through the GitHub checkout boundary", async () => {
-    const { manager, github } = await makeManager({
+  it("prepares a local PR thread through safe Git checkout", async () => {
+    const { manager, github, git } = await makeManager({
       gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
     });
 
@@ -418,8 +681,243 @@ describe("GitManager unit", () => {
     );
 
     expect(result).toMatchObject({ branch: "feature/test", worktreePath: null });
-    expect(github.calls).toContain("checkoutPullRequest:42");
+    expect(github.calls).not.toContain("checkoutPullRequest:42");
+    expect(git.calls.checkoutBranch).toHaveLength(1);
   });
+
+  it("preserves an existing branch without tracking when the provider has no head OID", async () => {
+    const { manager, git } = await makeManager({
+      gitHub: {
+        pullRequest: {
+          number: 42,
+          title: "PR",
+          url: "https://github.com/t3tools/f5/pull/42",
+          baseRefName: "main",
+          headRefName: "feature/test",
+          headRefOid: null,
+        },
+      },
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+        readDefaultBranch: () => Effect.succeed("main"),
+        resolveCommit: () => Effect.succeed("b".repeat(40)),
+      },
+    });
+    const result = await Effect.runPromise(
+      manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+    );
+    expect(result.isOnPullRequestHead).toBe(false);
+    expect(git.calls.checkoutBranch).toHaveLength(1);
+    expect(git.calls.fastForwardTo).toHaveLength(0);
+    expect(git.calls.setBranchUpstream).toHaveLength(0);
+    expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+  });
+
+  it.each(["default", "tracking", "commit"])(
+    "does not fall back to fetching when PR branch safety metadata fails (%s)",
+    async (failedRead) => {
+      const failure = Effect.fail(
+        new GitCommandError({
+          operation: "read",
+          cwd,
+          command: "git config",
+          detail: "metadata unavailable",
+        }),
+      );
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+          resolveCommit: () => (failedRead === "commit" ? failure : Effect.succeed("b".repeat(40))),
+          readDefaultBranch: () => (failedRead === "default" ? failure : Effect.succeed("main")),
+          readConfigValue: (_cwd, key) =>
+            key === "branch.feature/test.remote" && failedRead === "tracking"
+              ? failure
+              : Effect.succeed(null),
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: "feature/test",
+            headRefOid: "a".repeat(40),
+          },
+        },
+      });
+      await expect(
+        Effect.runPromise(
+          manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+        ),
+      ).rejects.toThrow("metadata unavailable");
+      expect(git.calls.fetchPullRequestBranch).toHaveLength(0);
+      expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+      expect(git.calls.checkoutBranch).toHaveLength(0);
+      expect(git.calls.fastForwardTo).toHaveLength(0);
+    },
+  );
+
+  it.each([false, true])(
+    "confirms a local checkout only after a successful fast-forward (%s)",
+    async (fails) => {
+      const head = "a".repeat(40);
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          resolveCommit: () => Effect.succeed(head),
+          fastForwardTo: () =>
+            fails
+              ? Effect.fail(
+                  new GitCommandError({
+                    operation: "merge",
+                    cwd,
+                    command: "git merge --ff-only",
+                    detail: "local commits diverged",
+                  }),
+                )
+              : Effect.void,
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: "feature/test",
+            headRefOid: head,
+          },
+        },
+      });
+      const result = await Effect.runPromise(
+        manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+      );
+      expect(result.isOnPullRequestHead).toBe(!fails);
+      expect(git.calls.fastForwardTo).toEqual([[cwd, head, "feature/test"]]);
+    },
+  );
+
+  it.each([
+    { branch: "feature/test", isCrossRepository: true, defaultBranch: "main" },
+    { branch: "main", isCrossRepository: true, defaultBranch: "main" },
+    { branch: "main", isCrossRepository: false, defaultBranch: "main" },
+    { branch: "release", isCrossRepository: false, defaultBranch: "release" },
+  ])(
+    "preserves a colliding local PR branch (%j)",
+    async ({ branch, isCrossRepository, defaultBranch }) => {
+      const { manager, git, github } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          listLocalBranchNames: () => Effect.succeed([branch]),
+          readDefaultBranch: () => Effect.succeed(defaultBranch),
+          resolveCommit: () => Effect.succeed("b".repeat(40)),
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "Updated PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: branch,
+            headRefOid: "a".repeat(40),
+            isCrossRepository,
+            headRepositoryNameWithOwner: "contributor/f5",
+            headRepositoryOwnerLogin: "contributor",
+          },
+        },
+      });
+      await expect(
+        Effect.runPromise(
+          manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+        ),
+      ).rejects.toThrow("collides with a pull request head");
+      expect(git.calls.checkoutBranch).toHaveLength(0);
+      expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+      expect(git.calls.fastForwardTo).toHaveLength(0);
+      expect(git.calls.setBranchUpstream).toHaveLength(0);
+      expect(github.calls).not.toContain("checkoutPullRequest:42");
+    },
+  );
+
+  it("confirms an unambiguous abbreviated provider head", async () => {
+    const head = "a".repeat(40);
+    const { manager, git } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        resolveCommit: () => Effect.succeed(head),
+        listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+      },
+      gitHub: {
+        pullRequest: {
+          number: 42,
+          title: "PR",
+          url: "https://github.com/t3tools/f5/pull/42",
+          baseRefName: "main",
+          headRefName: "feature/test",
+          headRefOid: head.slice(0, 12),
+        },
+      },
+    });
+    const result = await Effect.runPromise(
+      manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+    );
+    expect(result.isOnPullRequestHead).toBe(true);
+    expect(git.calls.fastForwardTo).toEqual([[cwd, head, "feature/test"]]);
+    expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+    expect(git.calls.fetchPullRequestBranch).toHaveLength(0);
+  });
+
+  it.each([true, false])(
+    "refreshes an existing PR branch only with matching tracking (%s)",
+    async (tracksHead) => {
+      const head = "a".repeat(40);
+      let advanced = false;
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+          readDefaultBranch: () => Effect.succeed("main"),
+          readConfigValue: (_cwd, key) =>
+            Effect.succeed(
+              key === "branch.feature/test.remote"
+                ? tracksHead
+                  ? "origin"
+                  : "other"
+                : key === "branch.feature/test.merge"
+                  ? "refs/heads/feature/test"
+                  : null,
+            ),
+          resolveCommit: (_cwd, ref) =>
+            Effect.succeed(ref === head || advanced ? head : "b".repeat(40)),
+          fastForwardTo: () =>
+            Effect.sync(() => {
+              advanced = true;
+            }),
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: "feature/test",
+            headRefOid: head,
+          },
+        },
+      });
+      const checkout = Effect.runPromise(
+        manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+      );
+      if (tracksHead) expect((await checkout).isOnPullRequestHead).toBe(true);
+      else {
+        await expect(checkout).rejects.toThrow("does not track");
+        expect(git.calls.checkoutBranch).toHaveLength(0);
+        expect(git.calls.fastForwardTo).toHaveLength(0);
+      }
+      expect(git.calls.setBranchUpstream).toHaveLength(0);
+    },
+  );
 
   it("materializes a PR branch and creates a dedicated worktree", async () => {
     const worktreePath = "/tmp/f5-pr-worktree";
@@ -438,9 +936,105 @@ describe("GitManager unit", () => {
 
     expect(result).toMatchObject({ branch: "feature/test", worktreePath });
     expect(git.calls.fetchPullRequestBranch).toEqual([
-      [{ cwd, prNumber: 42, branch: "feature/test" }],
+      [{ cwd, prNumber: 42, branch: "feature/test", preserveExisting: true }],
     ]);
     expect(git.calls.createWorktree).toHaveLength(1);
+  });
+
+  it.each([
+    ["an unrelated worktree that shares the fork head name", "main", 0],
+    ["the fork PR's own worktree", "t3code/pr-42/main", 1],
+  ] as const)(
+    "configures tracking only when reusing %s",
+    async (_label, branchName, upstreamWrites) => {
+      const worktreePath = "/tmp/f5-existing-main-worktree";
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed({ ...cleanStatus, branch: branchName }),
+          listBranches: () =>
+            Effect.succeed({
+              branches: [
+                {
+                  name: branchName,
+                  isRemote: false,
+                  current: false,
+                  isDefault: false,
+                  worktreePath,
+                },
+              ],
+              isRepo: true,
+              hasOriginRemote: true,
+            }),
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "Fork PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: "main",
+            isCrossRepository: true,
+            headRepositoryNameWithOwner: "contributor/f5",
+            headRepositoryOwnerLogin: "contributor",
+          },
+        },
+      });
+
+      const result = await Effect.runPromise(
+        manager.preparePullRequestThread({ cwd, reference: "42", mode: "worktree" }),
+      );
+
+      expect(result).toMatchObject({ branch: "t3code/pr-42/main", worktreePath });
+      expect(git.calls.setBranchUpstream).toHaveLength(upstreamWrites);
+      expect(git.calls.fetchPullRequestBranch).toHaveLength(0);
+      expect(git.calls.createWorktree).toHaveLength(0);
+    },
+  );
+
+  it("skips the project's setup script when the caller opts out", async () => {
+    const projectId = ProjectId.makeUnsafe("setup-project");
+    const prepare = (runSetupScript?: boolean) =>
+      makeManager({
+        projects: [
+          {
+            projectId,
+            title: "Setup project",
+            workspaceRoot: cwd,
+            defaultModel: null,
+            scripts: [
+              {
+                id: "setup",
+                name: "Setup",
+                command: "bun install",
+                icon: "play",
+                runOnWorktreeCreate: true,
+              },
+            ],
+            createdAt: "2026-09-29T00:00:00Z",
+            updatedAt: "2026-09-29T00:00:00Z",
+            deletedAt: null,
+          },
+        ],
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          listBranches: () => Effect.succeed({ branches: [], isRepo: true, hasOriginRemote: true }),
+          createWorktree: () =>
+            Effect.succeed({ worktree: { path: "/tmp/f5-pr-worktree", branch: "feature/test" } }),
+        },
+      }).then(async ({ manager, git }) => {
+        await Effect.runPromise(
+          manager.preparePullRequestThread({
+            cwd,
+            reference: "42",
+            mode: "worktree",
+            ...(runSetupScript === undefined ? {} : { runSetupScript }),
+          }),
+        );
+        return (git.calls.createWorktree[0]![0] as { preparation?: unknown }).preparation;
+      });
+
+    expect(await prepare()).toMatchObject({ runSetupScript: true, setupIdentity: "bun install" });
+    expect(await prepare(false)).toMatchObject({ runSetupScript: false, setupIdentity: null });
   });
 
   it("rejects a stale expected PR head before checkout or fetch", async () => {
@@ -494,7 +1088,8 @@ it("does not write tracking config if the index locks after PR checkout", async 
     manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }).pipe(Effect.result),
   );
   expect(result._tag).toBe("Failure");
-  expect(github.calls).toContain("checkoutPullRequest:42");
+  expect(github.calls).not.toContain("checkoutPullRequest:42");
+  expect(git.calls.checkoutBranch).toHaveLength(1);
   expect(git.calls.setBranchUpstream).toEqual([]);
 });
 

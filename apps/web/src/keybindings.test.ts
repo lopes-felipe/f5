@@ -19,6 +19,7 @@ import {
   isTerminalNewShortcut,
   isTerminalSplitShortcut,
   isTerminalToggleShortcut,
+  modelFavoriteJumpIndexFromCommand,
   modelPickerJumpCommandForIndex,
   modelPickerJumpIndexFromCommand,
   resolveShortcutBinding,
@@ -26,6 +27,7 @@ import {
   shortcutLabelForCommand,
   terminalDeleteShortcutData,
   terminalNavigationShortcutData,
+  terminalScrollbackShortcut,
   type ShortcutEventLike,
 } from "./keybindings";
 
@@ -464,6 +466,47 @@ describe("steered working ribbon", () => {
   });
 });
 
+describe("expanded composer", () => {
+  const bindings = compile([
+    { shortcut: { ...modShortcut("escape"), modKey: false }, command: "thread.stop" },
+    { shortcut: modShortcut("escape"), command: "chat.new" },
+  ]);
+  const options = { platform: "MacIntel" };
+
+  function withActiveElement(insideExpandedComposer: boolean, run: () => void) {
+    vi.stubGlobal("document", {
+      activeElement: {
+        closest: (selector: string) =>
+          insideExpandedComposer && selector === '[data-composer-expanded="true"]' ? {} : null,
+      },
+    });
+    try {
+      run();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("resolves no binding for a bare Escape inside the composer or its popups", () => {
+    withActiveElement(true, () => {
+      assert.isNull(resolveShortcutCommand(event({ key: "Escape" }), bindings, options));
+      assert.strictEqual(
+        resolveShortcutCommand(event({ key: "Escape", metaKey: true }), bindings, options),
+        "chat.new",
+      );
+    });
+  });
+
+  it("resolves Escape as usual when focus is elsewhere", () => {
+    withActiveElement(false, () => {
+      assert.strictEqual(
+        resolveShortcutCommand(event({ key: "Escape" }), bindings, options),
+        "thread.stop",
+      );
+    });
+  });
+});
+
 describe("cross-command precedence", () => {
   it("uses when + order so a later focused rule overrides a global rule", () => {
     const keybindings = compile([
@@ -798,6 +841,48 @@ describe("terminalDeleteShortcutData", () => {
   });
 });
 
+describe("terminalScrollbackShortcut", () => {
+  it("selects all with Cmd+A on macOS and Ctrl+Shift+A elsewhere, leaving Ctrl+A to the shell", () => {
+    assert.strictEqual(
+      terminalScrollbackShortcut(event({ key: "a", metaKey: true }), "MacIntel"),
+      "select-all",
+    );
+    assert.strictEqual(
+      terminalScrollbackShortcut(event({ key: "A", ctrlKey: true, shiftKey: true }), "Linux"),
+      "select-all",
+    );
+    assert.isNull(terminalScrollbackShortcut(event({ key: "a", ctrlKey: true }), "Linux"));
+    assert.isNull(terminalScrollbackShortcut(event({ key: "a", ctrlKey: true }), "MacIntel"));
+    assert.isNull(
+      terminalScrollbackShortcut(event({ key: "a", metaKey: true, shiftKey: true }), "MacIntel"),
+    );
+  });
+
+  it("jumps to the start and latest output with the primary modifier and Shift", () => {
+    assert.strictEqual(
+      terminalScrollbackShortcut(event({ key: "Home", metaKey: true, shiftKey: true }), "MacIntel"),
+      "top",
+    );
+    assert.strictEqual(
+      terminalScrollbackShortcut(event({ key: "End", ctrlKey: true, shiftKey: true }), "Win32"),
+      "bottom",
+    );
+    assert.isNull(terminalScrollbackShortcut(event({ key: "End", ctrlKey: true }), "Win32"));
+    assert.isNull(
+      terminalScrollbackShortcut(
+        event({ key: "End", ctrlKey: true, shiftKey: true, altKey: true }),
+        "Win32",
+      ),
+    );
+    assert.isNull(
+      terminalScrollbackShortcut(
+        event({ type: "keyup", key: "End", ctrlKey: true, shiftKey: true }),
+        "Linux",
+      ),
+    );
+  });
+});
+
 describe("terminalNavigationShortcutData", () => {
   it("maps Option+Arrow on macOS to word movement", () => {
     assert.strictEqual(
@@ -911,6 +996,20 @@ describe("Phase 3 shortcut contexts", () => {
       command,
     );
   });
+  it("maps mod+U to the Usage page unless the terminal has focus", () => {
+    const pressed = event({ key: "u", metaKey: true });
+    assert.equal(
+      resolveShortcutCommand(pressed, DEFAULT_RESOLVED_KEYBINDINGS, { platform: "MacIntel" }),
+      "usage.open",
+    );
+    assert.notEqual(
+      resolveShortcutCommand(pressed, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: true },
+      }),
+      "usage.open",
+    );
+  });
   it("maps mod+/ to the shortcuts reference unless the terminal has focus", () => {
     const slash = event({ key: "/", ctrlKey: true });
     assert.equal(
@@ -966,6 +1065,173 @@ describe("Phase 3 shortcut contexts", () => {
         context: { newThreadComposer: false },
       }),
       "chat.newBackground",
+    );
+  });
+});
+
+describe("favorite model shortcuts", () => {
+  const desktop = { isElectron: true, terminalFocus: false, dialogFocus: false };
+
+  it("resolves ctrl+N to favorite N on macOS and elsewhere", () => {
+    for (const platform of ["MacIntel", "Linux", "Win32"]) {
+      assert.strictEqual(
+        resolveShortcutCommand(event({ key: "2", ctrlKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+          platform,
+          context: desktop,
+        }),
+        "model.favorite.2",
+      );
+    }
+    assert.strictEqual(modelFavoriteJumpIndexFromCommand("model.favorite.9"), 8);
+    assert.isNull(modelFavoriteJumpIndexFromCommand("modelPicker.jump.1"));
+  });
+
+  it("hands ctrl+N to the open picker's row jump off macOS", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "2", ctrlKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { ...desktop, modelPickerOpen: true },
+      }),
+      "modelPicker.jump.2",
+    );
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "2", ctrlKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        context: { ...desktop, modelPickerOpen: true },
+      }),
+    );
+  });
+
+  it("leaves ctrl+N alone in a terminal, a dialog or the web build", () => {
+    for (const context of [
+      { ...desktop, terminalFocus: true },
+      { ...desktop, dialogFocus: true },
+      { ...desktop, isElectron: false },
+    ]) {
+      assert.isNull(
+        resolveShortcutCommand(event({ key: "1", ctrlKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+          platform: "MacIntel",
+          context,
+        }),
+      );
+    }
+  });
+
+  it("cycles favorites and steps effort with mod+alt arrows", () => {
+    const resolve = (key: string) =>
+      resolveShortcutCommand(
+        event({ key, metaKey: true, altKey: true }),
+        DEFAULT_RESOLVED_KEYBINDINGS,
+        { platform: "MacIntel", context: { ...desktop, isElectron: false } },
+      );
+    assert.strictEqual(resolve("ArrowRight"), "model.favorite.next");
+    assert.strictEqual(resolve("ArrowLeft"), "model.favorite.previous");
+    assert.strictEqual(resolve("ArrowUp"), "composer.effortUp");
+    assert.strictEqual(resolve("ArrowDown"), "composer.effortDown");
+  });
+
+  it("matches an Option binding on macOS by its physical key", () => {
+    const keybindings = compile([
+      { shortcut: modShortcut("1", { modKey: false, altKey: true }), command: "model.favorite.1" },
+      { shortcut: modShortcut("k", { altKey: true }), command: "model.favorite.next" },
+    ]);
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "¡", code: "Digit1", altKey: true }), keybindings, {
+        platform: "MacIntel",
+      }),
+      "model.favorite.1",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "˚", code: "KeyK", altKey: true, metaKey: true }),
+        keybindings,
+        { platform: "MacIntel" },
+      ),
+      "model.favorite.next",
+    );
+    // Without Option, the typed key still decides.
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "a", code: "Digit1" }), keybindings, {
+        platform: "MacIntel",
+      }),
+    );
+  });
+
+  it("never matches by physical key off macOS, so AltGr characters stay typeable", () => {
+    // AltGr+Q types `@` on a German Windows layout; Chromium reports Ctrl+Alt.
+    const keybindings = compile([
+      {
+        shortcut: modShortcut("q", { modKey: false, ctrlKey: true, altKey: true }),
+        command: "model.favorite.next",
+      },
+      { shortcut: modShortcut("7", { altKey: true }), command: "model.favorite.1" },
+    ]);
+    for (const platform of ["Win32", "Linux"]) {
+      assert.isNull(
+        resolveShortcutCommand(
+          event({ key: "@", code: "KeyQ", ctrlKey: true, altKey: true }),
+          keybindings,
+          { platform },
+        ),
+      );
+      assert.isNull(
+        resolveShortcutCommand(
+          event({ key: "{", code: "Digit7", ctrlKey: true, altKey: true }),
+          keybindings,
+          { platform },
+        ),
+      );
+    }
+    // Ctrl+Option on macOS is not an Option rewrite either.
+    assert.isNull(
+      resolveShortcutCommand(
+        event({ key: "@", code: "KeyQ", ctrlKey: true, altKey: true }),
+        keybindings,
+        { platform: "MacIntel" },
+      ),
+    );
+  });
+
+  it("matches a letter layout by the typed key only", () => {
+    // AZERTY: the physical Q key types `a`.
+    const keybindings = compile([
+      { shortcut: modShortcut("a", { modKey: false, altKey: true }), command: "model.favorite.1" },
+      { shortcut: modShortcut("q", { modKey: false, altKey: true }), command: "model.favorite.2" },
+    ]);
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "a", code: "KeyQ", altKey: true }), keybindings, {
+        platform: "MacIntel",
+      }),
+      "model.favorite.1",
+    );
+  });
+
+  it("prefers a rule for the typed character over a physical-key rule", () => {
+    const keybindings = compile([
+      { shortcut: modShortcut("¡", { modKey: false, altKey: true }), command: "model.favorite.2" },
+      { shortcut: modShortcut("1", { modKey: false, altKey: true }), command: "model.favorite.1" },
+    ]);
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "¡", code: "Digit1", altKey: true }), keybindings, {
+        platform: "MacIntel",
+      }),
+      "model.favorite.2",
+    );
+  });
+
+  it("keeps the existing alt defaults", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "Tab", altKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+      }),
+      "model.switchRecent",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "Enter", altKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        context: { dialogFocus: false },
+      }),
+      "chat.queueTurnNext",
     );
   });
 });

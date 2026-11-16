@@ -30,6 +30,7 @@ export interface ProjectSetupScriptRunnerInput {
   readonly projectCwd?: string;
   readonly worktreePath: string;
   readonly preferredTerminalId?: string;
+  readonly retry?: boolean;
 }
 
 export interface ProjectSetupScriptRunnerShape {

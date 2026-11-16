@@ -6,7 +6,7 @@ import { PR_HUB_MERGE_STATE_QUERY, recheckUnknownMergeStates } from "./mergeStat
 
 import type { SearchTask } from "./discovery.ts";
 
-import { githubRequestScheduler, GitHubRequestPriority } from "../git/githubRequestScheduler.ts";
+import { GitHubRequestPriority, githubCooldownActive } from "../git/githubRequestScheduler.ts";
 
 import { defaultPrHubCoverage } from "./readModel.ts";
 
@@ -14,7 +14,7 @@ import { mapGitHubCliError } from "../sourceControl/GitHubSourceControlProvider.
 
 import { type PrHubLocalCheckoutCandidate, type PrHubSnapshot } from "@t3tools/contracts";
 
-import { Effect, Exit } from "effect";
+import { Effect, Exit, type Cause } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
@@ -36,6 +36,7 @@ import {
   buildReconcileByNumberRequest,
   buildTrackedByNumberRequest,
   buildSearchQueries,
+  causeErrorKind,
   causeUserMessage,
   nodeArray,
   normalizeFallbackPr,
@@ -50,6 +51,27 @@ import type { GitHubCliShape } from "../git/Services/GitHubCli.ts";
 import type { ServerSettingsShape } from "../serverSettings.ts";
 import type { SourceControlProvider } from "../sourceControl/SourceControlProvider.ts";
 import type { PrHubDiscoveryMethods } from "./Services/PrHubDiscovery.ts";
+/**
+ * The request scheduler and GitHub's own rate limit both answer "not now": the work stays
+ * queued and the next poll continues it. Anything else is a read that failed.
+ */
+const isDeferredRead = (cause: Cause.Cause<unknown>) => causeErrorKind(cause) === "rate_limited";
+const isDeferredError = (error: unknown) => asRecord(error)?.kind === "rate_limited";
+
+/**
+ * Whether a hydration pass failed outright. A failed read does, and so do details that are
+ * missing with no deferred read to explain them. Deferred reads leave only backlog. The
+ * recovery pass and the main pass are classified by this one rule.
+ */
+const hydrationFailed = (result: {
+  readonly details: { readonly failed: boolean; readonly degraded: boolean };
+  readonly attentionFailed: boolean;
+  readonly missingDetailCount: number;
+}) =>
+  result.details.failed ||
+  result.attentionFailed ||
+  (result.missingDetailCount > 0 && !result.details.degraded);
+
 export interface PrHubDiscoveryContext {
   readonly host: string;
   readonly cwd: string;
@@ -94,6 +116,8 @@ export function createPrHubDiscovery(
     {
       readonly nodesById: ReadonlyMap<string, Record<string, unknown>>;
       readonly degraded: boolean;
+      /** A read failed outright, as opposed to being deferred for a later poll. */
+      readonly failed: boolean;
       readonly errorMessage?: string | undefined;
     },
     never
@@ -101,6 +125,7 @@ export function createPrHubDiscovery(
     Effect.gen(function* () {
       const nodesById = new Map<string, Record<string, unknown>>();
       let degraded = false;
+      let failed = false;
       let errorMessage: string | undefined;
       let loggedFailureCount = 0;
 
@@ -122,7 +147,7 @@ export function createPrHubDiscovery(
             if (
               ids.length > 1 &&
               shouldSplitDetailChunk(result.cause) &&
-              !githubRequestScheduler.status(host).retryAt
+              !(yield* githubCooldownActive(host))
             ) {
               const mid = Math.ceil(ids.length / 2);
               yield* hydrateChunk(ids.slice(0, mid));
@@ -131,6 +156,7 @@ export function createPrHubDiscovery(
             }
 
             degraded = true;
+            failed ||= !isDeferredRead(result.cause);
             errorMessage ??= message;
             loggedFailureCount += 1;
             if (loggedFailureCount <= 5) {
@@ -151,6 +177,7 @@ export function createPrHubDiscovery(
           const graphQlErrors = asArray(response?.errors);
           if (graphQlErrors.length > 0) {
             degraded = true;
+            failed = true;
             errorMessage ??= `GitHub GraphQL returned partial PR detail errors for ${graphQlErrors.length} chunk(s).`;
           }
           const nodes = asArray(asRecord(response?.data)?.nodes);
@@ -186,18 +213,18 @@ export function createPrHubDiscovery(
             Exit.isFailure(response) &&
             targets.length > 1 &&
             shouldSplitDetailChunk(response.cause) &&
-            !githubRequestScheduler.status(host).retryAt
+            !(yield* githubCooldownActive(host))
           ) {
             const mid = Math.ceil(targets.length / 2);
             yield* hydrateNumberChunk(targets.slice(0, mid));
-            if (!githubRequestScheduler.status(host).retryAt)
-              yield* hydrateNumberChunk(targets.slice(mid));
+            if (!(yield* githubCooldownActive(host))) yield* hydrateNumberChunk(targets.slice(mid));
             return;
           }
           const body = Exit.isSuccess(response) ? asRecord(response.value) : null;
           const data = asRecord(body?.data);
           if (asArray(body?.errors).length > 0) {
             degraded = true;
+            failed = true;
             errorMessage ??= "GitHub GraphQL returned partial saved PR lookup errors.";
           }
           for (const { alias, key } of request.aliases) {
@@ -213,6 +240,7 @@ export function createPrHubDiscovery(
               nodesById.set(task.key, node);
             } else {
               degraded = true;
+              failed ||= !(Exit.isFailure(response) && isDeferredRead(response.cause));
               errorMessage ??= Exit.isFailure(response)
                 ? causeUserMessage(response.cause, "Saved PR lookup failed.")
                 : "Saved PR lookup returned no accessible data.";
@@ -220,7 +248,7 @@ export function createPrHubDiscovery(
           }
         });
       for (let index = 0; index < numbered.length; index += PR_HUB_DETAILS_CHUNK_SIZE) {
-        if (githubRequestScheduler.status(host).retryAt) {
+        if (yield* githubCooldownActive(host)) {
           degraded = true;
           break;
         }
@@ -237,7 +265,7 @@ export function createPrHubDiscovery(
         const ids = knownIds.slice(index, index + PR_HUB_DETAILS_CHUNK_SIZE);
         if (ids.length === 0) continue;
         const rank = Math.max(...ids.map((id) => priorities?.get(id)?.priority ?? 0));
-        if (githubRequestScheduler.status(host).retryAt) {
+        if (yield* githubCooldownActive(host)) {
           degraded = true;
           break;
         }
@@ -298,6 +326,7 @@ export function createPrHubDiscovery(
       return {
         nodesById,
         degraded,
+        failed,
         ...(errorMessage ? { errorMessage } : {}),
       };
     });
@@ -328,6 +357,7 @@ export function createPrHubDiscovery(
       );
       const details = yield* fetchGraphqlDetails([...aliasesByNodeId.keys()], hydration);
       let attentionIncomplete = false;
+      let attentionFailed = false;
       const detailedNodes = new Map(details.nodesById);
       // Continue only hydrated, relevant PRs, using the same captured account and host budgets.
       for (const [id, node] of details.nodesById) {
@@ -348,6 +378,11 @@ export function createPrHubDiscovery(
         detailedNodes.set(id, { ...continued.node, reviewFactsComplete: continued.complete });
         if (!continued.complete) {
           attentionIncomplete = true;
+        }
+        // An unfinished connection is backlog. A page that could not be read is not: only a
+        // read put off by the request budget or the rate limit resumes by itself.
+        if (continued.rejected || continued.errors.some((error) => !isDeferredError(error))) {
+          attentionFailed = true;
         }
       }
 
@@ -398,6 +433,7 @@ export function createPrHubDiscovery(
         pullRequests,
         details,
         attentionIncomplete,
+        attentionFailed,
         missingDetailCount: hydration.size - pullRequests.length,
       };
     });
@@ -466,17 +502,24 @@ export function createPrHubDiscovery(
         });
       let recoveredPullRequests: readonly NormalizedPr[] = [];
       let recoveryError: string | undefined;
-      if (!githubRequestScheduler.status(host).retryAt) {
+      // Set by any read that failed outright; deferred reads leave only backlog behind.
+      let hardFailure = false;
+      let searchFailed = false;
+      if (!(yield* githubCooldownActive(host))) {
         yield* enqueuePrHubTracked(account, excluded).pipe(Effect.orDie);
         const recovery = yield* selectPrHubHydration(account, excluded).pipe(Effect.orDie);
         if (recovery.size > 0) {
           const recovered = yield* hydrateAndPersist(recovery);
           recoveredPullRequests = recovered.pullRequests;
+          const recoveryFailed = hydrationFailed(recovered);
+          hardFailure ||= recoveryFailed;
           recoveryError =
             recovered.details.errorMessage ??
-            (recovered.attentionIncomplete || recovered.missingDetailCount > 0
-              ? "Saved PR revalidation is incomplete; remaining work will resume."
-              : undefined);
+            (recoveryFailed
+              ? "Saved PR revalidation failed for some pull requests."
+              : recovered.attentionIncomplete || recovered.missingDetailCount > 0
+                ? "Saved PR revalidation is incomplete; remaining work will resume."
+                : undefined);
         }
       }
       const teamListCapped = viewer.teams.length > TEAM_QUERY_CHUNK_SIZE * TEAM_QUERY_CHUNK_COUNT;
@@ -504,12 +547,13 @@ export function createPrHubDiscovery(
           }),
         );
         if (Exit.isFailure(result)) {
+          searchFailed ||= !isDeferredRead(result.cause);
           searchErrorMessage ??= causeUserMessage(
             result.cause,
             "GitHub GraphQL search request failed.",
           );
           yield* ingestPrHubSearch(account, scope, null, excluded).pipe(Effect.orDie);
-          if (githubRequestScheduler.status(host).retryAt) break;
+          if (yield* githubCooldownActive(host)) break;
           continue;
         }
         const response = asRecord(result.value);
@@ -561,6 +605,7 @@ export function createPrHubDiscovery(
         ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
       if (Exit.isFailure(continued)) {
+        searchFailed ||= !isDeferredRead(continued.cause);
         cappedBuckets.push("discovery_continuation");
         searchErrorMessage ??= causeUserMessage(
           continued.cause,
@@ -597,13 +642,13 @@ export function createPrHubDiscovery(
             ),
           )
         : null;
-      const hydration = githubRequestScheduler.status(host).retryAt
+      const hydration = (yield* githubCooldownActive(host))
         ? new Map()
         : yield* selectPrHubHydration(account, excluded).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.orDie,
           );
-      const { pullRequests, details, attentionIncomplete, missingDetailCount } =
+      const { pullRequests, details, attentionIncomplete, attentionFailed, missingDetailCount } =
         yield* hydrateAndPersist(hydration);
 
       const pending = yield* sql<{
@@ -617,12 +662,16 @@ export function createPrHubDiscovery(
         missingDetailCount > 0
           ? `GitHub GraphQL returned incomplete PR detail data for ${missingDetailCount} PR(s).`
           : undefined;
-      const detailErrorMessage = attentionIncomplete
-        ? "Review-thread and review-history pagination is incomplete; monitoring will resume on the next poll."
-        : details.degraded
-          ? (details.errorMessage ?? "GitHub GraphQL returned partial PR detail data.")
-          : missingDetailMessage;
+      const detailErrorMessage = attentionFailed
+        ? "Review threads and review history could not be read in full; review state may be out of date."
+        : attentionIncomplete
+          ? "Review-thread and review-history pagination is incomplete; monitoring will resume on the next poll."
+          : details.degraded
+            ? (details.errorMessage ?? "GitHub GraphQL returned partial PR detail data.")
+            : missingDetailMessage;
       const detailDegraded = attentionIncomplete || details.degraded || missingDetailCount > 0;
+      hardFailure ||= hydrationFailed({ details, attentionFailed, missingDetailCount });
+      hardFailure ||= graphQlErrors.length > 0 || viewer.teamLookupError !== null;
 
       const work = yield* sql<{
         repositories: number;
@@ -684,6 +733,8 @@ export function createPrHubDiscovery(
               : "partial",
           checkedAt: new Date().toISOString(),
           remainingTasks: repoSearches + remainingHydrations,
+          remainingSearches: repoSearches,
+          remainingHydrations,
           description: `${work[0]?.repositories ?? 0} known repositories; ${repoSearches} search pages/partitions and ${remainingHydrations} PR detail reads remain.${Exit.isFailure(knownRepos) ? " Affiliation enumeration is unavailable." : knownRepos.value ? " Affiliation traversal completed." : " Affiliation traversal is still in progress."}`,
         },
         {
@@ -700,6 +751,8 @@ export function createPrHubDiscovery(
               : "partial",
           checkedAt: new Date().toISOString(),
           remainingTasks: globalSearches + remainingHydrations,
+          remainingSearches: globalSearches,
+          remainingHydrations,
           limits: cappedBuckets,
           description: `Search-based relationship coverage: ${globalSearches} pages/partitions and ${remainingHydrations} PR detail reads remain. GitHub search cannot prove coverage of every accessible repository.`,
         },
@@ -720,8 +773,16 @@ export function createPrHubDiscovery(
         },
       ];
 
+      // The fallback search is for reads that failed. Deferred work is already queued, and
+      // searching again around the budget would only spend the quota it protects.
+      const degraded =
+        !!recoveryError ||
+        !!searchErrorMessage ||
+        graphQlErrors.length > 0 ||
+        detailDegraded ||
+        viewer.teamLookupError !== null;
       const fallback =
-        searchErrorMessage || (details.degraded && pullRequests.length === 0)
+        (searchErrorMessage && searchFailed) || (details.failed && pullRequests.length === 0)
           ? yield* fetchFallback(
               viewer,
               searchErrorMessage ?? details.errorMessage ?? "PR detail recovery is incomplete.",
@@ -736,12 +797,8 @@ export function createPrHubDiscovery(
           ),
         ],
         cappedBuckets,
-        degraded:
-          !!recoveryError ||
-          !!searchErrorMessage ||
-          graphQlErrors.length > 0 ||
-          detailDegraded ||
-          viewer.teamLookupError !== null,
+        degraded,
+        resumable: degraded && !hardFailure && !searchFailed,
         errorMessage:
           fallback?.errorMessage ??
           recoveryError ??
@@ -759,13 +816,19 @@ export function createPrHubDiscovery(
   ): Effect.Effect<FetchResult, never> {
     return Effect.gen(function* () {
       const buckets = [
+        // The broad search below also matches requests to the viewer's teams, so the
+        // personal one is searched on its own.
+        {
+          alias: "direct_review",
+          args: ["--user-review-requested", "@me", "--state", "open"],
+        },
         { alias: "review_requested", args: ["--review-requested", "@me", "--state", "open"] },
         { alias: "author", args: ["--author", "@me", "--state", "open"] },
         { alias: "assignee", args: ["--assignee", "@me", "--state", "open"] },
         { alias: "mentioned", args: ["--mentions", "@me", "--state", "open"] },
         { alias: "involved", args: ["--involves", "@me", "--state", "open"] },
       ] as const;
-      if (githubRequestScheduler.status(host).retryAt)
+      if (yield* githubCooldownActive(host))
         return {
           pullRequests: [],
           cappedBuckets: [],
@@ -777,7 +840,7 @@ export function createPrHubDiscovery(
       let deferred = false;
       const nodesByUrl = new Map<string, { node: Record<string, unknown>; aliases: Set<string> }>();
       for (const bucket of buckets) {
-        if (githubRequestScheduler.status(host).retryAt) {
+        if (yield* githubCooldownActive(host)) {
           deferred = true;
           break;
         }

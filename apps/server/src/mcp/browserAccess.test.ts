@@ -17,7 +17,10 @@ it.effect("ANDs every agent capability with the browser access master switch", (
       previewAutomation: true,
       externalHosts: [],
       claudeInChrome: false,
-      computerUse: false,
+      codexChrome: false,
+      computerUse: true,
+      computerUseExecutionMode: "background",
+      computerUsePasswordMasking: "fast",
     });
     yield* settings.updateSettings({
       previewExternalHosts: ["example.com"],
@@ -33,14 +36,20 @@ it.effect("ANDs every agent capability with the browser access master switch", (
       previewAutomation: true,
       externalHosts: ["*.example.org"],
       claudeInChrome: true,
+      codexChrome: false,
       computerUse: true,
+      computerUseExecutionMode: "background",
+      computerUsePasswordMasking: "fast",
     });
     yield* settings.updateSettings({ enableAgentBrowserAccess: false });
     assert.deepEqual(yield* resolveAgentBrowserPolicy(one), {
       previewAutomation: false,
       externalHosts: [],
       claudeInChrome: false,
+      codexChrome: false,
       computerUse: false,
+      computerUseExecutionMode: "foreground",
+      computerUsePasswordMasking: "fast",
     });
   }).pipe(
     Effect.provide(Layer.mergeAll(SqliteClient.layerMemory(), ServerSettingsService.layerTest())),

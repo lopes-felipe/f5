@@ -8,7 +8,8 @@ import { CodexLaunchArgsError, resolveCodexLaunchArgv } from "./codexLaunchArgs.
 import { resolveCodexHome } from "../os-jank.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 import { CommandNotFoundError, resolveInvocationEffect } from "../spawn/resolveCommand.ts";
-import { resolveClaudeCliInvocation } from "./claudeSdkExecutable.ts";
+import { claudeCliSpawnEnvironment, resolveClaudeCliInvocation } from "./claudeSdkExecutable.ts";
+import { resolveCodexCommand } from "./codexExecutable.ts";
 
 export interface ProviderCliCommandResult {
   readonly stdout: string;
@@ -17,6 +18,7 @@ export interface ProviderCliCommandResult {
 }
 
 export interface ProviderCliCommandOptions {
+  readonly cwd?: string | undefined;
   readonly baseEnvironment: NodeJS.ProcessEnv;
   readonly binaryPath?: string | undefined;
   readonly envOverrides?: NodeJS.ProcessEnv | undefined;
@@ -54,17 +56,23 @@ export function runProviderCliCommand(
 ) {
   return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const resolvedBinary = options?.binaryPath ?? binary;
-    const environment = buildProviderChildProcessEnv(
-      options.baseEnvironment,
-      options?.envOverrides,
-    );
+    const resolvedBinary = yield* Effect.try({
+      try: () =>
+        binary === "codex"
+          ? resolveCodexCommand(options.binaryPath)
+          : (options.binaryPath ?? binary),
+      catch: (cause) =>
+        cause instanceof CommandNotFoundError
+          ? cause
+          : new CommandNotFoundError(binary, String(cause)),
+    });
+    const environment = buildProviderChildProcessEnv(options.baseEnvironment, options.envOverrides);
     const launchArgs =
       binary === "codex"
         ? yield* Effect.try({
             try: () =>
               resolveCodexLaunchArgv({
-                ...(options?.launchArgs ? { providerLaunchArgs: options.launchArgs } : {}),
+                ...(options.launchArgs ? { providerLaunchArgs: options.launchArgs } : {}),
                 environment,
               }),
             catch: (cause) =>
@@ -82,14 +90,15 @@ export function runProviderCliCommand(
       binary === "codex"
         ? prependCodexCliTelemetryDisabledConfig([...launchArgs.argv, ...args], {
             managedCredentials: environment.F5_PROFILE_ISOLATED === "1",
-            mcpServers: options?.mcpServers ?? null,
-            mcpOAuthCallbackPort: options?.mcpOAuthCallbackPort ?? null,
-            mcpOAuthCallbackUrl: options?.mcpOAuthCallbackUrl ?? null,
+            mcpServers: options.mcpServers ?? null,
+            mcpOAuthCallbackPort: options.mcpOAuthCallbackPort ?? null,
+            mcpOAuthCallbackUrl: options.mcpOAuthCallbackUrl ?? null,
           })
         : [...args];
     const invocation = yield* resolveInvocationEffect(resolvedBinary, commandArgs, environment);
     const command = ChildProcess.make(invocation.file, [...invocation.args], {
       env: environment,
+      ...(options.cwd ? { cwd: options.cwd } : {}),
       stdin: "ignore",
     });
 
@@ -131,7 +140,7 @@ export const runClaudeCliCommand = (
           : new CommandNotFoundError(options?.binaryPath ?? "claude", String(cause)),
     });
     const command = ChildProcess.make(invocation.file, [...invocation.args], {
-      env: environment,
+      env: claudeCliSpawnEnvironment(invocation, environment),
       stdin: "ignore",
     });
     const child = yield* spawner.spawn(command);

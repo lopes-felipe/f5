@@ -16,6 +16,7 @@
       "persistent": true,
     },
     "smoke-test": {
+      "passThroughEnv": ["F5_CI_ARTIFACT_DIR"],
       "dependsOn": ["build", "@t3tools/web#build", "t3#build"],
       "cache": false,
       "outputs": [],

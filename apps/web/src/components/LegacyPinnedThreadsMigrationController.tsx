@@ -6,7 +6,6 @@ import { importLegacyPinnedThreads, orderedPinnedThreadIds } from "../threadPinS
 import { toastManager } from "./ui/toast";
 
 export function LegacyPinnedThreadsMigrationController() {
-  const threads = useStore((state) => state.threads);
   const threadsHydrated = useStore((state) => state.threadsHydrated);
   const pinRevision = useStore((state) => state.pinRevision ?? 0);
   const attemptedImport = useRef<string | null>(null);
@@ -20,6 +19,8 @@ export function LegacyPinnedThreadsMigrationController() {
     if (attemptedImport.current === signature) return;
     attemptedImport.current = signature;
 
+    // One-shot read: the import runs once per pin revision after hydration.
+    const { threads } = useStore.getState();
     const activeIds = new Set(
       threads.filter((thread) => thread.archivedAt === null).map((thread) => thread.id),
     );
@@ -43,7 +44,7 @@ export function LegacyPinnedThreadsMigrationController() {
           description: error instanceof Error ? error.message : "The server rejected the import.",
         });
       });
-  }, [pinRevision, threads, threadsHydrated]);
+  }, [pinRevision, threadsHydrated]);
 
   return null;
 }

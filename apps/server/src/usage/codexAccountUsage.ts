@@ -60,6 +60,18 @@ function normalizeRateLimitWindow(value: unknown): CodexAccountRateLimitWindow |
   };
 }
 
+/** Enterprise credit allowances report what remains and carry no window duration. */
+function normalizeIndividualLimit(value: unknown): CodexAccountRateLimitWindow | null {
+  const record = asRecord(value);
+  const remaining = record?.remainingPercent;
+  if (typeof remaining !== "number" || !Number.isFinite(remaining)) return null;
+  return {
+    usedPercent: Math.min(100, Math.max(0, 100 - remaining)),
+    windowDurationMins: null,
+    resetsAt: asNonNegativeInteger(record?.resetsAt),
+  };
+}
+
 function normalizeCredits(value: unknown): CodexAccountCredits | null {
   const record = asRecord(value);
   if (!record || typeof record.hasCredits !== "boolean" || typeof record.unlimited !== "boolean") {
@@ -76,12 +88,15 @@ function normalizeRateLimit(value: unknown, fallbackId: string): CodexAccountRat
   const record = asRecord(value);
   if (!record) return null;
   const id = asTrimmedString(record.limitId) ?? fallbackId;
+  // The credit allowance is account-wide; Spark repeats it, so only the main bucket owns it.
+  const individual = id === "codex" ? normalizeIndividualLimit(record.individualLimit) : null;
   return {
     id,
     name: asTrimmedString(record.limitName),
     planType: asTrimmedString(record.planType),
     primary: normalizeRateLimitWindow(record.primary),
     secondary: normalizeRateLimitWindow(record.secondary),
+    ...(individual ? { individual } : {}),
     credits: normalizeCredits(record.credits),
   };
 }
@@ -189,7 +204,12 @@ export function readCodexAccountSections(client: CodexControlClient, timeoutMs =
 // Owned by the provider instance scope: configuration changes retire both the
 // cached account data and any in-flight control process.
 export function makeCodexAccountUsage(
-  instance: { instanceId: ProviderInstanceId; displayName: string; enabled: boolean },
+  instance: {
+    instanceId: ProviderInstanceId;
+    displayName: string;
+    enabled: boolean;
+    identity: string;
+  },
   environment: CodexControlEnvironmentConfig & { processEnvironment: NodeJS.ProcessEnv },
 ) {
   return makeAccountUsageCapability(
@@ -203,6 +223,6 @@ export function makeCodexAccountUsage(
       sections: [emptyAccountSection("codex-tokens"), emptyAccountSection("codex-limits")],
     },
     probeCodexAccountSections(environment),
-    { readerOwnsTimeout: true },
+    { identity: instance.identity, readerOwnsTimeout: true },
   );
 }

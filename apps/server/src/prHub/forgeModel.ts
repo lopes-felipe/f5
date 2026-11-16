@@ -28,17 +28,24 @@ export function forgeTracked(
   const author = login(raw.author ?? raw.user ?? raw.createdBy);
   const draft = raw.draft === true || raw.work_in_progress === true || raw.isDraft === true;
   const state = detail.state ?? "open";
-  const pipeline = record(raw.head_pipeline);
-  const pipelineStatus = text(pipeline.status)?.toLowerCase();
-  const checkRollup: TrackedPullRequest["checkRollup"] =
-    pipelineStatus === "success"
-      ? "success"
-      : pipelineStatus === "failed"
-        ? "failure"
-        : ["pending", "running", "created", "preparing", "waiting_for_resource"].includes(
-              pipelineStatus ?? "",
-            )
-          ? "pending"
+  const checks = detail.checks ?? [];
+  const requiredChecks = checks.filter((check) => check.required === true);
+  const gate = requiredChecks.length ? requiredChecks : checks;
+  const headStatus = text(record(raw.head_pipeline).status)?.toLowerCase();
+  const checksIncomplete =
+    (ref.provider === "gitlab" &&
+      (detail.checksComplete !== true || headStatus === "manual" || headStatus === "skipped")) ||
+    (ref.provider === "forgejo" && detail.checksComplete === false);
+  const checkRollup: TrackedPullRequest["checkRollup"] = gate.some(
+    (check) => check.status === "failure" || check.status === "cancelled",
+  )
+    ? "failure"
+    : gate.some((check) => check.status === "pending")
+      ? "pending"
+      : checksIncomplete
+        ? "pending"
+        : checks.length
+          ? "success"
           : "none";
   const reviewers = Array.isArray(raw.reviewers)
     ? raw.reviewers.map(login).filter((name): name is string => name !== null)
@@ -124,14 +131,37 @@ export function forgeTracked(
     attentionFingerprint: JSON.stringify([state, detail.headRefOid]),
   };
 }
+const validTerminalDate = (value: unknown): string | null =>
+  typeof value === "string" && Number.isFinite(Date.parse(value))
+    ? new Date(value).toISOString()
+    : null;
+/** Only actual terminal timestamps can prove completion; updated-at is not such proof. */
+export function forgeTerminalDates(
+  raw: Readonly<Record<string, unknown>>,
+  state: "open" | "merged" | "closed",
+) {
+  return {
+    mergedAt:
+      state === "merged"
+        ? validTerminalDate(raw.merged_at ?? raw.closedDate ?? raw.closed_on)
+        : null,
+    closedAt:
+      state === "closed"
+        ? validTerminalDate(raw.closed_at ?? raw.closedDate ?? raw.closed_on)
+        : null,
+  };
+}
 export function forgeDetail(pr: TrackedPullRequest, detail: ForgeDetail): PrHubDetailResult {
   return {
     detail: {
       key: pr.key,
-      providerDetails: pr.providerDetails as Exclude<
-        NonNullable<TrackedPullRequest["providerDetails"]>,
-        { provider: "github" }
-      >,
+      providerDetails: {
+        ...(pr.providerDetails as Exclude<
+          NonNullable<TrackedPullRequest["providerDetails"]>,
+          { provider: "github" }
+        >),
+        headRefOid: detail.headRefOid ?? null,
+      },
       title: pr.title,
       body: detail.body,
       url: pr.url,
@@ -145,18 +175,31 @@ export function forgeDetail(pr: TrackedPullRequest, detail: ForgeDetail): PrHubD
       baseRefName: pr.baseRefName,
       createdAt: pr.createdAt,
       updatedAt: pr.updatedAt,
-      mergedAt: null,
-      closedAt: null,
+      ...forgeTerminalDates(detail.raw, pr.state),
       author: pr.author ? { login: pr.author, name: null, avatarUrl: null } : null,
       labels: pr.labels.map((name) => ({ name, color: null, description: null })),
       reviewers: [],
-      checks: [],
+      checks: detail.checks ?? [],
+      ...((pr.provider === "gitlab" && detail.checksComplete !== true) ||
+      (pr.provider === "forgejo" && detail.checksComplete === false)
+        ? { truncatedSections: ["checks" as const] }
+        : {}),
       reactions: [],
     },
     stale: false,
     refreshedAt: new Date().toISOString(),
   };
 }
+
+/** Keep native discussion and flat comment shapes consistent across reads and writes. */
+export const forgeComments = (values: readonly Readonly<Record<string, unknown>>[]) =>
+  values.flatMap((value) =>
+    Array.isArray(value.notes)
+      ? value.notes.map(record)
+      : Array.isArray(value.comments)
+        ? value.comments.map(record)
+        : [value],
+  );
 
 /** Native discussion shapes retain only actual inline locations and resolution facts. */
 export function forgeReviewThreads(
@@ -206,13 +249,25 @@ export function forgeReviewThreads(
         path,
         line,
         originalLine: line,
-        viewerCanReply: provider.forgeCapabilities.review.reply,
-        viewerCanResolve: provider.forgeCapabilities.review.resolve,
-        viewerCanUnresolve: provider.forgeCapabilities.review.resolve,
+        viewerCanReply: provider.forgeCapabilities.review.reply && value.viewerCanReply !== false,
+        ...(typeof value.canResolve === "boolean" ? { canResolve: value.canResolve } : {}),
+        viewerCanResolve:
+          provider.forgeCapabilities.review.resolve &&
+          value.canResolve !== false &&
+          value.viewerCanResolve !== false,
+        viewerCanUnresolve:
+          provider.forgeCapabilities.review.resolve &&
+          value.canResolve !== false &&
+          value.viewerCanUnresolve !== false,
         comments: inline.map((comment) => ({
           id: String(comment.id),
+          ...(typeof comment.canEdit === "boolean" ? { canEdit: comment.canEdit } : {}),
           url: text(comment.html_url ?? comment.web_url) ?? "",
           author: login(comment.author ?? comment.user),
+          ...(record(comment.author ?? comment.user).bot === true ||
+          record(comment.author ?? comment.user).type === "Bot"
+            ? { authorIsBot: true }
+            : {}),
           bodyText:
             text(comment.body) ?? text(record(comment.content).raw) ?? text(comment.content) ?? "",
           body:

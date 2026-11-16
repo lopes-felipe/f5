@@ -1,12 +1,17 @@
+import { formatSubagentDisplayTitle } from "@t3tools/shared/subagentDisplay";
 import type {
   AgentsSnapshot,
+  ProviderInstanceId,
   BackgroundWorkKind,
   OrchestrationThreadActivity,
   ThreadBackgroundWorkEntry,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
+import {
+  readToolActivityPayload,
+  REASONING_STATUS_ACTIVITY_KIND,
+} from "@t3tools/shared/orchestrationActivityPayload";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -55,7 +60,10 @@ export interface AgentsPanelEntry {
   /** Running or monitoring work that is still alive. */
   readonly live: boolean;
   readonly provider: ThreadBackgroundWorkEntry["provider"];
+  readonly providerInstanceId?: ProviderInstanceId | null;
   readonly model: string | null;
+  /** Effective effort reported by this agent, independent of its parent's current selection. */
+  readonly effort?: string | null;
   /** Task or subagent type recorded at start. */
   readonly phase: string | null;
   readonly title: string;
@@ -127,6 +135,7 @@ function isTimelineFocusableActivity(activity: OrchestrationThreadActivity): boo
     activity.kind !== "task.started" &&
     activity.kind !== "task.completed" &&
     activity.kind !== "runtime.configured" &&
+    activity.kind !== REASONING_STATUS_ACTIVITY_KIND &&
     activity.kind !== "account.updated" &&
     activity.kind !== "account.rate-limits.updated"
   );
@@ -372,7 +381,9 @@ function chooseSnapshotEntry(
   };
 }
 
-function isLiveEntry(entry: Pick<AgentsPanelEntry, "active" | "classification" | "status">) {
+export function isLiveBackgroundWork(
+  entry: Pick<AgentsPanelEntry, "active" | "classification" | "status">,
+) {
   return (
     entry.active &&
     entry.classification !== "inert" &&
@@ -418,13 +429,13 @@ function panelEntryTitle(
   entry: ThreadBackgroundWorkEntry,
   detail: AgentActivityDetail | undefined,
 ): string {
-  return (
+  const title =
     asTrimmedString(entry.title) ??
     detail?.description ??
     detail?.path ??
     humanizeType(entry.phase ?? detail?.type ?? null) ??
-    (entry.kind === "workflow" ? "Workflow work" : "Subagent")
-  );
+    (entry.kind === "workflow" ? "Workflow work" : "Subagent");
+  return entry.kind === "agent" ? formatSubagentDisplayTitle(title) : title;
 }
 
 function matchesStatus(entry: AgentsPanelEntry, status: AgentsStatusFilter): boolean {
@@ -598,9 +609,11 @@ export function deriveAgentsPanelModel(input: {
       classification: group.entry.classification,
       status: group.entry.status,
       active: group.entry.active,
-      live: isLiveEntry(group.entry),
+      live: isLiveBackgroundWork(group.entry),
       provider: group.entry.provider,
+      providerInstanceId: group.entry.providerInstanceId,
       model: group.entry.model ?? group.detail?.model ?? null,
+      ...(group.entry.effort !== undefined ? { effort: group.entry.effort } : {}),
       phase: group.entry.phase ?? group.detail?.type ?? null,
       title: panelEntryTitle(group.entry, group.detail),
       prompt,
@@ -615,4 +628,17 @@ export function deriveAgentsPanelModel(input: {
   });
 
   return buildAgentsPanelModel(entries, input.snapshot.generatedAt);
+}
+
+/** An old task must never pick up another driver or a guessed default account's name. */
+export function resolveAgentProviderName(
+  entry: Pick<AgentsPanelEntry, "provider" | "providerInstanceId">,
+  instances: ReadonlyMap<
+    ProviderInstanceId,
+    { readonly driverKind: string; readonly displayName: string }
+  >,
+): string | undefined {
+  if (!entry.providerInstanceId) return undefined;
+  const instance = instances.get(entry.providerInstanceId);
+  return instance?.driverKind === entry.provider ? instance.displayName : undefined;
 }

@@ -1,8 +1,34 @@
 import type { CommandId, NextTurnQueueItem, NextTurnQueueSnapshot } from "@t3tools/contracts";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 
-import { deriveDisplayedUserMessageState } from "~/lib/terminalContext";
+import {
+  formatAnswerDeliveryAnswers,
+  isAnswerMessageId,
+  parseAnswerDeliveryText,
+} from "@t3tools/shared/answerDelivery";
+import {
+  deriveDisplayedUserMessageState,
+  type DisplayedUserMessageState,
+} from "~/lib/terminalContext";
 
 export const USAGE_LIMIT_RESUME_LABEL = "Continues after usage limit resets";
+
+/**
+ * Puts an edited queued turn's visible text back in front of its send-time context. An empty
+ * result means the turn has nothing left to send.
+ */
+export function rebuildEditedText(item: NextTurnQueueItem, visibleText: string): string {
+  const current = item.command.message.text;
+  const visible = visibleText.trim();
+  const terminalMarker = current.search(/\n*<terminal_context>|\n*<attached_files>/u);
+  if (terminalMarker >= 0) return `${visible}${current.slice(terminalMarker)}`;
+  // Providers need words to start a turn, so attachments sent without any get the hidden prompt,
+  // as they do when first sent.
+  if (visible.length === 0) {
+    return item.command.message.attachments.length > 0 ? IMAGE_ONLY_BOOTSTRAP_PROMPT : "";
+  }
+  return current === current.trimEnd() ? visible : `${visible}\n`;
+}
 
 export function buildQueueRowDisplay(item: NextTurnQueueItem) {
   const displayed = deriveDisplayedUserMessageState(item.command.message.text);
@@ -16,15 +42,39 @@ export function buildQueueRowDisplay(item: NextTurnQueueItem) {
     ...displayed,
     imageCount,
     fileCount,
-    label:
-      displayed.visibleText.trim().length === 0 &&
-      displayed.attachedFilePaths.length === 0 &&
-      imageCount + fileCount > 0
-        ? fileCount > 0
-          ? "Attachment-only turn"
-          : "Image-only turn"
-        : displayed.visibleText,
+    label: describeAnswerDelivery(item) ?? queuedTurnLabel(displayed, { imageCount, fileCount }),
   };
+}
+
+/** Names a queued turn sent without words by what it carries. */
+export function queuedTurnLabel(
+  displayed: Pick<DisplayedUserMessageState, "visibleText" | "attachedFilePaths">,
+  attachments: { readonly imageCount: number; readonly fileCount: number },
+): string {
+  if (
+    displayed.visibleText.trim().length > 0 ||
+    displayed.attachedFilePaths.length > 0 ||
+    attachments.imageCount + attachments.fileCount === 0
+  ) {
+    return displayed.visibleText;
+  }
+  return attachments.fileCount > 0 ? "Attachment-only turn" : "Image-only turn";
+}
+
+/**
+ * Message-mode question answers are delivered as JSON for the provider; show
+ * the chosen answers instead. Display only; the queued text is unchanged. An
+ * edited or retried answer gets a new command id but keeps its answer message id.
+ */
+function describeAnswerDelivery(item: NextTurnQueueItem): string | null {
+  if (
+    !item.command.commandId.startsWith("answer-delivery:") &&
+    !isAnswerMessageId(item.command.message.messageId)
+  ) {
+    return null;
+  }
+  const answers = parseAnswerDeliveryText(item.command.message.text);
+  return answers ? `Answer · ${formatAnswerDeliveryAnswers(answers)}` : null;
 }
 
 export function moveItemInOrder(
@@ -64,9 +114,16 @@ export function mergeVisibleOrder(
   );
 }
 
-export function describeQueueBlockedState(snapshot: NextTurnQueueSnapshot): string | null {
+export function describeQueueBlockedState(
+  snapshot: NextTurnQueueSnapshot,
+  options: { readonly workspaceBannerShown?: boolean } = {},
+): string | null {
   const fallback = snapshot.reasonDetail;
   switch (snapshot.reasonCode) {
+    case "scheduled_task_wait":
+      return "Waiting for scheduled execution capacity or scheduler enablement.";
+    case "scheduled_task_canceled":
+      return fallback ?? "A scheduled message was canceled.";
     case "active_turn":
       return "Waiting for the active turn to finish.";
     case "turn_starting":
@@ -99,8 +156,16 @@ export function describeQueueBlockedState(snapshot: NextTurnQueueSnapshot): stri
       return "Waiting for conversation compaction to finish.";
     case "thread_compacted":
       return "Queue paused after conversation compaction.";
+    case "workspace_switch":
+      return "Switching workspace. Queued turns will wait.";
+    case "workspace_switch_failed":
+      return fallback ?? "Inspect and resolve the interrupted workspace switch.";
     case "worktree_missing":
-      return fallback ?? "Queue paused because the worktree is missing.";
+      // The workspace banner above the composer owns the details and recovery
+      // actions; it only renders for a thread that records a worktree.
+      return snapshot.paused && options.workspaceBannerShown
+        ? "Queue paused: workspace needs attention (see above)."
+        : (fallback ?? "Queue paused because the worktree is missing.");
     case "dispatch_rejected":
     case "delivery_rejected":
     case "delivery_ambiguous":

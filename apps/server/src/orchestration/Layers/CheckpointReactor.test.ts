@@ -1,5 +1,9 @@
+import { GitCore } from "../../git/Services/GitCore.ts";
+import { makeFakeGitCore } from "../../git/testDoubles.ts";
+import { withFixtureWorkspaceWrites } from "../testUtils/workspaceWrites.ts";
 import { GitService, type GitServiceShape } from "../../git/Services/GitService.ts";
 import { GitServiceLive } from "../../git/Layers/GitService.ts";
+import { branchNameFromHeadRef } from "../../git/headBranch.ts";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -27,12 +31,20 @@ import {
   CheckpointStore,
   type CheckpointStoreShape,
 } from "../../checkpointing/Services/CheckpointStore.ts";
-import { CheckpointInvariantError } from "../../checkpointing/Errors.ts";
+import {
+  CheckpointInvariantError,
+  CheckpointUnsupportedError,
+} from "../../checkpointing/Errors.ts";
+import { GitCommandError } from "../../git/Errors.ts";
 import { CheckpointReactorLive } from "./CheckpointReactor.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { RuntimeReceiptBusLive } from "./RuntimeReceiptBus.ts";
+import {
+  RuntimeReceiptBus,
+  type OrchestrationRuntimeReceipt,
+} from "../Services/RuntimeReceiptBus.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -95,12 +107,14 @@ function createProviderServiceHarness(
       : Effect.succeed([] as ReadonlyArray<ProviderSession>);
   const service: ProviderServiceShape = {
     startSession: () => unsupported(),
+    replaceSession: () => unsupported(),
     sendTurn: () => unsupported(),
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     respondToElicitation: () => unsupported(),
     stopSession: () => unsupported(),
+    listStartingWorkspaces: () => Effect.succeed([]),
     listSessions,
     getSessionCapabilities: () => Effect.succeed(null),
     assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
@@ -263,6 +277,7 @@ const fakeCheckpointStore: CheckpointStoreShape = {
       }
       return createUnifiedDiff(before, after);
     }),
+  readCheckpointRefs: () => Effect.succeed({}),
   deleteCheckpointRefs: ({ cwd, checkpointRefs }) =>
     Effect.sync(() => {
       const snapshots = fakeCheckpointSnapshots.get(cwd);
@@ -371,6 +386,8 @@ describe("CheckpointReactor", () => {
     readonly threadWorktreePath?: string | null;
     readonly providerSessionCwd?: string;
     readonly stallStartupQuiescence?: boolean;
+    /** Records published receipts instead of using the live bus. */
+    readonly receipts?: Array<OrchestrationRuntimeReceipt>;
   }) {
     const cwd = createGitRepository(options?.initiallyGit ?? true);
     tempDirs.push(cwd);
@@ -390,10 +407,40 @@ describe("CheckpointReactor", () => {
 
     const layer = CheckpointReactorLive.pipe(
       Layer.provide(
+        Layer.succeed(
+          GitCore,
+          makeFakeGitCore({
+            inspectCheckoutIdentity: (target) =>
+              Effect.gen(function* () {
+                const branch = branchNameFromHeadRef(
+                  options?.gitService
+                    ? (yield* options.gitService.execute({
+                        operation: "checkpoint.verifyBranch",
+                        cwd: target,
+                        args: ["symbolic-ref", "HEAD"],
+                      })).stdout
+                    : execFileSync("git", ["symbolic-ref", "HEAD"], {
+                        cwd: target,
+                        encoding: "utf8",
+                      }),
+                );
+                return { canonicalRoot: target, commonDir: path.join(target, ".git"), branch };
+              }),
+          }).service,
+        ),
+      ),
+      Layer.provide(
         options?.gitService ? Layer.succeed(GitService, options.gitService) : GitServiceLive,
       ),
       Layer.provideMerge(orchestrationLayer),
-      Layer.provideMerge(RuntimeReceiptBusLive),
+      Layer.provideMerge(
+        options?.receipts
+          ? Layer.succeed(RuntimeReceiptBus, {
+              publish: (receipt) => Effect.sync(() => options.receipts!.push(receipt)),
+              stream: Stream.empty,
+            })
+          : RuntimeReceiptBusLive,
+      ),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(
         Layer.succeed(CheckpointStore, options?.checkpointStore ?? fakeCheckpointStore),
@@ -410,7 +457,9 @@ describe("CheckpointReactor", () => {
     );
 
     runtime = ManagedRuntime.make(layer);
-    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const engine = withFixtureWorkspaceWrites(
+      await runtime.runPromise(Effect.service(OrchestrationEngineService)),
+    );
     const reactor = await runtime.runPromise(Effect.service(CheckpointReactor));
     const checkpointStore = await runtime.runPromise(Effect.service(CheckpointStore));
     scope = await Effect.runPromise(Scope.make("sequential"));
@@ -440,7 +489,7 @@ describe("CheckpointReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: options?.threadWorktreePath ?? cwd,
+        worktreePath: options?.threadWorktreePath === undefined ? cwd : options.threadWorktreePath,
         createdAt,
       }),
     );
@@ -479,12 +528,16 @@ describe("CheckpointReactor", () => {
   it.each([
     { shared: false, checkout: "agent-selected", injected: false },
     { shared: false, checkout: "agent-selected", injected: true },
+    // A tag that shares the branch's name must not make it read as heads/<name>.
+    { shared: false, checkout: "agent-selected", tagged: true },
     { shared: true, checkout: "agent-selected" },
     { shared: false, checkout: "t3code/abcdef01" },
   ])(
     "follows only an exclusive non-temporary checkout: %j",
-    async ({ shared, checkout, injected }) => {
-      const execute = vi.fn(() => Effect.succeed({ code: 0, stdout: checkout + "\n", stderr: "" }));
+    async ({ shared, checkout, injected, tagged }) => {
+      const execute = vi.fn(() =>
+        Effect.succeed({ code: 0, stdout: `refs/heads/${checkout}\n`, stderr: "" }),
+      );
       const harness = await createHarness({
         seedFilesystemCheckpoints: false,
         ...(injected ? { gitService: { execute } } : {}),
@@ -493,6 +546,28 @@ describe("CheckpointReactor", () => {
         cwd: harness.cwd,
         stdio: "ignore",
       });
+      if (tagged) {
+        execFileSync(
+          "git",
+          [
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@test.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+          ],
+          { cwd: harness.cwd, stdio: "ignore" },
+        );
+        execFileSync("git", ["update-ref", `refs/tags/${checkout}`, "HEAD"], {
+          cwd: harness.cwd,
+          stdio: "ignore",
+        });
+      }
       const threadId = ThreadId.makeUnsafe("thread-1");
       await Effect.runPromise(
         harness.engine.dispatch({
@@ -567,7 +642,11 @@ describe("CheckpointReactor", () => {
   });
 
   it("captures pre-turn baseline on turn.started and post-turn checkpoint on turn.completed", async () => {
-    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const diffCheckpoints = vi.fn(fakeCheckpointStore.diffCheckpoints);
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      checkpointStore: { ...fakeCheckpointStore, diffCheckpoints },
+    });
     const createdAt = new Date().toISOString();
 
     await Effect.runPromise(
@@ -620,6 +699,10 @@ describe("CheckpointReactor", () => {
       (entry) => entry.latestTurn?.turnId === "turn-1" && entry.checkpoints.length === 1,
     );
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+    // Finalization keeps only per-file totals, so it skips the costly patch minimization.
+    expect(diffCheckpoints).toHaveBeenCalledWith(
+      expect.objectContaining({ options: { excludeGitImports: true, minimal: false } }),
+    );
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 0)),
     ).toBe(true);
@@ -765,6 +848,27 @@ describe("CheckpointReactor", () => {
       );
 
       fs.writeFileSync(path.join(harness.cwd, "README.md"), "v4\n");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.makeUnsafe("actual-reply-text"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          messageId: MessageId.makeUnsafe("actual-final-reply"),
+          delta: "Final answer",
+          turnId: asTurnId("turn-refresh"),
+          createdAt: "2026-04-23T10:00:02.500Z",
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: CommandId.makeUnsafe("actual-reply-before-checkpoint"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          messageId: MessageId.makeUnsafe("actual-final-reply"),
+          turnId: asTurnId("turn-refresh"),
+          createdAt: "2026-04-23T10:00:02.500Z",
+        }),
+      );
       harness.provider.emit({
         type: terminalType,
         eventId: EventId.makeUnsafe("terminal-final-edits"),
@@ -791,6 +895,8 @@ describe("CheckpointReactor", () => {
           entry.checkpoints[0]?.checkpointTurnCount === 1,
       );
       expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+      expect(thread.checkpoints[0]?.assistantMessageId).toBe("actual-final-reply");
+      expect(thread.latestTurn?.assistantMessageId).toBe("actual-final-reply");
     },
   );
 
@@ -1091,6 +1197,110 @@ describe("CheckpointReactor", () => {
     );
   });
 
+  it.each([
+    { scenario: "unsupported", failureTones: [] },
+    { scenario: "git-failure", failureTones: ["error"] },
+  ] as const)(
+    "settles the turn without a checkpoint and reports only real failures: $scenario",
+    async ({ scenario, failureTones }) => {
+      const captureCheckpoint = vi.fn(({ cwd }: { readonly cwd: string }) =>
+        scenario === "unsupported"
+          ? Effect.fail(
+              new CheckpointUnsupportedError({
+                operation: "test.capture",
+                cwd,
+                detail: "The workspace directory is ignored by its Git repository.",
+              }),
+            )
+          : Effect.fail(
+              new GitCommandError({
+                operation: "test.capture",
+                command: "git add",
+                cwd,
+                detail: "capture failed",
+              }),
+            ),
+      );
+      const hasCheckpointRef = vi.fn(fakeCheckpointStore.hasCheckpointRef);
+      const receipts: Array<OrchestrationRuntimeReceipt> = [];
+      const harness = await createHarness({
+        seedFilesystemCheckpoints: false,
+        checkpointStore: { ...fakeCheckpointStore, captureCheckpoint, hasCheckpointRef },
+        receipts,
+      });
+      const threadId = ThreadId.makeUnsafe("thread-1");
+      const turnId = asTurnId("turn-unsupported");
+
+      harness.provider.emit({
+        type: "turn.started",
+        eventId: EventId.makeUnsafe("evt-turn-started-unsupported"),
+        provider: "codex",
+        createdAt: "2026-04-23T10:00:00.000Z",
+        threadId,
+        turnId,
+      });
+      await harness.drain();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe("cmd-unsupported-placeholder"),
+          threadId,
+          turnId,
+          completedAt: "2026-04-23T10:00:01.000Z",
+          checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+          status: "missing",
+          files: [],
+          checkpointTurnCount: 1,
+          assistantMessageId: MessageId.makeUnsafe("assistant-unsupported"),
+          createdAt: "2026-04-23T10:00:01.000Z",
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("cmd-session-set-unsupported"),
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-04-23T10:00:02.000Z",
+          },
+          createdAt: "2026-04-23T10:00:02.000Z",
+        }),
+      );
+      await waitForEvent(
+        harness.engine,
+        (event) => event.type === "thread.turn-processing-quiesced",
+      );
+      await harness.drain();
+
+      const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(captureCheckpoint).toHaveBeenCalledTimes(2);
+      // Only the turn-start lookup; the turn capture fails before reading a baseline.
+      expect(hasCheckpointRef).toHaveBeenCalledTimes(1);
+      expect(receipts).toEqual([
+        {
+          type: "turn.processing.quiesced",
+          threadId,
+          turnId,
+          createdAt: "2026-04-23T10:00:01.000Z",
+        },
+      ]);
+      expect(thread?.checkpoints.map((checkpoint) => checkpoint.status)).toEqual(["missing"]);
+      expect(
+        thread?.activities
+          .filter((activity) => activity.kind === "checkpoint.capture.failed")
+          .map((activity) => activity.tone),
+      ).toEqual(failureTones);
+    },
+  );
+
   it("continues processing runtime events after a single checkpoint runtime failure", async () => {
     const nonRepositorySessionCwd = fs.mkdtempSync(
       path.join(os.tmpdir(), "t3-checkpoint-runtime-non-repo-"),
@@ -1151,83 +1361,101 @@ describe("CheckpointReactor", () => {
     ).toBe(true);
   });
 
-  it("executes provider revert and emits thread.reverted for checkpoint revert requests", async () => {
-    const harness = await createHarness();
-    const createdAt = new Date().toISOString();
+  it.each([false, true])(
+    "completes provider revert when stale ref removal fails: %s",
+    async (failDeletion) => {
+      const harness = await createHarness({
+        ...(failDeletion
+          ? {
+              checkpointStore: {
+                ...fakeCheckpointStore,
+                deleteCheckpointRefs: () =>
+                  Effect.fail(
+                    new CheckpointInvariantError({
+                      operation: "deleteCheckpointRefs",
+                      detail: "Ref is locked by another Git process.",
+                    }),
+                  ),
+              },
+            }
+          : {}),
+      });
+      const createdAt = new Date().toISOString();
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.makeUnsafe("cmd-session-set"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        session: {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("cmd-session-set"),
           threadId: ThreadId.makeUnsafe("thread-1"),
+          session: {
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        }),
+      );
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe("cmd-diff-1"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnId: asTurnId("turn-1"),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
           status: "ready",
-          providerName: "codex",
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: createdAt,
-        },
-        createdAt,
-      }),
-    );
+          files: [],
+          checkpointTurnCount: 1,
+          createdAt,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe("cmd-diff-2"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnId: asTurnId("turn-2"),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 2),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: 2,
+          createdAt,
+        }),
+      );
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.diff.complete",
-        commandId: CommandId.makeUnsafe("cmd-diff-1"),
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.checkpoint.revert",
+          commandId: CommandId.makeUnsafe("cmd-revert-request"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnCount: 1,
+          createdAt,
+        }),
+      );
+
+      await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+      const thread = await waitForThread(harness.engine, (entry) => entry.checkpoints.length === 1);
+
+      expect(thread.latestTurn?.turnId).toBe("turn-1");
+      expect(thread.checkpoints).toHaveLength(1);
+      expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+      expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
+      expect(harness.provider.rollbackConversation).toHaveBeenCalledWith({
         threadId: ThreadId.makeUnsafe("thread-1"),
-        turnId: asTurnId("turn-1"),
-        completedAt: createdAt,
-        checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
-        status: "ready",
-        files: [],
-        checkpointTurnCount: 1,
-        createdAt,
-      }),
-    );
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.diff.complete",
-        commandId: CommandId.makeUnsafe("cmd-diff-2"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        turnId: asTurnId("turn-2"),
-        completedAt: createdAt,
-        checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 2),
-        status: "ready",
-        files: [],
-        checkpointTurnCount: 2,
-        createdAt,
-      }),
-    );
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.checkpoint.revert",
-        commandId: CommandId.makeUnsafe("cmd-revert-request"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        turnCount: 1,
-        createdAt,
-      }),
-    );
-
-    await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
-    const thread = await waitForThread(harness.engine, (entry) => entry.checkpoints.length === 1);
-
-    expect(thread.latestTurn?.turnId).toBe("turn-1");
-    expect(thread.checkpoints).toHaveLength(1);
-    expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
-    expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
-    expect(harness.provider.rollbackConversation).toHaveBeenCalledWith({
-      threadId: ThreadId.makeUnsafe("thread-1"),
-      numTurns: 1,
-    });
-    expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
-    expect(
-      gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 2)),
-    ).toBe(false);
-  });
+        numTurns: 1,
+      });
+      expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
+      expect(
+        gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 2)),
+      ).toBe(failDeletion);
+    },
+  );
 
   it("processes consecutive revert requests with deterministic rollback sequencing", async () => {
     const harness = await createHarness();

@@ -27,6 +27,7 @@ it.layer(SqliteClient.layerMemory())("forge account routing", (it) => {
             Effect.sync(() => {
               values.delete(name);
             }),
+          list: () => Effect.succeed([]),
           getOrCreateRandom: () => Effect.succeed(new Uint8Array()),
         };
         const calls: { url: string; token: string | null }[] = [];
@@ -111,6 +112,7 @@ it.layer(SqliteClient.layerMemory())("forge account routing", (it) => {
             values.set(name, value);
           }),
         remove: () => Effect.void,
+        list: () => Effect.succeed([]),
         getOrCreateRandom: () => Effect.succeed(new Uint8Array()),
       };
       let calls = 0,
@@ -191,6 +193,7 @@ it.layer(SqliteClient.layerMemory())("forge account routing", (it) => {
             values.set(name, value);
           }),
         remove: () => Effect.void,
+        list: () => Effect.succeed([]),
         getOrCreateRandom: () => Effect.succeed(new Uint8Array()),
       };
       const fixtures = [
@@ -269,6 +272,7 @@ it.layer(SqliteClient.layerMemory())("forge credential lifecycle", (it) => {
             Effect.sync(() => {
               values.delete(name);
             }),
+          list: () => Effect.succeed([]),
           getOrCreateRandom: () => Effect.succeed(new Uint8Array()),
         };
         const accounts = yield* makeForgeAccounts({

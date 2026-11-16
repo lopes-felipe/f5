@@ -7,14 +7,14 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 export function ThreadWorktreeIndicator(props: {
   thread: Pick<Thread, "id" | "branch" | "worktreePath">;
 }) {
-  const worktreePath = props.thread.worktreePath?.trim();
+  const worktreePath = props.thread.worktreePath;
   if (!worktreePath) {
     return null;
   }
 
   const displayPath = formatWorktreePathForDisplay(worktreePath);
   const label = props.thread.branch
-    ? `Worktree: ${displayPath} (${props.thread.branch})`
+    ? `Worktree: ${props.thread.branch} · ${displayPath}`
     : `Worktree: ${displayPath}`;
 
   return (

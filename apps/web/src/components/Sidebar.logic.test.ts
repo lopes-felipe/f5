@@ -3,8 +3,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildRenderedProjectThreadIds,
+  findShelfBucketForThread,
+  formatCompactCount,
   getVisibleSidebarThreadIds,
   isTrailingDoubleClick,
+  partitionAgedSidebarItems,
+  polledSidebarGitStatusCwds,
+  sidebarPullRequestLinkTargets,
   reconcileFrozenOrder,
   resolveSidebarComposerDraftPreview,
   resolvePrimaryNewThreadProjectId,
@@ -18,6 +23,126 @@ import {
   toggleWorkflowThreadListExpansion,
   threadBucketExpansionKey,
 } from "./Sidebar.logic";
+
+describe("formatCompactCount", () => {
+  it("keeps counts under 1000 exact and shortens thousands", () => {
+    expect(formatCompactCount(0)).toBe("0");
+    expect(formatCompactCount(432)).toBe("432");
+    expect(formatCompactCount(999)).toBe("999");
+    expect(formatCompactCount(1000)).toBe("1k");
+    expect(formatCompactCount(2224)).toBe("2.2k");
+    expect(formatCompactCount(9_999)).toBe("9.9k");
+    expect(formatCompactCount(15_400)).toBe("15k");
+  });
+});
+
+describe("partitionAgedSidebarItems", () => {
+  const now = Date.parse("2026-11-03T12:00:00.000Z");
+  const daysAgo = (days: number) => new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+  const items = [
+    { id: "fresh", at: daysAgo(1) },
+    { id: "stale", at: daysAgo(8) },
+    { id: "boundary", at: daysAgo(7) },
+    { id: "exempt", at: daysAgo(30) },
+    { id: "unknown", at: null },
+  ];
+  const accessors = {
+    getKey: (item: (typeof items)[number]) => item.id,
+    getActivityAt: (item: (typeof items)[number]) => item.at,
+  };
+
+  it("folds items idle longer than the threshold, keeping order on both sides", () => {
+    const result = partitionAgedSidebarItems(items, now, 7, new Set(["exempt"]), accessors);
+    expect(result.recent.map((item) => item.id)).toEqual([
+      "fresh",
+      "boundary",
+      "exempt",
+      "unknown",
+    ]);
+    expect(result.older.map((item) => item.id)).toEqual(["stale"]);
+  });
+
+  it("keeps everything recent when aging is off", () => {
+    const result = partitionAgedSidebarItems(items, now, 0, new Set(), accessors);
+    expect(result.recent).toHaveLength(items.length);
+    expect(result.older).toEqual([]);
+  });
+
+  it("honours every exemption regardless of age", () => {
+    const result = partitionAgedSidebarItems(
+      items,
+      now,
+      3,
+      new Set(["stale", "boundary", "exempt"]),
+      accessors,
+    );
+    expect(result.older).toEqual([]);
+  });
+});
+
+describe("findShelfBucketForThread", () => {
+  const thread = (id: string) => ({ id: ThreadId.makeUnsafe(id) });
+  const lists = {
+    scheduledThreads: [thread("scheduled")],
+    snoozedThreads: [thread("snoozed")],
+    settledThreads: [thread("settled")],
+    archivedSidebarItems: [
+      { kind: "workflow" as const },
+      { kind: "thread" as const, thread: thread("archived") },
+    ],
+  };
+
+  it("finds the bucket that lists the open thread", () => {
+    expect(findShelfBucketForThread(lists, ThreadId.makeUnsafe("scheduled"))).toBe("scheduled");
+    expect(findShelfBucketForThread(lists, ThreadId.makeUnsafe("snoozed"))).toBe("snoozed");
+    expect(findShelfBucketForThread(lists, ThreadId.makeUnsafe("settled"))).toBe("settled");
+    expect(findShelfBucketForThread(lists, ThreadId.makeUnsafe("archived"))).toBe("archived");
+  });
+
+  it("returns null for threads off the shelf and for no thread", () => {
+    expect(findShelfBucketForThread(lists, ThreadId.makeUnsafe("active"))).toBeNull();
+    expect(findShelfBucketForThread(lists, null)).toBeNull();
+  });
+});
+
+describe("polledSidebarGitStatusCwds", () => {
+  const target = (
+    id: string,
+    cwd: string | null,
+    archived: boolean,
+    branch: string | null = "f5/x",
+  ) => ({
+    threadId: ThreadId.makeUnsafe(id),
+    branch,
+    archived,
+    cwd,
+  });
+
+  it("polls live branch threads and the open thread, never other archived ones", () => {
+    const targets = [
+      target("live", "/repo/live", false),
+      target("archived", "/repo/archived", true),
+      target("open-archived", "/repo/open", true),
+      target("no-branch", "/repo/no-branch", false, null),
+      target("no-cwd", null, false),
+    ];
+
+    expect([...polledSidebarGitStatusCwds(targets, ThreadId.makeUnsafe("open-archived"))]).toEqual([
+      "/repo/live",
+      "/repo/open",
+    ]);
+    expect([...polledSidebarGitStatusCwds(targets, null)]).toEqual(["/repo/live"]);
+  });
+
+  it("keeps polling a workspace shared by a live and an archived thread", () => {
+    const targets = [
+      target("archived", "/repo/shared", true),
+      target("live", "/repo/shared", false),
+    ];
+
+    expect([...polledSidebarGitStatusCwds(targets, null)]).toEqual(["/repo/shared"]);
+  });
+});
 
 describe("resolveSidebarComposerDraftPreview", () => {
   const emptyDraft = {
@@ -241,6 +366,19 @@ describe("resolvePrimaryNewThreadProjectId", () => {
       }),
     ).toBeNull();
   });
+
+  it("ignores stale bootstrap/draft context when its project no longer exists", () => {
+    const context = {
+      activeThreadProjectId: active,
+      activeDraftProjectId: draft,
+      mostRecentProjectId: recent,
+      firstProjectId: first,
+    };
+    expect(resolvePrimaryNewThreadProjectId({ ...context, projects: [] })).toBeNull();
+    expect(resolvePrimaryNewThreadProjectId({ ...context, projects: [{ id: recent }] })).toBe(
+      recent,
+    );
+  });
 });
 
 describe("resolveSidebarNewThreadIntent", () => {
@@ -292,6 +430,31 @@ describe("workflow thread list helpers", () => {
         expandByDefault: false,
         activeThreadId: ThreadId.makeUnsafe("thread-a"),
         workflowThreadIds: [ThreadId.makeUnsafe("thread-a")],
+      }),
+    ).toBe(true);
+  });
+
+  it("collapses completed workflows even when expanding by default", () => {
+    const input = {
+      expandByDefault: true,
+      activeThreadId: null,
+      workflowThreadIds: [ThreadId.makeUnsafe("thread-a")],
+    };
+    expect(resolveWorkflowThreadListExpanded({ ...input, overallState: "completed" })).toBe(false);
+    expect(resolveWorkflowThreadListExpanded({ ...input, overallState: "active" })).toBe(true);
+    // The open thread still reveals its finished workflow, and a user toggle still wins.
+    expect(
+      resolveWorkflowThreadListExpanded({
+        ...input,
+        activeThreadId: ThreadId.makeUnsafe("thread-a"),
+        overallState: "completed",
+      }),
+    ).toBe(true);
+    expect(
+      resolveWorkflowThreadListExpanded({
+        ...input,
+        overrideExpanded: true,
+        overallState: "completed",
       }),
     ).toBe(true);
   });
@@ -569,5 +732,28 @@ describe("resolveThreadRowClassName", () => {
     const read = resolveThreadRowClassName({ isActive: false, isSelected: false });
     expect(read).toContain("text-muted-foreground");
     expect(read).not.toContain("font-medium");
+  });
+});
+
+describe("sidebarPullRequestLinkTargets", () => {
+  const thread = (id: string, archived: boolean, lookupCwd: string | null = "/repo") => ({
+    id: ThreadId.makeUnsafe(id),
+    archived,
+    lookupCwd,
+    pullRequests: [{ url: `https://github.com/o/r/pull/${id.length}` }],
+  });
+
+  it("resolves links of live threads and the open thread only", () => {
+    const targets = sidebarPullRequestLinkTargets(
+      [thread("live", false), thread("archived", true), thread("opened", true)],
+      ThreadId.makeUnsafe("opened"),
+    );
+    expect(targets.map((target) => target.enabled)).toEqual([true, false, true]);
+  });
+
+  it("never resolves a thread without a repository to read from", () => {
+    expect(sidebarPullRequestLinkTargets([thread("scratch", false, null)], null)).toEqual([
+      { cwd: null, url: "https://github.com/o/r/pull/7", enabled: false },
+    ]);
   });
 });

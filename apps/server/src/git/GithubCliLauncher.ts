@@ -6,11 +6,33 @@ import {
   githubGitCredentialsPath,
 } from "./GithubCliProjection";
 import * as FS from "node:fs/promises";
+import { readFileSync, statSync } from "node:fs";
 import * as Path from "node:path";
 
 export const githubUnavailablePath = (stateDir: string) =>
   Path.join(stateDir, "github-unavailable");
 export const githubLauncherDir = (stateDir: string) => Path.join(stateDir, "github-bin");
+
+const windowsLauncherSource = (runtime: string, script: string) =>
+  `@echo off\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${runtime}" "${script}" %*\r\n`;
+
+/** Resolve only this profile's exact generated wrapper, without invoking cmd.exe. */
+export function resolveProfileGithubLauncher(executable: string, env: NodeJS.ProcessEnv) {
+  if (!env.GH_CONFIG_DIR) return null;
+  const directory = githubLauncherDir(Path.dirname(env.GH_CONFIG_DIR));
+  const wrapper = Path.join(directory, "gh.cmd");
+  if (Path.resolve(executable).toLowerCase() !== Path.resolve(wrapper).toLowerCase()) return null;
+  const runtime = javascriptRuntimeExecutable();
+  const script = Path.join(directory, "gh.cjs");
+  const expected = windowsLauncherSource(runtime, script);
+  if (
+    statSync(executable).size !== Buffer.byteLength(expected) ||
+    readFileSync(executable, "utf8") !== expected ||
+    !statSync(script).isFile()
+  )
+    throw new Error("The profile GitHub launcher changed; refusing to execute it.");
+  return { runtime, script };
+}
 
 /** No credentials in this launcher. It selects the profile again after shell startup. */
 const prepared = new Map<string, Promise<void>>();
@@ -86,7 +108,7 @@ process.exit(result.status ?? 1);
   );
   await FS.writeFile(
     Path.join(directory, "gh.cmd"),
-    `@echo off\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${javascriptRuntimeExecutable()}" "${script}" %*\r\n`,
+    windowsLauncherSource(javascriptRuntimeExecutable(), script),
     { mode: 0o700 },
   );
 }

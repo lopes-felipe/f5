@@ -1,3 +1,7 @@
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { GrokSettings } from "@t3tools/contracts";
 import { Effect, Schema } from "effect";
@@ -6,6 +10,31 @@ import { describe, expect, it } from "vitest";
 import { checkGrokProviderStatus, parseGrokModelsCliOutput } from "./GrokProvider.ts";
 
 describe("checkGrokProviderStatus", () => {
+  it.skipIf(process.platform === "win32")(
+    "allows slow healthy version probes",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "f5-grok-slow-"));
+      const binaryPath = join(dir, "grok");
+      writeFileSync(
+        binaryPath,
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then sleep 4.2; echo "grok 1.2.0"; fi\nexit 0\n',
+      );
+      chmodSync(binaryPath, 0o755);
+      try {
+        const settings = Schema.decodeSync(GrokSettings)({ enabled: true, binaryPath });
+        const provider = await Effect.runPromise(
+          checkGrokProviderStatus(settings, {
+            PATH: process.env.PATH,
+          }).pipe(Effect.provide(NodeServices.layer)),
+        );
+        expect(provider.installed).toBe(true);
+        expect(provider.version).toBe("1.2.0");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
   it("reads native login and models output without assuming exit zero means authenticated", () => {
     expect(parseGrokModelsCliOutput("You are not logged in.\nRun grok login").authenticated).toBe(
       false,
@@ -28,6 +57,120 @@ describe("checkGrokProviderStatus", () => {
     expect(provider.enabled).toBe(false);
     expect(provider.status).toBe("disabled");
   });
+  it.skipIf(process.platform === "win32")(
+    "keeps Grok's updater off for its health probes",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "f5-grok-probe-"));
+      const log = join(dir, "env.log");
+      const binaryPath = join(dir, "grok");
+      writeFileSync(
+        binaryPath,
+        `#!/bin/sh\necho "$1=$GROK_DISABLE_AUTOUPDATER" >> "${log}"\n[ "$1" = "--version" ] && echo "grok 1.2.0"\nexit 0\n`,
+      );
+      chmodSync(binaryPath, 0o755);
+      try {
+        const settings = Schema.decodeSync(GrokSettings)({
+          enabled: true,
+          binaryPath,
+          customModels: [],
+        });
+        await Effect.runPromise(
+          checkGrokProviderStatus(settings, { PATH: process.env.PATH }).pipe(
+            Effect.provide(NodeServices.layer),
+          ),
+        );
+        expect(readFileSync(log, "utf8")).toContain("--version=1");
+        expect(readFileSync(log, "utf8")).not.toMatch(/=\n/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+  it.skipIf(process.platform === "win32")("marks Grok CLIs older than 1.0.13 broken", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "f5-grok-old-"));
+    const binaryPath = join(dir, "grok");
+    writeFileSync(binaryPath, `#!/bin/sh\n[ "$1" = "--version" ] && echo "grok 1.0.12"\nexit 0\n`);
+    chmodSync(binaryPath, 0o755);
+    try {
+      const settings = Schema.decodeSync(GrokSettings)({
+        enabled: true,
+        binaryPath,
+        customModels: [],
+      });
+      const provider = await Effect.runPromise(
+        checkGrokProviderStatus(settings, { PATH: process.env.PATH }).pipe(
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+      expect(provider.status).toBe("error");
+      expect(provider.version).toBe("1.0.12");
+      expect(provider.message).toBe("Grok CLI v1.0.12 is too old. Upgrade to v1.0.13 or newer.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const runLoginProbe = async (secondModelsOutput: string, environment: NodeJS.ProcessEnv = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), "f5-grok-login-"));
+    const count = join(dir, "models.count");
+    const binaryPath = join(dir, "grok");
+    // The first `grok models` reports a logged-out token; later runs print `secondModelsOutput`.
+    writeFileSync(
+      binaryPath,
+      `#!/bin/sh\n[ "$1" = "--version" ] && echo "grok 1.2.0" && exit 0\necho x >> "${count}"\nif [ "$(wc -l < "${count}")" -eq 1 ]; then echo "You are not logged in."; else printf '${secondModelsOutput}\\n'; fi\nexit 0\n`,
+    );
+    chmodSync(binaryPath, 0o755);
+    try {
+      const settings = Schema.decodeSync(GrokSettings)({
+        enabled: true,
+        binaryPath,
+        customModels: [],
+      });
+      const provider = await Effect.runPromise(
+        checkGrokProviderStatus(settings, { PATH: process.env.PATH, ...environment }).pipe(
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+      return { provider, modelsRuns: readFileSync(count, "utf8").trim().split("\n").length };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  it.skipIf(process.platform === "win32")(
+    "rechecks login once when the first probe refreshed an expired token",
+    async () => {
+      const { provider, modelsRuns } = await runLoginProbe(
+        "You are logged in with grok.com.\\nAvailable models:\\n - grok-4.6",
+      );
+      expect(modelsRuns).toBe(2);
+      expect(provider.status).toBe("ready");
+      expect(provider.auth.status).toBe("authenticated");
+    },
+  );
+  it.skipIf(process.platform === "win32")(
+    "keeps a real logout unauthenticated after one recheck",
+    async () => {
+      const { provider, modelsRuns } = await runLoginProbe("You are not logged in.");
+      expect(modelsRuns).toBe(2);
+      expect(provider.auth.status).toBe("unauthenticated");
+    },
+  );
+  it.skipIf(process.platform === "win32")(
+    "keeps the logged-out verdict when the recheck is inconclusive",
+    async () => {
+      const { provider } = await runLoginProbe("Available models:\\n - grok-4.6");
+      expect(provider.auth.status).toBe("unauthenticated");
+    },
+  );
+  it.skipIf(process.platform === "win32")(
+    "does not recheck login when an xAI API key is configured",
+    async () => {
+      const { provider, modelsRuns } = await runLoginProbe("You are logged in.", {
+        XAI_API_KEY: "xai-test",
+      });
+      expect(modelsRuns).toBe(1);
+      expect(provider.auth.status).toBe("authenticated");
+    },
+  );
   it("reports a missing binary as unavailable", async () => {
     const settings = Schema.decodeSync(GrokSettings)({
       enabled: true,

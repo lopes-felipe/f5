@@ -1,0 +1,82 @@
+{
+  "version": "2025-06-18",
+  "description": "Initialize lifecycle: initialize, initialized notification, then tools/* with the negotiated MCP-Protocol-Version header.",
+  "exchanges": [
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-06-18",
+          "capabilities": {},
+          "clientInfo": { "name": "conformance-client", "version": "1.0.0" }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": "2025-06-18",
+          "capabilities": { "tools": { "listChanged": false } },
+          "serverInfo": { "name": "F5 Agent Bridge", "title": "F5 Agent Bridge" }
+        }
+      }
+    },
+    {
+      "request": { "jsonrpc": "2.0", "method": "notifications/initialized" },
+      "response": null
+    },
+    {
+      "headers": { "mcp-protocol-version": "2025-06-18" },
+      "request": { "jsonrpc": "2.0", "id": 2, "method": "ping" },
+      "response": { "jsonrpc": "2.0", "id": 2, "result": {} }
+    },
+    {
+      "headers": { "mcp-protocol-version": "2025-06-18" },
+      "request": { "jsonrpc": "2.0", "id": 3, "method": "tools/list" },
+      "toolNames": [
+        "list_projects",
+        "list_providers",
+        "list_threads",
+        "get_thread",
+        "get_thread_diff",
+        "create_thread",
+        "send_message",
+        "wait_for_submission"
+      ]
+    },
+    {
+      "headers": { "mcp-protocol-version": "2025-06-18" },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "list_projects", "arguments": {} }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "structuredContent": {
+            "projects": [{ "id": "exposed", "title": "exposed", "workspaceRoot": "/repo/exposed" }]
+          }
+        }
+      }
+    },
+    {
+      "headers": { "mcp-protocol-version": "2025-06-18" },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": { "name": "delete_thread" }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "error": { "code": -32602, "message": "Unknown tool: delete_thread" }
+      }
+    }
+  ]
+}

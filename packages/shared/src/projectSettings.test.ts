@@ -1,9 +1,20 @@
 import legacySettings from "./fixtures/server-settings-290d261c9.json";
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
-import { DEFAULT_SERVER_SETTINGS, ProjectId, ServerSettings } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProjectId,
+  ProjectSettingsOverrides,
+  ServerSettings,
+  ProviderInstanceId,
+  ProviderDriverKind,
+} from "@t3tools/contracts";
 import { parseCheckedInProjectFile } from "./checkedInProjectFile";
-import { agentBrowserPolicyFromSettings, resolveProjectSettings } from "./projectSettings";
+import {
+  agentBrowserPolicyFromSettings,
+  resolveProjectSettings,
+  resolveWorktreeCleanupRules,
+} from "./projectSettings";
 import { applyServerSettingsPatch } from "./serverSettings";
 const id = ProjectId.makeUnsafe("project-test");
 describe("agent browser policy", () => {
@@ -21,6 +32,40 @@ describe("agent browser policy", () => {
 });
 
 describe("project settings", () => {
+  it("uses background computer control by default and honors project disablement", () => {
+    const policy = agentBrowserPolicyFromSettings(DEFAULT_SERVER_SETTINGS, id);
+    expect(policy.computerUse).toBe(true);
+    expect(policy.computerUseExecutionMode).toBe("background");
+    expect(
+      agentBrowserPolicyFromSettings(
+        applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+          projectSettingsOverrides: { [id]: { enableAgentComputerUse: false } },
+        }),
+        id,
+      ).computerUse,
+    ).toBe(false);
+  });
+  it("persists global password masking without allowing project or checked-in overrides", () => {
+    const global = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      computerUsePasswordMasking: "conservative",
+    });
+    expect(global.computerUsePasswordMasking).toBe("conservative");
+    expect(agentBrowserPolicyFromSettings(global, id).computerUsePasswordMasking).toBe(
+      "conservative",
+    );
+    expect(
+      agentBrowserPolicyFromSettings(DEFAULT_SERVER_SETTINGS, id).computerUsePasswordMasking,
+    ).toBe("fast");
+    expect(
+      resolveProjectSettings({
+        projectId: id,
+        global,
+        checkedIn: Schema.decodeUnknownSync(ProjectSettingsOverrides)({
+          computerUsePasswordMasking: "fast",
+        }),
+      }).settings.computerUsePasswordMasking,
+    ).toBe("conservative");
+  });
   it("ignores checked-in values for storage automation keys", () => {
     const result = resolveProjectSettings({
       projectId: id,
@@ -28,7 +73,7 @@ describe("project settings", () => {
         autoPullDefaultBranch: true,
         worktreeCleanup: {
           mode: "custom",
-          rules: { afterDays: 1, onMerge: true, onDelete: true, unchanged: true },
+          rules: { afterDays: 1, onMerge: true, onDelete: true, unchanged: true, minIdleHours: 1 },
         },
       },
       sourceFile: "f5.json",
@@ -37,9 +82,48 @@ describe("project settings", () => {
     expect(result.settings.worktreeCleanup).toBeNull();
     expect(result.sources.autoPullDefaultBranch).toBe("default");
   });
+  it("keeps settlement opt-in under user-owned global and project settings", () => {
+    const checkedIn = {
+      autoSettleOnPullRequestMerge: true,
+      autoSettleAfterDays: 1,
+      autoSettleKeepPullRequests: false,
+    };
+    const result = resolveProjectSettings({ projectId: id, checkedIn, sourceFile: "f5.json" });
+    expect(result.settings.autoSettleOnPullRequestMerge).toBe(false);
+    expect(result.settings.autoSettleAfterDays).toBeNull();
+    expect(result.settings.autoSettleKeepPullRequests).toBe(true);
+    const global = { ...DEFAULT_SERVER_SETTINGS, projectSettingsOverrides: { [id]: checkedIn } };
+    const override = resolveProjectSettings({ projectId: id, checkedIn: {}, global });
+    expect(override.settings.autoSettleAfterDays).toBe(1);
+    expect(override.sources.autoSettleAfterDays).toBe("project");
+  });
+  it("recognizes an on-settle-only cleanup rule and honors the master opt-in", () => {
+    const worktree = {
+      afterDays: null,
+      onMerge: false,
+      onDelete: false,
+      unchanged: false,
+      minIdleHours: 24,
+      onSettle: true,
+    };
+    expect(
+      resolveWorktreeCleanupRules({
+        ...DEFAULT_SERVER_SETTINGS,
+        storageCleanup: { ...DEFAULT_SERVER_SETTINGS.storageCleanup, enabled: true, worktree },
+      }),
+    ).toEqual(worktree);
+    expect(
+      resolveWorktreeCleanupRules({
+        ...DEFAULT_SERVER_SETTINGS,
+        storageCleanup: { ...DEFAULT_SERVER_SETTINGS.storageCleanup, enabled: false, worktree },
+      }),
+    ).toBeNull();
+  });
+
   it("never lets a checked-in file widen agent browser or computer reach", () => {
     const result = resolveProjectSettings({
       projectId: id,
+      global: { ...DEFAULT_SERVER_SETTINGS, enableAgentComputerUse: false },
       checkedIn: {
         previewExternalHosts: ["*"],
         enableClaudeInChrome: true,
@@ -50,7 +134,21 @@ describe("project settings", () => {
     expect(result.settings.previewExternalHosts).toEqual([]);
     expect(result.settings.enableClaudeInChrome).toBe(false);
     expect(result.settings.enableAgentComputerUse).toBe(false);
-    expect(result.sources.previewExternalHosts).toBe("default");
+    expect(result.sources.previewExternalHosts).toBe("global");
+  });
+  it("ignores checked-in computer disablement and execution mode under the new defaults", () => {
+    const result = resolveProjectSettings({
+      projectId: id,
+      global: DEFAULT_SERVER_SETTINGS,
+      checkedIn: Schema.decodeUnknownSync(ProjectSettingsOverrides)({
+        enableAgentComputerUse: false,
+        computerUseExecutionMode: "foreground",
+      }),
+      sourceFile: "f5.json",
+    });
+    expect(result.settings.enableAgentComputerUse).toBe(true);
+    expect(result.settings.computerUseExecutionMode).toBe("background");
+    expect(result.sources.enableAgentComputerUse).toBe("global");
   });
   it("resolves override, legacy, file, global and built-in defaults in order", () => {
     const global = { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "worktree" as const };
@@ -161,4 +259,37 @@ describe("project settings", () => {
       textGenerationModelSelection: legacySettings.textGenerationModelSelection,
     });
   });
+});
+
+it("keeps instance configuration while falling back to a project-enabled custom text generator", () => {
+  const custom = ProviderInstanceId.make("custom-codex");
+  const providerInstances = Object.fromEntries(
+    Object.keys(DEFAULT_SERVER_SETTINGS.providers).map((driver) => [driver, { enabled: false }]),
+  );
+  const global = {
+    ...DEFAULT_SERVER_SETTINGS,
+    providerInstances: {
+      [custom]: {
+        driver: ProviderDriverKind.make("codex"),
+        enabled: false,
+        config: { binaryPath: "/custom/codex", homePath: "/private/home" },
+      },
+    },
+    projectSettingsOverrides: {
+      [id]: { providerInstances: { ...providerInstances, [custom]: { enabled: true } } },
+    },
+  };
+  const resolved = resolveProjectSettings({
+    global,
+    projectId: id,
+    checkedIn: { providerInstances: { [custom]: { enabled: false } } },
+  });
+  expect(resolved.settings.textGenerationModelSelection.instanceId).toBe(custom);
+  expect(resolved.settings.providerInstances[custom]?.config).toEqual(
+    global.providerInstances[custom]?.config,
+  );
+  expect(resolved.settings.providerInstances[custom]?.enabled).toBe(true);
+  expect(resolved.settings.providers.codex.enabled).toBe(false);
+  expect(global.providerInstances[custom]?.enabled).toBe(false);
+  expect(resolved.sources.providerInstances).toBe("project");
 });

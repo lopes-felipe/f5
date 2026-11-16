@@ -1,4 +1,126 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
+import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
+import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
+import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
+import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
+import { resolveTemporaryWorktreeBranch } from "./git/temporaryWorktreeBranch.ts";
+import { parseNaturalLanguageSchedule } from "./scheduledTasks/naturalLanguage.ts";
+import { TURN_SUBMISSION_FAILURES } from "./TurnSubmissionError.ts";
+import { makeTurnSubmissionService } from "./TurnSubmissionService.ts";
+import { RouteRequestError, mapNextTurnQueueRouteError } from "./turnSubmissionErrors.ts";
+import { makeScheduledTaskService } from "./scheduledTasks/Service.ts";
+import { makeScheduledTaskStore, scheduleError } from "./scheduledTasks/Store.ts";
+import { McpAppService } from "./mcpApps/McpAppService.ts";
+import { MCP_APPS_WS_METHODS } from "@t3tools/contracts";
+import { ThreadSettlementService } from "./orchestration/Layers/ThreadSettlementService.ts";
+import { makeTurnGitStatusRefresh } from "./wsServer/turnGitStatusRefresh";
+import { THREAD_SETTLEMENT_WS_METHODS } from "@t3tools/contracts";
+import { PullRequestWatchService } from "./orchestration/Layers/PullRequestWatchService.ts";
+import { PR_WATCH_WS_METHODS, PR_WATCH_CHANGED_CHANNEL } from "@t3tools/contracts";
+import { HTML_RENDER_WS_METHODS } from "@t3tools/contracts";
+import { makeHtmlPreviewBroker } from "./htmlRender/HtmlPreviewBroker.ts";
+import { makeHtmlRenderRuntime } from "./htmlRender/HtmlRenderRuntime.ts";
+import { ThreadMcpBroker } from "./mcp/threadMcpTools.ts";
+import { makeThreadToolHandler } from "./mcp/threadToolRuntime.ts";
+import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages.ts";
+import { ProjectionThreadProposedPlanRepositoryLive } from "./persistence/Layers/ProjectionThreadProposedPlans.ts";
+import { ProjectionThreadMessageRepository } from "./persistence/Services/ProjectionThreadMessages.ts";
+import { ProjectionThreadProposedPlanRepository } from "./persistence/Services/ProjectionThreadProposedPlans.ts";
+import { PrHubFederation } from "./prHub/Layers/PrHubFederation.ts";
+import { PrHubReviewGuideService } from "./prHub/Layers/PrHubReviewGuideService.ts";
+import { publicOtlpConfiguration, resolveOtlpConfiguration } from "@t3tools/shared/observability";
+import { registerShutdown, ServerShutdown } from "./shutdown.ts";
+import { streamFileHandle } from "./assetHttp.ts";
+import { makeSocketLiveness, closeSocketsWithin } from "./wsServer/socketLiveness.ts";
+import { makeClientDiagnosticsReporter } from "./observability/clientDiagnostics.ts";
+import { withProviderThreadAccess } from "./provider/providerThreadAccess.ts";
+import { makeMcpSecretWriter } from "./mcp/McpSecretWriter.ts";
+import { McpServerWriteDefinition } from "@t3tools/contracts";
+import { makeMcpAccountExecutionResolver } from "./mcp/accountExecution.ts";
+import { detectMcpImports } from "./mcp/McpImportDetection.ts";
+import { probeMcpServer } from "./mcp/McpProbe.ts";
+import { resolveMcpSecrets } from "./mcp/McpSecretResolver.ts";
+import {
+  OrchestrationCommandInvariantError,
+  OrchestrationOverloadError,
+} from "./orchestration/Errors.ts";
+import {
+  WorkspaceRequiresNewWorktreeError,
+  GitWorkspaceSwitch,
+  type GitWorkspaceSwitchHandler,
+} from "./git/workspaceSwitch.ts";
+import { inspectAttachableWorkspace } from "./project/workspaceAttachment.ts";
+import { discoverSourceControlProviderIdentities } from "./sourceControl/discovery.ts";
+import {
+  initializeNewProject,
+  projectFolderSlug,
+  reserveProjectFolder,
+  resolveProjectsRoot,
+} from "./project/createNewProject.ts";
+import {
+  prepareScratchRoot,
+  scratchProjectIdFor,
+  scratchRootFor,
+  scratchWorkspaceRefusal,
+} from "./project/scratchProject.ts";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { answerMessageIdFor } from "@t3tools/shared/answerDelivery";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { readWorktreeClaims } from "./project/worktreeClaims.ts";
+import { withRepositoryLifecycleLock } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
+import { GitHubCli } from "./git/Services/GitHubCli.ts";
+import { GitService } from "./git/Services/GitService.ts";
+import { TextGeneration } from "./git/Services/TextGeneration.ts";
+import { makeUpstreamGit } from "./upstreamPorts/git.ts";
+import { makeUpstreamGitHub } from "./upstreamPorts/github.ts";
+import { makeUpstreamPortsService, UpstreamPortsError } from "./upstreamPorts/service.ts";
+import { makeUpstreamStore } from "./upstreamPorts/store.ts";
+import {
+  assertExclusiveProfileCheckout,
+  assertNotOtherProfileManagedCheckout,
+} from "./profiles/RepositorySharing.ts";
+import {
+  WorkspaceTransition,
+  type WorkspaceTransitionShape,
+} from "./project/Services/WorkspaceTransition.ts";
+import { setupProjectScript } from "@t3tools/shared/projectScripts";
+import { WorktreePreparations } from "./persistence/Services/WorktreePreparations.ts";
+import { WorktreePreparationsLive } from "./persistence/Layers/WorktreePreparations.ts";
+import {
+  WorktreePreparation,
+  type WorktreePreparationShape,
+} from "./project/Services/WorktreePreparation.ts";
+import { removeWorktreeSafely } from "./project/worktreeClaims.ts";
+import { WorktreeManager, type WorktreeManagerShape } from "./project/Services/WorktreeManager.ts";
+import { canonicalWorktreePath } from "./git/worktreePaths.ts";
+import { ProjectionProjectRepository } from "./persistence/Services/ProjectionProjects";
+import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects";
+import {
+  ProjectSkillSyncService,
+  type ProjectSkillSyncServiceShape,
+} from "./orchestration/Services/ProjectSkillSyncService.ts";
+import { startScheduledBackups, readScheduledBackupStatus } from "./storage/scheduledBackups.ts";
+import { startDatabaseSnapshots } from "./storage/databaseSnapshots.ts";
+import { startDatabaseDamageTripwire } from "./storage/databaseDamageTripwire.ts";
+import { getDatabaseDamage } from "./persistence/databaseHealth.ts";
+import { rpcBusyTotal, rpcServerStartingTotal } from "./observability/Metrics";
+import { rpcLane, RpcAdmission, rpcRequiresRuntime } from "@t3tools/shared/rpcScheduling";
+import { writeWorkspaceFile } from "./WorkspaceFileWriter";
+import { WorkspaceWatchRegistry } from "./workspaceWatch";
+import {
+  agentComputerUsePush,
+  ComputerAutomationBroker,
+} from "./computer/ComputerAutomationBroker";
+import { computerPolicyChange } from "./computer/computerPolicyChange";
+import {
+  restoreChromeSessionSetup,
+  listChromeSessionSetups,
+  isChromeRuntimeSession,
+  reconcileChromeSessionSetups,
+} from "./provider/chromeSessionRuntimeFactory";
 import { finishAcknowledgedNativeRewind } from "./orchestration/nativeRewindAcknowledgement.ts";
+import { readThreadPeek, readThreadPeeks } from "./orchestration/threadPeek.ts";
 import { ProviderValidationError } from "./provider/Errors.ts";
 import { NATIVE_OPERATION_WS_METHODS, ThreadId as NativeForkThreadId } from "@t3tools/contracts";
 import {
@@ -6,12 +128,23 @@ import {
   runClaudeTranscriptMaintenance,
   claudeMaintenanceErrorMessage,
 } from "./maintenance/ClaudeTranscriptMaintenance.ts";
+import { readAgentTranscript } from "./provider/agentTranscript/readAgentTranscript.ts";
 import { stampSubmissionSource } from "./provider/submissionProvenance.ts";
+import { AgentBridgeHostError, type AgentBridgeHostShape } from "./agentBridge/AgentBridgeHost.ts";
+import {
+  agentBridgeStdioSetups,
+  makeAgentBridgeService,
+} from "./agentBridge/AgentBridgeService.ts";
+import { makeAgentBridgeStore } from "./agentBridge/AgentBridgeStore.ts";
+import { makeBotTaskStore } from "./agentBridge/BotTaskStore.ts";
+import { version as serverPackageVersion } from "../package.json" with { type: "json" };
 import { usageResumeTargetAfterCredit } from "./usage/usageResumeAfterCredit.ts";
 import { usageLimitKey } from "./nextTurnQueue/usageLimitResume.ts";
 import { awaitActivation, waitForActivation, reportActive } from "./distribution/activation";
 import { ForgeAccounts } from "./sourceControl/accountRouting.ts";
 import { PrHubExtensions } from "./prHub/PrHubExtensions.ts";
+import { prHubPeekErrorCode } from "./prHub/prHubPeekError.ts";
+import { withPrHubThreadLinks } from "./prHub/readModel.ts";
 import { createGitHubMediaProxy } from "./prHub/githubMediaProxy.ts";
 import { readAssetImageDimensions } from "./imageDimensions";
 import { makePreviewFileServer } from "./previewFileServer";
@@ -28,8 +161,10 @@ import {
   F5_PROTOCOL_HEADER,
   F5_PROTOCOL_QUERY,
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
+  type ServerRuntimeReadiness,
   type TurnSubmissionResult,
   type GitCheckoutConflict,
+  type WebSocketResponse,
 } from "@t3tools/contracts";
 import { GithubDeviceLogin, resolveGithubOAuthClientId } from "./git/GithubDeviceLogin";
 import { GithubCliImport } from "./git/GithubCliImport";
@@ -44,7 +179,7 @@ import {
   invalidExecutionDirectories,
 } from "./profiles/RepositorySharing";
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
-import { profileStateDir } from "@t3tools/shared/profilePaths";
+import { integrationUnavailableDetail } from "@t3tools/shared/providerIntegrationCertification";
 import { ProfileRegistryStore, fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
 import { ProviderAccountService } from "./profiles/ProviderAccountService";
 /**
@@ -64,6 +199,9 @@ import Mime from "@effect/platform-node/Mime";
 import {
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
+  AGENT_BRIDGE_WS_CHANNELS,
+  UPSTREAM_PORTS_WS_CHANNELS,
+  UpstreamTriageBatchResult,
   USAGE_WS_METHODS,
   ELICITATION_WS_METHODS,
   CommandId,
@@ -82,9 +220,7 @@ import {
   ProviderInstanceId,
   WS_CHANNELS,
   WS_METHODS,
-  type StorageCleanupProgressPayload,
   WebSocketRequest,
-  type WsResponse as WsResponseMessage,
   WsResponse,
   type WsPushEnvelopeBase,
   type WorkflowPlatformCreateRunInput,
@@ -104,6 +240,7 @@ import {
   Ref,
   Result,
   Schema,
+  Semaphore,
   Scope,
   ServiceMap,
   Stream,
@@ -113,15 +250,11 @@ import { WebSocketServer, type WebSocket } from "ws";
 
 import { createLogger } from "./logger";
 import { NextTurnQueueStore } from "./nextTurnQueue/Services/NextTurnQueueStore.ts";
+import { makeProjectionTurnRepository } from "./persistence/Layers/ProjectionTurns.ts";
 import {
   NextTurnQueueDispatcher,
   type NextTurnQueueDispatcherShape,
 } from "./nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
-import { canonicalRequestHash } from "./nextTurnQueue/canonicalRequestHash.ts";
-import {
-  NextTurnQueueIdempotencyConflictError,
-  type NextTurnQueueError,
-} from "./nextTurnQueue/Errors.ts";
 import { makeGlobalSearch } from "./globalSearch";
 import { makeBackupService } from "./backupService";
 import {
@@ -130,7 +263,7 @@ import {
   inspectWorkflowPlatformRun,
 } from "./workflowPlatform.ts";
 import { GitManager } from "./git/Services/GitManager.ts";
-import { TerminalManager } from "./terminal/Services/Manager.ts";
+import { TerminalManager, type TerminalError } from "./terminal/Services/Manager.ts";
 import { Keybindings } from "./keybindings";
 import {
   browseWorkspaceEntries,
@@ -189,7 +322,7 @@ import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderUpdateAdvisor } from "./provider/Services/ProviderUpdateAdvisor.ts";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { CheckpointStore } from "./checkpointing/Services/CheckpointStore";
-import { Open, resolveAvailableEditors } from "./open";
+import { Open, OpenError, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { IMMUTABLE_PRIVATE_CACHE_CONTROL, openContainedFile, serveAsset } from "./assetHttp";
@@ -223,6 +356,12 @@ import {
 } from "./observability/Metrics.ts";
 import { observeRpcEffect } from "./observability/RpcInstrumentation.ts";
 import {
+  readServerHealth,
+  recordSlowRpcRoute,
+  SLOW_RPC_ROUTE_MS,
+  startEventLoopDelayMonitor,
+} from "./observability/serverHealth.ts";
+import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
 } from "./wsServer/bootstrapTurnStart.ts";
@@ -236,6 +375,19 @@ import {
   webSocketRuntimeName,
 } from "./wsServer/webSocketTransport.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
+import { agentBridgeRoutes } from "./wsServer/routes/agentBridgeRoutes.ts";
+import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
+import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
+import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
+import { scheduledTaskRoutes } from "./wsServer/routes/scheduledTaskRoutes.ts";
+import { terminalRoutes } from "./wsServer/routes/terminalRoutes.ts";
+import { upstreamPortRoutes } from "./wsServer/routes/upstreamPortRoutes.ts";
+import {
+  answerFromTable,
+  routePromise,
+  routeTables,
+  tableAnswers,
+} from "./wsServer/routes/routeTable.ts";
 import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCleanup.ts";
 import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
 import {
@@ -243,11 +395,18 @@ import {
   getCurrentStartupPhase,
   withStartupPhaseTiming,
 } from "./startupTiming.ts";
-import { isPrivateHttpPath, makeServerAuth } from "./serverAuth.ts";
-import { resolveDefaultWorktreePath } from "./git/worktreePaths.ts";
+import {
+  AUTH_RATE_LIMITED_MESSAGE,
+  isPrivateHttpPath,
+  makeServerAuth,
+  REQUEST_HOST_NOT_ALLOWED_MESSAGE,
+} from "./serverAuth.ts";
 import { getReviewPreviewDiff } from "./git/ReviewDiffService.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
-import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
+import {
+  getMessageTextLengthIssue,
+  getThreadReferenceLimitIssue,
+} from "@t3tools/shared/providerInput";
 import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
@@ -256,6 +415,7 @@ import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
+import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import { DiskSpaceMonitor } from "./storage/DiskSpaceMonitor.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
@@ -304,6 +464,11 @@ export interface ServerShape {
  */
 export class Server extends ServiceMap.Service<Server, ServerShape>()("t3/wsServer/Server") {}
 
+type SubmissionSource = "human" | "automation";
+
+const clientDiagnosticsReporter = makeClientDiagnosticsReporter();
+const BACKEND_INCARNATION = process.env.F5_DESKTOP_BACKEND_INCARNATION || crypto.randomUUID();
+
 const DESKTOP_RENDERER_ORIGIN = "t3://app";
 const PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
 /** One list drives both preflight validation and `Access-Control-Allow-Headers`. */
@@ -327,11 +492,21 @@ const isServerNotRunningError = (error: Error): boolean => {
   );
 };
 
-function rejectUpgrade(socket: Duplex, statusCode: number, message: string): void {
+function rejectUpgrade(
+  socket: Duplex,
+  statusCode: number,
+  message: string,
+  headers: Readonly<Record<string, string>> = {},
+): void {
+  const reason =
+    statusCode === 401 ? "Unauthorized" : statusCode === 429 ? "Too Many Requests" : "Bad Request";
   socket.end(
-    `HTTP/1.1 ${statusCode} ${statusCode === 401 ? "Unauthorized" : "Bad Request"}\r\n` +
+    `HTTP/1.1 ${statusCode} ${reason}\r\n` +
       "Connection: close\r\n" +
       "Content-Type: text/plain\r\n" +
+      Object.entries(headers)
+        .map(([name, value]) => `${name}: ${value}\r\n`)
+        .join("") +
       `Content-Length: ${Buffer.byteLength(message)}\r\n` +
       "\r\n" +
       message,
@@ -385,6 +560,7 @@ function isRelativePathOutsideRoot(relativePath: string, path: Path.Path): boole
 }
 
 function validateWorkspaceRelativeTarget(params: {
+  allowWorkspaceRoot?: boolean;
   workspaceRoot: string;
   relativePath: string;
   path: Path.Path;
@@ -392,7 +568,7 @@ function validateWorkspaceRelativeTarget(params: {
   { requestedAbsolutePath: string; relativePath: string; workspaceAbsolutePath: string },
   RouteRequestError
 > {
-  const normalizedInputPath = params.relativePath.trim();
+  const normalizedInputPath = params.relativePath;
   if (params.path.isAbsolute(normalizedInputPath)) {
     return Effect.fail(
       new RouteRequestError({
@@ -406,7 +582,10 @@ function validateWorkspaceRelativeTarget(params: {
   const relativeToRoot = toPosixRelativePath(
     params.path.relative(workspaceAbsolutePath, requestedAbsolutePath),
   );
-  if (isRelativePathOutsideRoot(relativeToRoot, params.path)) {
+  if (
+    isRelativePathOutsideRoot(relativeToRoot, params.path) &&
+    !(params.allowWorkspaceRoot && params.relativePath === "." && relativeToRoot.length === 0)
+  ) {
     return Effect.fail(
       new RouteRequestError({
         message: "Workspace file path must stay within the project root.",
@@ -519,6 +698,7 @@ export function resolveWorkspaceWritePath(params: {
 }
 
 export function resolveWorkspaceReadPath(params: {
+  allowWorkspaceRoot?: boolean;
   workspaceRoot: string;
   relativePath: string;
   path: Path.Path;
@@ -544,6 +724,7 @@ export function resolveWorkspaceReadPath(params: {
         workspaceRootRealPath,
         targetRealPath: targetRealPathResult.value,
         path: params.path,
+        allowWorkspaceRoot: params.allowWorkspaceRoot ?? false,
       });
       return {
         absolutePath: targetRealPathResult.value,
@@ -571,8 +752,13 @@ function readFilePrefix(
       const handle = await fsPromises.open(absolutePath, "r");
       try {
         const buffer = Buffer.allocUnsafe(byteLimit);
-        const { bytesRead } = await handle.read(buffer, 0, byteLimit, 0);
-        return buffer.subarray(0, bytesRead);
+        let offset = 0;
+        while (offset < byteLimit) {
+          const { bytesRead } = await handle.read(buffer, offset, byteLimit - offset, offset);
+          if (bytesRead <= 0) break;
+          offset += bytesRead;
+        }
+        return buffer.subarray(0, offset);
       } finally {
         await handle.close();
       }
@@ -581,8 +767,10 @@ function readFilePrefix(
   });
 }
 
-function stripRequestTag<T extends { _tag: string }>(body: T) {
-  return Struct.omit(body, ["_tag"]);
+type RequestBodyWithoutTag<T> = T extends { _tag: string } ? Omit<T, "_tag"> : never;
+
+function stripRequestTag<T extends { _tag: string }>(body: T): RequestBodyWithoutTag<T> {
+  return Struct.omit(body, ["_tag"]) as RequestBodyWithoutTag<T>;
 }
 
 function deriveRpcGroup(method: string): string {
@@ -606,6 +794,9 @@ function deriveRpcGroup(method: string): string {
   }
   if (method.startsWith("prHub.")) {
     return "prHub";
+  }
+  if (method.startsWith("upstreamPorts.")) {
+    return "upstreamPorts";
   }
   if (method.startsWith("projects.")) {
     return "projects";
@@ -669,6 +860,41 @@ function resolveGitStatusInvalidation(event: OrchestrationEvent):
 const encodeWsResponse = Schema.encodeEffect(Schema.fromJsonString(WsResponse));
 const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
 
+/** The RPC method a route fiber serves, so a runtime wait can attribute itself. */
+const CurrentRpcMethod = ServiceMap.Reference<string | null>("f5/ws/CurrentRpcMethod", {
+  defaultValue: () => null,
+});
+const LARGE_RPC_RESPONSE_LOG_BYTES = 1024 * 1024;
+
+/**
+ * Sent when a result cannot be encoded, so the client still releases the
+ * request's slot. Built without the schema that just failed.
+ */
+export function encodeResponseEncodeFailure(id: string): string {
+  return JSON.stringify({
+    id,
+    error: { message: "Response could not be encoded", code: "ResponseEncodeFailed" },
+  });
+}
+
+/**
+ * The pre-admission answer for a request that needs the orchestration runtime
+ * while it starts; `null` lets the request proceed to admission.
+ */
+export function serverStartingRejection(
+  body: { readonly _tag: string },
+  readiness: ServerRuntimeReadiness,
+) {
+  return readiness.state === "starting" && rpcRequiresRuntime(body)
+    ? {
+        code: "ServerStarting" as const,
+        retryable: true,
+        retryAfterMs: 1_000,
+        message: "F5 is still starting. The request will run once startup finishes.",
+      }
+    : null;
+}
+
 /** Best-effort id recovery for requests whose body fails schema decoding. */
 export function readWebSocketRequestId(messageText: string): string | null {
   try {
@@ -702,6 +928,7 @@ export type ServerCoreRuntimeServices =
   | ProjectMcpConfigService
   | PreviewAutomationBroker
   | PrHubAdvisoryService
+  | PrHubReviewGuideService
   | PrHubService;
 
 export type ServerRuntimeServices =
@@ -722,15 +949,6 @@ export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycl
     cause: Schema.optional(Schema.Defect),
   },
 ) {}
-
-class RouteRequestError extends Schema.TaggedErrorClass<RouteRequestError>()("RouteRequestError", {
-  message: Schema.String,
-  code: Schema.optional(Schema.String),
-}) {}
-
-function mapNextTurnQueueRouteError(error: NextTurnQueueError): RouteRequestError {
-  return new RouteRequestError({ message: error.message, code: error._tag });
-}
 
 function toDeliveryRecoveryError(error: Error): RouteRequestError {
   return new RouteRequestError({
@@ -764,8 +982,11 @@ function formatRouteFailure(
   readonly message: string;
   readonly code?: string;
   readonly checkoutConflict?: GitCheckoutConflict;
+  readonly retryable?: boolean;
 } {
   const squashed = Cause.squash(cause);
+  if (Schema.is(OrchestrationOverloadError)(squashed))
+    return { message: squashed.message, code: squashed._tag, retryable: squashed.retryable };
   if (
     method === WS_METHODS.gitCheckout &&
     Schema.is(GitCommandError)(squashed) &&
@@ -779,6 +1000,12 @@ function formatRouteFailure(
   }
   if (Schema.is(AttachmentIngressError)(squashed)) {
     return { message: squashed.message };
+  }
+  if (Schema.is(OpenError)(squashed)) {
+    // Generic launch failures ("failed to spawn detached process") keep the
+    // real reason in `cause`; carry its message without the stack.
+    const cause = squashed.cause instanceof Error ? squashed.cause.message.trim() : "";
+    return { message: cause ? `${squashed.message}: ${cause}` : squashed.message };
   }
   if (Schema.is(RouteRequestError)(squashed)) {
     return {
@@ -825,6 +1052,10 @@ function formatServerLifecycleRouteFailure(error: ServerLifecycleError): string 
 const ORCHESTRATION_RUNTIME_ROUTE_WAIT_MS = 55_000;
 
 interface OrchestrationRuntimeServices {
+  readonly mcpApps: McpAppService["Service"];
+  readonly threadSettlement: ThreadSettlementService["Service"];
+  readonly pullRequestWatches: PullRequestWatchService["Service"];
+  readonly projectSkillSyncService: ProjectSkillSyncServiceShape;
   readonly threadBackgroundWork: ThreadBackgroundWorkShape;
   readonly usageService: UsageServiceShape;
   readonly orchestrationEngine: OrchestrationEngineShape;
@@ -838,6 +1069,9 @@ interface OrchestrationRuntimeServices {
   readonly storageMaintenance: StorageMaintenanceShape;
   readonly nextTurnQueueDispatcher: NextTurnQueueDispatcherShape;
   readonly worktreeSetup: WorktreeSetupShape;
+  readonly worktreePreparation: WorktreePreparationShape;
+  readonly worktreeManager: WorktreeManagerShape;
+  readonly workspaceTransition: WorkspaceTransitionShape;
   readonly storageCleanupWorker: StorageCleanupWorkerShape;
   readonly defaultBranchAutoPull: DefaultBranchAutoPullShape;
 }
@@ -871,11 +1105,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ...(mode === "desktop" ? [DESKTOP_RENDERER_ORIGIN] : []),
       ...(devUrl ? [devUrl.origin] : []),
     ],
+    ...(serverConfig.trustedProxies ? { trustedProxies: serverConfig.trustedProxies } : {}),
   });
   const availableEditors = resolveAvailableEditors();
 
   const gitManager = yield* GitManager;
   const terminalManager = yield* TerminalManager;
+  const shutdown = yield* Effect.serviceOption(ServerShutdown);
+  let shuttingDown = false;
+  yield* registerShutdown("websocket-admission", "admission", () =>
+    Effect.sync(() => {
+      shuttingDown = true;
+    }),
+  );
   const keybindingsManager = yield* Keybindings;
   const providerService = yield* ProviderService;
   const elicitationSubmissionsInFlight = new Set<string>();
@@ -891,18 +1133,32 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const mcpRuntimeService = yield* McpRuntimeService;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const previewAutomationBroker = yield* PreviewAutomationBroker;
+  const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
   const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
+  const htmlPreviewBroker = makeHtmlPreviewBroker();
+  yield* Effect.addFinalizer(() => Effect.sync(() => htmlPreviewBroker.close()));
+  const threadMcpBroker = yield* Effect.serviceOption(ThreadMcpBroker);
+  const threadMcpFederation = yield* Effect.serviceOption(PrHubFederation);
   const prHubExtensions = yield* Effect.serviceOption(PrHubExtensions);
   const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
   const prHub = yield* PrHubService;
   const prHubAdvisory = yield* PrHubAdvisoryService;
+  const prHubReviewGuide = yield* PrHubReviewGuideService;
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE scheduled_control SET ready=0 WHERE id=1`.pipe(
+    Effect.mapError(
+      (cause) => new ServerLifecycleError({ operation: "scheduledTasks.closeStartupGate", cause }),
+    ),
+  );
   const attachmentUploads = yield* makeAttachmentUploads(serverConfig.attachmentsDir);
   const nextTurnQueueStore = yield* NextTurnQueueStore;
   const globalSearch = yield* makeGlobalSearch;
+  const projectionProjects = yield* Effect.service(ProjectionProjectRepository).pipe(
+    Effect.provide(ProjectionProjectRepositoryLive),
+  );
   const backupService = yield* makeBackupService;
 
   yield* keybindingsManager.syncDefaultKeybindingsOnStartup.pipe(
@@ -924,7 +1180,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     ),
   );
 
+  yield* startScheduledBackups(backupService);
+  yield* startDatabaseSnapshots;
+
   const clients = yield* Ref.make(new Set<WebSocket>());
+  const scratchProjectSemaphore = yield* Semaphore.make(1);
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
   const shouldLogThreadOpenTimings =
@@ -994,9 +1254,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const profileSecrets = yield* makeServerSecretStore.pipe(
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "profiles.secrets", cause })),
   );
+  const storeMcpSecret = yield* makeMcpSecretWriter(profileSecrets);
+  const resolveMcpFeatureExecution = yield* makeMcpAccountExecutionResolver.pipe(
+    Effect.provideService(ProjectionProjectRepository, projectionProjects),
+  );
   const githubAccount = new ProfileGithubAccount(profileSecrets, fetch, serverConfig);
   const githubLogin = new GithubDeviceLogin(githubAccount, resolveGithubOAuthClientId(process.env));
   yield* Effect.addFinalizer(() => Effect.sync(() => githubLogin.cancel()));
+  const stopEventLoopDelayMonitor = startEventLoopDelayMonitor();
+  yield* Effect.addFinalizer(() => Effect.sync(stopEventLoopDelayMonitor));
   const githubCliImport = new GithubCliImport({
     account: githubAccount,
     // Profile state dirs live under the F5 home (parent of Default's state dir).
@@ -1008,12 +1274,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     launcherDir: githubLauncherDir(serverConfig.stateDir),
   });
   const activeProfile = serverConfig.profile ?? fallbackDefaultProfile(defaultProfileStateDir);
-  const profileCall = <A>(operation: () => Promise<A>) =>
-    Effect.tryPromise({
-      try: operation,
-      catch: (cause) =>
-        new RouteRequestError({ message: cause instanceof Error ? cause.message : String(cause) }),
-    });
+  const profileCall = routePromise;
   const computeProfiles = async () => {
     const snapshot = await profilesStore.list(activeProfile.id);
     const providers = await Effect.runPromise(providerRegistry.getProviders);
@@ -1067,18 +1328,129 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     );
   }
   // Every window shows a global banner while an agent controls the computer.
-  yield* Effect.acquireRelease(
-    Effect.sync(() =>
-      computerUseLease.subscribe((holder) => {
-        void Effect.runPromise(
-          pushBus.publishAll(WS_CHANNELS.agentComputerUseChanged, {
-            threadId: holder === null ? null : ThreadId.makeUnsafe(holder),
-          }),
-        );
-      }),
-    ),
-    (unsubscribe) => Effect.sync(unsubscribe),
-  );
+  if (Option.isNone(computerAutomationBroker))
+    yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        computerUseLease.subscribe((holder) => {
+          void Effect.runPromise(
+            pushBus.publishAll(WS_CHANNELS.agentComputerUseChanged, {
+              holders:
+                holder === null
+                  ? []
+                  : [
+                      {
+                        threadId: ThreadId.makeUnsafe(holder),
+                        delivery: "foreground",
+                        state: "active",
+                      },
+                    ],
+            }),
+          );
+        }),
+      ),
+      (unsubscribe) => Effect.sync(unsubscribe),
+    );
+  if (Option.isSome(computerAutomationBroker)) {
+    const computer = computerAutomationBroker.value;
+    // Settle crashed or timed-out Chrome launches before any session can reuse them.
+    yield* reconcileChromeSessionSetups(serverConfig.stateDir).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.catchDefect(() => Effect.void),
+    );
+    yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        computer.subscribe((event) => {
+          // One merged publication for native, Chrome and execution-state changes, so a
+          // reconnecting client restores real pending, active and paused state.
+          if (event.channel === "computer.use.changed") {
+            computerUseLease.setFromHost(event.data.holders[0]?.threadId ?? null);
+            void Effect.runPromise(
+              pushBus.publishAll(
+                WS_CHANNELS.agentComputerUseChanged,
+                agentComputerUsePush(event.data),
+              ),
+            );
+          }
+          if (event.channel === "computer.host") {
+            if (event.data.type === "chromeInterrupted") {
+              const interrupted = event.data;
+              void Effect.runPromise(
+                Deferred.await(orchestrationRuntime).pipe(
+                  Effect.flatMap(({ orchestrationEngine }) =>
+                    computer.generation(interrupted.threadId) === interrupted.sessionGeneration
+                      ? orchestrationEngine
+                          .dispatch({
+                            type: "thread.turn.interrupt",
+                            commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+                            threadId: ThreadId.makeUnsafe(interrupted.threadId),
+                            createdAt: new Date().toISOString(),
+                          })
+                          .pipe(Effect.asVoid)
+                      : Effect.void,
+                  ),
+                ),
+              ).catch(() => undefined);
+            } else if (event.data.type === "pauseChanged")
+              void Effect.runPromise(
+                previewAutomationBroker.setPaused(
+                  ThreadId.makeUnsafe(event.data.threadId),
+                  event.data.paused,
+                ),
+              );
+            else if (event.data.type === "killSwitch") {
+              const killed = event.data;
+              void Effect.runPromise(
+                Deferred.await(orchestrationRuntime).pipe(
+                  Effect.flatMap(({ orchestrationEngine }) =>
+                    computer.matchesTurn(killed.threadId, killed.sessionGeneration, killed.turnId)
+                      ? orchestrationEngine
+                          .dispatch({
+                            type: "thread.turn.interrupt",
+                            commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+                            threadId: ThreadId.makeUnsafe(killed.threadId),
+                            createdAt: new Date().toISOString(),
+                          })
+                          .pipe(Effect.asVoid)
+                      : Effect.void,
+                  ),
+                ),
+              ).catch(() => undefined);
+            }
+          } else {
+            switch (event.channel) {
+              case "computer.access.requested":
+                void Effect.runPromise(
+                  pushBus.publishAll(WS_CHANNELS.computerAccessRequested, event.data),
+                );
+                break;
+              case "computer.access.settled":
+                void Effect.runPromise(
+                  pushBus.publishAll(WS_CHANNELS.computerAccessSettled, event.data),
+                );
+                break;
+              case "computer.access.grantsChanged":
+                void Effect.runPromise(
+                  pushBus.publishAll(WS_CHANNELS.computerAccessGrantsChanged, event.data),
+                );
+                break;
+              case "computer.observations.invalidated":
+                void Effect.runPromise(
+                  pushBus.publishAll(WS_CHANNELS.computerObservationsInvalidated, event.data),
+                );
+                break;
+              case "computer.activity":
+                void Effect.runPromise(
+                  pushBus.publishAll(WS_CHANNELS.computerActivity, event.data),
+                );
+                break;
+            }
+          }
+        }),
+      ),
+      (off) => Effect.sync(off),
+    );
+  }
   const accountService = new ProviderAccountService(
     serverConfig,
     serverSettings,
@@ -1187,7 +1559,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* readiness.markKeybindingsReady;
 
   const normalizeProjectWorkspaceRoot = Effect.fnUntraced(function* (workspaceRoot: string) {
-    const normalizedWorkspaceRoot = path.resolve(yield* expandHomePath(workspaceRoot.trim()));
+    const normalizedWorkspaceRoot = path.resolve(yield* expandHomePath(workspaceRoot));
     const workspaceStat = yield* fileSystem
       .stat(normalizedWorkspaceRoot)
       .pipe(Effect.catch(() => Effect.succeed(null)));
@@ -1211,7 +1583,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       input.command as typeof input.command & {
         readonly dispatchSource?: unknown;
       };
-    const inputLengthIssue = getProviderTurnInputLengthIssue(turnStartCommand.message.text);
+    const inputLengthIssue =
+      getMessageTextLengthIssue(turnStartCommand.message.text) ??
+      getThreadReferenceLimitIssue(turnStartCommand.message.text);
     if (inputLengthIssue) {
       return yield* new RouteRequestError({
         message: inputLengthIssue.message,
@@ -1335,13 +1709,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     readonly submissionId: CommandId;
     readonly requestHash: string;
     readonly worktreeSetup: WorktreeSetupShape;
+    readonly submissionSource: SubmissionSource;
   }) =>
     Effect.gen(function* () {
       const prepared = yield* prepareTurnStartCommand({ command: input.command });
       yield* stampSubmissionSource(
         prepared.command.commandId,
         prepared.command.threadId,
-        "human",
+        input.submissionSource,
       ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       const result = yield* input.worktreeSetup
         .start({
@@ -1381,7 +1756,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
         if (input.command.bootstrap?.prepareWorktree?.requireWorktree === true) {
           return yield* new RouteRequestError({
-            message: result.detail,
+            message: `Worktree isolation unavailable: ${result.detail}`,
             code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
           });
         }
@@ -1391,22 +1766,158 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return result.result;
     });
 
+  const validateCreationAttachment = (input: {
+    projectId: ProjectId;
+    worktreePath: string | null;
+    branch: string | null;
+    sharedFilesystemConfirmed?: boolean | undefined;
+    threadId?: ThreadId | undefined;
+  }) =>
+    Effect.gen(function* () {
+      const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+      const model = yield* orchestrationEngine.getReadModel();
+      const project = model.projects.find(
+        (entry) => entry.id === input.projectId && entry.deletedAt === null,
+      );
+      if (!project) return yield* new RouteRequestError({ message: "Unknown project." });
+      if (!input.worktreePath) {
+        yield* Effect.tryPromise({
+          try: () => assertNotOtherProfileManagedCheckout(serverConfig, project.workspaceRoot),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: cause instanceof Error ? cause.message : String(cause),
+            }),
+        });
+        return;
+      }
+      yield* withWorktreeLifecycleLock(
+        input.worktreePath,
+        Effect.gen(function* () {
+          const target = yield* inspectAttachableWorkspace(
+            git,
+            serverConfig,
+            project.workspaceRoot,
+            input.worktreePath!,
+            input.branch,
+          ).pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+          const usage = yield* readWorktreeClaims(target.canonicalRoot).pipe(
+            Effect.provideService(OrchestrationEngineService, orchestrationEngine),
+            Effect.provideService(ProviderService, providerService),
+            Effect.provideService(TerminalManager, terminalManager),
+            Effect.provideService(NextTurnQueueStore, nextTurnQueueStore),
+          );
+          if (usage.unknown || usage.setupThreadIds.some((id) => id !== input.threadId))
+            return yield* new RouteRequestError({
+              message: "Workspace ownership could not be verified or another operation owns it.",
+            });
+          if (
+            usage.threadIds.some((id) => id !== input.threadId) &&
+            !input.sharedFilesystemConfirmed
+          )
+            return yield* new RouteRequestError({
+              message: "Confirm sharing this checkout's filesystem with the linked conversations.",
+            });
+        }),
+      );
+    });
+
+  const dispatchWithCreationAttachment = (
+    engine: OrchestrationEngineShape,
+    command: OrchestrationCommand,
+  ) => {
+    if (command.type !== "thread.create") return engine.dispatch(command);
+    return Effect.gen(function* () {
+      const model = yield* engine.getReadModel();
+      const project = model.projects.find((entry) => entry.id === command.projectId);
+      const workspace = command.worktreePath ?? project?.workspaceRoot;
+      if (!workspace)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Unknown project workspace.",
+        });
+      return yield* withWorktreeLifecycleLock(
+        workspace,
+        validateCreationAttachment(command).pipe(
+          Effect.mapError(
+            (error) =>
+              new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: error.message,
+              }),
+          ),
+          Effect.andThen(engine.dispatch(command)),
+        ),
+      );
+    }).pipe(
+      Effect.catchTag("RepositoryLifecycleError", (error) =>
+        Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: error.message,
+          }),
+        ),
+      ),
+    );
+  };
+
   const runBootstrapTurnStart = Effect.fnUntraced(function* (input: {
     readonly command: Extract<ClientOrchestrationCommand, { type: "thread.turn.start" }>;
     readonly orchestrationEngine: OrchestrationEngineShape;
     readonly projectSetupScriptRunner: ProjectSetupScriptRunnerShape;
+    readonly submissionSource: SubmissionSource;
   }) {
     const prepared = yield* prepareTurnStartCommand({ command: input.command });
     yield* stampSubmissionSource(
       prepared.command.commandId,
       prepared.command.threadId,
-      "human",
+      input.submissionSource,
     ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     let rolledBack: BootstrapThreadDisposition | null = null;
     return yield* dispatchBootstrapTurnStart({
       command: prepared.command,
-      orchestrationEngine: input.orchestrationEngine,
+      orchestrationEngine: {
+        ...input.orchestrationEngine,
+        dispatch: (command) => dispatchWithCreationAttachment(input.orchestrationEngine, command),
+      },
       git: { ...git, createWorktree: createConfiguredWorktree },
+      rollbackWorktree: (receipt, ownedTerminalId) =>
+        Effect.gen(function* () {
+          if (ownedTerminalId)
+            yield* terminalManager.close({
+              threadId: prepared.command.threadId,
+              terminalId: ownedTerminalId,
+            });
+          return yield* removeWorktreeSafely({
+            projectCwd: receipt.cwd,
+            path: receipt.path,
+            policy: {
+              kind: "ownedRollback",
+              ownThreadId: prepared.command.threadId,
+              ownedCreation: { ...receipt, created: true },
+            },
+          });
+        }).pipe(
+          Effect.provideService(GitCore, git),
+          Effect.provideService(ServerConfig, serverConfig),
+          Effect.provideService(OrchestrationEngineService, input.orchestrationEngine),
+          Effect.provideService(NextTurnQueueStore, nextTurnQueueStore),
+          Effect.provideService(TerminalManager, terminalManager),
+          Effect.provideService(ProviderService, providerService),
+          Effect.flatMap((result) =>
+            result.blockedReasons.length
+              ? Effect.fail(new Error(`Worktree retained: ${result.blockedReasons.join("; ")}`))
+              : Effect.void,
+          ),
+          Effect.mapError(
+            (error) =>
+              new GitCommandError({
+                operation: "bootstrap.rollback",
+                cwd: receipt.cwd,
+                command: "worktree remove",
+                detail: error.message,
+              }),
+          ),
+        ),
       ...(prepared.attachmentIngress.attachments.length > 0
         ? {
             persistAttachments: persistPreparedAttachmentIngress(prepared.attachmentIngress).pipe(
@@ -1421,7 +1932,24 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             ),
           }
         : {}),
-      projectSetupScriptRunner: input.projectSetupScriptRunner,
+      projectSetupScriptRunner: {
+        runForThread: (request) =>
+          Effect.gen(function* () {
+            if (!request.worktreePath)
+              return yield* input.projectSetupScriptRunner.runForThread(request);
+            const { worktreePreparation } = yield* awaitOrchestrationRuntimeForRoute;
+            const model = yield* input.orchestrationEngine.getReadModel();
+            const thread = model.threads.find((thread) => thread.id === request.threadId);
+            if (thread?.branch)
+              yield* worktreePreparation.prepare({
+                threadId: thread.id,
+                projectId: thread.projectId,
+                worktreePath: request.worktreePath,
+                branch: thread.branch,
+              });
+            return { status: "no-script" as const };
+          }),
+      },
       worktreesDir: serverConfig.worktreesDir,
       onThreadRolledBack: (disposition) => {
         rolledBack = disposition;
@@ -1443,6 +1971,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const normalizeDispatchCommand = Effect.fnUntraced(function* (input: {
     readonly command: ClientOrchestrationCommand;
+    /** Provenance stamped on a turn start; the first stamp for a command wins. */
+    readonly submissionSource: SubmissionSource;
   }) {
     if (input.command.type === "project.create") {
       return {
@@ -1504,7 +2034,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           commandId: command.commandId,
           threadId: command.threadId,
           message: {
-            messageId: MessageId.makeUnsafe(`answer:${command.commandId}`),
+            messageId: MessageId.makeUnsafe(answerMessageIdFor(command.commandId)),
             role: "user",
             text: JSON.stringify(command.answers),
             attachments: command.attachments ?? [],
@@ -1527,7 +2057,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     yield* stampSubmissionSource(
       prepared.command.commandId,
       prepared.command.threadId,
-      "human",
+      input.submissionSource,
     ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     return yield* persistPreparedTurnStartCommand(prepared);
   });
@@ -1580,6 +2110,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
     void Effect.runPromise(
       Effect.gen(function* () {
+        // Before anything else, static files included: a rebound page must not load the app
+        // under its own origin either.
+        if (!serverAuth.isRequestHostAllowed(req)) {
+          respond(
+            403,
+            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+            JSON.stringify({ error: REQUEST_HOST_NOT_ALLOWED_MESSAGE }),
+          );
+          return;
+        }
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
         // Workspace asset handles are capabilities: the URL is the credential, so
         // they skip session auth but still need CORS for the renderer's fetch().
@@ -1673,13 +2213,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           return;
         }
         if (isPrivatePath && !serverAuth.isHttpRequestAuthenticated(req)) {
+          // A locked-out client is told to wait, so it does not take its token for a wrong one.
+          const retryAfter = serverAuth.bearerRetryAfterSeconds(req);
           respond(
-            401,
+            retryAfter === null ? 401 : 429,
             {
               "Cache-Control": "no-store",
               "Content-Type": "application/json; charset=utf-8",
+              ...(retryAfter === null ? {} : { "Retry-After": `${retryAfter}` }),
             },
-            JSON.stringify({ error: "Authentication required." }),
+            JSON.stringify({
+              error: retryAfter === null ? "Authentication required." : AUTH_RATE_LIMITED_MESSAGE,
+            }),
           );
           return;
         }
@@ -1708,6 +2253,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           );
           return;
         }
+        if (url.pathname.startsWith("/api/html-renders/preview/")) {
+          const id = url.pathname.slice("/api/html-renders/preview/".length);
+          const html = /^[a-f0-9-]{36}$/.test(id) ? htmlPreviewBroker.readInput(id) : null;
+          const allowed = req.method === "GET" || req.method === "HEAD";
+          respond(
+            allowed ? (html === null ? 410 : 200) : 405,
+            {
+              "Cache-Control": "no-store",
+              "Content-Type": "text/plain; charset=utf-8",
+              "X-Content-Type-Options": "nosniff",
+              "Content-Security-Policy": "sandbox; default-src 'none'",
+            },
+            req.method === "HEAD" ? undefined : (html ?? "Preview expired."),
+          );
+          return;
+        }
         if (url.pathname === "/api/prhub/media") {
           const accounts = Option.isSome(forgeAccounts)
             ? yield* forgeAccounts.value.listAccounts()
@@ -1730,6 +2291,29 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             },
           });
           yield* Effect.promise(() => proxy(req, res));
+          return;
+        }
+        if (url.pathname === DESKTOP_ACTIVITY_PATH && req.method === "GET") {
+          const headers = {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json; charset=utf-8",
+          };
+          if (runtimeReadiness.state !== "ready") {
+            respond(503, headers, JSON.stringify({ state: runtimeReadiness.state }));
+            return;
+          }
+          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+          const model = yield* orchestrationEngine.getReadModel();
+          const pending = yield* agentBridgeTurns.listRecentPendingTurnStartThreadIds({
+            since: new Date(Date.now() - 600_000).toISOString(),
+          });
+          respond(
+            200,
+            headers,
+            JSON.stringify({
+              busyThreadCount: desktopBusyThreadCount(model, pending),
+            } satisfies DesktopBackendActivity),
+          );
           return;
         }
         if (url.pathname === "/api/bootstrap" && req.method === "GET") {
@@ -1929,6 +2513,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               workspaceAssetAuthorizer,
               checkedInProjectFileService,
               req,
+              serverAuth.externalRequestOrigin,
             ),
           )
         ) {
@@ -2045,42 +2630,47 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           }
         }
 
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          respond(405, { Allow: "GET, HEAD" }, "Method not allowed");
+          return;
+        }
         const fileInfo = yield* fileSystem
           .stat(filePath)
           .pipe(Effect.catch(() => Effect.succeed(null)));
         if (!fileInfo || fileInfo.type !== "File") {
-          const indexPath = path.resolve(staticRoot, "index.html");
-          const indexData = yield* fileSystem
-            .readFile(indexPath)
-            .pipe(Effect.catch(() => Effect.succeed(null)));
-          if (!indexData) {
+          const wantsHtml =
+            req.headers["sec-fetch-mode"] === "navigate" ||
+            /(?:^|,)\s*text\/html(?:[;,]|$)/i.test(req.headers.accept ?? "");
+          const bundleRequest =
+            rawStaticRelativePath.startsWith("assets/") ||
+            /\.(?:[cm]?js|css|map|wasm|woff2?|ttf|otf|png|jpe?g|gif|svg|webp|ico)$/i.test(
+              rawStaticRelativePath,
+            );
+          if (!wantsHtml || bundleRequest) {
             respond(404, { "Content-Type": "text/plain" }, "Not Found");
             return;
           }
-          respond(
-            200,
-            { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" },
-            indexData,
-          );
-          return;
+          filePath = path.resolve(staticRoot, "index.html");
         }
-
+        const relative = path.relative(staticRoot, filePath);
+        const fingerprinted =
+          relative.startsWith(`assets${path.sep}`) && /-[a-zA-Z0-9_]{8,}\.[^.]+$/.test(relative);
         const contentType = Mime.getType(filePath) ?? "application/octet-stream";
-        const data = yield* fileSystem
-          .readFile(filePath)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        if (!data) {
-          respond(500, { "Content-Type": "text/plain" }, "Internal Server Error");
-          return;
-        }
-        respond(
-          200,
-          {
-            "Content-Type": contentType,
-            ...(path.basename(filePath) === "index.html" ? { "Cache-Control": "no-cache" } : {}),
-          },
-          data,
-        );
+        yield* Effect.promise(async () => {
+          try {
+            const file = await openContainedFile(staticRoot, relative);
+            await streamFileHandle(req, res, file, {
+              "Content-Type": contentType.startsWith("text/")
+                ? `${contentType}; charset=utf-8`
+                : contentType,
+              "Cache-Control": fingerprinted ? "public, max-age=31536000, immutable" : "no-cache",
+              "X-Content-Type-Options": "nosniff",
+            });
+          } catch {
+            if (res.headersSent) res.destroy();
+            else respond(404, { "Content-Type": "text/plain" }, "Not Found");
+          }
+        });
       }),
     ).catch(() => {
       if (!res.headersSent) {
@@ -2101,6 +2691,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     perMessageDeflate: resolveServerPerMessageDeflate(),
   });
 
+  const socketLiveness = makeSocketLiveness();
+  yield* Effect.addFinalizer(() => Effect.sync(() => socketLiveness.dispose()));
   const closeWebSocketServer = Effect.callback<void, ServerLifecycleError>((resume) => {
     wss.close((error) => {
       if (error && !isServerNotRunningError(error)) {
@@ -2115,11 +2707,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     });
   });
 
-  const closeAllClients = Ref.get(clients).pipe(
-    Effect.flatMap(Effect.forEach((client) => Effect.sync(() => client.close()))),
-    Effect.flatMap(() => Ref.set(clients, new Set())),
-  );
+  const closeAllClients = Effect.promise(() =>
+    closeSocketsWithin(
+      wss.clients,
+      performance.now() +
+        Math.max(0, (Option.getOrUndefined(shutdown)?.deadline ?? Date.now() + 1500) - Date.now()),
+    ),
+  ).pipe(Effect.andThen(Ref.set(clients, new Set())));
 
+  yield* registerShutdown("websockets", "producers", () => closeAllClients);
   const listenOptions = host ? { host, port } : { port };
   const projectionReadModelQuery = yield* ProjectionSnapshotQuery;
   const projectionWorkspaceQuery = yield* ProjectionWorkspaceQuery;
@@ -2129,9 +2725,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       const workspace = await Effect.runPromise(
         projectionWorkspaceQuery.getProjectWorkspace(ProjectId.makeUnsafe(projectId)),
       );
+      // The scratch root is shared by every thread without a project; only a thread scope
+      // reaches one of its folders.
       return Option.match(workspace, {
         onNone: () => null,
-        onSome: (value) => value.workspaceRoot,
+        onSome: (value) => (isScratchProject(value) ? null : value.workspaceRoot),
       });
     },
     resolveThreadWorkspaceRoot: async (threadId) => {
@@ -2186,6 +2784,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   );
   const activeContentSearchesByClient = new WeakMap<WebSocket, Map<string, string>>();
   let nextContentSearchKey = 1;
+  // Open files and visible directories per client; released on disconnect.
+  const workspaceWatchRegistry = new WorkspaceWatchRegistry<WebSocket>({
+    notify: (client, notification) => {
+      void Effect.runPromise(
+        pushBus.publishClient(client, WS_CHANNELS.projectsWatchedPathsChanged, notification),
+      );
+    },
+  });
+  yield* Effect.addFinalizer(() => Effect.sync(() => workspaceWatchRegistry.dispose()));
+  yield* registerShutdown("workspace-watchers", "admission", () =>
+    Effect.sync(() => workspaceWatchRegistry.dispose()),
+  );
   const threadCommandExecutionQuery = yield* ThreadCommandExecutionQuery;
   const threadFileChangeQuery = yield* ThreadFileChangeQuery;
   const checkpointDiffQuery = yield* CheckpointDiffQuery;
@@ -2195,6 +2805,34 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     OrchestrationRuntimeServices,
     ServerLifecycleError
   >();
+  /** Revision 0 is `starting`; the single transition to ready or failed is revision 1. */
+  let runtimeReadiness: ServerRuntimeReadiness = { state: "starting", revision: 0 };
+  const currentRuntimeReadiness = (): ServerRuntimeReadiness => {
+    if (runtimeReadiness.state !== "starting") return runtimeReadiness;
+    const phase = getCurrentStartupPhase()?.phase;
+    return phase ? { ...runtimeReadiness, phase } : runtimeReadiness;
+  };
+  // Requests that still park inside a route while the runtime starts. A
+  // runtime-dependent request is answered `ServerStarting` before admission,
+  // so every arrival here is a policy misclassification. Arrivals are counted
+  // as they happen; every parked request resumes at readiness, so the earliest
+  // arrival bounds the longest wait.
+  const runtimeParkedByMethod = new Map<string, number>();
+  let firstRuntimeParkedAt: number | null = null;
+  const noteRuntimeParked = (method: string) => {
+    const count = runtimeParkedByMethod.get(method) ?? 0;
+    runtimeParkedByMethod.set(method, count + 1);
+    firstRuntimeParkedAt ??= Date.now();
+    if (count === 0)
+      logger.warn("rpc method policy misclassified a runtime-dependent route", { method });
+  };
+  const logRuntimeParking = () => {
+    if (firstRuntimeParkedAt === null) return;
+    logger.info("requests parked while the orchestration runtime started", {
+      parkedByMethod: Object.fromEntries(runtimeParkedByMethod),
+      maxParkedMs: Date.now() - firstRuntimeParkedAt,
+    });
+  };
   const nextTurnQueueDispatcherRef = yield* Ref.make<NextTurnQueueDispatcherShape | null>(null);
 
   yield* Effect.gen(function* () {
@@ -2209,8 +2847,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const previewFileServer = makePreviewFileServer(workspaceAssetAuthorizer);
   yield* Effect.addFinalizer(() => Effect.promise(previewFileServer.close));
   const subscriptionsScope = yield* Scope.make("sequential");
+  if (git.subscribeStatusRefresh) {
+    const unsubscribe = yield* git.subscribeStatusRefresh((cwd) => {
+      Effect.runFork(pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd }));
+    });
+    yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+  }
+
   yield* Effect.addFinalizer(() => Scope.close(subscriptionsScope, Exit.void));
 
+  let wakeUpstreamPorts: (threadId?: string) => Effect.Effect<void> = () => Effect.void;
+  yield* Stream.runForEach(serverSettings.streamChanges, () => wakeUpstreamPorts()).pipe(
+    Effect.forkIn(subscriptionsScope),
+  );
   yield* Stream.runForEach(keybindingsManager.streamChanges, (event) =>
     providerAdvisoryProjection.getProviders.pipe(
       Effect.bindTo("providers"),
@@ -2248,6 +2897,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   );
   yield* Stream.runForEach(serverSettings.streamChanges, (settings) =>
     Effect.all({
+      computerPolicy: Option.isSome(computerAutomationBroker)
+        ? Effect.promise(() => computerAutomationBroker.value.refreshPolicies())
+        : Effect.void,
       keybindingsConfig: keybindingsManager.loadConfigState,
       providers: providerAdvisoryProjection.getProviders,
     }).pipe(
@@ -2275,6 +2927,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }),
       ),
       Effect.tap(() => providerUpdateAdvisor.noteRegistryChanged),
+      Effect.tap(() => wakeUpstreamPorts()),
     ),
   ).pipe(Effect.forkIn(subscriptionsScope));
   yield* Stream.runForEach(providerUpdateAdvisor.streamChanges, (advisories) =>
@@ -2358,16 +3011,88 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         orchestrationRuntimeServices,
         NextTurnQueueDispatcher,
       );
+      const mcpApps = ServiceMap.get(orchestrationRuntimeServices, McpAppService);
+      const threadSettlement = ServiceMap.get(
+        orchestrationRuntimeServices,
+        ThreadSettlementService,
+      );
+      const pullRequestWatches = ServiceMap.get(
+        orchestrationRuntimeServices,
+        PullRequestWatchService,
+      );
+      const worktreeManager = ServiceMap.get(orchestrationRuntimeServices, WorktreeManager);
+      const workspaceTransition = ServiceMap.get(orchestrationRuntimeServices, WorkspaceTransition);
       const worktreeSetup = ServiceMap.get(orchestrationRuntimeServices, WorktreeSetup);
+      const worktreePreparation = ServiceMap.get(orchestrationRuntimeServices, WorktreePreparation);
       const storageCleanupWorker = ServiceMap.get(
         orchestrationRuntimeServices,
         StorageCleanupWorker,
+      );
+      const projectSkillSyncService = ServiceMap.get(
+        orchestrationRuntimeServices,
+        ProjectSkillSyncService,
       );
       const defaultBranchAutoPull = ServiceMap.get(
         orchestrationRuntimeServices,
         DefaultBranchAutoPull,
       );
 
+      if (
+        Option.isSome(threadMcpBroker) &&
+        Option.isSome(threadMcpFederation) &&
+        Option.isSome(prHubExtensions)
+      ) {
+        const html = yield* makeHtmlRenderRuntime({
+          engine: orchestrationEngine,
+          attachmentsDir: serverConfig.attachmentsDir,
+          preview: htmlPreviewBroker,
+        });
+        const threadContextRepositories = yield* Effect.gen(function* () {
+          return {
+            messages: yield* ProjectionThreadMessageRepository,
+            plans: yield* ProjectionThreadProposedPlanRepository,
+          };
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              ProjectionThreadMessageRepositoryLive,
+              ProjectionThreadProposedPlanRepositoryLive,
+            ),
+          ),
+        );
+        yield* threadMcpBroker.value
+          .register(
+            makeThreadToolHandler({
+              ...threadContextRepositories,
+              sql,
+              engine: orchestrationEngine,
+              federation: threadMcpFederation.value,
+              guides: prHubReviewGuide,
+              watches: pullRequestWatches,
+              settlement: threadSettlement,
+              links: prHubExtensions.value,
+              html,
+            }),
+          )
+          .pipe(Effect.provideService(Scope.Scope, subscriptionsScope), Effect.orDie);
+      }
+
+      const refreshTurnGitStatus = makeTurnGitStatusRefresh({
+        scope: subscriptionsScope,
+        resolveCwd: (threadId) =>
+          Effect.gen(function* () {
+            const model = yield* orchestrationEngine.getReadModel();
+            const thread = model.threads.find((thread) => thread.id === threadId);
+            const project = model.projects.find((project) => project.id === thread?.projectId);
+            return thread ? threadWorkspaceCwd(thread, project) : null;
+          }),
+        read: (cwd) =>
+          gitManager
+            .status({ cwd, includeRemote: false, includePullRequest: false })
+            .pipe(Effect.orElseSucceed(() => null)),
+        publish: (cwd, status) =>
+          pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd, status }),
+      });
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
           if (event.type.startsWith("project.")) profileReadCache = undefined;
@@ -2387,6 +3112,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               );
           }
           yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
+          if (event.type === "thread.turn-processing-quiesced") {
+            yield* refreshTurnGitStatus(event.payload.threadId);
+          }
+          if (event.type === "thread.turn-processing-quiesced" || event.type === "thread.deleted")
+            yield* wakeUpstreamPorts(event.aggregateId);
           const gitStatusInvalidation = resolveGitStatusInvalidation(event);
           if (gitStatusInvalidation.publish) {
             yield* pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, {
@@ -2394,12 +3124,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             });
           }
         }),
-      ).pipe(Effect.forkIn(subscriptionsScope));
+      ).pipe(Effect.forkIn(subscriptionsScope, { startImmediately: true }));
       yield* Stream.runForEach(nextTurnQueueDispatcher.changes, (threadId) =>
         nextTurnQueueDispatcher.getSnapshot(threadId).pipe(
           Effect.flatMap((snapshot) =>
             pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot),
           ),
+          Effect.tap(() => wakeUpstreamPorts(threadId)),
           Effect.catchCause((cause) =>
             Effect.logWarning("failed to publish next-turn queue snapshot", {
               threadId,
@@ -2461,20 +3192,75 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         ),
       );
       yield* Scope.provide(worktreeSetup.startup, subscriptionsScope);
+      // Clears a scheduled compaction's request now, and runs it once startup is ready.
+      yield* Scope.provide(
+        storageMaintenance.startScheduledCompaction(
+          Deferred.await(orchestrationRuntime).pipe(Effect.ignore),
+        ),
+        subscriptionsScope,
+      );
+      // Registered before the reactors start writing, so the first corruption
+      // error still finds the engine's read model intact.
+      yield* Scope.provide(
+        startDatabaseDamageTripwire({
+          stateDir: serverConfig.stateDir,
+          getReadModel: orchestrationEngine.getReadModel(),
+          publish: (damage) =>
+            pushBus.publishAll(WS_CHANNELS.serverDatabaseDamaged, damage).pipe(Effect.asVoid),
+        }),
+        subscriptionsScope,
+      );
       yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
       yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
+      let lastStorageRevision = -1;
+      let lastCompletedOperation: string | null = null;
+      yield* Effect.forever(
+        Effect.gen(function* () {
+          const status = yield* storageMaintenance.getStatus;
+          if (status.revision !== lastStorageRevision) {
+            lastStorageRevision = status.revision;
+            const bounded =
+              Buffer.byteLength(JSON.stringify(status)) > 7 * 1024 && status.cleanup
+                ? { ...status, cleanup: { ...status.cleanup, result: null } }
+                : status;
+            yield* pushBus.publishAll(WS_CHANNELS.storageStatusUpdated, bounded);
+            if (
+              status.cleanup?.completedAt &&
+              status.cleanup.operationId !== lastCompletedOperation
+            ) {
+              lastCompletedOperation = status.cleanup.operationId;
+              yield* pushBus.publishAll(WS_CHANNELS.storageInvalidated, {
+                reason: "cleanup-completed",
+                operationId: status.cleanup.operationId,
+              });
+              if (diskSpaceMonitor._tag === "Some")
+                yield* diskSpaceMonitor.value.noteStorageChanged;
+            }
+          }
+          yield* Effect.sleep("500 millis");
+        }),
+      ).pipe(Effect.forkIn(subscriptionsScope));
       yield* Scope.provide(storageCleanupWorker.start, subscriptionsScope);
+      yield* Stream.runForEach(pullRequestWatches.changes, (threadId) =>
+        pushBus.publishAll(PR_WATCH_CHANGED_CHANNEL, { threadId }),
+      ).pipe(Effect.forkIn(subscriptionsScope));
+      yield* Scope.provide(pullRequestWatches.start, subscriptionsScope);
+      yield* Scope.provide(threadSettlement.start, subscriptionsScope);
       yield* Scope.provide(defaultBranchAutoPull.start, subscriptionsScope);
       if (diskSpaceMonitor._tag === "Some")
         yield* Scope.provide(
           diskSpaceMonitor.value.start({
             estimateReclaimable: storageMaintenance.summarizeReclaimable,
+            pendingCompaction: storageMaintenance.getPendingCompaction,
           }),
           subscriptionsScope,
         );
       yield* Ref.set(nextTurnQueueDispatcherRef, nextTurnQueueDispatcher);
       yield* readiness.markOrchestrationSubscriptionsReady;
       yield* Deferred.succeed(orchestrationRuntime, {
+        mcpApps,
+        threadSettlement,
+        pullRequestWatches,
         threadBackgroundWork,
         usageService,
         orchestrationEngine,
@@ -2488,7 +3274,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         storageMaintenance,
         nextTurnQueueDispatcher,
         worktreeSetup,
+        worktreePreparation,
         storageCleanupWorker,
+        worktreeManager,
+        workspaceTransition,
+        projectSkillSyncService,
         defaultBranchAutoPull,
       }).pipe(Effect.orDie);
 
@@ -2524,6 +3314,30 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   );
   const orchestrationRuntimeStartedAtMs = Date.now();
   yield* startOrchestrationRuntime.pipe(Effect.forkIn(subscriptionsScope));
+  // Clients hold runtime-dependent requests while this reports `starting`,
+  // instead of parking them in route slots for the whole startup.
+  yield* Deferred.await(orchestrationRuntime).pipe(
+    Effect.matchEffect({
+      onSuccess: () => Effect.succeed<ServerRuntimeReadiness>({ state: "ready", revision: 1 }),
+      onFailure: (error) =>
+        Effect.succeed<ServerRuntimeReadiness>({
+          state: "failed",
+          revision: 1,
+          message: formatServerLifecycleRouteFailure(error),
+        }),
+    }),
+    Effect.flatMap((readiness) =>
+      Effect.suspend(() => {
+        runtimeReadiness = readiness;
+        logRuntimeParking();
+        return pushBus.publishAll(WS_CHANNELS.serverRuntimeReadiness, {
+          ...readiness,
+          backendIncarnation: BACKEND_INCARNATION,
+        });
+      }),
+    ),
+    Effect.forkIn(subscriptionsScope),
+  );
 
   // Server-internal waits (cwd auto-bootstrap, clone completion) have no
   // client deadline, so they wait for startup to finish however long catch-up
@@ -2572,7 +3386,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         bootstrapProjectDefaultModel = DEFAULT_MODEL_BY_PROVIDER.codex;
         yield* orchestrationEngine.dispatch({
           type: "project.create",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           projectId: bootstrapProjectId,
           title: bootstrapProjectTitle,
           workspaceRoot: cwd,
@@ -2593,7 +3407,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const threadId = ThreadId.makeUnsafe(crypto.randomUUID());
         yield* orchestrationEngine.dispatch({
           type: "thread.create",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId,
           projectId: bootstrapProjectId,
           title: "New thread",
@@ -2617,7 +3431,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     );
   }
 
-  const awaitOrchestrationRuntimeForRoute = Deferred.await(orchestrationRuntime).pipe(
+  const awaitOrchestrationRuntimeForRoute = Effect.suspend(() => {
+    if (runtimeReadiness.state !== "starting") return Deferred.await(orchestrationRuntime);
+    // A route still parking here holds an RPC slot: the policy should have
+    // answered `ServerStarting` before admission. Count it per method.
+    return Effect.gen(function* () {
+      const method = yield* CurrentRpcMethod;
+      // The runtime may have resolved just before readiness was published.
+      if (method !== null && !(yield* Deferred.isDone(orchestrationRuntime)))
+        noteRuntimeParked(method);
+      return yield* Deferred.await(orchestrationRuntime);
+    });
+  }).pipe(
     Effect.mapError(
       (error) =>
         new RouteRequestError({
@@ -2639,6 +3464,33 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         ),
     }),
   );
+  const withTerminalThreadAccess = <A>(threadId: string, action: Effect.Effect<A, TerminalError>) =>
+    Effect.gen(function* () {
+      const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+      const readThread = Effect.map(orchestrationEngine.getReadModel(), (model) =>
+        model.threads.find((entry) => entry.id === threadId),
+      );
+      const thread = yield* readThread;
+      const open = Effect.gen(function* () {
+        // Re-read after waiting for provider access: a purge may have deleted
+        // this archived thread while the request was queued.
+        const current = yield* readThread;
+        if ((thread && !current) || current?.deletedAt != null)
+          return yield* new RouteRequestError({ message: "This conversation has been deleted." });
+        return yield* current?.worktreePath
+          ? withWorktreeLifecycleLock(current.worktreePath, action).pipe(
+              Effect.catchTag("RepositoryLifecycleError", (error) =>
+                Effect.fail(new RouteRequestError({ message: error.message })),
+              ),
+            )
+          : action;
+      });
+      // Live and draft terminals must not wait for provider startup or routing.
+      // Archived/deleted threads share the purge gate and revalidate after it.
+      return yield* thread && (thread.archivedAt !== null || thread.deletedAt !== null)
+        ? withProviderThreadAccess(threadId, open)
+        : open;
+    });
   const awaitOrchestrationRuntimeForOptionalBackground = Deferred.await(orchestrationRuntime).pipe(
     Effect.option,
   );
@@ -2665,6 +3517,42 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       };
     });
 
+  /**
+   * Admits a turn through the durable queue (or the bootstrap path for a
+   * first send). The WS route submits as `human`; the Agent Bridge submits as
+   * `automation`. Retries with the same submission id replay the stored result.
+   */
+  const toSubmissionError = (error: { readonly message: string; readonly code?: unknown }) =>
+    new RouteRequestError({
+      message: error.message,
+      ...(typeof error.code === "string" ? { code: error.code } : {}),
+    });
+  const turnSubmissions = makeTurnSubmissionService({
+    nextTurnQueueStore,
+    awaitOrchestrationRuntimeForRoute,
+    git,
+    singleFlightBootstrap,
+    startWorktreeSetupSubmission: (input) =>
+      startWorktreeSetupSubmission(input).pipe(Effect.mapError(toSubmissionError)),
+    runBootstrapTurnStart: (input) =>
+      runBootstrapTurnStart(input).pipe(Effect.mapError(toSubmissionError)),
+    normalizeDispatchCommand: (input) =>
+      normalizeDispatchCommand(input).pipe(Effect.mapError(toSubmissionError)),
+    removePersistedTurnAttachments,
+    releaseSentUploads,
+  });
+
+  const submitTurnSubmission = (...args: Parameters<typeof turnSubmissions>) =>
+    turnSubmissions(...args).pipe(
+      Effect.mapError(
+        (error) =>
+          new RouteRequestError({
+            message: error.message,
+            ...(error.code ? { code: error.code } : {}),
+          }),
+      ),
+    );
+
   const publishNextTurnQueueSnapshot = (threadId: ThreadId) =>
     getNextTurnQueueSnapshot(threadId).pipe(
       Effect.flatMap((snapshot) => pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot)),
@@ -2674,6 +3562,313 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           causePretty: Cause.pretty(cause),
         }),
       ),
+    );
+
+  const toAgentBridgeHostError = (error: {
+    readonly message: string;
+    readonly code?: unknown;
+    readonly kind?: unknown;
+  }) =>
+    new AgentBridgeHostError({
+      message: error.message,
+      ...(typeof error.code === "string" ? { code: error.code } : {}),
+      ...(TURN_SUBMISSION_FAILURES.some((kind) => kind === error.kind)
+        ? { submissionFailure: error.kind as (typeof TURN_SUBMISSION_FAILURES)[number] }
+        : {}),
+    });
+  const agentBridgeTurns = yield* makeProjectionTurnRepository.pipe(
+    Effect.provideService(SqlClient.SqlClient, sql),
+  );
+  const getSubmissionThreadDetails: AgentBridgeHostShape["getThreadDetails"] = (threadId) =>
+    Effect.gen(function* () {
+      const details = yield* projectionReadModelQuery.getThreadDetails({ threadId });
+      const turns = yield* agentBridgeTurns.listByThreadId({ threadId });
+      return bindSubmissionTurnIds(details, turns);
+    }).pipe(Effect.mapError(toAgentBridgeHostError));
+  const getSubmissionTurnState: AgentBridgeHostShape["getTurnState"] = (input) =>
+    agentBridgeTurns.getByTurnId(input).pipe(
+      Effect.map((turn) => (Option.isSome(turn) ? turn.value.state : null)),
+      Effect.mapError(toAgentBridgeHostError),
+    );
+  const getSubmissionQueueSnapshot: AgentBridgeHostShape["getQueueSnapshot"] = (threadId) =>
+    getNextTurnQueueSnapshot(threadId).pipe(Effect.mapError(toAgentBridgeHostError));
+  const getTurnSubmission: AgentBridgeHostShape["getSubmission"] = (submissionId) =>
+    nextTurnQueueStore
+      .getBySubmissionId(submissionId)
+      .pipe(Effect.mapError(toAgentBridgeHostError));
+  const submissionQueueChanges = Stream.unwrap(
+    awaitOrchestrationRuntimeForOptionalBackground.pipe(
+      Effect.map((runtime) =>
+        Option.isSome(runtime) ? runtime.value.nextTurnQueueDispatcher.changes : Stream.empty,
+      ),
+    ),
+  );
+  const submissionDomainEvents = Stream.unwrap(
+    awaitOrchestrationRuntimeForOptionalBackground.pipe(
+      Effect.map((runtime) =>
+        Option.isSome(runtime)
+          ? runtime.value.orchestrationEngine.streamDomainEvents
+          : Stream.empty,
+      ),
+    ),
+  );
+  const agentBridgeHost: AgentBridgeHostShape = {
+    readSnapshot: awaitOrchestrationRuntimeForRoute.pipe(
+      Effect.flatMap(({ orchestrationEngine }) => orchestrationEngine.getReadModel()),
+      Effect.mapError(toAgentBridgeHostError),
+    ),
+    ensureThreadActivities: (threadIds) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap(
+          ({ orchestrationEngine }) =>
+            orchestrationEngine.ensureThreadActivities?.(threadIds) ?? Effect.void,
+        ),
+        Effect.ignore,
+      ),
+    getThreadDetails: (threadId) =>
+      projectionReadModelQuery
+        .getThreadDetails({ threadId })
+        .pipe(Effect.mapError(toAgentBridgeHostError)),
+    getSubmissionThreadDetails,
+    getTurnState: getSubmissionTurnState,
+    getThreadDiff: ({ threadId, fromTurnCount, toTurnCount }) =>
+      (fromTurnCount === undefined
+        ? checkpointDiffQuery.getFullThreadDiff({ threadId, toTurnCount })
+        : checkpointDiffQuery.getTurnDiff({ threadId, fromTurnCount, toTurnCount })
+      ).pipe(
+        Effect.map((result) => result.diff),
+        Effect.mapError(toAgentBridgeHostError),
+      ),
+    getQueueSnapshot: getSubmissionQueueSnapshot,
+    getSubmission: getTurnSubmission,
+    queueChanges: submissionQueueChanges,
+    domainEvents: submissionDomainEvents,
+    listProviderInstances: providerAdvisoryProjection.getProviders,
+    getSettings: serverSettings.getSettings.pipe(Effect.mapError(toAgentBridgeHostError)),
+    getProjectGitBranch: (cwd) =>
+      git.status({ cwd }).pipe(
+        Effect.flatMap((status) =>
+          status.branch
+            ? Effect.succeed(status.branch)
+            : git
+                .listBranches({ cwd })
+                .pipe(
+                  Effect.map((result) => result.branches.find((b) => b.isDefault)?.name ?? null),
+                ),
+        ),
+        Effect.orElseSucceed(() => null),
+      ),
+    submitTurnSubmission: (body, options) =>
+      turnSubmissions(body, options).pipe(
+        Effect.mapError(toAgentBridgeHostError),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ),
+    dispatch: (command) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap(({ orchestrationEngine }) => orchestrationEngine.dispatch(command)),
+        Effect.asVoid,
+        Effect.mapError(toAgentBridgeHostError),
+      ),
+  };
+  const scheduledTaskStore = yield* makeScheduledTaskStore.pipe(
+    Effect.provideService(SqlClient.SqlClient, sql),
+  );
+  let notificationWake: Effect.Effect<void> = Effect.void;
+  const scheduleTextGeneration = yield* Effect.serviceOption(TextGeneration);
+  const scheduledTasks = yield* makeScheduledTaskService({
+    naturalLanguage: (input, now) =>
+      Effect.gen(function* () {
+        if (Option.isNone(scheduleTextGeneration))
+          return yield* new RouteRequestError({ message: "Text generation is unavailable." });
+        const project = (yield* agentBridgeHost.readSnapshot).projects.find(
+          (p) => p.id === input.projectId && p.deletedAt === null,
+        );
+        if (!project)
+          return yield* new RouteRequestError({
+            message: "Choose a project for schedule conversion.",
+          });
+        const effective = yield* readProjectSettings(yield* serverSettings.getSettings, project);
+        const selection = effective.settings.textGenerationModelSelection;
+        const providers = yield* agentBridgeHost.listProviderInstances;
+        return yield* parseNaturalLanguageSchedule({
+          preview: input,
+          now,
+          cwd: project.workspaceRoot,
+          modelSelection: selection,
+          isCodex: providers.some(
+            (p) => p.instanceId === selection.instanceId && p.driver === "codex",
+          ),
+          textGeneration: scheduleTextGeneration.value,
+        });
+      }).pipe(
+        Effect.mapError((error) => scheduleError("natural_language_unavailable", error.message)),
+      ),
+    store: scheduledTaskStore,
+    wakeQueue: (threadId) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap((runtime) =>
+          runtime.nextTurnQueueDispatcher
+            .notify(threadId)
+            .pipe(
+              Effect.andThen(
+                runtime.providerTurnDeliveryWorker.wakeScheduled?.(threadId) ?? Effect.void,
+              ),
+            ),
+        ),
+        Effect.ignore,
+      ),
+    usageAccounts: awaitOrchestrationRuntimeForRoute.pipe(
+      Effect.flatMap((runtime) => runtime.usageService.getAccounts({ refresh: "none" })),
+      Effect.orElseSucceed(() => []),
+    ),
+    host: agentBridgeHost,
+    settings: serverSettings,
+    publish: (payload) =>
+      pushBus
+        .publishAll(WS_CHANNELS.scheduledTasksChanged, payload)
+        .pipe(Effect.andThen(Effect.suspend(() => notificationWake))),
+  });
+  yield* scheduledTasks.start.pipe(
+    Effect.catchCause((cause) => Effect.logError("scheduledTasks.start", cause)),
+    Effect.forkScoped,
+  );
+  if (Option.isSome(computerAutomationBroker)) {
+    const delivery = yield* makeScheduledNotificationDelivery({
+      host: computerAutomationBroker.value.host,
+      service: scheduledTasks,
+      store: scheduledTaskStore,
+      changed: () =>
+        scheduledTaskStore.readRevision.pipe(
+          Effect.flatMap((revision) =>
+            pushBus.publishAll(WS_CHANNELS.scheduledTasksChanged, {
+              revision,
+              taskIds: [],
+              runIds: [],
+            }),
+          ),
+          Effect.ignore,
+        ),
+    });
+    notificationWake = delivery.wake;
+    yield* delivery.start;
+  }
+  const agentBridge = yield* makeAgentBridgeService({
+    schedules: scheduledTasks,
+    host: agentBridgeHost,
+    store: makeAgentBridgeStore(sql),
+    tasks: makeBotTaskStore(sql),
+    settingsChanges: yield* serverSettings.subscribeChanges,
+    stateDir: serverConfig.stateDir,
+    serverVersion: serverPackageVersion,
+    stdio: agentBridgeStdioSetups({
+      profileId: serverConfig.profile?.id,
+      isDefaultProfile: serverConfig.profile?.isDefault ?? true,
+      defaultStateDir: serverConfig.defaultStateDir,
+    }),
+    publish: (payload) => pushBus.publishAll(AGENT_BRIDGE_WS_CHANNELS.stateChanged, payload),
+  });
+
+  const upstreamGitService = yield* Effect.serviceOption(GitService);
+  const upstreamGitHubCli = yield* Effect.serviceOption(GitHubCli);
+  const upstreamTextGeneration = yield* Effect.serviceOption(TextGeneration);
+  const asHostError = (error: unknown) =>
+    error instanceof UpstreamPortsError
+      ? error
+      : new UpstreamPortsError({
+          code: "internal",
+          message: String((error as { message?: unknown })?.message ?? error),
+        });
+  const upstreamPorts = Option.isNone(upstreamGitService)
+    ? null
+    : yield* makeUpstreamPortsService({
+        host: {
+          readModel: awaitOrchestrationRuntimeForRoute.pipe(
+            Effect.flatMap(({ orchestrationEngine }) => orchestrationEngine.getReadModel()),
+            Effect.mapError(asHostError),
+          ),
+          checkedInConfig: (projectId) =>
+            Effect.tryPromise({
+              try: () => checkedInProjectFileService.load(projectId),
+              catch: asHostError,
+            }),
+          getSettings: serverSettings.getSettings.pipe(Effect.mapError(asHostError)),
+          listProviders: providerAdvisoryProjection.getProviders,
+          usageAccounts: awaitOrchestrationRuntimeForRoute.pipe(
+            Effect.flatMap((runtime) => runtime.usageService.getAccounts({ refresh: "none" })),
+          ),
+          getThreadDetails: getSubmissionThreadDetails,
+          getTurnState: getSubmissionTurnState,
+          getQueueSnapshot: getSubmissionQueueSnapshot,
+          getSubmission: getTurnSubmission,
+          queueChanges: submissionQueueChanges,
+          domainEvents: submissionDomainEvents,
+          cancelQueuedSubmission: (submissionId) =>
+            cancelQueuedSubmission(
+              nextTurnQueueStore,
+              (threadId) =>
+                awaitOrchestrationRuntimeForRoute.pipe(
+                  Effect.flatMap((runtime) => runtime.nextTurnQueueDispatcher.notify(threadId)),
+                ),
+              submissionId,
+            ).pipe(Effect.mapError(asHostError)),
+          createCodeReviewWorkflow: (input, workflowId) =>
+            awaitOrchestrationRuntimeForRoute.pipe(
+              Effect.flatMap(({ codeReviewWorkflowService }) =>
+                codeReviewWorkflowService.createWorkflow(input, { workflowId }),
+              ),
+            ),
+          archiveCodeReviewWorkflow: (workflowId) =>
+            awaitOrchestrationRuntimeForRoute.pipe(
+              Effect.flatMap(({ codeReviewWorkflowService }) =>
+                codeReviewWorkflowService.archiveWorkflow(workflowId),
+              ),
+            ),
+          submitTurn: (body, source) =>
+            // A background retry must preserve any hold the user set meanwhile.
+            submitTurnSubmission(body, { submissionSource: source, resumeQueue: false }).pipe(
+              Effect.mapError((error) => ({
+                message: error.message,
+                ...("code" in error && typeof error.code === "string" ? { code: error.code } : {}),
+              })),
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+          publish: (payload) => pushBus.publishAll(UPSTREAM_PORTS_WS_CHANNELS.changed, payload),
+          generateTriageBatch: Option.isSome(upstreamTextGeneration)
+            ? (input) =>
+                upstreamTextGeneration.value.generateStructuredJson({
+                  ...input,
+                  outputSchema: UpstreamTriageBatchResult,
+                })
+            : null,
+          readDefaultBranch: (cwd) => git.readDefaultBranch(cwd),
+          resolveAvailableBranchName: (cwd, name) => git.resolveAvailableBranchName(cwd, name),
+          resolveCommonDir: (cwd) => git.resolveCommonDir(cwd),
+          withRepositoryLock: (commonDir, mode, effect) =>
+            withRepositoryLifecycleLock(serverConfig.baseDir, commonDir, effect, { mode }),
+        },
+        store: makeUpstreamStore(sql),
+        sql,
+        git: makeUpstreamGit(upstreamGitService.value.execute),
+        github: Option.isSome(upstreamGitHubCli)
+          ? makeUpstreamGitHub(upstreamGitHubCli.value)
+          : null,
+        baseDir: serverConfig.baseDir,
+        writer: {
+          profileId: serverConfig.profile?.id ?? "default",
+          stateDir: serverConfig.stateDir,
+        },
+      });
+  if (upstreamPorts !== null)
+    wakeUpstreamPorts = (threadId) => upstreamPorts.wakePortQueue(undefined, threadId);
+  if (upstreamPorts !== null)
+    yield* Deferred.await(orchestrationRuntime).pipe(
+      Effect.andThen(Scope.provide(upstreamPorts.start, subscriptionsScope)),
+      Effect.ignoreCause({ log: true }),
+      Effect.forkIn(subscriptionsScope),
     );
 
   const ownedPreviewUrls = new OwnedPreviewUrls();
@@ -2737,6 +3932,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             orchestrationEngine,
             providerService,
             providerSessionDirectory,
+            threadCommandExecutionQuery,
           },
           {
             threadIds: [params.threadId],
@@ -2776,12 +3972,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     },
   >(
     body: T,
-  ): Promise<T> => {
+  ): Promise<
+    T & {
+      provider: import("@t3tools/contracts").ProviderKind;
+      instanceId: import("@t3tools/contracts").ProviderInstanceId;
+    }
+  > => {
     if (body.binaryPath !== undefined || body.homePath !== undefined)
       throw new Error(
         "Client-supplied provider executable and home paths are not accepted. Select a provider instance.",
       );
-    const { ProviderInstanceId } = await import("@t3tools/contracts");
+    const { ProviderInstanceId, isKnownProviderKind } = await import("@t3tools/contracts");
     const configured = deriveProviderInstanceConfigMap(
       await Effect.runPromise(serverSettings.getSettings),
     );
@@ -2800,123 +4001,206 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     const account = await accountService.resolve(ProviderInstanceId.make(selected));
     if (body.provider && body.provider !== account.instance.driver)
       throw new Error("Provider instance does not match the requested provider.");
+    const provider = account.instance.driver;
+    if (!isKnownProviderKind(provider))
+      throw new Error("This provider does not support MCP account operations.");
     return {
       ...body,
+      provider,
       instanceId: ProviderInstanceId.make(selected),
       ...(account.config.binaryPath ? { binaryPath: account.config.binaryPath } : {}),
       ...(account.config.homePath ? { homePath: account.config.homePath } : {}),
     };
   };
 
+  const preparationReceipts = yield* Effect.service(WorktreePreparations).pipe(
+    Effect.provide(WorktreePreparationsLive),
+  );
   const prepareWorktree = yield* makeWorktreePreparation({
     scope: subscriptionsScope,
+    git,
+    receipts: preparationReceipts,
     createWorktree: (input) =>
-      Effect.gen(function* () {
-        const commit = yield* git.resolveCommit(input.cwd, input.branch);
-        if (!commit)
-          return yield* Effect.fail(new Error(`Cannot resolve worktree base '${input.branch}'.`));
-        return yield* createConfiguredWorktree({
-          ...input,
-          baseRefName: commit,
-          path: resolveDefaultWorktreePath({
-            worktreesDir: serverConfig.worktreesDir,
-            cwd: input.cwd,
-            branch: input.newBranch,
-          }),
-        });
+      createConfiguredWorktree({
+        ...input,
+        preparation: {
+          owner: `thread:${input.threadId}`,
+          projectCwd: input.projectCwd,
+          requestedBase: input.branch,
+          operationId: input.operationId,
+          runSetupScript: input.runSetupScript ?? true,
+          setupIdentity: input.setupIdentity ?? null,
+        },
       }),
     runSetup: (input) =>
-      awaitOrchestrationRuntimeForRoute.pipe(
-        Effect.flatMap(({ projectSetupScriptRunner }) =>
-          projectSetupScriptRunner.runForThread(input),
-        ),
-      ),
+      Effect.gen(function* () {
+        const { orchestrationEngine, worktreePreparation } =
+          yield* awaitOrchestrationRuntimeForRoute;
+        const model = yield* orchestrationEngine.getReadModel();
+        const project = model.projects.find(
+          (p) => p.workspaceRoot === input.projectCwd && p.deletedAt === null,
+        );
+        if (!project || !input.worktreePath) return { status: "no-script" as const };
+        const receipt = yield* preparationReceipts.latest(
+          yield* Effect.promise(() => canonicalWorktreePath(input.worktreePath!)),
+        );
+        if (receipt)
+          yield* worktreePreparation.prepare({
+            threadId: input.threadId,
+            projectId: project.id,
+            worktreePath: input.worktreePath,
+            branch: receipt.branch,
+            retry: input.retry === true,
+          });
+        return { status: "no-script" as const };
+      }),
   });
 
-  const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
-    switch (request.body._tag) {
-      case WS_METHODS.githubLoginStart:
-        return yield* profileCall(() => githubLogin.start());
-      case WS_METHODS.githubLoginStatus:
-        return githubLogin.status(request.body.handle);
-      case WS_METHODS.githubLoginCancel:
-        return githubLogin.cancel(request.body.handle);
-      case WS_METHODS.githubAccountSet: {
-        const { host, token } = request.body;
-        // Browser sign-in is github.com-only; a token save for that host supersedes it.
-        if (host === "github.com") githubLogin.cancel();
-        return yield* profileCall(() => githubAccount.set(host, token));
-      }
-      case WS_METHODS.githubAccountRemove: {
-        const { host } = request.body;
-        if (host === "github.com") githubLogin.cancel();
-        return yield* profileCall(() => githubAccount.remove(host));
-      }
-      case WS_METHODS.githubAccountStatus: {
-        const { host } = request.body;
-        return yield* profileCall(() => githubAccount.status(host));
-      }
-      case WS_METHODS.githubAccountCliCandidates:
-        return yield* profileCall(() => githubCliImport.candidates());
-      case WS_METHODS.githubAccountCliImport: {
-        const { host, login } = request.body;
-        if (host === "github.com") githubLogin.cancel();
-        return yield* profileCall(() => githubCliImport.import({ host, login }));
-      }
-      case WS_METHODS.profilesList:
-        return yield* profileCall(readProfiles);
-      case WS_METHODS.profilesCreate: {
-        const profile = yield* profileCall(() =>
-          profilesStore.create(
-            stripRequestTag(request.body) as import("@t3tools/contracts").ProfileCreateInput,
+  const switchGitWorkspace =
+    (threadId?: ThreadId, operationId?: string): GitWorkspaceSwitchHandler =>
+    (input) =>
+      Effect.gen(function* () {
+        const { orchestrationEngine, workspaceTransition } =
+          yield* awaitOrchestrationRuntimeForRoute;
+        if (threadId) {
+          const model = yield* orchestrationEngine.getReadModel();
+          const thread = model.threads.find(
+            (entry) => entry.id === threadId && entry.deletedAt === null,
+          );
+          const project = model.projects.find((entry) => entry.id === thread?.projectId);
+          const workspace = threadWorkspaceCwd(thread, project);
+          if (
+            !thread ||
+            !project ||
+            isScratchProject(project) ||
+            !workspace ||
+            (yield* Effect.tryPromise(() => canonicalWorktreePath(input.cwd))) !==
+              (yield* Effect.tryPromise(() => canonicalWorktreePath(workspace)))
+          )
+            return yield* Effect.fail(
+              new Error("The checkout does not match this conversation's workspace."),
+            );
+          const result = yield* workspaceTransition.switchWorkspace({
+            operationId: operationId ?? crypto.randomUUID(),
+            threadId,
+            intent: input.create ? "create_branch_and_checkout" : "checkout_branch",
+            branch: input.branch,
+            expected: {
+              branch: thread.branch,
+              worktreePath: thread.worktreePath,
+              sessionUpdatedAt: thread.session?.updatedAt ?? null,
+            },
+          });
+          if (result.phase !== "completed") {
+            if (result.checkoutConflict)
+              return yield* new GitCommandError({
+                operation: "GitCore.checkoutBranch.checkout",
+                cwd: input.cwd,
+                command: "git checkout",
+                detail: result.error ?? "Local changes block branch switching.",
+                checkoutConflict: result.checkoutConflict,
+              });
+            return yield* Effect.fail(
+              new Error(result.error ?? "Inspect and resolve the workspace transition."),
+            );
+          }
+          return;
+        }
+        const checkout = yield* git.inspectCheckoutIdentity(input.cwd);
+        yield* withWorktreeLifecycleLock(
+          checkout.canonicalRoot,
+          withRepositoryLifecycleLock(
+            serverConfig.baseDir,
+            checkout.commonDir,
+            Effect.gen(function* () {
+              const current = yield* git.inspectCheckoutIdentity(input.cwd);
+              if (
+                current.canonicalRoot !== checkout.canonicalRoot ||
+                current.commonDir !== checkout.commonDir ||
+                current.branch !== checkout.branch
+              )
+                return yield* Effect.fail(
+                  new Error("The checkout identity changed. Inspect it before switching branches."),
+                );
+              const usage = yield* readWorktreeClaims(checkout.canonicalRoot).pipe(
+                Effect.provideService(OrchestrationEngineService, orchestrationEngine),
+                Effect.provideService(ProviderService, providerService),
+                Effect.provideService(TerminalManager, terminalManager),
+                Effect.provideService(NextTurnQueueStore, nextTurnQueueStore),
+              );
+              if (
+                usage.unknown ||
+                usage.threadIds.length ||
+                usage.sessions.length ||
+                usage.terminals.length ||
+                usage.setupThreadIds.length
+              )
+                return yield* Effect.fail(
+                  new Error(
+                    "This checkout is referenced by a conversation or process. Switch it through that conversation.",
+                  ),
+                );
+              yield* Effect.tryPromise(() =>
+                assertExclusiveProfileCheckout(serverConfig, checkout.canonicalRoot),
+              );
+              if (input.create) yield* git.createBranch({ cwd: input.cwd, branch: input.branch });
+              yield* Effect.scoped(
+                git.checkoutBranch(
+                  { cwd: input.cwd, branch: input.branch },
+                  { refreshUpstream: false },
+                ),
+              );
+            }),
           ),
         );
-        return {
-          ...profile,
-          stateDir: profileStateDir(defaultProfileStateDir, profile),
-          isActive: false,
-          providerAccounts: [],
-        };
-      }
-      case WS_METHODS.profilesUpdate: {
-        const profile = yield* profileCall(() =>
-          profilesStore.update(
-            stripRequestTag(request.body) as import("@t3tools/contracts").ProfileUpdateInput,
-          ),
-        );
-        return {
-          ...profile,
-          stateDir: profileStateDir(defaultProfileStateDir, profile),
-          isActive: profile.id === activeProfile.id,
-          providerAccounts: [],
-        };
-      }
-      case WS_METHODS.profilesDelete: {
-        const id = request.body.profileId;
-        return yield* profileCall(() => profilesStore.remove(id));
-      }
-      case WS_METHODS.providerAccountLoginStart: {
-        const id = request.body.instanceId;
-        const method = request.body.method;
-        return yield* profileCall(() => accountService.start(id, false, ws, method));
-      }
-      case WS_METHODS.providerAccountLogout: {
-        const id = request.body.instanceId;
-        return yield* profileCall(() => accountService.start(id, true, ws));
-      }
-      case WS_METHODS.providerAccountInput: {
-        const { handle, data } = request.body;
-        return yield* profileCall(async () => accountService.input(handle, data, ws));
-      }
-      case WS_METHODS.providerAccountCancel: {
-        const { handle } = request.body;
-        return yield* profileCall(() => accountService.cancel(handle, ws));
-      }
-      case WS_METHODS.providerAccountStatus: {
-        const id = request.body.instanceId;
-        return yield* profileCall(() => accountService.status(id));
-      }
+      });
 
+  // Routes that live in their own modules. `routeRequest` answers from here
+  // before its switch; see `wsServer/routes/routeTable.ts`.
+  const routeTable = routeTables(
+    githubAccountRoutes({
+      login: githubLogin,
+      account: githubAccount,
+      cliImport: githubCliImport,
+    }),
+  )
+    .and(providerAccountRoutes(accountService))
+    .and(
+      profileRoutes({
+        store: profilesStore,
+        list: readProfiles,
+        defaultStateDir: defaultProfileStateDir,
+        activeProfileId: activeProfile.id,
+      }),
+    )
+    .and(
+      scheduledTaskRoutes({
+        schedules: scheduledTasks,
+        desktopShowsNotifications: () =>
+          Option.isSome(computerAutomationBroker) &&
+          computerAutomationBroker.value.host.notificationsCapable(),
+      }),
+    )
+    .and(upstreamPortRoutes(upstreamPorts))
+    .and(agentBridgeRoutes(agentBridge))
+    .and(
+      terminalRoutes({ terminals: terminalManager, startingShellFor: withTerminalThreadAccess }),
+    ).table;
+
+  const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
+    const requestCwd = (request.body as { readonly cwd?: unknown }).cwd;
+    if (typeof requestCwd === "string") {
+      const refusal = scratchWorkspaceRefusal({
+        scratchRoot: scratchRootFor(serverConfig.stateDir),
+        method: request.body._tag,
+        cwd: requestCwd,
+      });
+      if (refusal) return yield* new RouteRequestError({ message: refusal });
+    }
+    if (tableAnswers(routeTable, request.body)) {
+      return yield* answerFromTable(routeTable, request.body, ws);
+    }
+    switch (request.body._tag) {
       case AGENTS_WS_METHODS.getSnapshot: {
         const { threadBackgroundWork } = yield* awaitOrchestrationRuntimeForRoute;
         const { threadId } = stripRequestTag(request.body);
@@ -2930,6 +4214,44 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               new RouteRequestError({
                 message: `Unable to load background work: ${error.message}`,
               }),
+          ),
+        );
+      }
+
+      case AGENTS_WS_METHODS.readTranscript: {
+        const { threadBackgroundWork, providerSessionDirectory } =
+          yield* awaitOrchestrationRuntimeForRoute;
+        const input = stripRequestTag(request.body);
+        const workspace = yield* projectionWorkspaceQuery
+          .getThreadWorkspace(input.threadId)
+          .pipe(
+            Effect.mapError(
+              () =>
+                new RouteRequestError({ message: "Unable to resolve the transcript workspace." }),
+            ),
+          );
+        return yield* readAgentTranscript(input, {
+          work: threadBackgroundWork,
+          directory: providerSessionDirectory,
+          service: providerService,
+          resolveAccount: (id) => accountService.resolve(id),
+          ...(Option.isSome(workspace) ? { cwd: workspace.value.workspaceRoot } : {}),
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause as Cause.Cause<never>)
+              : Effect.logWarning("Agent transcript read failed", {
+                  cause: Cause.pretty(cause),
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new RouteRequestError({
+                        message:
+                          "Unable to read this agent transcript. Retry or check the provider configuration.",
+                      }),
+                    ),
+                  ),
+                ),
           ),
         );
       }
@@ -2962,7 +4284,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             )
             .map((thread) => [thread.id, usageLimitKey(thread.session)]),
         );
-        const refreshResumes = (): Effect.Effect<void> =>
+        const refreshResumes = (attempt = 0): Effect.Effect<void> =>
           Effect.gen(function* () {
             const refreshed = yield* usageService.refreshAccount(body.providerInstanceId);
             if (!refreshed.fresh || !refreshed.snapshot) {
@@ -2970,10 +4292,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               if (
                 (result.outcome === "reset" || result.outcome === "alreadyRedeemed") &&
                 Number.isFinite(retryAt) &&
-                retryAt > Date.now()
+                attempt < 3
               )
-                yield* Effect.sleep(retryAt - Date.now()).pipe(
-                  Effect.andThen(Effect.suspend(refreshResumes)),
+                // The hint can elapse between the capability's refusal and this
+                // check. Retry through its real throttle instead of dropping it.
+                yield* Effect.sleep(Math.max(50, retryAt - Date.now())).pipe(
+                  Effect.andThen(Effect.suspend(() => refreshResumes(attempt + 1))),
                   Effect.forkIn(subscriptionsScope),
                 );
               return;
@@ -3014,39 +4338,45 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             ),
           );
         yield* refreshResumes();
+        yield* wakeUpstreamPorts();
         return result;
       }
       case USAGE_WS_METHODS.getAccounts: {
         const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* usageService
-          .getAccounts(stripRequestTag(request.body))
-          .pipe(
-            Effect.mapError(
-              () => new RouteRequestError({ message: "Unable to load account usage." }),
-            ),
-          );
+        return yield* usageService.getAccounts(stripRequestTag(request.body)).pipe(
+          Effect.tap(() => wakeUpstreamPorts()),
+          Effect.mapError(
+            () => new RouteRequestError({ message: "Unable to load account usage." }),
+          ),
+        );
       }
 
       case NATIVE_OPERATION_WS_METHODS.fork: {
         const input = stripRequestTag(request.body);
-        const { orchestrationEngine, providerSessionDirectory, projectSetupScriptRunner } =
+        const { orchestrationEngine, providerSessionDirectory, worktreePreparation } =
           yield* awaitOrchestrationRuntimeForRoute;
         const snapshot = yield* orchestrationEngine.getReadModel();
         const source = snapshot.threads.find(
           (entry) => entry.id === input.threadId && entry.deletedAt === null,
         );
         const project = snapshot.projects.find((entry) => entry.id === source?.projectId);
-        if (!source || !project || !providerService.nativeOperations?.executeWithApply)
+        // A fork gets its own Git worktree, which a thread without a project cannot have.
+        if (
+          !source ||
+          !project ||
+          isScratchProject(project) ||
+          !providerService.nativeOperations?.executeWithApply
+        )
           return yield* new RouteRequestError({ message: "This conversation cannot be forked." });
         if (!/^[0-9a-f-]{36}$/i.test(input.operationId))
           return yield* new RouteRequestError({ message: "Invalid fork identifier." });
         const targetId = NativeForkThreadId.makeUnsafe(`fork-${input.operationId}`);
-        const branch = `t3code/${input.operationId.slice(0, 8)}`;
-        const cwd = resolveDefaultWorktreePath({
-          worktreesDir: serverConfig.worktreesDir,
-          cwd: project.workspaceRoot,
-          branch,
-        });
+        const branch = yield* resolveTemporaryWorktreeBranch(
+          git,
+          project.workspaceRoot,
+          `t3code/${input.operationId.slice(0, 8)}`,
+        );
+        const cwd = yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch });
         const binding = yield* providerSessionDirectory
           .getBinding(input.threadId)
           .pipe(Effect.mapError((cause) => new RouteRequestError({ message: String(cause) })));
@@ -3107,26 +4437,24 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                     cwd,
                   },
                 });
-                yield* projectSetupScriptRunner
-                  .runForThread({
-                    threadId: targetId,
-                    projectId: project.id,
-                    projectCwd: project.workspaceRoot,
-                    worktreePath: cwd,
-                  })
+                yield* worktreePreparation
+                  .prepare({ threadId: targetId, projectId: project.id, worktreePath: cwd, branch })
                   .pipe(Effect.mapError(validation));
               }),
             createConfiguredWorktree({
-              cwd: source.worktreePath ?? project.workspaceRoot,
+              cwd: threadWorkspaceCwd(source, project) ?? project.workspaceRoot,
               branch: source.branch ?? "HEAD",
               baseRefName: source.branch ?? "HEAD",
               newBranch: branch,
+              preparation: { owner: `thread:${targetId}`, runSetupScript: true },
               path: cwd,
             }).pipe(Effect.asVoid, Effect.mapError(validation)),
             { background: true },
           )
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }
+      case NATIVE_OPERATION_WS_METHODS.historyRecovery:
+      case NATIVE_OPERATION_WS_METHODS.markRead:
       case NATIVE_OPERATION_WS_METHODS.resolve:
       case NATIVE_OPERATION_WS_METHODS.execute:
       case NATIVE_OPERATION_WS_METHODS.list:
@@ -3141,6 +4469,33 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           return yield* new RouteRequestError({
             message: "Native operations are unavailable for this conversation.",
           });
+        if (request.body._tag === NATIVE_OPERATION_WS_METHODS.historyRecovery) {
+          if (!providerService.nativeOperations.historyRecovery)
+            return yield* new RouteRequestError({ message: "History recovery is unavailable." });
+          const recovery = stripRequestTag(request.body);
+          const result = yield* providerService.nativeOperations
+            .historyRecovery(recovery)
+            .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+          // Accepting the history releases its fence: the warning kept for it goes too.
+          if (recovery.action === "acknowledge" && recovery.expected) {
+            const cleared = makeHistoryRecoveredSessionSet({
+              thread: (yield* orchestrationEngine.getReadModel()).threads.find(
+                (entry) => entry.id === recovery.threadId,
+              ),
+              markerId: recovery.expected.eventId,
+              commandId: CommandId.makeUnsafe(
+                `server:history-accepted:${recovery.threadId}:${timeOrderedUuid()}`,
+              ),
+              createdAt: new Date().toISOString(),
+            });
+            if (cleared) yield* orchestrationEngine.dispatch(cleared);
+          }
+          return result;
+        }
+        if (request.body._tag === NATIVE_OPERATION_WS_METHODS.markRead) {
+          yield* providerService.nativeOperations.markRead?.(input.threadId) ?? Effect.void;
+          return;
+        }
         if (request.body._tag === NATIVE_OPERATION_WS_METHODS.resolve) {
           if (!providerService.nativeOperations.resolve)
             return yield* new RouteRequestError({
@@ -3198,6 +4553,34 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case USAGE_WS_METHODS.getQuotaHistory: {
+        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* usageService.getQuotaHistory.pipe(
+          Effect.mapError((error) => new RouteRequestError({ message: error.message })),
+        );
+      }
+
+      case USAGE_WS_METHODS.getThreadTurns: {
+        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* usageService
+          .getThreadTurns(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+
+      case USAGE_WS_METHODS.analyzeClaudeUsage: {
+        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* usageService
+          .analyzeClaudeUsage(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+
+      case ORCHESTRATION_WS_METHODS.getLatestSequence: {
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        return {
+          latestSequence: (yield* orchestrationEngine.getReadModel()).snapshotSequence,
+          backendIncarnation: BACKEND_INCARNATION,
+        };
+      }
       case ORCHESTRATION_WS_METHODS.getSnapshot: {
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* orchestrationEngine.getReadModel();
@@ -3231,6 +4614,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* projectionReadModelQuery.getRewindDrafts(body);
       }
 
+      case ORCHESTRATION_WS_METHODS.getThreadPeek: {
+        const body = stripRequestTag(request.body);
+        return yield* readThreadPeek(sql, body.threadId);
+      }
+
+      case ORCHESTRATION_WS_METHODS.getThreadPeeks: {
+        const body = stripRequestTag(request.body);
+        return { peeks: yield* readThreadPeeks(sql, body.threadIds) };
+      }
+
       case ORCHESTRATION_WS_METHODS.getThreadTailDetails: {
         const body = stripRequestTag(request.body);
         return yield* withWsThreadOpenTiming({
@@ -3241,7 +4634,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               threadId: body.threadId,
               reason: "ws:getThreadTailDetails",
             });
-            return yield* projectionReadModelQuery.getThreadTailDetails(body);
+            const details = yield* projectionReadModelQuery.getThreadTailDetails(body);
+            const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+            const model = yield* orchestrationEngine.getReadModel();
+            const thread = model.threads.find((thread) => thread.id === body.threadId);
+            // Keep the response bounded even when the runtime retains full history.
+            return {
+              ...details,
+              thread: thread
+                ? { ...thread, messages: [], activities: [], checkpoints: [], proposedPlans: [] }
+                : null,
+            };
           }),
           summarize: (result) => ({
             detailSequence: result.detailSequence,
@@ -3253,6 +4656,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             hasOlderActivities: result.hasOlderActivities,
           }),
         });
+      }
+
+      case ORCHESTRATION_WS_METHODS.searchThread: {
+        return yield* projectionReadModelQuery.searchThread(stripRequestTag(request.body));
       }
 
       case ORCHESTRATION_WS_METHODS.getThreadHistoryPage: {
@@ -3283,7 +4690,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case ORCHESTRATION_WS_METHODS.dispatchCommand: {
-        const { orchestrationEngine, projectSetupScriptRunner } =
+        const { orchestrationEngine, projectSetupScriptRunner, workspaceTransition } =
           yield* awaitOrchestrationRuntimeForRoute;
         const rawCommand = request.body.command;
         const command =
@@ -3295,11 +4702,67 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             command,
             orchestrationEngine,
             projectSetupScriptRunner,
+            submissionSource: "human",
           });
           yield* releaseSentUploads(command.threadId, command.message.attachments);
           return dispatched;
         }
-        const normalizedCommand = yield* normalizeDispatchCommand({ command });
+        if (
+          command.type === "thread.meta.update" &&
+          (command.branch !== undefined || command.worktreePath !== undefined)
+        ) {
+          const thread = (yield* orchestrationEngine.getReadModel()).threads.find(
+            (entry) => entry.id === command.threadId && entry.deletedAt === null,
+          );
+          if (!thread) return yield* new RouteRequestError({ message: "Unknown conversation." });
+          if (
+            (command.expectedBranch !== undefined && command.expectedBranch !== thread.branch) ||
+            (command.expectedWorktreePath !== undefined &&
+              command.expectedWorktreePath !== thread.worktreePath)
+          )
+            return yield* new RouteRequestError({
+              message: "The conversation workspace changed. Refresh and try again.",
+            });
+          const path =
+            command.worktreePath === undefined ? thread.worktreePath : command.worktreePath;
+          const branch = command.branch === undefined ? thread.branch : command.branch;
+          if (path !== thread.worktreePath || branch !== thread.branch) {
+            const project = (yield* orchestrationEngine.getReadModel()).projects.find(
+              (entry) => entry.id === thread.projectId,
+            );
+            if (!project) return yield* new RouteRequestError({ message: "Unknown project." });
+            const result = yield* workspaceTransition
+              .switchWorkspace({
+                operationId: command.commandId,
+                threadId: thread.id,
+                intent: "attach_existing",
+                targetPath: path ?? project.workspaceRoot,
+                ...(branch ? { branch } : {}),
+                expected: {
+                  branch: thread.branch,
+                  worktreePath: thread.worktreePath,
+                  sessionUpdatedAt: thread.session?.updatedAt ?? null,
+                },
+              })
+              .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+            if (result.phase !== "completed")
+              return yield* new RouteRequestError({
+                message: result.error ?? "Resolve the workspace transition before continuing.",
+              });
+          }
+          const {
+            branch: _branch,
+            worktreePath: _path,
+            expectedBranch: _expectedBranch,
+            expectedWorktreePath: _expectedPath,
+            ...metadata
+          } = command;
+          return yield* orchestrationEngine.dispatch(metadata);
+        }
+        const normalizedCommand = yield* normalizeDispatchCommand({
+          command,
+          submissionSource: "human",
+        });
         if (normalizedCommand.type === "thread.turn.start") {
           yield* removePersistedTurnAttachments(normalizedCommand);
           return yield* new RouteRequestError({
@@ -3308,7 +4771,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               "Established-thread turns must be submitted through nextTurnQueue.submit so ordering is enforced by the server.",
           });
         }
-        const result = yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
+        const result = yield* dispatchWithCreationAttachment(
+          orchestrationEngine,
+          normalizedCommand,
+        ).pipe(
           Effect.tapError(() =>
             normalizedCommand.type === "thread.user-input.respond"
               ? discardAttachmentIngress({
@@ -3520,7 +4986,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case ORCHESTRATION_WS_METHODS.deleteWorkflow: {
         const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
-        yield* workflowService.deleteWorkflow(body.workflowId).pipe(
+        return yield* workflowService.deleteWorkflow(body.workflowId, body.deleteThreads).pipe(
           Effect.mapError(
             (cause) =>
               new RouteRequestError({
@@ -3528,35 +4994,36 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }),
           ),
         );
-        return undefined;
       }
 
       case ORCHESTRATION_WS_METHODS.deleteCodeReviewWorkflow: {
         const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
-        yield* codeReviewWorkflowService.deleteWorkflow(body.workflowId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to delete code review workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
+        return yield* codeReviewWorkflowService
+          .deleteWorkflow(body.workflowId, body.deleteThreads)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new RouteRequestError({
+                  message: `Failed to delete code review workflow: ${String(cause)}`,
+                }),
+            ),
+          );
       }
 
       case ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow: {
         const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
-        yield* investigationWorkflowService.deleteWorkflow(body.workflowId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to delete investigation workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
+        return yield* investigationWorkflowService
+          .deleteWorkflow(body.workflowId, body.deleteThreads)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new RouteRequestError({
+                  message: `Failed to delete investigation workflow: ${String(cause)}`,
+                }),
+            ),
+          );
       }
 
       case ORCHESTRATION_WS_METHODS.skipDocumentReaderPass: {
@@ -3596,6 +5063,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }),
           ),
         );
+      }
+
+      case ORCHESTRATION_WS_METHODS.postCodeReviewWorkflow: {
+        const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        return yield* codeReviewWorkflowService
+          .postWorkflow(body)
+          .pipe(Effect.mapError((cause) => new RouteRequestError({ message: cause.message })));
       }
 
       case ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow: {
@@ -3650,6 +5125,150 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
       case WS_METHODS.projectsCloneList:
         return projectClones.list();
+      case WS_METHODS.projectsEnsureScratch: {
+        return yield* scratchProjectSemaphore.withPermits(1)(
+          Effect.gen(function* () {
+            const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+            const findLive = orchestrationEngine
+              .getReadModel()
+              .pipe(
+                Effect.map((model) =>
+                  model.projects.find((project) => isScratchProject(project) && !project.deletedAt),
+                ),
+              );
+            const existing = yield* findLive;
+            if (existing) return { projectId: existing.id };
+            const workspaceRoot = yield* Effect.tryPromise({
+              try: () => prepareScratchRoot(serverConfig.stateDir),
+              catch: (cause) =>
+                new RouteRequestError({
+                  message:
+                    cause instanceof Error
+                      ? cause.message
+                      : "Could not create the folder for threads without a project.",
+                }),
+            });
+            // The id and command id depend only on the profile, so racing or retried creates
+            // converge on one project: a duplicate either replays the receipt or is refused.
+            const projectId = ProjectId.makeUnsafe(scratchProjectIdFor(activeProfile.id));
+            yield* orchestrationEngine
+              .dispatch({
+                type: "project.scratch.create",
+                commandId: CommandId.makeUnsafe(`scratch-project-create:${projectId}`),
+                projectId,
+                workspaceRoot,
+                createdAt: new Date().toISOString(),
+              })
+              .pipe(
+                Effect.catch((error) =>
+                  findLive.pipe(
+                    Effect.flatMap((raced) =>
+                      raced
+                        ? Effect.void
+                        : Effect.fail(new RouteRequestError({ message: String(error) })),
+                    ),
+                  ),
+                ),
+              );
+            const created = yield* findLive;
+            if (!created)
+              return yield* new RouteRequestError({
+                message: "Could not create the home for threads without a project.",
+              });
+            return { projectId: created.id };
+          }),
+        );
+      }
+      case WS_METHODS.projectsCreateNew: {
+        const body = stripRequestTag(request.body);
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const settings = yield* serverSettings.getSettings.pipe(
+          Effect.mapError(
+            () => new RouteRequestError({ message: "Could not read the projects folder setting." }),
+          ),
+        );
+        const created = yield* Effect.tryPromise({
+          try: async () => {
+            const root = resolveProjectsRoot({
+              setting: settings.projectsRoot,
+              profileId: activeProfile.id,
+              isDefaultProfile: serverConfig.profile?.isDefault ?? true,
+            });
+            const folder = await reserveProjectFolder(root, projectFolderSlug(body.name));
+            const { warning } = await initializeNewProject({
+              folder,
+              name: body.name,
+              authorName: settings.gitAuthorName,
+              authorEmail: settings.gitAuthorEmail,
+            });
+            return { folder, warning };
+          },
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Could not create the project: ${cause instanceof Error ? cause.message : String(cause)}`,
+            }),
+        });
+        const projectId = ProjectId.makeUnsafe(randomUUID());
+        yield* orchestrationEngine
+          .dispatch({
+            type: "project.create",
+            commandId: CommandId.makeUnsafe(`project-create-new:${projectId}`),
+            projectId,
+            title: body.name,
+            workspaceRoot: created.folder,
+            defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
+            createdAt: new Date().toISOString(),
+          })
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new RouteRequestError({
+                  message: `The folder ${created.folder} was created but could not be added as a project: ${String(error)}`,
+                }),
+            ),
+          );
+        return { projectId, workspaceRoot: created.folder, warning: created.warning };
+      }
+      case WS_METHODS.projectsFindByRepository: {
+        const body = stripRequestTag(request.body);
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const model = yield* orchestrationEngine.getReadModel();
+        const owner = body.owner.toLowerCase();
+        const name = body.name.toLowerCase().replace(/\.git$/, "");
+        // Bounded concurrency and a per-project deadline keep one slow or unmounted
+        // volume from stalling the link; such a project simply does not match.
+        const candidates = model.projects.filter(
+          (project) => project.deletedAt === null && !isScratchProject(project),
+        );
+        const matched = yield* Effect.forEach(
+          candidates,
+          (project) =>
+            git.listRemotes(project.workspaceRoot).pipe(
+              Effect.timeoutOption("5 seconds"),
+              Effect.map(Option.getOrElse(() => [])),
+              Effect.orElseSucceed(() => []),
+              Effect.map((remotes) =>
+                discoverSourceControlProviderIdentities(remotes, {
+                  githubHosts: ["github.com"],
+                }).some(
+                  (identity) =>
+                    identity.kind === "github" &&
+                    identity.host?.toLowerCase() === "github.com" &&
+                    identity.owner?.toLowerCase() === owner &&
+                    identity.repository?.toLowerCase() === name,
+                ),
+              ),
+            ),
+          { concurrency: 6 },
+        );
+        return candidates
+          .filter((_, index) => matched[index])
+          .map((project) => ({
+            projectId: project.id,
+            title: project.title,
+            workspaceRoot: project.workspaceRoot,
+          }));
+      }
       case WS_METHODS.projectsCloneCancel: {
         yield* projectClones.cancel(request.body.operationId);
         return undefined;
@@ -3793,66 +5412,25 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.projectsWriteFile: {
         const body = stripRequestTag(request.body);
-        const target = yield* resolveWorkspaceWritePath({
-          workspaceRoot: body.cwd,
-          relativePath: body.relativePath,
-          path,
-          fileSystem,
-        });
-        const targetStatResult = yield* Effect.exit(fileSystem.stat(target.absolutePath));
-        if (body.expectedContentSha256) {
-          if (
-            Exit.isFailure(targetStatResult) ||
-            targetStatResult.value.type === "Directory" ||
-            Number(targetStatResult.value.size) > PROJECT_READ_FILE_MAX_SIZE
-          ) {
-            return yield* new RouteRequestError({
-              message: `Workspace file changed before save: ${target.relativePath}. Reload file before saving.`,
-            });
-          }
-          const existingBytes = yield* fileSystem.readFile(target.absolutePath).pipe(
-            Effect.mapError(
-              () =>
-                new RouteRequestError({
-                  message: `Workspace file changed before save: ${target.relativePath}. Reload file before saving.`,
-                }),
+        const result = yield* Effect.tryPromise({
+          try: () =>
+            writeWorkspaceFile(
+              body,
+              NodePath.join(
+                serverConfig.profilesRoot ?? NodePath.dirname(serverConfig.stateDir),
+                "locks",
+              ),
             ),
-          );
-          const existingHash = sha256Hex(existingBytes);
-          if (existingHash !== body.expectedContentSha256) {
-            return yield* new RouteRequestError({
-              message: `Workspace file changed before save: ${target.relativePath}. Reload file before saving.`,
-            });
-          }
-        }
-        yield* fileSystem
-          .makeDirectory(path.dirname(target.absolutePath), { recursive: true })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new RouteRequestError({
-                  message: `Failed to prepare workspace path: ${String(cause)}`,
-                }),
-            ),
-          );
-        yield* fileSystem.writeFileString(target.absolutePath, body.contents).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to write workspace file: ${String(cause)}`,
-              }),
-          ),
-        );
-        clearWorkspaceIndexCache(body.cwd, {
-          destroySearchIndex:
-            Exit.isFailure(targetStatResult) || targetStatResult.value.type !== "File",
+          catch: (cause) =>
+            new RouteRequestError({
+              message: cause instanceof Error ? cause.message : String(cause),
+            }),
         });
-        const writtenBytes = Buffer.from(body.contents, "utf8");
-        return {
-          relativePath: target.relativePath,
-          byteLength: writtenBytes.byteLength,
-          contentSha256: sha256Hex(writtenBytes),
-        };
+        if (!("conflict" in result))
+          clearWorkspaceIndexCache(body.cwd, {
+            destroySearchIndex: body.condition.type === "create",
+          });
+        return result;
       }
 
       case WS_METHODS.attachmentsCloneToUpload: {
@@ -3956,6 +5534,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         });
       }
 
+      case WS_METHODS.projectsSetWatchedPaths: {
+        const body = stripRequestTag(request.body);
+        return yield* Effect.tryPromise({
+          try: async () => {
+            const result = await workspaceWatchRegistry.setWatchedPaths(ws, body);
+            // A request still queued when the socket closed must not outlive it.
+            if (ws.readyState !== ws.OPEN) workspaceWatchRegistry.releaseSubscriber(ws);
+            return result;
+          },
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Failed to watch workspace paths: ${String(cause)}`,
+            }),
+        });
+      }
+
       case WS_METHODS.projectsReadFile: {
         const body = stripRequestTag(request.body);
         const target = yield* resolveWorkspaceReadPath({
@@ -4002,6 +5596,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             }),
         });
         return {
+          workspaceIdentity: yield* fileSystem.realPath(body.cwd),
+          fileIdentity: target.absolutePath,
           relativePath: target.relativePath,
           contents,
           byteLength,
@@ -4046,25 +5642,42 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.shellRevealInFileManager: {
         const body = stripRequestTag(request.body);
-        const projectWorkspace = yield* projectionWorkspaceQuery.getProjectWorkspace(
-          body.projectId,
-        );
-        if (Option.isNone(projectWorkspace)) {
-          return yield* new RouteRequestError({ message: "Project not found." });
-        }
-        const threadProjectId = yield* projectionWorkspaceQuery.getThreadProjectId(body.threadId);
-        if (Option.isSome(threadProjectId) && threadProjectId.value !== body.projectId) {
+        // External previews may choose a local directory, as projects.readFile
+        // already permits. Ownership checks do not make that directory project-scoped.
+        if (
+          body.cwd !== undefined &&
+          (!path.isAbsolute(body.cwd) || body.kind !== "file" || /[\\/]/u.test(body.relativePath))
+        ) {
           return yield* new RouteRequestError({
-            message: "Thread does not belong to the selected project.",
+            message: "External file reveals require an absolute directory and a single file name.",
           });
         }
-        const threadWorkspace = yield* projectionWorkspaceQuery.getThreadWorkspace(body.threadId);
+        const workspaceRoot = yield* Effect.gen(function* () {
+          const projectWorkspace = yield* projectionWorkspaceQuery.getProjectWorkspace(
+            body.projectId,
+          );
+          if (Option.isNone(projectWorkspace)) {
+            return yield* new RouteRequestError({ message: "Project not found." });
+          }
+          const threadProjectId = yield* projectionWorkspaceQuery.getThreadProjectId(body.threadId);
+          if (Option.isSome(threadProjectId) && threadProjectId.value !== body.projectId) {
+            return yield* new RouteRequestError({
+              message: "Thread does not belong to the selected project.",
+            });
+          }
+          const threadWorkspace = yield* projectionWorkspaceQuery.getThreadWorkspace(body.threadId);
+          return (
+            body.cwd ??
+            Option.match(threadWorkspace, {
+              onNone: () => projectWorkspace.value.workspaceRoot,
+              onSome: (thread) => thread.workspaceRoot,
+            })
+          );
+        });
         const target = yield* resolveWorkspaceReadPath({
-          workspaceRoot: Option.match(threadWorkspace, {
-            onNone: () => projectWorkspace.value.workspaceRoot,
-            onSome: (thread) => thread.workspaceRoot,
-          }),
+          workspaceRoot,
           relativePath: body.relativePath,
+          allowWorkspaceRoot: true,
           path,
           fileSystem,
         });
@@ -4118,6 +5731,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             },
           })
           .pipe(
+            Effect.provideService(
+              GitWorkspaceSwitch,
+              switchGitWorkspace(body.threadId, `git-action:${actionId}`),
+            ),
             Effect.tap((result) =>
               pushBus
                 .publishClient(ws, WS_CHANNELS.gitActionProgress, {
@@ -4152,7 +5769,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.gitPreparePullRequestThread: {
         const body = stripRequestTag(request.body);
-        return yield* gitManager.preparePullRequestThread(body);
+        return yield* gitManager
+          .preparePullRequestThread(body)
+          .pipe(Effect.provideService(GitWorkspaceSwitch, switchGitWorkspace(body.threadId)));
       }
 
       case WS_METHODS.gitListBranches: {
@@ -4166,22 +5785,77 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* createConfiguredWorktree({
           ...body,
           path:
-            body.path ??
-            resolveDefaultWorktreePath({
-              worktreesDir: serverConfig.worktreesDir,
-              cwd: body.cwd,
-              branch: targetBranch,
-            }),
+            body.path ?? (yield* git.allocateWorktreePath({ cwd: body.cwd, branch: targetBranch })),
         });
       }
 
       case WS_METHODS.gitPrepareWorktree: {
-        return yield* prepareWorktree(stripRequestTag(request.body));
+        const body = stripRequestTag(request.body);
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const canonicalProject = yield* Effect.promise(() =>
+          canonicalWorktreePath(body.projectCwd),
+        );
+        const projects = (yield* orchestrationEngine.getReadModel()).projects.filter(
+          (project) => project.deletedAt === null,
+        );
+        let script: ReturnType<typeof setupProjectScript> = null;
+        for (const project of projects) {
+          if (
+            (yield* Effect.promise(() => canonicalWorktreePath(project.workspaceRoot))) ===
+            canonicalProject
+          ) {
+            script = setupProjectScript(project.scripts);
+            break;
+          }
+        }
+        return yield* prepareWorktree({
+          ...body,
+          runSetupScript: body.runSetupScript ?? script !== null,
+          setupIdentity: script?.command ?? null,
+        });
       }
 
       case WS_METHODS.gitRemoveWorktree: {
         const body = stripRequestTag(request.body);
-        return yield* git.removeWorktree(body);
+        const { worktreeManager, orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(body.cwd)).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        const projects = (yield* orchestrationEngine.getReadModel()).projects.filter(
+          (project) => project.deletedAt === null,
+        );
+        let projectId: ProjectId | undefined;
+        for (const project of projects) {
+          if (
+            canonical !== null &&
+            (yield* Effect.tryPromise(() => canonicalWorktreePath(project.workspaceRoot)).pipe(
+              Effect.orElseSucceed(() => null),
+            )) === canonical
+          ) {
+            projectId = project.id;
+            break;
+          }
+        }
+        if (!projectId)
+          return yield* Effect.fail(new RouteRequestError({ message: "Unknown project" }));
+        const preview = yield* worktreeManager
+          .inspect({ projectId, path: body.path })
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        const result = yield* worktreeManager
+          .remove({
+            projectId,
+            path: body.path,
+            deleteBranch: false,
+            expectedHead: preview.headSha,
+          })
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        if (!result.removed)
+          return yield* Effect.fail(
+            new RouteRequestError({
+              message: result.blockedReasons.join("; ") || "Worktree was not removed.",
+            }),
+          );
+        return;
       }
 
       case WS_METHODS.gitCreateBranch: {
@@ -4191,15 +5865,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.gitCheckout: {
         const body = stripRequestTag(request.body);
-        return yield* Effect.scoped(git.checkoutBranch(body)).pipe(
-          Effect.tapError((error) =>
-            Effect.logWarning("Branch checkout failed", {
-              cwd: body.cwd,
-              branch: body.branch,
-              detail: error.detail,
-            }),
-          ),
-        );
+        return yield* switchGitWorkspace(
+          body.threadId,
+          body.operationId,
+        )({ cwd: body.cwd, branch: body.branch, create: false });
       }
 
       case WS_METHODS.gitInit: {
@@ -4242,7 +5911,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* forgeAccounts.value.setRouting(stripRequestTag(request.body));
       case PR_HUB_WS_METHODS.peek:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.peek(stripRequestTag(request.body));
+        return yield* prHubExtensions.value.peek(stripRequestTag(request.body)).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+                code: prHubPeekErrorCode(error),
+              }),
+          ),
+        );
       case PR_HUB_WS_METHODS.getStack:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
         return yield* prHubExtensions.value.getStack(stripRequestTag(request.body));
@@ -4276,11 +5953,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case PR_HUB_WS_METHODS.listReviewerCandidates:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
         return yield* prHubExtensions.value.listReviewerCandidates(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getChecks:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getChecks(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getCheckLog:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getCheckLog(stripRequestTag(request.body));
 
       case PR_HUB_WS_METHODS.getOverview:
         return yield* prHub.getOverview(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.listPullRequests:
-        return yield* prHub.listPullRequests(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.listPullRequests: {
+        const page = yield* prHub.listPullRequests(stripRequestTag(request.body));
+        if (Option.isNone(prHubExtensions)) return page;
+        return yield* withPrHubThreadLinks(page, prHubExtensions.value.getThreadsForPrs);
+      }
 
       case PR_HUB_WS_METHODS.refresh: {
         const body = stripRequestTag(request.body);
@@ -4372,6 +6058,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         });
       }
 
+      case PR_HUB_WS_METHODS.unignore: {
+        const body = stripRequestTag(request.body);
+        yield* prHub.unignore(body);
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
+      }
+
+      case PR_HUB_WS_METHODS.bulkUpdate:
+        return yield* prHub.bulkUpdate(stripRequestTag(request.body));
+
       case PR_HUB_WS_METHODS.acknowledgeAttention:
         yield* prHub.acknowledgeAttention(stripRequestTag(request.body));
         return yield* prHub.getOverview({
@@ -4401,6 +6099,43 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         return yield* prHubAdvisory.analyzeAdvisories(body);
       }
+
+      case MCP_APPS_WS_METHODS.toolInfo:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.toolInfo(
+          stripRequestTag(request.body),
+        );
+      case MCP_APPS_WS_METHODS.callTool:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.callTool(
+          stripRequestTag(request.body),
+        );
+      case MCP_APPS_WS_METHODS.readResource:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.readResource(
+          stripRequestTag(request.body),
+        );
+      case MCP_APPS_WS_METHODS.updateModelContext:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.updateModelContext(
+          stripRequestTag(request.body),
+        );
+      case THREAD_SETTLEMENT_WS_METHODS.settleProjectIdle:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).threadSettlement.settleProjectIdle(
+          request.body.projectId,
+        );
+      case PR_WATCH_WS_METHODS.list:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).pullRequestWatches.list(
+          request.body.threadId,
+        );
+      case PR_WATCH_WS_METHODS.start:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).pullRequestWatches.startWatch(
+          stripRequestTag(request.body),
+        );
+      case PR_WATCH_WS_METHODS.stop:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).pullRequestWatches.stopWatch(
+          stripRequestTag(request.body),
+        );
+      case PR_HUB_WS_METHODS.getReviewGuide:
+        return yield* prHubReviewGuide.get(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.generateReviewGuide:
+        return yield* prHubReviewGuide.generate(stripRequestTag(request.body));
 
       case PR_HUB_WS_METHODS.getAdvisories: {
         const body = stripRequestTag(request.body);
@@ -4503,49 +6238,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           accountGeneration:
             "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
         });
-
-      case WS_METHODS.terminalOpen: {
-        const body = stripRequestTag(request.body);
-        // Opening a terminal inside a worktree is serialized with cleanup and
-        // setup cancellation, which treat a live terminal as a claim.
-        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        const thread = (yield* orchestrationEngine.getReadModel()).threads.find(
-          (entry) => entry.id === body.threadId,
-        );
-        const worktreePath = thread?.worktreePath ?? null;
-        return yield* worktreePath
-          ? withWorktreeLifecycleLock(worktreePath, terminalManager.open(body)).pipe(
-              Effect.catchTag("RepositoryLifecycleError", (error) =>
-                Effect.fail(new RouteRequestError({ message: error.message })),
-              ),
-            )
-          : terminalManager.open(body);
-      }
-
-      case WS_METHODS.terminalWrite: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.write(body);
-      }
-
-      case WS_METHODS.terminalResize: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.resize(body);
-      }
-
-      case WS_METHODS.terminalClear: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.clear(body);
-      }
-
-      case WS_METHODS.terminalRestart: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.restart(body);
-      }
-
-      case WS_METHODS.terminalClose: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.close(body);
-      }
 
       case WS_METHODS.previewOpen: {
         const body = stripRequestTag(request.body);
@@ -4683,6 +6375,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case HTML_RENDER_WS_METHODS.host: {
+        const body = stripRequestTag(request.body);
+        if (body.available)
+          htmlPreviewBroker.register(getPreviewAutomationHostId(ws), {
+            push: (request) => pushBus.publishClient(ws, WS_CHANNELS.htmlRenderRequest, request),
+          });
+        else htmlPreviewBroker.unregister(getPreviewAutomationHostId(ws));
+        return undefined;
+      }
+      case HTML_RENDER_WS_METHODS.respond: {
+        const body = stripRequestTag(request.body);
+        htmlPreviewBroker.respond(getPreviewAutomationHostId(ws), body);
+        return undefined;
+      }
       case WS_METHODS.previewAutomationRespond: {
         const body = stripRequestTag(request.body);
         yield* previewAutomationBroker.respond(
@@ -4695,12 +6401,165 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.previewAutomationSetPaused: {
         const body = stripRequestTag(request.body);
+        if (!body.paused && Option.isSome(computerAutomationBroker)) {
+          const broker = computerAutomationBroker.value;
+          yield* Effect.try({
+            try: () => broker.assertRemoteResumeAllowed(body.threadId),
+            catch: () =>
+              new RouteRequestError({
+                message: "Resume computer control on the computer running F5.",
+              }),
+          });
+        }
         yield* previewAutomationBroker.setPaused(body.threadId, body.paused);
+        if (Option.isSome(computerAutomationBroker))
+          computerAutomationBroker.value.setPaused(body.threadId, body.paused);
         return undefined;
       }
 
+      case WS_METHODS.computerChromeRelease: {
+        if (Option.isNone(computerAutomationBroker))
+          return { released: false, outcome: "not-holder" as const };
+        const broker = computerAutomationBroker.value;
+        const body = stripRequestTag(request.body);
+        // The same path preemption uses: only an idle holder in this profile gives way.
+        const outcome = yield* Effect.promise(() =>
+          broker.releaseChromeHolderOutcome(body.threadId),
+        );
+        return { released: outcome === "released", outcome };
+      }
+
+      case WS_METHODS.computerAccessRevoke:
+      case WS_METHODS.computerAccessList:
+      case WS_METHODS.computerAccessListRemembered:
+      case WS_METHODS.computerAccessForgetRemembered: {
+        if (Option.isNone(computerAutomationBroker))
+          return request.body._tag === WS_METHODS.computerAccessList ||
+            request.body._tag === WS_METHODS.computerAccessListRemembered
+            ? []
+            : undefined;
+        const access = computerAutomationBroker.value.access;
+        const body = stripRequestTag(request.body);
+        if (
+          request.body._tag === WS_METHODS.computerAccessRevoke &&
+          "threadId" in body &&
+          typeof body.threadId === "string" &&
+          "appId" in body &&
+          typeof body.appId === "string"
+        ) {
+          access.revoke(body.threadId, body.appId);
+          return undefined;
+        }
+        if (
+          request.body._tag === WS_METHODS.computerAccessList &&
+          "threadId" in body &&
+          typeof body.threadId === "string"
+        )
+          return access.grants(body.threadId);
+        if (
+          request.body._tag === WS_METHODS.computerAccessListRemembered &&
+          "projectId" in body &&
+          typeof body.projectId === "string"
+        )
+          return access.listRemembered(body.projectId);
+        if (
+          "projectId" in body &&
+          typeof body.projectId === "string" &&
+          "appId" in body &&
+          typeof body.appId === "string"
+        )
+          yield* Effect.promise(() =>
+            access.forgetRemembered(body.projectId as string, body.appId as string),
+          );
+        return undefined;
+      }
+      case WS_METHODS.claudeChromeRestoreNativeHost:
+      case WS_METHODS.codexChromeRestoreNativeHost: {
+        const body = stripRequestTag(request.body);
+        const provider =
+          request.body._tag === WS_METHODS.claudeChromeRestoreNativeHost ? "claude" : "codex";
+        const service = yield* ProviderService;
+        const sessions = yield* service.listSessions();
+        // Storage-only: works without a live runtime, after restarts and SDK upgrades.
+        return yield* restoreChromeSessionSetup({
+          stateDir: serverConfig.stateDir,
+          provider,
+          transactionId: body.transactionId,
+          broker: Option.getOrUndefined(computerAutomationBroker),
+          stopSessions: async () => {
+            for (const session of sessions)
+              if (
+                isChromeRuntimeSession(session.threadId) &&
+                ((provider === "claude" && session.provider === "claudeAgent") ||
+                  (provider === "codex" && session.provider === "codex"))
+              )
+                await Effect.runPromise(service.stopSession({ threadId: session.threadId }));
+          },
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.catchDefect((cause) =>
+            Effect.fail(
+              new RouteRequestError({
+                message: cause instanceof Error ? cause.message : "Chrome restoration failed.",
+              }),
+            ),
+          ),
+        );
+      }
+      case WS_METHODS.chromeNativeHostListTransactions: {
+        const body = stripRequestTag(request.body);
+        return yield* listChromeSessionSetups(serverConfig.stateDir, body.provider).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.catchDefect(() =>
+            Effect.fail(
+              new RouteRequestError({ message: "Chrome transactions could not be read." }),
+            ),
+          ),
+        );
+      }
+      case WS_METHODS.chromeGetReadiness: {
+        const body = stripRequestTag(request.body);
+        const instanceId = ProviderInstanceId.make(body.providerInstanceId);
+        const instance = yield* providerInstanceRegistry.getInstance(instanceId);
+        const settings = yield* serverSettings.getSettings;
+        const checkedAt = new Date().toISOString();
+        const provider = instance?.driverKind === "codex" ? "codex" : "claude";
+        const enabled =
+          provider === "claude" ? settings.enableClaudeInChrome : settings.enableCodexChrome;
+        // Disabled instances and settings answer cheaply without touching disk; a closed
+        // certification gate is static, so its reason is reported even while off.
+        if (!instance?.enabled || !enabled || !instance.adapter.getChromeReadiness) {
+          const reason =
+            instance && !instance.adapter.getChromeReadiness
+              ? "This agent has no provider-native Chrome integration."
+              : integrationUnavailableDetail(
+                  provider === "claude" ? "claude-chrome" : "codex-chrome",
+                  process.platform,
+                  process.arch,
+                );
+          return {
+            providerInstanceId: body.providerInstanceId,
+            provider,
+            eligibility: "off" as const,
+            ...(reason ? { reason } : {}),
+            checkedAt,
+          };
+        }
+        const readiness = yield* instance.adapter.getChromeReadiness();
+        return { providerInstanceId: body.providerInstanceId, provider, checkedAt, ...readiness };
+      }
+
+      case WS_METHODS.serverReportClientDiagnostics:
+        yield* clientDiagnosticsReporter.report(stripRequestTag(request.body));
+        return undefined;
       case WS_METHODS.serverProbe:
-        return {};
+        // Lets a client holding requests notice readiness even if a push is lost.
+        return { runtime: currentRuntimeReadiness() };
+
+      case WS_METHODS.serverGetHealth:
+        return readServerHealth();
 
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
@@ -4717,18 +6576,30 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           providers,
           availableEditors,
           settings,
+          diagnostics: publicOtlpConfiguration(
+            resolveOtlpConfiguration(settings.observability, process.env),
+          ),
         };
 
       case WS_METHODS.serverGetProjectSettings: {
         const { projectId } = stripRequestTag(request.body);
-        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        const model = yield* orchestrationEngine.getReadModel();
-        const project = model.projects.find((p) => p.id === projectId && p.deletedAt === null);
-        if (!project) return yield* new RouteRequestError({ message: "Project not found." });
+        const projected = yield* projectionProjects.getById({ projectId });
+        if (Option.isNone(projected) || projected.value.deletedAt !== null)
+          return yield* new RouteRequestError({ message: "Project not found." });
+        const project = { ...projected.value, id: projected.value.projectId };
         const global = yield* serverSettings.getSettings.pipe(
           Effect.map(redactServerSettingsForClient),
         );
-        return yield* readProjectSettings(global, project);
+        const ready = yield* Deferred.isDone(orchestrationRuntime);
+        const runtime = ready
+          ? yield* Deferred.await(orchestrationRuntime).pipe(Effect.option)
+          : Option.none();
+        return {
+          ...(yield* readProjectSettings(global, project)),
+          skillScanWarnings: Option.isSome(runtime)
+            ? yield* runtime.value.projectSkillSyncService.getWarnings(projectId)
+            : [],
+        };
       }
       case WS_METHODS.serverMigrateClientSetting:
         return yield* serverSettings.migrateClientSetting(request.body);
@@ -4745,7 +6616,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             }
           }
         }
-        return yield* serverSettings.updateSettings(body).pipe(
+        const update = serverSettings.updateSettings(body);
+        // Computer policy changes go through the broker's admission barrier before they persist:
+        // admissions close, revisions bump, host scopes drain, then the change applies. On a
+        // persistence failure the barrier reloads policies and reopens under a fresh revision.
+        // Only patches that change effective computer policy pass the barrier, and a project
+        // override change interrupts only that project's threads.
+        const change = Option.isSome(computerAutomationBroker)
+          ? computerPolicyChange(yield* serverSettings.getSettings, body)
+          : null;
+        const guarded =
+          change && Option.isSome(computerAutomationBroker)
+            ? Effect.promise(() =>
+                computerAutomationBroker.value.policyTransition(
+                  () => Effect.runPromise(Effect.exit(update)),
+                  change.global
+                    ? undefined
+                    : (projectId) => projectId !== undefined && change.projects.has(projectId),
+                ),
+              ).pipe(Effect.flatMap((exit) => exit))
+            : update;
+        return yield* guarded.pipe(
           Effect.map(redactServerSettingsForClient),
           Effect.mapError(
             (error) =>
@@ -4757,12 +6648,42 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.serverRefreshProviders: {
-        yield* providerRegistry.refresh();
-        yield* providerUpdateAdvisor.refreshAdvisories({ force: true }).pipe(Effect.forkChild);
+        const { instanceId } = stripRequestTag(request.body);
+        if (instanceId) yield* providerRegistry.refreshInstance(instanceId);
+        else yield* providerRegistry.refresh();
         const providers = yield* providerAdvisoryProjection.getProviders;
         return { providers };
       }
 
+      case WS_METHODS.serverCheckProviderUpdates: {
+        const body = stripRequestTag(request.body);
+        yield* providerUpdateAdvisor.refreshAdvisories({ mode: "explicit", ...body });
+        return { providers: yield* providerAdvisoryProjection.getProviders };
+      }
+
+      case WS_METHODS.serverRunProviderUpdate: {
+        const { instanceId } = stripRequestTag(request.body);
+        const result = yield* providerUpdateAdvisor
+          .runUpdate(instanceId)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        return { ...result, providers: yield* providerAdvisoryProjection.getProviders };
+      }
+
+      case WS_METHODS.serverSaveProviderFeedback: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance || instance.driverKind !== "codex" || !instance.saveFeedback)
+          return yield* new RouteRequestError({
+            message: "Feedback bundles are only available for a configured Codex provider.",
+          });
+        return yield* instance
+          .saveFeedback()
+          .pipe(
+            Effect.mapError(
+              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+            ),
+          );
+      }
       case WS_METHODS.serverGetProviderInventory: {
         const body = stripRequestTag(request.body);
         const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
@@ -4881,7 +6802,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.storageGetUsage: {
         const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
-        return yield* storageMaintenance.inspect(body).pipe(
+        return yield* storageMaintenance.getUsage(body).pipe(
           Effect.mapError(
             (error) =>
               new RouteRequestError({
@@ -4891,25 +6812,26 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case WS_METHODS.storageGetStatus: {
+        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* storageMaintenance.getStatus;
+      }
+      case WS_METHODS.storageGetTargets: {
+        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* storageMaintenance
+          .getTargets(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.storageGetOperation: {
+        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* storageMaintenance
+          .getOperation(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
       case WS_METHODS.storageCleanup: {
         const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
-        const publishProgress = (event: StorageCleanupProgressPayload) =>
-          pushBus.publishClient(ws, WS_CHANNELS.storageCleanupProgress, event).pipe(Effect.asVoid);
-        const result = yield* storageMaintenance.cleanup(body, { publishProgress }).pipe(
-          Effect.tap(() =>
-            pushBus.publishAll(WS_CHANNELS.storageInvalidated, {
-              reason: "cleanup-completed",
-              operationId: body.operationId,
-            }),
-          ),
-          // Freed space releases held turns and clears the banner right away,
-          // including when the cleanup failed or was cancelled partway.
-          Effect.ensuring(
-            diskSpaceMonitor._tag === "Some"
-              ? diskSpaceMonitor.value.noteStorageChanged
-              : Effect.void,
-          ),
+        const result = yield* storageMaintenance.acceptCleanup(body).pipe(
           Effect.mapError(
             (error) =>
               new RouteRequestError({
@@ -4937,6 +6859,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case WS_METHODS.storageScheduleCompaction: {
+        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        const result = yield* storageMaintenance
+          .scheduleCompaction(body.when)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        if (diskSpaceMonitor._tag === "Some") yield* diskSpaceMonitor.value.noteStorageChanged;
+        return result;
+      }
+
       case WS_METHODS.storageAutomationDryRun: {
         const { storageCleanupWorker, defaultBranchAutoPull } =
           yield* awaitOrchestrationRuntimeForRoute;
@@ -4947,18 +6879,101 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.storageAutomationAudit: {
         const body = stripRequestTag(request.body);
-        const entries = yield* listStorageAutomationAudit(body.limit ?? 100).pipe(
+        const entries = yield* listStorageAutomationAudit(body.limit ?? 100, body.source).pipe(
           Effect.mapError(
             (error) => new RouteRequestError({ message: `Cannot read audit: ${error.message}` }),
           ),
         );
-        return { entries };
+        const scheduledBackupStatus = yield* Effect.tryPromise({
+          try: () => readScheduledBackupStatus(path.join(serverConfig.stateDir, "backups")),
+          catch: (cause) =>
+            new RouteRequestError({ message: `Cannot read backup status: ${String(cause)}` }),
+        });
+        return { entries, scheduledBackupStatus };
       }
 
+      case WS_METHODS.worktreesMoveThread: {
+        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* workspaceTransition
+          .moveThread(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesDiscardMovedChanges: {
+        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* workspaceTransition
+          .discardMovedChanges(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesSwitchWorkspace: {
+        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* workspaceTransition.switchWorkspace(stripRequestTag(request.body)).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+                ...(error instanceof WorkspaceRequiresNewWorktreeError ? { code: error.code } : {}),
+              }),
+          ),
+        );
+      }
+      case WS_METHODS.worktreesGetTransition: {
+        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* workspaceTransition
+          .getTransition(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesPreviewTransitionRecovery: {
+        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* workspaceTransition
+          .previewRecovery(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesResolveTransition: {
+        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* workspaceTransition
+          .resolve(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesList: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager
+          .list(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesInspect: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager
+          .inspect(request.body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesRemove: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager
+          .remove(request.body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesThreadState: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager
+          .threadState(request.body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesRecover: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager
+          .recover(request.body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
       case WS_METHODS.worktreeSetupSubscribe: {
         const body = stripRequestTag(request.body);
         const { worktreeSetup } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* worktreeSetup.get(body.threadId);
+        const snapshot = yield* worktreeSetup.get(body.threadId);
+        return {
+          snapshot,
+          ...(snapshot
+            ? { generation: snapshot.generation, sequence: snapshot.sequence }
+            : yield* worktreeSetup.ordering(body.threadId)),
+        };
       }
 
       case WS_METHODS.worktreeSetupCancel:
@@ -4972,7 +6987,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             : request.body._tag === WS_METHODS.worktreeSetupRetry
               ? worktreeSetup.retry
               : worktreeSetup.workLocally;
-        const snapshot = yield* action(body.threadId).pipe(
+        const snapshot = yield* action(body.threadId, body.expectedOperationId).pipe(
           Effect.mapError(
             (error) =>
               new RouteRequestError({
@@ -4982,7 +6997,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           ),
         );
         yield* publishNextTurnQueueSnapshot(body.threadId).pipe(Effect.ignoreCause({ log: true }));
-        return { snapshot };
+        return {
+          snapshot,
+          ...(snapshot
+            ? { generation: snapshot.generation, sequence: snapshot.sequence }
+            : yield* worktreeSetup.ordering(body.threadId)),
+        };
       }
 
       case WS_METHODS.nextTurnQueueList: {
@@ -4995,223 +7015,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.nextTurnQueueSummary:
         return yield* nextTurnQueueStore.summary.pipe(Effect.mapError(mapNextTurnQueueRouteError));
 
-      case WS_METHODS.nextTurnQueueSubmit: {
-        const body = stripRequestTag(request.body);
-        const requestHash = canonicalRequestHash(body.command);
-        const existingSubmission = yield* nextTurnQueueStore
-          .getBySubmissionId(body.submissionId)
-          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-        const {
-          nextTurnQueueDispatcher,
-          orchestrationEngine,
-          projectSetupScriptRunner,
-          worktreeSetup,
-        } = yield* awaitOrchestrationRuntimeForRoute;
-        if (
-          body.command.bootstrap?.createThread !== undefined &&
-          body.command.bootstrap.prepareWorktree !== undefined &&
-          existingSubmission === null
-        ) {
-          // A new thread in a worktree: the thread and its queued first turn are
-          // created now, and the worktree is prepared in the background while
-          // the queue waits. The client gets `queued` right away.
-          const started = yield* singleFlightBootstrap(
-            body.submissionId,
-            requestHash,
-            startWorktreeSetupSubmission({
-              command: body.command,
-              submissionId: body.submissionId,
-              requestHash,
-              worktreeSetup,
-            }),
-          );
-          if (started !== null) return started;
-          // No usable repository or base: fall through to the project checkout.
-        }
-        if (body.command.bootstrap !== undefined && existingSubmission === null) {
-          // A first send creates its thread here, so it cannot be admitted to
-          // the thread's queue first. The submission is recorded once the turn
-          // starts; a retry with the same id then replays the result above.
-          // A retry that arrives while the first attempt still runs joins it
-          // instead of racing it into a second thread.
-          const fallbackCommand =
-            body.command.bootstrap.prepareWorktree === undefined ||
-            body.command.bootstrap.createThread === undefined
-              ? body.command
-              : {
-                  ...body.command,
-                  bootstrap: {
-                    createThread: body.command.bootstrap.createThread,
-                  },
-                };
-          return yield* singleFlightBootstrap(
-            body.submissionId,
-            requestHash,
-            Effect.gen(function* () {
-              const dispatched = yield* runBootstrapTurnStart({
-                command: fallbackCommand,
-                orchestrationEngine,
-                projectSetupScriptRunner,
-              });
-              yield* nextTurnQueueStore
-                .recordStartedSubmission({
-                  submissionId: body.submissionId,
-                  threadId: body.command.threadId,
-                  requestHash,
-                  messageId: body.command.message.messageId,
-                  sequence: dispatched.sequence,
-                })
-                .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-              yield* releaseSentUploads(body.command.threadId, body.command.message.attachments);
-              yield* nextTurnQueueDispatcher.notify(body.command.threadId);
-              return {
-                disposition: "started" as const,
-                submissionId: body.submissionId,
-                sequence: dispatched.sequence,
-              };
-            }),
-          );
-        }
-        if (existingSubmission !== null) {
-          if (existingSubmission.requestHash !== requestHash) {
-            return yield* mapNextTurnQueueRouteError(
-              new NextTurnQueueIdempotencyConflictError({
-                message: "That send identifier was already used for different content.",
-              }),
-            );
-          }
-          if (existingSubmission.disposition === "started") {
-            return {
-              disposition: "started" as const,
-              submissionId: body.submissionId,
-              sequence: existingSubmission.resultSequence ?? 0,
-            };
-          }
-          if (
-            existingSubmission.disposition === "canceled" ||
-            existingSubmission.disposition === "cleared" ||
-            existingSubmission.disposition === "rejected"
-          ) {
-            return {
-              disposition: existingSubmission.disposition,
-              submissionId: body.submissionId,
-              reasonCode: existingSubmission.reasonCode ?? existingSubmission.disposition,
-            };
-          }
-          if (existingSubmission.itemId !== null) {
-            if (
-              existingSubmission.disposition === "pending" &&
-              (body.intent === "auto" || body.intent === "steer")
-            ) {
-              return yield* nextTurnQueueDispatcher
-                .submitAndSettle({
-                  threadId: existingSubmission.threadId,
-                  itemId: existingSubmission.itemId,
-                  submissionId: body.submissionId,
-                })
-                .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-            }
-            return {
-              disposition: "queued" as const,
-              submissionId: body.submissionId,
-              itemId: existingSubmission.itemId,
-              snapshot: yield* nextTurnQueueDispatcher
-                .getSnapshot(existingSubmission.threadId)
-                .pipe(Effect.mapError(mapNextTurnQueueRouteError)),
-            };
-          }
-        }
-        const command = yield* normalizeDispatchCommand({ command: body.command });
-        if (command.type !== "thread.turn.start") {
-          return yield* new RouteRequestError({
-            message: "Only thread turn-start commands can be queued.",
-          });
-        }
-        const itemId = CommandId.makeUnsafe(crypto.randomUUID());
-        const steeringThread =
-          body.intent === "steer"
-            ? (yield* (yield* awaitOrchestrationRuntimeForRoute).orchestrationEngine.getReadModel()).threads.find(
-                (thread) => thread.id === command.threadId,
-              )
-            : undefined;
-        if (
-          body.intent === "steer" &&
-          (!steeringThread?.session?.activeTurnId ||
-            steeringThread.runtimeMode !== command.runtimeMode ||
-            steeringThread.interactionMode !== command.interactionMode)
-        ) {
-          yield* removePersistedTurnAttachments(command);
-          return yield* new RouteRequestError({
-            message:
-              "Steering requires an active turn with the same Build/Plan and permission modes.",
-          });
-        }
-        const queuedCommand = steeringThread?.session?.activeTurnId
-          ? { ...command, expectedTurnId: steeringThread.session.activeTurnId }
-          : command;
-        const inserted = yield* nextTurnQueueStore
-          .insertSubmission({
-            submissionId: body.submissionId,
-            requestHash,
-            itemId,
-            command: queuedCommand,
-            submissionSource: "human",
-            supersedeUsageResume: body.intent !== "queue-tail",
-            atHead: body.intent === "queue-head" || body.intent === "steer",
-          })
-          .pipe(
-            Effect.tapError(() => removePersistedTurnAttachments(command)),
-            Effect.mapError(mapNextTurnQueueRouteError),
-          );
-        if (inserted.kind === "replay") {
-          // A concurrent request may have normalized a second, independently-id'd
-          // attachment set before the winning ledger transaction committed.
-          // The ledger result is authoritative; discard this request's ingress files.
-          yield* removePersistedTurnAttachments(command);
-          const replayItemId = inserted.submission.itemId ?? itemId;
-          if (body.intent === "auto" || body.intent === "steer") {
-            return yield* nextTurnQueueDispatcher
-              .submitAndSettle({
-                threadId: inserted.submission.threadId,
-                itemId: replayItemId,
-                submissionId: body.submissionId,
-              })
-              .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-          }
-          return {
-            disposition: "queued" as const,
-            submissionId: body.submissionId,
-            itemId: replayItemId,
-            snapshot: yield* nextTurnQueueDispatcher
-              .getSnapshot(inserted.submission.threadId)
-              .pipe(Effect.mapError(mapNextTurnQueueRouteError)),
-          };
-        }
-        const result =
-          body.intent === "auto" || body.intent === "steer"
-            ? yield* nextTurnQueueDispatcher
-                .submitAndSettle({
-                  threadId: command.threadId,
-                  itemId,
-                  submissionId: body.submissionId,
-                })
-                .pipe(Effect.mapError(mapNextTurnQueueRouteError))
-            : {
-                disposition: "queued" as const,
-                submissionId: body.submissionId,
-                itemId,
-                snapshot: yield* nextTurnQueueDispatcher
-                  .getSnapshot(command.threadId)
-                  .pipe(Effect.mapError(mapNextTurnQueueRouteError)),
-              };
-        yield* nextTurnQueueStore
-          .settleSubmission({ submissionId: body.submissionId, result })
-          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-        // The queue item now owns its attachment copies; retries replay by submissionId.
-        yield* releaseSentUploads(command.threadId, body.command.message.attachments);
-        yield* nextTurnQueueDispatcher.notify(command.threadId);
-        return result;
-      }
+      case WS_METHODS.nextTurnQueueSubmit:
+        return yield* submitTurnSubmission(stripRequestTag(request.body), {
+          submissionSource: "human",
+        });
 
       case WS_METHODS.nextTurnQueueUpdate: {
         const body = stripRequestTag(request.body);
@@ -5492,11 +7299,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const blocking = yield* nextTurnQueueDispatcher
           .getBlockingDelivery(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-        const delivery = blocking
+        const rechecked = blocking
           ? yield* providerTurnDeliveryWorker
-              .recheck(body.threadId, blocking.deliveryId)
+              .recheckWithReason(body.threadId, blocking.deliveryId)
               .pipe(Effect.mapError(toDeliveryRecoveryError))
           : null;
+        const delivery = rechecked?.delivery ?? null;
         if (delivery?.state === "accepted") {
           yield* nextTurnQueueDispatcher
             .handleDeliveryOutcome({
@@ -5514,6 +7322,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         yield* nextTurnQueueDispatcher
           .reconcileDeliveryPause(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+        // Otherwise Recheck looks like it did nothing while history is unreadable.
+        if (delivery?.state === "ambiguous" && rechecked?.historyError)
+          return yield* new RouteRequestError({
+            code: "NextTurnQueueDeliveryRecoveryError",
+            message: `Couldn't read provider history: ${rechecked.historyError}`,
+          });
         return yield* nextTurnQueueDispatcher
           .getSnapshot(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
@@ -5628,7 +7442,34 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
         const snapshot = yield* orchestrationEngine.getReadModel();
         return yield* Effect.try({
-          try: () => ({ inspection: inspectWorkflowPlatformRun(body, snapshot) }),
+          try: () => ({
+            inspection: inspectWorkflowPlatformRun(body, snapshot),
+            ...(body.includeWorkflow
+              ? {
+                  workflowDetails:
+                    body.runKind === "planning"
+                      ? {
+                          runKind: "planning" as const,
+                          workflow: snapshot.planningWorkflows.find(
+                            (workflow) => workflow.id === body.workflowId,
+                          )!,
+                        }
+                      : body.runKind === "codeReview"
+                        ? {
+                            runKind: "codeReview" as const,
+                            workflow: snapshot.codeReviewWorkflows.find(
+                              (workflow) => workflow.id === body.workflowId,
+                            )!,
+                          }
+                        : {
+                            runKind: "investigation" as const,
+                            workflow: snapshot.investigationWorkflows.find(
+                              (workflow) => workflow.id === body.workflowId,
+                            )!,
+                          },
+                }
+              : {}),
+          }),
           catch: (cause) =>
             new RouteRequestError({ message: `Failed to inspect workflow run: ${String(cause)}` }),
         });
@@ -5731,6 +7572,125 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case WS_METHODS.mcpListImportCandidates: {
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
+        const execution = yield* resolveMcpFeatureExecution(body).pipe(
+          Effect.mapError((error) => new RouteRequestError({ message: error.message })),
+        );
+        return yield* profileCall(() =>
+          detectMcpImports({
+            environment: execution.environment,
+            ...(body.projectId ? { cwd: execution.cwd } : {}),
+          }),
+        );
+      }
+
+      case WS_METHODS.mcpProbeServer: {
+        const requestBody = stripRequestTag(request.body);
+        if (!Schema.is(McpServerWriteDefinition)(requestBody.server))
+          return yield* new RouteRequestError({
+            message: "Invalid MCP draft. Check the command, HTTP URL, and options.",
+          });
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
+        const execution = yield* resolveMcpFeatureExecution(body).pipe(
+          Effect.mapError((error) => new RouteRequestError({ message: error.message })),
+        );
+        const resolved = yield* resolveMcpSecrets(
+          { [body.serverName]: body.server },
+          profileSecrets,
+        );
+        const server = resolved.servers[body.serverName];
+        if (!server)
+          return {
+            ok: false,
+            durationMs: 0,
+            tools: [],
+            toolsTruncated: false,
+            resourceCount: 0,
+            promptCount: 0,
+            authRequired: false,
+            error: resolved.issues[0]?.message ?? "Stored secret is unavailable.",
+          };
+        return yield* probeMcpServer({ ...body, server }, execution);
+      }
+
+      case WS_METHODS.mcpStoreSecret: {
+        const { value } = stripRequestTag(request.body);
+        return yield* storeMcpSecret(value).pipe(
+          Effect.mapError((error) => new RouteRequestError({ message: error.message })),
+        );
+      }
+
+      case WS_METHODS.mcpInspectServer: {
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
+        return yield* mcpRuntimeService
+          .inspectServer(body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+
+      case WS_METHODS.mcpReconnectServer: {
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
+        const targetResult =
+          body.provider === "codex" && providerService.getMcpReconnectTargets
+            ? yield* providerService
+                .getMcpReconnectTargets(body)
+                .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
+            : { threadIds: [], failures: [] };
+        const targets = targetResult.threadIds;
+        const result = yield* mcpRuntimeService
+          .reconnectServer(body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        if (body.provider === "claudeAgent") return result;
+        if (targets.length === 0)
+          return yield* mcpRuntimeService
+            .sanitizeReconnectResult(body, {
+              ...result,
+              failures: [...result.failures, ...targetResult.failures],
+            })
+            .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        const { providerCommandReactor } = yield* awaitOrchestrationRuntimeForRoute;
+        const applied = yield* providerCommandReactor
+          .applyMcpConfigToLiveSessions({
+            scope: "project",
+            projectId: body.projectId,
+            instanceId: body.instanceId,
+            threadIds: targets,
+            retryUnchanged: true,
+          })
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        yield* codexMcpEventBus.publishStatusUpdated({
+          scope: "project",
+          projectId: body.projectId,
+          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
+          reason: "reloaded",
+        });
+        const sessions = applied.sessions ?? [];
+        return yield* mcpRuntimeService
+          .sanitizeReconnectResult(body, {
+            ...result,
+            sessionsMatched: targets.length,
+            sessionsReconnected: sessions.filter((session) => session.disposition === "applied")
+              .length,
+            sessions,
+            failures: [
+              ...result.failures,
+              ...targetResult.failures,
+              ...sessions
+                .filter((session) => session.disposition !== "applied")
+                .map((session) => ({
+                  threadId: session.threadId,
+                  message:
+                    session.result.errors.map((error) => error.message).join("; ") ||
+                    session.disposition,
+                })),
+            ],
+          })
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+
       case WS_METHODS.mcpStartLogin: {
         const requestBody = stripRequestTag(request.body);
         const body = yield* profileCall(() => resolveMcpAccount(requestBody));
@@ -5759,6 +7719,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         });
         return yield* codexMcpSyncService.getStatus({
           projectId: body.projectId,
+          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
           ...(providerOptions ? { providerOptions } : {}),
         });
       }
@@ -5773,16 +7734,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         yield* providerService.reloadMcpConfigForProject({
           provider: "codex",
           projectId: body.projectId,
+          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
           ...(providerOptions ? { providerOptions } : {}),
         });
         const status = yield* codexMcpSyncService.getStatus({
           projectId: body.projectId,
+          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
           ...(providerOptions ? { providerOptions } : {}),
         });
         yield* codexMcpEventBus.publishStatusUpdated({
           provider: "codex",
           scope: "project",
           projectId: body.projectId,
+          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
           reason: "reloaded",
           ...(status.configVersion ? { configVersion: status.configVersion } : {}),
         });
@@ -5791,7 +7755,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.mcpApplyToLiveSessions: {
         const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
+        if (requestBody.binaryPath !== undefined || requestBody.homePath !== undefined)
+          return yield* new RouteRequestError({
+            message:
+              "Client-supplied provider executable and home paths are not accepted. Select a provider instance.",
+          });
+        const body = requestBody;
         const { providerCommandReactor } = yield* awaitOrchestrationRuntimeForRoute;
         const result = yield* providerCommandReactor.applyMcpConfigToLiveSessions(body).pipe(
           Effect.mapError(
@@ -5803,6 +7772,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
         yield* codexMcpEventBus.publishStatusUpdated({
           scope: result.scope,
+          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
           ...(result.projectId ? { projectId: result.projectId } : {}),
           reason: "applied",
           ...(result.configVersion ? { configVersion: result.configVersion } : {}),
@@ -5838,9 +7808,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     }
   });
 
+  const rpcAdmissions = new WeakMap<WebSocket, RpcAdmission>();
   const handleMessage = Effect.fnUntraced(function* (ws: WebSocket, raw: unknown) {
-    const sendWsResponse = (response: WsResponseMessage) =>
+    if (shuttingDown) {
+      ws.close(1012, "Server shutting down");
+      return;
+    }
+    const sendWsResponse = (response: WebSocketResponse, method?: string) =>
       encodeWsResponse(response).pipe(
+        Effect.catch((cause) =>
+          // The cause can quote the response payload, so only its kind is logged.
+          Effect.logWarning("rpc response could not be encoded", {
+            method: method ?? "unknown",
+            error: cause instanceof Error ? cause.name : typeof cause,
+          }).pipe(Effect.as(encodeResponseEncodeFailure(response.id))),
+        ),
+        Effect.tap((encodedResponse) => {
+          const bytes = Buffer.byteLength(encodedResponse);
+          return bytes >= LARGE_RPC_RESPONSE_LOG_BYTES
+            ? Effect.logInfo("large rpc response", { method: method ?? "unknown", bytes })
+            : Effect.void;
+        }),
         Effect.flatMap((encodedResponse) => webSocketSendController.send(ws, encodedResponse)),
         Effect.asVoid,
       );
@@ -5868,10 +7856,40 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     }
 
     const method = request.success.body._tag;
+    const lane = rpcLane(request.success.body);
+    // Pre-execution, like `RpcBusy`: nothing runs and no slot is held. The
+    // client holds the request until the runtime reports ready.
+    const starting = serverStartingRejection(request.success.body, runtimeReadiness);
+    if (starting) {
+      yield* increment(rpcServerStartingTotal, { method });
+      return yield* sendWsResponse({ id: request.success.id, error: starting }, method);
+    }
+    const admission = rpcAdmissions.get(ws) ?? new RpcAdmission();
+    rpcAdmissions.set(ws, admission);
+    const release = admission.claim(lane, Buffer.byteLength(messageText));
+    if (!release) {
+      yield* increment(rpcBusyTotal, { lane, method });
+      return yield* sendWsResponse(
+        {
+          id: request.success.id,
+          error: {
+            code: "RpcBusy",
+            retryable: true,
+            retryAfterMs: 250,
+            message: "This request lane is busy. Retry shortly.",
+          },
+        },
+        method,
+      );
+    }
+    const routeStartedAt = Date.now();
     const result = yield* Effect.exit(
       observeRpcEffect(
         method,
-        routeRequest(ws, request.success),
+        routeRequest(ws, request.success).pipe(
+          Effect.provideService(CurrentRpcMethod, method),
+          Effect.ensuring(Effect.sync(release)),
+        ),
         rpcTraceAttributesForRequest(request.success),
       ).pipe(
         Effect.withSpan(`rpc.${method}`, {
@@ -5879,20 +7897,40 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }),
       ),
     );
-    if (Exit.isFailure(result)) {
-      return yield* sendWsResponse({
-        id: request.success.id,
-        error: formatRouteFailure(result.cause, method),
+    const routeMs = Date.now() - routeStartedAt;
+    if (routeMs >= SLOW_RPC_ROUTE_MS) {
+      recordSlowRpcRoute(method, routeMs, lane);
+      yield* Effect.logInfo("slow rpc route", {
+        method,
+        lane,
+        durationMs: routeMs,
+        admission: admission.snapshot(),
       });
     }
+    if (Exit.isFailure(result)) {
+      return yield* sendWsResponse(
+        {
+          id: request.success.id,
+          error: formatRouteFailure(result.cause, method),
+        },
+        method,
+      );
+    }
 
-    return yield* sendWsResponse({
-      id: request.success.id,
-      result: result.value,
-    });
+    return yield* sendWsResponse(
+      {
+        id: request.success.id,
+        result: result.value,
+      },
+      method,
+    );
   });
 
   httpServer.on("upgrade", (request, socket, head) => {
+    if (shuttingDown) {
+      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+      return;
+    }
     socket.on("error", () => {}); // Prevent unhandled `EPIPE`/`ECONNRESET` from crashing the process if the client disconnects mid-handshake
 
     let url: URL;
@@ -5903,13 +7941,32 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return;
     }
 
+    if (!serverAuth.isRequestHostAllowed(request)) {
+      rejectUpgrade(socket, 403, REQUEST_HOST_NOT_ALLOWED_MESSAGE);
+      return;
+    }
+
     if (!serverAuth.isWebSocketOriginAllowed(request)) {
-      rejectUpgrade(socket, 403, "WebSocket origin is not allowed");
+      // The usual cause behind a TLS proxy on another host: its X-Forwarded-Proto is not
+      // believed, so the https Origin does not match. Say so instead of a bare refusal.
+      const ignoredPeer = serverAuth.ignoredForwardedProtoPeer(request);
+      rejectUpgrade(
+        socket,
+        403,
+        ignoredPeer === null
+          ? "WebSocket origin is not allowed"
+          : `WebSocket origin is not allowed. X-Forwarded-Proto from ${ignoredPeer} was ignored; ` +
+              "if that is your reverse proxy, start F5 with --trusted-proxy.",
+      );
       return;
     }
 
     if (!serverAuth.isWebSocketRequestAuthenticated(request, url)) {
-      rejectUpgrade(socket, 401, "Unauthorized WebSocket connection");
+      // A locked-out client is told to wait, so it does not take its token for a wrong one.
+      const retryAfter = serverAuth.bearerRetryAfterSeconds(request);
+      if (retryAfter === null) rejectUpgrade(socket, 401, "Unauthorized WebSocket connection");
+      else
+        rejectUpgrade(socket, 429, AUTH_RATE_LIMITED_MESSAGE, { "Retry-After": `${retryAfter}` });
       return;
     }
 
@@ -5927,6 +7984,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   });
 
   wss.on("connection", (ws) => {
+    socketLiveness.add(ws);
     logger.info("websocket transport negotiated", {
       runtime: webSocketRuntimeName(),
       extensions: ws.extensions.length > 0 ? ws.extensions : "none",
@@ -5940,7 +7998,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     const segments = cwd.split(/[/\\]/).filter(Boolean);
     const projectName = segments[segments.length - 1] ?? "project";
 
+    let welcomeRuntime: ServerRuntimeReadiness | null = null;
     const welcomeData = {
+      backendIncarnation: BACKEND_INCARNATION,
       bootstrap: SERVER_BOOTSTRAP,
       cwd,
       projectName,
@@ -5960,6 +8020,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         Effect.flatMap((snapshot) =>
           pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, {
             ...welcomeData,
+            runtime: (welcomeRuntime = currentRuntimeReadiness()),
             profile: snapshot.profiles.find((profile) => profile.isActive) ?? {
               ...fallbackDefaultProfile(defaultProfileStateDir),
               ...activeProfile,
@@ -5969,6 +8030,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               providerAccounts: [],
             },
             ...(snapshot.diagnostic ? { profileDiagnostic: snapshot.diagnostic } : {}),
+            ...(getDatabaseDamage() ? { databaseDamage: getDatabaseDamage()! } : {}),
           }),
         ),
         Effect.tap((delivered) =>
@@ -5979,14 +8041,59 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         Effect.flatMap((delivered) =>
           delivered
             ? Ref.update(clients, (clients) => clients.add(ws)).pipe(
+                // Readiness that changed between the welcome and joining the
+                // broadcast set would otherwise be lost for this client.
+                Effect.andThen(
+                  Effect.suspend(() =>
+                    welcomeRuntime !== null && runtimeReadiness.revision !== welcomeRuntime.revision
+                      ? pushBus.publishClient(ws, WS_CHANNELS.serverRuntimeReadiness, {
+                          ...runtimeReadiness,
+                          backendIncarnation: BACKEND_INCARNATION,
+                        })
+                      : Effect.void,
+                  ),
+                ),
                 Effect.andThen(registerPreviewAutomationHost(ws)),
                 Effect.andThen(
                   Effect.suspend(() => {
+                    if (Option.isSome(computerAutomationBroker)) {
+                      const computer = computerAutomationBroker.value;
+                      const snapshot = computer.snapshot();
+                      return Effect.all([
+                        pushBus.publishClient(
+                          ws,
+                          WS_CHANNELS.agentComputerUseChanged,
+                          agentComputerUsePush(snapshot.computerUse),
+                        ),
+                        ...snapshot.pausedThreads.map((threadId) =>
+                          pushBus.publishClient(ws, WS_CHANNELS.previewAutomationPauseChanged, {
+                            threadId: ThreadId.makeUnsafe(threadId),
+                            paused: true,
+                          }),
+                        ),
+                        ...snapshot.pending.map((request) =>
+                          pushBus.publishClient(ws, WS_CHANNELS.computerAccessRequested, request),
+                        ),
+                        ...snapshot.grants.map((grants) =>
+                          pushBus.publishClient(
+                            ws,
+                            WS_CHANNELS.computerAccessGrantsChanged,
+                            grants,
+                          ),
+                        ),
+                      ]).pipe(Effect.asVoid);
+                    }
                     const holder = computerUseLease.current();
                     return holder === null
                       ? Effect.void
                       : pushBus.publishClient(ws, WS_CHANNELS.agentComputerUseChanged, {
-                          threadId: ThreadId.makeUnsafe(holder),
+                          holders: [
+                            {
+                              threadId: ThreadId.makeUnsafe(holder),
+                              delivery: "foreground",
+                              state: "active",
+                            },
+                          ],
                         });
                   }),
                 ),
@@ -6006,6 +8113,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return;
       }
       disconnectRecorded = true;
+      rpcAdmissions.delete(ws);
+      workspaceWatchRegistry.releaseSubscriber(ws);
       const activeContentSearches = activeContentSearchesByClient.get(ws);
       activeContentSearchesByClient.delete(ws);
       if (activeContentSearches) {
@@ -6020,7 +8129,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           Effect.andThen(
             Effect.gen(function* () {
               const hostId = previewAutomationHostIdByWs.get(ws);
-              if (hostId) yield* previewAutomationBroker.unregisterHost(hostId);
+              if (hostId) {
+                htmlPreviewBroker.unregister(hostId);
+                yield* previewAutomationBroker.unregisterHost(hostId);
+              }
               const clientIds = previewAutomationClientIdsByWs.get(ws);
               if (!clientIds) return;
               previewAutomationClientIdsByWs.delete(ws);

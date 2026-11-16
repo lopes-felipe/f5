@@ -5,6 +5,7 @@ import {
   ProjectId,
   ThreadId,
   ProviderInstanceId,
+  ProviderDriverKind,
 } from "@t3tools/contracts";
 
 import { useComposerDraftStore } from "../composerDraftStore";
@@ -12,10 +13,19 @@ import { useModelPreferencesStore } from "../modelPreferencesStore";
 import { useStore } from "../store";
 import { seedDraftThreadFromModelPreferences } from "./useHandleNewThread";
 import { createProjectBackedDraftThread } from "./useCreateProjectBackedDraftThread";
+import { QueryClient } from "@tanstack/react-query";
+import { resolveProjectThreadEnvMode } from "../lib/projectConfigReactQuery";
+import {
+  noteWsConnectionClosed,
+  noteWsConnectionOpened,
+  resetWsConnectionStateForTests,
+} from "../wsConnectionState";
 
 const settingsApi = vi.hoisted(() => ({ getProjectSettings: vi.fn() }));
 vi.mock("../nativeApi", () => ({ ensureNativeApi: () => ({ server: settingsApi }) }));
 beforeEach(() => {
+  resetWsConnectionStateForTests();
+  noteWsConnectionOpened();
   settingsApi.getProjectSettings
     .mockReset()
     .mockResolvedValue({ settings: DEFAULT_SERVER_SETTINGS });
@@ -54,6 +64,26 @@ describe("seedDraftThreadFromModelPreferences", () => {
       ],
       threads: [],
     });
+  });
+
+  it("clears remembered effort for capability-aware defaulting and permits a new selection", () => {
+    useModelPreferencesStore.setState({
+      lastProvider: "codex",
+      lastModelByProvider: { codex: "gpt-6-luna" },
+      lastModelOptions: { codex: { reasoningEffort: "medium", fastMode: true } },
+    });
+    const threadId = ThreadId.makeUnsafe("fresh-high");
+    seedDraftThreadFromModelPreferences(threadId);
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelOptions).toEqual({
+      codex: { fastMode: true },
+    });
+    useComposerDraftStore.getState().setModelOptions(threadId, {
+      codex: { reasoningEffort: "low", fastMode: true },
+    });
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelOptions?.codex
+        ?.reasoningEffort,
+    ).toBe("low");
   });
 
   it("uses an explicit project default before remembered models", () => {
@@ -95,7 +125,14 @@ describe("seedDraftThreadFromModelPreferences", () => {
         },
       })),
     });
-    seedDraftThreadFromModelPreferences(threadId, PROJECT_ID);
+    seedDraftThreadFromModelPreferences(threadId, PROJECT_ID, {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [ProviderInstanceId.make("claude-work")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+        },
+      },
+    });
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toMatchObject({
       provider: "claudeAgent",
       providerInstanceId: "claude-work",
@@ -122,11 +159,7 @@ describe("seedDraftThreadFromModelPreferences", () => {
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toMatchObject({
       provider: "claudeAgent",
       model: "claude-opus-4-6",
-      modelOptions: {
-        claudeAgent: {
-          effort: "max",
-        },
-      },
+      modelOptions: null,
     });
   });
 
@@ -160,7 +193,6 @@ describe("seedDraftThreadFromModelPreferences", () => {
       model: "claude-opus-4-6",
       modelOptions: {
         claudeAgent: {
-          effort: "max",
           fastMode: true,
         },
       },
@@ -183,6 +215,41 @@ describe("createProjectBackedDraftThread", () => {
     });
   });
 
+  it.each(["connecting", "reconnecting"] as const)(
+    "opens an offline draft without waiting for settings while %s",
+    async (phase) => {
+      if (phase === "connecting") resetWsConnectionStateForTests();
+      else noteWsConnectionClosed();
+      settingsApi.getProjectSettings.mockImplementation(() => new Promise(() => {}));
+      rememberDraftSettings({
+        ...DEFAULT_SERVER_SETTINGS,
+        projectSettingsOverrides: {
+          [PROJECT_ID]: {
+            defaultThreadEnvMode: "worktree",
+            defaultRuntimeMode: "approval-required",
+          },
+        },
+      });
+      const navigateSpy = vi.fn(async () => undefined);
+      const envMode = await resolveProjectThreadEnvMode(new QueryClient(), PROJECT_ID);
+      const result = await createProjectBackedDraftThread({
+        navigate: navigateSpy,
+        onboardingLiteStatus: "completed",
+        projectId: PROJECT_ID,
+        routeThreadId: null,
+        options: { envMode },
+        updateSettings: vi.fn(),
+      });
+      expect(useComposerDraftStore.getState().getDraftThread(result!.threadId)).toMatchObject({
+        envMode: "worktree",
+        runtimeMode: "approval-required",
+      });
+      expect(settingsApi.getProjectSettings).not.toHaveBeenCalled();
+      expect(navigateSpy).toHaveBeenCalledOnce();
+      rememberDraftSettings(DEFAULT_SERVER_SETTINGS);
+    },
+  );
+
   it("reuses one draft for concurrent clicks after the settings request", async () => {
     let finish!: (value: unknown) => void;
     const response = new Promise((resolve) => {
@@ -200,8 +267,44 @@ describe("createProjectBackedDraftThread", () => {
     const two = createProjectBackedDraftThread(input);
     finish({ settings: DEFAULT_SERVER_SETTINGS });
     const [a, b] = await Promise.all([one, two]);
-    expect(a.threadId).toBe(b.threadId);
+    expect(a?.threadId).toBe(b?.threadId);
     expect(Object.keys(useComposerDraftStore.getState().draftThreadsByThreadId)).toHaveLength(1);
+  });
+  it("abandons the draft when the project is removed while settings load", async () => {
+    const project = {
+      id: PROJECT_ID,
+      name: "Project",
+      cwd: "/repo/project",
+      model: "gpt-5.4",
+      createdAt: NOW_ISO,
+      expanded: true,
+      scripts: [],
+      memories: [],
+      skills: [],
+    };
+    useStore.setState({ projects: [project], threads: [] });
+    let finish!: (value: unknown) => void;
+    settingsApi.getProjectSettings.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const navigateSpy = vi.fn(async () => undefined);
+    const pending = createProjectBackedDraftThread({
+      navigate: navigateSpy,
+      onboardingLiteStatus: "eligible",
+      projectId: PROJECT_ID,
+      routeThreadId: null,
+      updateSettings: vi.fn(),
+    });
+
+    useStore.setState({ projects: [] });
+    finish({ settings: DEFAULT_SERVER_SETTINGS });
+
+    await expect(pending).resolves.toBeNull();
+    expect(navigateSpy).not.toHaveBeenCalled();
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID)).toBeNull();
+    useStore.setState({ projects: [project] });
   });
   it("creates a draft with the last safe project mode when settings fail", async () => {
     rememberDraftSettings(
@@ -217,7 +320,7 @@ describe("createProjectBackedDraftThread", () => {
       routeThreadId: null,
       updateSettings: vi.fn(),
     });
-    expect(useComposerDraftStore.getState().getDraftThread(result.threadId)?.runtimeMode).toBe(
+    expect(useComposerDraftStore.getState().getDraftThread(result!.threadId)?.runtimeMode).toBe(
       "approval-required",
     );
   });
@@ -278,4 +381,29 @@ describe("createProjectBackedDraftThread", () => {
     );
     expect(updateSettings).toHaveBeenCalledWith({ onboardingLiteStatus: "completed" });
   });
+});
+
+it("seeds an enabled project fallback instead of disabled remembered or project defaults", () => {
+  const threadId = ThreadId.makeUnsafe("disabled-project-default");
+  useModelPreferencesStore.setState({
+    lastProvider: "codex",
+    lastModelByProvider: { codex: "gpt-5" },
+    lastModelOptions: { codex: { fastMode: true } },
+  });
+  const settings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    projectSettingsOverrides: {
+      [PROJECT_ID]: {
+        providerInstances: { [ProviderInstanceId.make("codex")]: { enabled: false } },
+      },
+    },
+  };
+  seedDraftThreadFromModelPreferences(threadId, PROJECT_ID, settings);
+  expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toMatchObject({
+    provider: "claudeAgent",
+    providerInstanceId: "claudeAgent",
+  });
+  expect(
+    useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelOptions?.codex,
+  ).toBeUndefined();
 });

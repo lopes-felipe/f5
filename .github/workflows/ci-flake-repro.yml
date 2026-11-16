@@ -1,0 +1,106 @@
+name: CI flake repro
+# Repeats one test file (or the desktop smoke) on a hosted OS with CI retries
+# off. A flake fix links a green run of this workflow as its evidence.
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Hosted runner where the test flaked
+        type: choice
+        options: [ubuntu-latest, windows-latest, macos-latest]
+        default: ubuntu-latest
+      suite:
+        description: Which CI command to repeat
+        type: choice
+        options: [server-unit, server-integration, server-git, web-browser, desktop-smoke]
+        default: server-unit
+      filter:
+        description: Test file or pattern relative to the package (required except for desktop-smoke)
+        type: string
+        default: ""
+      repeats:
+        description: Iterations (1-100)
+        type: number
+        default: 30
+      fail-fast:
+        description: Stop at the first failure
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: ci-flake-repro-${{ github.ref }}-${{ inputs.os }}-${{ inputs.suite }}-${{ inputs.filter }}
+  cancel-in-progress: false
+jobs:
+  repeat:
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      SUITE: ${{ inputs.suite }}
+      FILTER: ${{ inputs.filter }}
+      REPEATS: ${{ inputs.repeats }}
+      FAIL_FAST: ${{ inputs.fail-fast }}
+    steps:
+      - name: Configure Git line endings
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Set diagnostic paths
+        run: |
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/repro\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Install Chromium
+        if: inputs.suite == 'web-browser'
+        run: |
+          bun run --cwd apps/web test:browser:install
+      - name: Configure Electron sandbox
+        if: inputs.suite == 'desktop-smoke' && runner.os == 'Linux'
+        working-directory: apps/desktop
+        run: |
+          electron_sandbox="$(node -e 'const path = require("node:path"); console.log(path.join(path.dirname(require("electron")), "chrome-sandbox"))')"
+          sudo chown root:root "$electron_sandbox"
+          sudo chmod 4755 "$electron_sandbox"
+      - name: Build desktop
+        if: inputs.suite == 'desktop-smoke'
+        # ARM64 Node defaults to a 2 GiB heap; declaration generation exceeds it.
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          bun run build:desktop
+      - name: Repeat
+        run: |
+          if [[ "$SUITE" != desktop-smoke && -z "$FILTER" ]]; then
+            echo "::error::A filter is required for $SUITE; repeating a whole suite hides which test flakes."
+            exit 1
+          fi
+          case "$SUITE" in
+            server-unit) command=(bun run --cwd apps/server test:file "$FILTER") ;;
+            # Mirror CI: Windows integration runs one worker, with CI's timeout.
+            server-integration) command=(env F5_CI_SUITE_ID=server-integration bun run --cwd apps/server test:file "$FILTER" --testTimeout=60000) ;;
+            server-git) command=(bun run --cwd apps/server test:file "$FILTER" --sequence.concurrent --maxConcurrency=4) ;;
+            web-browser) command=(bun run --cwd apps/web test:browser "$FILTER") ;;
+            desktop-smoke)
+              if [[ "$RUNNER_OS" == Linux ]]; then
+                command=(xvfb-run --auto-servernum bun run test:desktop-smoke)
+              else
+                command=(bun run test:desktop-smoke)
+              fi
+              ;;
+            *) echo "::error::Unknown suite $SUITE"; exit 1 ;;
+          esac
+          flags=(--times "$REPEATS")
+          if [[ "$FAIL_FAST" == true ]]; then flags+=(--fail-fast); fi
+          node scripts/ci-repeat.ts "${flags[@]}" -- "${command[@]}"
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: repro-diagnostics-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/repro', runner.temp) }}
+          retention-days: 7
+          if-no-files-found: ignore

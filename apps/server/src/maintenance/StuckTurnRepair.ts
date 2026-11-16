@@ -1,6 +1,6 @@
-import { createReadStream, existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
+import { readCompleteLogLines } from "./completeLogLines.ts";
 
 import {
   CommandId,
@@ -215,10 +215,7 @@ async function readLoggedTurnCompletions(
     .map((name) => path.join(providerLogsDir, name));
 
   for (const filePath of files) {
-    const lines = readline.createInterface({
-      input: createReadStream(filePath, { encoding: "utf8" }),
-      crlfDelay: Infinity,
-    });
+    const lines = readCompleteLogLines(filePath);
     for await (const line of lines) {
       const event = parseCanonicalTurnCompletedLine(line);
       if (event?.turnId === undefined) continue;
@@ -239,10 +236,7 @@ async function readLoggedTurnCompletions(
       .filter((name) => name === `${threadId}.log` || name.startsWith(`${threadId}.log.`))
       .map((name) => path.join(providerLogsDir, name));
     for (const filePath of threadFiles) {
-      const lines = readline.createInterface({
-        input: createReadStream(filePath, { encoding: "utf8" }),
-        crlfDelay: Infinity,
-      });
+      const lines = readCompleteLogLines(filePath);
       for await (const line of lines) {
         const event = parseNativeTurnCompletedLine(line, threadId);
         if (event?.turnId !== turnId) continue;

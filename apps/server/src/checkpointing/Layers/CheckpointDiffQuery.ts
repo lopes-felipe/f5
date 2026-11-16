@@ -10,7 +10,8 @@ import { ProjectionCheckpointRepository } from "../../persistence/Services/Proje
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { CheckpointInvariantError, CheckpointUnavailableError } from "../Errors.ts";
-import { checkpointRefForThreadTurn, resolveThreadWorkspaceCwd } from "../Utils.ts";
+import { checkpointRefForThreadTurn } from "../Utils.ts";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
 import {
   CheckpointDiffQuery,
@@ -78,10 +79,10 @@ const make = Effect.gen(function* () {
       const project = Option.getOrUndefined(
         yield* projectRepository.getById({ projectId: thread.projectId }),
       );
-      const workspaceCwd = resolveThreadWorkspaceCwd({
-        thread: { projectId: thread.projectId, worktreePath: thread.worktreePath },
-        projects: project ? [{ id: project.projectId, workspaceRoot: project.workspaceRoot }] : [],
-      });
+      const workspaceCwd = threadWorkspaceCwd(
+        thread,
+        project ? { kind: project.kind, workspaceRoot: project.workspaceRoot } : undefined,
+      );
       if (!workspaceCwd) {
         return yield* new CheckpointInvariantError({
           operation,
@@ -148,7 +149,8 @@ const make = Effect.gen(function* () {
         fromCheckpointRef,
         toCheckpointRef,
         fallbackFromToHead: false,
-        ...(input.options ? { options: input.options } : {}),
+        // Match the turn's file summary: files a pull, merge or rebase brought in stay out.
+        options: { ...input.options, excludeGitImports: true },
       });
 
       const turnDiff: OrchestrationGetTurnDiffResultType = {

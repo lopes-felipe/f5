@@ -1,4 +1,7 @@
-import type { InvestigationWorkflow, ThreadId } from "@t3tools/contracts";
+import type {
+  InvestigationWorkflowSummary as InvestigationWorkflow,
+  ThreadId,
+} from "@t3tools/contracts";
 import { threadIdsForInvestigationWorkflow as getInvestigationWorkflowThreadIds } from "@t3tools/shared/workflowThreads";
 
 export function threadIdsForInvestigationWorkflow(workflow: InvestigationWorkflow): ThreadId[] {

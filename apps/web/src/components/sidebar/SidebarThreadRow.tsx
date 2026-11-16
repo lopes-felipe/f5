@@ -8,31 +8,53 @@ import {
   LoaderCircleIcon,
   MoonIcon,
   PinIcon,
+  PinOffIcon,
   SquarePenIcon,
+  SunriseIcon,
   TerminalIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type DragEvent, type ReactNode, useEffect, useRef } from "react";
+import {
+  isThreadReferenceId,
+  THREAD_REFERENCE_MAX_PER_MESSAGE,
+} from "@t3tools/shared/threadReferences";
 
+import { useStore } from "../../store";
+import { ProjectIcon } from "../ProjectIcon";
 import { useComposerDraftStore } from "../../composerDraftStore";
-import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { formatRelativeTimeLabel } from "../../lib/relativeTime";
+import { synchronizeStatusPulse } from "../../lib/statusPulse";
+import { writeThreadReferenceDrag } from "../../lib/threadReferenceDrag";
+import { selectThreadById } from "../../threadSelectors";
 import { cn } from "../../lib/utils";
+import { selectThreadTerminalState, useTerminalStateStore } from "../../terminalStateStore";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
-import { hasUnseenCompletion, type ThreadStatusPill } from "../../threadStatus";
-import type { Thread } from "../../types";
+import type { ThreadStatusPill } from "../../threadStatus";
+import type { ThreadListItem } from "../../types";
 import { InlineTitleEditor } from "../InlineTitleEditor";
-import { resolveSidebarComposerDraftPreview, resolveThreadRowClassName } from "../Sidebar.logic";
+import {
+  resolveSidebarComposerDraftPreview,
+  resolveThreadRowClassName,
+  SIDEBAR_DONE_ROW_CLASS_NAME,
+  SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
+} from "../Sidebar.logic";
+import { ThreadRelativeActivityTime } from "../thread/ThreadActivityTime";
 import { ThreadQueueCountBadge } from "../thread/ThreadQueueCountBadge";
 import { ThreadStatusPillBadge } from "../thread/ThreadStatusPillBadge";
-import { ThreadWorktreeIndicator } from "../ThreadWorktreeIndicator";
+import { ThreadPullRequestMenuItems } from "../pullRequests/ThreadPullRequestMenuItems";
+import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import { SidebarMenuSubButton, SidebarMenuSubItem } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   type PrStatusIndicator,
   type TerminalStatusIndicator,
   pinnedThreadSortableId,
+  terminalStatusFromRunningIds,
 } from "./sidebarLists";
+import { useSidebarPeekTrigger } from "./SidebarPeekCard";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
+import { useSidebarTreeRowProps } from "./sidebarTreeRow";
+import type { WorkflowSidebarStepState } from "./sidebarWorkflowGroups";
+import { WorkflowStepGlyph } from "./WorkflowStepGlyph";
 
 /**
  * Which list a row lives in. Each list keeps its own affordances:
@@ -40,33 +62,96 @@ import type { SidebarThreadActions } from "./useSidebarThreadActions";
  * - `active`: project thread list; drafts, pins, queue badge, rename, archive.
  * - `snoozed`: no status/PR, single-thread context menu, no keyboard open.
  * - `archived`: rename and unarchive.
+ * - `settled`: quiet completed work, with an explicit Unsettle action.
  * - `attention`: "Needs you"; plain navigation, no multi-select, shows the project.
+ * - `recent`: the Recent view; like `active` (it shows the project instead), no pin drag.
  */
-export type SidebarThreadRowSection = "workflow" | "active" | "snoozed" | "archived" | "attention";
+export type SidebarThreadRowSection =
+  | "workflow"
+  | "active"
+  | "recent"
+  | "snoozed"
+  | "archived"
+  | "settled"
+  | "attention";
 
 export interface SidebarThreadRowProps {
-  thread: Thread;
+  thread: ThreadListItem;
   section: SidebarThreadRowSection;
   isActive: boolean;
   isDraft?: boolean | undefined;
   /** Visible thread ids for shift-click range selection. */
   orderedIds: readonly ThreadId[];
-  /** Overrides the visible title (workflow role label); the full title stays in the tooltip. */
+  /** Overrides the visible title (workflow role label); the full title stays in the peek card. */
   displayTitle?: string | undefined;
+  /** A workflow child's workflow title, for its peek card. */
+  workflowTitle?: string | undefined;
+  /** A workflow child's full step label for its peek card, when the row shows a short one. */
+  workflowRoleLabel?: string | undefined;
   /** Extra trailing content before the timestamp (model chip, project name). */
   trailingMeta?: ReactNode;
   threadStatus: ThreadStatusPill | null;
   prStatus: PrStatusIndicator | null;
-  terminalStatus: TerminalStatusIndicator | null;
+  /** A completed turn the user has not seen yet. */
+  isUnread: boolean;
   isRenaming: boolean;
   actions: SidebarThreadActions;
+  /**
+   * A workflow child's step: its state fills the leading slot in place of the thread's
+   * unread-style statuses. The deliverable (the workflow's PR thread) shows its PR there.
+   */
+  workflowStep?: SidebarWorkflowStepProps | undefined;
 }
+
+export interface SidebarWorkflowStepProps {
+  state: WorkflowSidebarStepState;
+  isDeliverable: boolean;
+}
+
+/**
+ * Thread statuses a workflow child still shows: they need someone or say it is running.
+ * "Plan Ready" and an unseen "Completed" describe hand-offs the workflow already made.
+ */
+const WORKFLOW_CHILD_STATUS_LABELS: ReadonlySet<ThreadStatusPill["label"]> = new Set([
+  "Pending Approval",
+  "Awaiting Input",
+  "Working",
+  "Connecting",
+  "Failed",
+]);
 
 /** Hover-revealed controls also reveal on keyboard focus and coarse pointers (F5). */
 export const SIDEBAR_ROW_REVEAL_CLASS_NAME =
   "opacity-0 group-hover/thread-row:opacity-100 group-focus-within/thread-row:opacity-100 pointer-coarse:opacity-100";
 
+const PINNED_DRAG_HANDLE_SELECTOR = "[data-pinned-thread-drag-handle]";
+
+/**
+ * The threads a row drag carries: the multi-selection when this row is part of it, in visible
+ * order, otherwise just this row. Titles are the full thread titles.
+ */
+export function threadReferenceDragItems(input: {
+  readonly threadId: ThreadId;
+  readonly selectedThreadIds: ReadonlySet<ThreadId>;
+  readonly orderedIds: readonly ThreadId[];
+  readonly titleOf: (threadId: ThreadId) => string | undefined;
+}): Array<{ threadId: string; title: string }> {
+  const { threadId, selectedThreadIds, orderedIds } = input;
+  const ids =
+    selectedThreadIds.has(threadId) && selectedThreadIds.size > 1
+      ? [
+          ...orderedIds.filter((id) => selectedThreadIds.has(id)),
+          ...[...selectedThreadIds].filter((id) => !orderedIds.includes(id)),
+        ]
+      : [threadId];
+  return ids
+    .filter((id) => isThreadReferenceId(id))
+    .slice(0, THREAD_REFERENCE_MAX_PER_MESSAGE)
+    .map((id) => ({ threadId: id, title: input.titleOf(id) ?? "Thread" }));
+}
+
 export function SidebarThreadRow(props: SidebarThreadRowProps) {
+  "use memo";
   const {
     thread,
     section,
@@ -75,42 +160,137 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     orderedIds,
     threadStatus,
     prStatus,
-    terminalStatus,
+    isUnread,
     isRenaming,
     actions,
   } = props;
+  const runningTerminalIds = useTerminalStateStore((state) =>
+    section === "snoozed" || section === "settled"
+      ? null
+      : selectThreadTerminalState(state.terminalStateByThreadId, thread.id).runningTerminalIds,
+  );
+  const terminalStatus =
+    runningTerminalIds === null ? null : terminalStatusFromRunningIds(runningTerminalIds);
+  const project = useStore((state) =>
+    section === "settled"
+      ? state.projects.find((project) => project.id === thread.projectId)
+      : undefined,
+  );
   const selectable = section !== "snoozed" && section !== "attention" && !isDraft;
   const isSelected = useThreadSelectionStore(
     (state) => selectable && state.selectedThreadIds.has(thread.id),
   );
   const isHighlighted = isActive || isSelected;
+  const isWorkflowChild = section === "workflow";
+  const workflowStep = isWorkflowChild ? props.workflowStep : undefined;
+  const workflowStatus =
+    isWorkflowChild && threadStatus && WORKFLOW_CHILD_STATUS_LABELS.has(threadStatus.label)
+      ? threadStatus
+      : null;
+  // The deliverable's PR stays reachable through code review and Apply Reviews, which keep
+  // its step active (or failed); a thread no step names (a skipped step's) keeps its PR too.
+  const showsWorkflowPr =
+    isWorkflowChild &&
+    !workflowStatus &&
+    prStatus !== null &&
+    (workflowStep === undefined ||
+      (workflowStep.isDeliverable && workflowStep.state !== "pending"));
+  // Steps run unattended, so unread is no signal there: only a step that is running, needs
+  // someone, or is the deliverable stands out.
+  const workflowEmphasis =
+    workflowStatus !== null ||
+    workflowStep?.isDeliverable === true ||
+    workflowStep?.state === "active" ||
+    workflowStep?.state === "error";
+  // Recent rows behave like a project's active rows; only one of the two views renders.
+  const activeLike = section === "active" || section === "recent";
   const testId =
-    section === "active" || section === "archived"
+    activeLike || section === "archived" || section === "settled"
       ? `thread-row-${thread.id}`
       : section === "attention"
         ? `attention-thread-row-${thread.id}`
         : undefined;
-  const canRename = section === "active" || section === "archived";
-  const action =
-    section === "active" && !isDraft
-      ? {
-          label: "Archive",
-          ariaLabel: `Archive ${thread.title}`,
-          icon: ArchiveIcon,
-          onClick: () => {
-            void actions.archiveThread(thread.id, true);
-          },
-        }
-      : section === "archived"
-        ? {
-            label: "Unarchive",
-            ariaLabel: `Unarchive ${thread.title}`,
-            icon: ArchiveRestoreIcon,
+  const canRename = activeLike || section === "archived" || section === "settled";
+  const treeRowProps = useSidebarTreeRowProps(`thread:${section}:${thread.id}`);
+  // Dragging a row onto a composer references the thread; it never navigates or reorders.
+  const draggable = !isDraft && !(canRename && isRenaming) && isThreadReferenceId(thread.id);
+  const onThreadDragStart = (event: DragEvent<HTMLElement>) => {
+    // The pinned handle reorders with its own pointer sensor; it never starts a reference drag.
+    if (event.target instanceof Element && event.target.closest(PINNED_DRAG_HANDLE_SELECTOR)) {
+      event.preventDefault();
+      return;
+    }
+    const items = threadReferenceDragItems({
+      threadId: thread.id,
+      selectedThreadIds: selectable
+        ? useThreadSelectionStore.getState().selectedThreadIds
+        : new Set(),
+      orderedIds,
+      titleOf: (id) =>
+        id === thread.id ? thread.title : selectThreadById(useStore.getState(), id)?.title,
+    });
+    if (!writeThreadReferenceDrag(event.dataTransfer, items)) event.preventDefault();
+  };
+  const pinned = thread.pinnedAt != null;
+  // A pinned project row's yellow pin is its unpin control, so the quick actions skip it.
+  const showsPinnedHandle = section === "active" && pinned;
+  const quickActions: ThreadRowQuickAction[] =
+    activeLike && !isDraft
+      ? [
+          ...(showsPinnedHandle
+            ? []
+            : [
+                {
+                  label: pinned ? "Unpin" : "Pin",
+                  ariaLabel: `${pinned ? "Unpin" : "Pin"} ${thread.title}`,
+                  icon: pinned ? PinOffIcon : PinIcon,
+                  onClick: () => actions.togglePinThread(thread.id),
+                },
+              ]),
+          {
+            label: "Archive",
+            ariaLabel: `Archive ${thread.title}`,
+            icon: ArchiveIcon,
             onClick: () => {
-              void actions.archiveThread(thread.id, false);
+              void actions.archiveThread(thread.id, true);
             },
-          }
-        : null;
+          },
+        ]
+      : section === "archived"
+        ? [
+            {
+              label: "Unarchive",
+              ariaLabel: `Unarchive ${thread.title}`,
+              icon: ArchiveRestoreIcon,
+              onClick: () => {
+                void actions.archiveThread(thread.id, false);
+              },
+            },
+          ]
+        : section === "settled"
+          ? [
+              {
+                label: "Unsettle",
+                ariaLabel: `Unsettle ${thread.title}`,
+                icon: SunriseIcon,
+                onClick: () => {
+                  void actions.unsettleThread(thread.id);
+                },
+              },
+            ]
+          : [];
+  const peekTrigger = useSidebarPeekTrigger(
+    {
+      kind: "thread",
+      threadId: thread.id,
+      roleLabel:
+        section === "workflow" ? (props.workflowRoleLabel ?? props.displayTitle) : undefined,
+      workflowTitle: section === "workflow" ? props.workflowTitle : undefined,
+      indicators: { threadStatus, prStatus, isUnread },
+    },
+    // A draft has no server thread to describe yet.
+    { disabled: isDraft },
+  );
 
   return (
     <SidebarMenuSubItem
@@ -126,7 +306,16 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
       {...(section === "attention" ? {} : { "data-thread-item": true })}
     >
       <SidebarMenuSubButton
-        render={<div role="button" tabIndex={0} />}
+        // Inside a project the row is a tree item, reached with the arrow keys from the
+        // tree's single Tab stop; attention rows outside the tree keep their own stop.
+        render={peekTrigger(
+          <div
+            role="button"
+            tabIndex={0}
+            {...treeRowProps}
+            {...(draggable ? { draggable: true, onDragStart: onThreadDragStart } : {})}
+          />,
+        )}
         size="md"
         isActive={isActive}
         {...(testId ? { "data-testid": testId } : {})}
@@ -134,15 +323,22 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           resolveThreadRowClassName({
             isActive,
             isSelected,
-            isUnread: section !== "archived" && hasUnseenCompletion(thread),
+            isUnread: section !== "archived" && !isWorkflowChild && isUnread,
           }),
+          section !== "attention" && SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
+          workflowEmphasis && !isHighlighted && "text-foreground",
+          // Done work recedes until it is hovered or focused; an open or selected archived
+          // row keeps its normal colors.
+          section === "settled" && SIDEBAR_DONE_ROW_CLASS_NAME,
+          section === "archived" && !isActive && !isSelected && SIDEBAR_DONE_ROW_CLASS_NAME,
         )}
+        {...(section === "archived" || section === "settled" ? { "data-row-done": true } : {})}
         onClick={(event) => {
           if (section === "attention") {
             actions.openThread(thread.id);
             return;
           }
-          if (section === "workflow" || section === "active") {
+          if (section === "workflow" || activeLike) {
             actions.handleThreadClick(event, thread.id, orderedIds, { isDraft });
             return;
           }
@@ -154,7 +350,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
                 actions.handleThreadRowDoubleClick(
                   event,
                   thread,
-                  section === "active" ? { isDraft } : undefined,
+                  activeLike ? { isDraft } : undefined,
                 );
               },
             }
@@ -171,7 +367,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
                   actions.openThread(thread.id);
                   return;
                 }
-                actions.handleThreadRowKeyDown(event, thread.id, { isDraft });
+                actions.handleThreadRowKeyDown(event, thread.id, { isDraft, canRename });
               },
             }
           : {})}
@@ -183,35 +379,42 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
         }}
       >
         <span className="flex size-4 shrink-0 items-center justify-center">
-          {section === "snoozed" ? (
+          {section === "settled" ? (
+            <ProjectIcon
+              projectId={thread.projectId}
+              kind={project?.kind}
+              name={project?.name ?? "Project"}
+              icon={project?.icon}
+              className="size-4"
+            />
+          ) : section === "snoozed" ? (
             <MoonIcon aria-label="Snoozed" className="size-3.5 text-faint-foreground" />
+          ) : isWorkflowChild ? (
+            workflowStatus ? (
+              <ThreadStatusPillBadge pill={workflowStatus} variant="icon" live={false} />
+            ) : showsWorkflowPr ? (
+              <SidebarThreadPrStatus
+                prStatus={prStatus}
+                settled={false}
+                onOpen={(event, url) => actions.openPrLink(event, url)}
+              />
+            ) : workflowStep ? (
+              <WorkflowStepGlyph state={workflowStep.state} />
+            ) : (
+              <WorkflowStepGlyph state={null} />
+            )
           ) : threadStatus ? (
             <ThreadStatusPillBadge pill={threadStatus} variant="icon" live={false} />
           ) : null}
         </span>
-        {section !== "snoozed" && prStatus ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label={prStatus.tooltip}
-                  className={cn(
-                    "-mx-0.5 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md outline-none hover:bg-background focus-visible:ring-2 focus-visible:ring-ring",
-                    prStatus.colorClass,
-                  )}
-                  onClick={(event) => {
-                    actions.openPrLink(event, prStatus.url);
-                  }}
-                >
-                  <GitPullRequestIcon className="size-3.5" />
-                </button>
-              }
-            />
-            <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
-          </Tooltip>
+        {/* A workflow child's PR, if any, is its leading glyph, so every title starts level. */}
+        {section !== "snoozed" && !isWorkflowChild && prStatus ? (
+          <SidebarThreadPrStatus
+            prStatus={prStatus}
+            settled={section === "settled"}
+            onOpen={(event, url) => actions.openPrLink(event, url)}
+          />
         ) : null}
-        {section === "active" ? <ThreadQueueCountBadge compact threadId={thread.id} /> : null}
         {canRename && !isDraft && isRenaming ? (
           <InlineTitleEditor
             initialValue={thread.title}
@@ -225,106 +428,165 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           <SidebarThreadTitle
             thread={thread}
             {...(props.displayTitle ? { displayTitle: props.displayTitle } : {})}
-            withTestId={section === "active" || section === "snoozed"}
+            withTestId={activeLike || section === "snoozed"}
           />
         )}
         {props.trailingMeta}
-        {section === "active" && thread.pinnedAt != null ? (
-          <PinnedThreadDragHandle threadId={thread.id} />
+        {showsPinnedHandle ? (
+          <PinnedThreadDragHandle
+            threadId={thread.id}
+            title={thread.title}
+            onUnpin={() => actions.togglePinThread(thread.id)}
+          />
         ) : null}
         <ThreadRowTrailingMeta
           thread={thread}
           lastInteractionAt={thread.lastInteractionAt}
-          terminalStatus={section === "snoozed" ? null : terminalStatus}
+          terminalStatus={terminalStatus}
           isHighlighted={isHighlighted}
-          {...(section === "active" ? { showDraftIndicator: !isDraft } : {})}
-          action={action}
+          {...(activeLike ? { showDraftIndicator: !isDraft } : {})}
+          showQueueCount={activeLike}
+          actions={quickActions}
         />
       </SidebarMenuSubButton>
     </SidebarMenuSubItem>
   );
 }
 
+/** The row title; the full title (and a workflow child's thread title) is in the peek card. */
 export function SidebarThreadTitle({
   thread,
   displayTitle,
   withTestId = true,
 }: {
-  thread: Thread;
+  thread: ThreadListItem;
   displayTitle?: string | undefined;
   withTestId?: boolean | undefined;
 }) {
-  const suppressTooltip = useMediaQuery("(hover: none), (pointer: coarse)");
   const visibleTitle = displayTitle ?? thread.title;
-  const tooltip = displayTitle && displayTitle !== thread.title ? thread.title : visibleTitle;
-  const title = (
+  const fullTitle = displayTitle && displayTitle !== thread.title ? thread.title : visibleTitle;
+  return (
     <span
       className="min-w-0 flex-1 truncate"
       {...(withTestId ? { "data-testid": `thread-title-${thread.id}` } : {})}
     >
       {visibleTitle}
-      {tooltip !== visibleTitle ? <span className="sr-only">{`, ${tooltip}`}</span> : null}
+      {fullTitle !== visibleTitle ? <span className="sr-only">{`, ${fullTitle}`}</span> : null}
     </span>
   );
+}
 
-  if (suppressTooltip) {
-    return title;
-  }
-
+/**
+ * A pinned project row's yellow pin: a click unpins the thread, a drag (6px or more, per the
+ * sidebar's pointer sensor) reorders the pins. Hover and focus show the unpin icon.
+ */
+export function PinnedThreadDragHandle({
+  threadId,
+  title,
+  onUnpin,
+}: {
+  threadId: ThreadId;
+  title: string;
+  onUnpin: () => void;
+}) {
+  "use memo";
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: pinnedThreadSortableId(threadId),
+  });
+  // Releasing a drag over the handle can still fire a click; it must not unpin.
+  const draggedRef = useRef(false);
+  useEffect(() => {
+    if (isDragging) draggedRef.current = true;
+  }, [isDragging]);
   return (
     <Tooltip>
-      <TooltipTrigger delay={250} render={title} />
-      <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
-        {tooltip}
-      </TooltipPopup>
+      <TooltipTrigger
+        render={
+          <button
+            ref={setNodeRef}
+            type="button"
+            data-pinned-thread-drag-handle=""
+            className={cn(
+              "group/pin -mx-0.5 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-warning-foreground outline-none hover:bg-background hover:text-foreground focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing",
+              isDragging && "z-20 opacity-70",
+            )}
+            style={{ transform: CSS.Translate.toString(transform), transition }}
+            {...attributes}
+            {...listeners}
+            aria-label={`Unpin ${title}`}
+            onPointerDown={(event) => {
+              draggedRef.current = false;
+              listeners?.onPointerDown?.(event);
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (draggedRef.current) {
+                draggedRef.current = false;
+                return;
+              }
+              onUnpin();
+            }}
+            onKeyDown={(event) => {
+              // Enter and Space unpin here instead of opening the row.
+              if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+            }}
+          >
+            <PinIcon
+              aria-hidden="true"
+              className="size-3.5 group-hover/pin:hidden group-focus-visible/pin:hidden"
+            />
+            <PinOffIcon
+              aria-hidden="true"
+              className="hidden size-3.5 group-hover/pin:block group-focus-visible/pin:block"
+            />
+          </button>
+        }
+      />
+      <TooltipPopup side="top">Unpin · drag to reorder</TooltipPopup>
     </Tooltip>
   );
 }
 
-export function PinnedThreadDragHandle({ threadId }: { threadId: ThreadId }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: pinnedThreadSortableId(threadId),
-  });
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      aria-label="Reorder pinned thread"
-      className={cn(
-        "inline-flex size-5 shrink-0 cursor-grab items-center justify-center rounded-md text-warning-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing",
-        isDragging && "z-20 opacity-70",
-      )}
-      style={{ transform: CSS.Translate.toString(transform), transition }}
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-      {...attributes}
-      {...listeners}
-    >
-      <PinIcon className="size-3.5" />
-    </button>
-  );
+/** Opens the thread's terminal drawer on a running terminal, including one in a split. */
+function revealRunningTerminal(threadId: ThreadId) {
+  const store = useTerminalStateStore.getState();
+  const terminalId = selectThreadTerminalState(store.terminalStateByThreadId, threadId)
+    .runningTerminalIds[0];
+  if (!terminalId) return;
+  store.setActiveTerminal(threadId, terminalId);
+  store.setTerminalOpen(threadId, true);
+}
+
+export interface ThreadRowQuickAction {
+  label: string;
+  ariaLabel: string;
+  icon: typeof ArchiveIcon;
+  onClick: (button: HTMLButtonElement) => void;
 }
 
 export function ThreadRowTrailingMeta(props: {
-  thread: Pick<Thread, "id" | "branch" | "worktreePath" | "titleRegeneration">;
+  thread: Pick<ThreadListItem, "id" | "branch" | "worktreePath" | "titleRegeneration">;
   lastInteractionAt: string;
   terminalStatus: TerminalStatusIndicator | null;
   isHighlighted: boolean;
   showDraftIndicator?: boolean | undefined;
-  action?: {
-    label: string;
-    ariaLabel: string;
-    icon: typeof ArchiveIcon;
-    onClick: () => void;
-  } | null;
+  /** The queued-message count, kept beside the time so every title starts at the same x. */
+  showQueueCount?: boolean | undefined;
+  /**
+   * Shown in the timestamp's place on hover and focus: Pin/Unpin and Archive (a pinned
+   * project row unpins from its yellow pin), Unarchive, or Unsettle. Snoozing lives in the
+   * context menu. Touch screens always show the last one, the row's main action; the others
+   * stay in the context menu there.
+   */
+  actions?: readonly ThreadRowQuickAction[] | undefined;
 }) {
-  const action = props.action ?? null;
+  "use memo";
+  const actions = props.actions ?? [];
+  const hasActions = actions.length > 0;
   const draft = useComposerDraftStore((store) => store.draftsByThreadId[props.thread.id]);
   const draftPreview =
     props.showDraftIndicator === false ? null : resolveSidebarComposerDraftPreview(draft);
-  const ActionIcon = action?.icon;
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -352,63 +614,191 @@ export function ThreadRowTrailingMeta(props: {
           </TooltipPopup>
         </Tooltip>
       ) : null}
-      <ThreadWorktreeIndicator thread={props.thread} />
+      {props.showQueueCount ? <ThreadQueueCountBadge compact threadId={props.thread.id} /> : null}
       {props.terminalStatus ? (
-        <span
-          role="img"
-          aria-label={props.terminalStatus.label}
+        <button
+          type="button"
+          aria-label={`${props.terminalStatus.label}. Show terminal`}
           title={props.terminalStatus.label}
-          className={cn("inline-flex items-center justify-center", props.terminalStatus.colorClass)}
+          className={cn(
+            "inline-flex items-center justify-center rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            props.terminalStatus.colorClass,
+          )}
+          // The row's own click then opens the thread; this picks which terminal shows.
+          onClick={() => revealRunningTerminal(props.thread.id)}
         >
           <TerminalIcon
-            className={cn("size-3.5", props.terminalStatus.pulse && "animate-status-pulse")}
+            className={cn(
+              "size-3.5",
+              props.terminalStatus.pulse && "motion-safe:animate-status-pulse",
+            )}
+            onAnimationStart={synchronizeStatusPulse}
           />
-        </span>
+        </button>
       ) : null}
-      <span className="relative flex shrink-0 items-center justify-end">
+      <span className="flex shrink-0 items-center justify-end">
         <span
           className={cn(
             "text-2xs font-normal tabular-nums",
             props.isHighlighted ? "text-foreground" : "text-muted-foreground",
-            action &&
-              "group-hover/thread-row:invisible group-focus-within/thread-row:invisible pointer-coarse:invisible",
+            hasActions &&
+              "group-hover/thread-row:hidden group-focus-within/thread-row:hidden pointer-coarse:hidden",
           )}
         >
-          {formatRelativeTimeLabel(props.lastInteractionAt)}
+          <ThreadRelativeActivityTime
+            threadId={props.thread.id}
+            fallback={props.lastInteractionAt}
+          />
         </span>
-        {action && ActionIcon ? (
-          <span className="absolute inset-y-0 right-0 flex items-center">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label={action.ariaLabel}
-                    className={cn(
-                      "-mr-1 inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
-                      SIDEBAR_ROW_REVEAL_CLASS_NAME,
-                    )}
-                    onMouseDown={(event) => {
-                      event.stopPropagation();
-                    }}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      action.onClick();
-                    }}
-                    onKeyDown={(event) => {
-                      event.stopPropagation();
-                    }}
-                  >
-                    <ActionIcon className="size-3.5" />
-                  </button>
-                }
-              />
-              <TooltipPopup side="top">{action.label}</TooltipPopup>
-            </Tooltip>
+        {hasActions ? (
+          <span
+            className="-mr-1 hidden items-center group-hover/thread-row:flex group-focus-within/thread-row:flex pointer-coarse:flex"
+            data-testid="thread-row-quick-actions"
+          >
+            {actions.map((action, index) => (
+              <Tooltip key={action.label}>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label={action.ariaLabel}
+                      className={cn(
+                        "inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+                        // Touch screens keep only the row's main action, the last one.
+                        index < actions.length - 1 && "pointer-coarse:hidden",
+                      )}
+                      onMouseDown={(event) => {
+                        event.stopPropagation();
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        action.onClick(event.currentTarget);
+                      }}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                      }}
+                    >
+                      <action.icon className="size-3.5" />
+                    </button>
+                  }
+                />
+                <TooltipPopup side="top">{action.label}</TooltipPopup>
+              </Tooltip>
+            ))}
           </span>
         ) : null}
       </span>
     </div>
+  );
+}
+
+const PR_STATUS_BUTTON_CLASS_NAME =
+  "relative -mx-0.5 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md outline-none hover:bg-background focus-visible:ring-2 focus-visible:ring-ring";
+
+/** Settled rows keep their PR icon muted until hovered or focused. */
+function settledPrColorClass(state: PrStatusIndicator["state"]): string {
+  return cn(
+    "text-muted-foreground",
+    state === "open"
+      ? "group-hover/thread-row:text-success-foreground group-focus-within/thread-row:text-success-foreground"
+      : state === "merged"
+        ? "group-hover/thread-row:text-attention-foreground group-focus-within/thread-row:text-attention-foreground"
+        : "group-hover/thread-row:text-muted-foreground",
+  );
+}
+
+/**
+ * The row's PR icon: one icon colored by the most actionable PR, with a count when the thread
+ * has several. One PR opens directly; several open a menu of them.
+ */
+export function SidebarThreadPrStatus({
+  prStatus,
+  settled,
+  onOpen,
+}: {
+  prStatus: PrStatusIndicator;
+  settled: boolean;
+  onOpen: (event: React.MouseEvent<HTMLElement> | null, url: string) => void;
+}) {
+  const count = prStatus.items.length;
+  const className = cn(
+    PR_STATUS_BUTTON_CLASS_NAME,
+    settled ? settledPrColorClass(prStatus.state) : prStatus.colorClass,
+  );
+  const icon = (
+    <>
+      <GitPullRequestIcon className="size-3.5" />
+      {count > 1 ? (
+        <span
+          aria-hidden="true"
+          data-testid="sidebar-pr-count"
+          className="-top-1 -right-1 absolute font-medium text-2xs tabular-nums leading-none"
+        >
+          {count}
+        </span>
+      ) : null}
+    </>
+  );
+  const tooltip = (
+    <TooltipPopup side="top" className="whitespace-pre-line">
+      {prStatus.tooltip}
+    </TooltipPopup>
+  );
+  if (count <= 1) {
+    return (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              aria-label={prStatus.tooltip}
+              className={className}
+              onClick={(event) => onOpen(event, prStatus.url)}
+            >
+              {icon}
+            </button>
+          }
+        />
+        {tooltip}
+      </Tooltip>
+    );
+  }
+  // The menu portals out of the row, but React events still bubble to the row's handlers.
+  const stopRowEvent = (event: React.SyntheticEvent) => event.stopPropagation();
+  return (
+    <Menu>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <MenuTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`${count} pull requests`}
+                  className={className}
+                  onClick={stopRowEvent}
+                  onDoubleClick={stopRowEvent}
+                >
+                  {icon}
+                </button>
+              }
+            />
+          }
+        />
+        {tooltip}
+      </Tooltip>
+      <MenuPopup
+        align="start"
+        onClick={stopRowEvent}
+        onDoubleClick={stopRowEvent}
+        onContextMenu={stopRowEvent}
+      >
+        <ThreadPullRequestMenuItems
+          items={prStatus.items}
+          onOpen={(item) => onOpen(null, item.url)}
+        />
+      </MenuPopup>
+    </Menu>
   );
 }

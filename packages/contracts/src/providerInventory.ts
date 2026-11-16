@@ -22,6 +22,7 @@ export type ProviderInventorySource = typeof ProviderInventorySource.Type;
 const BoundedText = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
 
 export const ProviderInventoryHook = Schema.Struct({
+  environmentId: Schema.optional(BoundedText),
   event: BoundedText,
   matcher: Schema.optional(BoundedText),
   handlerType: Schema.optional(BoundedText),
@@ -72,6 +73,23 @@ export const ProviderInventoryAgent = Schema.Struct({
 export type ProviderInventoryAgent = typeof ProviderInventoryAgent.Type;
 
 export const ProviderInstanceInventory = Schema.Struct({
+  feedbackSupported: Schema.optional(Schema.Boolean),
+  account: Schema.optional(
+    Schema.Struct({
+      type: Schema.Literals(["apiKey", "chatgpt", "gcp", "unknown"]),
+      email: Schema.optional(BoundedText),
+      workspaceName: Schema.optional(BoundedText),
+    }),
+  ),
+  accountWorkspaces: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        name: BoundedText,
+        kind: Schema.optional(BoundedText),
+        active: Schema.Boolean,
+      }),
+    ),
+  ),
   instanceId: ProviderInstanceId,
   driver: ProviderDriverKind,
   generatedAt: IsoDateTime,
@@ -91,3 +109,6 @@ export const ServerGetProviderInventoryInput = Schema.Struct({
   projectId: Schema.optional(ProjectId),
 });
 export type ServerGetProviderInventoryInput = typeof ServerGetProviderInventoryInput.Type;
+
+export const ServerSaveProviderFeedbackInput = Schema.Struct({ instanceId: ProviderInstanceId });
+export type ServerSaveProviderFeedbackInput = typeof ServerSaveProviderFeedbackInput.Type;

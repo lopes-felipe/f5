@@ -193,7 +193,9 @@ function applyTaskCreate(
       tracking: withSync(tracking, "overflow", `More than ${MAX_THREAD_TASKS} tasks.`),
     };
   }
-  const description = boundedDescription(input?.description);
+  // Claude Code 2.1.317+ echoes the stored description, which may differ from the input.
+  const description =
+    boundedDescription(task?.description) ?? boundedDescription(input?.description);
   const created: TaskItem = {
     id,
     content: subject,
@@ -580,11 +582,14 @@ export function abandonPendingTaskToolCalls(state: TaskToolState): ReduceResult 
 export function revertTaskToolState(
   state: TaskToolState,
   retainedTurnIds: ReadonlySet<string> | undefined,
+  native?: { readonly removedTurnIds: ReadonlySet<string> },
 ): TaskToolState {
   const tracking = state.tracking;
   if (!tracking) return { tasks: [], tracking: null };
   const isRetained = (turnId: string | null) =>
-    turnId !== null && retainedTurnIds !== undefined && retainedTurnIds.has(turnId);
+    native
+      ? turnId === null || !native.removedTurnIds.has(turnId)
+      : turnId !== null && retainedTurnIds !== undefined && retainedTurnIds.has(turnId);
   const discarded = new Set(
     tracking.provenance.filter((entry) => !isRetained(entry.turnId)).map((entry) => entry.taskId),
   );

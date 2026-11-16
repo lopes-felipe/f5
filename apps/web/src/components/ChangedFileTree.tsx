@@ -2,6 +2,7 @@ import { ChevronDownIcon, ChevronRightIcon, CopyIcon, FileIcon, FolderIcon } fro
 import { useMemo, useState, type MouseEvent } from "react";
 import { useAppSettings } from "../appSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { compareFilePathsCaseSensitive } from "../lib/filePathCollator";
 import { Button } from "./ui/button";
 
 export interface ChangedFileTreeEntry {
@@ -24,10 +25,12 @@ export function changedFileTreeRows(
     const parts = flat ? [file.path] : file.path.split("/");
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
-      let child = node.children.get(part);
+      // A diff can contain both a file and a directory at the same real path.
+      const key = i === parts.length - 1 ? part : `${part}/`;
+      let child = node.children.get(key);
       if (!child) {
         child = { path: flat ? part : parts.slice(0, i + 1).join("/"), children: new Map() };
-        node.children.set(part, child);
+        node.children.set(key, child);
       }
       node = child;
     }
@@ -38,7 +41,7 @@ export function changedFileTreeRows(
     for (const child of [...node.children.values()].sort(
       (a, b) =>
         Number(Boolean(a.file)) - Number(Boolean(b.file)) ||
-        a.path.localeCompare(b.path, undefined, { numeric: true }),
+        compareFilePathsCaseSensitive(a.path, b.path),
     )) {
       rows.push({ path: child.path, depth, ...(child.file ? { file: child.file } : {}) });
       if (!collapsed.has(child.path)) visit(child, depth + 1);
@@ -115,7 +118,7 @@ export function ChangedFileTree({
       <div className="max-h-64 overflow-auto px-2 pb-2" aria-label="Changed file navigation">
         {rows.slice(0, visibleCount).map((row) => (
           <div
-            key={row.path}
+            key={`${row.file ? "file" : "directory"}:${row.path}`}
             className="group flex min-w-0 items-center gap-1"
             style={{ paddingLeft: row.depth * 12 }}
           >
@@ -123,6 +126,7 @@ export function ChangedFileTree({
               type="button"
               className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-1 text-left hover:bg-accent"
               title={row.file?.previousPath ? `${row.file.previousPath} → ${row.path}` : row.path}
+              aria-label={`${row.file ? "File" : "Folder"} ${row.path}`}
               aria-expanded={row.file ? undefined : !collapsed.has(row.path)}
               onContextMenu={
                 row.file && onContextMenu ? (event) => onContextMenu(event, row.path) : undefined

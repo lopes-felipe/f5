@@ -1,0 +1,282 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-codex-all-app-windows-closed",
+  "state": "passed",
+  "repositoryCommit": "a2aa17f3d1233b1a448fb99b054ab94287e75dbf",
+  "workingTreeDirty": false,
+  "recordedAt": "2026-10-14T11:43:13.657Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "provider": "codex",
+  "runtimeMode": "full-access",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "a4bdc0c5022c09bc98e13e3cbd526b1f2ded4ef0c235a627cf4926613813d629",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "6b1a949e9d27df86bec5cb1e9f211b46483e945eefd6203cf581b32d1f3319b3",
+    "observerSource": "c201709b3bc633242344d22618df7f8a7e4919fddc69635e50605fc7e0f2338a",
+    "transportObserverSource": "88da9c9eefcdfee6767c5f7a8695de27b726ef2d41a7542b16be268f2d5eb10b",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "a3b8c3d877aa24fd44168bc82fa39208f54e5358e197264ca0470861680baa49",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "17281f635c4f653e13d7dcbeb52e8570e6930a32e93414c0de713437e5abe95d",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "realConsentDialogVisible": true,
+    "realConsentSettledAllowed": true,
+    "humanTrustedConsent": true,
+    "consentTurnEmittedNoInput": true,
+    "native-receipt": true,
+    "stop": true,
+    "windows-closed": true,
+    "humanFinishAcknowledged": true,
+    "noTaggedProviderErrors": true,
+    "genuineConsent": true,
+    "externalSubmissionsOnce": true,
+    "cleanup": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "externalSubmissions": 1,
+  "stopScope": "session-stop-after-completed-native-actions",
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": true,
+      "nativeInspectionSucceeded": true,
+      "nativeInputSucceeded": true
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": true,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 1,
+    "inspectionResponses": 1,
+    "activityMessages": 8,
+    "activityThumbnails": 1,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "pendingResponses": 0,
+    "accessRequests": 1,
+    "accessAnswersForwarded": 1,
+    "accessAnswerSummaries": [
+      {
+        "kind": "apps",
+        "appCount": 1,
+        "allowed": 1,
+        "remembered": 0
+      }
+    ],
+    "sessionGenerationsObserved": 1,
+    "requestSessions": [
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "activateApp",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "screenshot",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "inspect",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "elementAction",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "resolveApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "elementAction",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "type",
+        "sessionOrdinal": 1
+      }
+    ],
+    "backendRestarts": [],
+    "backendLifecycle": [],
+    "mcpTransport": [],
+    "mcpTransportOverflow": false,
+    "grantChanges": 13,
+    "lastGrantCount": 0,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "activateApp",
+        "outcome": "ok",
+        "actionCompleted": true,
+        "actionCaptureSucceeded": true
+      },
+      {
+        "op": "screenshot",
+        "outcome": "ok",
+        "validCapture": true
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "inspect",
+        "outcome": "ok",
+        "accessible": true,
+        "nodes": 15
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok",
+        "action": "press"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "elementAction",
+        "outcome": "ok",
+        "action": "focus"
+      },
+      {
+        "op": "leaseAcquire",
+        "outcome": "ok"
+      },
+      {
+        "op": "type",
+        "outcome": "ok"
+      }
+    ]
+  },
+  "fixtureObservation": {
+    "presses": 1,
+    "expectedSyntheticTextReceived": true,
+    "humanFinishAcknowledged": true
+  },
+  "consentObservation": {
+    "requested": true,
+    "trustedClick": true,
+    "settled": true,
+    "allowed": true,
+    "fixtureGranted": true
+  },
+  "windowlessObservation": {
+    "active": true,
+    "reopened": false,
+    "inputWithWindow": false,
+    "mutationAdmissions": 4,
+    "finalWindowCount": 0
+  },
+  "windowlessStopObservation": {
+    "sessionStopped": true,
+    "grantsCleared": true,
+    "leaseReleased": true
+  },
+  "providerTailObserved": true,
+  "providerErrorCodes": [],
+  "providerVersion": "0.162.1",
+  "admission": {
+    "version": 1,
+    "suiteId": "c8501532-0735-458d-8207-882c222c86bf",
+    "scenario": "windows-closed.codex",
+    "attempt": 1,
+    "identityHash": "cd5fee4d3d8c12facc2f84513996811fa5b1d8160cbb2877a0c5117701e8287c",
+    "state": "passed",
+    "evidenceKind": "provider-desktop",
+    "startedAt": "2026-10-14T11:41:50.744Z",
+    "finishedAt": "2026-10-14T11:43:14.376Z",
+    "checks": {
+      "realElectronPermissionsAvailable": true,
+      "realConsentDialogVisible": true,
+      "realConsentSettledAllowed": true,
+      "humanTrustedConsent": true,
+      "consentTurnEmittedNoInput": true,
+      "native-receipt": true,
+      "stop": true,
+      "windows-closed": true,
+      "humanFinishAcknowledged": true,
+      "noTaggedProviderErrors": true,
+      "genuineConsent": true,
+      "externalSubmissionsOnce": true,
+      "cleanup": true,
+      "receipt.genuineConsent": true,
+      "receipt.native-receipt": true,
+      "receipt.windows-closed": true,
+      "receipt.stop": true,
+      "receipt.externalSubmissionsOnce": true,
+      "receipt.humanFinishAcknowledged": true,
+      "receipt.noTaggedProviderErrors": true,
+      "receipt.cleanup": true
+    },
+    "measurements": {},
+    "cleanup": "confirmed",
+    "evidenceSha256": "c8c3fa45127ad73b6c6d539fac477992ccba817c1201341cc808a4893e148fa9"
+  },
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Unsigned real Electron development run; not signed installed-build attribution or certification",
+    "All app windows of the suite-owned F5 instance closed; unrelated F5 instances were not closed",
+    "Genuine fixture consent before closure; one ordinary queued provider turn submitted externally; no consent or input shortcut",
+    "Exactly one activation, semantic press, semantic focus and typing action; capture/inspection responses correlated with independent fixture receipts",
+    "Session stop after completed actions cleared grants and lease; not a measurement of interruption during sustained input",
+    "Other independent profile/privacy/display/recovery release requirements remain pending"
+  ]
+}

@@ -45,7 +45,9 @@ export function stripTerminalControl(text: string): string {
 
 function shellInvocation(command: string): { file: string; args: string[] } {
   if (process.platform === "win32") {
-    return { file: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", command] };
+    // Match Node's shell launch: /s strips this outer envelope, preserving
+    // quotes around executable paths and arguments inside the command.
+    return { file: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `"${command}"`] };
   }
   const shell = process.env.SHELL && process.env.SHELL.length > 0 ? process.env.SHELL : "/bin/sh";
   // A login shell picks up the same PATH the user's terminals see.
@@ -85,6 +87,7 @@ export const startOwnedSetupScript = (input: {
           stdio: ["ignore", "pipe", "pipe"],
           detached: process.platform !== "win32",
           windowsHide: true,
+          windowsVerbatimArguments: process.platform === "win32",
         }),
       catch: (cause) =>
         new SetupScriptSpawnError({ message: `Failed to start setup script: ${String(cause)}` }),

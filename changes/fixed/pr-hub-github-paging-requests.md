@@ -1,0 +1,1 @@
+- Some of PR Hub's GitHub requests were refused before they were sent, because their paging options were written into the address: reviewer suggestions, the comment and changed-file reads behind review actions and review guides, and **Approve workflow runs**. They are sent now.

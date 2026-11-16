@@ -40,34 +40,28 @@ const resetProjectionTables = (sql: SqlClient.SqlClient) =>
     yield* sql`DELETE FROM projection_state`;
   });
 
-const withoutTransactions = <A, E, R>(
+const expectReadTransactions = <A, E, R>(
   sql: SqlClient.SqlClient,
   effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, R> =>
-  Effect.acquireUseRelease(
+): Effect.Effect<A, E, R> => {
+  const client = sql as { withTransaction: SqlClient.SqlClient["withTransaction"] };
+  let calls = 0;
+  return Effect.acquireUseRelease(
     Effect.sync(() => {
-      const client = sql as any;
-      const originalWithTransaction = client.withTransaction;
-      client.withTransaction = () => Effect.never;
-      return originalWithTransaction;
+      const original = client.withTransaction;
+      client.withTransaction = (effect) => {
+        calls++;
+        return original(effect);
+      };
+      return original;
     }),
-    () => effect,
-    (originalWithTransaction) =>
+    () => effect.pipe(Effect.tap(() => Effect.sync(() => assert.equal(calls, 3)))),
+    (original) =>
       Effect.sync(() => {
-        (sql as any).withTransaction = originalWithTransaction;
+        client.withTransaction = original;
       }),
   );
-
-const withQueryTimeout = <A, E, R>(
-  label: string,
-  effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E | Error, R> =>
-  effect.pipe(
-    Effect.timeoutOrElse({
-      duration: "1 second",
-      onTimeout: () => Effect.fail(new Error(`Timed out waiting for ${label}`)),
-    }),
-  );
+};
 
 const seedProjectionFixture = (sql: SqlClient.SqlClient) =>
   Effect.gen(function* () {
@@ -336,6 +330,168 @@ const seedProjectionFixture = (sql: SqlClient.SqlClient) =>
   });
 
 projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
+  it.effect("can page older work when alignment leaves an empty activity stream", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* seedProjectionFixture(sql);
+      yield* sql`UPDATE projection_thread_activities
+        SET turn_id = 'older-turn', created_at = '2026-04-01T08:00:00.000Z'`;
+      const tail = yield* query.getThreadTailDetails({
+        threadId: asThreadId("thread-1"),
+        messageLimit: 1,
+      });
+      assert.deepEqual(tail.activities, []);
+      assert.isTrue(tail.hasOlderActivities);
+      assert.isNotNull(tail.oldestLoadedActivityCursor);
+      const page = yield* query.getThreadHistoryPage({
+        threadId: asThreadId("thread-1"),
+        beforeMessageCursor: null,
+        beforeCheckpointTurnCount: null,
+        beforeCommandExecutionCursor: null,
+        activityCursor: tail.oldestLoadedActivityCursor,
+      });
+      assert.isAbove(page.activities.length, 0);
+      assert.equal(page.activities.at(-1)?.id, asEventId("activity-1"));
+    }),
+  );
+  it.effect("bounds a long single turn and pages every message without gaps", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* seedProjectionFixture(sql);
+      yield* sql`DELETE FROM projection_thread_messages`;
+      const ids = Array.from({ length: 900 }, (_, index) => String(index).padStart(4, "0"));
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        )
+        SELECT value, 'thread-1', 'turn-1', 'assistant', ${"x".repeat(8000)}, 0,
+          '2026-04-01T09:00:04.000Z', '2026-04-01T09:00:05.000Z'
+        FROM json_each(${JSON.stringify(ids)})
+      `;
+      const tail = yield* query.getThreadTailDetails({ threadId: asThreadId("thread-1") });
+      assert.isBelow(Buffer.byteLength(JSON.stringify(tail)), 1_048_576);
+      assert.isBelow(tail.messages.length, 120);
+      const loaded = tail.messages.map((message) => String(message.id));
+      let cursor = tail.oldestLoadedMessageCursor;
+      let hasOlder = tail.hasOlderMessages;
+      while (hasOlder) {
+        const page = yield* query.getThreadHistoryPage({
+          threadId: asThreadId("thread-1"),
+          beforeMessageCursor: cursor,
+          beforeCheckpointTurnCount: null,
+          activityCursor: null,
+          beforeCommandExecutionCursor: null,
+        });
+        assert.isAbove(page.messages.length, 0);
+        assert.isBelow(Buffer.byteLength(JSON.stringify(page)), 1_048_576);
+        loaded.push(...page.messages.map((message) => String(message.id)));
+        cursor = page.oldestLoadedMessageCursor;
+        hasOlder = page.hasOlderMessages;
+      }
+      assert.deepEqual(loaded.sort(), ids);
+    }),
+  );
+  it.effect(
+    "searches unloaded older messages and plans, counts occurrences and hydrates the selected plan",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const query = yield* ProjectionSnapshotQuery;
+        yield* seedProjectionFixture(sql);
+        yield* sql`UPDATE projection_thread_messages SET text='unrelated'`;
+        yield* sql`UPDATE projection_thread_proposed_plans SET plan_markdown='unrelated plan'`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at) VALUES('old-find','thread-1',NULL,'assistant','needle **Needle**',0,'2025-01-01T00:00:00Z','2025-01-01T00:00:00Z')`;
+        for (let i = 0; i < MAX_THREAD_MESSAGES + 1; i++)
+          yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at) VALUES(${`new-find-${i}`},'thread-1',NULL,'assistant','other',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`;
+        yield* sql`INSERT INTO projection_thread_proposed_plans(plan_id,thread_id,turn_id,plan_markdown,created_at,updated_at) VALUES('old-plan-find','thread-1',NULL,'# Needle\n\nneedLE','2025-02-01T00:00:00Z','2025-02-01T00:00:00Z')`;
+        const tail = yield* query.getThreadTailDetails({ threadId: asThreadId("thread-1") });
+        assert.isFalse(tail.messages.some((message) => message.id === "old-find"));
+        const first = yield* query.searchThread({
+          threadId: asThreadId("thread-1"),
+          query: "needle",
+        });
+        assert.equal(first.totalMatches, 4);
+        assert.equal(first.match?.entryId, "old-find");
+        assert.equal(first.match?.occurrence, 0);
+        const second = yield* query.searchThread({
+          threadId: asThreadId("thread-1"),
+          query: "needle",
+          index: 1,
+        });
+        assert.equal(second.match?.occurrence, 1);
+        const plan = yield* query.searchThread({
+          threadId: asThreadId("thread-1"),
+          query: "needle",
+          index: 2,
+        });
+        assert.equal(plan.match?.kind, "plan");
+        assert.equal(plan.match?.plan?.planMarkdown, "# Needle\n\nneedLE");
+        assert.equal(
+          (yield* query.searchThread({
+            threadId: asThreadId("thread-1"),
+            query: "needle",
+            index: 4,
+          })).activeIndex,
+          0,
+        );
+      }),
+  );
+  it.effect("invalidates search counts after a projection change and rejects deleted threads", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* seedProjectionFixture(sql);
+      yield* sql`UPDATE projection_thread_messages SET text='freshneedle'`;
+      const leading = Object.values(ORCHESTRATION_PROJECTOR_NAMES)[0]!;
+      yield* sql`UPDATE projection_state SET last_applied_sequence=1000 WHERE projector=${leading}`;
+      const input = { threadId: asThreadId("thread-1"), query: "freshneedle" };
+      assert.isAbove((yield* query.searchThread(input)).totalMatches, 0);
+      yield* sql`UPDATE projection_thread_messages SET text='changed'`;
+      yield* sql`UPDATE projection_state SET last_applied_sequence=last_applied_sequence+1 WHERE projector != ${leading}`;
+      assert.equal((yield* query.searchThread(input)).totalMatches, 0);
+      yield* sql`UPDATE projection_threads SET deleted_at='2026-10-19T00:00:00Z'`;
+      assert.equal((yield* query.searchThread(input).pipe(Effect.result))._tag, "Failure");
+    }),
+  );
+  it.effect(
+    "searches literal Unicode text without matching hidden link targets or interpreting SQL",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const query = yield* ProjectionSnapshotQuery;
+        yield* seedProjectionFixture(sql);
+        yield* sql`UPDATE projection_thread_messages SET text='İ ΟΣ 100%_ [visible](https://hidden-find.invalid/needle)'`;
+        yield* sql`UPDATE projection_thread_proposed_plans SET plan_markdown='other'`;
+        const input = { threadId: asThreadId("thread-1") };
+        assert.isAbove((yield* query.searchThread({ ...input, query: "σ" })).totalMatches, 0);
+        assert.isAbove((yield* query.searchThread({ ...input, query: "100%_" })).totalMatches, 0);
+        assert.equal(
+          (yield* query.searchThread({ ...input, query: "hidden-find" })).totalMatches,
+          0,
+        );
+        assert.equal(
+          (yield* query.searchThread({ ...input, query: "' OR 1=1 --" })).totalMatches,
+          0,
+        );
+      }),
+  );
+  it.effect(
+    "refuses an oversized body without silently omitting it and releases the connection",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const query = yield* ProjectionSnapshotQuery;
+        yield* seedProjectionFixture(sql);
+        yield* sql`UPDATE projection_thread_messages SET text=${"x".repeat(2 * 1024 * 1024 + 1)}`;
+        const input = { threadId: asThreadId("thread-1"), query: "oversizedneedle" };
+        assert.equal((yield* query.searchThread(input).pipe(Effect.result))._tag, "Failure");
+        yield* sql`UPDATE projection_thread_messages SET text='oversizedneedle'`;
+        yield* sql`UPDATE projection_state SET last_applied_sequence=last_applied_sequence+1`;
+        assert.isAbove((yield* query.searchThread(input)).totalMatches, 0);
+      }),
+  );
   it.effect("getStartupSnapshot omits heavyweight detail fields but preserves summary data", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
@@ -403,6 +559,82 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         },
       ]);
       assert.deepEqual(thread.activities, []);
+    }),
+  );
+
+  it.effect(
+    "leaves archived plans out of the startup snapshot and returns them with tail details",
+    () =>
+      Effect.gen(function* () {
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+        yield* seedProjectionFixture(sql);
+        yield* sql`UPDATE projection_threads SET archived_at = '2026-04-02T00:00:00.000Z' WHERE thread_id = 'thread-1'`;
+
+        const startup = yield* snapshotQuery.getStartupSnapshot();
+        const archived = startup.snapshot.threads.find((thread) => thread.id === "thread-1")!;
+        assert.deepEqual(archived.proposedPlans, []);
+        assert.strictEqual(archived.proposedPlansOmitted, true);
+        for (const thread of startup.snapshot.threads.filter(
+          (thread) => thread.archivedAt === null,
+        ))
+          assert.strictEqual(thread.proposedPlansOmitted, undefined);
+
+        const bundled = yield* snapshotQuery.getStartupSnapshot({
+          detailThreadId: asThreadId("thread-1"),
+        });
+        assert.deepEqual(
+          bundled.threadTailDetails?.proposedPlans.map((plan) => plan.id),
+          ["plan-1"],
+        );
+        const tail = yield* snapshotQuery.getThreadTailDetails({
+          threadId: asThreadId("thread-1"),
+        });
+        assert.deepEqual(
+          tail.proposedPlans.map((plan) => plan.planMarkdown),
+          ["# Lazy details"],
+        );
+        // Other snapshots still carry archived plans.
+        const bootstrap = yield* snapshotQuery.getBootstrapSnapshot();
+        const hydrated = bootstrap.threads.find((thread) => thread.id === "thread-1")!;
+        assert.strictEqual(hydrated.proposedPlans.length, 1);
+        assert.strictEqual(hydrated.proposedPlansOmitted, undefined);
+      }),
+  );
+
+  it.effect("returns every plan with tail details, beyond the live retention cap", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedProjectionFixture(sql);
+      for (let index = 0; index < 201; index++) {
+        const createdAt = new Date(Date.UTC(2025, 0, 1, 0, 0, index)).toISOString();
+        yield* sql`INSERT INTO projection_thread_proposed_plans(plan_id,thread_id,turn_id,plan_markdown,created_at,updated_at) VALUES(${`extra-plan-${index}`},'thread-1',NULL,'# Extra',${createdAt},${createdAt})`;
+      }
+      const expected = 202;
+      const tail = yield* snapshotQuery.getThreadTailDetails({ threadId: asThreadId("thread-1") });
+      assert.strictEqual(tail.proposedPlans.length, expected);
+      // The oldest plan, which an older approval may reference, is still there.
+      assert.strictEqual(tail.proposedPlans[0]?.id, "extra-plan-0");
+      const bundled = yield* snapshotQuery.getStartupSnapshot({
+        detailThreadId: asThreadId("thread-1"),
+      });
+      assert.strictEqual(bundled.threadTailDetails?.proposedPlans.length, expected);
+    }),
+  );
+
+  it.effect("preserves scheduled origin in startup summaries before thread details load", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      yield* seedProjectionFixture(sql);
+      const origin = { taskId: "scheduled-task", runId: "scheduled-run" };
+      yield* sql`UPDATE projection_threads SET scheduled_origin_json = ${JSON.stringify(origin)} WHERE thread_id = 'thread-1'`;
+      const startup = yield* snapshotQuery.getStartupSnapshot();
+      assert.deepStrictEqual(startup.snapshot.threads[0]?.scheduledOrigin, origin);
+      assert.deepStrictEqual(startup.snapshot.threads[0]?.messages, []);
+      const full = yield* snapshotQuery.getSnapshot();
+      assert.deepStrictEqual(full.threads[0]?.scheduledOrigin, origin);
     }),
   );
 
@@ -486,6 +718,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
           },
         ],
         commandExecutions: [],
+        proposedPlans: [
+          {
+            id: "plan-1",
+            turnId: asTurnId("turn-1"),
+            planMarkdown: "# Lazy details",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-04-01T09:00:05.000Z",
+            updatedAt: "2026-04-01T09:00:05.500Z",
+          },
+        ],
         tasks: [
           {
             id: "task-1",
@@ -703,8 +946,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         assert.equal(bootstrapThread.proposedPlans[0]?.id, "plan-4");
         assert.equal(bootstrapThread.activities.length, MAX_THREAD_ACTIVITIES);
         assert.equal(bootstrapThread.activities[0]?.id, asEventId("activity-5"));
-        assert.equal(tail.activities.length, MAX_THREAD_ACTIVITIES);
-        assert.equal(tail.activities[0]?.id, asEventId("activity-5"));
+        // These synthetic activities predate every message in the bounded tail.
+        assert.equal(tail.activities.length, 0);
+        assert.isNotNull(tail.oldestLoadedActivityCursor);
         assert.equal(tail.hasOlderActivities, true);
         assert.equal(bootstrapThread.checkpoints.length, MAX_THREAD_CHECKPOINTS);
         assert.equal(bootstrapThread.checkpoints[0]?.turnId, asTurnId("turn-4"));
@@ -715,39 +959,34 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
       }),
   );
 
-  it.effect(
-    "getSnapshot, getBootstrapSnapshot, and getStartupSnapshot do not depend on read transactions",
-    () =>
-      Effect.gen(function* () {
-        const snapshotQuery = yield* ProjectionSnapshotQuery;
-        const sql = yield* SqlClient.SqlClient;
+  it.effect("pins each snapshot response to one read transaction", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
 
-        yield* seedProjectionFixture(sql);
+      yield* seedProjectionFixture(sql);
 
-        const [snapshot, bootstrapSnapshot, startupResult] = yield* withoutTransactions(
-          sql,
-          Effect.all(
-            [
-              withQueryTimeout("getSnapshot", snapshotQuery.getSnapshot()),
-              withQueryTimeout("getBootstrapSnapshot", snapshotQuery.getBootstrapSnapshot()),
-              withQueryTimeout(
-                "getStartupSnapshot",
-                snapshotQuery.getStartupSnapshot({
-                  detailThreadId: asThreadId("thread-1"),
-                }),
-              ),
-            ],
-            { concurrency: 1 },
-          ),
-        );
+      const [snapshot, bootstrapSnapshot, startupResult] = yield* expectReadTransactions(
+        sql,
+        Effect.all(
+          [
+            snapshotQuery.getSnapshot(),
+            snapshotQuery.getBootstrapSnapshot(),
+            snapshotQuery.getStartupSnapshot({
+              detailThreadId: asThreadId("thread-1"),
+            }),
+          ],
+          { concurrency: 1 },
+        ),
+      );
 
-        assert.equal(snapshot.threads.length, 1);
-        assert.equal(snapshot.threads[0]?.id, asThreadId("thread-1"));
-        assert.equal(bootstrapSnapshot.threads.length, 1);
-        assert.equal(bootstrapSnapshot.threads[0]?.id, asThreadId("thread-1"));
-        assert.isNotNull(startupResult.threadTailDetails);
-        assert.equal(startupResult.threadTailDetails.threadId, asThreadId("thread-1"));
-      }),
+      assert.equal(snapshot.threads.length, 1);
+      assert.equal(snapshot.threads[0]?.id, asThreadId("thread-1"));
+      assert.equal(bootstrapSnapshot.threads.length, 1);
+      assert.equal(bootstrapSnapshot.threads[0]?.id, asThreadId("thread-1"));
+      assert.isNotNull(startupResult.threadTailDetails);
+      assert.equal(startupResult.threadTailDetails.threadId, asThreadId("thread-1"));
+    }),
   );
 
   it.effect("getThreadTailDetails and getThreadHistoryPage page thread history from the tail", () =>
@@ -1038,7 +1277,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
     }),
   );
 
-  it.effect("thread detail reads do not depend on read transactions", () =>
+  it.effect("pins each tail, history and full detail response to one read transaction", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
@@ -1101,35 +1340,26 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         )
       `;
 
-      const [tail, page, details] = yield* withoutTransactions(
+      const [tail, page, details] = yield* expectReadTransactions(
         sql,
         Effect.gen(function* () {
-          const tail = yield* withQueryTimeout(
-            "getThreadTailDetails",
-            snapshotQuery.getThreadTailDetails({
-              threadId: asThreadId("thread-1"),
-              messageLimit: 1,
-              checkpointLimit: 1,
-            }),
-          );
-          const page = yield* withQueryTimeout(
-            "getThreadHistoryPage",
-            snapshotQuery.getThreadHistoryPage({
-              threadId: asThreadId("thread-1"),
-              beforeMessageCursor: tail.oldestLoadedMessageCursor,
-              beforeCheckpointTurnCount: tail.oldestLoadedCheckpointTurnCount,
-              activityCursor: null,
-              beforeCommandExecutionCursor: null,
-              messageLimit: 1,
-              checkpointLimit: 1,
-            }),
-          );
-          const details = yield* withQueryTimeout(
-            "getThreadDetails",
-            snapshotQuery.getThreadDetails({
-              threadId: asThreadId("thread-1"),
-            }),
-          );
+          const tail = yield* snapshotQuery.getThreadTailDetails({
+            threadId: asThreadId("thread-1"),
+            messageLimit: 1,
+            checkpointLimit: 1,
+          });
+          const page = yield* snapshotQuery.getThreadHistoryPage({
+            threadId: asThreadId("thread-1"),
+            beforeMessageCursor: tail.oldestLoadedMessageCursor,
+            beforeCheckpointTurnCount: tail.oldestLoadedCheckpointTurnCount,
+            activityCursor: null,
+            beforeCommandExecutionCursor: null,
+            messageLimit: 1,
+            checkpointLimit: 1,
+          });
+          const details = yield* snapshotQuery.getThreadDetails({
+            threadId: asThreadId("thread-1"),
+          });
 
           return [tail, page, details] as const;
         }),

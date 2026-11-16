@@ -1,3 +1,4 @@
+import type { WorkerAdmissionError } from "@t3tools/shared/DrainableWorker";
 /**
  * ProviderRuntimeIngestionService - Provider runtime ingestion service interface.
  *
@@ -28,7 +29,7 @@ export interface ProviderRuntimeIngestionShape {
    * Resolves when the internal processing queue is empty and idle.
    * Intended for test use to replace timing-sensitive sleeps.
    */
-  readonly drain: Effect.Effect<void>;
+  readonly drain: Effect.Effect<void, WorkerAdmissionError>;
 }
 
 /**

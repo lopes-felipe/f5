@@ -3,8 +3,10 @@ import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { CLAUDE_SDK_MESSAGE_DISPOSITIONS } from "@t3tools/shared/claudeSdkManifest";
+import { PROVIDER_INTEGRATION_RECORDS } from "@t3tools/shared/providerIntegrationCertification";
 import {
   deprecatedClaudeSdkReferences,
+  uncoveredClaudeChromeTarget,
   extractClaudeSdkMessageSurface,
   handledClaudeMessageCases,
   unclassifiedClaudeMessages,
@@ -60,5 +62,29 @@ describe("Claude SDK drift guardrail", () => {
         : ts.createSourceFile(file, files[file]!, languageVersion, true);
     const program = ts.createProgram([client, declarations], { noLib: true }, host);
     expect(deprecatedClaudeSdkReferences(program)).toEqual([`${client}:1 setMaxThinkingTokens`]);
+  });
+
+  it("requires a non-withdrawn Claude in Chrome floor at or below the SDK pin", () => {
+    const record = (sdkMin: string, arch = "arm64", withdrawn?: string) => ({
+      platform: "darwin",
+      arch,
+      versions: { sdkMin },
+      ...(withdrawn ? { withdrawn } : {}),
+    });
+    // An older floor keeps covering a bumped pin.
+    expect(uncoveredClaudeChromeTarget([record("0.3.295")], "0.3.317")).toEqual([]);
+    expect(uncoveredClaudeChromeTarget([record("0.3.330")], "0.3.317")).toEqual(["darwin-arm64"]);
+    expect(
+      uncoveredClaudeChromeTarget(
+        [record("0.3.295", "arm64", "Withdrawn"), record("0.3.295", "x64")],
+        "0.3.317",
+      ),
+    ).toEqual(["darwin-arm64"]);
+    const pin = JSON.parse(
+      readFileSync(path.join(import.meta.dirname, "../apps/server/package.json"), "utf8"),
+    ).dependencies["@anthropic-ai/claude-agent-sdk"];
+    expect(uncoveredClaudeChromeTarget(PROVIDER_INTEGRATION_RECORDS["claude-chrome"], pin)).toEqual(
+      [],
+    );
   });
 });

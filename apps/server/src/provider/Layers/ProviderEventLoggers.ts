@@ -1,3 +1,4 @@
+import { registerShutdown } from "../../shutdown.ts";
 /**
  * ProviderEventLoggers — single observability service that owns the two
  * shared NDJSON streams the provider runtime writes:
@@ -75,6 +76,18 @@ export const ProviderEventLoggersLive = Layer.effect(
     const canonical = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "canonical",
     });
+    yield* registerShutdown("provider-logs", "logs", () =>
+      Effect.all([native?.close() ?? Effect.void, canonical?.close() ?? Effect.void], {
+        concurrency: "unbounded",
+        discard: true,
+      }),
+    );
+    yield* Effect.addFinalizer(() =>
+      Effect.all([native?.close() ?? Effect.void, canonical?.close() ?? Effect.void], {
+        concurrency: "unbounded",
+        discard: true,
+      }),
+    );
     return {
       native,
       canonical,

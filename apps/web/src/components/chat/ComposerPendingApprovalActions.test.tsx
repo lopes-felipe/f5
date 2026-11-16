@@ -36,3 +36,49 @@ it("offers no approval when a persisted MCP request has no option metadata", () 
   expect(markup).toContain("Decline");
   expect(markup).not.toContain("Approve");
 });
+
+it.each(["file-read", "file-change", "permission"] as const)(
+  "keeps permission choices and destructive Decline styling for %s cards",
+  (requestKind) => {
+    const markup = renderToStaticMarkup(
+      <ComposerPendingApprovalActions
+        requestId={ApprovalRequestId.make("permission")}
+        requestKind={requestKind}
+        requestedPermissions={
+          requestKind === "permission"
+            ? { network: true }
+            : {
+                fileSystem: {
+                  entries: [
+                    {
+                      access: requestKind === "file-read" ? "read" : "write",
+                      path: { type: "glob_pattern", pattern: "/w/out/**" },
+                    },
+                  ],
+                },
+              }
+        }
+        canApprove
+        isResponding={false}
+        onRespondToApproval={async () => {}}
+      />,
+    );
+    expect(markup).not.toContain("Cancel turn");
+    expect(markup).toContain("Always allow this session");
+    expect(markup).toContain("Approve once");
+    expect(markup).toMatch(/<button[^>]*text-destructive-foreground[^>]*>Decline<\/button>/);
+  },
+);
+
+it("keeps Cancel turn for file approvals without permission profiles", () => {
+  const markup = renderToStaticMarkup(
+    <ComposerPendingApprovalActions
+      requestId={ApprovalRequestId.make("file")}
+      requestKind="file-change"
+      canApprove
+      isResponding={false}
+      onRespondToApproval={async () => {}}
+    />,
+  );
+  expect(markup).toContain("Cancel turn");
+});

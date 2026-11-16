@@ -1,3 +1,5 @@
+import { isAdmittedDeliveryQueueItem } from "@t3tools/contracts";
+import { WorkspaceTransitionSummary } from "./WorkspaceTransitionBanner";
 import type {
   CommandId,
   CompactRuntimeConfiguredActivityPayload,
@@ -26,6 +28,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useStore } from "~/store";
+import { selectThreadById } from "~/threadSelectors";
+import { useShallow } from "zustand/react/shallow";
 import { readNativeApi } from "~/nativeApi";
 import { rewriteComposerRuntimeSkillInvocationForSend } from "../ChatView.logic";
 import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "~/nextTurnQueueStore";
@@ -38,6 +42,7 @@ import {
   isFoldedUsageLimitItem,
   mergeVisibleOrder,
   moveItemInOrder,
+  rebuildEditedText,
 } from "./NextTurnQueuePanel.logic";
 import { NextTurnQueueRow } from "./NextTurnQueueRow";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./composer/ComposerTray";
@@ -46,51 +51,14 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Failed to update the queued turn.";
 }
 
-function rebuildEditedText(item: NextTurnQueueItem, visibleText: string): string {
-  const current = item.command.message.text;
-  const displayed = item.command.message.text.trim().length > 0 ? current : "";
-  const existingVisible =
-    displayed.length > 0
-      ? current.slice(0, current.length - (current.length - current.trimEnd().length))
-      : "";
-  const terminalMarker = current.search(/\n*<terminal_context>|\n*<attached_files>/u);
-  if (terminalMarker >= 0) return `${visibleText.trim()}${current.slice(terminalMarker)}`;
-  return existingVisible === current ? visibleText.trim() : `${visibleText.trim()}\n`;
-}
-
-export function NextTurnQueuePanel({
-  threadId,
-  provider,
-  runtimeSlashCommands,
-  projectSkills,
-  turnSteering = false,
-  variant = "standalone",
-  foldedItemId = null,
-}: {
-  readonly variant?: ComposerPanelVariant;
-  readonly threadId: ThreadId;
-  /** The pending continue the usage-limit card shows instead of this list. */
-  readonly foldedItemId?: CommandId | null;
-  readonly turnSteering?: boolean | undefined;
-  readonly provider?: ProviderKind | null;
-  readonly runtimeSlashCommands?: CompactRuntimeConfiguredActivityPayload["slashCommands"] | null;
-  readonly projectSkills?: ReadonlyArray<ProjectSkill> | null | undefined;
-}) {
+/**
+ * Lists the thread's queue on every (re)connect while `auto` is set; pushed
+ * updates keep it current in between. Returns the loader for manual retries.
+ */
+function useNextTurnQueueHydration(threadId: ThreadId, auto: boolean): () => Promise<void> {
   const connection = useWsConnectionState();
-  const thread = useStore((store) => store.threads.find((entry) => entry.id === threadId));
-  const state = useNextTurnQueueStore(
-    (store) => store.byThreadId[threadId] ?? EMPTY_QUEUE_THREAD_STATE,
-  );
   const applySnapshot = useNextTurnQueueStore((store) => store.applySnapshot);
   const setHydrationError = useNextTurnQueueStore((store) => store.setHydrationError);
-  const setPendingOrder = useNextTurnQueueStore((store) => store.setPendingOrder);
-  const setItemBusy = useNextTurnQueueStore((store) => store.setItemBusy);
-  const [collapsed, setCollapsed] = useState(false);
-  const [announcement, setAnnouncement] = useState("");
-  const previousSnapshotRef = useRef(state.snapshot);
-  const watchdogRef = useRef<number | null>(null);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-
   const load = useCallback(async () => {
     const api = readNativeApi();
     if (!api?.nextTurnQueue) return;
@@ -102,18 +70,98 @@ export function NextTurnQueuePanel({
   }, [applySnapshot, setHydrationError, threadId]);
 
   useEffect(() => {
-    if (connection.phase === "connected") void load();
-  }, [connection.connectedAt, connection.phase, load]);
+    if (auto && connection.phase === "connected") void load();
+  }, [auto, connection.connectedAt, connection.phase, load]);
+  return load;
+}
+
+/** The polite announcement for the latest queue change, such as a turn sent or a pause. */
+function useQueueAnnouncement(threadId: ThreadId, enabled: boolean): string {
+  const snapshot = useNextTurnQueueStore((store) => store.byThreadId[threadId]?.snapshot ?? null);
+  const [announcement, setAnnouncement] = useState("");
+  const previousSnapshotRef = useRef(snapshot);
 
   useEffect(() => {
-    const snapshot = state.snapshot;
-    if (!snapshot) return;
+    if (!enabled || !snapshot) return;
     const next = deriveQueueAnnouncement(previousSnapshotRef.current, snapshot);
     previousSnapshotRef.current = snapshot;
     if (!next) return;
     const timeout = window.setTimeout(() => setAnnouncement(next), 400);
     return () => window.clearTimeout(timeout);
-  }, [state.snapshot]);
+  }, [enabled, snapshot]);
+  return announcement;
+}
+
+function QueueAnnouncer({ announcement }: { readonly announcement: string }) {
+  return (
+    <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      {announcement}
+    </span>
+  );
+}
+
+/**
+ * Keeps a thread's queue loaded and announced while its panel may be
+ * unmounted, as it is inside a closed status-chip popover. Panels rendered
+ * alongside it pass `synced`.
+ */
+export function NextTurnQueueSync({ threadId }: { readonly threadId: ThreadId }) {
+  useNextTurnQueueHydration(threadId, true);
+  // Anchored here too, so the live region cannot escape to the timeline scroller.
+  return (
+    <div className="relative">
+      <QueueAnnouncer announcement={useQueueAnnouncement(threadId, true)} />
+    </div>
+  );
+}
+
+export function NextTurnQueuePanel({
+  threadId,
+  provider,
+  runtimeSlashCommands,
+  projectSkills,
+  turnSteering = false,
+  variant = "standalone",
+  foldedItemId = null,
+  synced = false,
+}: {
+  readonly variant?: ComposerPanelVariant;
+  /** A mounted `NextTurnQueueSync` already loads and announces this queue. */
+  readonly synced?: boolean;
+  readonly threadId: ThreadId;
+  /** The pending continue the usage-limit card shows instead of this list. */
+  readonly foldedItemId?: CommandId | null;
+  readonly turnSteering?: boolean | undefined;
+  readonly provider?: ProviderKind | null;
+  readonly runtimeSlashCommands?: CompactRuntimeConfiguredActivityPayload["slashCommands"] | null;
+  readonly projectSkills?: ReadonlyArray<ProjectSkill> | null | undefined;
+}) {
+  // Steering eligibility only; message deltas leave these fields unchanged.
+  const thread = useStore(
+    useShallow((store) => {
+      const entry = selectThreadById(store, threadId);
+      return entry
+        ? {
+            activeTurnId: entry.session?.activeTurnId ?? null,
+            sessionGeneration: entry.session?.capabilities?.generation ?? null,
+            interactionMode: entry.interactionMode,
+            runtimeMode: entry.runtimeMode,
+            hasWorktree: entry.worktreePath != null,
+          }
+        : undefined;
+    }),
+  );
+  const state = useNextTurnQueueStore(
+    (store) => store.byThreadId[threadId] ?? EMPTY_QUEUE_THREAD_STATE,
+  );
+  const applySnapshot = useNextTurnQueueStore((store) => store.applySnapshot);
+  const setPendingOrder = useNextTurnQueueStore((store) => store.setPendingOrder);
+  const setItemBusy = useNextTurnQueueStore((store) => store.setItemBusy);
+  const [collapsed, setCollapsed] = useState(false);
+  const announcement = useQueueAnnouncement(threadId, !synced);
+  const watchdogRef = useRef<number | null>(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const load = useNextTurnQueueHydration(threadId, !synced);
 
   useEffect(() => {
     if (state.snapshot?.paused || state.snapshot?.blockedKind === "error") setCollapsed(false);
@@ -121,9 +169,14 @@ export function NextTurnQueuePanel({
 
   useEffect(
     () => () => {
-      if (watchdogRef.current !== null) window.clearTimeout(watchdogRef.current);
+      if (watchdogRef.current === null) return;
+      window.clearTimeout(watchdogRef.current);
+      watchdogRef.current = null;
+      // The watchdog was the only thing left to drop an order the server has
+      // not matched; a stale one would hide items that arrive later.
+      setPendingOrder(threadId, null);
     },
-    [],
+    [setPendingOrder, threadId],
   );
 
   const runItemMutation = useCallback(
@@ -157,6 +210,14 @@ export function NextTurnQueuePanel({
       ),
     [foldedItemId, snapshot?.items],
   );
+  const clearKeepIds = new Set([
+    ...hiddenIds,
+    ...(snapshot?.items.filter(isAdmittedDeliveryQueueItem).map((item) => item.itemId) ?? []),
+  ]);
+  const handleMutationError = (error: unknown) => {
+    toastManager.add({ type: "error", title: errorMessage(error) });
+    void load();
+  };
   const visibleOrder = order.filter((itemId) => !hiddenIds.has(itemId));
   const orderedItems = visibleOrder.flatMap((itemId) => {
     const item = itemsById.get(itemId);
@@ -170,6 +231,7 @@ export function NextTurnQueuePanel({
       setPendingOrder(threadId, orderedItemIds);
       if (watchdogRef.current !== null) window.clearTimeout(watchdogRef.current);
       watchdogRef.current = window.setTimeout(() => {
+        watchdogRef.current = null;
         setPendingOrder(threadId, null);
         void load();
       }, 5_000);
@@ -225,10 +287,19 @@ export function NextTurnQueuePanel({
   }
   if (!snapshot) return null;
   const itemCount = snapshot.items.length - hiddenIds.size + state.optimistic.length;
-  if (itemCount === 0 && !snapshot.paused && !state.syncError && snapshot.quarantinedCount === 0) {
+  if (
+    itemCount === 0 &&
+    !snapshot.paused &&
+    !state.syncError &&
+    snapshot.quarantinedCount === 0 &&
+    (!snapshot.workspaceTransition ||
+      ["completed", "cancelled"].includes(snapshot.workspaceTransition.phase))
+  ) {
     return null;
   }
-  const blockedDescription = describeQueueBlockedState(snapshot);
+  const blockedDescription = describeQueueBlockedState(snapshot, {
+    workspaceBannerShown: thread?.hasWorktree ?? false,
+  });
   // Gate on the delivery the server can still act on, not on the pause reason:
   // a superseded delivery can leave a stale reason with nothing to recover.
   const unresolvedDelivery = snapshot.unresolvedDelivery ?? null;
@@ -269,16 +340,16 @@ export function NextTurnQueuePanel({
     <section
       id="next-turn-queue-panel"
       tabIndex={-1}
+      // Relative anchors the sr-only live region; unanchored, it escapes to the timeline
+      // scroller and scrolls the chat column.
       className={
         variant === "tray"
-          ? `${COMPOSER_TRAY_PANEL_CLASS_NAME} outline-none`
-          : "mx-auto mb-2 w-full max-w-(--chat-content-max-width) rounded-xl border border-border bg-card px-2.5 py-2 shadow-sm"
+          ? `${COMPOSER_TRAY_PANEL_CLASS_NAME} relative outline-none`
+          : "relative mx-auto mb-2 w-full max-w-(--chat-content-max-width) rounded-xl border border-border bg-card px-2.5 py-2 shadow-sm"
       }
       aria-label="Queued turns"
     >
-      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-        {announcement}
-      </span>
+      {synced ? null : <QueueAnnouncer announcement={announcement} />}
       <span id="next-turn-queue-reorder-help" className="sr-only">
         Press Alt+Up or Alt+Down to reorder this queued turn.
       </span>
@@ -316,7 +387,7 @@ export function NextTurnQueuePanel({
           >
             {snapshot.paused ? <PlayIcon /> : <PauseIcon />}
           </Button>
-          {snapshot.items.length > hiddenIds.size ? (
+          {snapshot.items.length > clearKeepIds.size ? (
             <Button
               type="button"
               variant="ghost"
@@ -329,8 +400,8 @@ export function NextTurnQueuePanel({
                     threadId,
                     scope: "all",
                     expectedRevision: snapshot.revision,
-                    // The card owns a folded continue; Clear only removes the listed turns.
-                    ...(hiddenIds.size > 0 ? { keepItemIds: [...hiddenIds] } : {}),
+                    // Folded continuations and admitted deliveries have their own recovery actions.
+                    ...(clearKeepIds.size > 0 ? { keepItemIds: [...clearKeepIds] } : {}),
                   })
                   .then((result) => {
                     applySnapshot(result.snapshot);
@@ -350,12 +421,14 @@ export function NextTurnQueuePanel({
                                 itemIds: result.removed.map((item) => item.itemId),
                                 expectedRevision: current.revision,
                               })
-                              .then((restored) => applySnapshot(restored.snapshot));
+                              .then((restored) => applySnapshot(restored.snapshot))
+                              .catch(handleMutationError);
                           },
                         },
                       });
                     }
-                  });
+                  })
+                  .catch(handleMutationError);
               }}
             >
               Clear
@@ -368,7 +441,7 @@ export function NextTurnQueuePanel({
             aria-label={collapsed ? "Expand queue" : "Collapse queue"}
             onClick={() => setCollapsed((value) => !value)}
           >
-            {collapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}
+            {collapsed ? <ChevronUpIcon /> : <ChevronDownIcon />}
           </Button>
         </div>
       </div>
@@ -383,19 +456,9 @@ export function NextTurnQueuePanel({
           className={`mt-1 rounded px-2 py-1 text-xs ${snapshot.blockedKind === "waiting" ? "text-muted-foreground" : "bg-warning/10 text-warning-foreground"}`}
         >
           {blockedDescription}
-          {snapshot.reasonCode === "worktree_missing" ? (
-            <Button
-              type="button"
-              variant="link"
-              size="xs"
-              onClick={() => {
-                const api = readNativeApi();
-                if (api) void api.nextTurnQueue.refreshGate({ threadId }).then(applySnapshot);
-              }}
-            >
-              Refresh
-            </Button>
-          ) : null}
+          {snapshot.workspaceTransition && (
+            <WorkspaceTransitionSummary transition={snapshot.workspaceTransition} />
+          )}
           {hasDeliveryFailure || hasDeliveryPause ? (
             <span className="ml-1 inline-flex gap-1">
               <Button
@@ -503,7 +566,8 @@ export function NextTurnQueuePanel({
                                 itemIds: [candidate.itemId],
                                 expectedRevision: current.revision,
                               })
-                              .then((restored) => applySnapshot(restored.snapshot));
+                              .then((restored) => applySnapshot(restored.snapshot))
+                              .catch(handleMutationError);
                           },
                         },
                       });
@@ -543,7 +607,7 @@ export function NextTurnQueuePanel({
                   canSteer={
                     turnSteering &&
                     Boolean(
-                      thread?.session?.activeTurnId &&
+                      thread?.activeTurnId &&
                       thread.interactionMode === item.command.interactionMode &&
                       thread.runtimeMode === item.command.runtimeMode,
                     )
@@ -556,18 +620,14 @@ export function NextTurnQueuePanel({
                         await api.nextTurnQueue.steer({
                           itemId: candidate.itemId,
                           expectedRevision: snapshot.revision,
-                          ...(thread?.session?.capabilities
-                            ? {
-                                expectedSessionGeneration: thread.session.capabilities.generation,
-                              }
+                          ...(thread?.sessionGeneration != null
+                            ? { expectedSessionGeneration: thread.sessionGeneration }
                             : {}),
                         }),
                       );
                     })
                   }
-                  canRunNow={
-                    !thread?.session?.activeTurnId && snapshot.reasonCode !== "active_turn"
-                  }
+                  canRunNow={!thread?.activeTurnId && snapshot.reasonCode !== "active_turn"}
                   onRunNow={async (candidate) =>
                     runItemMutation(candidate, async () => {
                       const api = readNativeApi();

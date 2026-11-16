@@ -1,0 +1,143 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-claude-session-actions",
+  "state": "failed",
+  "recordedAt": "2026-10-13T19:53:45.924Z",
+  "repositoryCommit": "a5dadb91dd2544f9c8110d95a3b4496bcd4d75b5",
+  "workingTreeDirty": false,
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "provider": "claude",
+  "runtimeMode": "approval-required",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "c63d9d93b292e61888db6417c531527303c47e9137f585c56ccded97e8ded08a",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "ce2425134f552658b22e8fe32e4e821e745e8fad333ca37d7ded86e262f80186",
+    "observerSource": "b2d3de0eee3ff80fcc32563f64810f37ef5753a6eb8f4f41a5dbfd684813b178",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "26dea6aed6480fa4e3c93b2f51fc8ecf4216f7d78d69b070c42ddfc4d4cb26fc",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "d82ceb8de727ec5091054a3c7113d21d006e7ed622cb2b3c3b5ce3f0fd2b1dcb",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140",
+    "claudeLaunchSource": "aadef868ab32b858a0078ae619922dd69fd4b1f9cde03640f119e28bfb7559df"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "sessionActionsInitiallyEmpty": true,
+    "sessionActionsTrustedAppConsent": true,
+    "sessionActionsAppConsentNoInput": true,
+    "sessionActionsTrustedDenial": true,
+    "sessionActionsDeniedWithoutInput": true,
+    "sessionActionsTrustedApproval": true,
+    "sessionActionsApprovedActivation": false,
+    "sessionActionsProviderTailObserved": true,
+    "sessionActionsOnlyExpectedDenial": false,
+    "sessionActionsCleanup": true,
+    "sessionActionsReceiptsComplete": false
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "providerErrorCodes": [],
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": false,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "activityMessages": 0,
+    "activityThumbnails": 0,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "pendingResponses": 0,
+    "accessRequests": 3,
+    "accessAnswersForwarded": 3,
+    "accessAnswerSummaries": [
+      {
+        "kind": "apps",
+        "appCount": 1,
+        "allowed": 1,
+        "remembered": 0
+      },
+      {
+        "kind": "session-actions",
+        "appCount": 0,
+        "allowed": 0,
+        "remembered": 0,
+        "allowSessionActions": false
+      },
+      {
+        "kind": "session-actions",
+        "appCount": 0,
+        "allowed": 0,
+        "remembered": 0,
+        "allowSessionActions": true
+      }
+    ],
+    "sessionGenerationsObserved": 2,
+    "grantChanges": 7,
+    "lastGrantCount": 0,
+    "operations": [
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "resolveApps",
+        "outcome": "ok"
+      }
+    ]
+  },
+  "consentObservation": {
+    "requested": true,
+    "trustedClick": true,
+    "settled": true,
+    "allowed": true,
+    "fixtureGranted": false,
+    "cardHasError": false,
+    "dialogPresentInDom": true
+  },
+  "sessionActionsFailures": [
+    {
+      "op": "activateApp",
+      "outcome": "NotGranted"
+    },
+    {
+      "op": "activateApp",
+      "outcome": "NotGranted"
+    }
+  ],
+  "failureStage": "session-actions-approval",
+  "failureCode": "incomplete-receipt",
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Genuine app consent and session denial/approval were observed, but approved activation returned NotGranted after a provider-session replacement",
+    "No lease, capture or input occurred; cleanup was confirmed",
+    "The replacement cause is not established by this receipt; no credit for approved activation or next-turn delivery"
+  ]
+}

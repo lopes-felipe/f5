@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { RuntimeUsageLimit } from "./usageLimit";
 import { Schema } from "effect";
 import {
@@ -19,7 +20,11 @@ import {
   ProviderApprovalPresentation,
 } from "./orchestration";
 import { ProviderInstanceId } from "./providerInstance";
-import { TOOL_LIFECYCLE_ITEM_TYPES, ToolCompletionEnvelope } from "./toolLifecycle";
+import {
+  ComputerStepSummary,
+  TOOL_LIFECYCLE_ITEM_TYPES,
+  ToolCompletionEnvelope,
+} from "./toolLifecycle";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -35,6 +40,7 @@ const RuntimeEventRawSource = Schema.Literals([
   "acp.cursor.extension",
   "acp.grok.extension",
   "opencode.sdk.event",
+  "msp.jsonrpc",
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
 
@@ -165,6 +171,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "turn.started",
   "turn.completed",
   "turn.aborted",
+  "turn.reasoning-tokens.reported",
   "turn.plan.updated",
   "turn.proposed.delta",
   "turn.proposed.completed",
@@ -220,6 +227,7 @@ const ThreadRealtimeClosedType = Schema.Literal("thread.realtime.closed");
 const TurnStartedType = Schema.Literal("turn.started");
 const TurnCompletedType = Schema.Literal("turn.completed");
 const TurnAbortedType = Schema.Literal("turn.aborted");
+const TurnReasoningTokensReportedType = Schema.Literal("turn.reasoning-tokens.reported");
 const TurnPlanUpdatedType = Schema.Literal("turn.plan.updated");
 const TurnProposedDeltaType = Schema.Literal("turn.proposed.delta");
 const TurnProposedCompletedType = Schema.Literal("turn.proposed.completed");
@@ -256,6 +264,7 @@ const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 
 const ProviderRuntimeEventBase = Schema.Struct({
+  sessionGeneration: Schema.optional(NonNegativeInt),
   eventId: EventId,
   provider: ProviderKind,
   providerInstanceId: Schema.optional(ProviderInstanceId),
@@ -324,6 +333,16 @@ const ThreadThinkingTokensUpdatedPayload = Schema.Struct({
   estimatedTokensDelta: Schema.optional(Schema.Int),
 });
 export type ThreadThinkingTokensUpdatedPayload = typeof ThreadThinkingTokensUpdatedPayload.Type;
+
+/**
+ * Reasoning tokens spent since the previous report in the same turn. Codex
+ * reports billed `reasoningOutputTokens`; Claude only has SDK estimates.
+ */
+const TurnReasoningTokensReportedPayload = Schema.Struct({
+  tokens: NonNegativeInt,
+  estimated: Schema.Boolean,
+});
+export type TurnReasoningTokensReportedPayload = typeof TurnReasoningTokensReportedPayload.Type;
 
 const CompactionRecommendedPayload = Schema.Struct({
   estimatedTokens: NonNegativeInt,
@@ -407,12 +426,27 @@ const TurnDiffUpdatedPayload = Schema.Struct({
 export type TurnDiffUpdatedPayload = typeof TurnDiffUpdatedPayload.Type;
 
 export const ItemLifecyclePayload = Schema.Struct({
+  /** Assigned by F5 at authenticated event admission, never inferred from a server name. */
+  computerTool: Schema.optional(Schema.Boolean),
+  /** Assigned with computerTool from the raw call; see sanitizeComputerStep. */
+  computerStep: Schema.optional(ComputerStepSummary),
   itemType: CanonicalItemType,
   status: Schema.optional(RuntimeItemStatus),
   title: Schema.optional(TrimmedNonEmptyStringSchema),
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   requestKind: Schema.optional(ProviderRequestKind),
   data: Schema.optional(Schema.Unknown),
+  /** Computer screenshots stored before queue admission; never inline image bytes. */
+  mcpImages: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        attachmentId: TrimmedNonEmptyStringSchema,
+        mimeType: Schema.String,
+        sizeBytes: NonNegativeInt,
+      }),
+    ),
+  ),
+  mcpImagesOmitted: Schema.optional(NonNegativeInt),
   /** Only on `item.completed`; never on starts, updates or deltas. */
   completion: Schema.optional(ToolCompletionEnvelope),
 });
@@ -467,8 +501,12 @@ const UserInputResolvedPayload = Schema.Struct({
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
 const TaskStartedPayload = Schema.Struct({
+  nativeParentSessionId: Schema.optional(
+    TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(128)),
+  ),
   runId: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
+  effort: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(64)))),
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -478,6 +516,7 @@ export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 const TaskProgressPayload = Schema.Struct({
   runId: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
+  effort: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(64)))),
   taskId: RuntimeTaskId,
   description: TrimmedNonEmptyStringSchema,
   usage: Schema.optional(Schema.Unknown),
@@ -578,6 +617,7 @@ export type SubagentActivityKind = typeof SubagentActivityKind.Type;
 
 const SubagentActivityPayload = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyStringSchema),
+  reasoningEffort: Schema.optional(TrimmedNonEmptyStringSchema),
   kind: SubagentActivityKind,
   agentThreadId: TrimmedNonEmptyStringSchema,
   agentPath: TrimmedNonEmptyStringSchema,
@@ -615,12 +655,21 @@ const AccountRateLimitsUpdatedPayload = Schema.Struct({
 });
 export type AccountRateLimitsUpdatedPayload = typeof AccountRateLimitsUpdatedPayload.Type;
 
-const McpServerStartupStatus = Schema.Literals(["starting", "ready", "failed", "cancelled"]);
+const McpServerStartupStatus = Schema.Literals([
+  "starting",
+  "ready",
+  "failed",
+  "cancelled",
+  "needs-auth",
+]);
 export type McpServerStartupStatus = typeof McpServerStartupStatus.Type;
 
 const McpServerStatus = Schema.Struct({
   name: Schema.optional(TrimmedNonEmptyStringSchema),
   status: McpServerStartupStatus,
+  toolCount: Schema.optional(NonNegativeInt),
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+  sessionGeneration: Schema.optional(NonNegativeInt),
   error: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type McpServerStatus = typeof McpServerStatus.Type;
@@ -648,7 +697,7 @@ export type ModelReroutedPayload = typeof ModelReroutedPayload.Type;
 const ConfigWarningPayload = Schema.Struct({
   summary: TrimmedNonEmptyStringSchema,
   details: Schema.optional(TrimmedNonEmptyStringSchema),
-  path: Schema.optional(TrimmedNonEmptyStringSchema),
+  path: Schema.optional(FilesystemPath),
   range: Schema.optional(Schema.Unknown),
 });
 export type ConfigWarningPayload = typeof ConfigWarningPayload.Type;
@@ -688,6 +737,7 @@ const RuntimeWarningPayload = Schema.Struct({
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
 
 const RuntimeErrorPayload = Schema.Struct({
+  historyReconciliationRequired: Schema.optional(Schema.Boolean),
   usageLimit: Schema.optional(RuntimeUsageLimit),
   message: TrimmedNonEmptyStringSchema,
   class: Schema.optional(RuntimeErrorClass),
@@ -832,6 +882,14 @@ const ProviderRuntimeTurnAbortedEvent = Schema.Struct({
   payload: TurnAbortedPayload,
 });
 export type ProviderRuntimeTurnAbortedEvent = typeof ProviderRuntimeTurnAbortedEvent.Type;
+
+const ProviderRuntimeTurnReasoningTokensReportedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TurnReasoningTokensReportedType,
+  payload: TurnReasoningTokensReportedPayload,
+});
+export type ProviderRuntimeTurnReasoningTokensReportedEvent =
+  typeof ProviderRuntimeTurnReasoningTokensReportedEvent.Type;
 
 const ProviderRuntimeTurnPlanUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
@@ -1099,6 +1157,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTurnStartedEvent,
   ProviderRuntimeTurnCompletedEvent,
   ProviderRuntimeTurnAbortedEvent,
+  ProviderRuntimeTurnReasoningTokensReportedEvent,
   ProviderRuntimeTurnPlanUpdatedEvent,
   ProviderRuntimeTurnProposedDeltaEvent,
   ProviderRuntimeTurnProposedCompletedEvent,

@@ -4,6 +4,7 @@ import {
   SOURCE_CONTROL_PULL_REQUEST_ACTIONS,
   type ForgeAction,
   type ForgeCapabilities,
+  type PrHubCheck,
   type SourceControlPullRequestAction,
   type SourceControlPullRequestRef,
 } from "@t3tools/contracts";
@@ -11,6 +12,8 @@ import { quoteGitPatchPath, unquoteGitPatchPath } from "@t3tools/shared/gitPatch
 import { parseSourceControlPullRequestUrl } from "@t3tools/shared/sourceControl";
 import type { PrReviewPosition } from "@t3tools/shared/prReview";
 import { forgeRequestBudget, updateForgeRequestBudget } from "./forgeRequestBudget.ts";
+import { gitLabHeadPipelineChecks, gitLabTriggerJobChecks } from "./gitLabPipelineChecks.ts";
+import { markRequiredForgejoChecks } from "./forgejoRequiredChecks.ts";
 import {
   SourceControlProviderError,
   type SourceControlProvider,
@@ -18,117 +21,8 @@ import {
 } from "./SourceControlProvider.ts";
 
 export type ForgeKind = "gitlab" | "bitbucket" | "azure-devops" | "forgejo";
-const COMMON = {
-  diff: true,
-  labels: false,
-  viewedFiles: "f5",
-  stacks: false,
-  stackActions: false,
-  edit: { changeRequest: true, comment: true },
-  reviewers: { request: true, listCandidates: true },
-} as const;
-export const FORGE_CAPABILITIES: Readonly<Record<ForgeKind, ForgeCapabilities>> = {
-  gitlab: {
-    ...COMMON,
-    comment: true,
-    actions: [
-      "merge",
-      "ready",
-      "draft",
-      "close",
-      "reopen",
-      "update-branch",
-      "enable-auto-merge",
-      "disable-auto-merge",
-    ],
-    mergeMethods: ["merge", "squash", "rebase"],
-    updateMethods: ["rebase"],
-    search: true,
-    reactions: true,
-    review: { inlineComment: true, reply: true, resolve: true, verdicts: ["comment", "approve"] },
-  },
-  bitbucket: {
-    ...COMMON,
-    comment: true,
-    actions: ["close"],
-    mergeMethods: [],
-    updateMethods: [],
-    search: true,
-    reactions: false,
-    review: {
-      inlineComment: true,
-      reply: true,
-      resolve: true,
-      verdicts: ["comment", "approve", "request-changes"],
-    },
-  },
-  "azure-devops": {
-    ...COMMON,
-    comment: false,
-    actions: [
-      "merge",
-      "ready",
-      "draft",
-      "close",
-      "reopen",
-      "enable-auto-merge",
-      "disable-auto-merge",
-    ],
-    mergeMethods: ["merge", "squash"],
-    updateMethods: [],
-    search: false,
-    reactions: false,
-    review: { inlineComment: false, reply: false, resolve: false, verdicts: [] },
-    reviewers: { request: true, listCandidates: false },
-    edit: { changeRequest: true, comment: false },
-  },
-  forgejo: {
-    ...COMMON,
-    comment: true,
-    actions: ["merge", "close", "reopen", "update-branch"],
-    mergeMethods: ["merge", "squash", "rebase"],
-    updateMethods: ["merge", "rebase"],
-    search: false,
-    reactions: true,
-    labels: true,
-    review: {
-      inlineComment: true,
-      reply: false,
-      resolve: false,
-      verdicts: ["comment", "approve", "request-changes"],
-    },
-  },
-};
-export const GITHUB_FORGE_CAPABILITIES: ForgeCapabilities = {
-  ...COMMON,
-  viewedFiles: "host",
-  comment: true,
-  labels: true,
-  actions: [
-    "merge",
-    "ready",
-    "draft",
-    "close",
-    "reopen",
-    "update-branch",
-    "enable-auto-merge",
-    "disable-auto-merge",
-    "revert",
-    "approve-workflows",
-  ],
-  mergeMethods: ["merge", "squash", "rebase"],
-  updateMethods: ["merge", "rebase"],
-  search: true,
-  reactions: true,
-  review: {
-    inlineComment: true,
-    reply: true,
-    resolve: true,
-    verdicts: ["comment", "approve", "request-changes"],
-  },
-  stacks: true,
-  stackActions: true,
-};
+export { FORGE_CAPABILITIES, GITHUB_FORGE_CAPABILITIES } from "@t3tools/shared/forgeCapabilities";
+import { FORGE_CAPABILITIES } from "@t3tools/shared/forgeCapabilities";
 export interface ForgeAccount {
   readonly kind: ForgeKind;
   readonly host: string;
@@ -147,6 +41,8 @@ export interface ForgeFile {
 export interface ForgeDetail extends SourceControlPullRequestSummary {
   readonly body: string;
   readonly raw: Readonly<Record<string, unknown>>;
+  readonly checks?: ReadonlyArray<PrHubCheck>;
+  readonly checksComplete?: boolean;
 }
 export interface ForgeCommentInput {
   readonly ref: SourceControlPullRequestRef;
@@ -161,6 +57,12 @@ export interface ForgeCommentInput {
   readonly startSha?: string;
   readonly headSha?: string;
 }
+export interface ForgeWorkflowRun {
+  readonly id: number;
+  /** Goes up each time the run is run again. */
+  readonly attempt: number;
+  readonly completed: boolean;
+}
 export interface ForgeProvider extends SourceControlProvider {
   readonly forgeCapabilities: ForgeCapabilities;
   readonly listPullRequests: (
@@ -169,6 +71,7 @@ export interface ForgeProvider extends SourceControlProvider {
   ) => Effect.Effect<ReadonlyArray<ForgeDetail>, SourceControlProviderError>;
   readonly getDetail: (
     ref: SourceControlPullRequestRef,
+    options?: { readonly checks?: boolean },
   ) => Effect.Effect<ForgeDetail, SourceControlProviderError>;
   readonly getFiles: (
     ref: SourceControlPullRequestRef,
@@ -191,9 +94,30 @@ export interface ForgeProvider extends SourceControlProvider {
   readonly performAction: (input: {
     readonly ref: SourceControlPullRequestRef;
     readonly action: ForgeAction;
+    readonly removeAgentCreditsOnMerge?: boolean;
     readonly method?: "merge" | "squash" | "rebase";
     readonly expectedHeadOid?: string;
   }) => Effect.Effect<unknown, SourceControlProviderError>;
+  /**
+   * The workflow runs behind "re-run failed jobs", one request per run, so the caller can
+   * record which runs it asked to restart before each request and check exactly those later.
+   */
+  readonly workflowRuns?: {
+    /** The failed runs to restart at the head. Fails, with nothing sent, when there is none. */
+    readonly listFailed: (input: {
+      readonly ref: SourceControlPullRequestRef;
+      readonly expectedHeadOid: string;
+    }) => Effect.Effect<ReadonlyArray<ForgeWorkflowRun>, SourceControlProviderError>;
+    /** Null once the forge accepted the re-run, or the reason it refused. */
+    readonly rerunFailedJobs: (input: {
+      readonly ref: SourceControlPullRequestRef;
+      readonly runId: number;
+    }) => Effect.Effect<string | null, SourceControlProviderError>;
+    readonly get: (input: {
+      readonly ref: SourceControlPullRequestRef;
+      readonly runId: number;
+    }) => Effect.Effect<ForgeWorkflowRun, SourceControlProviderError>;
+  };
   readonly editChangeRequest: (input: {
     readonly ref: SourceControlPullRequestRef;
     readonly title?: string;
@@ -243,6 +167,8 @@ const rows = (value: unknown): Json[] =>
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const enc = encodeURIComponent;
 const pathParts = (value: string) => value.split("/").map(enc).join("/");
+/** The largest merge request `/diffs` page every supported GitLab version answers. */
+const GITLAB_MERGE_REQUEST_DIFF_PAGE_SIZE = 30;
 
 /** Each request resolves an account independently. There is no process-global active account. */
 export function makeForgeSourceControlProvider(options: {
@@ -330,6 +256,13 @@ export function makeForgeSourceControlProvider(options: {
           .some((part) => !part || part === "." || part === ".." || /[\\?#\s]/.test(part))
       )
         return yield* error("repository", "Invalid repository name.", "forbidden");
+      // `/repositories/<workspace>` lists a workspace, so a one-part name never names a repository.
+      if (kind === "bitbucket" && repositoryOverride && repositoryOverride.split("/").length !== 2)
+        return yield* error(
+          "repository",
+          "Bitbucket repositories must be specified as workspace/repository.",
+          "forbidden",
+        );
       const url = `${root(repositoryOverride ? { ...a, repository: repositoryOverride } : a)}${suffix}${kind === "azure-devops" ? `${suffix.includes("?") ? "&" : "?"}api-version=7.1` : ""}`;
       const budget = forgeRequestBudget(a);
       if (!budget)
@@ -455,15 +388,15 @@ export function makeForgeSourceControlProvider(options: {
           ),
         );
     });
-  const pagedRows = (ref: SourceControlPullRequestRef, suffix: string) =>
+  const pagedRows = (ref: SourceControlPullRequestRef, suffix: string, pageSize = 100) =>
     Effect.gen(function* () {
       if (kind === "azure-devops") return rows(yield* request(ref, undefined, suffix));
       const result: Json[] = [];
-      for (let page = 1; page <= 10; page++) {
+      for (let page = 1; page <= Math.ceil(1_000 / pageSize); page++) {
         const response = yield* request(
           ref,
           undefined,
-          `${suffix}${suffix.includes("?") ? "&" : "?"}${kind === "gitlab" ? "per_page" : kind === "bitbucket" ? "pagelen" : "limit"}=100&page=${page}`,
+          `${suffix}${suffix.includes("?") ? "&" : "?"}${kind === "gitlab" ? "per_page" : kind === "bitbucket" ? "pagelen" : "limit"}=${pageSize}&page=${page}`,
         );
         if (!Array.isArray(response) && !Array.isArray(object(response).values))
           return yield* error(
@@ -473,7 +406,7 @@ export function makeForgeSourceControlProvider(options: {
           );
         const values = rows(response);
         result.push(...values);
-        const more = kind === "bitbucket" ? !!object(response).next : values.length === 100;
+        const more = kind === "bitbucket" ? !!object(response).next : values.length >= pageSize;
         if (!more) return result;
       }
       return yield* error(
@@ -517,11 +450,23 @@ export function makeForgeSourceControlProvider(options: {
             head.sha ??
             object(source.commit).hash ??
             object(v.lastMergeSourceCommit).commitId,
+        ).trim() || null,
+      updatedAt:
+        text(
+          v.updated_at ??
+            v.updated_on ??
+            v.lastUpdatedDate ??
+            v.updatedDate ??
+            v.closedDate ??
+            v.creationDate,
         ) || null,
       state:
         status === "merged" || status === "completed" || v.merged === true
           ? "merged"
-          : status === "closed" || status === "declined" || status === "abandoned"
+          : status === "closed" ||
+              status === "declined" ||
+              status === "abandoned" ||
+              status === "superseded"
             ? "closed"
             : "open",
       isCrossRepository:
@@ -548,19 +493,150 @@ export function makeForgeSourceControlProvider(options: {
         return yield* error("reference", "Invalid pull request reference.", "invalid_response");
       return ref;
     });
-  const getDetail = (ref: SourceControlPullRequestRef) =>
+  const getDetail = (ref: SourceControlPullRequestRef, options?: { readonly checks?: boolean }) =>
     request(ref, undefined, pull(ref)).pipe(
       Effect.flatMap((value) =>
         Effect.gen(function* () {
-          const detail = summary(value, ref);
+          let detail = summary(value, ref);
           if (kind === "gitlab" && detail.isCrossRepository) {
             const source = object(value).source_project_id;
             const project = object(
               yield* request(ref, undefined, "", "GET", undefined, false, String(source)),
             );
-            return {
+            detail = {
               ...detail,
               headRepositoryNameWithOwner: text(project.path_with_namespace) || null,
+            };
+          }
+          if (kind === "forgejo" && options?.checks) {
+            return yield* Effect.gen(function* () {
+              if (!detail.headRefOid || !detail.baseRefName)
+                return { ...detail, checks: [], checksComplete: false };
+              const headSha = detail.headRefOid;
+              const branchRead = request(
+                ref,
+                undefined,
+                "/branches/" + pathParts(detail.baseRefName),
+              ).pipe(
+                Effect.catch((cause) =>
+                  cause.kind === "forbidden" || cause.kind === "not_found"
+                    ? Effect.succeed({})
+                    : Effect.fail(cause),
+                ),
+                Effect.map(object),
+              );
+              const readStatuses = (page: number) =>
+                request(
+                  ref,
+                  undefined,
+                  "/statuses/" + enc(headSha) + "?sort=recentupdate&limit=50&page=" + page,
+                );
+              const [branch, firstPage] = yield* Effect.all([branchRead, readStatuses(1)], {
+                concurrency: 2,
+              });
+              const checks = new Map<
+                string,
+                { check: PrHubCheck; updatedAt: number; id: number }
+              >();
+              // Servers can cap pages below our requested size. Only an empty page proves completion.
+              for (let page = 1; page <= 20; page++) {
+                const statuses = page === 1 ? firstPage : yield* readStatuses(page);
+                if (!Array.isArray(statuses))
+                  return yield* error("checks", "Invalid Forgejo status page.", "invalid_response");
+                if (statuses.length === 0)
+                  return {
+                    ...detail,
+                    checks: markRequiredForgejoChecks(
+                      [...checks.values()].map((value) => value.check),
+                      branch,
+                    ),
+                    checksComplete: true,
+                  };
+                for (const value of statuses) {
+                  const status = object(value);
+                  const name = text(status.context) || "check";
+                  const parsedAt = Date.parse(text(status.updated_at));
+                  const updatedAt = Number.isFinite(parsedAt) ? parsedAt : 0;
+                  const id = Number(status.id ?? status.index) || 0;
+                  const previous = checks.get(name);
+                  // Forgejo's update ordering has second precision. Higher IDs break ties.
+                  if (
+                    previous &&
+                    (previous.updatedAt > updatedAt ||
+                      (previous.updatedAt === updatedAt && previous.id >= id))
+                  )
+                    continue;
+                  checks.set(name, {
+                    updatedAt,
+                    id,
+                    check: {
+                      name,
+                      status:
+                        status.status === "success"
+                          ? "success"
+                          : status.status === "failure" || status.status === "error"
+                            ? "failure"
+                            : status.status === "skipped"
+                              ? "skipped"
+                              : status.status === "warning"
+                                ? "neutral"
+                                : "pending",
+                      description: text(status.description) || null,
+                      url: text(status.target_url)
+                        ? (URL.parse(text(status.target_url), detail.url)?.href ?? null)
+                        : null,
+                    },
+                  });
+                }
+              }
+              yield* Effect.logWarning("Forgejo status history exceeded the 20-page read limit", {
+                repository: ref.repository,
+                number: ref.number,
+              });
+              return { ...detail, checks: [], checksComplete: false };
+            }).pipe(
+              Effect.catch((cause) =>
+                cause.kind === "unauthenticated" || cause.kind === "rate_limited"
+                  ? Effect.fail(cause)
+                  : Effect.logWarning("Forgejo checks could not be read completely", {
+                      repository: ref.repository,
+                      number: ref.number,
+                      error: cause,
+                    }).pipe(Effect.as({ ...detail, checks: [], checksComplete: false })),
+              ),
+            );
+          }
+          if (kind !== "gitlab" || !options?.checks) return detail;
+          detail = {
+            ...detail,
+            checks: gitLabHeadPipelineChecks(detail.raw.head_pipeline),
+            checksComplete: detail.raw.head_pipeline == null,
+          };
+          const pipeline = object(detail.raw.head_pipeline);
+          if (
+            kind === "gitlab" &&
+            Number.isSafeInteger(pipeline.id) &&
+            Number(pipeline.id) > 0 &&
+            Number.isSafeInteger(pipeline.project_id) &&
+            Number(pipeline.project_id) > 0
+          ) {
+            // Fork pipelines belong to their source project. Keep the selected host/account.
+            const downstream = yield* request(
+              ref,
+              undefined,
+              "/pipelines/" + pipeline.id + "/bridges?per_page=100",
+              "GET",
+              undefined,
+              false,
+              String(pipeline.project_id),
+            ).pipe(
+              Effect.map(gitLabTriggerJobChecks),
+              Effect.catch(() => Effect.succeed(null)),
+            );
+            detail = {
+              ...detail,
+              checks: [...(detail.checks ?? []), ...(downstream ?? [])],
+              checksComplete: downstream !== null,
             };
           }
           return detail;
@@ -853,11 +929,21 @@ export function makeForgeSourceControlProvider(options: {
               return { path, previousPath, status, patch: null, revision: source };
             const oldLines = before ? before.replace(/\n$/, "").split("\n") : [],
               newLines = after ? after.replace(/\n$/, "").split("\n") : [];
+            const renamed = previousPath !== null && previousPath !== path;
+            const renameHeader = renamed
+              ? `similarity index ${before === after ? 100 : 0}%\nrename from ${quoteGitPatchPath(previousPath.replace(/^\//, ""))}\nrename to ${quoteGitPatchPath(path.replace(/^\//, ""))}\n`
+              : "";
             const patch =
               before === after
                 ? ""
                 : `diff --git ${quoteGitPatchPath(`a${previousPath ?? path}`)} ${quoteGitPatchPath(`b${path}`)}\n--- ${quoteGitPatchPath(`a${previousPath ?? path}`)}\n+++ ${quoteGitPatchPath(`b${path}`)}\n@@ -${oldLines.length ? 1 : 0},${oldLines.length} +${newLines.length ? 1 : 0},${newLines.length} @@\n${[...oldLines.map((line) => `-${line}`), ...newLines.map((line) => `+${line}`)].join("\n")}\n`;
-            return { path, previousPath, status, patch, revision: source };
+            const renamePatch = renamed
+              ? (
+                  patch ||
+                  `diff --git ${quoteGitPatchPath(`a${previousPath}`)} ${quoteGitPatchPath(`b${path}`)}\n`
+                ).replace(/\n/, "\n" + renameHeader)
+              : patch;
+            return { path, previousPath, status, patch: renamePatch, revision: source };
           }),
         { concurrency: 4 },
       );
@@ -1043,6 +1129,9 @@ export function makeForgeSourceControlProvider(options: {
             const result = yield* pagedRows(
               ref,
               `${pull(ref)}/${kind === "gitlab" ? "diffs" : kind === "bitbucket" ? "diffstat" : "files"}`,
+              // GitLab 15.7 through 17.10 answer merge request `/diffs` with a 500 for any
+              // `per_page` above 30 (fixed in 17.11).
+              kind === "gitlab" ? GITLAB_MERGE_REQUEST_DIFF_PAGE_SIZE : undefined,
             );
             const diff =
               kind === "gitlab"
@@ -1163,22 +1252,29 @@ export function makeForgeSourceControlProvider(options: {
     execute: () => unsupported("execute"),
     query: () => unsupported("graphql"),
     getPullRequest: (input) => refFrom(input.reference, input.cwd).pipe(Effect.flatMap(getDetail)),
-    listOpenPullRequests: (input) =>
-      request(
-        undefined,
-        input.cwd,
+    listOpenPullRequests: (input) => {
+      const all = input.state === "all";
+      const limit = Math.max(1, Math.min(input.limit ?? 100, kind === "bitbucket" ? 50 : 100));
+      const endpoint =
         kind === "gitlab"
-          ? `/merge_requests?state=opened&source_branch=${enc(input.headSelector)}&per_page=${Math.min(input.limit ?? 100, 100)}`
+          ? `/merge_requests?state=${all ? "all" : "opened"}&source_branch=${enc(input.headSelector)}&per_page=${limit}&order_by=updated_at&sort=desc`
           : kind === "azure-devops"
-            ? `/pullrequests?searchCriteria.status=active&searchCriteria.sourceRefName=${enc(`refs/heads/${input.headSelector}`)}`
-            : `/${kind === "forgejo" ? "pulls" : "pullrequests"}?${kind === "bitbucket" ? `q=${enc(`state="OPEN" AND source.branch.name="${input.headSelector.replace(/["\\]/g, "")}"`)}` : `state=open&head=${enc(input.headSelector)}&limit=${Math.min(input.limit ?? 100, 100)}`}`,
-      ).pipe(
-        Effect.map((result) =>
-          rows(result)
-            .map((value) => summary(value))
-            .filter((value) => kind !== "forgejo" || value.headRefName === input.headSelector),
-        ),
-      ),
+            ? `/pullrequests?searchCriteria.status=${all ? "all" : "active"}&searchCriteria.sourceRefName=${enc(`refs/heads/${input.headSelector}`)}&$top=${limit}`
+            : kind === "bitbucket"
+              ? `/pullrequests?${(all ? ["OPEN", "MERGED", "DECLINED", "SUPERSEDED"] : ["OPEN"]).map((state) => `state=${state}`).join("&")}&q=${enc(`source.branch.name=${JSON.stringify(input.headSelector)}`)}&pagelen=${limit}&sort=-updated_on`
+              : `/pulls?state=${all ? "all" : "open"}&head=${enc(input.headSelector)}&limit=${limit}`;
+      return request(undefined, input.cwd, endpoint).pipe(
+        Effect.flatMap((result) => {
+          if (all && (object(result).next || rows(result).length >= limit))
+            return unsupported("listOpenPullRequests: incomplete branch page");
+          return Effect.succeed(
+            rows(result)
+              .map((value) => summary(value))
+              .filter((value) => value.headRefName === input.headSelector),
+          );
+        }),
+      );
+    },
     searchPullRequests: (input) =>
       !caps.search
         ? unsupported("search")
@@ -1289,8 +1385,11 @@ export function makeForgeSourceControlProvider(options: {
         getDetail(ref).pipe(
           Effect.flatMap((detail) => {
             const reviewers = rows(detail.raw.reviewers ?? detail.raw.requested_reviewers)
-              .map((v) => text(v.login ?? v.uuid ?? v.id))
-              .filter((id) => !input.remove.includes(id));
+              .map(
+                (v) =>
+                  text(v.login ?? v.uuid) || (typeof v.id === "number" ? String(v.id) : text(v.id)),
+              )
+              .filter((id) => id.length > 0 && !input.remove.includes(id));
             return setReviewers({ ref, reviewers: [...new Set([...reviewers, ...input.add])] });
           }),
         ),

@@ -189,4 +189,41 @@ describe("DiskSpaceMonitor", () => {
       }),
     );
   });
+
+  it("keeps sampling free space while the pending-compaction read waits on the database", async () => {
+    const { disk, run } = harness();
+    const pending = {
+      freeBytes: 10 * GB,
+      liveBytes: 4 * GB,
+      requiredFreeDiskBytes: 8 * GB,
+      availableDiskBytes: 50 * GB,
+      waitingSince: "2026-10-01T00:00:00.000Z",
+      lastSkipReason: null,
+      scheduledForRestart: false,
+    };
+    let databaseBusy = false;
+    await run((monitor) =>
+      Effect.gen(function* () {
+        yield* monitor.start({
+          estimateReclaimable: Effect.succeed([]),
+          // A compaction holds the connection: the read never answers.
+          pendingCompaction: Effect.suspend(() =>
+            databaseBusy ? Effect.never : Effect.succeed(pending),
+          ),
+        });
+        yield* monitor.noteStorageChanged;
+        expect((yield* monitor.getStatus()).pendingCompaction).toEqual(pending);
+
+        databaseBusy = true;
+        disk.freeBytes = 5 * GB;
+        const started = Date.now();
+        yield* monitor.noteStorageChanged;
+        expect(Date.now() - started).toBeLessThan(5_000);
+        const status = yield* monitor.getStatus();
+        expect(status.level).toBe("low");
+        // The last known value stays until the database answers again.
+        expect(status.pendingCompaction).toEqual(pending);
+      }),
+    );
+  });
 });

@@ -1,13 +1,36 @@
+import { holdsWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Cause, Effect, Layer, Metric } from "effect";
+import { it as effectIt } from "@effect/vitest";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Fiber,
+  Layer,
+  ManagedRuntime,
+  Metric,
+  Schema,
+  Sink,
+  Stream,
+} from "effect";
+import { TestClock } from "effect/testing";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import { GitCoreLive } from "./GitCore.ts";
+import {
+  fetchMissingDefaultBranch,
+  resolveHeadInDefaultBranch,
+} from "../../project/worktreeMerge.ts";
+import { GitCoreTestLive as GitCoreLive } from "../testLayers.ts";
 import { GitCommandError } from "../Errors.ts";
+import { runsGitWithoutConsole } from "../../spawn/resolveCommand.ts";
+import { GitServiceLive } from "./GitService.ts";
 import { GitCore } from "../Services/GitCore.ts";
 import {
   GitService,
@@ -28,31 +51,43 @@ function makeScriptedGitService(resolve: (input: ExecuteGitInput) => ScriptedRes
   return {
     calls,
     service: {
-      execute: (input) => {
-        calls.push(input);
-        // Worktree add/remove take the cross-profile repository lock, which
-        // resolves the git-common-dir on disk; answer with a real directory.
-        if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-common-dir"])) {
-          return Effect.succeed({ code: 0, stdout: `${process.cwd()}\n`, stderr: "" });
-        }
-        const scripted = resolve(input);
-        return Effect.succeed({
-          code: scripted.code ?? 0,
-          stdout: scripted.stdout ?? "",
-          stderr: scripted.stderr ?? "",
-        });
-      },
+      // Lazy like the real service, so a retried or deferred command runs, and records, again.
+      execute: (input) =>
+        Effect.sync(() => {
+          calls.push(input);
+          // Worktree add/remove take the cross-profile repository lock, which
+          // resolves the git-common-dir on disk; answer with a real directory.
+          if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-common-dir"])) {
+            return { code: 0, stdout: `${process.cwd()}\n`, stderr: "" };
+          }
+          const scripted = resolve(input);
+          // Like the real service, streaming consumers receive the output as chunks.
+          if (input.onStdoutChunk && scripted.stdout)
+            input.onStdoutChunk(new TextEncoder().encode(scripted.stdout));
+          return {
+            code: scripted.code ?? 0,
+            stdout: scripted.stdout ?? "",
+            stderr: scripted.stderr ?? "",
+          };
+        }),
     },
   };
 }
 
+const runtimeDisposals = new Set<() => Promise<void>>();
+afterEach(async () => {
+  await Promise.all([...runtimeDisposals].map((dispose) => dispose()));
+  runtimeDisposals.clear();
+});
 async function makeCore(gitService: GitServiceShape) {
   const layer = GitCoreLive.pipe(
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "f5-git-core-" })),
     Layer.provide(Layer.succeed(GitService, gitService)),
     Layer.provide(NodeServices.layer),
   );
-  return Effect.runPromise(Effect.service(GitCore).pipe(Effect.provide(layer)));
+  const runtime = ManagedRuntime.make(layer);
+  runtimeDisposals.add(() => runtime.dispose());
+  return runtime.runPromise(Effect.service(GitCore));
 }
 
 it("places generated worktrees under the configured server worktree root", async () => {
@@ -75,6 +110,8 @@ it("places generated worktrees under the configured server worktree root", async
       expect(scripted.calls.find((call) => call.args[0] === "worktree")?.args).toContain(
         result.worktree.path,
       );
+      const addArgs = scripted.calls.find((call) => call.args[0] === "worktree")!.args;
+      expect(addArgs[addArgs.indexOf(result.worktree.path) - 1]).toBe("--");
     }).pipe(
       Effect.provide(
         GitCoreLive.pipe(
@@ -87,6 +124,84 @@ it("places generated worktrees under the configured server worktree root", async
       ),
     ),
   );
+});
+
+it("creates under the live custom root, preserves old roots, and rejects invalid locations before Git mutation", async () => {
+  const scripted = makeScriptedGitService((input) => ({
+    stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "",
+  }));
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const config = yield* ServerConfig;
+      const settings = yield* ServerSettingsService;
+      const core = yield* GitCore;
+      const custom = join(config.baseDir, "custom-worktrees");
+      yield* settings.updateSettings({ worktreesDirectory: custom });
+      const created = yield* core.createWorktree({
+        cwd: process.cwd(),
+        branch: "main",
+        newBranch: "custom-location",
+        path: null,
+      });
+      expect(created.worktree.path.startsWith(custom)).toBe(true);
+      expect(scripted.calls.find((call) => call.args[0] === "worktree")?.args).toContain(
+        created.worktree.path,
+      );
+      for (const invalid of ["relative/worktrees", "/"]) {
+        yield* settings.updateSettings({ worktreesDirectory: invalid });
+        const result = yield* Effect.result(
+          core.allocateWorktreePath({ cwd: process.cwd(), branch: "invalid" }),
+        );
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure")
+          expect(result.failure.detail).toContain("Settings → Storage");
+      }
+    }).pipe(
+      Effect.provide(
+        GitCoreLive.pipe(
+          Layer.provide(Layer.succeed(GitService, scripted.service)),
+          Layer.provideMerge(ServerSettingsService.layerTest()),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "f5-custom-worktrees-" }),
+          ),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+});
+
+it("rejects option-shaped worktree refs before Git calls or ownership allocation", async () => {
+  const scripted = makeScriptedGitService((input) => ({
+    stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "",
+  }));
+  const core = await makeCore(scripted.service);
+  for (const fields of [
+    { newBranch: "--delete" },
+    { branch: "--orphan" },
+    { newBranch: "safe", baseRefName: "--orphan" },
+    { newBranch: "invalid\0branch" },
+    { newBranch: "" },
+  ]) {
+    await expect(
+      Effect.runPromise(
+        core.createWorktree({
+          cwd: process.cwd(),
+          branch: "main",
+          path: null,
+          ...fields,
+        }),
+      ),
+    ).rejects.toThrow("Invalid worktree ref name");
+  }
+  for (const branch of ["--orphan", "invalid\0branch", ""]) {
+    await expect(
+      Effect.runPromise(
+        core.ensureWorktree({ cwd: process.cwd(), path: "/unused-worktree", branch }),
+      ),
+    ).rejects.toThrow("Invalid worktree ref name");
+  }
+  expect(scripted.calls).toEqual([]);
 });
 
 function counterValue(
@@ -152,6 +267,44 @@ describe("GitCore unit", () => {
       GIT_TERMINAL_PROMPT: "0",
       GCM_INTERACTIVE: "never",
     });
+  });
+
+  it.each([
+    "error: cannot lock ref 'refs/remotes/origin/main': is at 1234 but expected 5678",
+    "error: fetching ref refs/remotes/origin/main failed: incorrect old value provided",
+  ])("retries a base fetch once when another fetch held the ref: %s", async (stderr) => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    let fetches = 0;
+    const scripted = makeScriptedGitService((input) => {
+      if (input.args[0] === "rev-parse") return { stdout: `${commit}\n` };
+      if (input.args[0] === "fetch" && ++fetches === 1) return { code: 1, stderr };
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+
+    await expect(
+      Effect.runPromise(
+        core.fetchRemoteBranchCommit({ cwd: process.cwd(), remoteName: "origin", branch: "main" }),
+      ),
+    ).resolves.toMatchObject({ commit });
+    expect(fetches).toBe(2);
+  });
+
+  it("fails a base fetch without retrying when the remote is unreachable", async () => {
+    let fetches = 0;
+    const scripted = makeScriptedGitService((input) => {
+      if (input.args[0] !== "fetch") return {};
+      fetches += 1;
+      return { code: 128, stderr: "fatal: Could not resolve host: example.test" };
+    });
+    const core = await makeCore(scripted.service);
+
+    await expect(
+      Effect.runPromise(
+        core.fetchRemoteBranchCommit({ cwd: process.cwd(), remoteName: "origin", branch: "main" }),
+      ),
+    ).rejects.toThrow("Git could not reach the remote");
+    expect(fetches).toBe(1);
   });
 
   it("rejects option-like remote names before invoking git fetch", async () => {
@@ -229,13 +382,13 @@ describe("GitCore unit", () => {
             "# branch.head feature/parser\x00# branch.upstream origin/feature/parser\x00# branch.ab +2 -3\x001 .M N... 100644 100644 100644 a b src/a.ts\x00? notes.txt\x00",
         };
       }
-      if (argsEqual(input, ["diff", "--numstat", "-z"])) {
+      if (argsEqual(input, ["diff-files", "-M", "--numstat", "-z"])) {
         return { stdout: "4\t1\tsrc/a.ts\x002\t0\tnotes.txt\x00" };
       }
       if (argsEqual(input, ["diff", "--cached", "--numstat", "-z"])) {
         return { stdout: "3\t2\tsrc/a.ts\x00" };
       }
-      if (argsEqual(input, ["diff", "--numstat", "-z", "HEAD", "--"])) {
+      if (argsEqual(input, ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"])) {
         return { stdout: "3\t1\tsrc/a.ts\x002\t0\tnotes.txt\x00" };
       }
       return {};
@@ -271,8 +424,52 @@ describe("GitCore unit", () => {
     });
   });
 
-  it("limits generated commit context to the selected paths", async () => {
+  it("lists worktrees when older Git rejects the NUL option", async () => {
     const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["worktree", "list", "--porcelain", "-z"]))
+        return { code: 129, stderr: "error: unknown switch `z'" };
+      if (argsEqual(input, ["worktree", "list", "--porcelain"]))
+        return {
+          stdout: `worktree ${process.cwd()}\nHEAD ${"a".repeat(40)}\nbranch refs/heads/main\n\n`,
+        };
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+    await expect(Effect.runPromise(core.listWorktrees(process.cwd()))).resolves.toMatchObject([
+      { path: process.cwd(), branch: "main", headSha: "a".repeat(40), isMain: true },
+    ]);
+    expect(scripted.calls.filter((call) => call.args[0] === "worktree")).toHaveLength(2);
+  });
+
+  it("keeps unrelated worktree-list failures visible without a compatibility retry", async () => {
+    const scripted = makeScriptedGitService(() => ({
+      code: 128,
+      stderr: "fatal: not a git repository",
+    }));
+    const core = await makeCore(scripted.service);
+    await expect(Effect.runPromise(core.listWorktrees(process.cwd()))).rejects.toThrow(
+      "not a git repository",
+    );
+    expect(scripted.calls.filter((call) => call.args[0] === "worktree")).toHaveLength(1);
+  });
+
+  it("classifies actual GitCore metadata reads as console-free on Windows", async () => {
+    const scripted = makeScriptedGitService();
+    const core = await makeCore(scripted.service);
+    await Effect.runPromise(core.readConfigValue(process.cwd(), "branch.main.pushRemote"));
+    await Effect.runPromise(core.listRemotes(process.cwd()));
+    await Effect.runPromise(core.resolveCommonDir(process.cwd()));
+    expect(scripted.calls).toHaveLength(3);
+    for (const call of scripted.calls) {
+      expect(runsGitWithoutConsole("win32", "C:\\Git\\ucrt64\\bin\\git.exe", call.args)).toBe(true);
+    }
+  });
+
+  it("limits generated commit context to the selected paths", async () => {
+    const indexPath = join(tmpdir(), `f5-fake-index-${crypto.randomUUID()}`);
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-path", "index"]))
+        return { stdout: indexPath };
       if (input.args.includes("--name-status")) return { stdout: "M\tsrc/selected.ts\n" };
       if (input.args.includes("--patch")) return { stdout: "+selected\n" };
       return {};
@@ -285,14 +482,23 @@ describe("GitCore unit", () => {
       stagedSummary: "M\tsrc/selected.ts",
       stagedPatch: "+selected\n",
     });
+    expect(
+      scripted.calls
+        .filter((call) => call.args.includes("add"))
+        .every((call) => call.env?.GIT_INDEX_FILE?.startsWith(`${indexPath}.f5-`)),
+    ).toBe(true);
     expect(scripted.calls.map((call) => call.args)).toContainEqual([
+      "-c",
+      "diff.relative=false",
       "diff",
       "--cached",
       "--name-status",
       "--",
-      "src/selected.ts",
+      ":(top,literal)src/selected.ts",
     ]);
     expect(scripted.calls.map((call) => call.args)).toContainEqual([
+      "-c",
+      "diff.relative=false",
       "diff",
       "--cached",
       "--patch",
@@ -301,16 +507,46 @@ describe("GitCore unit", () => {
       "--dst-prefix=b/",
       "--minimal",
       "--",
-      "src/selected.ts",
+      ":(top,literal)src/selected.ts",
     ]);
   });
 
-  it("commits the full index during a merge even when selected paths were requested", async () => {
+  it("stops reading the staged patch once commit context has enough of it", async () => {
+    const indexPath = join(tmpdir(), `f5-fake-index-${crypto.randomUUID()}`);
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-path", "index"]))
+        return { stdout: indexPath };
+      if (input.args.includes("--name-status")) return { stdout: "A\tvendor/huge.js\n" };
+      return {};
+    });
+    let patchInterrupted = false;
+    const core = await makeCore({
+      execute: (input) =>
+        input.args.includes("--patch")
+          ? // A diff far larger than the cap that would otherwise run until its timeout.
+            Effect.sync(() => input.onStdoutChunk?.(new Uint8Array(2 * 1024 * 1024).fill(43))).pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  patchInterrupted = true;
+                }),
+              ),
+            )
+          : scripted.service.execute(input),
+    });
+
+    const context = await Effect.runPromise(core.prepareCommitContext(process.cwd()));
+    expect(context?.stagedSummary).toBe("A\tvendor/huge.js");
+    expect(context?.stagedPatch).toHaveLength(1024 * 1024);
+    expect(patchInterrupted).toBe(true);
+  });
+
+  it("rejects selected paths during a merge before running any commit", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "f5-git-core-merge-"));
     const mergeHeadPath = path.join(cwd, "MERGE_HEAD");
     fs.writeFileSync(mergeHeadPath, "0123456789abcdef\n");
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["rev-parse", "--git-path", "MERGE_HEAD"])) {
+      if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"])) {
         return { stdout: `${mergeHeadPath}\n` };
       }
       if (argsEqual(input, ["rev-parse", "HEAD"])) return { stdout: "abc123\n" };
@@ -321,61 +557,106 @@ describe("GitCore unit", () => {
     try {
       await expect(
         Effect.runPromise(core.commit(cwd, "Resolve merge", "", ["src/selected.ts"])),
-      ).resolves.toEqual({ commitSha: "abc123" });
-      expect(scripted.calls.map((call) => call.args)).toContainEqual([
-        "commit",
-        "-m",
-        "Resolve merge",
-      ]);
-      expect(scripted.calls.some((call) => call.args.includes("--only"))).toBe(false);
+      ).rejects.toThrow("Cannot commit selected files during a merge");
+      expect(scripted.calls.some((call) => call.args[0] === "commit")).toBe(false);
+      expect(fs.readFileSync(mergeHeadPath, "utf8")).toBe("0123456789abcdef\n");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  it("caches successful upstream refreshes across repeated status reads", async () => {
-    const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])) {
-        return { stdout: "origin/feature/cache\n" };
-      }
-      if (argsEqual(input, ["remote"])) {
-        return { stdout: "origin\n" };
-      }
-      if (argsEqual(input, ["rev-parse", "--git-common-dir"])) {
-        return { stdout: ".git\n" };
-      }
-      if (argsEqual(input, ["status", "--porcelain=2", "--branch", "-z"])) {
-        return {
-          stdout:
-            "# branch.head feature/cache\x00# branch.upstream origin/feature/cache\x00# branch.ab +0 -0\x00",
-        };
-      }
-      return {};
-    });
-    const core = await makeCore(scripted.service);
+  it.each([false, true])(
+    "caches successful upstream refreshes across repeated status reads (legacy Git=%s)",
+    async (legacy) => {
+      const scripted = makeScriptedGitService((input) => {
+        if (legacy && input.args[0] === "fetch" && input.args.includes("--no-write-fetch-head"))
+          return { code: 129, stderr: "error: unknown option `no-write-fetch-head'" };
+        if (
+          argsEqual(input, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+        ) {
+          return { stdout: "origin/feature/cache\n" };
+        }
+        if (argsEqual(input, ["rev-parse", "--verify", "refs/remotes/origin/feature/cache"]))
+          return { stdout: `${"a".repeat(40)}\n` };
+        if (
+          input.args[0] === "rev-parse" &&
+          input.args[1] === "--verify" &&
+          input.args[2]?.startsWith("refs/f5/status/")
+        )
+          return { stdout: `${"b".repeat(40)}\n` };
+        if (argsEqual(input, ["remote"])) {
+          return { stdout: "origin\n" };
+        }
+        if (argsEqual(input, ["status", "--porcelain=2", "--branch", "-z"])) {
+          return {
+            stdout:
+              "# branch.head feature/cache\x00# branch.upstream origin/feature/cache\x00# branch.ab +0 -0\x00",
+          };
+        }
+        return {};
+      });
+      const core = await makeCore(scripted.service);
 
-    await Effect.runPromise(core.statusDetails(process.cwd()));
-    await Effect.runPromise(core.statusDetails(process.cwd()));
+      const refreshed = Promise.withResolvers<void>();
+      await Effect.runPromise(core.subscribeStatusRefresh!(() => refreshed.resolve()));
+      await Effect.runPromise(core.statusDetails(process.cwd()));
+      await refreshed.promise;
+      await Effect.runPromise(core.drainUpstreamRefreshes!(process.cwd()));
+      await Effect.runPromise(core.statusDetails(process.cwd()));
 
-    const refreshes = scripted.calls.filter((call) => call.args[0] === "fetch");
-    expect(refreshes).toHaveLength(1);
-    expect(refreshes[0]?.args).toEqual([
-      "fetch",
-      "--quiet",
-      "--no-tags",
-      "origin",
-      "+refs/heads/feature/cache:refs/remotes/origin/feature/cache",
-    ]);
-    expect(
-      scripted.calls.filter((call) =>
-        argsEqual(call, ["symbolic-ref", "refs/remotes/origin/HEAD"]),
-      ),
-    ).toHaveLength(1);
-    expect(
-      scripted.calls.filter((call) => argsEqual(call, ["rev-parse", "--git-common-dir"])),
-    ).toHaveLength(1);
-    expect(scripted.calls.filter((call) => argsEqual(call, ["remote"]))).toHaveLength(1);
-  });
+      const refreshes = scripted.calls.filter((call) => call.args[0] === "fetch");
+      expect(refreshes).toHaveLength(legacy ? 2 : 1);
+      expect(refreshes[0]?.args).toEqual([
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--no-auto-maintenance",
+        "--refmap=",
+        "--",
+        "origin",
+        expect.stringMatching(/^\+refs\/heads\/feature\/cache:refs\/f5\/status\//),
+      ]);
+      expect(scripted.calls.map((call) => call.args)).toContainEqual([
+        "update-ref",
+        "refs/remotes/origin/feature/cache",
+        "b".repeat(40),
+        "a".repeat(40),
+      ]);
+      expect(
+        scripted.calls.some(
+          (call) =>
+            call.args[0] === "update-ref" &&
+            call.args[1] === "-d" &&
+            call.args[2]?.startsWith("refs/f5/status/"),
+        ),
+      ).toBe(true);
+      expect(
+        scripted.calls.filter((call) =>
+          argsEqual(call, ["symbolic-ref", "refs/remotes/origin/HEAD"]),
+        ),
+      ).toHaveLength(1);
+      expect(
+        scripted.calls.filter(
+          (call) => call.operation === "GitCore.statusStaticMetadata.commonDir",
+        ),
+      ).toHaveLength(1);
+      expect(scripted.calls.filter((call) => argsEqual(call, ["remote"]))).toHaveLength(1);
+      expect(scripted.calls.filter((call) => call.args[0] === "fetch")).toHaveLength(
+        legacy ? 2 : 1,
+      );
+      if (legacy)
+        expect(scripted.calls.filter((call) => call.args[0] === "fetch")[1]?.args).toEqual([
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--refmap=",
+          "--",
+          "origin",
+          expect.stringMatching(/^\+refs\/heads\/feature\/cache:refs\/f5\/status\//),
+        ]);
+    },
+  );
 
   it("reports aggregate counts as unavailable for an unborn HEAD", async () => {
     const scripted = makeScriptedGitService((input) => {
@@ -384,7 +665,7 @@ describe("GitCore unit", () => {
           stdout: "# branch.oid (initial)\x00# branch.head main\x00? README.md\x00",
         };
       }
-      if (argsEqual(input, ["diff", "--numstat", "-z", "HEAD", "--"])) {
+      if (argsEqual(input, ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"])) {
         return { code: 128, stderr: "fatal: ambiguous argument 'HEAD'" };
       }
       return {};
@@ -412,10 +693,10 @@ describe("GitCore unit", () => {
       if (argsEqual(input, ["diff", "--cached", "--numstat", "-z"])) {
         return { stdout: "0\t0\t\x00dir/old name.txt\x00dir/new name.txt\x00" };
       }
-      if (argsEqual(input, ["diff", "--numstat", "-z"])) {
+      if (argsEqual(input, ["diff-files", "-M", "--numstat", "-z"])) {
         return { stdout: "1\t0\tcafé.txt\x00" };
       }
-      if (argsEqual(input, ["diff", "--numstat", "-z", "HEAD", "--"])) {
+      if (argsEqual(input, ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"])) {
         return {
           stdout: "0\t0\t\x00dir/old name.txt\x00dir/new name.txt\x001\t0\tcafé.txt\x00",
         };
@@ -429,20 +710,14 @@ describe("GitCore unit", () => {
     expect(status.workingTree.files).toEqual([
       { path: "café.txt", insertions: 1, deletions: 0 },
       { path: "dir/new name.txt", insertions: 0, deletions: 0 },
+      { path: "dir/old name.txt", insertions: 0, deletions: 0 },
     ]);
   });
 
   it("parses local and slash-containing remote names without pseudo refs", async () => {
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["branch", "--no-color"])) {
-        return { stdout: "  main\n* feature/current\n" };
-      }
-      if (argsEqual(input, ["branch", "--no-color", "--remotes"])) {
-        return {
-          stdout:
-            "  team/fork/feature/current\n  team/fork/HEAD -> team/fork/main\n  origin/main\n",
-        };
-      }
+      if (argsEqual(input, ["symbolic-ref", "--quiet", "HEAD"]))
+        return { stdout: "refs/heads/feature/current\n" };
       if (argsEqual(input, ["remote"])) {
         return { stdout: "origin\nteam/fork\n" };
       }
@@ -450,7 +725,10 @@ describe("GitCore unit", () => {
         return { stdout: "refs/remotes/origin/main\n" };
       }
       if (input.args[0] === "for-each-ref") {
-        return { stdout: "feature/current\t20\nmain\t10\nteam/fork/feature/current\t30\n" };
+        return {
+          stdout:
+            "refs/heads/feature/current\t\t20\nrefs/heads/main\t\t10\nrefs/remotes/team/fork/feature/current\t\t30\nrefs/remotes/team/fork/HEAD\trefs/remotes/team/fork/main\t0\nrefs/remotes/origin/main\t\t0\n",
+        };
       }
       return {};
     });
@@ -466,11 +744,15 @@ describe("GitCore unit", () => {
       "origin/main",
     ]);
     expect(result.branches[2]).toMatchObject({ isRemote: true, remoteName: "team/fork" });
+    await Effect.runPromise(core.listBranches({ cwd: process.cwd() }));
+    expect(
+      scripted.calls.filter((call) => call.operation === "GitCore.listBranches.refs"),
+    ).toHaveLength(1);
   });
 
   it("returns a non-repository result for git's repository error", async () => {
     const scripted = makeScriptedGitService((input) =>
-      argsEqual(input, ["branch", "--no-color"])
+      input.operation === "GitCore.listBranches.refs"
         ? { code: 128, stderr: "fatal: not a git repository" }
         : {},
     );
@@ -485,10 +767,11 @@ describe("GitCore unit", () => {
 
   it("falls back to local branches when remote lookups fail", async () => {
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["branch", "--no-color"])) {
-        return { stdout: "* main\n" };
-      }
-      if (argsEqual(input, ["branch", "--no-color", "--remotes"]) || argsEqual(input, ["remote"])) {
+      if (input.operation === "GitCore.listBranches.refs")
+        return { stdout: "refs/heads/main\t\t0\n" };
+      if (argsEqual(input, ["symbolic-ref", "--quiet", "HEAD"]))
+        return { stdout: "refs/heads/main\n" };
+      if (argsEqual(input, ["remote"])) {
         return { code: 1, stderr: "remote lookup failed" };
       }
       return {};
@@ -552,9 +835,10 @@ describe("GitCore unit", () => {
     );
 
     expect(remote).toBe("Octo-Cat-1");
-    expect(scripted.calls.at(-1)?.args).toEqual([
+    expect(scripted.calls.map((call) => call.args)).toContainEqual([
       "remote",
       "add",
+      "--",
       "Octo-Cat-1",
       "https://github.com/octocat/f5.git",
     ]);
@@ -635,6 +919,7 @@ describe("GitCore unit", () => {
       "fetch",
       "--quiet",
       "--no-tags",
+      "--",
       "origin",
       "+refs/pull/77/head:refs/heads/pr/77-safe",
     ]);
@@ -671,11 +956,13 @@ it("redacts remote output from failed fetches while explaining the cause", async
   }
 });
 
-it("allows five minutes for worktree removal", async () => {
+it("refuses to remove an unregistered directory", async () => {
   const scripted = makeScriptedGitService();
   const core = await makeCore(scripted.service);
-  await Effect.runPromise(core.removeWorktree({ cwd: process.cwd(), path: process.cwd() }));
-  expect(scripted.calls.find((call) => call.args[1] === "remove")?.timeoutMs).toBe(300_000);
+  await expect(
+    Effect.runPromise(core.removeWorktree({ cwd: process.cwd(), path: process.cwd() })),
+  ).rejects.toThrow("not an unlocked linked worktree");
+  expect(scripted.calls.some((call) => call.args[1] === "remove")).toBe(false);
 });
 
 it("returns missing worktree branches without running git", async () => {
@@ -700,29 +987,230 @@ it.each(["none", "shallow", "recursive"] as const)(
       }
       return {
         stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "",
-        code: input.args.includes("submodule") ? 1 : 0,
+        // A failed clone still leaves the created worktree usable.
+        code: input.args.includes("submodule") && input.args.includes("update") ? 1 : 0,
       };
     });
     const core = await makeCore(scripted.service);
+    const finished: Array<{ status: string; detail: string | null }> = [];
     const result = await Effect.runPromise(
-      core.createWorktree({ cwd: process.cwd(), branch: "main", path: null, submodules }),
+      core.createWorktree({
+        cwd: process.cwd(),
+        branch: "main",
+        path: null,
+        submodules,
+        progress: { onSubmodulesFinished: (result) => finished.push(result) },
+      }),
     );
     expect(result.worktree.branch).toBe("main");
     const calls = scripted.calls.filter((call) => call.args.includes("submodule"));
-    if (submodules === "none") expect(calls).toHaveLength(0);
-    else {
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.args).toEqual([
-        "-c",
-        "protocol.file.allow=never",
-        "submodule",
-        "update",
-        "--init",
-        ...(submodules === "recursive" ? ["--recursive"] : []),
+    if (submodules === "none") {
+      expect(calls).toHaveLength(0);
+      expect(finished).toEqual([{ status: "skipped", detail: "disabled in settings" }]);
+    } else {
+      expect(finished).toEqual([
+        {
+          status: "warning",
+          detail: expect.stringContaining("Unable to initialize worktree submodules"),
+        },
       ]);
-      expect(calls[0]!.cwd).toBe(result.worktree.path);
+      // Registration writes the shared config on its own; the clones run separately.
+      expect(calls.map((call) => call.args)).toEqual([
+        ["submodule", "init"],
+        [
+          "-c",
+          "protocol.file.allow=never",
+          "submodule",
+          "update",
+          "--init",
+          "--progress",
+          ...(submodules === "recursive" ? ["--recursive"] : []),
+        ],
+      ]);
+      expect(calls.every((call) => call.cwd === result.worktree.path)).toBe(true);
     }
   },
+);
+
+it("retains active receipt ownership while initializing submodules outside lifecycle locks", async () => {
+  const scripted = makeScriptedGitService((input) => {
+    if (input.args[0] === "worktree" && input.args[1] === "add") {
+      const target = input.args[input.args.length - 2]!;
+      mkdirSync(target, { recursive: true });
+      writeFileSync(join(target, ".gitmodules"), '[submodule "lib"]\n');
+    }
+    return { stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "" };
+  });
+  let observed = false;
+  const core = await makeCore({
+    execute: (input) =>
+      scripted.service.execute(input).pipe(
+        Effect.tap(() =>
+          input.args.includes("submodule")
+            ? Effect.gen(function* () {
+                observed = true;
+                expect((yield* core.readWorktreePreparation(input.cwd))?.phase).toBe(
+                  "setup_running",
+                );
+                expect(yield* holdsWorktreeLifecycleLock(input.cwd)).toBe(false);
+              }).pipe(Effect.orDie)
+            : Effect.void,
+        ),
+      ),
+  });
+  const created = await Effect.runPromise(
+    core.createWorktree({
+      cwd: process.cwd(),
+      branch: "main",
+      path: null,
+      submodules: "recursive",
+      preparation: { owner: "pr:pending", runSetupScript: true },
+    }),
+  );
+  expect(observed).toBe(true);
+  expect(
+    (await Effect.runPromise(core.readWorktreePreparation(created.worktree.path)))?.phase,
+  ).toBe("checkout_created");
+});
+
+effectIt.effect.each([
+  { submodules: "recursive", progress: false, cancel: false, stall: false },
+  { submodules: "recursive", progress: true, cancel: false, stall: false },
+  { submodules: "shallow", progress: false, cancel: false, stall: false },
+  { submodules: "shallow", progress: true, cancel: false, stall: false },
+  { submodules: "recursive", progress: true, cancel: true, stall: false },
+  { submodules: "recursive", progress: true, cancel: false, stall: true },
+  { submodules: "shallow", progress: false, cancel: false, stall: true },
+] as const)(
+  "bounds submodule inactivity ($submodules, progress: $progress, cancel: $cancel, stall: $stall)",
+  ({ submodules, progress, cancel, stall }) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const stopped = yield* Deferred.make<void>();
+      let running = true;
+      let killed = false;
+      let killedBeforeSpawnerRelease = false;
+      const kill = () =>
+        Effect.sync(() => {
+          killed = true;
+          running = false;
+        });
+      const spawner = ChildProcessSpawner.make(() =>
+        Effect.acquireRelease(
+          Effect.succeed(
+            ChildProcessSpawner.makeHandle({
+              // A synthetic id beyond the host PID range; never target a real process group.
+              pid: ChildProcessSpawner.ProcessId(2_147_483_647),
+              exitCode: Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as(ChildProcessSpawner.ExitCode(0)),
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    running = false;
+                  }),
+                ),
+              ),
+              isRunning: Effect.sync(() => running),
+              kill,
+              stdin: Sink.drain,
+              stdout: Stream.empty,
+              stderr: stall
+                ? Stream.empty
+                : Stream.fromEffect(
+                    Effect.sleep("4 minutes").pipe(
+                      Effect.as(new TextEncoder().encode("Cloning submodule\n")),
+                    ),
+                  ),
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            }),
+          ),
+          () =>
+            Effect.gen(function* () {
+              killedBeforeSpawnerRelease = killed;
+              // Like the real spawner, its own release also terminates children on Windows.
+              if (running) yield* kill();
+              yield* Deferred.succeed(stopped, undefined);
+            }),
+        ),
+      );
+      // Exercise the real command timeout and process-scope handling for the update.
+      const git = yield* Effect.service(GitService).pipe(
+        Effect.provide(
+          GitServiceLive.pipe(
+            Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+          ),
+        ),
+      );
+      const scripted = makeScriptedGitService((input) => {
+        if (input.args[0] === "worktree" && input.args[1] === "add") {
+          const target = input.args[input.args.length - 2]!;
+          mkdirSync(target, { recursive: true });
+          writeFileSync(join(target, ".gitmodules"), '[submodule "lib"]\n');
+        }
+        return { stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "" };
+      });
+      const core = yield* Effect.promise(() =>
+        makeCore({
+          execute: (input) =>
+            input.args.includes("submodule") && input.args.includes("update")
+              ? git.execute(input)
+              : scripted.service.execute(input),
+        }),
+      );
+      const finished: Array<{ status: string; detail: string | null }> = [];
+      const lines: string[] = [];
+      const claimed: string[] = [];
+      const creation = yield* core
+        .createWorktree({
+          cwd: process.cwd(),
+          branch: "main",
+          path: null,
+          submodules,
+          progress: {
+            onWorktreeClaimed: (path) => claimed.push(path),
+            onSubmodulesFinished: (result) => finished.push(result),
+            ...(progress ? { onSubmoduleLine: (line: string) => lines.push(line) } : {}),
+          },
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      // Step past real progress before advancing further, so an idle deadline is reset.
+      if (!stall) yield* TestClock.adjust("4 minutes");
+      yield* TestClock.adjust(stall ? "6 minutes" : "2 minutes");
+      if (stall) {
+        yield* Fiber.join(creation);
+        expect(finished).toEqual([
+          {
+            status: "warning",
+            detail: expect.stringContaining("no output for 5 minutes"),
+          },
+        ]);
+        expect(yield* Deferred.isDone(stopped)).toBe(true);
+        expect(killed).toBe(true);
+        if (process.platform !== "win32") expect(killedBeforeSpawnerRelease).toBe(true);
+        return;
+      }
+      expect(finished).toEqual([]);
+      expect(yield* Deferred.isDone(stopped)).toBe(false);
+      expect(claimed).toHaveLength(1);
+      if (cancel) {
+        yield* Fiber.interrupt(creation);
+        const exit = yield* Fiber.await(creation);
+        expect(exit._tag === "Failure" && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+        expect(finished).toEqual([]);
+        expect(killed).toBe(true);
+        if (process.platform !== "win32") expect(killedBeforeSpawnerRelease).toBe(true);
+      } else {
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(creation);
+        expect(finished).toEqual([{ status: "done", detail: null }]);
+        if (progress) expect(lines).toEqual(["Cloning submodule"]);
+      }
+      expect(yield* Deferred.isDone(stopped)).toBe(true);
+    }),
 );
 
 describe("failed worktree add", () => {
@@ -787,32 +1275,538 @@ it("skips submodule initialization when the checkout has no .gitmodules", async 
   expect(scripted.calls.filter((call) => call.args.includes("submodule"))).toHaveLength(0);
 });
 
-it("preserves existing branches during forge head materialization, including races", async () => {
+it.each([true, false])(
+  "preserves existing branches during forge head materialization (already exists=%s)",
+  async (alreadyExists) => {
+    const scripted = makeScriptedGitService((input) =>
+      input.args[0] === "show-ref"
+        ? { code: alreadyExists ? 0 : 1 }
+        : input.args[0] === "branch"
+          ? { code: 128, stderr: "fatal: a branch named 'existing' already exists" }
+          : {},
+    );
+    const core = await makeCore(scripted.service);
+    const result = await Effect.runPromise(
+      core
+        .fetchRemoteBranch({
+          cwd: process.cwd(),
+          remoteName: "origin",
+          remoteBranch: "feature",
+          localBranch: "existing",
+          preserveExisting: true,
+        })
+        .pipe(Effect.result),
+    );
+    expect(result._tag).toBe(alreadyExists ? "Success" : "Failure");
+    expect(scripted.calls.find((call) => call.args[0] === "fetch")?.args.at(-1)).toBe(
+      "refs/heads/feature:refs/remotes/origin/feature",
+    );
+    expect(scripted.calls.find((call) => call.args[0] === "branch")?.args).toEqual(
+      alreadyExists ? undefined : ["branch", "--no-track", "--", "existing", "origin/feature"],
+    );
+    expect(scripted.calls.flatMap((call) => call.args)).not.toContain("--force");
+  },
+);
+
+it("does not fast-forward a branch that changed after PR checkout", async () => {
   const scripted = makeScriptedGitService((input) =>
-    input.args[0] === "branch"
-      ? { code: 128, stderr: "fatal: a branch named 'existing' already exists" }
-      : {},
+    input.args[0] === "symbolic-ref" ? { stdout: "other-branch\n" } : {},
   );
   const core = await makeCore(scripted.service);
   const result = await Effect.runPromise(
-    core
-      .fetchRemoteBranch({
-        cwd: process.cwd(),
-        remoteName: "origin",
-        remoteBranch: "feature",
-        localBranch: "existing",
-        preserveExisting: true,
-      })
-      .pipe(Effect.result),
+    core.fastForwardTo(process.cwd(), "a".repeat(40), "pr-branch").pipe(Effect.result),
   );
   expect(result._tag).toBe("Failure");
-  expect(scripted.calls.find((call) => call.args[0] === "fetch")?.args.at(-1)).toBe(
-    "refs/heads/feature:refs/remotes/origin/feature",
+  expect(scripted.calls.some((call) => call.args[0] === "merge")).toBe(false);
+});
+
+it("rejects option-shaped checkout targets without running a checkout", async () => {
+  const scripted = makeScriptedGitService();
+  const core = await makeCore(scripted.service);
+  await expect(
+    Effect.runPromise(
+      core.checkoutBranch({ cwd: process.cwd(), branch: "--orphan=intruder" }).pipe(Effect.scoped),
+    ),
+  ).rejects.toThrow("Invalid branch name");
+  expect(scripted.calls.some((call) => call.args[0] === "checkout")).toBe(false);
+});
+
+describe("pull output beyond the output cap", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+  // A fast-forward that prints over 1 MB takes thousands of files, so the real pull's output is
+  // padded past the cap instead.
+  async function makePaddedCore(stream: "stdout" | "stderr") {
+    const padding = new Uint8Array(1_000_001).fill(0x20);
+    const spawnerLayer = Layer.effect(
+      ChildProcessSpawner.ChildProcessSpawner,
+      Effect.gen(function* () {
+        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+        return ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            const handle = yield* delegate.spawn(command);
+            const isPull =
+              ChildProcess.isStandardCommand(command) &&
+              command.args.includes("pull") &&
+              command.args.includes("--ff-only");
+            return isPull
+              ? ChildProcessSpawner.makeHandle({
+                  ...handle,
+                  [stream]: Stream.concat(handle[stream], Stream.make(padding)),
+                })
+              : handle;
+          }),
+        );
+      }),
+    ).pipe(Layer.provide(NodeServices.layer));
+    const layer = GitCoreLive.pipe(
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "f5-git-core-pull-" })),
+      Layer.provide(GitServiceLive),
+      Layer.provide(Layer.merge(NodeServices.layer, spawnerLayer)),
+    );
+    return Effect.runPromise(Effect.service(GitCore).pipe(Effect.provide(layer)));
+  }
+
+  function cloneBehindRemote() {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-pull-"));
+    const [cwd, remote, updater] = ["local", "remote.git", "updater"].map((name) =>
+      join(root, name),
+    ) as [string, string, string];
+    for (const dir of [cwd, remote, updater]) mkdirSync(dir);
+    const configure = (repo: string) => {
+      runGit(repo, ["config", "user.email", "test@test.com"]);
+      runGit(repo, ["config", "user.name", "Test"]);
+      runGit(repo, ["config", "commit.gpgsign", "false"]);
+    };
+    runGit(remote, ["init", "--bare", "--initial-branch=main"]);
+    runGit(cwd, ["init", "--initial-branch=main"]);
+    configure(cwd);
+    writeFileSync(join(cwd, "README.md"), "initial\n");
+    runGit(cwd, ["add", "README.md"]);
+    runGit(cwd, ["commit", "-m", "initial"]);
+    runGit(cwd, ["remote", "add", "origin", remote]);
+    runGit(cwd, ["push", "-u", "origin", "main"]);
+    runGit(updater, ["clone", remote, "."]);
+    configure(updater);
+    writeFileSync(join(updater, "remote.txt"), "remote\n");
+    runGit(updater, ["add", "remote.txt"]);
+    runGit(updater, ["commit", "-m", "remote commit"]);
+    runGit(updater, ["push", "origin", "HEAD:main"]);
+    return { root, cwd, remoteHead: runGit(updater, ["rev-parse", "HEAD"]) };
+  }
+
+  it.each(["stdout", "stderr"] as const)(
+    "reports a fast-forward whose %s passes the cap as pulled",
+    async (stream) => {
+      const core = await makePaddedCore(stream);
+      const { root, cwd, remoteHead } = cloneBehindRemote();
+      try {
+        const result = await Effect.runPromise(core.pullCurrentBranch(cwd));
+        expect(result.status).toBe("pulled");
+        expect(runGit(cwd, ["rev-parse", "HEAD"])).toBe(remoteHead);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
   );
-  expect(scripted.calls.find((call) => call.args[0] === "branch")?.args).toEqual([
-    "branch",
-    "existing",
-    "origin/feature",
-  ]);
-  expect(scripted.calls.flatMap((call) => call.args)).not.toContain("--force");
+
+  it("still fails a pull that Git rejects, whatever its output size", async () => {
+    const core = await makePaddedCore("stderr");
+    const { root, cwd } = cloneBehindRemote();
+    try {
+      // A local commit the remote lacks: `pull --ff-only` cannot fast-forward.
+      writeFileSync(join(cwd, "local.txt"), "local\n");
+      runGit(cwd, ["add", "local.txt"]);
+      runGit(cwd, ["commit", "-m", "local commit"]);
+
+      const error = await Effect.runPromise(Effect.flip(core.pullCurrentBranch(cwd)));
+      expect(error.operation).toBe("GitCore.pullCurrentBranch.pull");
+      expect(error.detail).not.toContain("exceeded");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("default branch without a local origin/HEAD ref", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+
+  it("asks origin for its advertised HEAD once and never guesses", async () => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-default-"));
+    try {
+      const [cwd, remote, unpublished] = ["local", "remote.git", "unpublished"].map((name) =>
+        join(root, name),
+      ) as [string, string, string];
+      for (const dir of [cwd, remote, unpublished]) mkdirSync(dir);
+      runGit(remote, ["init", "--bare", "--initial-branch=trunk"]);
+      for (const repo of [cwd, unpublished]) {
+        runGit(repo, ["init", "--initial-branch=main"]);
+        runGit(repo, ["config", "user.email", "test@test.com"]);
+        runGit(repo, ["config", "user.name", "Test"]);
+        runGit(repo, ["config", "commit.gpgsign", "false"]);
+        writeFileSync(join(repo, "README.md"), "initial\n");
+        runGit(repo, ["add", "README.md"]);
+        runGit(repo, ["commit", "-m", "initial"]);
+      }
+      runGit(cwd, ["remote", "add", "origin", remote]);
+      // `push -u` does not create refs/remotes/origin/HEAD.
+      runGit(cwd, ["push", "-u", "origin", "main:trunk", "main:main"]);
+
+      const core = await makeCore(
+        await Effect.runPromise(
+          Effect.service(GitService).pipe(
+            Effect.provide(GitServiceLive.pipe(Layer.provide(NodeServices.layer))),
+          ),
+        ),
+      );
+      expect(await Effect.runPromise(core.readDefaultBranch(cwd))).toBeNull();
+      expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(cwd))).toBe("trunk");
+      // Cached: the remote is not asked again within the pass.
+      runGit(remote, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+      expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(cwd))).toBe("trunk");
+      // No remote to ask: no default, rather than "main".
+      expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(unpublished))).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("fetches an advertised default that was never fetched, so merge checks can run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-default-"));
+    try {
+      const [cwd, remote] = ["local", "remote.git"].map((name) => join(root, name)) as [
+        string,
+        string,
+      ];
+      for (const dir of [cwd, remote]) mkdirSync(dir);
+      runGit(remote, ["init", "--bare", "--initial-branch=trunk"]);
+      runGit(cwd, ["init", "--initial-branch=feature"]);
+      runGit(cwd, ["config", "user.email", "test@test.com"]);
+      runGit(cwd, ["config", "user.name", "Test"]);
+      runGit(cwd, ["config", "commit.gpgsign", "false"]);
+      writeFileSync(join(cwd, "README.md"), "initial\n");
+      runGit(cwd, ["add", "README.md"]);
+      runGit(cwd, ["commit", "-m", "initial"]);
+      const head = runGit(cwd, ["rev-parse", "HEAD"]);
+      runGit(cwd, ["remote", "add", "origin", remote]);
+      runGit(cwd, ["push", "origin", "HEAD:trunk"]);
+      // Integrated upstream, but no origin/HEAD, tracking ref or local trunk.
+      runGit(cwd, ["update-ref", "-d", "refs/remotes/origin/trunk"]);
+
+      const core = await makeCore(
+        await Effect.runPromise(
+          Effect.service(GitService).pipe(
+            Effect.provide(GitServiceLive.pipe(Layer.provide(NodeServices.layer))),
+          ),
+        ),
+      );
+      expect(await Effect.runPromise(resolveHeadInDefaultBranch(core, cwd, head))).toEqual({
+        defaultBranch: "trunk",
+        merged: null,
+      });
+      await Effect.runPromise(fetchMissingDefaultBranch(core, cwd));
+      expect(await Effect.runPromise(resolveHeadInDefaultBranch(core, cwd, head))).toEqual({
+        defaultBranch: "trunk",
+        merged: true,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe.skipIf(process.platform === "win32")("pushes the remote refuses", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+  it("says the remote rejected the push without quoting the server", async () => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-push-"));
+    try {
+      const [cwd, remote] = ["local", "remote.git"].map((name) => join(root, name)) as [
+        string,
+        string,
+      ];
+      for (const dir of [cwd, remote]) mkdirSync(dir);
+      runGit(remote, ["init", "--bare", "--initial-branch=main"]);
+      runGit(cwd, ["init", "--initial-branch=main"]);
+      runGit(cwd, ["config", "user.email", "test@test.com"]);
+      runGit(cwd, ["config", "user.name", "Test"]);
+      runGit(cwd, ["config", "commit.gpgsign", "false"]);
+      writeFileSync(join(cwd, "README.md"), "initial\n");
+      runGit(cwd, ["add", "README.md"]);
+      runGit(cwd, ["commit", "-m", "initial"]);
+      runGit(cwd, ["remote", "add", "origin", remote]);
+      runGit(cwd, ["push", "-u", "origin", "main"]);
+      writeFileSync(
+        join(remote, "hooks", "pre-receive"),
+        "#!/bin/sh\necho secret-policy >&2\nexit 1\n",
+        {
+          mode: 0o755,
+        },
+      );
+      writeFileSync(join(cwd, "README.md"), "changed\n");
+      runGit(cwd, ["commit", "-am", "change"]);
+
+      const layer = GitCoreLive.pipe(
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "f5-git-core-push-" })),
+        Layer.provide(GitServiceLive),
+        Layer.provide(NodeServices.layer),
+      );
+      const error = await Effect.runPromise(
+        Effect.flip(
+          Effect.service(GitCore).pipe(
+            Effect.flatMap((core) => core.pushCurrentBranch(cwd, null)),
+            Effect.provide(layer),
+          ),
+        ),
+      );
+      if (!Schema.is(GitCommandError)(error)) throw error;
+      expect(error.detail).toContain(
+        "The remote rejected the push. Push this branch from a terminal to see the server's message.",
+      );
+      expect(error.detail).not.toContain("secret-policy");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+it("terminates option parsing before configuration keys", async () => {
+  const scripted = makeScriptedGitService();
+  const core = await makeCore(scripted.service);
+  await Effect.runPromise(core.readConfigValue(process.cwd(), "--list"));
+  expect(scripted.calls.at(-1)?.args).toEqual(["config", "--get", "--", "--list"]);
+});
+
+describe("shared .git/config writes", () => {
+  const lockMessage = "error: could not lock config file .git/config: File exists";
+
+  it("recognizes a held config lock even when the host locale translates Git", async () => {
+    let attempts = 0;
+    const scripted = makeScriptedGitService((input) => {
+      if (input.args[0] !== "branch") return {};
+      attempts += 1;
+      if (attempts > 1) return {};
+      // Only the untranslated message identifies the lock; a translated Git prints another.
+      return input.env?.LC_ALL === "C"
+        ? { code: 255, stderr: lockMessage }
+        : { code: 255, stderr: "Fehler: konnte Konfigurationsdatei nicht sperren" };
+    });
+    const core = await makeCore(scripted.service);
+
+    await Effect.runPromise(
+      core.setBranchUpstream({
+        cwd: process.cwd(),
+        branch: "feature",
+        remoteName: "origin",
+        remoteBranch: "feature",
+      }),
+    );
+
+    const writes = scripted.calls.filter((call) => call.args[0] === "branch");
+    expect(writes).toHaveLength(2);
+    expect(writes.every((call) => call.env?.LC_ALL === "C")).toBe(true);
+  });
+
+  it("does not retry a config write that failed for another reason", async () => {
+    const scripted = makeScriptedGitService((input) =>
+      input.args[0] === "branch"
+        ? { code: 128, stderr: "fatal: the requested upstream branch 'origin/x' does not exist" }
+        : {},
+    );
+    const core = await makeCore(scripted.service);
+
+    const result = await Effect.runPromise(
+      core
+        .setBranchUpstream({
+          cwd: process.cwd(),
+          branch: "feature",
+          remoteName: "origin",
+          remoteBranch: "x",
+        })
+        .pipe(Effect.result),
+    );
+
+    expect(result._tag).toBe("Failure");
+    expect(scripted.calls.filter((call) => call.args[0] === "branch")).toHaveLength(1);
+  });
+
+  it("returns a remote that a parallel launch added after the listing", async () => {
+    let listings = 0;
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["remote", "-v"])) {
+        listings += 1;
+        return listings === 1
+          ? { stdout: "" }
+          : { stdout: "fork\thttps://github.com/octocat/f5.git (fetch)\n" };
+      }
+      if (input.args[0] === "remote" && input.args[1] === "add")
+        return { code: 3, stderr: "error: remote octocat already exists." };
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+
+    await expect(
+      Effect.runPromise(
+        core.ensureRemote({
+          cwd: process.cwd(),
+          preferredName: "octocat",
+          url: "https://github.com/octocat/f5.git",
+        }),
+      ),
+    ).resolves.toBe("fork");
+  });
+
+  it("serializes a branch rename with a concurrent config write in the same repository", async () => {
+    const order: string[] = [];
+    const renameGate = Promise.withResolvers<void>();
+    const renameStarted = Promise.withResolvers<void>();
+    const scripted = makeScriptedGitService((input) =>
+      input.args[0] === "show-ref" ? { code: 1 } : {},
+    );
+    const core = await makeCore({
+      execute: (input) => {
+        if (input.args[0] === "branch" && input.args[1] === "-m")
+          return Effect.promise(async () => {
+            order.push("rename:start");
+            renameStarted.resolve();
+            await renameGate.promise;
+            order.push("rename:end");
+            return { code: 0, stdout: "", stderr: "" };
+          });
+        return scripted.service.execute(input);
+      },
+    });
+
+    const rename = Effect.runPromise(
+      core.renameBranch({ cwd: process.cwd(), oldBranch: "t3code/tmp", newBranch: "feature" }),
+    );
+    await renameStarted.promise;
+    const write = Effect.runPromise(
+      core.setBranchUpstream({
+        cwd: process.cwd(),
+        branch: "feature",
+        remoteName: "origin",
+        remoteBranch: "feature",
+      }),
+    );
+    // Give the write every chance to run while the rename still holds the config turn.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(scripted.calls.some((call) => call.args.includes("--set-upstream-to"))).toBe(false);
+    renameGate.resolve();
+    await Promise.all([rename, write]);
+    expect(order).toEqual(["rename:start", "rename:end"]);
+    expect(scripted.calls.some((call) => call.args.includes("--set-upstream-to"))).toBe(true);
+  });
+});
+
+describe("real repositories", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const makeRealCore = async () =>
+    makeCore(
+      await Effect.runPromise(
+        Effect.service(GitService).pipe(
+          Effect.provide(GitServiceLive.pipe(Layer.provide(NodeServices.layer))),
+        ),
+      ),
+    );
+  const makeRepo = (name = "local") => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-real-"));
+    roots.push(root);
+    const cwd = join(root, name);
+    mkdirSync(cwd);
+    runGit(cwd, ["init", "--initial-branch=main"]);
+    runGit(cwd, ["config", "user.email", "test@test.com"]);
+    runGit(cwd, ["config", "user.name", "Test"]);
+    runGit(cwd, ["config", "commit.gpgsign", "false"]);
+    return { root, cwd };
+  };
+  const commitFile = (cwd: string, file: string) => {
+    writeFileSync(join(cwd, file), `${file}\n`);
+    runGit(cwd, ["add", file]);
+    runGit(cwd, ["commit", "-m", file]);
+    return runGit(cwd, ["rev-parse", "HEAD"]);
+  };
+
+  it("reads the current branch by name when a tag shares it", async () => {
+    const { cwd } = makeRepo();
+    const head = commitFile(cwd, "README.md");
+    runGit(cwd, ["switch", "-c", "release"]);
+    runGit(cwd, ["update-ref", "refs/tags/release", "HEAD"]);
+    expect(runGit(cwd, ["symbolic-ref", "--short", "HEAD"])).toBe("heads/release");
+    const core = await makeRealCore();
+
+    expect((await Effect.runPromise(core.inspectCheckoutIdentity(cwd))).branch).toBe("release");
+    expect((await Effect.runPromise(core.inspectCheckout(cwd))).branch).toBe("release");
+    expect(
+      (await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }))).branch,
+    ).toBe("release");
+    await Effect.runPromise(core.fastForwardTo(cwd, head, "release"));
+  }, 30_000);
+
+  it("counts unpublished commits against the base branch, not a tag that shares its name", async () => {
+    const { cwd } = makeRepo();
+    const older = commitFile(cwd, "README.md");
+    commitFile(cwd, "base.txt");
+    runGit(cwd, ["update-ref", "refs/tags/main", older]);
+    runGit(cwd, ["switch", "-c", "feature"]);
+    commitFile(cwd, "feature.txt");
+    const core = await makeRealCore();
+
+    const status = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
+    expect(status.hasUpstream).toBe(false);
+    expect(status.aheadCount).toBe(1);
+  }, 30_000);
+
+  // A fork whose local main lags `upstream/main`, with a feature branched from upstream.
+  const makeForkWithUpstreamBase = () => {
+    const { root, cwd } = makeRepo();
+    const lagging = commitFile(cwd, "README.md");
+    commitFile(cwd, "upstream-1.txt");
+    commitFile(cwd, "upstream-2.txt");
+    runGit(cwd, ["remote", "add", "upstream", join(root, "missing-upstream.git")]);
+    runGit(cwd, ["update-ref", "refs/remotes/upstream/main", "HEAD"]);
+    runGit(cwd, ["reset", "--hard", lagging]);
+    runGit(cwd, ["switch", "--no-track", "-c", "feature", "refs/remotes/upstream/main"]);
+    runGit(cwd, ["config", "branch.feature.gh-merge-base", "upstream/main"]);
+    return { root, cwd, lagging };
+  };
+
+  it("counts unpublished commits against a configured remote merge base", async () => {
+    const { cwd } = makeForkWithUpstreamBase();
+    commitFile(cwd, "feature.txt");
+    // A local branch named like the remote base must not shadow it.
+    runGit(cwd, ["branch", "upstream/main", "main"]);
+    const core = await makeRealCore();
+
+    const status = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
+    expect(status.hasUpstream).toBe(false);
+    expect(status.aheadCount).toBe(1);
+  }, 30_000);
+
+  it("pushes a branch at its configured base when the published branch is behind", async () => {
+    const { root, cwd, lagging } = makeForkWithUpstreamBase();
+    const origin = join(root, "origin.git");
+    runGit(root, ["init", "--bare", "--initial-branch=main", origin]);
+    runGit(cwd, ["remote", "add", "origin", origin]);
+    runGit(cwd, ["push", "origin", `${lagging}:refs/heads/feature`]);
+    runGit(cwd, ["fetch", "origin"]);
+    const core = await makeRealCore();
+
+    const status = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
+    expect(status.aheadCount).toBe(0);
+    const result = await Effect.runPromise(core.pushCurrentBranch(cwd, null));
+    expect(result.status).toBe("pushed");
+    expect(runGit(origin, ["rev-parse", "refs/heads/feature"])).toBe(
+      runGit(cwd, ["rev-parse", "HEAD"]),
+    );
+  }, 30_000);
 });

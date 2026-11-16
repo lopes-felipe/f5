@@ -1,0 +1,351 @@
+{
+  "schemaVersion": 1,
+  "scope": "server-component",
+  "mode": "measurement",
+  "metadata": {
+    "capturedAt": "2026-10-19T09:54:39.735Z",
+    "sourceCommit": "aaff30384947534dfdd2634ced62f0e3cc797b5c",
+    "gitVersion": "git version 2.54.0 (Apple Git-157)",
+    "sourceDirty": true,
+    "fixtureDigest": "e5563b7a880819080598d41e08d7149464bc0c5a9db31d00ed64591cf6b9419a",
+    "harnessDigest": "574ef22e414802cab364b5db7c051200ac70caee784007926fc4f0936e9371bb",
+    "dependencyLockDigest": "413483ef913549ba3235def66983934064620cf2e1c403e615bce4c9c3920843",
+    "runtime": {
+      "executable": "/usr/local/bin/node",
+      "versions": {
+        "node": "26.11.1",
+        "acorn": "8.18.0",
+        "ada": "4.0.0",
+        "amaro": "1.1.11",
+        "ares": "1.34.8",
+        "brotli": "1.2.0",
+        "cldr": "48.0",
+        "icu": "78.3",
+        "libffi": "3.8.0",
+        "lief": "1.0.0",
+        "llhttp": "9.4.3",
+        "merve": "1.2.2",
+        "modules": "147",
+        "napi": "10",
+        "nbytes": "0.1.4",
+        "ncrypto": "0.0.1",
+        "nghttp2": "1.70.0",
+        "nghttp3": "",
+        "ngtcp2": "",
+        "openssl": "3.5.9",
+        "simdjson": "4.6.11",
+        "simdutf": "7.7.0",
+        "sqlite": "3.53.4",
+        "tz": "2026e",
+        "undici": "8.11.2",
+        "unicode": "17.0",
+        "uv": "1.52.1",
+        "uvwasi": "0.0.23",
+        "v8": "14.6.202.34-node.37",
+        "zlib": "1.3.2.1-motley-456ae73",
+        "zstd": "1.5.7"
+      }
+    },
+    "browser": null,
+    "browserConfig": null,
+    "os": {
+      "platform": "darwin",
+      "release": "27.0.0",
+      "architecture": "arm64"
+    },
+    "hardware": {
+      "cpu": "Apple M4 Pro",
+      "cores": 14,
+      "memoryBytes": 51539607552
+    },
+    "dependencies": {
+      "t3": {
+        "version": "0.1.0",
+        "dependencies": {
+          "@anthropic-ai/claude-agent-sdk": "0.3.295",
+          "@effect/platform-node": "4.0.0-beta.25",
+          "@effect/sql-sqlite-bun": "4.0.0-beta.25",
+          "@ff-labs/fff-node": "0.9.4",
+          "@modelcontextprotocol/sdk": "1.32.1",
+          "@muse-code/sdk": "1.4.8",
+          "@opencode-ai/sdk": "1.14.33",
+          "@pierre/diffs": "1.1.0-beta.19",
+          "cross-spawn": "7.0.6",
+          "effect": "4.0.0-beta.25",
+          "node-pty": "1.1.0",
+          "open": "10.2.0",
+          "ws": "8.20.0",
+          "yaml": "2.8.4",
+          "yauzl": "3.4.0",
+          "zod": "4.3.6"
+        }
+      },
+      "@t3tools/web": {
+        "version": "0.1.0",
+        "dependencies": {
+          "@base-ui/react": "1.3.0",
+          "@dnd-kit/core": "6.3.1",
+          "@dnd-kit/modifiers": "9.0.0",
+          "@dnd-kit/sortable": "10.0.0",
+          "@dnd-kit/utilities": "3.2.2",
+          "@fontsource-variable/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.2.8",
+          "@legendapp/list": "3.0.0-beta.44",
+          "@lexical/react": "0.41.0",
+          "@pierre/diffs": "1.1.0-beta.19",
+          "@t3tools/contracts": "0.1.0",
+          "@t3tools/shared": "0.0.0-alpha.1",
+          "@tanstack/react-pacer": "0.19.4",
+          "@tanstack/react-query": "5.90.21",
+          "@tanstack/react-router": "1.166.7",
+          "@xterm/addon-fit": "0.11.0",
+          "@xterm/xterm": "6.0.0",
+          "class-variance-authority": "0.7.1",
+          "culori": "4.0.2",
+          "effect": "4.0.0-beta.25",
+          "fflate": "0.8.3",
+          "jsonc-parser": "3.3.1",
+          "lexical": "0.41.0",
+          "lucide-react": "0.564.0",
+          "react": "19.2.4",
+          "react-dom": "19.2.4",
+          "react-markdown": "10.1.0",
+          "remark-gfm": "4.0.1",
+          "shiki": "3.23.0",
+          "tailwind-merge": "3.5.0",
+          "zustand": "5.0.11"
+        }
+      },
+      "@t3tools/contracts": {
+        "version": "0.1.0",
+        "dependencies": {
+          "effect": "4.0.0-beta.25"
+        }
+      },
+      "@t3tools/shared": {
+        "version": "0.0.0-alpha.1",
+        "dependencies": {
+          "@t3tools/contracts": "0.1.0",
+          "effect": "4.0.0-beta.25",
+          "smol-toml": "1.6.0"
+        }
+      }
+    }
+  },
+  "method": {
+    "warmups": 5,
+    "repetitions": 30
+  },
+  "measurements": {
+    "sqlite.checkpoint-40MiB": {
+      "wallMs": [
+        120.16741700000011, 150.50362500000028, 118.32512499999984, 132.33887499999992,
+        119.02808300000015, 122.3208340000001, 128.0567920000003, 127.37733300000036,
+        128.71758300000056, 126.34554200000002, 122.71120800000062, 129.2953749999997,
+        137.81312499999967, 119.87745900000027, 161.32254199999988, 182.46133400000053,
+        203.45087500000045, 310.8761249999998, 243.06816699999945, 322.4555419999997,
+        307.96879199999967, 279.8047920000008, 298.04733300000044, 255.80591600000116,
+        238.56879200000003, 264.1609160000007, 283.0740000000005, 259.70566599999984,
+        280.5590839999986, 316.2334159999991
+      ],
+      "cpuMs": [
+        119.98, 122.287, 96.712, 98.051, 94.568, 99.247, 99.855, 106.721, 104.586, 103.999, 98.069,
+        102.618, 109.863, 96.59, 126.663, 138.517, 156.408, 233.28, 192.6, 229.773, 214.604,
+        205.554, 218.029, 208.061, 188.017, 208.425, 214.631, 191.289, 200.059, 216.667
+      ]
+    }
+  },
+  "observations": [
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms",
+      "actual": 3.219455,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.0",
+      "actual": 1.232895,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.1",
+      "actual": 2.069503,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.2",
+      "actual": 1.211391,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.3",
+      "actual": 1.200127,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.4",
+      "actual": 1.187839,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.5",
+      "actual": 1.211391,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.6",
+      "actual": 1.195007,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.7",
+      "actual": 1.198079,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.8",
+      "actual": 1.206271,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.9",
+      "actual": 1.196031,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.10",
+      "actual": 1.202175,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.11",
+      "actual": 1.183743,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.12",
+      "actual": 1.204223,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.13",
+      "actual": 1.205247,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.14",
+      "actual": 1.790975,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.15",
+      "actual": 2.820095,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.16",
+      "actual": 2.932735,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.17",
+      "actual": 1.696767,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.18",
+      "actual": 2.830335,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.19",
+      "actual": 2.308095,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.20",
+      "actual": 3.219455,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.21",
+      "actual": 2.073599,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.22",
+      "actual": 2.140159,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.23",
+      "actual": 2.011135,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.24",
+      "actual": 1.890303,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.25",
+      "actual": 2.193407,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.26",
+      "actual": 2.342911,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.27",
+      "actual": 1.509375,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.28",
+      "actual": 2.478079,
+      "maximum": 50,
+      "passed": true
+    },
+    {
+      "name": "sqlite.checkpoint.eventLoopP99Ms.29",
+      "actual": 2.754559,
+      "maximum": 50,
+      "passed": true
+    }
+  ],
+  "notMeasured": [
+    "Other server components and interactive workloads",
+    "Comparative CPU improvement",
+    "10-minute retained memory"
+  ]
+}

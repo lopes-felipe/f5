@@ -120,6 +120,12 @@ describe("PreviewRuntime", () => {
 
     await expect(runtime.setColorScheme("tab-1", "dark")).resolves.toBe(true);
 
+    // Dark-scheme pages without their own background need an opaque base.
+    expect(mock.commands).toContainEqual({
+      method: "Emulation.setDefaultBackgroundColorOverride",
+      params: { color: { r: 255, g: 255, b: 255, a: 1 } },
+    });
+
     expect(runtime.lookupTab("tab-1")?.colorScheme).toBe("dark");
     expect(mock.commands).toContainEqual({
       method: "Emulation.setEmulatedMedia",
@@ -157,6 +163,8 @@ describe("PreviewRuntime", () => {
       params: { sessionId: 7 },
     });
     expect(mock.commands.some((command) => command.method === "Page.stopScreencast")).toBe(true);
+    // Input and snapshots share this debugger; stopping a recording must not detach it.
+    expect(mock.debuggerApi.isAttached()).toBe(true);
     expect(artifact).toMatchObject({ kind: "recording", bytes: 3 });
   });
 

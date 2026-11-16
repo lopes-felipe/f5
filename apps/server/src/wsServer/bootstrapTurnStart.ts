@@ -1,3 +1,8 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { OrchestrationOverloadError } from "../orchestration/Errors.ts";
+import { dispatchVerifiedWorkspace } from "../project/workspaceTransitionContext.ts";
+import { isPossiblyStaleWorktreeBase, resolveWorktreeBase } from "../project/worktreeBase.ts";
+import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { CommandId, type OrchestrationCommand } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import { Effect, Schema } from "effect";
@@ -5,7 +10,6 @@ import { Effect, Schema } from "effect";
 import { AttachmentIngressError } from "../attachmentIngress.ts";
 import { GitCommandError } from "../git/Errors.ts";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
-import { resolveDefaultWorktreePath } from "../git/worktreePaths.ts";
 import { PersistenceDecodeError, PersistenceSqlError } from "../persistence/Errors.ts";
 import {
   OrchestrationCommandIdConflictError,
@@ -14,6 +18,7 @@ import {
   type OrchestrationDispatchError,
   OrchestrationListenerCallbackError,
   OrchestrationProjectorDecodeError,
+  ThreadSettingsChangedError,
   ThreadTurnAlreadyActiveError,
   ThreadTurnNotReadyError,
 } from "../orchestration/Errors.ts";
@@ -43,12 +48,13 @@ type BootstrapFailureStage =
 type BootstrapObservedStage =
   | BootstrapFailureStage
   | "worktree-base-fetch"
-  | "worktree-base-probe"
   | "setup-script-launch"
   | "cleanup";
 interface BootstrapCreatedWorktree {
   readonly cwd: string;
   readonly path: string;
+  readonly commonDir: string;
+  readonly baseSha: string;
 }
 interface BootstrapPreviousThreadMeta {
   readonly branch: string | null;
@@ -56,7 +62,7 @@ interface BootstrapPreviousThreadMeta {
 }
 
 const serverCommandId = (tag: string): CommandId =>
-  CommandId.makeUnsafe(`server:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`server:${tag}:${timeOrderedUuid()}`);
 
 const stripBootstrapFromTurnStart = (
   command: ThreadTurnStartCommand,
@@ -69,9 +75,21 @@ interface BootstrapTurnStartBaseDependencies {
   readonly orchestrationEngine: Pick<OrchestrationEngineShape, "dispatch" | "getReadModel">;
   readonly git: Pick<
     GitCoreShape,
-    "createWorktree" | "fetchRemoteBranchCommit" | "hasRemote" | "removeWorktree"
+    | "inspectCheckoutIdentity"
+    | "allocateWorktreePath"
+    | "createWorktree"
+    | "fetchRemoteBranchCommit"
+    | "hasRemote"
+    | "isAncestor"
+    | "removeWorktree"
+    | "resolveCommit"
+    | "resolveCommonDir"
   >;
   readonly projectSetupScriptRunner: Pick<ProjectSetupScriptRunnerShape, "runForThread">;
+  readonly rollbackWorktree: (
+    input: BootstrapCreatedWorktree,
+    ownedTerminalId?: string,
+  ) => Effect.Effect<void, GitCommandError>;
   readonly worktreesDir?: string | undefined;
   /**
    * Reports how a failed bootstrap left the thread it was asked to create:
@@ -98,6 +116,7 @@ export type BootstrapTurnStartDependencies = BootstrapTurnStartBaseDependencies 
 
 export function isDefinitelyUncommittedDispatchError(error: OrchestrationDispatchError): boolean {
   return (
+    Schema.is(OrchestrationOverloadError)(error) ||
     Schema.is(OrchestrationCommandIdConflictError)(error) ||
     Schema.is(OrchestrationCommandInvariantError)(error) ||
     Schema.is(OrchestrationCommandPreviouslyRejectedError)(error) ||
@@ -189,6 +208,8 @@ function withAppendedCleanupDetail(
   if (Schema.is(ThreadTurnAlreadyActiveError)(error)) {
     return new ThreadTurnAlreadyActiveError({ ...error });
   }
+  if (Schema.is(ThreadSettingsChangedError)(error))
+    return new ThreadSettingsChangedError({ ...error });
   if (Schema.is(OrchestrationProjectorDecodeError)(error)) {
     return new OrchestrationProjectorDecodeError({
       ...error,
@@ -201,6 +222,8 @@ function withAppendedCleanupDetail(
       detail: `${error.detail}${suffix}`,
     });
   }
+  if (Schema.is(OrchestrationOverloadError)(error))
+    return new OrchestrationOverloadError({ ...error });
   const exhaustive: never = error;
   return exhaustive;
 }
@@ -218,6 +241,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
   const finalTurnStartCommand = stripBootstrapFromTurnStart(input.command);
   let createdThread = false;
   let createdWorktree: BootstrapCreatedWorktree | null = null;
+  let ownedSetupTerminalId: string | undefined;
   let previousThreadMeta: BootstrapPreviousThreadMeta | null = null;
   let appliedBootstrapThreadMeta: BootstrapPreviousThreadMeta | null = null;
   let mutatedExistingThreadMeta = false;
@@ -323,11 +347,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
             const removeWorktree = yield* runCleanupStep(
               error,
               "worktree removal",
-              input.git.removeWorktree({
-                cwd: createdWorktree.cwd,
-                path: createdWorktree.path,
-                force: true,
-              }),
+              input.rollbackWorktree(createdWorktree, ownedSetupTerminalId),
             );
             if (!removeWorktree.ok) {
               return yield* removeWorktree.error;
@@ -352,13 +372,18 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
             const restoreThreadMeta = yield* runCleanupStep(
               error,
               "thread metadata restore",
-              input.orchestrationEngine.dispatch({
-                type: "thread.meta.update",
-                commandId: serverCommandId("bootstrap-thread-meta-restore"),
-                threadId: input.command.threadId,
-                branch: previousThreadMeta.branch,
-                worktreePath: previousThreadMeta.worktreePath,
-              }),
+              dispatchVerifiedWorkspace(
+                input.orchestrationEngine,
+                input.git,
+                {
+                  type: "thread.meta.update",
+                  commandId: serverCommandId("bootstrap-thread-meta-restore"),
+                  threadId: input.command.threadId,
+                  branch: previousThreadMeta.branch,
+                  worktreePath: previousThreadMeta.worktreePath,
+                },
+                { allowMissing: true },
+              ),
             );
             if (!restoreThreadMeta.ok) {
               return yield* restoreThreadMeta.error;
@@ -380,11 +405,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
             const removeWorktree = yield* runCleanupStep(
               error,
               "worktree removal",
-              input.git.removeWorktree({
-                cwd: createdWorktree.cwd,
-                path: createdWorktree.path,
-                force: true,
-              }),
+              input.rollbackWorktree(createdWorktree, ownedSetupTerminalId),
             );
             if (!removeWorktree.ok) {
               return yield* removeWorktree.error;
@@ -397,11 +418,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
           const removeWorktree = yield* runCleanupStep(
             error,
             "worktree removal",
-            input.git.removeWorktree({
-              cwd: createdWorktree.cwd,
-              path: createdWorktree.path,
-              force: true,
-            }),
+            input.rollbackWorktree(createdWorktree, ownedSetupTerminalId),
           );
           if (!removeWorktree.ok) {
             return yield* removeWorktree.error;
@@ -448,13 +465,18 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
             type: "thread.create",
             commandId: serverCommandId("bootstrap-thread-create"),
             threadId: input.command.threadId,
+            scheduledOrigin: bootstrap.createThread.scheduledOrigin,
             projectId: bootstrap.createThread.projectId,
             title: bootstrap.createThread.title,
+            scratchFolderWords: input.command.message.text.slice(0, 8_000),
             model: bootstrap.createThread.model,
             runtimeMode: bootstrap.createThread.runtimeMode,
             interactionMode: bootstrap.createThread.interactionMode,
             branch: bootstrap.createThread.branch,
             worktreePath: bootstrap.createThread.worktreePath,
+            ...(bootstrap.createThread.sharedFilesystemConfirmed
+              ? { sharedFilesystemConfirmed: true }
+              : {}),
             ...(bootstrap.createThread.pullRequest
               ? { pullRequest: bootstrap.createThread.pullRequest }
               : {}),
@@ -476,10 +498,25 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
       // creating a second worktree. Otherwise the subsequent
       // `thread.meta.update` below would replace the existing `worktreePath`
       // and leave the earlier worktree orphaned on disk.
+      let runSetupScript =
+        bootstrap.prepareWorktree?.runSetupScript ?? bootstrap.runSetupScript ?? false;
+      let setupIdentity: string | null = null;
       let shouldPrepareWorktree = bootstrap.prepareWorktree !== undefined;
       if (shouldPrepareWorktree && bootstrap.prepareWorktree) {
         failureStage = "worktree-create";
         const preWorktreeReadModel = yield* input.orchestrationEngine.getReadModel();
+        const setupScript = setupProjectScript(
+          preWorktreeReadModel.projects.find(
+            (project) =>
+              project.workspaceRoot === bootstrap.prepareWorktree!.projectCwd &&
+              project.deletedAt === null,
+          )?.scripts ?? [],
+        );
+        setupIdentity = setupScript?.command ?? null;
+        runSetupScript =
+          bootstrap.prepareWorktree.runSetupScript ??
+          bootstrap.runSetupScript ??
+          setupScript !== null;
         const existingThreadBeforeWorktree = preWorktreeReadModel.threads.find(
           (thread) =>
             thread.id === input.command.threadId &&
@@ -505,35 +542,56 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
       if (shouldPrepareWorktree && bootstrap.prepareWorktree) {
         failureStage = "worktree-create";
         const newBranch = bootstrap.prepareWorktree.branch ?? buildTemporaryWorktreeBranchName();
-        const hasRemote = yield* observeBootstrapStage(
-          "worktree-base-probe",
-          input.git.hasRemote(bootstrap.prepareWorktree.projectCwd),
-        );
-        const remoteBase = hasRemote
-          ? yield* observeBootstrapStage(
-              "worktree-base-fetch",
-              input.git.fetchRemoteBranchCommit({
-                allowMissingBranch: true,
-                cwd: bootstrap.prepareWorktree.projectCwd,
-                branch: bootstrap.prepareWorktree.baseBranch,
+        const { baseSha } = yield* observeBootstrapStage(
+          "worktree-base-fetch",
+          resolveWorktreeBase(input.git, {
+            projectCwd: bootstrap.prepareWorktree.projectCwd,
+            baseBranch: bootstrap.prepareWorktree.baseBranch,
+            logAnnotations: { threadId: input.command.threadId },
+          }).pipe(
+            // This path has no setup card, so record how the base was chosen.
+            Effect.tap((base) =>
+              Effect.annotateCurrentSpan({
+                "worktree.base.outcome": base.outcome,
+                "worktree.base.detail": base.detail,
               }),
-            )
-          : null;
+            ),
+            Effect.tap((base) =>
+              isPossiblyStaleWorktreeBase(base.outcome)
+                ? Effect.logWarning("bootstrap created a worktree from a possibly stale base", {
+                    threadId: input.command.threadId,
+                    baseBranch: bootstrap.prepareWorktree!.baseBranch,
+                    outcome: base.outcome,
+                    detail: base.detail,
+                  })
+                : Effect.void,
+            ),
+          ),
+        );
+        const commonDir = yield* input.git.resolveCommonDir(bootstrap.prepareWorktree.projectCwd);
+        if (!baseSha)
+          return yield* new GitCommandError({
+            operation: "bootstrap",
+            cwd: bootstrap.prepareWorktree.projectCwd,
+            command: "rev-parse",
+            detail: "The worktree base is unavailable.",
+          });
         const worktree = yield* observeBootstrapStage(
           "worktree-create",
           input.git.createWorktree({
+            preparation: {
+              owner: `thread:${input.command.threadId}`,
+              runSetupScript,
+              setupIdentity,
+            },
             cwd: bootstrap.prepareWorktree.projectCwd,
             branch: bootstrap.prepareWorktree.baseBranch,
-            ...(remoteBase ? { baseRefName: remoteBase.commit } : {}),
+            baseRefName: baseSha,
             newBranch,
-            path:
-              input.worktreesDir === undefined
-                ? null
-                : resolveDefaultWorktreePath({
-                    worktreesDir: input.worktreesDir,
-                    cwd: bootstrap.prepareWorktree.projectCwd,
-                    branch: newBranch,
-                  }),
+            path: yield* input.git.allocateWorktreePath({
+              cwd: bootstrap.prepareWorktree.projectCwd,
+              branch: newBranch,
+            }),
           }),
         );
         targetProjectCwd = bootstrap.prepareWorktree.projectCwd;
@@ -541,13 +599,15 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
         createdWorktree = {
           cwd: bootstrap.prepareWorktree.projectCwd,
           path: worktree.worktree.path,
+          commonDir,
+          baseSha,
         };
         yield* annotateBootstrapSpan();
 
         failureStage = "thread-meta-update";
         yield* observeBootstrapStage(
           "thread-meta-update",
-          input.orchestrationEngine.dispatch({
+          dispatchVerifiedWorkspace(input.orchestrationEngine, input.git, {
             type: "thread.meta.update",
             commandId: serverCommandId("bootstrap-thread-meta-update"),
             threadId: input.command.threadId,
@@ -564,15 +624,22 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
         }
       }
 
-      if (bootstrap.runSetupScript && targetWorktreePath) {
+      if (runSetupScript && targetWorktreePath) {
         const setupScriptLaunch = input.projectSetupScriptRunner
           .runForThread({
             threadId: input.command.threadId,
             ...(targetProjectId ? { projectId: targetProjectId } : {}),
             ...(targetProjectCwd ? { projectCwd: targetProjectCwd } : {}),
             worktreePath: targetWorktreePath,
+            // A rollback may stop this terminal; never reuse a pre-existing script tab.
+            ...(createdWorktree ? { preferredTerminalId: `setup-${crypto.randomUUID()}` } : {}),
           })
           .pipe(
+            Effect.tap((result) =>
+              Effect.sync(() => {
+                if (result.status === "started") ownedSetupTerminalId = result.terminalId;
+              }),
+            ),
             Effect.tap((result) =>
               increment(setupScriptLaunchTotal, {
                 outcome: result.status,

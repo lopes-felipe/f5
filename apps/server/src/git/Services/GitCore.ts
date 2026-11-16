@@ -1,3 +1,5 @@
+import type { MoveSnapshotOperations } from "../moveSnapshot.ts";
+import type { IgnoredFilesRemovalPolicy } from "../worktreeIgnoredFiles.ts";
 /**
  * GitCore - Effect service contract for low-level Git operations.
  *
@@ -17,10 +19,67 @@ import type {
   GitListBranchesInput,
   GitListBranchesResult,
   GitPullResult,
-  GitRemoveWorktreeInput,
   GitStatusInput,
   GitStatusResult,
 } from "@t3tools/contracts";
+
+import type { WorktreeListEntry } from "../worktreeList.ts";
+
+export interface RegisteredWorktree extends WorktreeListEntry {
+  readonly canonicalPath: string;
+}
+export interface CheckoutIdentity {
+  readonly canonicalRoot: string;
+  readonly commonDir: string;
+  readonly branch: string | null;
+}
+export interface CheckoutInspection extends CheckoutIdentity {
+  /** Local status/index/file-metadata identity for recovery acceptance, without a diff-stat scan. */
+  readonly localFingerprint?: string;
+  readonly canonicalRoot: string;
+  readonly commonDir: string;
+  readonly registration: RegisteredWorktree | null;
+  readonly headSha: string | null;
+  readonly branch: string | null;
+  readonly operation: "merge" | "rebase" | "cherry-pick" | "revert" | "bisect" | null;
+  readonly hasInitializedSubmodules: boolean;
+  readonly hasTrackedChanges: boolean;
+  readonly hasUntrackedChanges: boolean;
+  /**
+   * Repo-relative paths from `git status`. Untracked directories end in `/`,
+   * except with `changesFingerprint`, which lists every untracked file.
+   */
+  readonly changedPaths?: ReadonlyArray<string>;
+  /** The untracked subset of `changedPaths`. */
+  readonly untrackedPaths?: ReadonlyArray<string>;
+  /** Status, index and file metadata of `changedPaths`, when requested with `changesFingerprint`. */
+  readonly changesFingerprint?: string;
+  readonly ignoredEntries: ReadonlyArray<string>;
+  readonly ignoredTruncated: boolean;
+  readonly upstreamRef: string | null;
+  readonly upstreamSha: string | null;
+  readonly aheadCount: number | null;
+  readonly behindCount: number | null;
+}
+
+/** Internal compatibility input; force is never honored for an existing checkout. */
+export interface InternalRemoveWorktreeInput {
+  readonly cwd: string;
+  readonly path: string;
+  readonly force?: boolean;
+  /** Explicit ignored-file policy; omitted by automated callers to protect local files. */
+  readonly ignoredFiles?: IgnoredFilesRemovalPolicy;
+  /** Storage cleanup only: the caller verified that the detached HEAD is merged. */
+  readonly allowDetachedHead?: boolean;
+  /**
+   * Storage cleanup only: discard exactly these reviewed changes. Removal is
+   * refused unless the current changed paths and their fingerprint still match.
+   */
+  readonly discardChanges?: {
+    readonly paths: ReadonlyArray<string>;
+    readonly fingerprint: string;
+  };
+}
 
 import type { GitCommandError } from "../Errors.ts";
 
@@ -57,6 +116,7 @@ export interface GitRenameBranchResult {
 }
 
 export interface GitFetchPullRequestBranchInput {
+  preserveExisting?: boolean;
   cwd: string;
   prNumber: number;
   branch: string;
@@ -126,7 +186,36 @@ export interface GitWorktreeProgress {
 /**
  * GitCoreShape - Service API for low-level Git repository interactions.
  */
-export interface GitCoreShape {
+export interface GitCoreShape extends MoveSnapshotOperations {
+  /** Await refreshes admitted for an owned checkout before releasing its files. */
+  readonly drainUpstreamRefreshes?: (cwd: string) => Effect.Effect<void>;
+
+  /** Fires only after an actual successful upstream refresh, never on a cache hit. */
+  readonly subscribeStatusRefresh?: (listener: (cwd: string) => void) => Effect.Effect<() => void>;
+
+  /** Local, bounded inventory status. Unknown/unreadable returns null. */
+  readonly isDirty: (cwd: string) => Effect.Effect<boolean | null>;
+  readonly listWorktrees: (
+    cwd: string,
+  ) => Effect.Effect<ReadonlyArray<RegisteredWorktree>, GitCommandError>;
+  /** Identity only: no status scan, upstream refresh, or repository mutation lock. */
+  readonly inspectCheckoutIdentity: (
+    path: string,
+  ) => Effect.Effect<CheckoutIdentity, GitCommandError>;
+  readonly inspectCheckout: (
+    path: string,
+    options?: {
+      aheadOf?: string;
+      statusTimeoutMs?: number;
+      recoveryFingerprint?: boolean;
+      /** Fingerprint the changes and list untracked files individually, for exact discard. */
+      changesFingerprint?: boolean;
+    },
+  ) => Effect.Effect<CheckoutInspection, GitCommandError>;
+  readonly clearMissingRegistration: (
+    cwd: string,
+    path: string,
+  ) => Effect.Effect<void, GitCommandError>;
   /**
    * Read Git status for a repository.
    */
@@ -135,21 +224,51 @@ export interface GitCoreShape {
   /** Recreate a missing linked worktree from its existing branch under lifecycle locks. */
   readonly ensureWorktree: (input: {
     submodules?: import("@t3tools/contracts").WorktreeSubmodules;
+    owner?: string;
     cwd: string;
     path: string;
     branch: string;
-  }) => Effect.Effect<void, GitCommandError>;
+  }) => Effect.Effect<{ recreated: boolean }, GitCommandError>;
+  readonly fastForwardTo: (
+    cwd: string,
+    sha: string,
+    expectedBranch?: string,
+  ) => Effect.Effect<void, GitCommandError>;
+  readonly initializeWorktreeSubmodules: (
+    path: string,
+    policy: import("@t3tools/contracts").WorktreeSubmodules,
+  ) => Effect.Effect<void, GitCommandError>;
   readonly branchExists: (cwd: string, branch: string) => Effect.Effect<boolean, GitCommandError>;
   /** Read detailed status without the polling cache, for mutation decisions. */
-  readonly statusDetails: (cwd: string) => Effect.Effect<GitStatusDetails, GitCommandError>;
+  /** `refreshUpstream: false` skips the stale-upstream fetch, for callers that only read local state. */
+  readonly statusDetails: (
+    cwd: string,
+    options?: { readonly refreshUpstream?: boolean },
+  ) => Effect.Effect<GitStatusDetails, GitCommandError>;
+  /** Uncached removal check; repository config cannot hide untracked or ignored files. */
+  readonly cleanupSafetyProbe: (
+    cwd: string,
+  ) => Effect.Effect<import("../cleanupSafety.ts").CleanupSafetyProbe, GitCommandError>;
 
   /**
-   * Build staged change context for commit generation.
+   * Build commit-generation context in a temporary index; never stage the real index.
    */
   readonly prepareCommitContext: (
     cwd: string,
     filePaths?: readonly string[],
   ) => Effect.Effect<GitPreparedCommitContext | null, GitCommandError>;
+
+  /** Revalidate a prepared context under the repository lock, then stage and commit. */
+  readonly commitPrepared: (
+    cwd: string,
+    subject: string,
+    body: string,
+    context: GitPreparedCommitContext,
+    options?: { newBranch?: string },
+  ) => Effect.Effect<
+    { status: "created"; commitSha: string } | { status: "context_changed" },
+    GitCommandError
+  >;
 
   /**
    * Create a commit with provided subject/body.
@@ -182,6 +301,13 @@ export interface GitCoreShape {
    */
   readonly readDefaultBranch: (cwd: string) => Effect.Effect<string | null, GitCommandError>;
 
+  /**
+   * `readDefaultBranch`, or, without a local `origin/HEAD` ref, the HEAD that
+   * origin advertises (cached). Null when neither names a branch; callers must
+   * not guess a conventional name, which may be a feature branch.
+   */
+  readonly readAdvertisedDefaultBranch: (cwd: string) => Effect.Effect<string | null>;
+
   readonly readConfigValue: (
     cwd: string,
     key: string,
@@ -205,9 +331,34 @@ export interface GitCoreShape {
   /**
    * Create a worktree and branch from a base branch.
    */
+  readonly readWorktreePreparation: (
+    path: string,
+  ) => Effect.Effect<
+    import("../../persistence/Services/WorktreePreparations.ts").WorktreePreparationReceipt | null,
+    GitCommandError
+  >;
+  readonly allocateWorktreePath: (input: {
+    cwd: string;
+    branch: string;
+  }) => Effect.Effect<string, GitCommandError>;
+  readonly isValidBranchName: (name: string) => Effect.Effect<boolean, GitCommandError>;
+  readonly resolveAvailableBranchName: (
+    cwd: string,
+    name: string,
+  ) => Effect.Effect<string, GitCommandError>;
   readonly createWorktree: (
     input: GitCreateWorktreeInput & {
       submodules?: import("@t3tools/contracts").WorktreeSubmodules;
+      preparation?: {
+        owner: string;
+        projectCwd?: string;
+        requestedBase?: string;
+        replaceMissing?: boolean;
+        operationId?: string;
+        namingIntent?: "explicit" | "generated" | "temporary" | "existing";
+        runSetupScript?: boolean;
+        setupIdentity?: string | null;
+      };
       /** Live checkout and submodule progress, for the worktree setup card. */
       progress?: GitWorktreeProgress;
     },
@@ -248,6 +399,8 @@ export interface GitCoreShape {
     readonly cwd: string;
     readonly branch: string;
     readonly expectedSha: string;
+    /** Check all registered worktrees while holding the repository lifecycle lock. */
+    readonly onlyIfUnused?: boolean;
   }) => Effect.Effect<boolean, GitCommandError>;
 
   /** Reads a small file from a revision without checking it out. Null when absent. */
@@ -307,7 +460,9 @@ export interface GitCoreShape {
   /**
    * Remove an existing worktree.
    */
-  readonly removeWorktree: (input: GitRemoveWorktreeInput) => Effect.Effect<void, GitCommandError>;
+  readonly removeWorktree: (
+    input: InternalRemoveWorktreeInput,
+  ) => Effect.Effect<void, GitCommandError>;
 
   /**
    * Rename an existing local branch.
@@ -324,8 +479,15 @@ export interface GitCoreShape {
   /**
    * Checkout an existing branch and refresh its upstream metadata in background.
    */
+  readonly resolveCheckoutTarget: (
+    input: GitCheckoutInput,
+  ) => Effect.Effect<
+    { branch: string | null; headSha: string | null; checkoutArgs: ReadonlyArray<string> },
+    GitCommandError
+  >;
   readonly checkoutBranch: (
     input: GitCheckoutInput,
+    options?: { refreshUpstream?: boolean; expectedTarget?: { branch: string; headSha: string } },
   ) => Effect.Effect<void, GitCommandError, Scope.Scope>;
 
   /**

@@ -36,6 +36,7 @@ export interface ProviderAdapterCapabilities {
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
   readonly nativeTurnIdempotency?: boolean;
+  readonly turnCompletionOnReturn?: boolean;
   readonly runtimeCapabilities?: import("@t3tools/contracts").ProviderRuntimeCapabilities;
 }
 
@@ -44,7 +45,23 @@ export interface ProviderThreadTurnSnapshot {
   readonly items: ReadonlyArray<unknown>;
 }
 
+/** Evidence is internal; absent metadata is never authoritative history. */
+export interface ProviderHistoryEvidence {
+  readonly origin?: {
+    readonly instanceId: import("@t3tools/contracts").ProviderInstanceId;
+    readonly generation: number;
+  };
+  readonly sessionOrigin?: "fresh" | "resumed" | "unknown";
+  readonly identity: string | null;
+  readonly provenance: "provider-persisted" | "runtime-local" | "unavailable";
+  readonly coverage: "complete" | "partial" | "unavailable";
+  readonly boundary: string | null;
+  readonly runtimeId: string | null;
+}
+
 export interface ProviderThreadSnapshot {
+  readonly history?: ProviderHistoryEvidence;
+
   readonly threadId: ThreadId;
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
 }
@@ -89,17 +106,58 @@ export type ProviderResolvedAttachment = ChatAttachment & {
   readonly localPath: string;
 };
 
+/** Server-only identity captured by each emitting session, before asynchronous event queues. */
+export type ProviderAdapterSessionStartInput = ProviderSessionStartInput & {
+  readonly mcpEventIdentity?: {
+    readonly providerInstanceId: import("@t3tools/contracts").ProviderInstanceId;
+    readonly sessionGeneration: number;
+  };
+};
+
 export type ProviderAdapterSendTurnInput = ProviderSendTurnInput & {
   /** Populated by ProviderService; optional for direct adapter harnesses. */
   readonly resolvedAttachments?: ReadonlyArray<ProviderResolvedAttachment>;
 };
 
+/** Live MCP server access; only adapters with native app-server support expose it. */
+export interface ProviderMcpApps<TError> {
+  readonly identity: (threadId: ThreadId) => Effect.Effect<string, TError>;
+  readonly listTools: (input: {
+    readonly threadId: ThreadId;
+    readonly server: string;
+  }) => Effect.Effect<ReadonlyArray<unknown>, TError>;
+  readonly callTool: (input: {
+    readonly threadId: ThreadId;
+    readonly server: string;
+    readonly tool: string;
+    readonly arguments: Record<string, unknown>;
+    readonly sessionIdentity: string;
+    readonly approved: boolean;
+  }) => Effect.Effect<unknown, TError>;
+  readonly readResource: (input: {
+    readonly threadId: ThreadId;
+    readonly server: string;
+    readonly uri: string;
+  }) => Effect.Effect<unknown, TError>;
+}
+
 export interface ProviderAdapterShape<TError> {
+  readonly markNativeThreadRead?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+  readonly mcpApps?: ProviderMcpApps<TError>;
   /**
    * Provider kind implemented by this adapter.
    */
   readonly provider: ProviderKind;
   readonly capabilities: ProviderAdapterCapabilities;
+  readonly readChildThreadItems?: (
+    threadId: ThreadId,
+    childId: string,
+    cursor: string | null,
+    limit: number,
+  ) => Effect.Effect<
+    { data: unknown[]; nextCursor: string | null } | "unsupported-provider" | null,
+    TError
+  >;
 
   /**
    * Start a provider-backed session.
@@ -115,6 +173,16 @@ export interface ProviderAdapterShape<TError> {
     record: import("@t3tools/contracts").NativeOperationRecord,
   ) => Effect.Effect<{ state: "completed" | "failed" | "indeterminate"; result?: unknown }, TError>;
   readonly renameThread?: (threadId: ThreadId, title: string) => Effect.Effect<void, TError>;
+  /**
+   * Whether `text` would run as a provider-native command (a slash command or
+   * compaction) rather than an ordinary prompt. Context handoffs are never
+   * prepended to native commands. Defaults to "prompt".
+   */
+  readonly classifyTurnInput?: (
+    threadId: ThreadId,
+    text: string,
+    cwd?: string,
+  ) => "prompt" | "native-command" | Effect.Effect<"prompt" | "native-command">;
   readonly previewClaudeFileRewind?: (
     threadId: ThreadId,
     userMessageId: string,
@@ -125,7 +193,7 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<import("@t3tools/contracts").NativeFileRewindPreview, TError>;
   readonly stopBackgroundTask?: (threadId: ThreadId, taskId: string) => Effect.Effect<void, TError>;
   readonly startSession: (
-    input: ProviderSessionStartInput,
+    input: ProviderAdapterSessionStartInput,
   ) => Effect.Effect<ProviderSession, TError>;
 
   /**
@@ -191,6 +259,10 @@ export interface ProviderAdapterShape<TError> {
   /**
    * Read a provider thread snapshot.
    */
+  readonly acknowledgeHistoryReconciliation?: (
+    threadId: ThreadId,
+    markerId: string,
+  ) => Effect.Effect<void>;
   readonly readThread: (threadId: ThreadId) => Effect.Effect<ProviderThreadSnapshot, TError>;
 
   /**
@@ -233,6 +305,43 @@ export interface ProviderAdapterShape<TError> {
    * report the observed result. Servers the provider loads from its own
    * settings or plugins are never removed by omission.
    */
+  /**
+   * Read-only provider-native Chrome preflight for this instance: resolves its
+   * executable and environment without spawning, writing or reading credentials.
+   */
+  readonly getChromeReadiness?: () => Effect.Effect<{
+    readonly eligibility: "ready" | "unavailable" | "recovery-required";
+    readonly reason?: string;
+    readonly recordId?: string;
+  }>;
+  readonly getOwnedMcpServerNames?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<string>, TError>;
+  readonly getMcpServerStatuses?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<import("../mcpObservation.ts").McpAdapterObservation, TError>;
+  readonly reconnectMcpServer?: (input: {
+    readonly threadId: ThreadId;
+    readonly serverName: string;
+    /** Also reconnect servers from the provider's own configuration, never built-ins. */
+    readonly allowExternal?: boolean;
+  }) => Effect.Effect<boolean, TError>;
+  /**
+   * Starts an explicit, user-initiated MCP OAuth sign-in through a live session.
+   * `authUrl` is absent when the server needed no user action.
+   */
+  readonly authenticateMcpServer?: (input: {
+    readonly threadId: ThreadId;
+    readonly serverName: string;
+  }) => Effect.Effect<
+    {
+      readonly authUrl?: string;
+      readonly callbackExpected: boolean;
+      readonly ownership: "managed" | "external";
+    },
+    TError
+  >;
+
   readonly reloadMcpConfig?: (input: {
     readonly threadId: ThreadId;
     readonly mcpServers: ProviderStartOptions["mcpServers"] | undefined;

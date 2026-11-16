@@ -1,0 +1,16 @@
+name: Classify CI changes
+description: Preserve docs-only exclusions without a queued prerequisite job
+outputs:
+  heavy:
+    description: Whether this job must execute its code checks
+    value: ${{ github.event_name != 'pull_request' || steps.paths.outputs.code == 'true' }}
+runs:
+  using: composite
+  steps:
+    - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+      id: paths
+      if: github.event_name == 'pull_request'
+      with:
+        predicate-quantifier: some-with-excludes
+        filters: |
+          code: ['**', '!**/*.md', '!docs/**']

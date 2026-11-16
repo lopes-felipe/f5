@@ -1,0 +1,3172 @@
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, it } from "@effect/vitest";
+import {
+  BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
+  UPSTREAM_LEDGER_SCHEMA_VERSION,
+  type OrchestrationThread,
+  type UpstreamTopic,
+  type UpstreamTriageBatchResult,
+} from "@t3tools/contracts";
+import {
+  digestShas,
+  serializeLedgerFiles,
+  sha256Hex,
+  type UpstreamLedger,
+} from "@t3tools/shared/upstreamPorts";
+import { Deferred, Effect, Layer } from "effect";
+import { TestClock } from "effect/testing";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { TextGenerationError } from "../git/Errors.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { UpstreamGitHubError } from "./github.ts";
+import { makeUpstreamPortsService, UpstreamPortsError, type UpstreamPortsDeps } from "./service.ts";
+import { makeQueueStore } from "./queueStore.ts";
+import { makeUpstreamStore } from "./store.ts";
+import { REVIEW_SLOTS, reviewThread } from "./testing/reviewFixtures.ts";
+import { SCHEDULER_TICK_MS } from "./scheduler.ts";
+import {
+  FakeGitHub,
+  FakeGitRepo,
+  FakeHost,
+  PROJECT_ID,
+  UPSTREAM_REPOSITORY,
+} from "./testing/fakes.ts";
+
+const layer = it.layer(SqlitePersistenceMemory.pipe(Layer.provideMerge(NodeServices.layer)));
+
+const RULES = readFileSync(new URL("../../../../upstream/rules.json", import.meta.url), "utf8");
+
+interface Fixture {
+  readonly repo: FakeGitRepo;
+  readonly gh: FakeGitHub;
+  readonly host: FakeHost;
+  readonly clock: { now: Date };
+  readonly upstream: ReadonlyArray<string>;
+  readonly target0: string;
+  readonly baseDir: string;
+  readonly make: (
+    writer?: UpstreamPortsDeps["writer"],
+    limits?: UpstreamPortsDeps["runLimits"],
+    sqlOverride?: SqlClient.SqlClient,
+  ) => ReturnType<typeof makeUpstreamPortsService>;
+}
+
+/** origin/main holds interval 1 (one topic, `pr-1`, in the inbox); upstream has `count` new commits. */
+const setup = (
+  options: {
+    readonly count?: number;
+    readonly paths?: (index: number) => ReadonlyArray<string>;
+    /** The suggestion on `pr-1`, the topic already in the ledger. */
+    readonly suggestion?: UpstreamTopic["suggestion"];
+  } = {},
+) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DELETE FROM upstream_ledger_ops`;
+    yield* sql`DELETE FROM upstream_ledger_publication`;
+    yield* sql`DELETE FROM upstream_port_runs`;
+    yield* sql`DELETE FROM upstream_port_occurrences`;
+    yield* sql`DELETE FROM upstream_port_requests`;
+    yield* sql`DELETE FROM upstream_port_groups`;
+    yield* sql`DELETE FROM upstream_port_links`;
+    yield* sql`DELETE FROM upstream_port_reviews`;
+    yield* sql`DELETE FROM upstream_port_queue`;
+    yield* sql`DELETE FROM upstream_port_queue_state`;
+    yield* sql`DELETE FROM upstream_port_queue_requests`;
+    yield* sql`DELETE FROM upstream_port_outcome_checks`;
+    yield* sql`DELETE FROM upstream_port_topic_outcomes`;
+    yield* sql`DELETE FROM upstream_budget_state`;
+    yield* sql`DELETE FROM projection_turns`;
+    yield* sql`DELETE FROM next_turn_queue`;
+    yield* sql`DELETE FROM projection_pending_approvals`;
+    yield* sql`DELETE FROM projection_thread_messages`;
+    yield* sql`DELETE FROM projection_threads`;
+    const repo = new FakeGitRepo();
+    repo.remotes.set("upstream", UPSTREAM_REPOSITORY);
+    repo.remotes.set("origin", "https://github.com/o/f5.git");
+    const root = repo.commit({ parent: null, subject: "Root", paths: ["README.md"] });
+    const target0 = repo.commit({
+      parent: root,
+      subject: "Initial settings (#1)",
+      paths: ["apps/web/settings.tsx"],
+    });
+    const topic0: UpstreamTopic = {
+      id: "pr-1",
+      createdAt: "2026-10-01T00:00:00.000Z",
+      title: "Initial settings",
+      summary: "",
+      upstreamPrs: [1],
+      status: "inbox",
+      epoch: 1,
+      ...(options.suggestion ? { suggestion: options.suggestion } : {}),
+    };
+    const ledger: UpstreamLedger = {
+      intervals: [
+        {
+          schemaVersion: UPSTREAM_LEDGER_SCHEMA_VERSION,
+          interval: 1,
+          baseSha: root,
+          targetSha: target0,
+          selection: "first-parent",
+          createdAt: "2026-10-01T00:00:00.000Z",
+          count: 1,
+          digest: digestShas([target0]),
+          commits: [{ sha: target0, subject: "Initial settings (#1)", pr: 1, topic: "pr-1" }],
+        },
+      ],
+      legacy: [],
+      topics: [topic0],
+    };
+    const files = new Map<string, string>([
+      ["upstream/rules.json", RULES],
+      ["upstream/policy.md", "# Policy\nPort desktop features.\n"],
+      ["apps/web/settings.tsx", "export {}\n"],
+    ]);
+    for (const [file, text] of serializeLedgerFiles(ledger)) files.set(`upstream/${file}`, text);
+    const main = repo.commit({ parent: null, subject: "f5 main", files });
+    repo.refs.set("refs/remotes/origin/main", main);
+    const upstream: string[] = [];
+    let parent = target0;
+    for (let index = 0; index < (options.count ?? 3); index += 1) {
+      parent = repo.commit({
+        parent,
+        subject: `Upstream change ${index} (#${index + 10})`,
+        paths: options.paths?.(index) ?? [`apps/server/feature${index}.ts`],
+      });
+      upstream.push(parent);
+    }
+    repo.refs.set("refs/remotes/upstream/main", parent);
+    const gh = new FakeGitHub();
+    const host = new FakeHost(repo);
+    const clock = { now: new Date("2026-10-22T12:00:00.000Z") };
+    const baseDir = mkdtempSync(path.join(tmpdir(), "f5-upstream-base-"));
+    let id = 0;
+    const make: Fixture["make"] = (
+      writer = { profileId: "p1", stateDir: "/state/p1", hostname: "host" },
+      limits,
+      sqlOverride,
+    ) =>
+      makeUpstreamPortsService({
+        host: host.host,
+        store: makeUpstreamStore(sql),
+        sql: sqlOverride ?? sql,
+        git: repo.git,
+        github: gh.github,
+        baseDir,
+        writer,
+        now: () => clock.now,
+        mintId: () => `id-${(id += 1)}`,
+        ...(limits ? { runLimits: limits } : {}),
+      });
+    return { repo, gh, host, clock, upstream, target0, baseDir, make } satisfies Fixture;
+  });
+
+const triageAll =
+  (decide: (sha: string) => Partial<UpstreamTriageBatchResult["groups"][number]>) =>
+  (prompt: string): Effect.Effect<UpstreamTriageBatchResult> => {
+    const shas = [...prompt.matchAll(/^commit ([0-9a-f]{40})$/gmu)].map((match) => match[1]!);
+    return Effect.succeed({
+      groups: shas.map((sha) => ({
+        key: `k-${sha.slice(0, 8)}`,
+        commits: [sha],
+        attachTo: null,
+        relatedTo: null,
+        title: `Title ${sha.slice(0, 8)}`,
+        summary: "",
+        suggestion: "port" as const,
+        reasonKey: null,
+        reason: "Useful",
+        userImpact: "medium" as const,
+        confidence: 0.6,
+        areas: [],
+        question: null,
+        ...decide(sha),
+      })),
+    });
+  };
+
+const prepareQueue = (
+  count: number,
+  concurrency = 2,
+  paths?: (index: number) => ReadonlyArray<string>,
+) =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ count, ...(paths ? { paths } : {}) });
+    fixture.host.settings = {
+      ...fixture.host.settings,
+      upstreamPorts: { ...fixture.host.settings.upstreamPorts, portConcurrency: concurrency },
+    };
+    fixture.host.triage = triageAll(() => ({ areas: ["server"] }));
+    const service = yield* fixture.make();
+    yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+    yield* service.testing.awaitIdle;
+    const ids = (yield* service.listTopicIds({
+      projectId: PROJECT_ID,
+      list: "inbox",
+    })).topicIds.filter((id) => id !== "pr-1");
+    for (let offset = 0; offset < ids.length; offset += 200)
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ids.slice(offset, offset + 200),
+        decision: { kind: "port" },
+      });
+    return { fixture, service, ids };
+  });
+const queueInput = (ids: ReadonlyArray<string>, requestId: string, batchSize = 5) => ({
+  projectId: PROJECT_ID,
+  target: { kind: "ids" as const, topicIds: ids },
+  grouping: "batched" as const,
+  batchSize,
+  modelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+  runtimeMode: "full-access" as const,
+  clientRequestId: requestId,
+});
+const completedThread = (id: string, turnId: string, messageId: string, state = "completed") =>
+  ({
+    id,
+    title: "Port",
+    deletedAt: null,
+    archivedAt: null,
+    branch: "port",
+    pendingUserInputs: [],
+    session: null,
+    latestTurn: {
+      turnId,
+      state,
+      requestedAt: "2026-10-22T12:00:00.000Z",
+      startedAt: "2026-10-22T12:00:00.000Z",
+      completedAt: "2026-10-22T12:01:00.000Z",
+      processingQuiescedAt: "2026-10-22T12:01:00.000Z",
+      assistantMessageId: messageId,
+    },
+  }) as unknown as OrchestrationThread;
+
+layer("upstream port queue", (it) => {
+  for (const correction of ["invalid", "single-topic"] as const)
+    it.effect("recovery respects the newer " + correction + " correction after restart", () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(1, 1);
+        yield* service.enqueuePort(queueInput(ids, "correct-" + correction));
+        yield* service.testing.awaitIdle;
+        const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+          .threadId!;
+        const sql = yield* SqlClient.SqlClient;
+        const original = "UPSTREAM-OUTCOME " + ids[0] + ": not-applicable No subsystem.";
+        const updated =
+          correction === "invalid"
+            ? "UPSTREAM-OUTCOME " + ids[0] + ": equivalent nonsense"
+            : "UPSTREAM-OUTCOME: equivalent src/new.ts:1";
+        yield* sql`INSERT INTO projection_turns
+          (thread_id,turn_id,state,requested_at,processing_quiesced_at,checkpoint_files_json)
+          VALUES (${threadId},'before-correction','completed','2026-10-22T12:00:00.000Z','2026-10-22T12:00:00.000Z','[]'),
+            (${threadId},'correction','completed','2026-10-22T12:01:00.000Z','2026-10-22T12:01:00.000Z','[]')`;
+        yield* sql`INSERT INTO projection_thread_messages
+          (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+          VALUES ('before-message',${threadId},'before-correction','assistant',${original},0,'2026-10-22T12:00:00.000Z','now'),
+            ('corrected-message',${threadId},'correction','assistant',${updated},0,'2026-10-22T12:01:00.000Z','now')`;
+        // Old admitted groups may lack command timestamps; the request is the durable fallback.
+        yield* sql`UPDATE upstream_port_groups SET command_json = json_remove(command_json,'$.createdAt')`;
+        fixture.host.threads = [
+          {
+            ...completedThread(threadId, "correction", "corrected-message"),
+            latestTurn: {
+              ...completedThread(threadId, "correction", "corrected-message").latestTurn!,
+              requestedAt: "2026-10-22T12:01:00.000Z",
+            },
+          },
+        ];
+        for (let restart = 0; restart < 2; restart++) {
+          const restarted = yield* fixture.make();
+          yield* restarted.testing.dispatchQueue(PROJECT_ID);
+          const row = (yield* restarted.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row;
+          assert.equal(row.state, correction === "invalid" ? "in-progress" : "done");
+          const [receipt] = yield* sql`SELECT kind,turn_id FROM upstream_port_topic_outcomes`;
+          assert.equal(receipt!.kind, correction === "invalid" ? "invalid" : "equivalent");
+          assert.equal(receipt!.turn_id, "correction");
+          yield* sql`INSERT OR IGNORE INTO projection_thread_messages
+            (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+            VALUES ('status-message',${threadId},'status','assistant','Review complete.',0,'now','now')`;
+          fixture.host.threads = [
+            {
+              ...completedThread(threadId, "status", "status-message"),
+              latestTurn: {
+                ...completedThread(threadId, "status", "status-message").latestTurn!,
+                requestedAt: "2026-10-22T12:02:00.000Z",
+              },
+            },
+          ];
+        }
+      }),
+    );
+
+  for (const mode of ["recorded", "historical", "unverified"] as const)
+    it.effect("reserves " + mode + " batch PR topics while preserving verified exclusions", () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(3, 1, () => ["shared.ts"]);
+        yield* service.enqueuePort({
+          ...queueInput(ids.slice(0, 2), "reopened"),
+          grouping: "together",
+        });
+        yield* service.testing.awaitIdle;
+        const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+          .threadId!;
+        const sql = yield* SqlClient.SqlClient;
+        const text = ids
+          .slice(0, 2)
+          .map((id) => "UPSTREAM-OUTCOME " + id + ": not-applicable No subsystem.")
+          .join("\n");
+        yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,processing_quiesced_at,checkpoint_files_json)
+        VALUES (${threadId},'excluded','completed','2026-10-22T12:00:00.000Z','2026-10-22T12:00:00.000Z','[]')`;
+        yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('excluded-message',${threadId},'excluded','assistant',${text},0,'2026-10-22T12:00:00.000Z','now')`;
+        fixture.host.threads = [completedThread(threadId, "excluded", "excluded-message")];
+        if (mode !== "historical") yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(
+          (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.state,
+          mode === "historical" ? "in-progress" : "skipped",
+        );
+        const pr = {
+          repo: "o/f5",
+          number: 42,
+          url: "https://github.com/o/f5/pull/42",
+          state: "open" as const,
+          head: "reopened",
+          title: "Implement first topic",
+          body: "Upstream-Topic: " + ids[0],
+        };
+        if (mode !== "unverified") fixture.gh.prs.push(pr);
+        yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('reopened-message',${threadId},'reopened','assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'2026-10-22T12:02:00.000Z','now')`;
+        fixture.host.threads = [
+          {
+            ...completedThread(threadId, "reopened", "reopened-message"),
+            latestTurn: {
+              ...completedThread(threadId, "reopened", "reopened-message").latestTurn!,
+              requestedAt: "2026-10-22T12:02:00.000Z",
+            },
+          },
+        ];
+        yield* service.enqueuePort(queueInput(ids.slice(2), "wait-reopened"));
+        yield* service.testing.awaitIdle;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        if (mode === "unverified") {
+          const unresolved = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries.find(
+            (entry) => entry.status === "queued",
+          )!;
+          // Both batch topics block, but the thread is listed once.
+          assert.lengthOf(unresolved.waitingOn, 1);
+          assert.lengthOf(unresolved.waitingOn[0]!.topicTitles, 2);
+          assert.equal(unresolved.waitingOn[0]!.threadId, threadId);
+          assert.isTrue(unresolved.waitingOn[0]!.needsAttention);
+          fixture.gh.prs.push(pr);
+          fixture.clock.now = new Date(fixture.clock.now.getTime() + 16_000);
+          yield* service.testing.dispatchQueue(PROJECT_ID);
+        }
+        const waiting = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries.find(
+          (entry) => entry.status === "queued",
+        )!;
+        assert.deepStrictEqual(
+          waiting.waitingOn.map((blocker) => blocker.topicId),
+          [ids[0]],
+        );
+        const receipts =
+          yield* sql`SELECT topic_id,kind FROM upstream_port_topic_outcomes ORDER BY topic_id`;
+        assert.equal(receipts.find((row) => row.topic_id === ids[0])!.kind, "pr");
+        assert.equal(receipts.find((row) => row.topic_id === ids[1])!.kind, "not-applicable");
+      }),
+    );
+
+  it.effect("releases an equivalent topic's PR reservation once its trailer lands on main", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(3, 1, () => ["shared.ts"]);
+      yield* service.enqueuePort({
+        ...queueInput(ids.slice(0, 2), "landed"),
+        grouping: "together",
+      });
+      yield* service.testing.awaitIdle;
+      const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+        .threadId!;
+      const sql = yield* SqlClient.SqlClient;
+      const decisions = [
+        "UPSTREAM-OUTCOME " + ids[0] + ": equivalent src/already.ts:1",
+        "UPSTREAM-OUTCOME " + ids[1] + ": not-applicable No subsystem.",
+      ].join("\n");
+      yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,processing_quiesced_at,checkpoint_files_json)
+        VALUES (${threadId},'decided','completed','2026-10-22T12:00:00.000Z','2026-10-22T12:00:00.000Z','[]')`;
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('decided-message',${threadId},'decided','assistant',${decisions},0,'2026-10-22T12:00:00.000Z','now')`;
+      fixture.host.threads = [completedThread(threadId, "decided", "decided-message")];
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const equivalent = (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row;
+      assert.equal(equivalent.topic.status, "equivalent");
+      assert.equal(equivalent.state, "done");
+
+      // A later turn ports the equivalent topic in a batch PR after all.
+      const pr = {
+        repo: "o/f5",
+        number: 42,
+        url: "https://github.com/o/f5/pull/42",
+        state: "open" as "open" | "merged",
+        head: "landed",
+        title: "Port first topic",
+        body: "Upstream-Topic: " + ids[0],
+      };
+      fixture.gh.prs.push(pr);
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('pr-message',${threadId},'pr-turn','assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'2026-10-22T12:02:00.000Z','now')`;
+      fixture.host.threads = [
+        {
+          ...completedThread(threadId, "pr-turn", "pr-message"),
+          latestTurn: {
+            ...completedThread(threadId, "pr-turn", "pr-message").latestTurn!,
+            requestedAt: "2026-10-22T12:02:00.000Z",
+          },
+        },
+      ];
+      yield* service.enqueuePort(queueInput(ids.slice(2), "waits-for-landing"));
+      yield* service.testing.awaitIdle;
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const evidenceReads = () =>
+        fixture.gh.calls.filter((call) => call === "topic evidence 42").length;
+      const queued = () =>
+        service
+          .getPortQueue({ projectId: PROJECT_ID })
+          .pipe(Effect.map((queue) => queue.entries.find((entry) => entry.status === "queued")));
+
+      // While the PR is open the equivalent topic keeps its files, and its evidence is re-read.
+      assert.deepStrictEqual(
+        (yield* queued())!.waitingOn.map((blocker) => blocker.topicId),
+        [ids[0]],
+      );
+      const openReads = evidenceReads();
+      assert.isAbove(openReads, 0);
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 121_000);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.isAbove(evidenceReads(), openReads);
+      assert.isDefined(yield* queued());
+
+      // Merging lands the trailer: the reservation ends and the merged PR is not polled again.
+      pr.state = "merged";
+      fixture.repo.remoteTips.set(
+        "origin/main",
+        fixture.repo.commit({
+          parent: fixture.repo.refs.get("refs/remotes/origin/main")!,
+          subject: "Port first topic (#42)",
+          body: "Upstream-Topic: " + ids[0],
+        }),
+      );
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 121_000);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.isUndefined(yield* queued());
+      assert.equal(fixture.host.submissions.length, 2);
+      const finalReads = evidenceReads();
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 121_000);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(evidenceReads(), finalReads);
+    }),
+  );
+
+  it.effect("re-reads a closed batch PR until it merges and retries failed reads", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(2, 1);
+      yield* service.enqueuePort({ ...queueInput(ids, "reopened-pr"), grouping: "together" });
+      yield* service.testing.awaitIdle;
+      const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+        .threadId!;
+      const sql = yield* SqlClient.SqlClient;
+      const decisions = [
+        "UPSTREAM-OUTCOME " + ids[0] + ": equivalent src/already.ts:1",
+        "UPSTREAM-OUTCOME " + ids[1] + ": not-applicable No subsystem.",
+      ].join("\n");
+      yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,processing_quiesced_at,checkpoint_files_json)
+        VALUES (${threadId},'decided','completed','2026-10-22T12:00:00.000Z','2026-10-22T12:00:00.000Z','[]')`;
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('decided-message',${threadId},'decided','assistant',${decisions},0,'2026-10-22T12:00:00.000Z','now'),
+          ('pr-message',${threadId},'pr-turn','assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'2026-10-22T12:02:00.000Z','now')`;
+      fixture.host.threads = [completedThread(threadId, "decided", "decided-message")];
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+
+      // The batch PR was closed without the equivalent topic's trailer.
+      const pr = {
+        repo: "o/f5",
+        number: 42,
+        url: "https://github.com/o/f5/pull/42",
+        state: "closed" as "open" | "closed" | "merged",
+        head: "reopened-pr",
+        title: "Port topics",
+        body: "",
+      };
+      fixture.gh.prs.push(pr);
+      fixture.host.threads = [
+        {
+          ...completedThread(threadId, "pr-turn", "pr-message"),
+          latestTurn: {
+            ...completedThread(threadId, "pr-turn", "pr-message").latestTurn!,
+            requestedAt: "2026-10-22T12:02:00.000Z",
+          },
+        },
+      ];
+      const reads = () => fixture.gh.calls.filter((call) => call === "topic evidence 42").length;
+      const receipt = () =>
+        sql<{ kind: string }>`SELECT kind FROM upstream_port_topic_outcomes
+          WHERE topic_id = ${ids[0]!}`.pipe(Effect.map((rows) => rows[0]?.kind));
+      const later = () =>
+        Effect.gen(function* () {
+          fixture.clock.now = new Date(fixture.clock.now.getTime() + 121_000);
+          yield* service.testing.dispatchQueue(PROJECT_ID);
+        });
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(yield* receipt(), "equivalent");
+      const closedReads = reads();
+      assert.isAbove(closedReads, 0);
+      yield* later();
+      assert.isAbove(reads(), closedReads);
+
+      // Reopening adds the trailer: the topic joins the PR and regains its reservation.
+      pr.state = "open";
+      pr.body = "Upstream-Topic: " + ids[0];
+      yield* later();
+      assert.equal(yield* receipt(), "pr");
+
+      // Reads that fail after the merge keep retrying until one succeeds.
+      pr.state = "merged";
+      fixture.gh.failure = new UpstreamGitHubError({
+        operation: "pull request topic evidence",
+        detail: "GitHub requests are waiting for the retry window.",
+        transient: true,
+      });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const before = reads();
+        yield* later();
+        assert.isAbove(reads(), before);
+      }
+      fixture.gh.failure = null;
+      yield* later();
+      assert.equal(yield* receipt(), "pr");
+      const finalReads = reads();
+      yield* later();
+      assert.equal(reads(), finalReads);
+    }),
+  );
+
+  it.effect("keeps a scoped PR out of unrelated topics after a status turn", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(2, 1);
+      yield* service.enqueuePort({ ...queueInput(ids, "scoped-pr"), grouping: "together" });
+      yield* service.testing.awaitIdle;
+      const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+        .threadId!;
+      const sql = yield* SqlClient.SqlClient;
+      const text = "UPSTREAM-OUTCOME " + ids[0] + ": pr https://github.com/o/f5/pull/42";
+      yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,processing_quiesced_at,checkpoint_files_json)
+        VALUES (${threadId},'scoped','completed','2026-10-22T12:00:00.000Z','2026-10-22T12:00:00.000Z','[]')`;
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('scoped-message',${threadId},'scoped','assistant',${text},0,'now','now'),
+          ('status-message',${threadId},'status','assistant','Review complete.',0,'now','now')`;
+      fixture.host.threads = [completedThread(threadId, "status", "status-message")];
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(
+        (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.links[0]!.outcome
+          ?.kind,
+        "pr",
+      );
+      assert.isNull(
+        (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[1]! })).row.links[0]!
+          .outcome,
+      );
+    }),
+  );
+
+  it.effect("keeps startup and queue dispatch alive when the recovery scan fails", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+      yield* service.enqueuePort(queueInput(ids, "startup-scan-error"));
+      yield* service.testing.awaitIdle;
+      const sql = yield* SqlClient.SqlClient;
+      let failed = false;
+      const flakySql = new Proxy(sql, {
+        apply(target, thisArg, args) {
+          if (!failed && String(args[0]).includes("SELECT DISTINCT l.project_id")) {
+            failed = true;
+            return sql`SELECT * FROM missing_recovery_scan_table`;
+          }
+          return Reflect.apply(target, thisArg, args);
+        },
+      });
+      const restarted = yield* fixture.make(undefined, undefined, flakySql);
+      yield* restarted.start;
+      assert.isTrue(failed);
+      yield* restarted.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+      yield* restarted.testing.awaitIdle;
+      assert.equal(fixture.host.submissions.length, 1);
+    }),
+  );
+
+  it.effect(
+    "recovers mixed topic outcomes after a broken checkpoint pointer and later status turn",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(3, 1, () => ["shared.ts"]);
+        fixture.gh.prs.push({
+          repo: "o/f5",
+          number: 42,
+          url: "https://github.com/o/f5/pull/42",
+          state: "open",
+          head: "unrelated-port",
+          title: "Other topics",
+          body: "Upstream-Topic: pr-999",
+        });
+        yield* service.enqueuePort({
+          ...queueInput(ids.slice(0, 2), "recover-mixed"),
+          grouping: "together",
+        });
+        yield* service.enqueuePort(queueInput(ids.slice(2), "recover-waiting"));
+        yield* service.testing.awaitIdle;
+        const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+        const threadId = first.threadId!;
+        const sql = yield* SqlClient.SqlClient;
+        const at = "2026-10-22T12:00:00.000Z";
+        const text = [
+          "UPSTREAM-OUTCOME " + ids[0] + ": equivalent src/already.ts:1",
+          "UPSTREAM-OUTCOME " + ids[1] + ": not-applicable This subsystem is absent.",
+        ].join("\n");
+        yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,completed_at,processing_quiesced_at,assistant_message_id,checkpoint_files_json)
+        VALUES (${threadId},'original','completed',${at},${at},${at},'assistant:toolu_missing','[]')`;
+        yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('actual-final',${threadId},'original','assistant',${text},0,${at},${at}),
+          ('status-final',${threadId},'status','assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'2026-10-22T12:02:00.000Z','2026-10-22T12:02:00.000Z')`;
+        fixture.host.threads = [
+          {
+            ...(completedThread(threadId, "status", "status-final") as OrchestrationThread),
+            archivedAt: "2026-10-22T12:03:00.000Z",
+          },
+        ];
+        yield* makeQueueStore(sql).upsertOutcomeCheck({
+          projectId: PROJECT_ID,
+          threadId,
+          turnId: "status",
+          result: "no-outcome",
+          detail: null,
+          checkedAt: at,
+          attempts: 0,
+          retryAt: null,
+        });
+        const restarted = yield* fixture.make();
+        yield* restarted.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(
+          (yield* restarted.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.state,
+          "done",
+        );
+        assert.equal(
+          (yield* restarted.getTopic({ projectId: PROJECT_ID, topicId: ids[1]! })).row.state,
+          "skipped",
+        );
+        assert.equal(fixture.host.submissions.length, 2);
+        const receipts =
+          yield* sql`SELECT topic_id,turn_id,message_id FROM upstream_port_topic_outcomes ORDER BY topic_id`;
+        assert.lengthOf(receipts, 2);
+        assert.isTrue(
+          receipts.every((row) => row.turn_id === "original" && row.message_id === "actual-final"),
+        );
+        const seq = yield* makeUpstreamStore(sql).maxSeq(PROJECT_ID);
+        yield* restarted.testing.dispatchQueue(PROJECT_ID);
+        const again = yield* fixture.make();
+        yield* again.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(yield* makeUpstreamStore(sql).maxSeq(PROJECT_ID), seq);
+        assert.equal(fixture.host.submissions.length, 2);
+        assert.deepStrictEqual(
+          yield* sql`SELECT topic_id,turn_id,message_id FROM upstream_port_topic_outcomes ORDER BY topic_id`,
+          receipts,
+        );
+      }),
+  );
+
+  for (const kind of ["equivalent", "not-applicable"] as const)
+    it.effect(
+      "keeps " +
+        kind +
+        " files reserved during a continuation, then releases them after an unrelated turn",
+      () =>
+        Effect.gen(function* () {
+          const { fixture, service, ids } = yield* prepareQueue(2, 1, () => ["shared.ts"]);
+          yield* service.enqueuePort({
+            ...queueInput(ids, "sticky-" + kind),
+            grouping: "separately",
+          });
+          yield* service.testing.awaitIdle;
+          const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+          const threadId = first.threadId!;
+          const sql = yield* SqlClient.SqlClient;
+          const text =
+            "UPSTREAM-OUTCOME: " +
+            kind +
+            (kind === "equivalent" ? " src/already.ts:1" : " No corresponding subsystem.");
+          fixture.host.threads = [completedThread(threadId, "resolved", "resolved-message")];
+          yield* sql`INSERT INTO projection_thread_messages
+          (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+          VALUES ('resolved-message',${threadId},'resolved','assistant',${text},0,'now','now')`;
+          yield* sql`INSERT INTO projection_threads
+          (thread_id,project_id,title,model,created_at,last_interaction_at,updated_at)
+          VALUES (${threadId},${PROJECT_ID},'Port','model','now','now','now')`;
+          yield* sql`INSERT INTO next_turn_queue
+          (item_id,thread_id,submission_id,command_id,message_id,position,status,command_json,created_at,updated_at)
+          VALUES ('sticky-continuation',${threadId},'sticky','sticky','sticky',0,'queued','{}','now','now')`;
+          yield* service.testing.dispatchQueue(PROJECT_ID);
+          assert.equal(fixture.host.submissions.length, 1);
+          assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.waitingOnFiles, 1);
+          assert.equal(
+            (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.state,
+            kind === "equivalent" ? "done" : "skipped",
+          );
+          yield* sql`UPDATE next_turn_queue SET deleted_at = 'now' WHERE item_id = 'sticky-continuation'`;
+          fixture.host.threads = [completedThread(threadId, "follow-up", "follow-up-message")];
+          yield* makeQueueStore(sql).upsertOutcomeCheck({
+            projectId: PROJECT_ID,
+            threadId,
+            turnId: "follow-up",
+            result: "no-outcome",
+            detail: null,
+            checkedAt: "now",
+            attempts: 0,
+            retryAt: null,
+          });
+          yield* service.testing.dispatchQueue(PROJECT_ID);
+          assert.equal(fixture.host.submissions.length, 2);
+        }),
+    );
+
+  it.effect("persists review choices through queue dispatch and preserves review opt-out", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(2, 2);
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+      const request = { ...queueInput([ids[0]!], "queued-review"), review: REVIEW_SLOTS };
+      yield* service.enqueuePort(request);
+      const queue = makeQueueStore(yield* SqlClient.SqlClient);
+      const [entry] = yield* queue.listQueue(PROJECT_ID);
+      assert.deepStrictEqual(entry?.review, REVIEW_SLOTS);
+      yield* service.enqueuePort({ ...queueInput([ids[1]!], "queued-no-review"), review: null });
+      // Absent and null choices have the same replay hash.
+      yield* service.enqueuePort(queueInput([ids[1]!], "queued-no-review"));
+      fixture.host.settings = {
+        ...fixture.host.settings,
+        upstreamPorts: {
+          ...fixture.host.settings.upstreamPorts,
+          portReview: { enabled: false, reviewerA: null, reviewerB: null, consolidation: null },
+        },
+      };
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+      yield* service.testing.awaitIdle;
+      const [started, optedOut] = yield* queue.listQueue(PROJECT_ID);
+      assert.equal(started?.status, "started");
+      assert.equal(optedOut?.status, "started");
+      const store = makeUpstreamStore(yield* SqlClient.SqlClient);
+      assert.deepStrictEqual(
+        (yield* store.getPortReviewByThread(started!.threadId!))?.reviewers,
+        REVIEW_SLOTS,
+      );
+      assert.equal((yield* store.listActivePortReviews).length, 1);
+      assert.isNull(yield* store.getPortReviewByThread(optedOut!.threadId!));
+    }),
+  );
+
+  it.effect("rejects unavailable review providers before enqueueing", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      fixture.host.unavailableProviders.add("codex");
+      const error = yield* service
+        .enqueuePort({
+          ...queueInput(ids, "unavailable-queue-review"),
+          review: REVIEW_SLOTS,
+        })
+        .pipe(Effect.flip);
+      assert.equal(error.code, "invalid");
+      assert.include(error.message, "reviewerA");
+      assert.equal(
+        (yield* makeQueueStore(yield* SqlClient.SqlClient).listQueue(PROJECT_ID)).length,
+        0,
+      );
+    }),
+  );
+
+  for (const kind of ["equivalent src/a.ts:1", "not-applicable Not used"])
+    it.effect(`does not apply an unscoped batch decision: ${kind}`, () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(2, 1);
+        yield* service.enqueuePort(queueInput(ids, "unscoped-batch"));
+        yield* service.testing.awaitIdle;
+        const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+        fixture.host.threads = [completedThread(first.threadId!, "batch-turn", "batch-message")];
+        const sql = yield* SqlClient.SqlClient;
+        const text = `UPSTREAM-OUTCOME: ${kind}`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+          VALUES ('batch-message',${first.threadId},'assistant',${text},0,'now','now','batch-turn')`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(
+          (yield* service.getPortQueue({ projectId: PROJECT_ID })).counts.needsAttention,
+          2,
+        );
+        for (const topicId of ids)
+          assert.equal(
+            (yield* service.getTopic({ projectId: PROJECT_ID, topicId })).row.state,
+            "in-progress",
+          );
+      }),
+    );
+
+  for (const code of ["busy", "internal"] as const)
+    it.effect(`retries ${code} preparation errors without dropping the rest of the queue`, () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(3, 2);
+        const original = fixture.host.host.withRepositoryLock;
+        let fail = true;
+        Object.assign(fixture.host.host, {
+          withRepositoryLock: <A, E>(
+            cwd: string,
+            mode: "user" | "background",
+            effect: Effect.Effect<A, E>,
+          ) =>
+            fail
+              ? Effect.fail(new UpstreamPortsError({ code, message: "Temporarily busy" }))
+              : original(cwd, mode, effect),
+        });
+        yield* service.enqueuePort({
+          ...queueInput(ids, "retry-preparation"),
+          grouping: "separately",
+        });
+        yield* service.testing.awaitIdle;
+        let progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+        assert.equal(progress.counts.queued, 3);
+        assert.equal(progress.counts.needsAttention, 0);
+        assert.equal(fixture.host.submissions.length, 0);
+        fail = false;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 0);
+        fixture.clock.now = new Date("2026-10-22T12:00:31.000Z");
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+        assert.equal(progress.counts.executing, 2);
+        assert.equal(progress.counts.queued, 1);
+      }),
+    );
+
+  it.effect("retries failed automatic recording with persisted backoff and a bounded budget", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      yield* service.enqueuePort(queueInput(ids, "retry-outcome"));
+      yield* service.testing.awaitIdle;
+      const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      fixture.host.threads = [completedThread(first.threadId!, "retry-turn", "retry-message")];
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+        VALUES ('retry-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: equivalent src/a.ts:1',0,'now','now','retry-turn')`;
+      const original = fixture.host.host.withRepositoryLock;
+      let fail = true;
+      Object.assign(fixture.host.host, {
+        withRepositoryLock: <A, E>(
+          cwd: string,
+          mode: "user" | "background",
+          effect: Effect.Effect<A, E>,
+        ) =>
+          fail
+            ? Effect.fail(new UpstreamPortsError({ code: "busy", message: "Temporarily busy" }))
+            : original(cwd, mode, effect),
+      });
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const queue = makeQueueStore(sql);
+      assert.equal((yield* queue.getOutcomeChecks(PROJECT_ID)).get(first.threadId!)!.attempts, 1);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal((yield* queue.getOutcomeChecks(PROJECT_ID)).get(first.threadId!)!.attempts, 1);
+      fail = false;
+      fixture.clock.now = new Date("2026-10-22T12:00:16.000Z");
+      const restarted = yield* fixture.make();
+      yield* restarted.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(
+        (yield* restarted.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.topic.status,
+        "equivalent",
+      );
+      const check = (yield* queue.getOutcomeChecks(PROJECT_ID)).get(first.threadId!)!;
+      assert.equal(check.result, "recorded");
+      assert.equal(check.attempts, 2);
+    }),
+  );
+
+  it.effect("retains hot shared files for dispatch while excluding them from grouping", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(10, 5, () => ["shared.ts", "bun.lock"]);
+      yield* service.enqueuePort({ ...queueInput(ids, "hot-path-gating"), grouping: "separately" });
+      yield* service.testing.awaitIdle;
+      const progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.equal(fixture.host.submissions.length, 1);
+      assert.equal(progress.counts.queued, 9);
+      assert.equal(progress.entries[0]!.fileCount, 1);
+      assert.equal(progress.entries[1]!.waitingOn.length, 1);
+      assert.deepStrictEqual(progress.viewCounts, {
+        active: 10,
+        needsYou: 0,
+        history: 0,
+        inactive: 0,
+      });
+      const active = yield* service.getPortQueue({
+        projectId: PROJECT_ID,
+        view: "active",
+        limit: 2,
+      });
+      assert.deepStrictEqual(
+        active.entries.map((entry) => entry.bucket),
+        ["executing", "waiting"],
+      );
+      assert.isNotNull(active.entries[0]!.thread);
+      assert.equal(active.nextCursor, "2");
+      assert.lengthOf(
+        (yield* service.getPortQueue({ projectId: PROJECT_ID, view: "history" })).entries,
+        0,
+      );
+    }),
+  );
+
+  it.effect("finishes a settled entry when its projected message never appears", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      yield* service.enqueuePort(queueInput(ids, "missing-projection"));
+      yield* service.testing.awaitIdle;
+      const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      fixture.host.threads = [completedThread(first.threadId!, "missing-turn", "missing-message")];
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal((yield* service.getPortQueue({ projectId: PROJECT_ID })).counts.executing, 1);
+      fixture.clock.now = new Date("2026-10-22T12:04:00.000Z");
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.equal(progress.counts.executing, 0);
+      assert.equal(progress.counts.needsAttention, 1);
+      assert.equal(progress.entries[0]!.topics[0]!.result, "no-outcome");
+      assert.equal(progress.entries[0]!.bucket, "needs-attention");
+      assert.equal(progress.viewCounts.needsYou, 1);
+      const needsYou = yield* service.getPortQueue({ projectId: PROJECT_ID, view: "needs-you" });
+      assert.deepStrictEqual(
+        needsYou.entries.map((entry) => entry.entryId),
+        [progress.entries[0]!.entryId],
+      );
+      assert.lengthOf(
+        (yield* service.getPortQueue({ projectId: PROJECT_ID, view: "active" })).entries,
+        0,
+      );
+      const summary = (yield* service.getOverview(PROJECT_ID)).portQueue;
+      assert.equal(summary.hasHistory, true);
+      assert.equal(summary.needsAttention, 1);
+      // A later attempt at the same epoch supersedes the failed one.
+      const queue = makeQueueStore(yield* SqlClient.SqlClient);
+      const [failed] = yield* queue.listQueue(PROJECT_ID);
+      yield* queue.setQueueEntry({
+        ...failed!,
+        entryId: `${failed!.entryId}-retry`,
+        position: failed!.position + 1,
+        requestId: `${failed!.requestId}-retry`,
+        topicResults: { [ids[0]!]: "pr" },
+      });
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.needsAttention, 0);
+      const retried = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.deepStrictEqual(
+        retried.entries.map((entry) => entry.bucket),
+        ["superseded", "awaiting-review"],
+      );
+      assert.equal(retried.counts.needsAttention, 0);
+      yield* queue.setQueueEntry({
+        ...failed!,
+        entryId: `${failed!.entryId}-retry`,
+        position: failed!.position + 1,
+        requestId: `${failed!.requestId}-retry`,
+        status: "dropped",
+        result: "canceled",
+        topicResults: { [ids[0]!]: "canceled" },
+      });
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.needsAttention, 1);
+      // Deciding the topic by hand settles it: the queue stops asking for attention.
+      // Declining keeps the epoch (Watch would start a new one and supersede the entry).
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: [ids[0]!],
+        decision: { kind: "declined", reason: "Not for f5" },
+      });
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.needsAttention, 0);
+      const resolved = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      assert.equal(resolved.bucket, "resolved");
+    }),
+  );
+  it.effect("releases overlapping files after recording a settled not-applicable outcome", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(2, 1, () => ["shared.ts"]);
+      yield* service.enqueuePort({
+        ...queueInput(ids, "not-applicable-refill"),
+        grouping: "separately",
+      });
+      yield* service.testing.awaitIdle;
+      const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      fixture.host.threads = [
+        completedThread(first.threadId!, "not-applicable-turn", "not-applicable-message"),
+      ];
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+        VALUES ('not-applicable-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: not-applicable This feature is absent from f5.',0,'now','now','not-applicable-turn')`;
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.equal(progress.counts.recorded, 1);
+      assert.equal(progress.counts.executing, 1);
+      assert.equal(fixture.host.submissions.length, 2);
+      assert.equal(
+        (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.state,
+        "skipped",
+      );
+    }),
+  );
+
+  for (const freshEvidence of [false, true])
+    it.effect(
+      `preserves a distant usage deadline with aging evidence; fresh recovery ${freshEvidence}`,
+      () =>
+        Effect.gen(function* () {
+          const { fixture, service, ids } = yield* prepareQueue(1, 1);
+          fixture.host.settings = { ...fixture.host.settings, autoResumeUsageLimitedThreads: true };
+          let fetchedAt = "2026-10-22T12:00:00.000Z";
+          let utilization = 100;
+          Object.assign(fixture.host.host, {
+            usageAccounts: Effect.sync(
+              () =>
+                [
+                  {
+                    providerInstanceId: "claudeAgent",
+                    sections: [
+                      {
+                        kind: "claude-usage",
+                        outcome: "available",
+                        snapshot: {
+                          fetchedAt,
+                          data: {
+                            subscriptionLabel: null,
+                            limitsAvailable: true,
+                            extraUsage: null,
+                            windows: [
+                              {
+                                key: "five_hour",
+                                label: "Five hours",
+                                utilization,
+                                resetsAt: "2026-10-22T15:00:00.000Z",
+                              },
+                            ],
+                          },
+                        },
+                      },
+                    ],
+                  },
+                ] as never,
+            ),
+          });
+          yield* service.enqueuePort(queueInput(ids, "distant-usage-reset"));
+          yield* service.testing.awaitIdle;
+          fixture.clock.now = new Date("2026-10-22T12:06:00.000Z");
+          yield* service.testing.dispatchQueue(PROJECT_ID);
+          assert.equal(fixture.host.submissions.length, 0);
+          assert.equal(
+            (yield* service.getOverview(PROJECT_ID)).portQueue.hold?.retryAt,
+            "2026-10-22T15:01:00.000Z",
+          );
+          if (freshEvidence) {
+            fetchedAt = fixture.clock.now.toISOString();
+            utilization = 10;
+          } else fixture.clock.now = new Date("2026-10-22T15:02:00.000Z");
+          yield* service.testing.dispatchQueue(PROJECT_ID);
+          assert.equal(fixture.host.submissions.length, 1);
+        }),
+    );
+
+  it.effect("shows disabled automatic usage recovery as requiring manual Resume", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      fixture.host.settings = { ...fixture.host.settings, autoResumeUsageLimitedThreads: false };
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO upstream_port_queue_state(project_id,hold_kind,hold_message,hold_until)
+        VALUES (${PROJECT_ID},'usage','Waiting','2026-10-22T15:00:00.000Z')`;
+      yield* service.enqueuePort(queueInput(ids, "manual-usage-recovery"));
+      yield* service.testing.awaitIdle;
+      const summary = (yield* service.getOverview(PROJECT_ID)).portQueue;
+      assert.equal(summary.hold?.retryAt, null);
+      assert.match(summary.hold?.message ?? "", /Resume/);
+      assert.equal(fixture.host.submissions.length, 0);
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+      yield* service.testing.awaitIdle;
+      assert.equal(fixture.host.submissions.length, 1);
+    }),
+  );
+
+  it.effect("rejects together enqueue over twenty topics as invalid", () =>
+    Effect.gen(function* () {
+      const { service, ids } = yield* prepareQueue(21);
+      const result = yield* service
+        .enqueuePort({
+          ...queueInput(ids, "oversized-together"),
+          grouping: "together",
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") assert.equal(result.failure.code, "invalid");
+    }),
+  );
+
+  it.effect("an uncertain manual submission owns one slot without holding the whole queue", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(2, 2);
+      const started = fixture.host.submitOutcome;
+      let manualSubmission: string | undefined;
+      fixture.host.submitOutcome = (body) => {
+        manualSubmission ??= body.submissionId;
+        return body.submissionId === manualSubmission ? Effect.succeed(null) : started(body);
+      };
+      yield* service.startPort({
+        projectId: PROJECT_ID,
+        topicIds: [ids[0]!],
+        grouping: "together",
+        modelSelection: queueInput(ids, "unused").modelSelection,
+        runtimeMode: "full-access",
+        clientRequestId: "manual-pending",
+      });
+      yield* service.enqueuePort(queueInput([ids[1]!], "beside-manual-pending"));
+      yield* service.testing.awaitIdle;
+      assert.equal((yield* service.getPortQueue({ projectId: PROJECT_ID })).counts.executing, 1);
+      const overview = yield* service.getOverview(PROJECT_ID);
+      assert.equal(overview.portQueue.running, 2);
+      assert.equal(overview.portQueue.hold, null);
+    }),
+  );
+
+  it.effect("briefly caches missing commit file evidence between queue wakes", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1);
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+      let calls = 0;
+      const original = fixture.repo.git.streamNumstat;
+      Object.assign(fixture.repo.git, {
+        streamNumstat: (...args: Parameters<typeof original>) => {
+          calls++;
+          return original(...args).pipe(Effect.map(() => new Map()));
+        },
+      });
+      const input = queueInput(ids, "unknown-files");
+      yield* service.enqueuePort(input);
+      yield* service.testing.awaitIdle;
+      const before = calls;
+      for (let index = 0; index < 3; index++) {
+        const preview = yield* service.previewPortGroups(input);
+        assert.equal(preview.filesUnknown, 1);
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+      }
+      assert.equal(calls, before);
+      fixture.clock.now = new Date("2026-10-22T12:00:31.000Z");
+      yield* service.previewPortGroups(input);
+      assert.equal(calls, before + 1);
+    }),
+  );
+
+  it.effect("keeps the main overview available when the queue read model fails", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1);
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+      yield* service.enqueuePort(queueInput(ids, "summary-read-failure"));
+      yield* service.testing.awaitIdle;
+      const read = fixture.host.host.readModel;
+      let calls = 0;
+      Object.assign(fixture.host.host, {
+        readModel: Effect.suspend(() =>
+          ++calls === 1 ? read : Effect.fail(new Error("Read model unavailable")),
+        ),
+      });
+      const overview = yield* service.getOverview(PROJECT_ID);
+      assert.equal(overview.counts.ready, 1);
+    }),
+  );
+
+  it.effect("classifies a decision during branch construction as omitted", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      Object.assign(fixture.host.host, {
+        resolveAvailableBranchName: (_cwd: string, branch: string) =>
+          service
+            .decide({
+              projectId: PROJECT_ID,
+              topicIds: ids,
+              decision: { kind: "skip", reasonKey: "maintenance" },
+            })
+            .pipe(Effect.as(branch)),
+      });
+      yield* service.enqueuePort(queueInput(ids, "decision-during-build"));
+      yield* service.testing.awaitIdle;
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.equal(progress.counts.omitted, 1);
+      assert.equal(progress.counts.needsAttention, 0);
+      assert.equal(fixture.host.submissions.length, 0);
+    }),
+  );
+
+  it.effect("lists topics and details when the optional outcome message query fails", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      yield* service.enqueuePort(queueInput(ids, "outcome-read-failure"));
+      yield* service.testing.awaitIdle;
+      const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      fixture.host.threads = [
+        completedThread(first.threadId!, "read-failure-turn", "read-failure-message"),
+      ];
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`ALTER TABLE projection_thread_messages RENAME TO saved_upstream_test_messages`;
+      yield* Effect.gen(function* () {
+        const page = yield* service.listTopics({ projectId: PROJECT_ID, list: "in-progress" });
+        assert.equal(page.topics.length, 1);
+        assert.equal(page.topics[0]!.links[0]!.outcome, null);
+        const detail = yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! });
+        assert.equal(detail.row.topic.id, ids[0]);
+      }).pipe(
+        Effect.ensuring(
+          sql`ALTER TABLE saved_upstream_test_messages RENAME TO projection_thread_messages`.pipe(
+            Effect.orDie,
+          ),
+        ),
+      );
+    }),
+  );
+
+  it.effect("does not dispatch from a non-writer profile", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+      yield* service.enqueuePort(queueInput(ids, "non-writer"));
+      yield* service.testing.awaitIdle;
+      const other = yield* fixture.make({
+        profileId: "p2",
+        stateDir: "/state/p2",
+        hostname: "host",
+      });
+      yield* other.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(fixture.host.submissions.length, 0);
+      assert.equal((yield* other.getOverview(PROJECT_ID)).portQueue.hold?.kind, "writer");
+    }),
+  );
+
+  it.effect(
+    "startup reconciliation skips deleted projects and still recovers the next project",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(1, 1);
+        fixture.host.submitOutcome = () => Effect.succeed(null);
+        yield* service.startPort({
+          projectId: PROJECT_ID,
+          topicIds: ids,
+          grouping: "together",
+          modelSelection: queueInput(ids, "unused").modelSelection,
+          runtimeMode: "full-access",
+          clientRequestId: "valid-recovery",
+        });
+        const store = makeUpstreamStore(yield* SqlClient.SqlClient);
+        const [group] = yield* store.listGroups(PROJECT_ID, "valid-recovery");
+        yield* store.insertPortRequest({
+          projectId: "deleted-project",
+          clientRequestId: "deleted-recovery",
+          argsHash: "x",
+          groups: [{ ...group!, threadId: "deleted-thread", submissionId: "deleted-submission" }],
+          links: [],
+          reviews: [],
+          at: "2026-10-21T12:00:00.000Z",
+        });
+        const restarted = yield* fixture.make();
+        const sql = yield* SqlClient.SqlClient;
+        const count = fixture.host.submissions.length;
+        yield* restarted.start;
+        yield* restarted.testing.awaitIdle;
+        assert.ok(fixture.host.submissions.length > count);
+        assert.ok(
+          fixture.host.submissions
+            .slice(count)
+            .every((submission) => submission.submissionId === group!.submissionId),
+        );
+        assert.equal(
+          (yield* sql`SELECT status FROM upstream_port_groups WHERE project_id = 'deleted-project'`)[0]!
+            .status,
+          "pending",
+        );
+      }),
+  );
+
+  it.effect("stops refreshing the base once automatic decisions have recorded all results", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      yield* service.enqueuePort(queueInput(ids, "recorded-needs-no-fetch"));
+      yield* service.testing.awaitIdle;
+      const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      fixture.host.threads = [
+        completedThread(first.threadId!, "equivalent-turn", "equivalent-message"),
+      ];
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+        VALUES ('equivalent-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: equivalent src/a.ts:1',0,'now','now','equivalent-turn')`;
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const before = fixture.repo.calls.filter((call) => call === "fetch origin/main").length;
+      fixture.clock.now = new Date("2026-10-22T12:06:00.000Z");
+      const progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      yield* service.testing.awaitIdle;
+      assert.equal(progress.counts.recorded, 1);
+      assert.equal(progress.counts.awaitingReview, 0);
+      assert.equal(progress.doneOnDefaultBranch, 0);
+      assert.equal(
+        fixture.repo.calls.filter((call) => call === "fetch origin/main").length,
+        before,
+      );
+    }),
+  );
+
+  it.effect("expires definitive isolation failures, unlinks them and continues the queue", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(2, 1, () => ["shared.ts"]);
+      fixture.host.submitOutcome = () =>
+        Effect.fail({
+          code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
+          message: "Worktree isolation unavailable: unsupported",
+        });
+      yield* service.enqueuePort({
+        ...queueInput(ids, "permanent-isolation"),
+        grouping: "separately",
+      });
+      yield* service.testing.awaitIdle;
+      const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      fixture.clock.now = new Date("2026-10-22T12:03:00.000Z");
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      let progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.equal(progress.counts.needsAttention, 1);
+      assert.equal(progress.counts.executing, 1);
+      assert.equal(progress.entries[0]!.result, "rejected");
+      assert.equal(
+        (yield* service.getTopic({ projectId: PROJECT_ID, topicId: first.topics[0]!.topicId })).row
+          .state,
+        "ready",
+      );
+      fixture.clock.now = new Date("2026-10-22T12:06:00.000Z");
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.equal(progress.counts.needsAttention, 2);
+      assert.equal(progress.counts.executing, 0);
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.hold, null);
+      assert.equal(
+        (yield* makeUpstreamStore(yield* SqlClient.SqlClient).listGroups(
+          PROJECT_ID,
+          `queue:${first.entryId}`,
+        ))[0]!.status,
+        "rejected",
+      );
+    }),
+  );
+
+  for (const paused of [false, true])
+    it.effect(`recovers a usage hold while preserving user pause ${paused}`, () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(1, 1);
+        fixture.host.settings = { ...fixture.host.settings, autoResumeUsageLimitedThreads: true };
+        Object.assign(fixture.host.host, {
+          usageAccounts: Effect.sync(
+            () =>
+              [
+                {
+                  providerInstanceId: "claudeAgent",
+                  sections: [
+                    {
+                      kind: "claude-usage",
+                      outcome: "available",
+                      snapshot: {
+                        fetchedAt: "2026-10-22T12:00:00.000Z",
+                        data: {
+                          subscriptionLabel: null,
+                          limitsAvailable: true,
+                          windows: [
+                            {
+                              key: "five_hour",
+                              label: "Five hours",
+                              utilization: 100,
+                              resetsAt: "2026-10-22T12:01:00.000Z",
+                            },
+                          ],
+                          extraUsage: null,
+                        },
+                      },
+                    },
+                  ],
+                },
+              ] as never,
+          ),
+        });
+        yield* service.enqueuePort(queueInput(ids, `usage-hold-${paused}`));
+        yield* service.testing.awaitIdle;
+        assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.hold?.kind, "usage");
+        assert.equal(fixture.host.submissions.length, 0);
+        if (paused) yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+        fixture.clock.now = new Date("2026-10-22T12:03:00.000Z");
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, paused ? 0 : 1);
+        if (paused) {
+          assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.paused, true);
+          yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+          yield* service.testing.awaitIdle;
+          assert.equal(fixture.host.submissions.length, 1);
+        }
+      }),
+    );
+
+  it.effect(
+    "holds for a loading provider, recovers automatically and leaves user pause intact",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(1, 1);
+        const providers = yield* fixture.host.host.listProviders;
+        let loading = true;
+        Object.assign(fixture.host.host, {
+          listProviders: Effect.sync(() =>
+            providers.map((provider) => ({
+              ...provider,
+              probeOutcome: loading ? ("loading" as const) : ("success" as const),
+            })),
+          ),
+        });
+        yield* service.enqueuePort(queueInput(ids, "loading-provider-hold"));
+        yield* service.testing.awaitIdle;
+        assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.hold?.kind, "provider");
+        yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+        loading = false;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 0);
+        yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+        yield* service.testing.awaitIdle;
+        assert.equal(fixture.host.submissions.length, 1);
+      }),
+  );
+
+  it.effect(
+    "refreshes base evidence without an open panel and unblocks overlapping ports after merge",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(2, 2, () => ["shared.ts"]);
+        yield* service.enqueuePort({
+          ...queueInput(ids, "merge-refresh-request"),
+          grouping: "separately",
+        });
+        yield* service.testing.awaitIdle;
+        const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+        fixture.host.threads = [completedThread(first.threadId!, "merge-turn", "merge-message")];
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('merge-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'now','now','merge-turn')`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 1);
+        const main = fixture.repo.refs.get("refs/remotes/origin/main")!;
+        fixture.repo.remoteTips.set(
+          "origin/main",
+          fixture.repo.commit({
+            parent: main,
+            subject: "Merge port #42",
+            body: `Upstream-Topic: ${first.topics[0]!.topicId}`,
+          }),
+        );
+        fixture.clock.now = new Date("2026-10-22T12:03:00.000Z");
+        const before = fixture.repo.calls.filter((call) => call === "fetch origin/main").length;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 2);
+        assert.equal(
+          (yield* service.getPortQueue({ projectId: PROJECT_ID })).doneOnDefaultBranch,
+          1,
+        );
+        assert.equal(
+          fixture.repo.calls.filter((call) => call === "fetch origin/main").length,
+          before + 1,
+        );
+      }),
+  );
+
+  for (const gate of ["preexisting", "setting-off", "invalid"] as const)
+    it.effect(`does not auto-record outcomes gated by ${gate}`, () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(1, 1);
+        yield* service.enqueuePort(queueInput(ids, `outcome-gate-${gate}`));
+        yield* service.testing.awaitIdle;
+        const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+          .threadId!;
+        fixture.host.threads = [completedThread(threadId, "gated-turn", "gated-message")];
+        const sql = yield* SqlClient.SqlClient;
+        if (gate === "preexisting")
+          yield* sql`INSERT INTO upstream_port_outcome_checks(project_id,thread_id,result,checked_at) VALUES (${PROJECT_ID},${threadId},'preexisting','now')`;
+        if (gate === "setting-off")
+          fixture.host.settings = {
+            ...fixture.host.settings,
+            upstreamPorts: { ...fixture.host.settings.upstreamPorts, autoRecordOutcomes: false },
+          };
+        const text =
+          gate === "invalid"
+            ? "UPSTREAM-OUTCOME: equivalent ../invalid:1"
+            : "UPSTREAM-OUTCOME: equivalent src/a.ts:1";
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('gated-message',${threadId},'assistant',${text},0,'now','now','gated-turn')`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(
+          (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.topic.status,
+          "port",
+        );
+      }),
+    );
+
+  it.effect(
+    "retains slots for approval, unquiesced turns, user input and scheduled continuations",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(2, 1);
+        yield* service.enqueuePort({
+          ...queueInput(ids, "slot-ownership-request"),
+          grouping: "separately",
+        });
+        yield* service.testing.awaitIdle;
+        const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+          .threadId!;
+        const sql = yield* SqlClient.SqlClient;
+        const thread = {
+          ...(completedThread(threadId, "slot-turn", "slot-message") as unknown as {
+            latestTurn: { processingQuiescedAt: string | null };
+            pendingUserInputs: Array<{ requestId: string }>;
+          }),
+        };
+        fixture.host.threads = [thread as never];
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('slot-message',${threadId},'assistant','UPSTREAM-OUTCOME: blocked review',0,'now','now','slot-turn')`;
+        yield* sql`INSERT INTO projection_pending_approvals(request_id,thread_id,status,created_at) VALUES ('approval',${threadId},'pending','now')`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 1);
+        yield* sql`UPDATE projection_pending_approvals SET status = 'resolved'`;
+        thread.latestTurn.processingQuiescedAt = null;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 1);
+        thread.latestTurn.processingQuiescedAt = "2026-10-22T12:01:00Z";
+        thread.pendingUserInputs = [{ requestId: "input" }];
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 1);
+        thread.pendingUserInputs = [];
+        yield* sql`INSERT INTO projection_threads(thread_id,project_id,title,model,created_at,last_interaction_at,updated_at)
+      VALUES (${threadId},${PROJECT_ID},'port','model','now','now','now')`;
+        yield* sql`INSERT INTO next_turn_queue(item_id,thread_id,submission_id,command_id,message_id,position,status,not_before,schedule_reason,command_json,created_at,updated_at)
+      VALUES ('continuation',${threadId},'continuation','continuation','next-message',0,'queued','2026-10-23T00:00:00Z','usage_limit_reset','{}','now','now')`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 1);
+        yield* sql`UPDATE next_turn_queue SET deleted_at = 'now'`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 2);
+      }),
+  );
+
+  it.effect("pauses after two consecutive errors and resumes immediately", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(3, 1);
+      yield* service.enqueuePort({
+        ...queueInput(ids, "two-errors-request"),
+        grouping: "separately",
+      });
+      yield* service.testing.awaitIdle;
+      for (let index = 0; index < 2; index++) {
+        const entry = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[index]!;
+        fixture.host.threads = [
+          ...fixture.host.threads,
+          completedThread(
+            entry.threadId!,
+            `error-turn-${index}`,
+            `error-message-${index}`,
+            "error",
+          ),
+        ];
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+      }
+      assert.equal(fixture.host.submissions.length, 2);
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.paused, true);
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+      yield* service.testing.awaitIdle;
+      assert.equal(fixture.host.submissions.length, 3);
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.paused, false);
+    }),
+  );
+
+  it.effect(
+    "honors cancellation during build and removes a manually started member's file keys",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(3, 2);
+        yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+        yield* service.enqueuePort(queueInput(ids, "manual-removes-member"));
+        yield* service.testing.awaitIdle;
+        yield* service.startPort({
+          projectId: PROJECT_ID,
+          topicIds: [ids[0]!],
+          grouping: "together",
+          modelSelection: queueInput(ids, "unused").modelSelection,
+          runtimeMode: "full-access",
+          clientRequestId: "manual-port-request",
+        });
+        yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+        yield* service.testing.awaitIdle;
+        assert.equal(fixture.host.submissions.length, 2);
+        assert.equal((yield* service.getPortQueue({ projectId: PROJECT_ID })).counts.cancelled, 1);
+        const fresh = yield* prepareQueue(1, 1);
+        Object.assign(fresh.fixture.host.host, {
+          resolveAvailableBranchName: (_cwd: string, branch: string) =>
+            fresh.service
+              .dequeuePort({ projectId: PROJECT_ID, topicIds: fresh.ids })
+              .pipe(Effect.as(branch)),
+        });
+        yield* fresh.service.enqueuePort(queueInput(fresh.ids, "cancel-during-build"));
+        yield* fresh.service.testing.awaitIdle;
+        assert.equal(fresh.fixture.host.submissions.length, 0);
+      }),
+  );
+
+  it.effect(
+    "re-triages failed Inbox topics with superseding suggestions and confident skip decisions",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 0 });
+        const service = yield* fixture.make();
+        const sql = yield* SqlClient.SqlClient;
+        const store = makeUpstreamStore(sql);
+        yield* service.decide({
+          projectId: PROJECT_ID,
+          topicIds: ["pr-1"],
+          decision: { kind: "inbox" },
+        });
+        const failedSuggestion = {
+          status: "port" as const,
+          reason: "Failed",
+          userImpact: "medium" as const,
+          confidence: 0,
+          areas: [],
+          model: "test",
+          triageError: "timeout",
+        };
+        yield* store.recordOps(
+          PROJECT_ID,
+          [
+            {
+              opId: "failed-suggestion",
+              op: {
+                kind: "suggestion",
+                topicId: "pr-1",
+                title: "Old title",
+                summary: "",
+                suggestion: failedSuggestion,
+              },
+            },
+          ],
+          fixture.clock.now.toISOString(),
+        );
+        assert.equal((yield* service.getOverview(PROJECT_ID)).triageFailedCount, 1);
+        assert.equal(
+          (yield* service
+            .run({ projectId: PROJECT_ID, kind: "retriage", triage: "rules-only" })
+            .pipe(Effect.flip)).code,
+          "invalid",
+        );
+        fixture.host.triage = triageAll(() => ({
+          suggestion: "skip",
+          reasonKey: "maintenance",
+          reason: "No user impact",
+          confidence: 0.99,
+        }));
+        yield* service.run({ projectId: PROJECT_ID, kind: "retriage", triage: "llm" });
+        yield* service.testing.awaitIdle;
+        const topic = (yield* service.getTopic({ projectId: PROJECT_ID, topicId: "pr-1" })).row
+          .topic;
+        assert.equal(topic.status, "skip");
+        assert.equal(topic.decidedBy, "llm");
+        assert.equal(topic.suggestion?.triageError, undefined);
+        assert.equal((yield* service.getOverview(PROJECT_ID)).triageFailedCount, 0);
+        assert.equal((yield* service.getOverview(PROJECT_ID)).lastRun?.kind, "retriage");
+        assert.ok(
+          fixture.host.published
+            .filter((event) => event.reason === "run-finished")
+            .every((event) => event.newInboxCount === undefined),
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM upstream_ledger_ops WHERE op_id = 'failed-suggestion'`,
+          [{ state: "superseded" }],
+        );
+      }),
+  );
+
+  for (const mixed of [false, true])
+    it.effect(
+      mixed
+        ? "does not skip a multi-commit topic with mixed skip and Port results"
+        : "keeps a two-commit failed topic whole even with chunkSize one",
+      () =>
+        Effect.gen(function* () {
+          const fixture = yield* setup({ count: 2 });
+          fixture.host.triage = (prompt) =>
+            triageAll(() => ({}))(prompt).pipe(
+              Effect.map((result) => ({
+                groups: [
+                  {
+                    ...result.groups[0]!,
+                    commits: result.groups.flatMap((group) => group.commits),
+                  },
+                ],
+              })),
+            );
+          const first = yield* fixture.make();
+          yield* first.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+          yield* first.testing.awaitIdle;
+          const topic = (yield* first.listTopics({
+            projectId: PROJECT_ID,
+            list: "inbox",
+          })).topics.find((row) => row.topic.id !== "pr-1")!.topic;
+          const sql = yield* SqlClient.SqlClient;
+          yield* makeUpstreamStore(sql).recordOps(
+            PROJECT_ID,
+            [
+              {
+                opId: "failed-multi",
+                op: {
+                  kind: "suggestion",
+                  topicId: topic.id,
+                  title: topic.title,
+                  summary: topic.summary,
+                  suggestion: { ...topic.suggestion!, triageError: "bad JSON" },
+                },
+              },
+            ],
+            fixture.clock.now.toISOString(),
+          );
+          const chunks: number[] = [];
+          fixture.host.triage = (prompt) => {
+            chunks.push([...prompt.matchAll(/^commit [0-9a-f]{40}$/gm)].length);
+            let index = 0;
+            return triageAll(() =>
+              mixed && index++ === 0
+                ? {
+                    suggestion: "skip",
+                    reasonKey: "maintenance",
+                    confidence: 0.99,
+                    reason: "No user impact",
+                  }
+                : {},
+            )(prompt);
+          };
+          const service = yield* fixture.make(undefined, { chunkSize: 1 });
+          yield* service.run({ projectId: PROJECT_ID, kind: "retriage", triage: "llm" });
+          yield* service.testing.awaitIdle;
+          assert.deepStrictEqual(chunks, [2]);
+          assert.equal(
+            (yield* service.getTopic({ projectId: PROJECT_ID, topicId: topic.id })).members.length,
+            2,
+          );
+          assert.equal((yield* service.getOverview(PROJECT_ID)).lastRun?.status, "succeeded");
+          assert.equal(
+            (yield* service.getTopic({ projectId: PROJECT_ID, topicId: topic.id })).row.state,
+            "inbox",
+          );
+        }),
+    );
+
+  for (const count of [21, 201, 1531])
+    it.effect(`queues all ${count} Ready topics beyond loaded pages`, () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(count);
+        yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+        const input = {
+          ...queueInput(ids, `volume-request-${count}`),
+          target: { kind: "all-ready" as const },
+        };
+        const queued = yield* service.enqueuePort(input);
+        yield* service.testing.awaitIdle;
+        assert.equal(queued.queuedTopicIds.length, count);
+        assert.equal(queued.queuedThreads, Math.ceil(count / 5));
+        assert.deepStrictEqual(yield* service.enqueuePort(input), queued);
+        assert.equal(
+          (yield* service.enqueuePort({ ...input, batchSize: 10 }).pipe(Effect.flip)).code,
+          "conflict",
+        );
+        assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.queuedTopics, count);
+        assert.equal(fixture.host.submissions.length, 0);
+        assert.equal(
+          (yield* service.enqueuePort({ ...input, clientRequestId: "second-enqueue" })).skipped
+            .length,
+          count,
+        );
+      }),
+    );
+
+  it.effect(
+    "refills 53 topics in six batches at concurrency two while the earlier PR is unmerged",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(53);
+        const sql = yield* SqlClient.SqlClient;
+        const before = yield* service.listTopics({
+          projectId: PROJECT_ID,
+          list: "ready",
+          limit: 10,
+        });
+        yield* service.enqueuePort(queueInput(ids, "fifty-three-topics", 10));
+        yield* service.testing.awaitIdle;
+        let queue = yield* service.getPortQueue({ projectId: PROJECT_ID });
+        assert.deepStrictEqual(
+          queue.entries.map((entry) => entry.topics.length),
+          [10, 10, 10, 10, 10, 3],
+        );
+        assert.equal(fixture.host.submissions.length, 2);
+        assert.equal(queue.counts.executing, 20);
+        assert.equal(
+          (yield* service.listTopics({
+            projectId: PROJECT_ID,
+            list: "ready",
+            limit: 10,
+            cursor: before.nextCursor!,
+          })).status,
+          "ok",
+        );
+        assert.equal(
+          (yield* service.listTopics({ projectId: PROJECT_ID, list: "ready" })).contentRevision,
+          before.contentRevision,
+        );
+        const threadId = queue.entries[0]!.threadId!;
+        fixture.host.threads = [completedThread(threadId, "turn-1", "message-1")];
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('message-1',${threadId},'assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'now','now','turn-1')`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        queue = yield* service.getPortQueue({ projectId: PROJECT_ID });
+        assert.equal(fixture.host.submissions.length, 3);
+        assert.equal(queue.counts.awaitingReview, 10);
+        assert.equal(queue.doneOnDefaultBranch, 0);
+        const command = fixture.host.submissions[0]!.command;
+        assert.equal(command.bootstrap?.prepareWorktree?.requireWorktree, true);
+        const restarted = yield* fixture.make();
+        yield* restarted.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 3);
+        yield* restarted.controlPortQueue({ projectId: PROJECT_ID, action: "clear" });
+        yield* restarted.testing.awaitIdle;
+        assert.equal(
+          (yield* restarted.getPortQueue({ projectId: PROJECT_ID })).counts.cancelled,
+          23,
+        );
+      }),
+  );
+
+  it.effect(
+    "skips file conflicts, keeps awaiting-merge files blocked, and permits a single override",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(3, 2, (index) => [
+          index < 2 ? "shared.ts" : "other.ts",
+        ]);
+        yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+        yield* service.enqueuePort({
+          ...queueInput(ids, "file-conflict-request"),
+          grouping: "separately",
+        });
+        yield* service.testing.awaitIdle;
+        yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+        yield* service.testing.awaitIdle;
+        let queue = yield* service.getPortQueue({ projectId: PROJECT_ID });
+        assert.equal(queue.entries.filter((entry) => entry.status === "started").length, 2);
+        const waiting = queue.entries.find((entry) => entry.status === "queued")!;
+        assert.equal(waiting.waitingOn.length, 1);
+        const first = queue.entries.find(
+          (entry) => entry.threadId === waiting.waitingOn[0]!.threadId,
+        )!;
+        fixture.host.threads = [completedThread(first.threadId!, "turn-files", "message-files")];
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('message-files',${first.threadId},'assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'now','now','turn-files')`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 2);
+        assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.waitingOnFiles, 1);
+        yield* service.controlPortQueue({
+          projectId: PROJECT_ID,
+          action: "ignore-conflicts",
+          entryId: waiting.entryId,
+        });
+        yield* service.testing.awaitIdle;
+        queue = yield* service.getPortQueue({ projectId: PROJECT_ID });
+        assert.equal(fixture.host.submissions.length, 3);
+        assert.equal(
+          queue.entries.find((entry) => entry.entryId === waiting.entryId)!.ignoreConflicts,
+          true,
+        );
+      }),
+  );
+
+  it.effect(
+    "records only a scoped batch outcome from its settled turn and never a later message",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(2, 1);
+        yield* service.enqueuePort(queueInput(ids, "scoped-outcome-request"));
+        yield* service.testing.awaitIdle;
+        const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+          .threadId!;
+        fixture.host.threads = [completedThread(threadId, "turn-outcome", "owned-message")];
+        const sql = yield* SqlClient.SqlClient;
+        const text = `UPSTREAM-OUTCOME ${ids[0]}: equivalent apps/server/a.ts:12\nUPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('owned-message',${threadId},'assistant',${text},0,'2026-10-22','2026-10-22','turn-outcome')`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
+      VALUES ('later-message',${threadId},'assistant','UPSTREAM-OUTCOME: not-applicable wrong message',0,'2026-10-23','2026-10-23')`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        const done = yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! });
+        assert.equal(done.row.topic.status, "equivalent");
+        assert.equal(done.row.topic.decidedBy, "llm");
+        const progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+        assert.equal(progress.counts.recorded, 1);
+        assert.equal(progress.doneOnDefaultBranch, 0);
+        assert.equal(progress.counts.awaitingReview, 1);
+        assert.ok(!done.row.topic.equivalence?.f5Refs.includes("#42"));
+        assert.equal(
+          (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[1]! })).row.state,
+          "in-progress",
+        );
+        const seq = yield* makeUpstreamStore(sql).maxSeq(PROJECT_ID);
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(yield* makeUpstreamStore(sql).maxSeq(PROJECT_ID), seq);
+      }),
+  );
+
+  it.effect(
+    "retries null and isolation deliveries with the original identity, without starting more work",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(3, 1);
+        fixture.host.submitOutcome = () =>
+          Effect.fail({
+            code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
+            message: "Worktree isolation unavailable: unsupported",
+          });
+        yield* service.enqueuePort({
+          ...queueInput(ids, "isolation-request"),
+          grouping: "separately",
+        });
+        yield* service.testing.awaitIdle;
+        assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.hold?.kind, "isolation");
+        const submissionId = fixture.host.submissions[0]!.submissionId;
+        fixture.host.submitOutcome = () => Effect.succeed(null);
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.at(-1)!.submissionId, submissionId);
+        assert.equal((yield* service.getPortQueue({ projectId: PROJECT_ID })).counts.executing, 1);
+      }),
+  );
+});
+
+layer("upstream ports service", (it) => {
+  it.effect("advances and retries reviews with the schedule off and without the writer claim", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const first = yield* fixture.make();
+      yield* first.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port" },
+      });
+      const result = yield* first.startPort({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        grouping: "together",
+        review: REVIEW_SLOTS,
+        modelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+        runtimeMode: "full-access",
+        clientRequestId: "review-background",
+      });
+      yield* first.testing.awaitIdle;
+      const thread = reviewThread({ id: result.groups[0]!.threadId, projectId: PROJECT_ID });
+      fixture.host.threads = [
+        { ...thread, latestTurn: { ...thread.latestTurn!, state: "running" } },
+      ];
+      fixture.gh.available = false;
+      const second = yield* fixture.make({
+        profileId: "p2",
+        stateDir: "/state/p2",
+        hostname: "host",
+      });
+      assert.isFalse((yield* second.getOverview(PROJECT_ID)).writer.managedByThisProfile);
+      assert.strictEqual((yield* second.getOverview(PROJECT_ID)).schedule.mode, "off");
+      yield* second.start;
+      fixture.host.threads = [
+        {
+          ...thread,
+          messages: thread.messages.map((m) => ({
+            ...m,
+            text: "UPSTREAM-OUTCOME: blocked dependency",
+          })),
+        },
+      ];
+      yield* TestClock.adjust(SCHEDULER_TICK_MS);
+      const store = makeUpstreamStore(yield* SqlClient.SqlClient);
+      for (
+        let count = 0;
+        count < 100 && (yield* store.getPortReviewByThread(thread.id))?.status !== "skipped";
+        count++
+      )
+        yield* Effect.yieldNow;
+      assert.strictEqual((yield* store.getPortReviewByThread(thread.id))?.status, "skipped");
+      fixture.host.threads = [thread];
+      fixture.gh.available = true;
+      fixture.gh.prs.push({
+        repo: "o/f5",
+        number: 42,
+        url: "https://github.com/o/f5/pull/42",
+        state: "open",
+        head: thread.branch!,
+        headSha: "abc",
+        title: "Port",
+        body: "",
+      });
+      const retried = yield* second.retryPortReview({ projectId: PROJECT_ID, threadId: thread.id });
+      assert.strictEqual(retried.revision, (yield* second.getOverview(PROJECT_ID)).revision);
+      assert.lengthOf(fixture.host.reviews, 1);
+    }),
+  );
+  it.effect(
+    "admits one review per group, validates all slots before admission, and leaves review-less ports alone",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 1 });
+        const service = yield* fixture.make();
+        yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "rules-only" });
+        yield* service.testing.awaitIdle;
+        const ids = (yield* service.listTopics({
+          projectId: PROJECT_ID,
+          list: "inbox",
+        })).topics.map((row) => row.topic.id);
+        yield* service.decide({ projectId: PROJECT_ID, topicIds: ids, decision: { kind: "port" } });
+        const input = {
+          projectId: PROJECT_ID,
+          topicIds: ids,
+          grouping: "together" as const,
+          modelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+          runtimeMode: "full-access" as const,
+          clientRequestId: "review-request-1",
+        };
+        for (const key of ["reviewerA", "reviewerB", "consolidation"] as const) {
+          const error = yield* service
+            .startPort({
+              ...input,
+              review: { ...REVIEW_SLOTS, [key]: { provider: "grok", model: "grok-code" } },
+            })
+            .pipe(Effect.flip);
+          assert.strictEqual(error.code, "invalid");
+          assert.include(error.message, key);
+        }
+        const store = makeUpstreamStore(yield* SqlClient.SqlClient);
+        assert.lengthOf(yield* store.listGroups(PROJECT_ID, input.clientRequestId), 0);
+        fixture.host.unavailableProviders.add("codex");
+        for (const key of ["reviewerA", "reviewerB", "consolidation"] as const) {
+          const review = {
+            reviewerA: REVIEW_SLOTS.reviewerB,
+            reviewerB: REVIEW_SLOTS.reviewerB,
+            consolidation: REVIEW_SLOTS.reviewerB,
+            [key]: REVIEW_SLOTS.reviewerA,
+          };
+          const error = yield* service.startPort({ ...input, review }).pipe(Effect.flip);
+          assert.strictEqual(error.code, "invalid");
+          assert.include(error.message, key);
+          assert.include(error.message, "Provider unavailable");
+        }
+        assert.lengthOf(yield* store.listGroups(PROJECT_ID, input.clientRequestId), 0);
+        fixture.host.unavailableProviders.clear();
+        const result = yield* service.startPort({ ...input, review: REVIEW_SLOTS });
+        yield* service.testing.awaitIdle;
+        assert.lengthOf(result.groups, 1);
+        const row = yield* store.getPortReviewByThread(result.groups[0]!.threadId);
+        assert.deepStrictEqual(row?.reviewers, REVIEW_SLOTS);
+        assert.strictEqual(row?.status, "waiting");
+        assert.lengthOf(
+          (yield* store.listLinks(PROJECT_ID)).filter((link) => link.threadId === row?.threadId),
+          ids.length,
+        );
+        yield* service.startPort({ ...input, review: REVIEW_SLOTS });
+        assert.lengthOf(yield* store.listActivePortReviews, 1);
+        const plain = yield* service.startPort({
+          ...input,
+          clientRequestId: "plain-request-1",
+          review: null,
+        });
+        fixture.host.threads = [
+          reviewThread({ id: plain.groups[0]!.threadId, projectId: PROJECT_ID }),
+        ];
+        yield* service.testing.reconcilePortReviews;
+        assert.isNull(yield* store.getPortReviewByThread(plain.groups[0]!.threadId));
+        assert.lengthOf(fixture.host.reviews, 0);
+        assert.isTrue(fixture.host.submissionSources.every((source) => source === "human"));
+      }),
+  );
+  it.effect("records decisions locally with no network and bumps epochs on reopen", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      const result = yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port", scope: "Only the panel" },
+      });
+      assert.deepStrictEqual(result.updated, ["pr-1"]);
+      assert.deepStrictEqual(fixture.repo.calls, []);
+      assert.deepStrictEqual(fixture.gh.calls, []);
+      const ready = yield* service.listTopics({ projectId: PROJECT_ID, list: "ready" });
+      assert.strictEqual(ready.topics[0]!.topic.scope, "Only the panel");
+      const again = yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port", scope: "Only the panel" },
+      });
+      assert.deepStrictEqual(again.unchanged, ["pr-1"]);
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "inbox" },
+      });
+      const detail = yield* service.getTopic({ projectId: PROJECT_ID, topicId: "pr-1" });
+      assert.strictEqual(detail.row.topic.epoch, 2);
+      assert.strictEqual(detail.row.topic.scope, undefined);
+      assert.strictEqual(detail.row.state, "inbox");
+      assert.ok(fixture.host.published.some((entry) => entry.reason === "ledger-updated"));
+      assert.deepStrictEqual(
+        detail.history.map((entry) => [entry.kind, entry.status, entry.epoch, entry.publication]),
+        [
+          ["created", undefined, 1, "published"],
+          ["decided", "port", 1, "superseded"],
+          ["decided", "inbox", 2, "pending"],
+        ],
+      );
+    }),
+  );
+
+  it.effect("undoes a decision once, keeping the epoch a reopen bumped", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      const input = { projectId: PROJECT_ID, topicIds: ["pr-1"] };
+      const ready = yield* service.decide({ ...input, decision: { kind: "port", scope: "Panel" } });
+      const reopen = yield* service.decide({ ...input, decision: { kind: "inbox" } });
+      assert.strictEqual(
+        (yield* service.getTopic({ ...input, topicId: "pr-1" })).row.topic.epoch,
+        2,
+      );
+
+      const undone = yield* service.undoDecisions({ ...input, undoToken: reopen.undoToken! });
+      assert.deepStrictEqual(
+        [undone.updated, undone.unchanged, undone.undoToken],
+        [["pr-1"], [], null],
+      );
+      const restored = (yield* service.getTopic({ ...input, topicId: "pr-1" })).row;
+      assert.strictEqual(restored.state, "ready");
+      // Epochs only grow: the reopen may already be in the ledger pull request.
+      assert.strictEqual(restored.topic.epoch, 2);
+      assert.strictEqual(restored.topic.scope, "Panel");
+      const reused = yield* Effect.flip(
+        service.undoDecisions({ ...input, undoToken: reopen.undoToken! }),
+      );
+      assert.deepStrictEqual(
+        [reused.code, reused.message],
+        ["not-found", "This undo has expired."],
+      );
+
+      yield* service.undoDecisions({ ...input, undoToken: ready.undoToken! });
+      const original = (yield* service.getTopic({ ...input, topicId: "pr-1" })).row.topic;
+      assert.deepStrictEqual([original.status, original.decidedBy], ["inbox", undefined]);
+
+      // A topic decided again since the token was minted stays as it is.
+      const watch = yield* service.decide({ ...input, decision: { kind: "watch" } });
+      yield* service.decide({ ...input, decision: { kind: "port" } });
+      const stale = yield* service.undoDecisions({ ...input, undoToken: watch.undoToken! });
+      assert.deepStrictEqual([stale.updated, stale.unchanged], [[], ["pr-1"]]);
+
+      const late = yield* service.decide({ ...input, decision: { kind: "watch" } });
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 16 * 60_000);
+      const expired = yield* Effect.flip(
+        service.undoDecisions({ ...input, undoToken: late.undoToken! }),
+      );
+      assert.strictEqual(expired.code, "not-found");
+      const noop = yield* service.decide({ ...input, decision: { kind: "watch" } });
+      assert.strictEqual(noop.undoToken, null);
+    }),
+  );
+
+  it.effect("does not let an undo or a stale decision overwrite one recorded meanwhile", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      const input = { projectId: PROJECT_ID, topicIds: ["pr-1"] };
+      const tick = () => {
+        fixture.clock.now = new Date(fixture.clock.now.getTime() + 1_000);
+      };
+      const watch = yield* service.decide({ ...input, decision: { kind: "watch" } });
+      tick();
+      // Another window marks the topic ready while this undo waits for the lock.
+      fixture.host.beforeNextLock = service.decide({ ...input, decision: { kind: "port" } });
+      const raced = yield* service.undoDecisions({ ...input, undoToken: watch.undoToken! });
+      assert.deepStrictEqual([raced.updated, raced.unchanged], [[], ["pr-1"]]);
+      assert.strictEqual(
+        (yield* service.getTopic({ ...input, topicId: "pr-1" })).row.topic.status,
+        "port",
+      );
+
+      // Another window reopens the topic while a decision made at the old epoch waits for the lock.
+      tick();
+      fixture.host.beforeNextLock = service.decide({ ...input, decision: { kind: "inbox" } });
+      const stale = yield* Effect.flip(
+        service.decide({ ...input, decision: { kind: "declined", reason: "Not for f5" } }),
+      );
+      assert.strictEqual(stale.code, "conflict");
+      const reopened = (yield* service.getTopic({ ...input, topicId: "pr-1" })).row.topic;
+      assert.deepStrictEqual([reopened.status, reopened.epoch], ["inbox", 2]);
+
+      // Watch, Mark ready, then Watch again: the first token does not come back to life.
+      tick();
+      const first = yield* service.decide({ ...input, decision: { kind: "watch" } });
+      tick();
+      yield* service.decide({ ...input, decision: { kind: "port" } });
+      tick();
+      yield* service.decide({ ...input, decision: { kind: "watch" } });
+      const revived = yield* service.undoDecisions({ ...input, undoToken: first.undoToken! });
+      assert.deepStrictEqual([revived.updated, revived.unchanged], [[], ["pr-1"]]);
+    }),
+  );
+
+  it.effect("keeps every batch of one action under a single undo token", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      // More batches than the per-project token limit: joining keeps them all.
+      let token: string | undefined;
+      for (let batch = 0; batch < 22; batch += 1) {
+        const result = yield* service.decide({
+          projectId: PROJECT_ID,
+          topicIds: ["pr-1"],
+          decision: { kind: batch % 2 === 0 ? "watch" : "port" },
+          ...(token ? { undoToken: token } : {}),
+        });
+        assert.ok(result.undoToken);
+        if (token) assert.strictEqual(result.undoToken, token);
+        token = result.undoToken;
+        fixture.clock.now = new Date(fixture.clock.now.getTime() + 1_000);
+      }
+      const undone = yield* service.undoDecisions({ projectId: PROJECT_ID, undoToken: token! });
+      // The newest batch is undone; the earlier ones were superseded by it.
+      assert.deepStrictEqual(undone.updated, ["pr-1"]);
+      assert.strictEqual(
+        (yield* service.getTopic({ projectId: PROJECT_ID, topicId: "pr-1" })).row.topic.status,
+        "watch",
+      );
+    }),
+  );
+
+  it.effect("lists a topic's changed files and whether f5 has each path", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      const files = yield* service.getTopicFiles({ projectId: PROJECT_ID, topicId: "pr-1" });
+      assert.deepStrictEqual(files, {
+        commits: [
+          {
+            sha: fixture.target0,
+            available: true,
+            files: [
+              {
+                path: "apps/web/settings.tsx",
+                added: 1,
+                deleted: 0,
+                existsInF5: true,
+                diffAnchor: `diff-${sha256Hex("apps/web/settings.tsx")}`,
+              },
+            ],
+            totalFiles: 1,
+            truncated: false,
+          },
+        ],
+        totalCommits: 1,
+        totals: { files: 1, added: 1, deleted: 0, existingInF5: 1 },
+      });
+      // A timeout is reported, not mistaken for commits missing from the clone.
+      fixture.repo.numstatTimeouts = 1;
+      const timedOut = yield* Effect.flip(
+        service.getTopicFiles({ projectId: PROJECT_ID, topicId: "pr-1" }),
+      );
+      assert.match(timedOut.message, /timed out/u);
+      fixture.repo.commits.delete(fixture.target0);
+      const missing = yield* service.getTopicFiles({ projectId: PROJECT_ID, topicId: "pr-1" });
+      assert.strictEqual(missing.commits[0]!.available, false);
+      const unknown = yield* Effect.flip(
+        service.getTopicFiles({ projectId: PROJECT_ID, topicId: "pr-404" }),
+      );
+      assert.strictEqual(unknown.code, "not-found");
+    }),
+  );
+
+  it.effect("runs rules-only triage into one interval op with rule skips", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({
+        count: 3,
+        paths: (index) => (index === 1 ? ["apps/mobile/app.tsx"] : [`apps/server/f${index}.ts`]),
+      });
+      const service = yield* fixture.make();
+      yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "rules-only" });
+      yield* service.testing.awaitIdle;
+      const overview = yield* service.getOverview(PROJECT_ID);
+      assert.strictEqual(overview.lastRun?.status, "succeeded");
+      assert.strictEqual(overview.lastRun?.commitCount, 3);
+      assert.strictEqual(overview.trackedThrough, fixture.upstream.at(-1));
+      assert.strictEqual(overview.publication.unpublishedOps, 1);
+      assert.strictEqual(overview.counts.inbox, 3);
+      assert.strictEqual(overview.counts.skipped, 1);
+      const skipped = yield* service.listTopics({ projectId: PROJECT_ID, list: "skipped" });
+      assert.strictEqual(skipped.topics[0]!.topic.reasonKey, "mobile");
+      assert.strictEqual(skipped.topics[0]!.topic.decidedBy, "rule");
+      assert.ok(
+        fixture.host.published.some(
+          (entry) => entry.reason === "run-finished" && entry.newInboxCount === 2,
+        ),
+      );
+    }),
+  );
+
+  it.effect("starts one run when two starts race, and the database allows one running row", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      // Hold the first run in triage so it is still active when the second start runs.
+      const gate = yield* Deferred.make<void>();
+      const triage = triageAll(() => ({}));
+      fixture.host.triage = (prompt) => Deferred.await(gate).pipe(Effect.andThen(triage(prompt)));
+      const service = yield* fixture.make();
+      const start = service
+        .run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" })
+        .pipe(Effect.result);
+      const results = yield* Effect.all([start, start], { concurrency: "unbounded" });
+      yield* Deferred.succeed(gate, undefined);
+      yield* service.testing.awaitIdle;
+      // Either start may win; exactly one must, and the other is busy.
+      assert.deepStrictEqual(results.map((result) => result._tag).toSorted(), [
+        "Failure",
+        "Success",
+      ]);
+      const failure = results.find((result) => result._tag === "Failure")!;
+      assert.strictEqual(failure._tag === "Failure" ? failure.failure.code : null, "busy");
+      const sql = yield* SqlClient.SqlClient;
+      const runs = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM upstream_port_runs`;
+      assert.strictEqual(runs[0]!.count, 1);
+
+      const insert = (runId: string) =>
+        sql`INSERT INTO upstream_port_runs (run_id, project_id, kind, trigger, triage, started_at, status)
+          VALUES (${runId}, 'other', 'upstream', 'manual', 'rules-only', '2026-10-22', 'running')`;
+      yield* insert("running-1");
+      assert.strictEqual((yield* insert("running-2").pipe(Effect.result))._tag, "Failure");
+    }),
+  );
+
+  it.effect("auto-skips confident LLM skips and keeps the rest in the inbox", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ count: 3 });
+      fixture.host.triage = triageAll((sha) =>
+        sha === fixture.upstream[0]
+          ? { suggestion: "skip", reasonKey: "maintenance", confidence: 0.85 }
+          : sha === fixture.upstream[1]
+            ? {
+                suggestion: "skip",
+                reasonKey: "maintenance",
+                confidence: 0.9,
+                question: "Is this used?",
+              }
+            : {},
+      );
+      const service = yield* fixture.make();
+      yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+      yield* service.testing.awaitIdle;
+      const skipped = yield* service.listTopics({
+        projectId: PROJECT_ID,
+        list: "skipped",
+        filter: { decidedBy: "llm" },
+      });
+      assert.strictEqual(skipped.topics.length, 1);
+      const questions = yield* service.listTopics({
+        projectId: PROJECT_ID,
+        list: "inbox",
+        filter: { hasQuestion: true },
+      });
+      assert.strictEqual(questions.topics[0]!.topic.suggestion?.question, "Is this used?");
+      const overview = yield* service.getOverview(PROJECT_ID);
+      assert.strictEqual(overview.lastRun?.llmCalls, 1);
+      assert.strictEqual(overview.lastRun?.autoDecidedCount, 1);
+
+      // Confirming the automatic skip unchanged attributes it to the user, once.
+      const topic = skipped.topics[0]!.topic;
+      const confirm = service.decide({
+        projectId: PROJECT_ID,
+        topicIds: [topic.id],
+        decision: { kind: "skip", reasonKey: topic.reasonKey!, reason: topic.reason! },
+      });
+      assert.deepStrictEqual((yield* confirm).updated, [topic.id]);
+      const confirmed = yield* service.getTopic({ projectId: PROJECT_ID, topicId: topic.id });
+      assert.strictEqual(confirmed.row.topic.decidedBy, "user");
+      assert.deepStrictEqual((yield* confirm).unchanged, [topic.id]);
+    }),
+  );
+
+  it.effect("keeps Inbox topics without a stored classification from expiring", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      const preview = yield* service.expireBacklog({
+        projectId: PROJECT_ID,
+        olderThanDays: 14,
+        dryRun: true,
+      });
+      assert.strictEqual(preview.count, 0);
+      assert.strictEqual(preview.unclassified, 1);
+    }),
+  );
+
+  it.effect("previews and expires aged Inbox topics under one undo token", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({
+        suggestion: {
+          status: "port",
+          reason: "Useful",
+          userImpact: "medium",
+          confidence: 0.6,
+          areas: [],
+          model: "m",
+          kind: "fix",
+        },
+      });
+      const service = yield* fixture.make();
+      // pr-1 was created 2026-10-01; the clock is 2026-10-22.
+      const input = { projectId: PROJECT_ID, olderThanDays: 14 };
+      const preview = yield* service.expireBacklog({ ...input, dryRun: true });
+      assert.strictEqual(preview.unclassified, 0);
+      assert.strictEqual(preview.count, 1);
+      assert.deepStrictEqual(preview.byLane, { bug: 1, perf: 0, feature: 0, maintenance: 0 });
+      assert.isNull(preview.undoToken);
+      const untouched = yield* service.getTopic({ projectId: PROJECT_ID, topicId: "pr-1" });
+      assert.strictEqual(untouched.row.state, "inbox");
+      assert.strictEqual(
+        (yield* service.expireBacklog({ ...input, olderThanDays: 30, dryRun: true })).count,
+        0,
+      );
+
+      const applied = yield* service.expireBacklog({ ...input, dryRun: false });
+      assert.strictEqual(applied.count, preview.count);
+      assert.ok(applied.undoToken);
+      const expired = (yield* service.getTopic({ projectId: PROJECT_ID, topicId: "pr-1" })).row;
+      assert.strictEqual(expired.state, "skipped");
+      assert.strictEqual(expired.topic.reasonKey, "aged-out");
+      assert.strictEqual(expired.topic.decidedBy, "rule");
+      const filtered = yield* service.listTopics({
+        projectId: PROJECT_ID,
+        list: "skipped",
+        filter: { reasonKey: "aged-out" },
+      });
+      assert.deepStrictEqual(
+        filtered.topics.map((row) => row.topic.id),
+        ["pr-1"],
+      );
+
+      yield* service.undoDecisions({ projectId: PROJECT_ID, undoToken: applied.undoToken! });
+      assert.strictEqual(
+        (yield* service.getTopic({ projectId: PROJECT_ID, topicId: "pr-1" })).row.state,
+        "inbox",
+      );
+    }),
+  );
+
+  it.effect(
+    "auto-queues confident critical security fixes from a run, within the daily limit",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 3 });
+        fixture.host.settings = {
+          ...fixture.host.settings,
+          upstreamPorts: {
+            ...fixture.host.settings.upstreamPorts,
+            portModelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+            portReview: { enabled: false, reviewerA: null, reviewerB: null, consolidation: null },
+            autoPort: { mode: "security-and-bugs", dailyLimit: 1 },
+          },
+        };
+        fixture.host.triage = triageAll((sha) =>
+          sha === fixture.upstream[2]
+            ? { kind: "security", severity: "critical", confidence: 0.95 }
+            : sha === fixture.upstream[1]
+              ? { kind: "security", severity: "high", confidence: 0.9 }
+              : // High impact, but its files are not in f5.
+                { kind: "fix", userImpact: "high", confidence: 0.95 },
+        );
+        const service = yield* fixture.make();
+        yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+        yield* service.testing.awaitIdle;
+        const queue = makeQueueStore(yield* SqlClient.SqlClient);
+        const entries = yield* queue.listQueue(PROJECT_ID);
+        assert.strictEqual(entries.length, 1);
+        const [queuedId] = entries[0]!.topicIds;
+        const queued = (yield* service.getTopic({ projectId: PROJECT_ID, topicId: queuedId! })).row;
+        assert.strictEqual(queued.topic.decidedBy, "llm");
+        assert.strictEqual(queued.topic.suggestion?.severity, "critical");
+        const inbox = yield* service.listTopics({
+          projectId: PROJECT_ID,
+          list: "inbox",
+          filter: { lane: ["security"] },
+        });
+        assert.deepStrictEqual(
+          inbox.topics.map((row) => row.topic.suggestion?.severity),
+          ["high"],
+        );
+        // Dequeuing the topic does not give its daily slot back.
+        yield* service.dequeuePort({ projectId: PROJECT_ID, topicIds: [queuedId!] });
+        assert.strictEqual(
+          yield* queue.countTopicsRequestedSince(PROJECT_ID, "auto-port:", "2000-01-01T00:00:00Z"),
+          1,
+        );
+      }),
+  );
+
+  it.effect(
+    "holds auto-port, deciding nothing, until reviewers are chosen or the provider is available",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 1 });
+        const autoPortSettings = (overrides: object) => ({
+          ...fixture.host.settings,
+          upstreamPorts: {
+            ...fixture.host.settings.upstreamPorts,
+            portModelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+            autoPort: { mode: "security" as const, dailyLimit: 5 },
+            ...overrides,
+          },
+        });
+        // Review is on (the default) but no reviewer models are saved yet.
+        fixture.host.settings = autoPortSettings({});
+        fixture.host.triage = triageAll(() => ({
+          kind: "security",
+          severity: "critical",
+          confidence: 0.95,
+        }));
+        const service = yield* fixture.make();
+        yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+        yield* service.testing.awaitIdle;
+        const queue = makeQueueStore(yield* SqlClient.SqlClient);
+        assert.strictEqual((yield* queue.listQueue(PROJECT_ID)).length, 0);
+        assert.strictEqual((yield* service.getOverview(PROJECT_ID)).counts.inbox, 2);
+        assert.strictEqual((yield* service.getOverview(PROJECT_ID)).counts.ready, 0);
+
+        // The saved port model's provider instance is gone.
+        const second = yield* setup({ count: 1 });
+        second.host.settings = {
+          ...second.host.settings,
+          upstreamPorts: {
+            ...second.host.settings.upstreamPorts,
+            portModelSelection: { instanceId: "missing", model: "claude-test" } as never,
+            portReview: { enabled: false, reviewerA: null, reviewerB: null, consolidation: null },
+            autoPort: { mode: "security", dailyLimit: 5 },
+          },
+        };
+        second.host.triage = fixture.host.triage;
+        const other = yield* second.make();
+        yield* other.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+        yield* other.testing.awaitIdle;
+        assert.strictEqual((yield* queue.listQueue(PROJECT_ID)).length, 0);
+        assert.strictEqual((yield* other.getOverview(PROJECT_ID)).counts.ready, 0);
+      }),
+  );
+
+  it.effect("never auto-queues without a port model", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ count: 1 });
+      fixture.host.settings = {
+        ...fixture.host.settings,
+        upstreamPorts: {
+          ...fixture.host.settings.upstreamPorts,
+          portModelSelection: null,
+          autoPort: { mode: "security", dailyLimit: 5 },
+        },
+      };
+      fixture.host.triage = triageAll(() => ({
+        kind: "security",
+        severity: "critical",
+        confidence: 0.95,
+      }));
+      const service = yield* fixture.make();
+      yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+      yield* service.testing.awaitIdle;
+      assert.strictEqual(
+        (yield* makeQueueStore(yield* SqlClient.SqlClient).listQueue(PROJECT_ID)).length,
+        0,
+      );
+      assert.strictEqual((yield* service.getOverview(PROJECT_ID)).counts.inbox, 2);
+    }),
+  );
+
+  it.effect("stops at the call budget with a partial run and resumes from the recorded chunk", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ count: 12 });
+      fixture.host.triage = triageAll(() => ({}));
+      const service = yield* fixture.make(undefined, { chunkSize: 5, callBudget: 1 });
+      yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+      yield* service.testing.awaitIdle;
+      let overview = yield* service.getOverview(PROJECT_ID);
+      assert.strictEqual(overview.lastRun?.status, "partial");
+      assert.strictEqual(overview.lastRun?.remainingCount, 7);
+      assert.strictEqual(overview.trackedThrough, fixture.upstream[4]);
+      assert.strictEqual(overview.untriagedUpstreamCount, 7);
+      yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "rules-only" });
+      yield* service.testing.awaitIdle;
+      overview = yield* service.getOverview(PROJECT_ID);
+      assert.strictEqual(overview.lastRun?.status, "succeeded");
+      assert.strictEqual(overview.trackedThrough, fixture.upstream.at(-1));
+      assert.strictEqual(overview.publication.unpublishedOps, 3);
+    }),
+  );
+
+  it.effect(
+    "fails with provider-unavailable after three provider failures, keeping earlier chunks",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 6 });
+        let calls = 0;
+        fixture.host.triage = (prompt) => {
+          calls += 1;
+          return calls === 1
+            ? triageAll(() => ({}))(prompt)
+            : Effect.fail(
+                new TextGenerationError({ operation: "t", detail: "429", kind: "limit" }),
+              );
+        };
+        const service = yield* fixture.make(undefined, { chunkSize: 2, batchSize: 1 });
+        yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+        yield* service.testing.awaitIdle;
+        const overview = yield* service.getOverview(PROJECT_ID);
+        assert.strictEqual(overview.lastRun?.status, "failed");
+        assert.strictEqual(overview.lastRun?.failureKind, "provider-unavailable");
+        assert.strictEqual(overview.publication.unpublishedOps, 1);
+        assert.strictEqual(overview.trackedThrough, fixture.upstream[1]);
+      }),
+  );
+
+  it.effect("retries a timed-out chunk once, then fails the run with git-timeout", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ count: 2 });
+      fixture.repo.numstatTimeouts = 1;
+      const service = yield* fixture.make();
+      yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "rules-only" });
+      yield* service.testing.awaitIdle;
+      assert.strictEqual((yield* service.getOverview(PROJECT_ID)).lastRun?.status, "succeeded");
+      fixture.repo.refs.set(
+        "refs/remotes/upstream/main",
+        fixture.repo.commit({ parent: fixture.upstream.at(-1)!, subject: "More", paths: ["x.ts"] }),
+      );
+      fixture.repo.numstatTimeouts = 2;
+      yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "rules-only" });
+      yield* service.testing.awaitIdle;
+      const failed = (yield* service.getOverview(PROJECT_ID)).lastRun;
+      assert.strictEqual(failed?.failureKind, "git-timeout");
+    }),
+  );
+
+  it.effect("rejects runs when the remote is missing or mismatched, and adds it", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      fixture.repo.remotes.delete("upstream");
+      const service = yield* fixture.make();
+      assert.strictEqual((yield* service.getOverview(PROJECT_ID)).remoteStatus, "missing");
+      const error = yield* service
+        .run({ projectId: PROJECT_ID, kind: "upstream", triage: "rules-only" })
+        .pipe(Effect.flip);
+      assert.strictEqual(error.code, "invalid");
+      yield* service.addRemote(PROJECT_ID);
+      assert.strictEqual((yield* service.getOverview(PROJECT_ID)).remoteStatus, "ok");
+      fixture.repo.remotes.set("upstream", "git@github.com:someone/else.git");
+      assert.strictEqual((yield* service.getOverview(PROJECT_ID)).remoteStatus, "mismatch");
+    }),
+  );
+
+  it.effect("keeps a second profile read-only until it takes over", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const first = yield* fixture.make();
+      yield* first.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "watch" },
+      });
+      const second = yield* fixture.make({
+        profileId: "p2",
+        stateDir: "/state/p2",
+        hostname: "host",
+      });
+      const error = yield* second
+        .decide({ projectId: PROJECT_ID, topicIds: ["pr-1"], decision: { kind: "port" } })
+        .pipe(Effect.flip);
+      assert.strictEqual(error.code, "read-only");
+      assert.strictEqual(
+        (yield* second.getOverview(PROJECT_ID)).writer.managedByThisProfile,
+        false,
+      );
+      yield* second.takeOverWriter(PROJECT_ID);
+      yield* second.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port" },
+      });
+      const lost = yield* first
+        .decide({ projectId: PROJECT_ID, topicIds: ["pr-1"], decision: { kind: "inbox" } })
+        .pipe(Effect.flip);
+      assert.strictEqual(lost.code, "read-only");
+    }),
+  );
+
+  it.effect(
+    "publishes to one rolling PR, detects a squash merge and replays leftovers on a new branch",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup();
+        const service = yield* fixture.make();
+        yield* service.decide({
+          projectId: PROJECT_ID,
+          topicIds: ["pr-1"],
+          decision: { kind: "port" },
+        });
+        yield* service.testing.publishNow(PROJECT_ID);
+        let overview = yield* service.getOverview(PROJECT_ID);
+        assert.strictEqual(overview.publication.prNumber, 100);
+        assert.ok(overview.publication.branch?.startsWith("f5/upstream-ledger-"));
+        assert.strictEqual(fixture.gh.prs[0]!.title, "Track upstream t3code changes (2026-10-22)");
+        assert.ok(!fixture.gh.prs[0]!.body.includes("—"));
+        const branchTip = fixture.repo.refs.get(`refs/heads/${overview.publication.branch}`)!;
+        const firstBranch = overview.publication.branch!;
+
+        // A second decision lands on the same branch and refreshes the PR body.
+        yield* service.decide({
+          projectId: PROJECT_ID,
+          topicIds: ["pr-1"],
+          decision: { kind: "port", scope: "API only" },
+        });
+        fixture.clock.now = new Date(fixture.clock.now.getTime() + 3 * 60_000);
+        yield* service.testing.publishNow(PROJECT_ID);
+        assert.strictEqual(fixture.gh.prs.length, 1);
+        assert.ok(fixture.gh.calls.includes("update 100"));
+
+        // Squash-merge the first commit only: its tree carries the first decision.
+        const firstTree = fixture.repo.commits.get(branchTip)!.tree;
+        const merged = fixture.repo.commit({
+          parent: fixture.repo.refs.get("refs/remotes/origin/main")!,
+          subject: "Squash",
+          files: firstTree,
+        });
+        // The merge is only on the server, and the base fetch is still throttled:
+        // observing the merged PR must refetch before replaying leftovers.
+        fixture.repo.remoteTips.set("origin/main", merged);
+        fixture.gh.prs[0]!.state = "merged";
+        yield* service.testing.publishNow(PROJECT_ID);
+        overview = yield* service.getOverview(PROJECT_ID);
+        assert.strictEqual(fixture.repo.refs.get("refs/remotes/origin/main"), merged);
+        assert.strictEqual(overview.publication.unpublishedOps, 1);
+        assert.strictEqual(overview.publication.prNumber, 101);
+        assert.strictEqual(fixture.gh.prs.length, 2);
+        // Every PR call targets the origin fork, never the upstream remote.
+        assert.ok(fixture.gh.prs.every((pr) => pr.repo === "o/f5"));
+        assert.ok(fixture.gh.calls.every((call) => call === "bodies" || !call.includes("t3code")));
+        assert.ok(fixture.gh.calls.includes(`create o/f5:${overview.publication.branch}`));
+        // The merged PR's local branch is deleted.
+        assert.isFalse(fixture.repo.refs.has(`refs/heads/${firstBranch}`));
+        assert.notStrictEqual(overview.publication.branch, firstBranch);
+        const ready = yield* service.listTopics({ projectId: PROJECT_ID, list: "ready" });
+        assert.strictEqual(ready.topics[0]!.topic.scope, "API only");
+      }),
+  );
+
+  it.effect("refuses to record or publish over a base ledger file it cannot parse", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port" },
+      });
+      const base = fixture.repo.refs.get("refs/remotes/origin/main")!;
+      const broken = fixture.repo.commit({
+        parent: base,
+        subject: "Break the ledger",
+        files: new Map([["upstream/topics/2026-10.json", "{not json"]]),
+      });
+      fixture.repo.refs.set("refs/remotes/origin/main", broken);
+      const refused = yield* service
+        .decide({ projectId: PROJECT_ID, topicIds: ["pr-1"], decision: { kind: "watch" } })
+        .pipe(Effect.flip);
+      assert.strictEqual(refused.code, "unavailable");
+      assert.include(refused.message, "upstream/topics/2026-10.json");
+      yield* service.testing.publishNow(PROJECT_ID);
+      const publication = (yield* service.getOverview(PROJECT_ID)).publication;
+      assert.strictEqual(publication.pausedReason, "conflict");
+      assert.include(publication.lastError ?? "", "upstream/topics/2026-10.json");
+      assert.isFalse(fixture.repo.calls.some((call) => call.startsWith("push")));
+      assert.deepStrictEqual(fixture.gh.prs, []);
+    }),
+  );
+
+  it.effect("pauses on a closed PR until republish, and on push failures until retry", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port" },
+      });
+      yield* service.testing.publishNow(PROJECT_ID);
+      fixture.gh.prs[0]!.state = "closed";
+      yield* service.testing.publishNow(PROJECT_ID);
+      assert.strictEqual(
+        (yield* service.getOverview(PROJECT_ID)).publication.pausedReason,
+        "closed-pr",
+      );
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "watch" },
+      });
+      yield* service.testing.publishNow(PROJECT_ID);
+      assert.strictEqual(
+        (yield* service.getOverview(PROJECT_ID)).publication.pausedReason,
+        "closed-pr",
+      );
+      fixture.repo.pushFailure = "Permission denied (publickey).";
+      yield* service.resolvePublication({ projectId: PROJECT_ID, action: "republish" });
+      let publication = (yield* service.getOverview(PROJECT_ID)).publication;
+      assert.strictEqual(publication.pausedReason, null);
+      assert.strictEqual(publication.lastError, "Permission denied (publickey).");
+      for (let attempt = 0; attempt < 3; attempt += 1)
+        yield* service.testing.publishNow(PROJECT_ID);
+      publication = (yield* service.getOverview(PROJECT_ID)).publication;
+      assert.strictEqual(publication.pausedReason, "auth");
+      fixture.repo.pushFailure = null;
+      yield* service.resolvePublication({ projectId: PROJECT_ID, action: "retry" });
+      publication = (yield* service.getOverview(PROJECT_ID)).publication;
+      assert.strictEqual(publication.pausedReason, null);
+      assert.strictEqual(publication.prNumber, 101);
+
+      // Transient push and GitHub failures keep retrying instead of pausing.
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port" },
+      });
+      fixture.repo.pushFailure = "ssh: connect to host github.com port 22: Operation timed out";
+      for (let attempt = 0; attempt < 5; attempt += 1)
+        yield* service.testing.publishNow(PROJECT_ID);
+      publication = (yield* service.getOverview(PROJECT_ID)).publication;
+      assert.strictEqual(publication.pausedReason, null);
+      assert.match(publication.lastError ?? "", /timed out/u);
+      fixture.repo.pushFailure = null;
+      fixture.gh.failure = new UpstreamGitHubError({
+        operation: "pull request lookup",
+        detail: "GitHub pull request lookup failed (502).",
+        transient: true,
+      });
+      yield* service.resolvePublication({ projectId: PROJECT_ID, action: "retry" });
+      publication = (yield* service.getOverview(PROJECT_ID)).publication;
+      assert.strictEqual(publication.pausedReason, null);
+      assert.strictEqual(publication.lastError, "GitHub pull request lookup failed (502).");
+
+      // Discard closes the open ledger PR, and refuses while it cannot.
+      fixture.gh.failure = new UpstreamGitHubError({
+        operation: "pull request close",
+        detail: "GitHub pull request close failed (403).",
+        transient: false,
+      });
+      const refused = yield* service
+        .resolvePublication({ projectId: PROJECT_ID, action: "discard" })
+        .pipe(Effect.flip);
+      assert.strictEqual(refused.code, "unavailable");
+      assert.strictEqual(fixture.gh.prs[1]!.state, "open");
+      assert.ok((yield* service.getOverview(PROJECT_ID)).publication.unpublishedOps > 0);
+      fixture.gh.failure = null;
+      yield* service.resolvePublication({ projectId: PROJECT_ID, action: "discard" });
+      assert.strictEqual(fixture.gh.prs[1]!.state, "closed");
+      assert.ok(fixture.gh.calls.includes("close 101"));
+      const after = yield* service.getOverview(PROJECT_ID);
+      assert.strictEqual(after.publication.unpublishedOps, 0);
+      assert.strictEqual(after.publication.prNumber, null);
+      assert.strictEqual(after.counts.inbox, 1);
+    }),
+  );
+
+  it.effect(
+    "admits ports idempotently, rejects mismatched retries and resumes pending groups",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 2 });
+        const service = yield* fixture.make();
+        yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "rules-only" });
+        yield* service.testing.awaitIdle;
+        const ids = (yield* service.listTopics({ projectId: PROJECT_ID, list: "inbox" })).topics
+          .map((row) => row.topic.id)
+          .filter((id) => id !== "pr-1");
+        const notReady = yield* service
+          .startPort({
+            projectId: PROJECT_ID,
+            topicIds: [ids[0]!],
+            grouping: "together",
+            modelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+            runtimeMode: "full-access",
+            clientRequestId: "request-0001",
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(notReady.code, "invalid");
+        const marked = yield* service.decide({
+          projectId: PROJECT_ID,
+          topicIds: ids,
+          decision: { kind: "port" },
+        });
+
+        const promptOnly = yield* service.getPortPrompt({
+          projectId: PROJECT_ID,
+          topicIds: [ids[0]!],
+        });
+        assert.ok(promptOnly.prompt.includes(`Upstream-Topic: ${ids[0]}`));
+        assert.strictEqual((yield* service.getOverview(PROJECT_ID)).counts["in-progress"], 0);
+
+        let attempts = 0;
+        fixture.host.submitOutcome = (body) => {
+          attempts += 1;
+          if (attempts === 1) return Effect.fail({ message: "queue busy" });
+          if (String(body.submissionId).endsWith(":1"))
+            return Effect.succeed({
+              submissionId: body.submissionId,
+              disposition: "rejected",
+              reasonCode: "x",
+              detail: "No",
+            } as never);
+          return Effect.succeed({
+            submissionId: body.submissionId,
+            disposition: "started",
+            sequence: 1,
+          } as never);
+        };
+        const input = {
+          projectId: PROJECT_ID,
+          topicIds: ids,
+          grouping: "separately" as const,
+          modelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+          runtimeMode: "full-access" as const,
+          clientRequestId: "request-0002",
+        };
+        const first = yield* service.startPort(input);
+        assert.deepStrictEqual(
+          first.groups.map((group) => group.status),
+          ["pending", "rejected"],
+        );
+        const command = fixture.host.submissions[0]!.command;
+        assert.strictEqual(command.bootstrap?.prepareWorktree?.branch, `f5/upstream-${ids[0]}`);
+        assert.ok(command.message.text.includes("UPSTREAM-OUTCOME"));
+        const retry = yield* service.startPort(input);
+        assert.deepStrictEqual(
+          retry.groups.map((group) => group.status),
+          ["submitted", "rejected"],
+        );
+        assert.strictEqual(retry.groups[0]!.threadId, first.groups[0]!.threadId);
+        const conflict = yield* service
+          .startPort({ ...input, runtimeMode: "approval-required" })
+          .pipe(Effect.flip);
+        assert.strictEqual(conflict.code, "conflict");
+        const counts = (yield* service.getOverview(PROJECT_ID)).counts;
+        assert.strictEqual(counts["in-progress"], 1);
+        assert.strictEqual(counts.ready, 1);
+        // The topic with a port thread keeps its decision; the other goes back to the inbox.
+        const undone = yield* service.undoDecisions({
+          projectId: PROJECT_ID,
+          undoToken: marked.undoToken!,
+        });
+        assert.deepStrictEqual([undone.updated, undone.unchanged], [[ids[1]], [ids[0]]]);
+        const tooMany = yield* service
+          .startPort({
+            ...input,
+            topicIds: ["pr-1", ...ids, "pr-2", "pr-3", "pr-4"] as never,
+            clientRequestId: "request-0003",
+          })
+          .pipe(Effect.flip);
+        assert.ok(tooMany.code === "invalid" || tooMany.code === "not-found");
+
+        const linked = yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! });
+        assert.strictEqual(linked.row.links.length, 1);
+        const sql = yield* SqlClient.SqlClient;
+        const linksVersion = () =>
+          sql<{
+            version: number;
+          }>`SELECT links_version AS version FROM upstream_ledger_publication WHERE project_id = ${PROJECT_ID}`.pipe(
+            Effect.map((rows) => rows[0]!.version),
+          );
+        const before = yield* linksVersion();
+        const unlink = service.unlinkPort({
+          projectId: PROJECT_ID,
+          topicId: ids[0]!,
+          threadId: first.groups[0]!.threadId,
+        });
+        yield* unlink;
+        assert.strictEqual(yield* linksVersion(), before + 1);
+        assert.strictEqual((yield* service.getOverview(PROJECT_ID)).counts["in-progress"], 0);
+        const history = (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! }))
+          .history;
+        assert.deepStrictEqual(
+          history.slice(-2).map((entry) => [entry.kind, entry.threadId, entry.at !== null]),
+          [
+            ["port-started", first.groups[0]!.threadId, true],
+            ["unlinked", first.groups[0]!.threadId, false],
+          ],
+        );
+        assert.strictEqual((yield* Effect.flip(unlink)).code, "not-found");
+      }),
+  );
+
+  it.effect(
+    "publishes a successful unlink even if review cancellation is temporarily unavailable",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 1 });
+        const service = yield* fixture.make();
+        yield* service.decide({
+          projectId: PROJECT_ID,
+          topicIds: ["pr-1"],
+          decision: { kind: "port" },
+        });
+        const result = yield* service.startPort({
+          projectId: PROJECT_ID,
+          topicIds: ["pr-1"],
+          grouping: "together",
+          modelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+          runtimeMode: "full-access",
+          clientRequestId: "unlink-review-failure",
+          review: REVIEW_SLOTS,
+        });
+        yield* service.testing.awaitIdle;
+        const threadId = result.groups[0]!.threadId;
+        fixture.host.threads = [reviewThread({ id: threadId, projectId: PROJECT_ID })];
+        const store = makeUpstreamStore(yield* SqlClient.SqlClient);
+        const row = (yield* store.getPortReviewByThread(threadId))!;
+        const group = (yield* store.listGroups(PROJECT_ID, row.clientRequestId))[0]!;
+        yield* store.updatePortReview({
+          ...row,
+          status: "applying",
+          applyCommandJson: JSON.stringify(group.command),
+        });
+        fixture.host.cancelError = new Error("Temporary queue outage");
+        const before = fixture.host.published.length;
+        yield* service.unlinkPort({ projectId: PROJECT_ID, threadId, topicId: "pr-1" });
+        assert.strictEqual((yield* store.listLinks(PROJECT_ID))[0]!.state, "unlinked");
+        assert.isAbove(fixture.host.published.length, before);
+        assert.strictEqual(fixture.host.cancellations.length, 1);
+        fixture.host.cancelError = null;
+        yield* service.retryPortReview({ projectId: PROJECT_ID, threadId }).pipe(Effect.flip);
+      }),
+  );
+
+  it.effect("reconciles pending port groups and interrupted scheduled runs at startup", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ count: 1 });
+      const service = yield* fixture.make();
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port" },
+      });
+      fixture.host.submitOutcome = () => Effect.fail({ message: "server restarting" });
+      const result = yield* service.startPort({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        grouping: "together",
+        modelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+        runtimeMode: "full-access",
+        clientRequestId: "request-0004",
+      });
+      assert.strictEqual(result.groups[0]!.status, "pending");
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO upstream_port_runs (run_id, project_id, kind, trigger, occurrence_due_at, triage, started_at, status,
+        commit_count, inbox_count, auto_decided_count, remaining_count, llm_calls)
+        VALUES ('stale', ${PROJECT_ID}, 'upstream', 'schedule', '2026-10-22T11:00:00.000Z', 'llm', '2026-10-22T11:00:00.000Z', 'running', 0, 0, 0, 0, 0)`;
+      yield* sql`INSERT INTO upstream_port_occurrences (project_id, due_at, status, attempts, continuations)
+        VALUES (${PROJECT_ID}, '2026-10-22T11:00:00.000Z', 'running', 1, 0)`;
+      fixture.host.submitOutcome = (body) =>
+        Effect.succeed({ submissionId: body.submissionId, disposition: "queued" } as never);
+      const restarted = yield* fixture.make();
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* restarted.start;
+        }),
+      );
+      const groups = yield* sql<{
+        readonly status: string;
+      }>`SELECT status FROM upstream_port_groups`;
+      assert.deepStrictEqual(
+        groups.map((row) => row.status),
+        ["submitted"],
+      );
+      const occurrence = yield* sql<{ readonly status: string; readonly attempts: number }>`
+        SELECT status, attempts FROM upstream_port_occurrences`;
+      assert.deepStrictEqual(
+        occurrence.map((row) => [row.status, Number(row.attempts)]),
+        [["pending", 1]],
+      );
+    }),
+  );
+
+  it.effect("schedules daily runs, and a manual success satisfies the occurrence", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ count: 2 });
+      const service = yield* fixture.make();
+      yield* service.testing.schedulerTick;
+      yield* service.testing.awaitIdle;
+      assert.strictEqual((yield* service.getOverview(PROJECT_ID)).lastRun, null);
+      fixture.host.settings = {
+        ...fixture.host.settings,
+        upstreamPorts: {
+          ...fixture.host.settings.upstreamPorts,
+          portConcurrency: 5,
+          autoRecordOutcomes: true,
+          schedule: { mode: "daily", hour: 0, weekday: 1 },
+          triageModelSelection: null,
+          portModelSelection: null,
+        },
+      };
+      fixture.host.triage = triageAll(() => ({}));
+      yield* service.testing.schedulerTick;
+      yield* service.testing.awaitIdle;
+      let overview = yield* service.getOverview(PROJECT_ID);
+      assert.strictEqual(overview.lastRun?.trigger, "schedule");
+      assert.strictEqual(overview.occurrence?.status, "succeeded");
+      assert.ok(overview.nextRunAt !== null);
+      yield* service.testing.schedulerTick;
+      yield* service.testing.awaitIdle;
+      overview = yield* service.getOverview(PROJECT_ID);
+      assert.strictEqual(overview.lastRun?.trigger, "schedule");
+    }),
+  );
+});

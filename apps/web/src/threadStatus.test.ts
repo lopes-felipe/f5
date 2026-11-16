@@ -12,10 +12,11 @@ import type { Thread } from "./types";
 function makeLatestTurn(overrides?: {
   completedAt?: string | null;
   startedAt?: string | null;
+  state?: NonNullable<ThreadStatusInput["latestTurn"]>["state"];
 }): ThreadStatusInput["latestTurn"] {
   return {
     turnId: "turn-1" as never,
-    state: "completed",
+    state: overrides?.state ?? "completed",
     assistantMessageId: null,
     requestedAt: "2026-03-09T10:00:00.000Z",
     startedAt: overrides?.startedAt ?? "2026-03-09T10:00:00.000Z",
@@ -167,6 +168,84 @@ describe("resolveThreadStatus", () => {
       }),
     ).toBe("none");
   });
+
+  const failedThread = {
+    ...baseThread,
+    interactionMode: "default" as const,
+    latestTurn: makeLatestTurn({ state: "error" }),
+    lastVisitedAt: "2026-03-09T10:04:00.000Z",
+    session: {
+      ...baseThread.session,
+      status: "error" as const,
+      orchestrationStatus: "error" as const,
+    },
+  } satisfies ThreadStatusInput;
+
+  it("resolves an unseen failed turn to failed, not completed", () => {
+    expect(
+      resolveThreadStatus({
+        thread: failedThread,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+      }),
+    ).toBe("failed");
+  });
+
+  it("resolves failed for a thread nobody has opened yet", () => {
+    expect(
+      resolveThreadStatus({
+        thread: { ...failedThread, lastVisitedAt: undefined },
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+      }),
+    ).toBe("failed");
+  });
+
+  it("resolves failed, not plan-ready, when a plan turn proposed a plan and then failed", () => {
+    expect(
+      resolveThreadStatus({
+        thread: {
+          ...failedThread,
+          interactionMode: "plan",
+          proposedPlans: [
+            {
+              id: "plan-1" as never,
+              turnId: "turn-1" as never,
+              createdAt: "2026-03-09T10:00:00.000Z",
+              updatedAt: "2026-03-09T10:05:00.000Z",
+              planMarkdown: "# Plan",
+              implementedAt: null,
+              implementationThreadId: null,
+            },
+          ],
+        },
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+      }),
+    ).toBe("failed");
+  });
+
+  it("returns none once the failure has been seen", () => {
+    expect(
+      resolveThreadStatus({
+        thread: { ...failedThread, lastVisitedAt: "2026-03-09T10:06:00.000Z" },
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+      }),
+    ).toBe("none");
+  });
+
+  it("measures a failure without an end time from its request, so a visit clears it", () => {
+    const latestTurn = { ...makeLatestTurn({ state: "error" })!, completedAt: null };
+    const statusVisitedAt = (lastVisitedAt: string) =>
+      resolveThreadStatus({
+        thread: { ...failedThread, latestTurn, lastVisitedAt },
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+      });
+    expect(statusVisitedAt("2026-03-09T09:59:00.000Z")).toBe("failed");
+    expect(statusVisitedAt("2026-03-09T10:06:00.000Z")).toBe("none");
+  });
 });
 
 describe("resolveThreadStatusPill", () => {
@@ -228,6 +307,22 @@ describe("resolveThreadStatusPill", () => {
       chipClass: "bg-warning/10 text-warning-foreground ring-1 ring-warning/20",
       pulse: false,
     });
+  });
+
+  it("uses the destructive palette for an unseen failure", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          interactionMode: "default",
+          latestTurn: makeLatestTurn({ state: "error" }),
+          lastVisitedAt: undefined,
+          proposedPlans: [],
+          session: null,
+        },
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+      }),
+    ).toMatchObject({ label: "Failed", dotClass: "bg-destructive", pulse: false });
   });
 
   it("derives the pill directly from a full thread", () => {

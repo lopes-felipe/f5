@@ -5,6 +5,7 @@ import { Effect, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { createLargeIgnoredDependencyTree } from "./ignoredPaths.testUtils.ts";
 import { ServerConfig } from "../config.ts";
 import { repositoryLockPath } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { acquireInstanceLock } from "../profiles/InstanceLock.ts";
@@ -96,6 +97,22 @@ describe("DefaultBranchAutoPull", { timeout: 60_000 }, () => {
             beforeRef: before,
             afterRef: upstreamSha,
           });
+        }),
+      ),
+    );
+  });
+
+  it("fast-forwards a checkout with more than a megabyte of ignored dependency paths", async () => {
+    await Effect.runPromise(
+      withRepo({ autoPullDefaultBranch: true }, ({ autoPull, repo, upstreamSha }) =>
+        Effect.gen(function* () {
+          const directory = yield* Effect.promise(() =>
+            createLargeIgnoredDependencyTree(repo.root),
+          );
+          expect((yield* autoPull.dryRun)[0]?.action).toBe("pull");
+          expect((yield* autoPull.runOnce)[0]?.action).toBe("pull");
+          expect(git(repo.root, "rev-parse", "HEAD")).toBe(upstreamSha);
+          expect((yield* Effect.promise(() => fs.readdir(directory))).length).toBe(4500);
         }),
       ),
     );

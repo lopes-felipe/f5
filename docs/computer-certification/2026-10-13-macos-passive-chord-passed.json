@@ -1,0 +1,48 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-13T10:55:25.048Z",
+  "repositoryCommit": "09b7cd98b46ea889eb23c95e4500684f6f9f18f0",
+  "workingTreeDirty": false,
+  "sourceHashes": {
+    "rehearsal": "78b6932c0de6ce87df5fa23ab9838ddbcaad3b7cb0b21b5dab217e5fee03bc8d",
+    "fixture": "1313590e016bc4e5bebfd12de1392bc3aff9600472a4ea50a4923cc635ee7ffb",
+    "fixtureLauncher": "975875d07a2543a54bfd6f503ae9eedb2b0b6a472725e417204ac12e57d58fe0",
+    "observation": "8602c52c5799dcdfab3f1e45d641ee33d99fb3c3da37a149b6ac4adf050c5f88"
+  },
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "scope": "unsigned-passive-fixed-chord-observation",
+  "signed": false,
+  "certified": false,
+  "state": "passed",
+  "interrupted": false,
+  "fixtureStarted": true,
+  "observation": {
+    "traceValid": true,
+    "monitorHealthy": true,
+    "prompted": true,
+    "chordObserved": true,
+    "frontmostReceiptObserved": true,
+    "fixtureStillFrontmost": true,
+    "candidates": [
+      {
+        "observer": "session",
+        "control": true,
+        "command": true,
+        "afterPromptMs": 289
+      },
+      {
+        "observer": "window",
+        "control": true,
+        "command": true,
+        "afterPromptMs": 296
+      }
+    ]
+  },
+  "limitations": [
+    "No helper, provider, consent, lease, permit, typing or process freeze",
+    "Escape modifier booleans and relative timings only; no characters, key codes, app content or raw packets",
+    "Does not establish stop latency, global-shortcut coexistence during a lease or any release certification"
+  ]
+}

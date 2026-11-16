@@ -58,7 +58,7 @@ export function readPersistedCwd(
   const rawCwd = "cwd" in runtimePayload ? runtimePayload.cwd : undefined;
   if (typeof rawCwd !== "string") return undefined;
   const trimmed = rawCwd.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  return trimmed.length > 0 ? rawCwd : undefined;
 }
 
 export function readPersistedInstructionContext(
@@ -155,5 +155,24 @@ export function persistedStartConfigToRecord(
       : config.model.state === "cleared"
         ? { model: null }
         : {}),
+  };
+}
+
+export interface IncompleteHistoryMarker {
+  readonly eventId: string;
+  readonly turnId: string | null;
+  readonly historyIdentity: string | null;
+}
+export function readIncompleteHistory(
+  runtimePayload: unknown,
+): IncompleteHistoryMarker | undefined {
+  if (!isRecord(runtimePayload) || !isRecord(runtimePayload.historyReconciliationRequired))
+    return undefined;
+  const marker = runtimePayload.historyReconciliationRequired;
+  if (typeof marker.eventId !== "string") return undefined;
+  return {
+    eventId: marker.eventId,
+    turnId: typeof marker.turnId === "string" ? marker.turnId : null,
+    historyIdentity: typeof marker.historyIdentity === "string" ? marker.historyIdentity : null,
   };
 }

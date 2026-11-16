@@ -56,7 +56,48 @@ export type ListProviderSessionRuntimeByProjectInput =
 /**
  * ProviderSessionRuntimeRepositoryShape - Service API for provider runtime records.
  */
+export interface ProviderMcpStateUpdate {
+  readonly threadId: ThreadId;
+  readonly instanceId: ProviderInstanceId;
+  readonly generation: number;
+  /** Omit to preserve the current applied version on an unreached/restart-required attempt. */
+  readonly effectiveVersion?: string | null;
+  readonly unconvergedVersion: string | null;
+}
+
+export interface ProviderTerminalLifecycleUpdate {
+  readonly threadId: ThreadId;
+  readonly instanceId: ProviderInstanceId;
+  readonly generation: number;
+  readonly turnId: string | null;
+  readonly eventType: "turn.completed" | "session.exited";
+  readonly createdAt: string;
+}
+
+export interface ProviderHistoryReconciliationUpdate {
+  readonly threadId: ThreadId;
+  readonly instanceId: ProviderInstanceId;
+  readonly generation: number;
+  readonly marker: {
+    readonly eventId: string;
+    readonly turnId: string | null;
+    readonly historyIdentity: string | null;
+  } | null;
+  /** Clearing is allowed only for the exact marker whose history was verified. */
+  readonly expectedMarkerId?: string;
+}
+
 export interface ProviderSessionRuntimeRepositoryShape {
+  readonly updateHistoryReconciliationIfCurrent: (
+    input: ProviderHistoryReconciliationUpdate,
+  ) => Effect.Effect<boolean, ProviderSessionRuntimeRepositoryError>;
+  readonly updateTerminalLifecycleIfCurrent: (
+    input: ProviderTerminalLifecycleUpdate,
+  ) => Effect.Effect<boolean, ProviderSessionRuntimeRepositoryError>;
+  readonly updateMcpStateIfCurrent: (
+    input: ProviderMcpStateUpdate,
+  ) => Effect.Effect<boolean, ProviderSessionRuntimeRepositoryError>;
+
   /**
    * Insert or replace a provider runtime row.
    *
@@ -76,12 +117,12 @@ export interface ProviderSessionRuntimeRepositoryShape {
   /**
    * List all provider runtime rows.
    *
-   * Returned in ascending last-seen order.
+   * Returned in ascending last-seen order. `excludeStopped` skips stopped
+   * rows in the query, so their payloads are never decoded.
    */
-  readonly list: () => Effect.Effect<
-    ReadonlyArray<ProviderSessionRuntime>,
-    ProviderSessionRuntimeRepositoryError
-  >;
+  readonly list: (options?: {
+    readonly excludeStopped?: boolean;
+  }) => Effect.Effect<ReadonlyArray<ProviderSessionRuntime>, ProviderSessionRuntimeRepositoryError>;
 
   /**
    * List provider runtime rows for one project.

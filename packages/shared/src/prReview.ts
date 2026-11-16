@@ -37,12 +37,13 @@ export function prReplyBody(body: string, id: string): string {
 }
 
 /** Only lines actually present in a complete provider hunk are commentable. */
+type ParsedPrReviewPosition = PrReviewPosition & { readonly text: string };
 function prReviewPositions(
   patch: string,
-): ReadonlyMap<"LEFT" | "RIGHT", ReadonlyMap<number, PrReviewPosition>> {
-  const left = new Map<number, PrReviewPosition>();
-  const right = new Map<number, PrReviewPosition>();
-  const empty = new Map<"LEFT" | "RIGHT", ReadonlyMap<number, PrReviewPosition>>();
+): ReadonlyMap<"LEFT" | "RIGHT", ReadonlyMap<number, ParsedPrReviewPosition>> {
+  const left = new Map<number, ParsedPrReviewPosition>();
+  const right = new Map<number, ParsedPrReviewPosition>();
+  const empty = new Map<"LEFT" | "RIGHT", ReadonlyMap<number, ParsedPrReviewPosition>>();
   let oldLine = 0;
   let newLine = 0;
   let oldRemaining = 0;
@@ -72,11 +73,14 @@ function prReviewPositions(
       return empty;
     }
     if (line === "") line = " ";
-    const position: PrReviewPosition = line.startsWith(" ")
-      ? { kind: "context", oldLine, newLine }
-      : line.startsWith("-")
-        ? { kind: "deleted", oldLine }
-        : { kind: "added", newLine };
+    const position: ParsedPrReviewPosition = {
+      text: line.slice(1),
+      ...(line.startsWith(" ")
+        ? { kind: "context", oldLine, newLine }
+        : line.startsWith("-")
+          ? { kind: "deleted", oldLine }
+          : { kind: "added", newLine }),
+    };
     if (line.startsWith(" ") || line.startsWith("-")) {
       if (oldRemaining <= 0 || oldLine < 1 || left.has(oldLine)) return empty;
       left.set(oldLine++, position);
@@ -108,7 +112,10 @@ export function resolvePrReviewPosition(
   patch: string,
 ): PrReviewPosition | null {
   if (!Number.isSafeInteger(anchor.line) || anchor.line <= 0) return null;
-  return prReviewPositions(patch).get(anchor.side)?.get(anchor.line) ?? null;
+  const parsed = prReviewPositions(patch).get(anchor.side)?.get(anchor.line);
+  if (!parsed) return null;
+  const { text: _text, ...position } = parsed;
+  return position;
 }
 
 export function isPrReviewAnchorInPatch(anchor: PrReviewAnchor, patch: string): boolean {
@@ -139,4 +146,28 @@ export function substantivePrPatch(patch: string): string | null {
     start = end;
   }
   return retained ? result.join("\n") : null;
+}
+
+/** Bounded excerpt using the same complete-hunk validation as inline comments. */
+export function prReviewExcerpt(
+  patch: string,
+  side: "old" | "new",
+  start: number,
+  end: number,
+): ReadonlyArray<{ line: number; text: string }> {
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start < 1 ||
+    end < start ||
+    end - start >= 25
+  )
+    return [];
+  const positions = prReviewPositions(patch).get(side === "old" ? "LEFT" : "RIGHT");
+  const result: Array<{ line: number; text: string }> = [];
+  for (let line = start; line <= end; line++) {
+    const position = positions?.get(line);
+    if (position) result.push({ line, text: position.text });
+  }
+  return result;
 }

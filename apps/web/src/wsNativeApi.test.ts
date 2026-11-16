@@ -26,6 +26,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "@t3tools/shared/codexOAuthTiming";
+import { rpcLongRunningTimeoutMs } from "@t3tools/shared/rpcScheduling";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestServerProvider } from "./testServerProvider";
 
@@ -134,9 +135,20 @@ describe("wsNativeApi", () => {
       newBranch: "t3code/12345678",
     };
     await createWsNativeApi().git.prepareWorktree(input);
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.gitPrepareWorktree, input, {
-      timeoutMs: null,
-    });
+    // The transport takes the long lane's timeout from the shared method policy.
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.gitPrepareWorktree, input);
+    expect(rpcLongRunningTimeoutMs({ _tag: WS_METHODS.gitPrepareWorktree, ...input })).toBe(null);
+  });
+
+  it("forwards the project-scoped worktree inventory request", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    requestMock.mockResolvedValue({ projects: [] });
+    const api = createWsNativeApi();
+    await expect(api.worktrees.list({})).resolves.toEqual({ projects: [] });
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.worktreesList, {});
+    const projectId = ProjectId.makeUnsafe("inventory");
+    await api.worktrees.list({ projectId });
+    expect(requestMock).toHaveBeenLastCalledWith(WS_METHODS.worktreesList, { projectId });
   });
 
   it("loads and subscribes to durable agents snapshots", async () => {
@@ -163,6 +175,33 @@ describe("wsNativeApi", () => {
     unsubscribe();
   });
 
+  it("resets missed computer consent before handling the new connection snapshot", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const { useAgentComputerActivityStore } = await import("./agentComputerActivityStore");
+    const api = createWsNativeApi();
+    const store = useAgentComputerActivityStore.getState();
+    const threadId = ThreadId.makeUnsafe("computer-consent");
+    api.computer!.access.onRequested(store.request);
+    store.request({
+      requestId: "old",
+      threadId,
+      backendIncarnation: "old-backend",
+      reason: "Old",
+      kind: "apps",
+      apps: [],
+    });
+    emitPush(WS_CHANNELS.serverWelcome, { cwd: "/tmp", projectName: "test" });
+    expect(useAgentComputerActivityStore.getState().requests).toEqual({});
+    emitPush(WS_CHANNELS.computerAccessRequested, {
+      requestId: "new",
+      threadId,
+      backendIncarnation: "new-backend",
+      reason: "New",
+      kind: "apps",
+      apps: [],
+    });
+    expect(Object.keys(useAgentComputerActivityStore.getState().requests)).toEqual(["new"]);
+  });
   it("delivers and caches valid server.welcome payloads", async () => {
     const { createWsNativeApi, onServerWelcome } = await import("./wsNativeApi");
 
@@ -327,6 +366,9 @@ describe("wsNativeApi", () => {
     api.orchestration.onDomainEvent(onDomainEvent);
 
     const terminalEvent = {
+      epoch: "test",
+      generation: 1,
+      revision: 1,
       threadId: "thread-1",
       terminalId: "terminal-1",
       createdAt: "2026-02-24T00:00:00.000Z",
@@ -397,12 +439,14 @@ describe("wsNativeApi", () => {
     await api.projects.writeFile({
       cwd: "/tmp/project",
       relativePath: "plan.md",
+      condition: { type: "create" },
       contents: "# Plan\n",
     });
 
     expect(requestMock).toHaveBeenCalledWith(WS_METHODS.projectsWriteFile, {
       cwd: "/tmp/project",
       relativePath: "plan.md",
+      condition: { type: "create" },
       contents: "# Plan\n",
     });
   });
@@ -473,6 +517,7 @@ describe("wsNativeApi", () => {
   it("forwards workspace file reads to the websocket project method", async () => {
     requestMock.mockResolvedValue({
       relativePath: "plan.md",
+      condition: { type: "create" },
       contents: "# Plan\n",
       byteLength: 7,
       truncated: false,
@@ -530,6 +575,35 @@ describe("wsNativeApi", () => {
     });
   });
 
+  it("routes desktop VS Code handoffs outside the sandboxed websocket backend", async () => {
+    const openInVSCode = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(getWindowForTest(), "desktopBridge", {
+      configurable: true,
+      value: { openInVSCode },
+    });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    await api.shell.openInEditor("/tmp/report.json:4:2", "vscode");
+    expect(openInVSCode).toHaveBeenCalledWith("/tmp/report.json:4:2");
+    await api.shell.openInEditor("/tmp/report.json:4:2", "vscode", "prepared-token");
+    expect(openInVSCode).toHaveBeenLastCalledWith("/tmp/report.json:4:2", "prepared-token");
+    expect(requestMock).not.toHaveBeenCalledWith(WS_METHODS.shellOpenInEditor, expect.anything());
+    openInVSCode.mockRejectedValue(new Error("Native launch failed"));
+    await expect(api.shell.openInEditor("/tmp/report.json", "vscode")).rejects.toThrow(
+      "Native launch failed",
+    );
+  });
+
+  it("retains the websocket editor handoff for web clients", async () => {
+    requestMock.mockResolvedValue(undefined);
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    await createWsNativeApi().shell.openInEditor("/tmp/report.json", "vscode");
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.shellOpenInEditor, {
+      cwd: "/tmp/report.json",
+      editor: "vscode",
+    });
+  });
+
   it("forwards harness validation requests to the websocket server method", async () => {
     requestMock.mockResolvedValue({ results: [] });
     const { createWsNativeApi } = await import("./wsNativeApi");
@@ -565,16 +639,13 @@ describe("wsNativeApi", () => {
       serverName: "Observability",
     });
 
-    expect(requestMock).toHaveBeenCalledWith(
-      WS_METHODS.mcpStartLogin,
-      {
-        provider: "codex",
-        projectId: "project-1",
-        serverName: "Observability",
-      },
-      {
-        timeoutMs: CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
-      },
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.mcpStartLogin, {
+      provider: "codex",
+      projectId: "project-1",
+      serverName: "Observability",
+    });
+    expect(rpcLongRunningTimeoutMs({ _tag: WS_METHODS.mcpStartLogin, provider: "codex" })).toBe(
+      CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
     );
   });
 
@@ -656,6 +727,104 @@ describe("wsNativeApi", () => {
         allowPossibleDuplicate: false,
       }),
     ).rejects.toThrow();
+  });
+
+  it("drops config values a newer server sends that this build does not know", async () => {
+    const shortcut = {
+      key: "p",
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      modKey: true,
+    };
+    const settings = { opaque: { kept: "as sent" } };
+    requestMock.mockResolvedValueOnce({
+      cwd: "/repo",
+      keybindingsConfigPath: "/repo/.f5/keybindings.json",
+      keybindings: [
+        { command: "someFuture.toggle", shortcut },
+        { command: "terminal.toggle", shortcut },
+      ],
+      customKeybindings: [
+        { key: "mod+p", command: "someFuture.toggle" },
+        { key: "mod+j", command: "terminal.toggle" },
+      ],
+      issues: [{ kind: "keybindings.future-issue", message: "From a newer server" }],
+      providers: [{ driver: "some-future-provider" }],
+      availableEditors: ["some-future-editor", "zed"],
+      settings,
+    });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    const config = await createWsNativeApi().server.getConfig();
+
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.serverGetConfig);
+    expect(config.keybindings).toEqual([{ command: "terminal.toggle", shortcut }]);
+    expect(config.customKeybindings).toEqual([{ key: "mod+j", command: "terminal.toggle" }]);
+    expect(config.issues).toEqual([]);
+    expect(config.availableEditors).toEqual(["zed"]);
+    // Fields outside the forward-compatible arrays pass through untouched.
+    expect(config.providers).toEqual([{ driver: "some-future-provider" }]);
+    expect(config.settings).toBe(settings);
+  });
+
+  it("rejects a server health answer in a shape this build does not know", async () => {
+    const health = {
+      startedAt: "2026-01-01T00:00:00.000Z",
+      uptimeMs: 1_000,
+      rssBytes: 1,
+      heapUsedBytes: 1,
+      eventLoopDelay: null,
+      slowRouteThresholdMs: 1_000,
+      slowStatementThresholdMs: 100,
+      slowRoutes: [],
+      slowStatementsCollected: true,
+      slowStatements: [],
+    };
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    requestMock.mockResolvedValueOnce(health);
+    await expect(createWsNativeApi().server.getHealth()).resolves.toEqual(health);
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.serverGetHealth);
+
+    // The card reads `slowRoutes.length`; without the list the request fails, not the render.
+    requestMock.mockResolvedValueOnce({ ...health, slowRoutes: undefined });
+    await expect(createWsNativeApi().server.getHealth()).rejects.toThrow();
+  });
+
+  it("drops unknown commands from keybinding mutation results", async () => {
+    const shortcut = {
+      key: "j",
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      modKey: true,
+    };
+    requestMock.mockResolvedValue({
+      keybindings: [
+        { command: "someFuture.toggle", shortcut },
+        { command: "terminal.toggle", shortcut },
+      ],
+      customKeybindings: [{ key: "mod+p", command: "someFuture.toggle" }],
+      issues: [{ kind: "keybindings.future-issue", message: "From a newer server" }],
+    });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    const expected = {
+      keybindings: [{ command: "terminal.toggle", shortcut }],
+      customKeybindings: [],
+      issues: [],
+    };
+    const rule = { key: "mod+j", command: "terminal.toggle" } as const;
+
+    await expect(api.server.upsertKeybinding(rule)).resolves.toEqual(expected);
+    await expect(api.server.addKeybinding({ rule })).resolves.toEqual(expected);
+    await expect(api.server.updateKeybinding({ target: rule, rule })).resolves.toEqual(expected);
+    await expect(api.server.removeKeybinding({ target: rule })).resolves.toEqual(expected);
+    await expect(api.server.resetKeybindings()).resolves.toEqual(expected);
+    expect(requestMock).toHaveBeenLastCalledWith(WS_METHODS.serverResetKeybindings, {});
   });
 
   it("treats an older server's void code-review retry response as started", async () => {
@@ -777,5 +946,16 @@ describe("PR Hub revision protocol", () => {
       { filter: "all", accountGeneration: "second" },
       undefined,
     );
+  });
+});
+
+it("keeps move RPCs pending without the default transport timeout", async () => {
+  const { createWsNativeApi } = await import("./wsNativeApi");
+  const api = createWsNativeApi();
+  requestMock.mockResolvedValue({});
+  const input = { threadId: ThreadId.makeUnsafe("slow-move") };
+  await api.worktrees.moveThread(input);
+  expect(requestMock).toHaveBeenLastCalledWith(WS_METHODS.worktreesMoveThread, input, {
+    timeoutMs: null,
   });
 });

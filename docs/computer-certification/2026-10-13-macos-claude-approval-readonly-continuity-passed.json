@@ -1,0 +1,95 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-claude-approval-mode-read-only-continuity-diagnostic",
+  "state": "passed",
+  "repositoryCommit": "cf7b9172a8c316d0b496068624e56e562eecef94",
+  "workingTreeDirty": false,
+  "recordedAt": "2026-10-13T21:15:44.309Z",
+  "provider": "claude",
+  "providerVersion": "2.1.295",
+  "runtimeMode": "approval-required",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "d0b66a0825bd9dbee0e77aeabeece1d89438adf6adbb915a8fabb0c69e9fa7f7",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "ea62f0d7c5e23f4680500e33563e13df80ccf04ba656002dd33a6915bdda920d",
+    "observerSource": "70d7271c2e6ffcc96c89879466433f5bbfbdbfcd784a53a5dd8f01e34fd85605",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "26dea6aed6480fa4e3c93b2f51fc8ecf4216f7d78d69b070c42ddfc4d4cb26fc",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "17281f635c4f653e13d7dcbeb52e8570e6930a32e93414c0de713437e5abe95d",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140",
+    "claudeLaunchSource": "aadef868ab32b858a0078ae619922dd69fd4b1f9cde03640f119e28bfb7559df"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "readOnlyTurnsCompleted": true,
+    "noComputerLeaseAcquired": true,
+    "threeCorrelatedMetadataResponses": true,
+    "approvalDiagnosticSameSession": true,
+    "approvalModeActuallySubmitted": true,
+    "noTaggedProviderErrors": true,
+    "hostAvailableAtEnd": true,
+    "noConsentRequested": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "submittedRuntimeModes": ["approval-required", "approval-required", "approval-required"],
+  "composerSubmissions": 3,
+  "approvalModeVerifiedTurns": 3,
+  "nativeObservation": {
+    "sessionGenerationsObserved": 1,
+    "requestSessions": [
+      {
+        "op": "listApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "listApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "listApps",
+        "sessionOrdinal": 1
+      }
+    ],
+    "backendRestarts": [],
+    "leaseObserved": false,
+    "accessRequests": 0,
+    "captureResponses": 0,
+    "operations": [
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      }
+    ]
+  },
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Three genuine read-only provider turns; no app/session consent, screenshot or input",
+    "One provider session and all three actual composer commands approval-required",
+    "Does not prove approved action delivery or qualify a release gate"
+  ]
+}

@@ -1,6 +1,8 @@
 import type { UsageAccount } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  claudeGatewayUsageLimit,
+  openCodeClaudeUsageLimit,
   claudeLimitState,
   usageLimitMessage,
   usageLimitFromWindows,
@@ -14,7 +16,71 @@ import {
 } from "./codexErrors.ts";
 
 describe("provider usage-limit messages", () => {
+  it("retains Claude plan limits through OpenCode and ignores unrelated reset text", () => {
+    expect(
+      openCodeClaudeUsageLimit(
+        "You've hit your weekly limit · resets 9pm Resets at 2026-11-02T20:00:00.000Z.",
+      )?.resetsAt,
+    ).toBe("2026-11-02T20:00:00.000Z");
+    expect(openCodeClaudeUsageLimit("You've hit your session limit")?.resetsAt).toBeNull();
+    expect(
+      openCodeClaudeUsageLimit("Request failed. Resets at 2026-11-02T20:00:00Z."),
+    ).toBeUndefined();
+  });
+  it.each([
+    { cooldown: "1h2m3s", seconds: 3723 },
+    { cooldown: "4m 6s", seconds: 246 },
+    { cooldown: "", seconds: 0 },
+  ])("reads a direct Claude gateway 429 cooldown ($cooldown)", ({ cooldown, seconds }) => {
+    const at = "2026-11-02T12:00:00.000Z";
+    const limit = claudeGatewayUsageLimit(
+      {
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "api_error",
+        api_error_status: 429,
+        result:
+          "API Error: Request rejected (429) · cooling down" +
+          (cooldown ? " (reset after " + cooldown + ")" : ""),
+      },
+      at,
+    );
+    expect(limit?.resetsAt).toBe(
+      seconds ? new Date(Date.parse(at) + seconds * 1000).toISOString() : undefined,
+    );
+  });
   const reset = Date.parse("2026-09-29T12:00:00Z") / 1000;
+  it.each([
+    { cooldown: "4m 6s", seconds: 246 },
+    { cooldown: "1h 2m 3s", seconds: 3723 },
+    { cooldown: "7s", seconds: 7 },
+    { cooldown: "0s", seconds: 0 },
+    { cooldown: "unknown", seconds: 0 },
+    { cooldown: "999999999999999999999999h", seconds: 0 },
+    { cooldown: "4m 6s", seconds: 0, errorType: "overloaded_error" },
+    { cooldown: "4m 6s", seconds: 0, status: 401 },
+  ])("reads a wrapped Claude gateway cooldown of $cooldown", (input) => {
+    const at = "2026-10-10T10:00:00.000Z";
+    const status = input.status ?? 503;
+    const limit = claudeGatewayUsageLimit(
+      {
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "api_error",
+        api_error_status: status,
+        result: `API Error: ${status} [claude/claude-opus-5-5] [429]: {"type":"error","error":{"type":"${input.errorType ?? "rate_limit_error"}","message":"Please try again later."}} (reset after ${input.cooldown}).`,
+      },
+      at,
+    );
+    if (input.seconds === 0) expect(limit).toBeUndefined();
+    else
+      expect(limit).toEqual({
+        windows: [],
+        resetsAt: new Date(Date.parse(at) + input.seconds * 1_000).toISOString(),
+        evidence: "message",
+        resetSource: "message",
+      });
+  });
   it("names Claude's rejected window and reset", () => {
     const state = claudeLimitState({
       status: "rejected",
@@ -49,6 +115,47 @@ describe("provider usage-limit messages", () => {
     expect(
       formatCodexUsageError("out of credits", merged, "2026-09-28T00:00:00Z", "usageLimitReached"),
     ).toContain("5-hour usage limit");
+  });
+  it("names the exhausted Enterprise monthly credit limit and its reset", () => {
+    const monthlyReset = Date.parse("2026-10-01T00:00:00Z") / 1000;
+    const snapshot = {
+      limitId: "codex",
+      individualLimit: { remainingPercent: 0, resetsAt: monthlyReset },
+    };
+    expect(
+      formatCodexUsageError(
+        "usage limit reached",
+        snapshot,
+        "2026-09-28T00:00:00Z",
+        "usageLimitReached",
+      ),
+    ).toContain("Codex monthly credit usage limit reached. Resets at 2026-10-01T00:00:00.000Z.");
+    expect(
+      detectCodexUsageLimit({
+        message: "usage limit reached",
+        errorInfo: "usageLimitReached",
+        snapshots: [snapshot],
+        at: "2026-09-28T00:00:00Z",
+      }),
+    ).toEqual({
+      windows: [
+        { id: "codex:individual", label: "monthly credit", resetsAt: "2026-10-01T00:00:00.000Z" },
+      ],
+      resetsAt: "2026-10-01T00:00:00.000Z",
+      evidence: "typed",
+      resetSource: "provider",
+    });
+    const remaining = mergeCodexLimitSnapshot(snapshot, {
+      primary: { usedPercent: 12 },
+    });
+    expect(remaining?.individualLimit).toEqual(snapshot.individualLimit);
+    const replenished = mergeCodexLimitSnapshot(remaining, {
+      individualLimit: { remainingPercent: 75, resetsAt: monthlyReset },
+    });
+    expect(replenished?.individualLimit).toEqual({ remainingPercent: 75, resetsAt: monthlyReset });
+    expect(
+      mergeCodexLimitSnapshot(replenished, { individualLimit: null })?.individualLimit,
+    ).toBeNull();
   });
   it("names the longer blocking Codex window and leaves unrelated errors intact", () => {
     expect(
@@ -218,6 +325,103 @@ it.each([
     if (previous === undefined) delete process.env.TZ;
     else process.env.TZ = previous;
   }
+});
+
+it("resolves a rolling Claude reset even when the monthly spend budget is used up", () => {
+  const limit = usageLimitFromWindows([{ id: "five_hour", label: "5-hour", resetsAt: null }]);
+  const account: UsageAccount = {
+    key: "claude:test",
+    provider: "claudeAgent",
+    providerInstanceId: null,
+    displayName: "Claude",
+    enabled: true,
+    refreshState: "idle",
+    sections: [
+      {
+        kind: "claude-usage",
+        outcome: "available",
+        lastAttemptAt: "2026-10-01T00:00:01Z",
+        errorCode: null,
+        snapshot: {
+          fetchedAt: "2026-10-01T00:00:01Z",
+          data: {
+            subscriptionLabel: "Max",
+            limitsAvailable: true,
+            extraUsage: { enabled: true, utilization: 100 },
+            windows: [
+              {
+                key: "five_hour",
+                label: "5-hour",
+                utilization: 100,
+                resetsAt: "2026-10-01T03:00:00Z",
+              },
+              { key: "monthly_spend", label: "Monthly spend", utilization: 100, resetsAt: null },
+            ],
+          },
+        },
+      },
+    ],
+  };
+  const resolved = resolveAccountUsageLimit(limit, account, "2026-10-01T00:00:00Z");
+  expect(resolved.resetsAt).toBe("2026-10-01T03:00:00Z");
+  expect(resolved.windows.map((window) => window.id)).toEqual(["five_hour"]);
+});
+
+it("leaves a Spark copy of the monthly credit allowance to the main bucket", () => {
+  const individualLimit = {
+    remainingPercent: 0,
+    resetsAt: Date.parse("2026-11-01T00:00:00Z") / 1000,
+  };
+  expect(
+    detectCodexUsageLimit({
+      message: "usage limit reached",
+      errorInfo: "usageLimitReached",
+      snapshots: [{ limitId: "codex_bengalfox", individualLimit }],
+      at: "2026-10-01T00:00:00Z",
+    })?.windows,
+  ).toEqual([]);
+});
+
+it("resolves an unknown Codex reset from an exhausted monthly credit limit", () => {
+  const limit = usageLimitFromWindows([
+    { id: "codex:individual", label: "monthly credit", resetsAt: null },
+  ]);
+  const resetsAt = Date.parse("2026-11-01T00:00:00Z") / 1000;
+  const account: UsageAccount = {
+    key: "codex:test",
+    provider: "codex",
+    providerInstanceId: null,
+    displayName: "Codex",
+    enabled: true,
+    refreshState: "idle",
+    sections: [
+      {
+        kind: "codex-limits",
+        outcome: "available",
+        lastAttemptAt: "2026-10-01T00:00:01Z",
+        errorCode: null,
+        snapshot: {
+          fetchedAt: "2026-10-01T00:00:01Z",
+          data: {
+            rateLimits: [
+              {
+                id: "codex",
+                name: null,
+                planType: "enterprise_cbp_usage_based",
+                primary: null,
+                secondary: null,
+                individual: { usedPercent: 100, windowDurationMins: null, resetsAt },
+                credits: null,
+              },
+            ],
+          },
+        },
+      },
+    ],
+  };
+  expect(resolveAccountUsageLimit(limit, account, "2026-10-01T00:00:00Z").windows).toEqual([
+    { id: "codex:individual", label: "monthly credit", resetsAt: "2026-11-01T00:00:00.000Z" },
+  ]);
 });
 
 it("requires a successful fresh account section before resolving unknown resets", () => {

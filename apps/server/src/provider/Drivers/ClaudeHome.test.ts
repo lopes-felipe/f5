@@ -1,17 +1,277 @@
 import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodePath from "@effect/platform-node/NodePath";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Path } from "effect";
+import { Effect, FileSystem, Path } from "effect";
 
 import {
+  claudeAccountUsageIdentity,
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
+  makeClaudeProcessEnvironment,
+  readClaudeSettingsBaseUrl,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
+  it.effect("reads endpoint settings with managed precedence and isolated home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const isolatedHome = path.resolve("isolated-home");
+      const userSettings = path.join(isolatedHome, ".claude", "settings.json");
+      const files: string[] = [];
+      for (const managedOverrides of [false, true]) {
+        files.length = 0;
+        const result = yield* readClaudeSettingsBaseUrl(
+          { homePath: isolatedHome },
+          { ANTHROPIC_BASE_URL: "https://process.example" },
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readFileString: (file) => {
+              files.push(file);
+              return Effect.succeed(
+                JSON.stringify({
+                  env: {
+                    ANTHROPIC_BASE_URL:
+                      file === userSettings
+                        ? "https://user.example"
+                        : managedOverrides
+                          ? "https://managed.example"
+                          : undefined,
+                  },
+                }),
+              );
+            },
+          }),
+        );
+        expect(files[0]).toBe(userSettings);
+        expect(result).toBe(managedOverrides ? "https://managed.example" : "https://user.example");
+      }
+    }),
+  );
+  describe("Claude process entrypoint", () => {
+    it.effect("removes launching session identity but preserves explicit instance overrides", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const resolve = (instance: { name: string; value: string; sensitive: boolean }[]) =>
+          makeClaudeProcessEnvironment(
+            { homePath: "" },
+            {
+              CLAUDECODE: "1",
+              ELECTRON_RUN_AS_NODE: "1",
+              CLAUDE_CODE_SESSION_ID: "host-session",
+              CLAUDE_CODE_MESSAGING_TOKEN: "host-token",
+              CLAUDE_EFFORT: "low",
+              ANTHROPIC_API_KEY: "account-key",
+            },
+            instance,
+          ).pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readFileString: () => Effect.succeed("{}"),
+            }),
+          );
+        const clean = yield* resolve([]);
+        expect(clean.CLAUDECODE).toBeUndefined();
+        expect(clean.ELECTRON_RUN_AS_NODE).toBeUndefined();
+        expect(clean.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+        expect(clean.CLAUDE_CODE_MESSAGING_TOKEN).toBeUndefined();
+        expect(clean.CLAUDE_EFFORT).toBeUndefined();
+        expect(clean.ANTHROPIC_API_KEY).toBe("account-key");
+        expect(
+          (yield* resolve([{ name: "CLAUDE_EFFORT", value: "high", sensitive: false }]))
+            .CLAUDE_EFFORT,
+        ).toBe("high");
+      }),
+    );
+    it.effect("reads POSIX managed settings with a Windows Path service", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const reads: string[] = [];
+        const environment = yield* makeClaudeProcessEnvironment(
+          { homePath: "" },
+          {},
+          undefined,
+          "linux",
+        ).pipe(
+          Effect.provide(NodePath.layerWin32),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readFileString: (file) => {
+              reads.push(file);
+              return Effect.succeed(
+                file === "/etc/claude-code/managed-settings.json"
+                  ? '{"env":{"CLAUDE_CODE_ENTRYPOINT":"managed"}}'
+                  : "{}",
+              );
+            },
+          }),
+        );
+        expect(environment.CLAUDE_CODE_ENTRYPOINT).toBe("managed");
+        expect(reads).toContain("/etc/claude-code/managed-settings.json");
+      }),
+    );
+
+    it.effect("honors Windows instance env case and Program Files managed settings", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const base = {
+          USERPROFILE: "/isolated",
+          PROGRAMDATA: "/program-data",
+          claude_code_entrypoint: "host",
+        };
+        const instance = [{ name: "claude_code_entrypoint", value: "instance", sensitive: false }];
+        const resolve = (managed: string) =>
+          makeClaudeProcessEnvironment({ homePath: "" }, base, instance, "win32").pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readFileString: (file) =>
+                Effect.succeed(
+                  file === "C:\\Program Files\\ClaudeCode\\managed-settings.json" ? managed : "{}",
+                ),
+            }),
+          );
+        const environment = yield* resolve("{}");
+        expect(environment.CLAUDE_CODE_ENTRYPOINT).toBe("instance");
+        expect(environment.claude_code_entrypoint).toBeUndefined();
+        expect(
+          (yield* resolve('{"env":{"CLAUDE_CODE_ENTRYPOINT":"managed"}}')).CLAUDE_CODE_ENTRYPOINT,
+        ).toBe("managed");
+      }),
+    );
+
+    for (const scenario of [
+      { name: "defaults without an inherited identifier", expected: "t3-code" },
+      { name: "replaces the host identifier", host: "claude-desktop", expected: "t3-code" },
+      {
+        name: "honors instance env",
+        host: "claude-desktop",
+        instance: "instance",
+        expected: "instance",
+      },
+      {
+        name: "honors user settings over instance env",
+        instance: "instance",
+        user: '{"env":{"CLAUDE_CODE_ENTRYPOINT":"user"}}',
+        expected: "user",
+      },
+      {
+        name: "honors managed settings over user settings",
+        instance: "instance",
+        user: '{"env":{"CLAUDE_CODE_ENTRYPOINT":"user"}}',
+        managed: '{"env":{"CLAUDE_CODE_ENTRYPOINT":"managed"}}',
+        expected: "managed",
+      },
+      {
+        name: "accepts lenient settings JSON",
+        user: '{/* comment */"env":{"CLAUDE_CODE_ENTRYPOINT":"custom",},}',
+        expected: "custom",
+      },
+      {
+        name: "ignores malformed settings",
+        instance: "instance",
+        user: "{invalid",
+        expected: "instance",
+      },
+      {
+        name: "ignores non-string settings values",
+        user: '{"env":{"CLAUDE_CODE_ENTRYPOINT":42}}',
+        expected: "t3-code",
+      },
+      {
+        name: "falls back when the final settings value is empty",
+        instance: "instance",
+        user: '{"env":{"CLAUDE_CODE_ENTRYPOINT":"user"}}',
+        managed: '{"env":{"CLAUDE_CODE_ENTRYPOINT":""}}',
+        expected: "instance",
+      },
+      {
+        name: "keeps user overrides when managed settings omit the identifier",
+        user: '{"env":{"CLAUDE_CODE_ENTRYPOINT":"user"}}',
+        managed: '{"env":{"OTHER":"value"}}',
+        expected: "user",
+      },
+    ]) {
+      it.effect(scenario.name, () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const homePath = path.resolve("/profiles/claude");
+          const files: Record<string, string | undefined> = {
+            [path.join(homePath, ".claude", "settings.json")]: scenario.user,
+            "/etc/claude-code/managed-settings.json": scenario.managed,
+          };
+          const reads: string[] = [];
+          const base = {
+            HOME: "/host",
+            CLAUDE_CONFIG_DIR: "/host/.claude",
+            CLAUDE_CODE_ENTRYPOINT: scenario.host,
+            KEEP: "1",
+            F5_AGENT_PROCESS: "1",
+          };
+          const environment = yield* makeClaudeProcessEnvironment(
+            { homePath },
+            base,
+            scenario.instance === undefined
+              ? undefined
+              : [{ name: "CLAUDE_CODE_ENTRYPOINT", value: scenario.instance, sensitive: false }],
+            "linux",
+          ).pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readFileString: (file) => {
+                reads.push(file);
+                return files[file] === undefined
+                  ? fs.readFileString(path.join(homePath, "missing-settings.json"))
+                  : Effect.succeed(files[file]!);
+              },
+            }),
+          );
+          expect(environment).toMatchObject({
+            CLAUDE_CODE_ENTRYPOINT: scenario.expected,
+            CLAUDE_CONFIG_DIR: path.join(homePath, ".claude"),
+            KEEP: "1",
+            F5_AGENT_PROCESS: "1",
+          });
+          expect(reads).toEqual(Object.keys(files));
+          expect(base.CLAUDE_CODE_ENTRYPOINT).toBe(scenario.host);
+        }),
+      );
+    }
+
+    it.effect("reads the instance config directory when homePath is unset", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const files: string[] = [];
+        const environment = yield* makeClaudeProcessEnvironment(
+          { homePath: "" },
+          { HOME: "/isolated", CLAUDE_CONFIG_DIR: "/isolated/config" },
+          undefined,
+          "linux",
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readFileString: (file) => {
+              files.push(file);
+              return Effect.succeed(
+                file === path.resolve("/isolated/config/settings.json")
+                  ? '{"env":{"CLAUDE_CODE_ENTRYPOINT":"isolated"}}'
+                  : "{}",
+              );
+            },
+          }),
+        );
+        expect(environment.CLAUDE_CODE_ENTRYPOINT).toBe("isolated");
+        expect(files[0]).toBe(path.resolve("/isolated/config/settings.json"));
+      }),
+    );
+  });
+
   describe("Claude home resolution", () => {
     it.effect(
       "keeps the macOS login keychain home while separating managed Claude config and keychain identities",
@@ -42,6 +302,27 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
           );
           expect(linux.HOME).toBe(path.resolve("/custom"));
         }),
+    );
+    it.effect("changes the usage history identity when only the configured home changes", () =>
+      Effect.gen(function* () {
+        const base = { HOME: "/users/me", F5_PROFILE_ISOLATED: "1" };
+        for (const platform of ["darwin", "linux"] as const) {
+          const work = yield* makeClaudeEnvironment({ homePath: "/homes/work" }, base, platform);
+          const personal = yield* makeClaudeEnvironment(
+            { homePath: "/homes/personal" },
+            base,
+            platform,
+          );
+          const unset = yield* makeClaudeEnvironment({ homePath: "" }, base, platform);
+          const identities = new Set(
+            [work, personal, unset].map((env) => claudeAccountUsageIdentity("claude", env)),
+          );
+          expect(identities.size).toBe(3);
+          expect(claudeAccountUsageIdentity("claude", work)).toBe(
+            claudeAccountUsageIdentity("claude", { ...work }),
+          );
+        }
+      }),
     );
     it.effect("uses the process home when no Claude home override is configured", () =>
       Effect.gen(function* () {

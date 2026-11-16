@@ -1,5 +1,6 @@
 import { resetDate } from "../usage/accountUsageJson.ts";
 import type { RuntimeUsageLimit, UsageAccount } from "@t3tools/contracts";
+import { CLAUDE_MONTHLY_SPEND_WINDOW_KEY } from "@t3tools/shared/usageLimit";
 /** Provider reset timestamps are epoch seconds; never render an invalid date. */
 export function usageLimitMessage(
   provider: string,
@@ -47,6 +48,27 @@ export function claudeLimitState(info: Record<string, unknown>): {
   };
 }
 
+/**
+ * The CLI suppresses an unchanged rate_limit_event, but repeats the limit as
+ * undeclared `api_error_params.rate_limit_info` on each blocked assistant
+ * message. Read it so a quick retry still knows when the limit resets.
+ */
+export function claudeBlockedAssistantLimit(
+  message: unknown,
+): ReturnType<typeof claudeLimitState> | undefined {
+  const params = asObject(asObject(message)?.api_error_params);
+  const info = asObject(params?.rate_limit_info);
+  if (!info) return undefined;
+  const limit = claudeLimitState(info);
+  return limit.blocked ? limit : undefined;
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 export function usageLimitFromWindows(
   windows: RuntimeUsageLimit["windows"],
   evidence: RuntimeUsageLimit["evidence"] = "typed",
@@ -67,6 +89,61 @@ export function usageLimitFromWindows(
   };
 }
 
+const CLAUDE_GATEWAY_LIMIT =
+  /^API Error: 503 \[[^\]\r\n]+\] \[429\]: \{"type":"error","error":\{"type":"rate_limit_error",[^\r\n]*\} \(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/;
+
+/** OpenCode's Claude agent reports plan limits as otherwise untyped errors. */
+export function openCodeClaudeUsageLimit(message: string): RuntimeUsageLimit | undefined {
+  if (!/^You've hit your [^\n·]*\blimit\b/.test(message)) return undefined;
+  const reset = /\bResets at (\d{4}-\d\d-\d\dT[\d:.]+Z)\.?\s*$/.exec(message)?.[1];
+  return {
+    windows: [],
+    resetsAt: reset && Number.isFinite(Date.parse(reset)) ? new Date(reset).toISOString() : null,
+    evidence: "message",
+    resetSource: "message",
+  };
+}
+
+/**
+ * Some Claude gateways (9router) wrap an upstream 429 in a 503 and append the
+ * cooldown, with no rate_limit_event. Treat that cooldown as the reset so the
+ * queue can resume the turn once it passes.
+ */
+export function claudeGatewayUsageLimit(
+  result: {
+    readonly subtype: string;
+    readonly is_error?: boolean;
+    readonly terminal_reason?: string;
+    readonly api_error_status?: number | null;
+    readonly result?: string;
+  },
+  at: string,
+): RuntimeUsageLimit | undefined {
+  if (
+    result.subtype !== "success" ||
+    !result.is_error ||
+    result.terminal_reason !== "api_error" ||
+    (result.api_error_status !== 503 && result.api_error_status !== 429)
+  )
+    return undefined;
+  const text = result.result ?? "";
+  const match =
+    result.api_error_status === 429 && text.startsWith("API Error:")
+      ? /\(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/.exec(text)
+      : CLAUDE_GATEWAY_LIMIT.exec(text);
+  if (!match) return undefined;
+  const seconds =
+    Number(match[1] ?? 0) * 3_600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0);
+  const resetMs = Date.parse(at) + seconds * 1_000;
+  if (!(seconds > 0) || !(resetMs < 8.64e15)) return undefined;
+  return {
+    windows: [],
+    resetsAt: new Date(resetMs).toISOString(),
+    evidence: "message",
+    resetSource: "message",
+  };
+}
+
 /** Only successful account reads made after the failure may resolve its reset. */
 export function resolveAccountUsageLimit(
   limit: RuntimeUsageLimit,
@@ -83,12 +160,14 @@ export function resolveAccountUsageLimit(
       continue;
     if (section.kind === "claude-usage") {
       for (const window of section.snapshot.data.windows) {
+        // A spent budget has no reset; it must not hide a rolling window's reset.
+        if (window.key === CLAUDE_MONTHLY_SPEND_WINDOW_KEY) continue;
         if (window.utilization !== null && window.utilization >= 100)
           windows.push({ id: window.key, label: window.label, resetsAt: window.resetsAt });
       }
     } else if (section.kind === "codex-limits") {
       for (const bucket of section.snapshot.data.rateLimits) {
-        for (const name of ["primary", "secondary"] as const) {
+        for (const name of ["primary", "secondary", "individual"] as const) {
           const window = bucket[name];
           if (window && window.usedPercent >= 100)
             windows.push({
@@ -104,7 +183,8 @@ export function resolveAccountUsageLimit(
   // Preserve unknown exhausted windows reported by the provider; a missing
   // account bucket cannot prove that a window has reset.
   const byId = new Map(limit.windows.map((window) => [window.id, window]));
-  for (const window of windows) byId.set(window.id, window);
+  for (const window of windows)
+    byId.set(window.id, { ...window, label: window.label ?? byId.get(window.id)?.label ?? null });
   const merged = [...byId.values()];
   return usageLimitFromWindows(merged, limit.evidence, "account");
 }

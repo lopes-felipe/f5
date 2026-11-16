@@ -12,7 +12,7 @@ const FILE_RECORD = 0x46;
 const MANIFEST_RECORD = 0x4d;
 const END_RECORD = 0x45;
 const ENCRYPTED_FLAG = 1;
-const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
+export const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const MAX_PATH_BYTES = 16 * 1024;
 const GIBIBYTE = 1024 * 1024 * 1024;
 const EXPANSION_RATIO_GRACE_BYTES = 16 * 1024 * 1024;
@@ -347,6 +347,8 @@ export async function writeBackupArchive(input: {
         : {}),
     };
     const manifestBytes = Buffer.from(JSON.stringify(manifest), "utf8");
+    if (manifestBytes.length > MAX_MANIFEST_BYTES)
+      throw new Error("Backup manifest exceeds its size limit.");
     const manifestHeader = Buffer.allocUnsafe(5);
     manifestHeader.writeUInt8(MANIFEST_RECORD, 0);
     manifestHeader.writeUInt32BE(manifestBytes.length, 1);
@@ -587,8 +589,8 @@ export async function parseBackupArchive(input: {
         if (records.some((record) => record.path === archivePath)) {
           throw new Error(`Backup contains duplicate path '${archivePath}'.`);
         }
-        if (encrypted && !archivePath.startsWith("secrets/")) {
-          throw new Error("Only secret files may be encrypted in a backup.");
+        if (encrypted && archivePath !== "settings.json" && !archivePath.startsWith("secrets/")) {
+          throw new Error("Only settings and secret files may be encrypted in a backup.");
         }
         const storedPath = `${destinationPath(payloadDir, archivePath)}${encrypted ? ".encrypted" : ""}`;
         if (rawSize + extractedBytes + size > maxTemporaryBytes) {

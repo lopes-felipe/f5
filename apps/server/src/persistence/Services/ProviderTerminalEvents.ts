@@ -1,6 +1,7 @@
 import {
   EventId,
   NonNegativeInt,
+  ProviderInstanceId,
   ProviderRuntimeEvent,
   ThreadId,
   TurnId,
@@ -30,17 +31,48 @@ export const ProviderTerminalEventReceipt = Schema.Struct({
   appliedAt: Schema.NullOr(Schema.String),
   attempt: NonNegativeInt,
   lastError: Schema.NullOr(Schema.String),
+  originProviderInstanceId: Schema.NullOr(ProviderInstanceId),
+  originSessionGeneration: Schema.NullOr(NonNegativeInt),
+  originTurnId: Schema.NullOr(TurnId),
+  nextDueAt: Schema.String,
 });
 export type ProviderTerminalEventReceipt = typeof ProviderTerminalEventReceipt.Type;
 
 export type ProviderTerminalEventRepositoryError = PersistenceSqlError | PersistenceDecodeError;
 
+// Migration 126 partial-index predicates use literals for query planning.
+// 124_ProviderTerminalRetry.test.ts verifies this limit matches both indexes.
+export const MAX_TERMINAL_RECEIPT_ATTEMPTS = 10;
+export interface TerminalReceiptOrigin {
+  readonly providerInstanceId: ProviderInstanceId | null;
+  readonly sessionGeneration: number;
+}
+
 export interface ProviderTerminalEventRepositoryShape {
   readonly record: (
     event: ProviderTerminalRuntimeEvent,
   ) => Effect.Effect<void, ProviderTerminalEventRepositoryError>;
-  readonly listPending: Effect.Effect<
+  readonly listPendingPage: Effect.Effect<
     ReadonlyArray<ProviderTerminalEventReceipt>,
+    ProviderTerminalEventRepositoryError
+  >;
+  readonly listDue: (
+    now?: string,
+  ) => Effect.Effect<
+    ReadonlyArray<ProviderTerminalEventReceipt>,
+    ProviderTerminalEventRepositoryError
+  >;
+  readonly hasPending: (
+    threadId: ThreadId,
+    turnId: TurnId | null,
+    origin: TerminalReceiptOrigin,
+  ) => Effect.Effect<boolean, ProviderTerminalEventRepositoryError>;
+  readonly hasExhausted: (
+    threadId?: ThreadId,
+  ) => Effect.Effect<boolean, ProviderTerminalEventRepositoryError>;
+  /** Null requests a full reconciliation after the bounded dirty set overflowed. */
+  readonly takeRecoveryThreadIds: Effect.Effect<
+    ReadonlyArray<ThreadId> | null,
     ProviderTerminalEventRepositoryError
   >;
   readonly markApplied: (

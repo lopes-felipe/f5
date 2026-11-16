@@ -23,6 +23,8 @@ export interface GitQuickAction {
   kind: "run_action" | "run_pull" | "open_pr" | "show_hint";
   action?: GitStackedAction;
   hint?: string;
+  /** For `open_pr`: how many PRs View PR offers; more than one opens a menu. */
+  pullRequestCount?: number;
 }
 
 export interface DefaultBranchActionDialogCopy {
@@ -84,6 +86,11 @@ export function summarizeGitResult(result: GitRunStackedActionResult): {
   title: string;
   description?: string;
 } {
+  if (result.commit.status === "context_changed")
+    return {
+      title: "Files or staging changed",
+      description: "Review the suggested message and current changes before trying again.",
+    };
   if (result.pr.status === "created" || result.pr.status === "opened_existing") {
     const prNumber = result.pr.number ? ` #${result.pr.number}` : "";
     const title = `${result.pr.status === "created" ? "Created PR" : "Opened PR"}${prNumber}`;
@@ -176,6 +183,20 @@ export function buildMenuItems(
   ];
 }
 
+/**
+ * Git work the user can do keeps the quick action; otherwise a thread with PRs gets View PR,
+ * whether git would have offered it or only a disabled hint.
+ */
+export function withThreadPullRequests(
+  quickAction: GitQuickAction,
+  pullRequestCount: number,
+): GitQuickAction {
+  if (pullRequestCount === 0) return quickAction;
+  if (quickAction.kind === "open_pr" || (quickAction.kind === "show_hint" && quickAction.disabled))
+    return { label: "View PR", disabled: false, kind: "open_pr", pullRequestCount };
+  return quickAction;
+}
+
 export function resolveQuickAction(
   gitStatus: GitStatusResult | null,
   isBusy: boolean,
@@ -212,7 +233,7 @@ export function resolveQuickAction(
   }
 
   if (hasChanges) {
-    if (!gitStatus.hasUpstream && !hasOriginRemote) {
+    if (isBehind || (!gitStatus.hasUpstream && !hasOriginRemote)) {
       return { label: "Commit", disabled: false, kind: "run_action", action: "commit" };
     }
     if (hasOpenPr || isDefaultBranch) {
@@ -235,7 +256,7 @@ export function resolveQuickAction(
         label: "Push",
         disabled: true,
         kind: "show_hint",
-        hint: 'Add an "origin" remote before pushing or creating a PR.',
+        hint: "Add a remote before pushing or creating a PR.",
       };
     }
     if (!isAhead) {
@@ -344,6 +365,18 @@ export function resolveDefaultBranchActionDialogCopy(input: {
     description: `This action will push local commits and create a PR${suffix}`,
     continueLabel: "Push & create PR",
   };
+}
+
+/**
+ * Why the default-branch dialog cannot check out a feature branch, or null when it can.
+ * The server names that branch from the uncommitted changes, so a clean tree cannot use it.
+ */
+export function resolveFeatureBranchUnavailableReason(input: {
+  branchName: string;
+  hasWorkingTreeChanges: boolean;
+}): string | null {
+  if (input.hasWorkingTreeChanges) return null;
+  return `There are no changes to commit, so a feature branch can't be named. Create a branch yourself or continue on ${input.branchName}.`;
 }
 
 // Re-export from shared for backwards compatibility in this module's exports

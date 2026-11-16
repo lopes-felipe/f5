@@ -1,0 +1,139 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-12T18:36:43.827Z",
+  "buildCommit": null,
+  "repositoryCommit": "856ae445230858ca775dfdfde26723925fa47b02",
+  "workingTreeDirty": false,
+  "platform": "darwin",
+  "osVersion": "27.0.0",
+  "arch": "arm64",
+  "packaged": false,
+  "helperSha256": "27eff7abd0c3019bf76a5331f182bb722eb4a9bfaee3d033a39302c75c3f9a17",
+  "helperSignature": {
+    "verified": false,
+    "detail": "Ad-hoc or missing team signature."
+  },
+  "appSignature": {
+    "verified": false,
+    "detail": "Development helper; no installed app supplied."
+  },
+  "permissionProbe": {
+    "displays": [
+      {
+        "rotation": 0,
+        "nativeBounds": {
+          "y": 0,
+          "height": 1117,
+          "x": 0,
+          "width": 1728
+        },
+        "displayId": "1",
+        "primary": true,
+        "pixelSize": {
+          "height": 2234,
+          "width": 3456
+        },
+        "geometryGeneration": "1:0.0:0.0:1728.0:1117.0:3456:2234:0.0",
+        "modelSize": {
+          "width": 1333,
+          "height": 862
+        }
+      }
+    ],
+    "available": true
+  },
+  "providerReadiness": {
+    "claudeComputer": {
+      "available": false,
+      "reason": "Claude's built-in computer use requires an interactive CLI session; the Agent SDK uses non-interactive mode"
+    },
+    "codexComputer": {
+      "version": "26.1007.21159",
+      "manifestHash": "3be981ef2b2e091f18495e26985c833e71b954fe16b821578595d555023b50dd",
+      "available": false,
+      "state": "host-managed",
+      "reason": "The bundled unified-computer-use plugin requires ChatGPT's runtime configuration; its launch and F5 veto/profile-isolation bridge are not certified"
+    },
+    "codexChrome": {
+      "version": "26.1007.21159",
+      "manifestHash": "6697a19849047d11060f6583c12970fb5f09742f99ece5ad3786104420d9a0e5",
+      "available": false,
+      "state": "host-managed",
+      "reason": "The bundled chrome plugin has no standalone MCP launch metadata; it requires a host-provided runtime"
+    }
+  },
+  "certified": false,
+  "checks": [
+    {
+      "name": "TCC attribution and permission revocation",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Both providers: native and multi-app workflows",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Command-app typing restrictions and secure fields",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Kill chord under 100ms, including hung renderer and stopped backend",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Physical input pause and fresh geometry on resume",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Focus/dialog changes and drag across protected windows",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Include-only capture and secure masking while windows move",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Inspect/zoom/semantic actions require grants",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Two-profile lease and multiple-build device lock",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Mixed-DPI displays, fullscreen overlays excluded from capture",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Control with all macOS F5 windows closed",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Signed packaging and installed helper path confinement",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Chrome consent, drift, pause, policy-off, and exact restore",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "name": "Built-in launch, consent, veto, F5 isolation, and profile isolation",
+      "state": "pending",
+      "evidence": null
+    }
+  ],
+  "note": "Read-only preflight. Signature/permission observations do not certify attribution, capture isolation, consent, or interruption latency. Release gates must be reviewed and changed separately after recorded machine tests."
+}

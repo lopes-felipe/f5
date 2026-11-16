@@ -1,0 +1,13 @@
+name: Assert clean worktree
+description: Reject files generated or modified by checks
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        status="$(git status --porcelain)"
+        if [[ -n "$status" ]]; then
+          printf '%s\n' "$status"
+          echo '::error::Tests left files in the worktree'
+          exit 1
+        fi

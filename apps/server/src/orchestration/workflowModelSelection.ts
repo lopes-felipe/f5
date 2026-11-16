@@ -5,7 +5,12 @@ import {
   type ServerProvider,
   type WorkflowModelSlot,
 } from "@t3tools/contracts";
-import { normalizeModelSlug, resolveSelectableModel } from "@t3tools/shared/model";
+import {
+  normalizeModelSlug,
+  resolveSelectableModel,
+  pickPreferredModel,
+  isListedModel,
+} from "@t3tools/shared/model";
 import { Effect } from "effect";
 
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
@@ -38,9 +43,8 @@ export function resolveAvailableWorkflowModelSlot(
   }
 
   const selectedModel =
-    resolveSelectableModel(driver, slot.model, provider.models) ??
-    provider.models.find((model) => !model.isCustom)?.slug ??
-    provider.models[0]?.slug;
+    resolveSelectableModel(driver, slot.model, provider.models.filter(isListedModel)) ??
+    pickPreferredModel(provider.models)?.slug;
   if (!selectedModel) {
     return slot;
   }

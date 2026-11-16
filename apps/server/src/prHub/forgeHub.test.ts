@@ -1,5 +1,6 @@
 import { it, assert } from "@effect/vitest";
 import { Effect, Stream } from "effect";
+import { SqlClient } from "effect/unstable/sql";
 import {
   DEFAULT_SERVER_SETTINGS,
   PullRequestKey,
@@ -12,7 +13,9 @@ import Migration102 from "../persistence/Migrations/102_ForgeAccounts.ts";
 import { makeForgeSourceControlProvider } from "../sourceControl/ForgeSourceControlProvider.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "../serverSettings.ts";
 import { makeForgePrHubService } from "./forgeHub.ts";
+import { ForgeAccounts, type ForgeAccountsShape } from "../sourceControl/accountRouting.ts";
 import { Schema } from "effect";
+import { evaluatePullRequestWatch } from "../orchestration/pullRequestWatch.ts";
 
 const settings: ServerSettingsShape = {
   start: Effect.void,
@@ -30,6 +33,28 @@ const account: ForgeAccount = {
   login: "alice",
   viewerId: "uuid",
   generation: "generation-1",
+};
+const routedAccounts = (account: ForgeAccount, repository: string): ForgeAccountsShape => {
+  const unused = () => Effect.die("unused account operation");
+  return {
+    listAccounts: () => Effect.succeed([account]),
+    listRouting: () =>
+      Effect.succeed([
+        {
+          provider: account.provider,
+          host: account.host,
+          repository,
+          accountId: account.id,
+        },
+      ]),
+    route: () => Effect.succeed(account),
+    removeAccount: unused,
+    saveAccount: unused,
+    getToken: unused,
+    removeRouting: unused,
+    setRouting: unused,
+    resolveAccount: unused,
+  };
 };
 const detail = {
   iid: 7,
@@ -49,6 +74,317 @@ const detail = {
 };
 
 it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
+  it.effect(
+    "refreshes discovered Forgejo checks on every poll and passes required checks through to watches",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Migration102;
+          const forgejo: ForgeAccount = {
+            ...account,
+            id: "forgejo-discovery",
+            provider: "forgejo",
+            host: "forgejo.example.com",
+          };
+          let status = "pending";
+          let head = "first";
+          let checkReads = 0;
+          let failChecks = false;
+          const pull = () => ({
+            number: 7,
+            title: "Forgejo checks",
+            state: "open",
+            head: { sha: head, ref: "topic" },
+            base: { ref: "main" },
+            html_url: "https://forgejo.example.com/group/repo/pulls/7",
+          });
+          const provider = makeForgeSourceControlProvider({
+            kind: "forgejo",
+            resolveAccount: () =>
+              Effect.succeed({
+                kind: "forgejo",
+                host: forgejo.host,
+                login: forgejo.login,
+                repository: "group/repo",
+                token: "secret",
+              }),
+            fetch: (async (input) => {
+              const url = new URL(String(input));
+              if (url.pathname.endsWith("/pulls")) return Response.json([pull()]);
+              if (url.pathname.includes("/branches/"))
+                return Response.json({
+                  enable_status_check: true,
+                  status_check_contexts: ["ci/*"],
+                });
+              if (url.pathname.includes("/statuses/")) {
+                checkReads++;
+                if (failChecks) return new Response(null, { status: 503 });
+                return Response.json(
+                  url.searchParams.get("page") === "1"
+                    ? [
+                        { context: "ci/build", status },
+                        { context: "optional", status: "failure" },
+                      ]
+                    : [],
+                );
+              }
+              return Response.json(pull());
+            }) as typeof fetch,
+          });
+          const hub = yield* makeForgePrHubService(forgejo, provider).pipe(
+            Effect.provideService(ServerSettingsService, settings),
+            Effect.provideService(ForgeAccounts, routedAccounts(forgejo, "group/repo")),
+          );
+          const first = (yield* hub.refreshNow({ mode: "force" })).pullRequests[0]!;
+          assert.equal(first.checkRollup, "pending");
+          status = "success";
+          const second = (yield* hub.refreshNow({ mode: "force" })).pullRequests[0]!;
+          assert.equal(second.checkRollup, "success");
+          assert.equal(checkReads, 4);
+          const detail = (yield* hub.getDetail({ key: second.key })).detail;
+          const watch = evaluatePullRequestWatch(
+            {
+              startedAt: "2026-11-14T00:00:00Z",
+              headSha: head,
+              failedChecks: ["optional"],
+              passed: false,
+              passedChecks: [],
+              remarkIds: [],
+              remarksThrough: "2026-11-14T00:00:00Z",
+              conflicting: false,
+              wakes: 0,
+            },
+            {
+              checks: detail.checks,
+              headSha: detail.providerDetails.headRefOid,
+              mergeability: detail.mergeable,
+              viewer: "alice",
+              author: null,
+            },
+            [],
+          );
+          assert.deepEqual(watch.changes, [{ kind: "checks-passed", count: 1, required: true }]);
+          head = "second";
+          status = "failure";
+          const moved = (yield* hub.refreshNow({ mode: "force" })).pullRequests[0]!;
+          assert.equal(moved.headRefOid, head);
+          assert.equal(moved.checkRollup, "failure");
+          failChecks = true;
+          const incomplete = (yield* hub.refreshNow({ mode: "force" })).pullRequests[0]!;
+          assert.equal(incomplete.checkRollup, "pending");
+          const partial = yield* hub.getDetail({ key: incomplete.key });
+          assert.deepEqual(partial.detail.checks, []);
+          assert.deepEqual(partial.detail.truncatedSections, ["checks"]);
+        }),
+      ).pipe(Effect.provide(SqliteClient.layerMemory())),
+  );
+  it.effect("applies the stale cutoff setting to overview, list and snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Migration102;
+        const forgejo: ForgeAccount = {
+          ...account,
+          id: "forgejo-stale",
+          provider: "forgejo",
+          host: "forgejo.example.com",
+        };
+        // Last updated long ago: stale under the default cutoff of 30 days.
+        const pull = {
+          number: 7,
+          title: "Old but open",
+          state: "open",
+          user: { login: "alice" },
+          head: { sha: "head", ref: "topic" },
+          base: { ref: "main" },
+          html_url: "https://forgejo.example.com/group/repo/pulls/7",
+          updated_at: "2026-01-02T00:00:00Z",
+        };
+        const provider = makeForgeSourceControlProvider({
+          kind: "forgejo",
+          resolveAccount: () =>
+            Effect.succeed({
+              kind: "forgejo",
+              host: forgejo.host,
+              login: forgejo.login,
+              repository: "group/repo",
+              token: "secret",
+            }),
+          fetch: (async (input) => {
+            const url = new URL(String(input));
+            if (url.pathname.endsWith("/pulls")) return Response.json([pull]);
+            if (url.pathname.includes("/branches/")) return Response.json({});
+            if (url.pathname.includes("/statuses/")) return Response.json([]);
+            return Response.json(pull);
+          }) as typeof fetch,
+        });
+        let staleAfterDays = DEFAULT_SERVER_SETTINGS.prHub.staleAfterDays;
+        const hub = yield* makeForgePrHubService(forgejo, provider).pipe(
+          Effect.provideService(ServerSettingsService, {
+            ...settings,
+            getSettings: Effect.sync(() => ({
+              ...DEFAULT_SERVER_SETTINGS,
+              prHub: { ...DEFAULT_SERVER_SETTINGS.prHub, staleAfterDays },
+            })),
+          }),
+          Effect.provideService(ForgeAccounts, routedAccounts(forgejo, "group/repo")),
+        );
+        yield* hub.refreshNow({ mode: "force" });
+        const sections = Effect.gen(function* () {
+          const overview = yield* hub.getOverview({});
+          const listed = yield* hub.listPullRequests({});
+          const snapshot = yield* hub.getSnapshot;
+          return {
+            stale: overview.sectionCounts?.stale,
+            listed: listed.pullRequests.map((pr) => pr.section),
+            snapshot: snapshot.pullRequests.map((pr) => pr.section),
+          };
+        });
+        assert.deepEqual(yield* sections, { stale: 1, listed: ["stale"], snapshot: ["stale"] });
+        // 0 turns the cutoff off; a longer cutoff keeps the row out of Stale too.
+        staleAfterDays = 0;
+        const off = yield* sections;
+        assert.equal(off.stale, 0);
+        assert.notInclude(off.listed, "stale");
+        assert.notInclude(off.snapshot, "stale");
+        staleAfterDays = 100_000;
+        assert.equal((yield* sections).stale, 0);
+      }),
+    ).pipe(Effect.provide(SqliteClient.layerMemory())),
+  );
+  it.effect("refreshes discovered pipeline checks on every poll and marks partial reads", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Migration102;
+        let partial = false;
+        const provider = makeForgeSourceControlProvider({
+          kind: "gitlab",
+          resolveAccount: () =>
+            Effect.succeed({
+              kind: "gitlab",
+              host: account.host,
+              login: account.login,
+              token: "secret",
+              repository: "group/repo",
+            }),
+          fetch: (async (url) => {
+            const path = new URL(String(url)).pathname;
+            if (path.endsWith("/bridges"))
+              return partial
+                ? new Response(null, { status: 403 })
+                : Response.json([{ name: "Pipeline", downstream_pipeline: { status: "failed" } }]);
+            // GitLab list responses omit head_pipeline.
+            if (path.endsWith("/merge_requests"))
+              return Response.json([{ ...detail, head_pipeline: undefined }]);
+            return Response.json({
+              ...detail,
+              head_pipeline: { id: 31, project_id: 12, status: "success" },
+            });
+          }) as typeof fetch,
+        });
+        const unused = () => Effect.die("unused account operation");
+        const accounts: ForgeAccountsShape = {
+          listAccounts: () => Effect.succeed([account]),
+          listRouting: () =>
+            Effect.succeed([
+              {
+                provider: "gitlab",
+                host: account.host,
+                repository: "group/repo",
+                accountId: account.id,
+              },
+            ]),
+          route: () => Effect.succeed(account),
+          removeAccount: unused,
+          saveAccount: unused,
+          getToken: unused,
+          removeRouting: unused,
+          setRouting: unused,
+          resolveAccount: unused,
+        };
+        const hub = yield* makeForgePrHubService({ ...account, id: "discovery" }, provider).pipe(
+          Effect.provideService(ServerSettingsService, settings),
+          Effect.provideService(ForgeAccounts, {
+            ...accounts,
+            listAccounts: () => Effect.succeed([{ ...account, id: "discovery" }]),
+            listRouting: () =>
+              Effect.succeed([
+                {
+                  provider: "gitlab",
+                  host: account.host,
+                  repository: "group/repo",
+                  accountId: "discovery",
+                },
+              ]),
+            route: () => Effect.succeed({ ...account, id: "discovery" }),
+          }),
+        );
+        const first = yield* hub.refreshNow({ mode: "force" });
+        const pr = first.pullRequests[0]!;
+        assert.equal(pr.checkRollup, "failure");
+        yield* hub.getDetail({ key: pr.key, mode: "force" });
+        const polled = yield* hub.refreshNow({ mode: "force" });
+        assert.equal(polled.pullRequests[0]?.checkRollup, "failure");
+        const read = yield* hub.getDetail({ key: pr.key });
+        assert.deepEqual(
+          read.detail.checks.map((check) => check.name),
+          ["Pipeline", "Downstream: Pipeline"],
+        );
+        partial = true;
+        const incomplete = yield* hub.getDetail({ key: pr.key, mode: "force" });
+        assert.deepEqual(incomplete.detail.truncatedSections, ["checks"]);
+        assert.equal((yield* hub.getSnapshot).pullRequests[0]?.checkRollup, "pending");
+
+        // A bulk change skips keys it does not track and is refused for a stale account.
+        const until = new Date(Date.now() + 3_600_000).toISOString();
+        const keys = [
+          pr.key,
+          PullRequestKey.makeUnsafe("gitlab:gitlab.example.com/group/repo#999"),
+        ];
+        assert.equal(
+          (yield* Effect.exit(
+            hub.bulkUpdate({ keys, action: "snooze", until, accountGeneration: "stale" }),
+          ))._tag,
+          "Failure",
+        );
+        assert.equal(
+          (yield* Effect.exit(hub.bulkUpdate({ keys, action: "snooze" })))._tag,
+          "Failure",
+        );
+        assert.deepStrictEqual(yield* hub.bulkUpdate({ keys, action: "snooze", until }), {
+          updated: 1,
+        });
+        assert.equal((yield* hub.getSnapshot).pullRequests[0]?.snoozedUntil, until);
+        // This hub keeps no seen state: marking seen changes and publishes nothing.
+        const revision = (yield* hub.getOverview({})).revision;
+        assert.deepStrictEqual(yield* hub.bulkUpdate({ keys, action: "mark_seen" }), {
+          updated: 0,
+        });
+        assert.equal((yield* hub.getOverview({})).revision, revision);
+
+        // A write that fails leaves storage and memory as they were, and publishes nothing.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TRIGGER fail_bulk BEFORE UPDATE ON forge_pr_hub_state
+          BEGIN SELECT RAISE(ABORT, 'boom'); END`;
+        assert.equal(
+          (yield* Effect.exit(hub.bulkUpdate({ keys, action: "ignore" })))._tag,
+          "Failure",
+        );
+        assert.isNull((yield* hub.getSnapshot).pullRequests[0]?.ignoredAt ?? null);
+        assert.equal((yield* hub.getOverview({})).revision, revision);
+        const stored = yield* sql<{ data_json: string }>`SELECT data_json FROM forge_pr_hub_state`;
+        assert.isTrue(stored.every((row) => !JSON.parse(row.data_json).pr.ignoredAt));
+        yield* sql`DROP TRIGGER fail_bulk`;
+
+        assert.deepStrictEqual(yield* hub.bulkUpdate({ keys, action: "ignore" }), { updated: 1 });
+        assert.isNotNull(
+          [
+            ...(yield* hub.getSnapshot).pullRequests,
+            ...(yield* hub.getSnapshot).recentlyResolved,
+          ].find((candidate) => candidate.key === pr.key)?.ignoredAt ?? null,
+        );
+      }),
+    ).pipe(Effect.provide(SqliteClient.layerMemory())),
+  );
   it.effect(
     "persists snapshots and native files, isolates generations and rejects foreign hosts",
     () =>
@@ -71,6 +407,17 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
               calls++;
               if (fail) return new Response(null, { status: 503 });
               const path = new URL(String(url)).pathname;
+              if (path.endsWith("/bridges"))
+                return Response.json([
+                  {
+                    name: "deploy",
+                    status: "success",
+                    downstream_pipeline: {
+                      status: "failed",
+                      web_url: "https://gitlab.example.com/fork/-/pipelines/32",
+                    },
+                  },
+                ]);
               if (path.endsWith("/diffs"))
                 return Response.json([
                   { old_path: "a.ts", new_path: "a.ts", diff: "@@ -1 +1 @@\n-old\n+new\n+added" },
@@ -92,7 +439,10 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
                     ],
                   },
                 ]);
-              return Response.json(detail);
+              return Response.json({
+                ...detail,
+                head_pipeline: { id: 31, project_id: 12, status: "success" },
+              });
             }) as typeof fetch,
           });
           const hub = yield* makeForgePrHubService(account, provider).pipe(
@@ -106,8 +456,18 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
           assert.equal(pr.reviewFactsComplete, false);
           assert.equal(pr.mergePermission, "unknown");
           Schema.decodeUnknownSync(PrHubSnapshot)(yield* hub.getSnapshot);
-          Schema.decodeUnknownSync(PrHubDetailResult)(yield* hub.getDetail({ key: pr.key }));
+          const result = Schema.decodeUnknownSync(PrHubDetailResult)(
+            yield* hub.getDetail({ key: pr.key }),
+          );
+          assert.deepEqual(
+            result.detail.checks.map((check) => [check.name, check.status]),
+            [
+              ["Pipeline", "success"],
+              ["Downstream: deploy", "failure"],
+            ],
+          );
           const files = yield* hub.getFiles({ key: pr.key });
+          assert.equal((yield* hub.getSnapshot).pullRequests[0]?.checkRollup, "failure");
           assert.equal(files.files.length, 1);
           assert.equal(files.comparison?.headOid, "head");
           assert.equal(files.comparison?.baseOid, "base-head");

@@ -1,10 +1,14 @@
 # Profiles
 
+> Operators and contributors: isolated F5 profiles, their storage, accounts and lifecycle.
+
+**Contents:** [Existing data and layout](#existing-data-and-layout) · [Browser, CLI and remote access](#browser-cli-and-remote-access) · [Desktop lifecycle](#desktop-lifecycle) · [GitHub authentication](#github-authentication) · [Removal and restore](#removal-and-restore) · [Real-provider release gate](#real-provider-release-gate) · [Shell startup and recovery storage](#shell-startup-and-recovery-storage)
+
 A Profile is an independent F5 environment with its own accounts, projects, conversations, settings, secrets, attachments, logs and worktrees. A project's `workspaceRoot` remains its source directory. **Display profile** remains the appearance-density setting. Electron session storage is called a **partition**.
 
-Create a profile in **Settings → Profiles**, then open it and use its account panels to sign in. Account setup works before adding a project. Login output is streamed in memory and is never written to terminal history or server logs. Cancel terminates the owned login process. Only one provider or MCP OAuth login can run per installation at a time; another login receives a visible conflict. F5 never terminates an unrelated callback-port owner.
+Create a profile in **Settings → Profiles & Accounts**, then open it and use its account panels to sign in. Account setup works before adding a project. Login output is streamed in memory and is never written to terminal history or server logs. Cancel terminates the owned login process. Only one provider or MCP OAuth login can run per installation at a time; another login receives a visible conflict. F5 never terminates an unrelated callback-port owner.
 
-Codex 0.144.3 and newer versions are allowed for subscription and API-key accounts. Claude uses the bundled Agent SDK 0.3.292. Other drivers and unsupported Claude executables remain preserved but are unavailable in isolated profiles. Managed Codex homes use file-backed credentials and do not share shadow-home overlays. Profile isolation must pass the real-provider release gate below; environment-variable tests alone do not certify platform credential storage.
+Codex 0.144.3 and newer versions are allowed for subscription and API-key accounts. Claude uses the bundled Agent SDK 0.3.317. Other drivers and unsupported Claude executables remain preserved but are unavailable in isolated profiles. Managed Codex homes use file-backed credentials and do not share shadow-home overlays. Profile isolation must pass the real-provider release gate below; environment-variable tests alone do not certify platform credential storage.
 
 Account usage is read through each configured provider instance, using the same home and environment as its sessions. Codex usage caches are instance-local; an unavailable instance never falls back to the machine account. Provider-reported subscription limits can still match when two profiles deliberately sign into the same upstream account.
 
@@ -32,7 +36,7 @@ SQLite OS locks prevent two processes from opening the same profile or removing 
 
 ## Browser, CLI and remote access
 
-Launch separate processes with `t3 --profile default` and `t3 --profile work`, or set `F5_PROFILE`. Each non-default profile owns its recorded port. An occupied port is an error, with no fallback scan. Change the port in Settings → Profiles and restart. Recently retired ports are withheld from allocation to reduce browser-storage reuse.
+Launch separate processes with `t3 --profile default` and `t3 --profile work`, or set `F5_PROFILE`. Each non-default profile owns its recorded port. An occupied port is an error, with no fallback scan. Change the port in Settings → Profiles & Accounts and restart. Recently retired ports are withheld from allocation to reduce browser-storage reuse.
 
 Browser state is isolated by origin, so keep a consistent hostname and protocol. Links preserve the current hostname. Explicit `--port` or `T3CODE_PORT` overrides transfer origin-isolation responsibility to the operator. Every remotely exposed profile needs its own port, origin and `#token=` exchange. Pass the shared `--auth-token` to each server and configure each port on the reverse proxy or private network.
 
@@ -42,7 +46,7 @@ Opening a profile starts its backend and opens a window in its own persistent pa
 
 ## GitHub authentication
 
-Connect in **Settings → Integrations → GitHub**. **Sign in with GitHub** (github.com) displays a device code and opens GitHub in your browser. Select the account intended for this profile. The verified username is shown after authorization. Use **Reconnect** to change accounts and **Disconnect** to remove the local connection.
+Connect in **Settings → Profiles & Accounts**, under GitHub account. **Sign in with GitHub** (github.com) displays a device code and opens GitHub in your browser. Select the account intended for this profile. The verified username is shown after authorization. Use **Reconnect** to change accounts and **Disconnect** to remove the local connection.
 
 A personal access token remains available for github.com and GitHub Enterprise hosts. **Use GitHub CLI login** imports an account your terminal's `gh` is already logged in to (see below). The profile connection is used by F5’s GitHub features and by ordinary `gh` commands in its agents and terminals. Default must connect explicitly once; F5 never imports workstation credentials automatically. Existing saved profile tokens migrate automatically, without requiring network access at startup.
 

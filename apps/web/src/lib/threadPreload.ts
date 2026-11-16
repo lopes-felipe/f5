@@ -10,8 +10,10 @@ import {
   scheduleThreadDetailRefreshIfProvisional,
   warmThreadFileChanges,
 } from "./orchestrationReactQuery";
+import { isThreadDetailPrefetchOverBudget } from "./threadDetailRetention";
 import { getVisibleThreads, sortThreadsByActivity } from "./threadOrdering";
 import { useStore } from "../store";
+import { isThreadRunning } from "./threadRunning";
 
 export interface ThreadWarmProfile {
   includeFileChanges: boolean;
@@ -151,6 +153,7 @@ function pumpLiveThreadWarmQueue() {
           ...(nextTask.signal ? { signal: nextTask.signal } : {}),
           captureLiveEvents: false,
           warmProfile: nextTask.warmProfile,
+          priority: "background",
         });
         nextTask.resolve();
       } catch (error) {
@@ -190,7 +193,7 @@ export function scheduleLiveThreadWarmForDomainEvent(
 
   const currentState = useStore.getState();
   const thread = currentState.threads.find((entry) => entry.id === threadId);
-  if (!thread || thread.detailsLoaded) {
+  if (!thread || thread.detailsLoaded || isThreadDetailPrefetchOverBudget()) {
     return null;
   }
 
@@ -267,6 +270,8 @@ export async function warmThreadBundle(
     captureLiveEvents?: boolean;
     initialDetails?: OrchestrationThreadTailDetails | null;
     warmProfile?: ThreadWarmProfile;
+    /** Warming ahead of navigation yields ordinary slots to interactive reads. */
+    priority?: "interactive" | "background";
   },
 ): Promise<void> {
   const warmProfile = options?.warmProfile ?? DEFAULT_THREAD_WARM_PROFILE;
@@ -279,6 +284,7 @@ export async function warmThreadBundle(
       ...(options?.captureLiveEvents !== undefined
         ? { captureLiveEvents: options.captureLiveEvents }
         : {}),
+      ...(options?.priority ? { priority: options.priority } : {}),
     });
   }
 
@@ -332,6 +338,8 @@ export async function preloadRecentThreadDetails(
     concurrency?: number;
     signal?: AbortSignal;
     warmProfile?: ThreadWarmProfile;
+    /** Desktop opt-in: hydrate every active session, including older/hidden threads. */
+    runningOnly?: boolean;
     /**
      * Threads that the caller has already dispatched (or is about to dispatch)
      * fetches for — e.g. the currently visible thread or welcome-bootstrap
@@ -341,7 +349,7 @@ export async function preloadRecentThreadDetails(
     excludeThreadIds?: ReadonlyArray<ThreadId>;
   },
 ): Promise<void> {
-  const limit = options?.limit ?? RECENT_THREAD_PRELOAD_COUNT;
+  const limit = options?.limit ?? (options?.runningOnly ? Infinity : RECENT_THREAD_PRELOAD_COUNT);
   const concurrency = Math.max(1, options?.concurrency ?? RECENT_THREAD_PRELOAD_CONCURRENCY);
   if (limit <= 0 || options?.signal?.aborted) return;
   const warmProfile = options?.warmProfile ?? DEFAULT_THREAD_WARM_PROFILE;
@@ -350,7 +358,9 @@ export async function preloadRecentThreadDetails(
   const { threads, planningWorkflows, codeReviewWorkflows, investigationWorkflows } =
     useStore.getState();
   const candidates = sortThreadsByActivity(
-    getVisibleThreads(threads, planningWorkflows, codeReviewWorkflows, investigationWorkflows),
+    options?.runningOnly
+      ? threads.filter(isThreadRunning)
+      : getVisibleThreads(threads, planningWorkflows, codeReviewWorkflows, investigationWorkflows),
   )
     .filter((thread) => !thread.detailsLoaded && !excluded.has(thread.id))
     .slice(0, limit)
@@ -368,11 +378,15 @@ export async function preloadRecentThreadDetails(
       // `candidates[i]` to `Thread | undefined`. Skip rather than exit so a
       // sparse-array oddity doesn't starve the other workers in the pool.
       if (!threadId) continue;
+      // Pinned (visible, loading) details already exceed the retention budget:
+      // anything warmed now would only be evicted again.
+      if (!options?.runningOnly && isThreadDetailPrefetchOverBudget()) return;
       try {
         await warmThreadBundle(queryClient, threadId, {
           ...(options?.signal ? { signal: options.signal } : {}),
-          captureLiveEvents: false,
+          captureLiveEvents: options?.runningOnly === true,
           warmProfile,
+          priority: "background",
         });
       } catch (error) {
         console.warn("Failed to preload thread bundle.", { threadId, error });

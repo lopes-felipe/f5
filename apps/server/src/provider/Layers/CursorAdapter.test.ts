@@ -479,9 +479,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       }),
   );
 
-  it.effect(
-    "streams ACP tool calls and approvals on the active turn in approval-required mode",
-    () =>
+  it.effect.each(["accept", "acceptForSession"] as const)(
+    "streams approvals and selects the offered allow-once option for %s",
+    (decision) =>
       Effect.gen(function* () {
         const previousEmitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS;
         process.env.T3_ACP_EMIT_TOOL_CALLS = "1";
@@ -493,8 +493,15 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         const settledEventTypes = new Set<string>();
         const settledEventsReady = yield* Deferred.make<void>();
 
+        const tempDir = yield* Effect.promise(() =>
+          mkdtemp(path.join(os.tmpdir(), "cursor-approval-")),
+        );
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
         const wrapperPath = yield* Effect.promise(() =>
-          makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_CALLS: "1" }),
+          makeProbeWrapper(requestLogPath, path.join(tempDir, "argv.txt"), {
+            T3_ACP_EMIT_TOOL_CALLS: "1",
+            T3_ACP_OMIT_ALLOW_ALWAYS: "1",
+          }),
         );
         yield* serverSettings.updateSettings({
           providers: { cursor: { binaryPath: wrapperPath } },
@@ -510,7 +517,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
               yield* adapter.respondToRequest(
                 threadId,
                 ApprovalRequestId.make(String(event.requestId)),
-                "accept",
+                decision,
               );
             }
             if (
@@ -541,6 +548,18 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             attachments: [],
           });
           yield* Deferred.await(settledEventsReady);
+
+          const wire = yield* Effect.promise(() => readJsonLines(requestLogPath));
+          assert.isTrue(
+            wire.some((entry) => {
+              const result = entry.result as
+                | { outcome?: { outcome?: string; optionId?: string } }
+                | undefined;
+              return (
+                result?.outcome?.outcome === "selected" && result.outcome.optionId === "allow-once"
+              );
+            }),
+          );
 
           const threadEvents = runtimeEvents.filter(
             (event) => String(event.threadId) === String(threadId),
@@ -591,7 +610,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           if (requestResolved?.type === "request.resolved") {
             assert.equal(String(requestResolved.turnId), String(turn.turnId));
             assert.equal(requestResolved.payload.requestType, "exec_command_approval");
-            assert.equal(requestResolved.payload.decision, "accept");
+            assert.equal(requestResolved.payload.decision, decision);
           }
 
           const toolCompleted = turnEvents.find(
@@ -1604,6 +1623,53 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
       );
 
       yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(eventFiber);
+    }),
+  );
+
+  it.effect("settles the active turn when the agent exits during a prompt", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-exit-during-prompt");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EXIT_DURING_PROMPT: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const events: ProviderRuntimeEvent[] = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      const sent = yield* adapter
+        .sendTurn({ threadId, input: "exit mid-prompt", attachments: [] })
+        .pipe(Effect.exit);
+      assert.equal(sent._tag, "Failure");
+      const turnId = events.find((event) => event.type === "turn.started")?.turnId;
+      assert.isDefined(turnId);
+      const exited = (event: ProviderRuntimeEvent) =>
+        event.type === "session.exited" && event.threadId === threadId;
+      for (let attempt = 0; attempt < 200 && !events.some(exited); attempt += 1)
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+
+      const completions = events.filter(
+        (event) => event.type === "turn.completed" && event.turnId === turnId,
+      );
+      assert.equal(completions.length, 1);
+      assert.deepInclude(completions[0]!.payload, { state: "failed" });
+      const exitEvent = events.find(exited);
+      assert.deepInclude(exitEvent?.payload, { exitKind: "error", recoverable: true });
+      // A dead session must not stay registered, or every later send reuses it.
+      assert.isFalse(yield* adapter.hasSession(threadId));
       yield* Fiber.interrupt(eventFiber);
     }),
   );

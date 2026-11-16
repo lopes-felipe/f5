@@ -43,6 +43,22 @@ export function classifyNextTurnDispatchFailure(input: {
   readonly readinessAttempt?: number;
 }): NextTurnDispatchOutcome {
   const { tag, message } = taggedError(input.error);
+  if (tag === "OrchestrationOverloadError") {
+    const superseded =
+      typeof input.error === "object" &&
+      input.error !== null &&
+      "reason" in input.error &&
+      input.error.reason === "superseded";
+    if (superseded) return { kind: "failed", errorCode: tag, errorDetail: message };
+    return {
+      kind: "retry",
+      delayMs: nextTurnDispatchBackoffMs(input.postClaimAttempt, input.random),
+      clearDispatchStartedAt: true,
+      consumeAttempt: false,
+      errorCode: tag,
+      errorDetail: message,
+    };
+  }
   if (tag === "ThreadTurnAlreadyActiveError" || tag === "ThreadTurnNotReadyError") {
     return {
       kind: "retry",

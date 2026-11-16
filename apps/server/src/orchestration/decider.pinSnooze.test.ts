@@ -73,6 +73,38 @@ async function applyDecision(
 }
 
 describe("thread pins and snoozes", () => {
+  it("rejects storage archiving if the conversation changed after inspection", async () => {
+    const model = await makeReadModel();
+    const readModel = {
+      ...model,
+      threads: model.threads.map((thread) =>
+        thread.id === THREAD_1 ? { ...thread, worktreePath: "/worktree" } : thread,
+      ),
+    };
+    const command = {
+      type: "thread.archive" as const,
+      commandId: CommandId.makeUnsafe("storage-archive"),
+      threadId: THREAD_1,
+      createdAt: LATER,
+      cleanupExpectation: {
+        worktreePath: "/worktree",
+        lastInteractionAt: NOW,
+        sessionUpdatedAt: null,
+      },
+    };
+    const successful = await Effect.runPromise(decideOrchestrationCommand({ readModel, command }));
+    expect(successful).toMatchObject({ type: "thread.archived" });
+    const changed = {
+      ...readModel,
+      threads: readModel.threads.map((thread) =>
+        thread.id === THREAD_1 ? { ...thread, lastInteractionAt: LATER } : thread,
+      ),
+    };
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({ readModel: changed, command }).pipe(Effect.result),
+    );
+    expect(result._tag).toBe("Failure");
+  });
   it("replaces pins atomically and rejects a stale revision", async () => {
     const readModel = await makeReadModel();
     const decision = await Effect.runPromise(

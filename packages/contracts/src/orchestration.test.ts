@@ -13,6 +13,7 @@ import {
   OrchestrationCreateWorkflowInput,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetThreadHistoryPageInput,
+  OrchestrationGetThreadPeeksInput,
   OrchestrationThread,
   OrchestrationGetTurnDiffInput,
   OrchestrationProposedPlan,
@@ -24,6 +25,7 @@ import {
   OrchestrationThreadActivityCursor,
   RuntimeMode,
   TaskItem,
+  THREAD_PEEKS_MAX_THREADS,
   ProjectCreateCommand,
   ThreadArchivedPayload,
   ThreadMessageSentPayload,
@@ -307,7 +309,7 @@ it.effect("trims branded ids and command string fields at decode boundaries", ()
     assert.strictEqual(parsed.commandId, "cmd-1");
     assert.strictEqual(parsed.projectId, "project-1");
     assert.strictEqual(parsed.title, "Project Title");
-    assert.strictEqual(parsed.workspaceRoot, "/tmp/workspace");
+    assert.strictEqual(parsed.workspaceRoot, " /tmp/workspace ");
     assert.strictEqual(parsed.defaultModel, "gpt-5.2");
   }),
 );
@@ -971,6 +973,16 @@ it("validates nullable activity cursor sequence identity", () => {
   );
 });
 
+it("caps a thread peeks request", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationGetThreadPeeksInput);
+  const ids = (count: number) => Array.from({ length: count }, (_, index) => `thread-${index}`);
+  assert.strictEqual(
+    decode({ threadIds: ids(THREAD_PEEKS_MAX_THREADS) }).threadIds.length,
+    THREAD_PEEKS_MAX_THREADS,
+  );
+  assert.throws(() => decode({ threadIds: ids(THREAD_PEEKS_MAX_THREADS + 1) }));
+});
+
 it("rejects ambiguous message history window selectors", () => {
   const decode = Schema.decodeUnknownSync(OrchestrationGetThreadHistoryPageInput);
   assert.throws(() =>
@@ -1017,3 +1029,45 @@ it.effect("preserves proposed plan implementation metadata when present", () =>
     assert.strictEqual(parsed.implementationThreadId, "thread-2");
   }),
 );
+
+it("keeps buffered native continuation identities internal to server queue commands", () => {
+  const command = {
+    type: "thread.turn.start",
+    commandId: "native-wake",
+    threadId: "thread",
+    message: {
+      messageId: "native-wake",
+      role: "user",
+      text: "Continue native work",
+      attachments: [],
+    },
+    provider: "pi",
+    model: "default",
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    presentation: "continuation",
+    continuationRequestId: "native-wake",
+    createdAt: "2026-10-19T00:00:00.000Z",
+  };
+  assert.equal(
+    Schema.decodeUnknownSync(ThreadTurnStartCommand)(command).continuationRequestId,
+    "native-wake",
+  );
+  assert.throws(() => Schema.decodeUnknownSync(ClientOrchestrationCommand)(command));
+  const { continuationRequestId: _internal, ...client } = command;
+  assert.doesNotThrow(() => Schema.decodeUnknownSync(ClientOrchestrationCommand)(client));
+});
+
+it("rejects client commands that try to reconcile native provider history", () => {
+  assert.throws(() =>
+    Schema.decodeUnknownSync(ClientOrchestrationCommand)({
+      type: "thread.native-history.reconcile",
+      commandId: "native-reconcile",
+      threadId: "thread",
+      providerInstanceId: "pi",
+      expectedTurnId: "native-turn",
+      removedTurnIds: ["old-turn"],
+      createdAt: "2026-10-19T00:00:00.000Z",
+    }),
+  );
+});

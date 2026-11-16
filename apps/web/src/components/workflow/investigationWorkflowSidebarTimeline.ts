@@ -1,6 +1,6 @@
 import type {
   InvestigationPhaseStatus,
-  InvestigationWorkflow,
+  InvestigationWorkflowSummary as InvestigationWorkflow,
   ThreadId,
   WorkflowStepStatus,
 } from "@t3tools/contracts";

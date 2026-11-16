@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import { ProjectId, TrimmedNonEmptyString } from "./baseSchemas";
 import { ProjectSettingsOverrides } from "./settings";
 import { ThreadEnvMode } from "./threadEnvMode";
+import { UpstreamProjectConfig } from "./upstreamPorts";
 
 export const F5_PROJECT_FILE_NAME = "f5.json";
 export const LEGACY_T3_PROJECT_FILE_NAME = "t3.json";
@@ -17,6 +18,7 @@ export type CheckedInProjectIconPath = typeof CheckedInProjectIconPath.Type;
 export const CheckedInProjectFile = Schema.Struct({
   $schema: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2_048))),
   iconPath: Schema.optionalKey(CheckedInProjectIconPath),
+  upstream: Schema.optionalKey(UpstreamProjectConfig),
   ...ProjectSettingsOverrides.fields,
 });
 export type CheckedInProjectFile = typeof CheckedInProjectFile.Type;
@@ -36,6 +38,7 @@ export const CheckedInProjectConfigDiagnosticField = Schema.Literals([
   "iconPath",
   "scripts",
   "mcpServers",
+  "upstream",
 ]);
 export type CheckedInProjectConfigDiagnosticField =
   typeof CheckedInProjectConfigDiagnosticField.Type;
@@ -57,6 +60,7 @@ export const ProjectCheckedInConfig = Schema.Struct({
   sourceFile: Schema.NullOr(CheckedInProjectFileName),
   defaultThreadEnvMode: Schema.NullOr(ThreadEnvMode),
   iconPath: Schema.NullOr(CheckedInProjectIconPath),
+  upstream: Schema.NullOr(UpstreamProjectConfig),
   diagnostics: Schema.Array(CheckedInProjectConfigDiagnostic),
 });
 export type ProjectCheckedInConfig = typeof ProjectCheckedInConfig.Type;

@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 
 import type { DraftThreadState } from "../composerDraftStore";
-import type { Thread } from "../types";
+import type { Thread, ThreadListItem } from "../types";
 import { sortThreadsByActivity } from "./threadOrdering";
 
 type ProjectDraftThread = DraftThreadState & {
@@ -64,12 +64,12 @@ export function buildLocalDraftThread(input: {
   };
 }
 
-export function getProjectThreadsWithDraft(input: {
+export function getProjectThreadsWithDraft<T extends ThreadListItem>(input: {
   readonly projectId: ProjectId;
-  readonly projectThreads: readonly Thread[];
+  readonly projectThreads: readonly T[];
   readonly draftThread?: ProjectDraftThread | null;
   readonly projectModel?: string | null;
-}): Thread[] {
+}): Array<T | Thread> {
   const filteredThreads = input.projectThreads.filter(
     (thread) => thread.projectId === input.projectId,
   );
@@ -90,14 +90,16 @@ export function getProjectThreadsWithDraft(input: {
   ];
 }
 
-export function getProjectActiveThreadsWithPinnedDraft(input: {
+export function getProjectActiveThreadsWithPinnedDraft<T extends ThreadListItem>(input: {
   readonly projectId: ProjectId;
-  readonly projectThreads: readonly Thread[];
+  readonly projectThreads: readonly T[];
   readonly draftThread?: ProjectDraftThread | null;
   readonly projectModel?: string | null;
-}): Thread[] {
+}): Array<T | Thread> {
   const activeThreads = sortThreadsByActivity(
-    getProjectThreadsWithDraft(input).filter((thread) => thread.archivedAt === null),
+    getProjectThreadsWithDraft(input).filter(
+      (thread) => thread.archivedAt === null && !thread.settledAt,
+    ),
   );
   const { draftThread } = input;
   if (!draftThread || draftThread.projectId !== input.projectId) {
@@ -120,12 +122,12 @@ export function getProjectActiveThreadsWithPinnedDraft(input: {
   return [draft, ...activeThreads.slice(0, draftIndex), ...activeThreads.slice(draftIndex + 1)];
 }
 
-export function getVisibleThreadsWithPinnedDraft(input: {
-  readonly threads: readonly Thread[];
+export function getVisibleThreadsWithPinnedDraft<T extends Pick<Thread, "id">>(input: {
+  readonly threads: readonly T[];
   readonly expanded: boolean;
   readonly previewLimit: number;
   readonly draftThreadId?: ThreadId | null;
-}): Thread[] {
+}): T[] {
   const { threads, expanded, previewLimit, draftThreadId } = input;
   if (expanded || threads.length <= previewLimit) {
     return [...threads];

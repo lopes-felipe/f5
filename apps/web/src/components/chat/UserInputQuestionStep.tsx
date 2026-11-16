@@ -11,6 +11,9 @@ import {
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
+import { fieldSurfaceClassName } from "~/components/ui/input";
+import ChatMarkdown from "../ChatMarkdown";
+import { useStableCallback } from "../../hooks/useStableCallback";
 
 /**
  * Where custom text answers are typed: an inline "Other…" field inside the
@@ -27,6 +30,8 @@ export type UserInputShortcutScope = "document" | "panel";
 
 interface UserInputQuestionStepProps {
   question: UserInputQuestion;
+  /** Resolves file links in the question text. */
+  cwd?: string | undefined;
   questionIndex: number;
   questionCount: number;
   selectedOptionLabels: readonly string[];
@@ -62,6 +67,7 @@ const PANEL_SCOPE_SELECTOR = '[data-user-input-shortcut-scope="panel"]';
 
 export function UserInputQuestionStep({
   question,
+  cwd,
   questionIndex,
   questionCount,
   selectedOptionLabels,
@@ -86,7 +92,7 @@ export function UserInputQuestionStep({
   const isMultiSelect = question.multiSelect === true;
   const isLastQuestion = questionIndex >= questionCount - 1;
   const hasOptions = question.options.length > 0;
-  const showInlineCustom = customMode === "inline";
+  const showInlineCustom = customMode === "inline" && question.allowCustomAnswer !== false;
   // A question without options can only be answered in free text.
   const customFieldOpen = showInlineCustom && (customOpen || !hasOptions);
   const customFieldRef = useRef<HTMLTextAreaElement | null>(null);
@@ -95,6 +101,8 @@ export function UserInputQuestionStep({
   // question switch inside the 200ms window doesn't fire `onAdvance()` with
   // an unrelated active question.
   const autoAdvanceQuestionIdRef = useRef<string | null>(null);
+  // Picking an option updates the draft before the timer fires.
+  const advance = useStableCallback(onAdvance);
 
   const clearAutoAdvance = useCallback(() => {
     if (autoAdvanceTimerRef.current !== null) {
@@ -110,8 +118,8 @@ export function UserInputQuestionStep({
   // so selecting option 1 on question A and immediately navigating to
   // question B doesn't fire the advance callback against B's context.
   useEffect(() => {
-    if (autoAdvanceQuestionIdRef.current !== question.id) clearAutoAdvance();
-  }, [clearAutoAdvance, question.id]);
+    if (disabled || autoAdvanceQuestionIdRef.current !== question.id) clearAutoAdvance();
+  }, [clearAutoAdvance, disabled, question.id]);
 
   const selectOptionAndAutoAdvance = useCallback(
     (optionLabel: string) => {
@@ -129,10 +137,10 @@ export function UserInputQuestionStep({
           return;
         }
         autoAdvanceQuestionIdRef.current = null;
-        onAdvance();
+        advance();
       }, AUTO_ADVANCE_DELAY_MS);
     },
-    [clearAutoAdvance, isLastQuestion, onAdvance, onSelectOption, question.id, suppressAutoSubmit],
+    [advance, clearAutoAdvance, isLastQuestion, onSelectOption, question.id, suppressAutoSubmit],
   );
 
   const pickOption = useCallback(
@@ -291,7 +299,9 @@ export function UserInputQuestionStep({
         ) : null}
       </div>
       <div hidden={collapsed}>
-        <p className="mt-1.5 text-sm text-foreground">{question.question}</p>
+        <div className="mt-1.5 text-sm">
+          <ChatMarkdown text={question.question} cwd={cwd} />
+        </div>
         {hasOptions ? (
           <div className="mt-3 space-y-1">
             {question.options.map((option, index) => {
@@ -328,7 +338,10 @@ export function UserInputQuestionStep({
             rows={1}
             aria-label={`Other answer: ${question.question}`}
             placeholder={`Type your answer… (Enter to ${isLastQuestion ? "send" : "continue"}, Shift+Enter for a new line)`}
-            className="mt-2 field-sizing-content max-h-24 min-h-8 w-full resize-none rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 disabled:opacity-50"
+            className={cn(
+              fieldSurfaceClassName,
+              "mt-2 field-sizing-content max-h-24 min-h-8 w-full resize-none px-3 py-1.5 text-sm",
+            )}
             disabled={disabled}
             value={customAnswer}
             onChange={(event) => onCustomAnswerChange?.(event.target.value)}
@@ -339,7 +352,7 @@ export function UserInputQuestionStep({
             }}
           />
         ) : null}
-        {customMode === "composer" ? (
+        {customMode === "composer" && question.allowCustomAnswer !== false ? (
           <p className="mt-2 text-xs text-muted-foreground">
             Or type your own answer in the composer
           </p>

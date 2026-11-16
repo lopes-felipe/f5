@@ -1,7 +1,38 @@
-import type { OrchestrationReadModel, ProjectId, ThreadId } from "@t3tools/contracts";
+import { makeCommitSideEffects } from "../commitSideEffects.ts";
+import { hydrateDeciderReadModel, withoutDeletedThreadDetails } from "../deciderReadModel.ts";
+import { coldThreadIdsOf, eventThreadId, withThreadActivities } from "../coldThreadActivities.ts";
+import { ProviderControlTarget } from "../../provider/controlTarget.ts";
+import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
+import {
+  makeCommandAdmission,
+  LosslessCommandAdmission,
+  isControlCommand,
+  isControlEvent,
+} from "../commandAdmission.ts";
+import { readPersistedSessionGeneration } from "../../provider/sessionCapabilities.ts";
+import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
+import { registerShutdown, AcceptedShutdownWork } from "../../shutdown.ts";
+import {
+  WorkspaceWriteContext,
+  type WorkspaceWrite,
+} from "../../project/workspaceTransitionContext.ts";
+import { WorkspaceTransitions } from "../../persistence/Services/WorkspaceTransitions.ts";
+import { assertWorktreeReady, WorktreeInspectionError } from "../../project/worktreeReadiness.ts";
+import { GitCore } from "../../git/Services/GitCore.ts";
+import type {
+  OrchestrationReadModel,
+  OrchestrationThread,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
-import { canonicalRequestHash } from "../../nextTurnQueue/canonicalRequestHash.ts";
-import { OrchestrationCommand, OrchestrationEvent } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  MessageId,
+  OrchestrationCommand,
+  OrchestrationEvent,
+} from "@t3tools/contracts";
 import {
   Cause,
   Deferred,
@@ -12,13 +43,23 @@ import {
   Metric,
   Option,
   PubSub,
-  Queue,
   Schema,
+  Semaphore,
+  ServiceMap,
   Stream,
 } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as NodeFS from "node:fs/promises";
+import * as NodePath from "node:path";
+import {
+  isScratchProject,
+  isScratchThreadFolder,
+  scratchThreadFolderName,
+} from "@t3tools/shared/scratchProject";
 
 import {
+  PerformanceStageProbe,
+  measurePerformanceStage,
   metricAttributes,
   orchestrationCommandAckDuration,
   orchestrationCommandsTotal,
@@ -28,6 +69,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
+  OrchestrationOverloadError,
   OrchestrationCommandIdConflictError,
   OrchestrationCommandInvariantError,
   ThreadTurnNotReadyError,
@@ -35,11 +77,13 @@ import {
   type OrchestrationDispatchError,
 } from "../Errors.ts";
 import { decideOrchestrationCommand, GLOBAL_PIN_AGGREGATE_ID } from "../decider.ts";
+import { observeReadModelRetention } from "../readModelRetention.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
+  type ControlOrigin,
 } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -49,8 +93,17 @@ import { withStartupPhaseTiming } from "../../startupTiming.ts";
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
+  workspaceWrite?: WorkspaceWrite | null;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
+  admissionOrder: number;
+  controlCommitted?: boolean;
+  controlCommittedAt?: number;
+  controlClaimed?: boolean;
+  controlExpired?: boolean;
+  controlOrigin?: ControlOrigin;
+  controlFinished?: Deferred.Deferred<void, OrchestrationOverloadError>;
+  workspace?: { path: string; branch: string | null; projectCwd: string };
 }
 
 function commandToAggregateRef(command: OrchestrationCommand): {
@@ -59,6 +112,7 @@ function commandToAggregateRef(command: OrchestrationCommand): {
 } {
   switch (command.type) {
     case "project.create":
+    case "project.scratch.create":
     case "project.meta.update":
     case "project.delete":
     case "project.memory.save":
@@ -68,6 +122,8 @@ function commandToAggregateRef(command: OrchestrationCommand): {
     case "project.workflow.create":
     case "project.workflow.delete":
     case "project.workflow.upsert":
+    case "project.workflow.archive":
+    case "project.workflow.unarchive":
     case "project.code-review-workflow.create":
     case "project.code-review-workflow.delete":
     case "project.code-review-workflow.upsert":
@@ -89,31 +145,209 @@ function commandToAggregateRef(command: OrchestrationCommand): {
   }
 }
 
-/** Queue pauses the user or environment chose, which a conversation revert must not undo. */
-const QUEUE_PAUSES_KEPT_ACROSS_REVERT: ReadonlySet<string> = new Set([
-  "manual_pause",
-  "thread_archived",
-  "worktree_missing",
-]);
+function controlCommandConflict(existing: CommandEnvelope, command: OrchestrationCommand) {
+  const accepted = commandToAggregateRef(existing.command);
+  const incoming = commandToAggregateRef(command);
+  return accepted.aggregateKind === incoming.aggregateKind &&
+    accepted.aggregateId === incoming.aggregateId
+    ? undefined
+    : new OrchestrationCommandIdConflictError({
+        commandId: command.commandId,
+        receiptAggregateKind: accepted.aggregateKind,
+        receiptAggregateId: accepted.aggregateId,
+        commandAggregateKind: incoming.aggregateKind,
+        commandAggregateId: incoming.aggregateId,
+      });
+}
+
+/** Only unclaimed control delivery expires; a running side effect keeps its lease. */
+export const ControlDeliveryClock = ServiceMap.Reference<() => number>(
+  "f5/orchestration/ControlDeliveryClock",
+  { defaultValue: () => Date.now },
+);
+const CONTROL_DELIVERY_TIMEOUT_MS = 30_000;
 
 const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const transitions = yield* Effect.serviceOption(WorkspaceTransitions);
   const queueStore = yield* Effect.serviceOption(NextTurnQueueStore);
+  const commitSideEffects = makeCommitSideEffects({ sql, transitions, queueStore });
   const eventStore = yield* OrchestrationEventStore;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const workspaceGit = yield* Effect.serviceOption(GitCore);
   const maintenanceLock = yield* makeStorageMaintenanceLock;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
+  const sessionDirectory = yield* Effect.serviceOption(ProviderSessionDirectory);
   const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
 
   let readModel = createEmptyReadModel(new Date().toISOString());
+  const nativeReconciledThreads = new Set<string>();
+  let hasDeletedThreads = false;
+  // Threads whose activity history is still only in SQLite (coldThreadActivities.ts).
+  const coldThreadIds = new Set<ThreadId>();
+  // A command reads `readModel`, works on a copy and replaces it; an on-demand
+  // load replaces it too. Each holds this permit from its first read to its
+  // write, so neither overwrites the other with a model it read earlier.
+  const readModelWrites = Semaphore.makeUnsafe(1);
 
-  const commandQueue = yield* Queue.unbounded<CommandEnvelope>();
+  type ColdLoadReason = "event" | "replay" | "on-demand";
+
+  /**
+   * Reads the retained activities of the cold threads among `threadIds`. A
+   * deleted thread holds no history in memory, so it gets none and reads nothing.
+   */
+  const readColdThreadActivities = (threadIds: Iterable<ThreadId>) =>
+    Effect.gen(function* () {
+      const loaded = new Map<ThreadId, OrchestrationThread["activities"]>();
+      const read = projectionSnapshotQuery.getRetainedThreadActivities;
+      if (!read || coldThreadIds.size === 0) return loaded;
+      for (const threadId of new Set(threadIds)) {
+        if (!coldThreadIds.has(threadId)) continue;
+        const thread = readModel.threads.find((entry) => entry.id === threadId);
+        loaded.set(threadId, !thread || thread.deletedAt !== null ? [] : yield* read(threadId));
+      }
+      return loaded;
+    });
+
+  /**
+   * Puts loaded activities into `readModel`, for the threads that are still
+   * cold, and keeps them for the rest of the run. Callers hold `readModelWrites`.
+   * Each load is logged with its reason: the memory saved at startup lasts
+   * only while archived threads stay cold.
+   */
+  const keepColdThreadActivities = (
+    loaded: ReadonlyMap<ThreadId, OrchestrationThread["activities"]>,
+    reason: ColdLoadReason,
+  ) =>
+    Effect.suspend(() => {
+      const fresh = new Map([...loaded].filter(([threadId]) => coldThreadIds.has(threadId)));
+      if (fresh.size === 0) return Effect.void;
+      readModel = withThreadActivities(readModel, fresh);
+      let activities = 0;
+      for (const [threadId, entries] of fresh) {
+        coldThreadIds.delete(threadId);
+        activities += entries.length;
+      }
+      return Effect.logInfo("loaded activities of threads archived before startup", {
+        reason,
+        threads: fresh.size,
+        activities,
+        coldThreads: coldThreadIds.size,
+      });
+    });
+
+  /** Reads and keeps in one step. Callers hold `readModelWrites`. */
+  const warmThreads = (threadIds: Iterable<ThreadId>, reason: ColdLoadReason) =>
+    readColdThreadActivities(threadIds).pipe(
+      Effect.flatMap((loaded) => keepColdThreadActivities(loaded, reason)),
+    );
+
+  /**
+   * Publishes the read model that results from `events`. A cold thread an
+   * event reached was projected from its partial activities, so they are
+   * replaced by what SQLite holds, which includes the event. This covers a
+   * command on the thread and an event no command named, such as a workflow
+   * restoring its threads. A failed load leaves the thread cold, still flagged
+   * `activitiesOmitted`, and the next event or reader retries it.
+   */
+  const publishReadModel = (
+    next: OrchestrationReadModel,
+    events: ReadonlyArray<OrchestrationEvent>,
+  ) =>
+    Effect.gen(function* () {
+      hasDeletedThreads ||= events.some((event) => event.type === "thread.deleted");
+      readModel = hasDeletedThreads ? withoutDeletedThreadDetails(next) : next;
+      if (coldThreadIds.size === 0) return;
+      yield* warmThreads(
+        events.flatMap((event) => eventThreadId(event) ?? []),
+        "event",
+      ).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to load activities for a cold thread after commit", {
+            cause,
+          }),
+        ),
+      );
+    });
+
+  const controlNow = yield* ControlDeliveryClock;
+  const admission = yield* makeCommandAdmission<CommandEnvelope>();
+  const controlReservations = new Map<string, CommandEnvelope>();
+  let admissionOrder = 0;
+  let accepting = true;
+  const stoppedSequences = new Map<string, number>();
+  const releaseControl = (commandId: string) =>
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        const envelope = controlReservations.get(commandId);
+        if (!envelope) return;
+        controlReservations.delete(commandId);
+        yield* admission.release(envelope);
+        if (envelope.controlFinished) yield* Deferred.succeed(envelope.controlFinished, undefined);
+      }),
+    );
+  const releaseEnvelopeAdmission = (envelope: CommandEnvelope) =>
+    envelope.controlCommitted
+      ? Effect.void
+      : isControlCommand(envelope.command)
+        ? releaseControl(envelope.command.commandId)
+        : admission.release(envelope);
+  yield* registerShutdown("orchestration-admission", "admission", () =>
+    Effect.sync(() => {
+      accepting = false;
+    }),
+  );
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      yield* admission.close;
+      for (const envelope of admission.pending()) {
+        yield* Deferred.fail(
+          envelope.result,
+          new OrchestrationOverloadError({
+            lane: isControlCommand(envelope.command) ? "control" : "ordinary",
+            reason: "closed",
+          }),
+        );
+        if (envelope.controlFinished)
+          yield* Deferred.fail(
+            envelope.controlFinished,
+            new OrchestrationOverloadError({ lane: "control", reason: "closed" }),
+          );
+        yield* admission.release(envelope);
+      }
+      controlReservations.clear();
+    }),
+  );
+  const probe = yield* PerformanceStageProbe;
   const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
+
+  const readSteerFallback = (command: OrchestrationCommand) =>
+    Effect.gen(function* () {
+      if (command.type !== "thread.turn.start" && command.type !== "thread.turn.steer")
+        return false;
+      const rows = yield* sql<{
+        readonly event: string;
+      }>`SELECT d.event_json AS event FROM provider_turn_deliveries d JOIN next_turn_queue q ON q.command_id = d.command_id WHERE d.command_id = ${command.commandId} AND d.thread_id = ${command.threadId} AND d.state = 'rejected' AND d.certainty = 'not_sent' AND q.last_error_code = 'steer_queued' AND q.deleted_at IS NULL`;
+      return rows.some(
+        (row) =>
+          Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrationEvent))(row.event).type ===
+          "thread.turn-steer-requested",
+      );
+    }).pipe(Effect.mapError(toPersistenceSqlError("OrchestrationEngine.readSteerFallback")));
+  const workspaceWaitError = (
+    command: Extract<OrchestrationCommand, { type: "thread.turn.start" | "thread.turn.steer" }>,
+    detail: string,
+  ) => new ThreadTurnNotReadyError({ threadId: command.threadId, detail });
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
     const dispatchStartSequence = readModel.snapshotSequence;
+    // Events this dispatch appended. Reconcile republishes only these: a
+    // shared state directory can contain events another server already
+    // handled, and republishing them starts a second provider turn.
+    const appendedEventIds = new Set<OrchestrationEvent["eventId"]>();
+    let commandReadModel = readModel;
     const processingStartedAtMs = Date.now();
     const aggregateRef = commandToAggregateRef(envelope.command);
     const baseMetricAttributes = {
@@ -128,14 +362,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         return;
       }
 
-      let nextReadModel = readModel;
+      let nextReadModel = commandReadModel;
       for (const persistedEvent of persistedEvents) {
         nextReadModel = yield* projectEvent(nextReadModel, persistedEvent);
       }
-      readModel = nextReadModel;
+      yield* publishReadModel(nextReadModel, persistedEvents);
 
       for (const persistedEvent of persistedEvents) {
-        yield* PubSub.publish(eventPubSub, persistedEvent);
+        if (appendedEventIds.has(persistedEvent.eventId)) {
+          yield* PubSub.publish(eventPubSub, persistedEvent);
+        }
       }
     });
 
@@ -151,19 +387,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const existingReceipt = yield* commandReceiptRepository.getByCommandId({
           commandId: envelope.command.commandId,
         });
-        const fallbackRows =
-          (envelope.command.type === "thread.turn.start" ||
-            envelope.command.type === "thread.turn.steer") &&
-          Option.isSome(existingReceipt)
-            ? yield* sql<{
-                readonly event: string;
-              }>`SELECT d.event_json AS event FROM provider_turn_deliveries d JOIN next_turn_queue q ON q.command_id = d.command_id WHERE d.command_id = ${envelope.command.commandId} AND d.thread_id = ${envelope.command.threadId} AND d.state = 'rejected' AND d.certainty = 'not_sent' AND q.last_error_code = 'steer_queued' AND q.deleted_at IS NULL`
-            : [];
-        const steerFallback = fallbackRows.some(
-          (row) =>
-            Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrationEvent))(row.event).type ===
-            "thread.turn-steer-requested",
-        );
+        const steerFallback =
+          Option.isSome(existingReceipt) && (yield* readSteerFallback(envelope.command));
         if (Option.isSome(existingReceipt) && !steerFallback) {
           const receipt = existingReceipt.value;
           let matchesAggregate =
@@ -203,6 +428,27 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             });
           }
           if (existingReceipt.value.status === "accepted") {
+            const command = envelope.command;
+            if (
+              (command.type === "project.workflow.delete" ||
+                command.type === "project.code-review-workflow.delete" ||
+                command.type === "project.investigation-workflow.delete") &&
+              command.deleteThreads === true
+            ) {
+              const rows = yield* sql<{ threadId: ThreadId }>`
+                SELECT stream_id AS "threadId" FROM orchestration_events
+                WHERE command_id = ${command.commandId}
+                  AND sequence <= ${receipt.resultSequence}
+                  AND event_type = 'thread.deleted'
+                ORDER BY sequence
+              `.pipe(
+                Effect.mapError(toPersistenceSqlError("OrchestrationEngine.readDeletedThreadIds")),
+              );
+              return {
+                sequence: receipt.resultSequence,
+                deletedThreadIds: rows.map((row) => row.threadId),
+              };
+            }
             return {
               sequence: existingReceipt.value.resultSequence,
             };
@@ -213,10 +459,38 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        const command = envelope.command;
+        if ("threadId" in command && nativeReconciledThreads.has(command.threadId)) {
+          const turnId =
+            "turnId" in command
+              ? command.turnId
+              : command.type === "thread.activity.append"
+                ? command.activity.turnId
+                : command.type === "thread.proposed-plan.upsert"
+                  ? command.proposedPlan.turnId
+                  : command.type === "thread.command-execution.record"
+                    ? command.commandExecution.turnId
+                    : command.type === "thread.file-change.record"
+                      ? command.fileChange.turnId
+                      : command.type === "thread.session.set"
+                        ? (command.session.activeTurnId ?? command.settledTurnId)
+                        : undefined;
+          if (
+            turnId &&
+            (yield* sql`SELECT 1 FROM native_history_retired_turns WHERE thread_id = ${command.threadId} AND turn_id = ${turnId}`)
+              .length
+          )
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "This turn was retired by verified native history reconciliation.",
+            });
+        }
+
         if (
           envelope.command.type === "thread.turn.start" ||
           envelope.command.type === "thread.turn.steer" ||
-          envelope.command.type === "thread.conversation.revert"
+          envelope.command.type === "thread.conversation.revert" ||
+          envelope.command.type === "thread.native-history.reconcile"
         ) {
           const active = yield* sql<{
             readonly operationId: string;
@@ -291,9 +565,157 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               detail: "That rewind identifier belongs to a different request.",
             });
         }
+        if (
+          envelope.command.type === "thread.turn.start" ||
+          envelope.command.type === "thread.turn.steer"
+        ) {
+          const command = envelope.command;
+          const thread = readModel.threads.find((entry) => entry.id === command.threadId);
+          if (
+            Option.isSome(queueStore) &&
+            (yield* queueStore.value.listByThread(command.threadId)).state.worktreeBlockToken
+          )
+            return yield* workspaceWaitError(
+              command,
+              "Workspace preparation is still in progress. Wait for it to finish.",
+            );
+          if (thread?.worktreePath || envelope.workspace) {
+            const project = readModel.projects.find(
+              (entry) => entry.id === thread?.projectId && entry.deletedAt === null,
+            );
+            if (
+              !thread ||
+              !envelope.workspace ||
+              envelope.workspace.path !== thread.worktreePath ||
+              envelope.workspace.branch !== thread.branch ||
+              envelope.workspace.projectCwd !== project?.workspaceRoot
+            )
+              return yield* workspaceWaitError(
+                command,
+                "The workspace changed during verification. Retry the request.",
+              );
+          }
+        }
+
+        const checkWorkspaceBarrier = Effect.gen(function* () {
+          const command = envelope.command;
+          if (!("threadId" in command)) return;
+          const changingWorkspace =
+            command.type === "thread.meta.update" &&
+            (command.branch !== undefined || command.worktreePath !== undefined);
+          const executing =
+            command.type === "thread.turn.start" ||
+            command.type === "thread.turn.steer" ||
+            command.type === "thread.checkpoint.revert" ||
+            command.type === "thread.conversation.revert" ||
+            command.type === "thread.compact.request" ||
+            command.type === "thread.approval.respond" ||
+            command.type === "thread.user-input.respond";
+          if (!changingWorkspace && !executing) return;
+          const active = Option.isSome(transitions)
+            ? yield* transitions.value.forThread(command.threadId, true).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new OrchestrationCommandInvariantError({
+                      commandType: command.type,
+                      detail: error.message,
+                    }),
+                ),
+              )
+            : null;
+          if (active && active.operationId !== envelope.workspaceWrite?.operationId)
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "A workspace transition must be resolved before continuing.",
+            });
+          if (!changingWorkspace || command.type !== "thread.meta.update") return;
+          const thread = readModel.threads.find((entry) => entry.id === command.threadId);
+          const changed =
+            thread &&
+            ((command.branch !== undefined && command.branch !== thread.branch) ||
+              (command.worktreePath !== undefined && command.worktreePath !== thread.worktreePath));
+          if (!changed) return;
+          const write = envelope.workspaceWrite;
+          if (
+            !write ||
+            !thread ||
+            thread.branch !== write.expected.branch ||
+            thread.worktreePath !== write.expected.worktreePath ||
+            (!write.operationId &&
+              !write.observation &&
+              (thread.session?.updatedAt ?? null) !== write.expected.sessionUpdatedAt)
+          )
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "Workspace changes require a verified transition and unchanged context.",
+            });
+          const token =
+            write.operationId && active && Option.isSome(queueStore)
+              ? (yield* queueStore.value.listByThread(command.threadId)).state.worktreeBlockToken
+              : undefined;
+          if (
+            token !== undefined &&
+            active &&
+            token !== active.setupOwnerToken &&
+            !(token === null && active.setupOwnerToken !== null && active.setupOwnerOperationId)
+          )
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "Workspace setup ownership changed before metadata commit.",
+            });
+          if (
+            write.operationId &&
+            (!active || active.phase !== "applied" || active.version !== write.version)
+          )
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "The workspace transition changed before metadata commit.",
+            });
+        });
+        yield* checkWorkspaceBarrier;
+
+        if (
+          envelope.command.type === "project.meta.update" &&
+          envelope.command.workspaceRoot !== undefined
+        ) {
+          const command = envelope.command;
+          const project = readModel.projects.find((entry) => entry.id === command.projectId);
+          if (
+            project &&
+            project.workspaceRoot !== command.workspaceRoot &&
+            readModel.threads.some(
+              (thread) => thread.projectId === project.id && thread.deletedAt === null,
+            )
+          )
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail:
+                "Conversations still reference this project workspace. Create a separate project for the new workspace.",
+            });
+        }
+        const nativeRemovedMessageIds =
+          envelope.command.type === "thread.native-history.reconcile" &&
+          envelope.command.removedTurnIds.length
+            ? (yield* sql<{ pendingMessageId: string | null; assistantMessageId: string | null }>`
+              SELECT pending_message_id AS "pendingMessageId", assistant_message_id AS "assistantMessageId"
+              FROM projection_turns WHERE thread_id = ${envelope.command.threadId}
+                AND ${sql.in("turn_id", envelope.command.removedTurnIds)}
+            `).flatMap((row) =>
+                [row.pendingMessageId, row.assistantMessageId].flatMap((id) =>
+                  id ? [MessageId.make(id)] : [],
+                ),
+              )
+            : [];
+        if (hasDeletedThreads && projectionSnapshotQuery.getRetainedThreadDetails)
+          commandReadModel = yield* hydrateDeciderReadModel(
+            readModel,
+            envelope.command,
+            projectionSnapshotQuery.getRetainedThreadDetails,
+          );
         const eventBase = yield* decideOrchestrationCommand({
+          nativeRemovedMessageIds,
           command: envelope.command,
-          readModel,
+          readModel: commandReadModel,
           ...(envelope.command.type === "thread.turn.start" && providerRegistry._tag === "Some"
             ? { providerInstances: yield* providerRegistry.value.getProviders }
             : {}),
@@ -302,6 +724,42 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              yield* checkWorkspaceBarrier;
+              if (envelope.command.type === "thread.settle") {
+                const command = envelope.command;
+                const [blocked] = yield* sql<{
+                  request: number;
+                  queued: number;
+                  background: number;
+                  scripts: number;
+                  watch: number;
+                }>`SELECT
+                  (EXISTS(SELECT 1 FROM projection_pending_approvals WHERE thread_id=${command.threadId} AND status='pending')
+                    OR EXISTS(SELECT 1 FROM projection_pending_user_inputs WHERE thread_id=${command.threadId} AND resolution IS NULL)) AS request,
+                  (EXISTS(SELECT 1 FROM next_turn_queue WHERE thread_id=${command.threadId} AND deleted_at IS NULL)
+                    OR EXISTS(SELECT 1 FROM next_turn_queue_quarantine WHERE thread_id=${command.threadId})
+                    OR EXISTS(SELECT 1 FROM next_turn_queue_state WHERE thread_id=${command.threadId} AND worktree_block_token IS NOT NULL)) AS queued,
+                  EXISTS(SELECT 1 FROM projection_thread_background_work WHERE thread_id=${command.threadId} AND active=1) AS background,
+                  EXISTS(SELECT 1 FROM thread_settlement_hooks WHERE thread_id=${command.threadId} AND state IN ('pending','running','orphaned')) AS scripts,
+                  (${command.settledBy === "auto" ? 1 : 0}=1 AND EXISTS(SELECT 1 FROM thread_pull_request_watches WHERE thread_id=${command.threadId})) AS watch`;
+                // The reason is shown to the user, so it names what to clear first.
+                const blocker = blocked?.request
+                  ? "This thread is waiting on an approval or question. Answer it before settling."
+                  : blocked?.queued
+                    ? "This thread has a queued message. Send it or remove it from the queue before settling."
+                    : blocked?.background
+                      ? "This thread still has background work running. Stop it before settling."
+                      : blocked?.scripts
+                        ? "Settlement scripts from an earlier settle are still running or need attention."
+                        : blocked?.watch
+                          ? "This thread is watching a pull request."
+                          : null;
+                if (blocker !== null)
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: command.type,
+                    detail: blocker,
+                  });
+              }
               if (
                 envelope.command.type === "thread.turn.start" &&
                 envelope.command.dispatchSource === "next-turn-queue"
@@ -321,199 +779,42 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                   });
               }
               const committedEvents: OrchestrationEvent[] = [];
-              let nextReadModel = readModel;
+              let nextReadModel = commandReadModel;
 
               for (const nextEvent of eventBases) {
-                const savedEvent = yield* eventStore.append(nextEvent);
-                nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
-                yield* projectionPipeline.projectEvent(savedEvent);
-                if (savedEvent.type === "thread.session-stop-requested") {
-                  // Commit cancellation with the stop intent: a crash before live
-                  // subscribers run must never revive an unsent continuation.
-                  yield* sql`UPDATE usage_limit_resumes SET state = 'cancelled',
-                    updated_at = ${savedEvent.occurredAt}
-                    WHERE thread_id = ${savedEvent.payload.threadId} AND state = 'scheduled'`;
-                  const cancelled = yield* sql<{ submissionId: string }>`
-                    UPDATE next_turn_queue SET deleted_at = ${savedEvent.occurredAt},
-                      updated_at = ${savedEvent.occurredAt}
-                    WHERE thread_id = ${savedEvent.payload.threadId}
-                      AND schedule_reason = 'usage_limit_reset'
-                      AND status = 'queued' AND deleted_at IS NULL
-                    RETURNING submission_id AS "submissionId"
-                  `;
-                  for (const item of cancelled) {
-                    yield* sql`UPDATE turn_submissions SET disposition = 'canceled',
-                      reason_code = 'session_stopped', settled_at = ${savedEvent.occurredAt}
-                      WHERE submission_id = ${item.submissionId} AND disposition IN ('pending', 'queued')`;
-                  }
-                  if (cancelled.length > 0)
-                    yield* sql`UPDATE next_turn_queue_state SET revision = revision + 1,
-                      updated_at = ${savedEvent.occurredAt} WHERE thread_id = ${savedEvent.payload.threadId}`;
-                }
-                if (savedEvent.type === "thread.message-sent") {
-                  yield* Effect.forEach(
-                    savedEvent.payload.attachments ?? [],
-                    (attachment) =>
-                      Effect.gen(function* () {
-                        yield* sql`
-                          DELETE FROM attachment_owners
-                          WHERE attachment_id = ${attachment.id}
-                            AND owner_kind IN ('ingress', 'queue_item')
-                        `;
-                        yield* sql`
-                          INSERT OR IGNORE INTO attachment_owners (
-                            attachment_id, owner_kind, owner_id, created_at
-                          ) VALUES (
-                            ${attachment.id}, 'message', ${savedEvent.payload.messageId},
-                            ${savedEvent.occurredAt}
-                          )
-                        `;
-                      }),
-                    { concurrency: 1, discard: true },
-                  );
-                }
-                if (
-                  savedEvent.type === "thread.turn-start-requested" ||
-                  savedEvent.type === "thread.turn-steer-requested"
-                ) {
-                  const eventJson = Schema.encodeSync(Schema.fromJsonString(OrchestrationEvent))(
-                    savedEvent,
-                  );
-                  if (steerFallback)
-                    yield* sql`UPDATE provider_turn_deliveries SET event_json = ${eventJson}, state = 'pending', provider_turn_id = NULL, attempt = 0, error_code = NULL, error_detail = NULL, certainty = NULL, not_before = NULL, outcome_projected_at = NULL WHERE command_id = ${savedEvent.commandId} AND state = 'rejected' AND certainty = 'not_sent'`;
-                  yield* sql`
-                    INSERT OR IGNORE INTO provider_turn_deliveries (
-                      delivery_id, thread_id, command_id, message_id, state, attempt,
-                      pre_send_turn_ids_json, event_json, created_at, updated_at
-                    ) VALUES (
-                      ${savedEvent.commandId}, ${savedEvent.payload.threadId},
-                      ${savedEvent.commandId}, ${savedEvent.payload.messageId}, 'pending', 0,
-                      '[]', ${eventJson}, ${savedEvent.occurredAt}, ${savedEvent.occurredAt}
-                    )
-                  `;
-                }
-                if (savedEvent.type === "thread.user-input-resolved") {
-                  const command = savedEvent.payload.command;
-                  if (command) {
-                    if (Option.isNone(queueStore))
-                      return yield* new OrchestrationCommandInvariantError({
-                        commandType: envelope.command.type,
-                        detail: "The durable answer queue is unavailable.",
-                      });
-                    yield* queueStore.value
-                      .insertSubmission({
-                        submissionId: command.commandId,
-                        itemId: command.commandId,
-                        requestHash: canonicalRequestHash(command),
-                        command,
-                        atHead: command.expectedTurnId !== undefined,
-                      })
-                      .pipe(
-                        Effect.mapError(
-                          (error) =>
-                            new OrchestrationCommandInvariantError({
-                              commandType: envelope.command.type,
-                              detail: error.message,
-                            }),
-                        ),
-                      );
-                    for (const attachment of savedEvent.payload.attachments ?? [])
-                      yield* sql`DELETE FROM attachment_owners WHERE attachment_id = ${attachment.id} AND owner_kind = 'ingress' AND owner_id = ${savedEvent.commandId}`;
-                  } else
-                    for (const attachment of savedEvent.payload.attachments ?? []) {
-                      yield* sql`DELETE FROM attachment_owners WHERE attachment_id = ${attachment.id} AND owner_kind = 'ingress' AND owner_id = ${savedEvent.commandId}`;
-                      yield* sql`INSERT OR IGNORE INTO attachment_owners VALUES (${attachment.id}, 'user_input', ${savedEvent.payload.requestId}, ${savedEvent.occurredAt})`;
-                    }
-                }
-                if (savedEvent.type === "thread.rewind-draft-resolved") {
-                  const { operationId, threadId } = savedEvent.payload;
-                  if (savedEvent.payload.intent === "cancel") {
-                    // Cancel an untouched rewind, or an uncertain native file rewind explicitly acknowledged after stopping the provider.
-                    // Prepared rewinds have not changed provider history. Give the prompt's attachments back to its
-                    // message, restore the queue, and unblock the thread. Deleting the
-                    // request row also stops a Retry still queued behind the rewind
-                    // gate, and a run that already loaded the operation loses its
-                    // conditional claim of `provider-pending` against this delete.
-                    const pending = (yield* sql<{
-                      target_message_id: string;
-                    }>`SELECT target_message_id FROM rewind_operations WHERE operation_id = ${operationId} AND thread_id = ${threadId} AND (state = 'prepared' OR (mode = 'conversation-and-files' AND state = 'reconciliation-required' AND EXISTS (SELECT 1 FROM native_operations WHERE operation_id = ${`native-files:${operationId}`} AND thread_id = ${threadId} AND state = 'cancelled')))`)[0];
-                    if (!pending)
-                      return yield* new OrchestrationCommandInvariantError({
-                        commandType: envelope.command.type,
-                        detail:
-                          "This rewind is already in progress or finished and can no longer be cancelled.",
-                      });
-                    yield* sql`INSERT OR IGNORE INTO attachment_owners(attachment_id, owner_kind, owner_id, created_at) SELECT attachment_id, 'message', ${pending.target_message_id}, ${savedEvent.occurredAt} FROM attachment_owners WHERE owner_kind = 'rewind_draft' AND owner_id = ${operationId}`;
-                    yield* sql`DELETE FROM attachment_owners WHERE owner_kind = 'rewind_draft' AND owner_id = ${operationId}`;
-                    const saved = (yield* sql<{
-                      state: string | null;
-                    }>`SELECT queue_state_json AS state FROM rewind_requests WHERE operation_id = ${operationId}`)[0];
-                    const prior = saved?.state
-                      ? (JSON.parse(saved.state) as {
-                          paused: number;
-                          pause_reason_code: string | null;
-                          pause_detail: string | null;
-                        })
-                      : { paused: 0, pause_reason_code: null, pause_detail: null };
-                    // Only the pauses this rewind set; another pause (for example a
-                    // checkpoint revert) must survive the cancel.
-                    yield* sql`UPDATE next_turn_queue_state SET paused = ${prior.paused}, pause_reason_code = ${prior.pause_reason_code}, pause_detail = ${prior.pause_detail}, revision = revision + 1 WHERE thread_id = ${threadId} AND pause_reason_code IN ('rewind_in_progress', 'reconciliation_required')`;
-                    yield* sql`DELETE FROM rewind_requests WHERE operation_id = ${operationId}`;
-                    yield* sql`DELETE FROM rewind_operations WHERE operation_id = ${operationId}`;
-                  } else {
-                    const draft =
-                      yield* sql`SELECT operation_id FROM rewind_operations WHERE operation_id = ${operationId} AND thread_id = ${threadId} AND state = 'completed'`;
-                    if (!draft.length)
-                      return yield* new OrchestrationCommandInvariantError({
-                        commandType: envelope.command.type,
-                        detail: "This rewind draft is not ready.",
-                      });
-                    yield* sql`DELETE FROM attachment_owners WHERE owner_kind = 'rewind_draft' AND owner_id = ${operationId} AND attachment_id IN (SELECT attachment_id FROM attachments WHERE thread_id = ${threadId})`;
-                    yield* sql`UPDATE rewind_operations SET draft_resolved_at = ${savedEvent.occurredAt} WHERE operation_id = ${operationId} AND thread_id = ${threadId} AND state = 'completed'`;
-                  }
-                }
-                if (savedEvent.type === "thread.reverted" && savedEvent.payload.operationId) {
-                  const { operationId, threadId } = savedEvent.payload;
-                  yield* sql`DELETE FROM restart_turn_markers WHERE thread_id = ${threadId}`;
-                  const saved = (yield* sql<{
-                    state: string | null;
-                  }>`SELECT queue_state_json AS state FROM rewind_requests WHERE operation_id = ${operationId}`)[0];
-                  const prior = saved?.state
-                    ? (JSON.parse(saved.state) as {
-                        paused: number;
-                        pause_reason_code: string | null;
-                        pause_detail: string | null;
-                      })
-                    : { paused: 0, pause_reason_code: null, pause_detail: null };
-                  const queued =
-                    yield* sql`SELECT 1 FROM next_turn_queue WHERE thread_id = ${threadId} AND deleted_at IS NULL LIMIT 1`;
-                  // A pause the user or the environment chose outlives the revert. Pauses
-                  // about turns (failed, interrupted, ...) described turns the revert just
-                  // deleted, so they go. Queued prompts were written against the discarded
-                  // conversation and wait for review; with nothing queued the queue runs.
-                  const next =
-                    prior.paused &&
-                    prior.pause_reason_code !== null &&
-                    QUEUE_PAUSES_KEPT_ACROSS_REVERT.has(prior.pause_reason_code)
-                      ? prior
-                      : queued.length > 0
-                        ? { paused: 1, pause_reason_code: "thread_reverted", pause_detail: null }
-                        : { paused: 0, pause_reason_code: null, pause_detail: null };
-                  // Only replaces the pause this rewind set; one set meanwhile survives.
-                  yield* sql`UPDATE next_turn_queue_state SET paused = ${next.paused}, pause_reason_code = ${next.pause_reason_code}, pause_detail = ${next.pause_detail}, revision = revision + 1 WHERE thread_id = ${threadId} AND pause_reason_code IN ('rewind_in_progress', 'reconciliation_required')`;
-                  yield* sql`UPDATE rewind_operations SET state = 'completed', updated_at = ${savedEvent.occurredAt} WHERE operation_id = ${savedEvent.payload.operationId} AND thread_id = ${savedEvent.payload.threadId} AND state = 'files-confirmed'`;
-                  yield* sql`DELETE FROM rewind_requests WHERE operation_id = ${savedEvent.payload.operationId}`;
-                }
-                if (savedEvent.type === "thread.conversation-revert-requested") {
-                  const priorQueueState =
-                    (yield* sql`SELECT paused, pause_reason_code, pause_detail FROM next_turn_queue_state WHERE thread_id = ${savedEvent.payload.threadId}`)[0] ?? {
-                      paused: 0,
-                      pause_reason_code: null,
-                      pause_detail: null,
-                    };
-                  yield* sql`INSERT OR IGNORE INTO rewind_requests(operation_id, thread_id, payload_json, created_at, queue_state_json) VALUES (${savedEvent.payload.operationId}, ${savedEvent.payload.threadId}, ${JSON.stringify(savedEvent.payload)}, ${savedEvent.occurredAt}, ${JSON.stringify(priorQueueState)})`;
-                  yield* sql`INSERT INTO next_turn_queue_state(thread_id, paused, pause_reason_code, revision, updated_at) VALUES (${savedEvent.payload.threadId}, 1, 'rewind_in_progress', 1, ${savedEvent.occurredAt}) ON CONFLICT(thread_id) DO UPDATE SET paused = 1, pause_reason_code = 'rewind_in_progress', revision = revision + 1`;
-                }
+                // Stamp the durable event as well as the live push so recall behaves
+                // identically before and after reconnecting or replaying history.
+                const authorship =
+                  nextEvent.type === "thread.message-sent" &&
+                  nextEvent.payload.role === "user" &&
+                  nextEvent.commandId
+                    ? envelope.command.type === "thread.turn.start" &&
+                      envelope.command.presentation === "continuation"
+                      ? "automation"
+                      : yield* readSubmissionSource(
+                          nextEvent.commandId,
+                          nextEvent.payload.threadId,
+                        ).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+                    : undefined;
+                const savedEvent = yield* eventStore.append(
+                  nextEvent.type === "thread.message-sent" && authorship === "automation"
+                    ? { ...nextEvent, payload: { ...nextEvent.payload, authorship } }
+                    : nextEvent,
+                );
+                appendedEventIds.add(savedEvent.eventId);
+                nextReadModel = yield* measurePerformanceStage(
+                  probe,
+                  "engine.readModelProjection",
+                  projectEvent(nextReadModel, savedEvent),
+                );
+                yield* projectionPipeline.projectEvent(savedEvent, {
+                  deferCursor: projectionPipeline.commitCursors !== undefined,
+                });
+                yield* commitSideEffects(savedEvent, {
+                  commandType: envelope.command.type,
+                  steerFallback,
+                  readModel: nextReadModel,
+                });
                 committedEvents.push(savedEvent);
               }
 
@@ -535,6 +836,42 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 error: null,
               });
 
+              if (Option.isSome(transitions) && envelope.workspaceWrite?.operationId) {
+                const record = yield* transitions.value
+                  .get(envelope.workspaceWrite.operationId)
+                  .pipe(Effect.orDie);
+                if (
+                  !record ||
+                  record.phase !== "applied" ||
+                  record.version !== envelope.workspaceWrite.version
+                )
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "Workspace transition completion lost its reservation.",
+                  });
+                if (
+                  record.intent === "use_project_checkout" &&
+                  record.setupOwnerOperationId &&
+                  record.operationId === `work-locally:${record.setupOwnerOperationId}` &&
+                  record.result?.worktreePath === null
+                ) {
+                  // Consume only this setup handoff's ownership in the completion transaction.
+                  // Manual and unrelated pauses remain untouched.
+                  yield* sql`UPDATE next_turn_queue_state SET
+                    worktree_block_token=NULL,
+                    paused=CASE WHEN pause_reason_code IN ('worktree_setup','worktree_setup_failed','worktree_setup_cancelled','worktree_setup_cancelled_kept') THEN 0 ELSE paused END,
+                    pause_detail=CASE WHEN pause_reason_code IN ('worktree_setup','worktree_setup_failed','worktree_setup_cancelled','worktree_setup_cancelled_kept') THEN NULL ELSE pause_detail END,
+                    resumed_at=CASE WHEN pause_reason_code IN ('worktree_setup','worktree_setup_failed','worktree_setup_cancelled','worktree_setup_cancelled_kept') THEN ${lastSavedEvent.occurredAt} ELSE resumed_at END,
+                    pause_reason_code=CASE WHEN pause_reason_code IN ('worktree_setup','worktree_setup_failed','worktree_setup_cancelled','worktree_setup_cancelled_kept') THEN NULL ELSE pause_reason_code END,
+                    revision=revision+1
+                    WHERE thread_id=${record.threadId} AND (worktree_block_token IS NULL OR worktree_block_token=${record.setupOwnerOperationId})`;
+                }
+                yield* transitions.value
+                  .update(record, { phase: "completed", error: null })
+                  .pipe(Effect.orDie);
+              }
+              if (projectionPipeline.commitCursors)
+                yield* projectionPipeline.commitCursors(lastSavedEvent);
               return {
                 committedEvents,
                 lastSequence: lastSavedEvent.sequence,
@@ -550,8 +887,35 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             ),
           );
 
-        readModel = committedCommand.nextReadModel;
+        for (const event of committedCommand.committedEvents)
+          if (event.type === "thread.reverted" && event.payload.removedTurnIds?.length)
+            nativeReconciledThreads.add(event.payload.threadId);
+        yield* publishReadModel(committedCommand.nextReadModel, committedCommand.committedEvents);
         for (const [index, event] of committedCommand.committedEvents.entries()) {
+          if (isControlEvent(event)) {
+            envelope.controlCommitted = true;
+            envelope.controlCommittedAt = controlNow();
+          }
+          if (
+            event.type === "thread.session-stop-requested" ||
+            event.type === "thread.archived" ||
+            (event.type === "thread.turn-interrupt-requested" && event.payload.turnId === undefined)
+          ) {
+            stoppedSequences.set(event.payload.threadId, event.sequence);
+            const cancelled = yield* admission.cancelQueued(
+              (queued) =>
+                (queued.command.type === "thread.turn.start" ||
+                  queued.command.type === "thread.turn.steer") &&
+                queued.command.threadId === event.payload.threadId &&
+                queued.admissionOrder < envelope.admissionOrder,
+            );
+            for (const pending of cancelled)
+              yield* Deferred.fail(
+                pending.result,
+                new OrchestrationOverloadError({ lane: "ordinary", reason: "superseded" }),
+              );
+          }
+          if (event.type === "thread.deleted") stoppedSequences.delete(event.payload.threadId);
           yield* PubSub.publish(eventPubSub, event);
           if (index === 0) {
             yield* Metric.update(
@@ -566,7 +930,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             );
           }
         }
-        return { sequence: committedCommand.lastSequence };
+        return {
+          sequence: committedCommand.lastSequence,
+          ...(committedCommand.committedEvents.some((event) => event.type === "thread.deleted")
+            ? {
+                deletedThreadIds: committedCommand.committedEvents.flatMap((event) =>
+                  event.type === "thread.deleted" ? [event.payload.threadId] : [],
+                ),
+              }
+            : {}),
+        };
       }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
     ).pipe(
       Effect.flatMap((exit) =>
@@ -595,6 +968,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           );
 
           if (Exit.isSuccess(exit)) {
+            // Release a completed continuation before its caller can submit the next.
+            yield* releaseEnvelopeAdmission(envelope);
             yield* Deferred.succeed(envelope.result, exit.value);
             return;
           }
@@ -634,6 +1009,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               })
               .pipe(Effect.catch(() => Effect.void));
           }
+          yield* releaseEnvelopeAdmission(envelope);
           yield* Deferred.fail(envelope.result, error);
         }),
       ),
@@ -641,13 +1017,22 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   };
 
   yield* withStartupPhaseTiming("orchestration.projection.bootstrap", projectionPipeline.bootstrap);
+  for (const row of yield* sql<{
+    threadId: string;
+  }>`SELECT DISTINCT thread_id AS "threadId" FROM native_history_retired_turns`)
+    nativeReconciledThreads.add(row.threadId);
 
   let replayFromSequence = 0;
   let bootstrapSource: "projection-snapshot" | "event-replay" = "event-replay";
+  const heapUsedBeforeHydrate = process.memoryUsage().heapUsed;
+  // Archived threads start cold only when their activities can be loaded later.
+  const omitArchivedActivities = projectionSnapshotQuery.getRetainedThreadActivities !== undefined;
   const projectionSnapshotExit = yield* Effect.exit(
     withStartupPhaseTiming(
       "orchestration.snapshot.hydrate",
-      projectionSnapshotQuery.getBootstrapSnapshot(),
+      projectionSnapshotQuery.getBootstrapSnapshot(
+        omitArchivedActivities ? { omitArchivedActivities: true } : undefined,
+      ),
     ),
   );
   if (Exit.isSuccess(projectionSnapshotExit)) {
@@ -656,6 +1041,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       readModel = projectionSnapshot;
       replayFromSequence = projectionSnapshot.snapshotSequence;
       bootstrapSource = "projection-snapshot";
+      if (omitArchivedActivities)
+        for (const threadId of coldThreadIdsOf(projectionSnapshot)) coldThreadIds.add(threadId);
     } else {
       const hasPersistedEvents = yield* Stream.runCollect(eventStore.readFromSequence(0, 1)).pipe(
         Effect.map((chunk) => chunk.length > 0),
@@ -681,15 +1068,71 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     eventStore.readFromSequence(replayFromSequence, Number.MAX_SAFE_INTEGER),
     (event) =>
       Effect.gen(function* () {
+        // A cold thread gets its stored activities before the event is applied.
+        // The projections may already hold the event; applying it again
+        // replaces the same activity, so the result is the same either way.
+        const threadId = eventThreadId(event);
+        if (threadId !== null && coldThreadIds.has(threadId))
+          yield* warmThreads([threadId], "replay").pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("failed to load activities for a cold thread during replay", {
+                threadId,
+                cause,
+              }),
+            ),
+          );
         readModel = yield* projectEvent(readModel, event);
       }),
   );
 
-  const worker = Effect.forever(
-    Queue.take(commandQueue).pipe(
-      Effect.flatMap((envelope) => maintenanceLock.withShared(processEnvelope(envelope))),
-    ),
+  hasDeletedThreads = readModel.threads.some((thread) => thread.deletedAt !== null);
+  if (hasDeletedThreads) readModel = withoutDeletedThreadDetails(readModel);
+  yield* observeReadModelRetention(
+    readModel,
+    heapUsedBeforeHydrate,
+    omitArchivedActivities ? coldThreadIds.size : undefined,
   );
+
+  const worker = Effect.gen(function* () {
+    for (;;) {
+      const envelope = yield* admission.take;
+      if (!envelope) return;
+      // `processEnvelope` reads `readModel` when it is called, so it is called
+      // only once the permit is held.
+      yield* maintenanceLock
+        .withShared(readModelWrites.withPermit(Effect.suspend(() => processEnvelope(envelope))))
+        .pipe(Effect.ensuring(Effect.suspend(() => releaseEnvelopeAdmission(envelope))));
+    }
+  });
+
+  const ensureThreadActivities: NonNullable<OrchestrationEngineShape["ensureThreadActivities"]> = (
+    threadIds,
+  ) =>
+    Effect.suspend(() => {
+      if (!threadIds.some((threadId) => coldThreadIds.has(threadId))) return Effect.void;
+      // The read runs outside the permit, so commands do not wait on it. A
+      // commit in the meantime can have changed a thread's stored activities
+      // without loading them (its own load failed); then they are read again
+      // under the permit.
+      const sequence = readModel.snapshotSequence;
+      return readColdThreadActivities(threadIds).pipe(
+        Effect.flatMap((loaded) =>
+          readModelWrites.withPermit(
+            Effect.suspend(() =>
+              readModel.snapshotSequence === sequence
+                ? keepColdThreadActivities(loaded, "on-demand")
+                : warmThreads(threadIds, "on-demand"),
+            ),
+          ),
+        ),
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to load activities for a cold thread on demand", {
+            threadIds,
+            cause,
+          }),
+        ),
+      );
+    });
   yield* Effect.forkScoped(worker);
   yield* Effect.log("orchestration engine started").pipe(
     Effect.annotateLogs({
@@ -705,14 +1148,326 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
     eventStore.readFromSequence(fromSequenceExclusive);
 
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+  // Every thread of the scratch project gets its own folder before it is created, whichever
+  // path creates it. The name depends only on the command, so a retried create reuses it.
+  // A folder the decider would refuse is never created, and one created for a command that is
+  // then rejected is removed again while it is still empty.
+  const withScratchFolder = (
+    command: OrchestrationCommand,
+    created: { folder: string | undefined },
+  ) =>
     Effect.gen(function* () {
+      if (command.type !== "thread.create") return command;
+      const project = readModel.projects.find(
+        (entry) => entry.id === command.projectId && entry.deletedAt === null,
+      );
+      if (!isScratchProject(project) || !project) return command;
+      const { scratchFolderWords, ...rest } = command;
+      const folder = NodePath.join(
+        project.workspaceRoot,
+        scratchThreadFolderName({
+          threadId: command.threadId,
+          createdAt: command.createdAt,
+          text: scratchFolderWords ?? command.title,
+        }),
+      );
+      if (
+        !isScratchThreadFolder(project.workspaceRoot, folder) ||
+        command.worktreePath !== null ||
+        command.branch !== null
+      )
+        return { ...rest, scratchPath: folder };
+      const existed = yield* Effect.promise(() =>
+        NodeFS.stat(folder).then(
+          () => true,
+          () => false,
+        ),
+      );
+      yield* Effect.tryPromise({
+        try: () => NodeFS.mkdir(folder, { recursive: true }),
+        catch: () =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Failed to create the folder for this thread.",
+          }),
+      });
+      if (!existed) created.folder = folder;
+      return { ...rest, scratchPath: folder };
+    });
+  const removeEmptyScratchFolder = (created: { folder: string | undefined }) =>
+    created.folder === undefined
+      ? Effect.void
+      : Effect.promise(() => NodeFS.rmdir(created.folder!).catch(() => undefined));
+
+  const dispatch: OrchestrationEngineShape["dispatch"] = (incoming) =>
+    Effect.gen(function* () {
+      const created: { folder: string | undefined } = { folder: undefined };
+      const command = yield* withScratchFolder(incoming, created);
+      // Git I/O must not occupy the serialized projection worker. The worker
+      // revalidates this metadata fingerprint before accepting the command.
+      let workspace: CommandEnvelope["workspace"];
+      if (
+        (command.type === "thread.turn.start" || command.type === "thread.turn.steer") &&
+        (Option.isNone(
+          yield* commandReceiptRepository.getByCommandId({ commandId: command.commandId }),
+        ) ||
+          (yield* readSteerFallback(command)))
+      ) {
+        const thread = readModel.threads.find((entry) => entry.id === command.threadId);
+        if (thread?.worktreePath) {
+          const project = readModel.projects.find(
+            (entry) => entry.id === thread.projectId && entry.deletedAt === null,
+          );
+          if (!project || Option.isNone(workspaceGit))
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "Workspace identity cannot be verified.",
+            });
+          workspace = {
+            path: thread.worktreePath,
+            branch: thread.branch,
+            projectCwd: project.workspaceRoot,
+          };
+          yield* assertWorktreeReady(
+            workspaceGit.value,
+            {
+              projectCwd: workspace.projectCwd,
+              worktreePath: workspace.path,
+              branch: workspace.branch,
+            },
+            command.type === "thread.turn.start",
+            {
+              allowBranchDrift:
+                command.expectedTurnId !== undefined &&
+                thread.session?.activeTurnId === command.expectedTurnId,
+            },
+          ).pipe(
+            Effect.mapError((error) =>
+              error instanceof WorktreeInspectionError
+                ? workspaceWaitError(command, error.message)
+                : new OrchestrationCommandInvariantError({
+                    commandType: command.type,
+                    detail: error.message,
+                  }),
+            ),
+          );
+        }
+      }
+      const control = isControlCommand(command);
+      const inheritedControl =
+        command.type === "thread.session.set" || command.type === "thread.activity.append"
+          ? yield* ProviderControlTarget
+          : undefined;
+      const existingControl = controlReservations.get(command.commandId);
+      if (control && existingControl) {
+        const conflict = controlCommandConflict(existingControl, command);
+        if (conflict) return yield* conflict;
+        return yield* Deferred.await(existingControl.result);
+      }
+      let controlOrigin: ControlOrigin | undefined;
+      if (control && "threadId" in command) {
+        let binding: { provider: string; instanceId: string | null; payload: unknown } | undefined;
+        if (Option.isSome(sessionDirectory)) {
+          const current = Option.getOrUndefined(
+            yield* sessionDirectory.value
+              .getBinding(command.threadId)
+              .pipe(Effect.mapError(toPersistenceSqlError("OrchestrationEngine.controlOrigin"))),
+          );
+          if (current)
+            binding = {
+              provider: current.provider,
+              instanceId: current.providerInstanceId ?? current.provider,
+              payload: current.runtimePayload,
+            };
+        } else {
+          const rows = yield* sql<{
+            provider: string;
+            instanceId: string | null;
+            payload: string | null;
+          }>`SELECT provider_name AS provider, provider_instance_id AS instanceId, runtime_payload_json AS payload FROM provider_session_runtime WHERE thread_id = ${command.threadId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("OrchestrationEngine.controlOrigin")),
+          );
+          if (rows[0])
+            binding = {
+              ...rows[0],
+              instanceId: rows[0].instanceId ?? rows[0].provider,
+              payload: rows[0].payload ? JSON.parse(rows[0].payload) : null,
+            };
+        }
+        controlOrigin = {
+          threadId: command.threadId,
+          provider: binding?.provider ?? null,
+          instanceId: binding?.instanceId ?? null,
+          generation: binding ? readPersistedSessionGeneration(binding.payload) : null,
+          activeTurnId:
+            readModel.threads.find((thread) => thread.id === command.threadId)?.session
+              ?.activeTurnId ?? null,
+        };
+      }
       const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
-      yield* Queue.offer(commandQueue, { command, result, startedAtMs: Date.now() });
-      return yield* Deferred.await(result);
+      const envelope: CommandEnvelope = {
+        command,
+        result,
+        startedAtMs: Date.now(),
+        admissionOrder: 0,
+        workspaceWrite: yield* WorkspaceWriteContext,
+        ...(controlOrigin
+          ? {
+              controlOrigin,
+              controlFinished: yield* Deferred.make<void, OrchestrationOverloadError>(),
+            }
+          : {}),
+        ...(workspace ? { workspace } : {}),
+      };
+      const bytes = Buffer.byteLength(JSON.stringify(command));
+      const lossless = yield* LosslessCommandAdmission;
+      const admittedResult = yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          if (
+            !accepting &&
+            !(yield* AcceptedShutdownWork) &&
+            !(
+              inheritedControl &&
+              [...controlReservations.values()].some(
+                (pending) => pending.controlOrigin === inheritedControl,
+              )
+            )
+          )
+            return yield* new OrchestrationOverloadError({
+              lane: control ? "control" : "ordinary",
+              reason: "closed",
+            });
+          const existing = control ? controlReservations.get(command.commandId) : undefined;
+          if (existing) {
+            const conflict = controlCommandConflict(existing, command);
+            if (conflict) return yield* conflict;
+            return existing.result;
+          }
+          envelope.admissionOrder = ++admissionOrder;
+          const owner =
+            inheritedControl &&
+            "threadId" in command &&
+            command.threadId === inheritedControl.threadId
+              ? [...controlReservations.values()].find(
+                  (pending) => pending.controlOrigin === inheritedControl,
+                )
+              : undefined;
+          // Publish the identity before waking the engine/consumer. Admission may yield.
+          if (control) controlReservations.set(command.commandId, envelope);
+          yield* (
+            owner
+              ? admission.offerContinuation(envelope, bytes, owner)
+              : lossless && !control
+                ? restore(admission.enqueue(envelope, bytes))
+                : admission.offer(envelope, bytes, control)
+          ).pipe(
+            Effect.onError((cause) =>
+              Effect.gen(function* () {
+                if (controlReservations.get(command.commandId) === envelope)
+                  controlReservations.delete(command.commandId);
+                // A duplicate may already be waiting on this temporarily published
+                // reservation. Admission failure must settle that waiter as well.
+                yield* Deferred.failCause(result, cause);
+              }),
+            ),
+          );
+          return result;
+        }),
+      );
+      return yield* Deferred.await(admittedResult).pipe(
+        Effect.tapError(() => removeEmptyScratchFolder(created)),
+      );
     });
 
+  // PubSub is intentionally not replayed. Detect a missing/dead consumer without
+  // releasing controls that have already begun a potentially ambiguous side effect.
+  yield* Effect.forever(
+    Effect.sleep("1 second").pipe(
+      Effect.andThen(
+        Effect.gen(function* () {
+          for (const envelope of controlReservations.values()) {
+            if (
+              envelope.controlClaimed ||
+              envelope.controlExpired ||
+              envelope.controlCommittedAt === undefined ||
+              controlNow() - envelope.controlCommittedAt < CONTROL_DELIVERY_TIMEOUT_MS
+            )
+              continue;
+            envelope.controlExpired = true;
+            const error = new OrchestrationOverloadError({ lane: "control", reason: "closed" });
+            if (envelope.controlFinished) yield* Deferred.fail(envelope.controlFinished, error);
+            const command = envelope.command;
+            if (!isControlCommand(command) || !("threadId" in command)) continue;
+            const createdAt = new Date().toISOString();
+            yield* Effect.logWarning("provider control was not consumed; action was not sent", {
+              commandId: command.commandId,
+              commandType: command.type,
+            });
+            yield* dispatch({
+              type: "thread.activity.append",
+              commandId: CommandId.makeUnsafe(`${command.commandId}:unconsumed`),
+              threadId: command.threadId,
+              activity: {
+                id: EventId.makeUnsafe(`${command.commandId}:unconsumed`),
+                tone: "error",
+                kind:
+                  command.type === "thread.session.stop"
+                    ? "provider.session.stop.failed"
+                    : command.type === "thread.turn.interrupt"
+                      ? "provider.turn.interrupt.failed"
+                      : command.type === "thread.approval.respond"
+                        ? "provider.approval.respond.failed"
+                        : "provider.user-input.respond.failed",
+                summary: "The provider action could not start",
+                payload: {
+                  detail:
+                    "The action was not sent because the provider command consumer did not start it. Retry the action after recovery.",
+                },
+                turnId: null,
+                createdAt,
+              },
+              createdAt,
+            }).pipe(
+              Effect.provideService(ProviderControlTarget, envelope.controlOrigin),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("failed to record unconsumed control", {
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+              Effect.ensuring(releaseControl(command.commandId)),
+            );
+          }
+        }),
+      ),
+    ),
+  ).pipe(Effect.forkScoped);
+
   return {
+    completeControl: releaseControl,
+    claimControl: (commandId) =>
+      Effect.sync(() => {
+        const envelope = controlReservations.get(commandId);
+        if (!envelope || envelope.controlExpired || envelope.controlClaimed) return false;
+        envelope.controlClaimed = true;
+        return true;
+      }),
+    waitForControlProgress: (threadId) =>
+      Effect.suspend(() =>
+        Effect.forEach(
+          [...controlReservations.values()].filter(
+            (envelope) => envelope.controlOrigin?.threadId === threadId,
+          ),
+          (envelope) =>
+            envelope.controlFinished ? Deferred.await(envelope.controlFinished) : Effect.void,
+          { concurrency: "unbounded", discard: true },
+        ),
+      ),
+    controlOrigin: (commandId) => controlReservations.get(commandId)?.controlOrigin,
+    isTurnStartSuperseded: (event) =>
+      event.aggregateKind === "thread" &&
+      event.sequence < (stoppedSequences.get(event.aggregateId) ?? 0),
+    inspectQueue: admission.snapshot,
+    ensureThreadActivities,
     getReadModel,
     readEvents,
     dispatch,

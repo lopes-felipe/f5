@@ -5,13 +5,15 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { Cause, Deferred, Duration, Effect, Layer, Option, Ref, Stream } from "effect";
 import type { PrHubSnapshot } from "@t3tools/contracts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { GitHubRequestPriority } from "../../git/githubRequestScheduler.ts";
+import { GitHubRequestPriority, GitHubSyncWait } from "../../git/githubRequestScheduler.ts";
 import { PrHubJobCoordinator, type PrHubRefresh } from "../Services/PrHubJobCoordinator.ts";
 
 interface Flight {
+  priority: import("../../git/githubRequestQueue.ts").GitHubPriority;
+  wait: boolean;
   deferred: Deferred.Deferred<PrHubSnapshot>;
   mode: "force" | "if_stale";
-  trailing: Deferred.Deferred<PrHubSnapshot> | null;
+  trailing: Flight | null;
 }
 
 export const PrHubJobCoordinatorLive = Layer.effect(
@@ -30,17 +32,18 @@ export const PrHubJobCoordinatorLive = Layer.effect(
             Effect.gen(function* () {
               let flight = initial;
               while (true) {
-                const result = yield* Effect.exit(run({ mode: flight.mode }));
+                const result = yield* Effect.exit(
+                  run({ mode: flight.mode }).pipe(
+                    Effect.provideService(GitHubRequestPriority, flight.priority),
+                    Effect.provideService(GitHubSyncWait, flight.wait),
+                  ),
+                );
                 const next = yield* Ref.modify(
                   active,
                   (current): readonly [Flight | null, Flight | null] => {
                     if (current?.deferred !== flight.deferred) return [null, current];
                     if (!current.trailing) return [null, null];
-                    const promoted: Flight = {
-                      deferred: current.trailing,
-                      mode: "force",
-                      trailing: null,
-                    };
+                    const promoted = current.trailing;
                     return [promoted, promoted];
                   },
                 );
@@ -53,6 +56,11 @@ export const PrHubJobCoordinatorLive = Layer.effect(
           return (input: Parameters<PrHubRefresh>[0]) =>
             Effect.uninterruptibleMask((restore) =>
               Effect.gen(function* () {
+                const priority = Option.getOrElse(
+                  yield* Effect.serviceOption(GitHubRequestPriority),
+                  () => "interactive" as const,
+                );
+                const wait = input.mode === "force" && priority === "interactive";
                 const deferred = yield* Deferred.make<PrHubSnapshot>();
                 const acquired = yield* Ref.modify(
                   active,
@@ -63,13 +71,27 @@ export const PrHubJobCoordinatorLive = Layer.effect(
                     Flight | null,
                   ] => {
                     if (!current) {
-                      const flight: Flight = { deferred, mode: input.mode, trailing: null };
+                      const flight: Flight = {
+                        deferred,
+                        mode: input.mode,
+                        trailing: null,
+                        priority,
+                        wait,
+                      };
                       return [{ started: flight, result: deferred }, flight];
                     }
-                    if (input.mode === "force" && current.mode === "if_stale") {
-                      const trailing = current.trailing ?? deferred;
+                    if (
+                      input.mode === "force" &&
+                      (current.mode === "if_stale" || (wait && !current.wait))
+                    ) {
+                      const existing = current.trailing;
+                      const trailing: Flight = existing
+                        ? wait && !existing.wait
+                          ? { ...existing, wait, priority }
+                          : existing
+                        : { deferred, mode: "force", trailing: null, priority, wait };
                       return [
-                        { started: null, result: trailing },
+                        { started: null, result: trailing.deferred },
                         { ...current, trailing },
                       ];
                     }

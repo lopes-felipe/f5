@@ -9,6 +9,7 @@ export class PersistenceSqlError extends Schema.TaggedErrorClass<PersistenceSqlE
   {
     operation: Schema.String,
     detail: Schema.String,
+    retryable: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect),
   },
 ) {
@@ -54,8 +55,17 @@ export function toPersistenceSqlError(operation: string) {
       detail: Schema.isSchemaError(cause)
         ? `Schema issue: ${cause.issue._tag}`
         : (sqliteCondition(cause) ?? `Failed to execute ${operation}`),
+      ...(retryableCause(cause) ? { retryable: true } : {}),
       cause,
     });
+}
+
+function retryableCause(cause: unknown): boolean {
+  for (let depth = 0; depth < 8 && cause && typeof cause === "object"; depth++) {
+    if ("retryable" in cause && cause.retryable === true) return true;
+    cause = "cause" in cause ? cause.cause : null;
+  }
+  return false;
 }
 
 export function toPersistenceDecodeError(operation: string) {

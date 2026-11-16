@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, type HTMLAttributes, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 
@@ -60,6 +60,8 @@ export function ComposerDock(props: {
   children: ReactNode;
   className?: string;
   redesign?: boolean;
+  /** F6 area props for the composer column, from `workspaceAreaProps`. */
+  workspaceArea?: HTMLAttributes<HTMLDivElement>;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -90,7 +92,10 @@ export function ComposerDock(props: {
         props.className,
       )}
     >
-      <div className={cn("relative flex flex-col", !props.redesign && "min-h-0")}>
+      <div
+        {...props.workspaceArea}
+        className={cn("relative flex flex-col", !props.redesign && "min-h-0")}
+      >
         {props.children}
       </div>
     </div>

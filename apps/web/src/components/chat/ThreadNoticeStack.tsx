@@ -1,11 +1,25 @@
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, type LucideIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 
+export type StatusChipTone = "neutral" | "warning" | "info";
+
+/**
+ * How a non-blocking notice shows in the compact layout's status strip; the
+ * notice content opens in the chip's popover. Notices without one stay inline.
+ */
+export interface ThreadNoticeChip {
+  readonly icon?: LucideIcon;
+  readonly label: ReactNode;
+  readonly tone: Exclude<StatusChipTone, "neutral">;
+  readonly ariaLabel: string;
+}
+
 export interface ThreadNotice {
   readonly id: string;
   readonly content: ReactNode;
+  readonly chip?: ThreadNoticeChip;
 }
 
 export const THREAD_NOTICE_STACK_VISIBLE_COUNT = 2;

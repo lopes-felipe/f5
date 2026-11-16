@@ -21,6 +21,8 @@ import { buildAppSettingsPatch } from "../../../appSettings";
 import { cn } from "../../../lib/utils";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
+import { SettingsCard, SettingsRow } from "../SettingsCard";
 import { ThemeSettings } from "../ThemeSettings";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 
@@ -355,7 +357,7 @@ export function AppearanceSettings() {
           </p>
         </div>
         <div
-          className="grid gap-2 sm:grid-cols-3"
+          className="grid grid-cols-2 gap-2 sm:grid-cols-4"
           role="radiogroup"
           aria-label="Conversation width"
         >
@@ -382,6 +384,34 @@ export function AppearanceSettings() {
           })}
         </div>
       </section>
+
+      <SettingsCard title="Diffs" description="Colors used for added and removed lines.">
+        <SettingsRow
+          title="Diff colors"
+          description="Blue and orange stays distinguishable for red-green color blindness."
+          control={
+            <Select
+              value={settings.diffColorPalette}
+              onValueChange={(value) => {
+                if (value === "red-green" || value === "blue-orange")
+                  updateSettings({ diffColorPalette: value });
+              }}
+            >
+              <SelectTrigger className="w-40" aria-label="Diff colors">
+                <SelectValue>
+                  {settings.diffColorPalette === "blue-orange"
+                    ? "Blue and orange"
+                    : "Red and green"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                <SelectItem value="red-green">Red and green</SelectItem>
+                <SelectItem value="blue-orange">Blue and orange</SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+      </SettingsCard>
     </>
   );
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cliTarget, parseRelease, selectArtifact } from "./cliRelease";
+import { cliTarget, parseRelease, selectArtifact, tarExecutable } from "./cliRelease";
 const artifact = {
   target: "linux-arm64",
   url: "https://github.com/lopes-felipe/f5/releases/download/v1.0.0/f5.tar.gz",
@@ -23,6 +23,11 @@ describe("F5 CLI release selection", () => {
     expect(() =>
       parseRelease({ schemaVersion: 1, version: "../current", artifacts: [artifact] }),
     ).toThrow();
+  });
+  it("uses the Windows bsdtar instead of a GNU tar from PATH", () => {
+    expect(tarExecutable("win32", { SystemRoot: "D:\\Win" })).toBe("D:\\Win\\System32\\tar.exe");
+    expect(tarExecutable("win32", {})).toBe("C:\\Windows\\System32\\tar.exe");
+    expect(tarExecutable("linux", { SystemRoot: "D:\\Win" })).toBe("tar");
   });
 });
 

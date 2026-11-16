@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
 
@@ -6,8 +7,10 @@ export type McpServerTransportType = typeof McpServerTransportType.Type;
 
 const McpStringRecord = Schema.Record(TrimmedNonEmptyString, Schema.String);
 const McpStringArray = Schema.Array(TrimmedNonEmptyString);
+export const McpArgArray = Schema.Array(Schema.String);
+export type McpArgArray = typeof McpArgArray.Type;
 const McpPort = PositiveInt.check(Schema.isLessThanOrEqualTo(65535));
-const McpHttpUrl = TrimmedNonEmptyString.check(
+export const McpHttpUrl = TrimmedNonEmptyString.check(
   Schema.makeFilter((value: string) => {
     try {
       const url = new URL(value);
@@ -30,16 +33,16 @@ const McpCommonServerFields = {
   scopes: Schema.optional(McpStringArray),
   oauthClientId: Schema.optional(TrimmedNonEmptyString),
   oauthCallbackPort: Schema.optional(McpPort),
-  oauthCallbackUrl: Schema.optional(McpHttpUrl),
+  oauthCallbackUrl: Schema.optional(TrimmedNonEmptyString),
   oauthResource: Schema.optional(TrimmedNonEmptyString),
 };
 
 const McpStdioServerDefinition = Schema.Struct({
   type: Schema.Literal("stdio"),
   command: TrimmedNonEmptyString,
-  args: Schema.optional(McpStringArray),
+  args: Schema.optional(McpArgArray),
   env: Schema.optional(McpStringRecord),
-  cwd: Schema.optional(TrimmedNonEmptyString),
+  cwd: Schema.optional(FilesystemPath),
   url: UnsupportedMcpField,
   headers: UnsupportedMcpField,
   ...McpCommonServerFields,
@@ -62,21 +65,48 @@ export const McpServerDefinition = Schema.Union([
 ]);
 export type McpServerDefinition = typeof McpServerDefinition.Type;
 
-export const McpProjectServersConfig = Schema.Record(TrimmedNonEmptyString, McpServerDefinition);
+export const McpProjectServersConfig = Schema.Record(Schema.String, McpServerDefinition);
 export type McpProjectServersConfig = typeof McpProjectServersConfig.Type;
 
+// Writes validate changed entries; persisted decoding remains lenient for legacy repair.
+export const McpServerWriteDefinition = Schema.Union([
+  McpStdioServerDefinition.mapFields((fields) => ({
+    ...fields,
+    oauthCallbackUrl: Schema.optional(McpHttpUrl),
+  })),
+  McpRemoteServerDefinition.mapFields((fields) => ({
+    ...fields,
+    url: McpHttpUrl,
+    oauthCallbackUrl: Schema.optional(McpHttpUrl),
+  })),
+]);
+export type McpServerWriteDefinition = typeof McpServerWriteDefinition.Type;
+export const McpProjectServersWriteConfig = Schema.Record(
+  TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  McpServerWriteDefinition,
+);
+export type McpProjectServersWriteConfig = typeof McpProjectServersWriteConfig.Type;
+
 const ClaudeAgentStdioMcpServerConfig = Schema.Struct({
+  timeout: Schema.optional(PositiveInt),
   type: Schema.Literal("stdio"),
   command: TrimmedNonEmptyString,
-  args: Schema.optional(McpStringArray),
+  args: Schema.optional(McpArgArray),
   env: Schema.optional(McpStringRecord),
-  cwd: Schema.optional(TrimmedNonEmptyString),
+  cwd: Schema.optional(FilesystemPath),
 });
 
 const ClaudeAgentRemoteMcpServerConfig = Schema.Struct({
+  timeout: Schema.optional(PositiveInt),
   type: Schema.Literals(["sse", "http"]),
   url: TrimmedNonEmptyString,
   headers: Schema.optional(McpStringRecord),
+  oauth: Schema.optional(
+    Schema.Struct({
+      clientId: Schema.optional(TrimmedNonEmptyString),
+      callbackPort: Schema.optional(McpPort),
+    }),
+  ),
 });
 
 export const ClaudeAgentMcpServerConfig = Schema.Union([
@@ -104,11 +134,11 @@ const CodexMcpServerCommonFields = {
 const CodexStdioMcpServerEntry = Schema.Struct({
   type: Schema.Literal("stdio"),
   command: TrimmedNonEmptyString,
-  args: Schema.optional(McpStringArray),
+  args: Schema.optional(McpArgArray),
   env: Schema.optional(McpStringRecord),
-  cwd: Schema.optional(TrimmedNonEmptyString),
+  cwd: Schema.optional(FilesystemPath),
   url: UnsupportedMcpField,
-  headers: UnsupportedMcpField,
+  http_headers: UnsupportedMcpField,
   ...CodexMcpServerCommonFields,
 });
 
@@ -119,7 +149,7 @@ const CodexRemoteMcpServerEntry = Schema.Struct({
   env: UnsupportedMcpField,
   cwd: UnsupportedMcpField,
   url: TrimmedNonEmptyString,
-  headers: Schema.optional(McpStringRecord),
+  http_headers: Schema.optional(McpStringRecord),
   ...CodexMcpServerCommonFields,
 });
 

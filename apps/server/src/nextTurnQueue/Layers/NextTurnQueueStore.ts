@@ -1,3 +1,11 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import {
+  linkScheduledContinuation,
+  freezeScheduledContinuationCommand,
+  scheduledContinuationFor,
+} from "../../scheduledTasks/continuations.ts";
+import { requireAttachmentOwner } from "../../attachmentOwnership.ts";
+import { withAttachmentRetentionLease } from "../../storage/attachmentRetention.ts";
 import {
   stampSubmissionSource,
   readSubmissionSource,
@@ -5,6 +13,7 @@ import {
 import { MAX_CONSECUTIVE_AUTO_RESUMES } from "../usageLimitResume.ts";
 import { randomUUID } from "node:crypto";
 import * as nodePath from "node:path";
+import { nextQueuedMessageId } from "@t3tools/shared/answerDelivery";
 
 import {
   CommandId,
@@ -55,7 +64,7 @@ interface QueueRow {
   readonly status: string;
   readonly attemptCount: number;
   readonly notBefore: string | null;
-  readonly scheduleReason: "usage_limit_reset" | null;
+  readonly scheduleReason: "usage_limit_reset" | "pull_request_watch" | null;
   readonly dispatchStartedAt: string | null;
   readonly commandJson: string;
   readonly lastErrorCode: string | null;
@@ -414,7 +423,9 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
     );
 
   const rejectAcceptedMutation = (item: NextTurnQueueItem) =>
-    item.command.presentation === "continuation" && item.scheduleReason !== "usage_limit_reset"
+    item.command.presentation === "continuation" &&
+    item.scheduleReason !== "usage_limit_reset" &&
+    item.scheduleReason !== "pull_request_watch"
       ? Effect.fail(
           new NextTurnQueueItemAlreadyRanError({
             message: "Restart continuations are managed by recovery.",
@@ -459,21 +470,78 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
       };
     });
 
-  const store: NextTurnQueueStoreShape = {
-    listByThread: (threadId) => listByThread(threadId).pipe(Effect.mapError(normalizeError)),
-
-    listActionableThreadIds: sql<{ readonly threadId: string }>`
+  let actionableCursor: ThreadId | null = null;
+  const readActionablePage = (
+    afterThreadId: ThreadId | null,
+    throughThreadId: string | null = null,
+  ) =>
+    sql<{ readonly threadId: string }>`
       SELECT DISTINCT queue.thread_id AS "threadId"
       FROM next_turn_queue AS queue
       LEFT JOIN next_turn_queue_state AS state ON state.thread_id = queue.thread_id
       WHERE queue.deleted_at IS NULL
         AND queue.status = 'queued'
+        AND (${afterThreadId} IS NULL OR queue.thread_id > ${afterThreadId})
+        AND (${throughThreadId} IS NULL OR queue.thread_id <= ${throughThreadId})
         AND (queue.not_before IS NULL OR julianday(queue.not_before) <= julianday('now'))
         AND COALESCE(state.paused, 0) = 0
-      ORDER BY queue.thread_id
+      ORDER BY queue.thread_id LIMIT 64
     `.pipe(
       Effect.map((rows) => rows.map((row) => ThreadId.makeUnsafe(row.threadId))),
       Effect.mapError(normalizeError),
+    );
+
+  const store: NextTurnQueueStoreShape = {
+    readWorkspaceClaims: (threadIds) =>
+      Effect.gen(function* () {
+        if (threadIds.length === 0) return [];
+        const queued = yield* sql<{
+          threadId: string;
+        }>`SELECT DISTINCT thread_id AS "threadId" FROM next_turn_queue WHERE deleted_at IS NULL AND ${sql.in("thread_id", threadIds)} UNION SELECT DISTINCT thread_id AS "threadId" FROM next_turn_queue_quarantine WHERE ${sql.in("thread_id", threadIds)}`;
+        const states = yield* sql<{
+          threadId: string;
+          token: string | null;
+        }>`SELECT thread_id AS "threadId", worktree_block_token AS token FROM next_turn_queue_state WHERE ${sql.in("thread_id", threadIds)}`;
+        const queuedIds = new Set(queued.map((row) => row.threadId));
+        const tokens = new Map(states.map((row) => [row.threadId, row.token]));
+        return threadIds.map((threadId) => ({
+          threadId,
+          hasQueuedWork: queuedIds.has(threadId),
+          worktreeBlockToken: tokens.get(threadId) ?? null,
+        }));
+      }).pipe(Effect.mapError(normalizeError)),
+    listByThread: (threadId) => listByThread(threadId).pipe(Effect.mapError(normalizeError)),
+
+    scanActionableThreads: (visit) =>
+      Effect.gen(function* () {
+        // A fixed boundary prevents concurrent insertions from extending startup forever.
+        const rows = yield* sql<{
+          id: string | null;
+        }>`SELECT MAX(thread_id) AS id FROM next_turn_queue WHERE deleted_at IS NULL AND status = 'queued'`;
+        const through = rows[0]?.id;
+        if (through == null) return;
+        let after: ThreadId | null = null;
+        for (;;) {
+          const page: ReadonlyArray<ThreadId> = yield* readActionablePage(after, through);
+          if (page.length === 0) return;
+          yield* visit(page);
+          after = page.at(-1)!;
+        }
+      }).pipe(Effect.mapError(normalizeError)),
+
+    listActionableThreadIds: Effect.suspend(() =>
+      readActionablePage(actionableCursor).pipe(
+        Effect.flatMap((rows) =>
+          rows.length === 0 && actionableCursor !== null
+            ? readActionablePage(null)
+            : Effect.succeed(rows),
+        ),
+        Effect.tap((rows) =>
+          Effect.sync(() => {
+            actionableCursor = rows.at(-1) ?? null;
+          }),
+        ),
+      ),
     ),
 
     getItem: (itemId) => readItem(itemId).pipe(Effect.mapError(normalizeError)),
@@ -503,7 +571,31 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
         .withTransaction(
           Effect.gen(function* () {
             let input = submission;
+            if (input.scheduledSourceTurnId)
+              input = {
+                ...input,
+                scheduledRun: yield* scheduledContinuationFor(
+                  input.command.threadId,
+                  input.scheduledSourceTurnId,
+                  "usage_limit",
+                ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+              };
+            if (input.scheduledRun) {
+              const command = yield* freezeScheduledContinuationCommand(
+                input.scheduledRun,
+                input.command,
+              ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+              input = { ...input, command, requestHash: canonicalRequestHash(command) };
+            }
             const threadId = input.command.threadId;
+            if (
+              (yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id=${threadId} AND phase IN ('reserved','stopping','applying','applied','needs_recovery') LIMIT 1`)
+                .length
+            )
+              return yield* new NextTurnQueueConflictError({
+                message:
+                  "A workspace transition must finish or be resolved before scheduling a continuation.",
+              });
             const at = now();
             const ledger = (yield* sql<{
               state: string;
@@ -546,7 +638,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             if (existing?.status === "failed") {
               // A poisoned command receipt cannot be reused for a manually retargeted turn.
               yield* rejectAcceptedMutation(decodeRow(existing));
-              const commandId = CommandId.makeUnsafe(randomUUID());
+              const commandId = CommandId.makeUnsafe(timeOrderedUuid());
               const messageId = MessageId.makeUnsafe(randomUUID());
               input = {
                 ...input,
@@ -583,6 +675,13 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               });
               if (insertion.kind === "replay") return "already_scheduled" as const;
             }
+            if (input.scheduledRun)
+              yield* linkScheduledContinuation(input.scheduledRun, {
+                submissionId: input.submissionId,
+                messageId: input.command.message.messageId,
+                threadId,
+                notBefore: input.notBefore,
+              }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
             yield* sql`UPDATE next_turn_queue SET schedule_provider_fingerprint=${input.providerFingerprint ?? null} WHERE item_id=${itemId}`;
             yield* sql`UPDATE next_turn_queue_state SET paused=0,pause_reason_code=NULL,pause_detail=NULL WHERE thread_id=${threadId} AND pause_reason_code='turn_failed'`;
             yield* sql`INSERT INTO usage_limit_resumes(thread_id,limit_key,state,source,auto_eligible_at_failure,item_id,not_before,prev_target,created_at,updated_at) VALUES(${threadId},${input.limitKey},'scheduled',${input.source},1,${itemId},${input.notBefore},${existing?.notBefore ?? null},${at},${at}) ON CONFLICT(thread_id,limit_key) DO UPDATE SET state='scheduled',source=excluded.source,item_id=excluded.item_id,prev_target=usage_limit_resumes.not_before,not_before=excluded.not_before,updated_at=excluded.updated_at`;
@@ -694,10 +793,19 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
     getBySubmissionId: (submissionId) =>
       readSubmission(submissionId).pipe(Effect.mapError(normalizeError)),
 
-    insertSubmission: (input) =>
+    insertSubmission: (submission) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
+            const frozen = submission.scheduledRun
+              ? yield* freezeScheduledContinuationCommand(
+                  submission.scheduledRun,
+                  submission.command,
+                ).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+              : null;
+            const input = frozen
+              ? { ...submission, command: frozen, requestHash: canonicalRequestHash(frozen) }
+              : submission;
             const existing = yield* readSubmission(input.submissionId);
             if (existing) {
               if (existing.requestHash !== input.requestHash) {
@@ -707,6 +815,14 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               }
               return { kind: "replay" as const, submission: existing };
             }
+
+            const switching =
+              yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id = ${input.command.threadId}
+              AND phase IN ('reserved','stopping','applying','applied','needs_recovery') LIMIT 1`;
+            if (switching.length)
+              return yield* new NextTurnQueueConflictError({
+                message: "A workspace transition must finish or be resolved before sending.",
+              });
 
             if (input.supersedeUsageResume) {
               const at = now();
@@ -721,7 +837,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             `;
             if (
               (countRows[0]?.count ?? 0) >=
-              MAX_QUEUED_TURNS_PER_THREAD + (input.scheduleReason ? 1 : 0)
+              MAX_QUEUED_TURNS_PER_THREAD + (input.scheduleReason === "usage_limit_reset" ? 1 : 0)
             ) {
               return yield* new NextTurnQueueLimitExceededError({
                 message: `A thread can queue at most ${MAX_QUEUED_TURNS_PER_THREAD} turns.`,
@@ -730,6 +846,31 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
 
             const at = now();
             yield* ensureState(input.command.threadId, at);
+            // Release only a user's hold, atomically with the new message.
+            // Worktree failures, delivery failures and usage limits retain their
+            // own recovery gates. A replay never releases a newer hold.
+            if (
+              input.resumeQueue &&
+              input.submissionSource === "human" &&
+              !input.command.expectedTurnId &&
+              !input.scheduledRun &&
+              !input.scheduleReason &&
+              input.worktreeBlockToken === undefined
+            ) {
+              yield* sql`
+                UPDATE next_turn_queue_state
+                SET last_human_send_sequence =
+                  COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'orchestration_events'), 0)
+                WHERE thread_id = ${input.command.threadId}
+              `;
+              yield* sql`
+                UPDATE next_turn_queue_state
+                SET paused = 0, pause_reason_code = NULL, pause_detail = NULL
+                WHERE thread_id = ${input.command.threadId} AND paused = 1
+                  AND pause_reason_code IN ('manual_pause', 'turn_interrupted')
+                  AND worktree_block_token IS NULL
+              `;
+            }
             if (input.worktreeBlockToken !== undefined) {
               yield* sql`
                 UPDATE next_turn_queue_state
@@ -760,6 +901,13 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
                 ${input.itemId}, ${input.command.message.messageId}, 'pending', ${at}
               )
             `;
+            if (input.scheduledRun)
+              yield* linkScheduledContinuation(input.scheduledRun, {
+                submissionId: input.submissionId,
+                messageId: input.command.message.messageId,
+                threadId: input.command.threadId,
+                notBefore: input.notBefore,
+              }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
             if (input.submissionSource)
               yield* stampSubmissionSource(
                 input.command.commandId,
@@ -786,11 +934,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
                       AND owner_kind = 'ingress'
                       AND owner_id = ${input.command.commandId}
                   `;
-                  yield* sql`
-                    INSERT OR IGNORE INTO attachment_owners (
-                      attachment_id, owner_kind, owner_id, created_at
-                    ) VALUES (${attachment.id}, 'queue_item', ${input.itemId}, ${at})
-                  `;
+                  yield* requireAttachmentOwner(sql, attachment.id, "queue_item", input.itemId, at);
                 }),
               { concurrency: 1, discard: true },
             );
@@ -885,8 +1029,10 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             }
             yield* rejectAcceptedMutation(item);
             const at = now();
-            const commandId = CommandId.makeUnsafe(randomUUID());
-            const messageId = MessageId.makeUnsafe(randomUUID());
+            const commandId = CommandId.makeUnsafe(timeOrderedUuid());
+            const messageId = MessageId.makeUnsafe(
+              nextQueuedMessageId(item.command.message.messageId, randomUUID()),
+            );
             const source = yield* readSubmissionSource(item.command.commandId, item.threadId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
             );
@@ -938,8 +1084,10 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             }
             yield* rejectAcceptedMutation(item);
             const at = now();
-            const commandId = CommandId.makeUnsafe(randomUUID());
-            const messageId = MessageId.makeUnsafe(randomUUID());
+            const commandId = CommandId.makeUnsafe(timeOrderedUuid());
+            const messageId = MessageId.makeUnsafe(
+              nextQueuedMessageId(item.command.message.messageId, randomUUID()),
+            );
             const source = yield* readSubmissionSource(item.command.commandId, item.threadId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
             );
@@ -1017,6 +1165,14 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
       sql
         .withTransaction(
           Effect.gen(function* () {
+            if (
+              input.token !== null &&
+              (yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id=${input.threadId} AND phase IN ('reserved','stopping','applying','applied','needs_recovery') LIMIT 1`)
+                .length
+            )
+              return yield* new NextTurnQueueConflictError({
+                message: "Resolve the workspace transition before starting setup.",
+              });
             yield* ensureState(input.threadId);
             const at = now();
             yield* input.expectedToken === undefined
@@ -1046,6 +1202,14 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               return yield* new NextTurnQueueConflictError({
                 message: "The queue changed in another client. Refresh and try again.",
               });
+            }
+            if (input.paused && input.interruptRequestedSequence !== undefined) {
+              const newerSend = yield* sql`
+                SELECT 1 FROM next_turn_queue_state
+                WHERE thread_id = ${input.threadId}
+                  AND last_human_send_sequence >= ${input.interruptRequestedSequence}
+              `;
+              if (newerSend.length > 0) return;
             }
             const at = now();
             yield* sql`
@@ -1477,10 +1641,12 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               ),
             { concurrency: 1, discard: true },
           );
-        const commandId = CommandId.makeUnsafe(randomUUID());
-        const messageId = MessageId.makeUnsafe(randomUUID());
-        const submissionId = CommandId.makeUnsafe(randomUUID());
-        const duplicateId = CommandId.makeUnsafe(randomUUID());
+        const commandId = CommandId.makeUnsafe(timeOrderedUuid());
+        const messageId = MessageId.makeUnsafe(
+          nextQueuedMessageId(item.command.message.messageId, randomUUID()),
+        );
+        const submissionId = CommandId.makeUnsafe(timeOrderedUuid());
+        const duplicateId = CommandId.makeUnsafe(timeOrderedUuid());
         const attachments = yield* Effect.forEach(
           item.command.message.attachments,
           (attachment) =>
@@ -1526,11 +1692,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
                   ${`copy:${attachment.id}`}, NULL, ${destination}, 'ready', ${at}, ${at}
                 )
               `;
-              yield* sql`
-                INSERT OR IGNORE INTO attachment_owners (
-                  attachment_id, owner_kind, owner_id, created_at
-                ) VALUES (${attachmentId}, 'ingress', ${commandId}, ${at})
-              `;
+              yield* requireAttachmentOwner(sql, attachmentId, "ingress", commandId, at);
               return nextAttachment;
             }),
           { concurrency: 1 },
@@ -1619,7 +1781,9 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
         discard: true,
       });
       return [...itemsByThread.keys()];
-    }).pipe(Effect.mapError(normalizeError)),
+    }).pipe(Effect.mapError(normalizeError), (effect) =>
+      withAttachmentRetentionLease(config.attachmentsDir, effect),
+    ),
 
     deleteForThread: (threadId) =>
       sql
@@ -1631,7 +1795,9 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             return items;
           }),
         )
-        .pipe(Effect.mapError(normalizeError)),
+        .pipe(Effect.mapError(normalizeError), (effect) =>
+          withAttachmentRetentionLease(config.attachmentsDir, effect),
+        ),
 
     deleteOrphans: Effect.gen(function* () {
       const rows = yield* sql<{ readonly threadId: string }>`
@@ -1648,58 +1814,60 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
       return threadIds;
     }).pipe(Effect.mapError(normalizeError)),
 
-    drainOrphanedAttachments: Effect.gen(function* () {
-      const attachmentsRoot = nodePath.resolve(config.attachmentsDir);
-      const isOwnedAttachmentPath = (candidate: string) => {
-        const resolved = nodePath.resolve(candidate);
-        return (
-          resolved !== attachmentsRoot && resolved.startsWith(`${attachmentsRoot}${nodePath.sep}`)
-        );
-      };
-      const staged = yield* sql<{
-        readonly attachmentId: string;
-        readonly stagingPath: string;
-        readonly finalPath: string;
-      }>`
+    drainOrphanedAttachments: withAttachmentRetentionLease(
+      config.attachmentsDir,
+      Effect.gen(function* () {
+        const attachmentsRoot = nodePath.resolve(config.attachmentsDir);
+        const isOwnedAttachmentPath = (candidate: string) => {
+          const resolved = nodePath.resolve(candidate);
+          return (
+            resolved !== attachmentsRoot && resolved.startsWith(`${attachmentsRoot}${nodePath.sep}`)
+          );
+        };
+        const staged = yield* sql<{
+          readonly attachmentId: string;
+          readonly stagingPath: string;
+          readonly finalPath: string;
+        }>`
         SELECT attachment_id AS "attachmentId", staging_path AS "stagingPath",
           final_path AS "finalPath"
         FROM attachments
         WHERE lifecycle = 'staged' AND staging_path IS NOT NULL
       `;
-      for (const attachment of staged) {
-        if (
-          !isOwnedAttachmentPath(attachment.stagingPath) ||
-          !isOwnedAttachmentPath(attachment.finalPath)
-        ) {
-          yield* Effect.logWarning("discarding attachment metadata with unsafe staging paths", {
-            attachmentId: attachment.attachmentId,
-          });
-          yield* sql`DELETE FROM attachments WHERE attachment_id = ${attachment.attachmentId}`;
-          continue;
-        }
-        const stagingInfo = yield* fileSystem
-          .stat(attachment.stagingPath)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        const finalInfo = yield* fileSystem
-          .stat(attachment.finalPath)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        if (stagingInfo?.type === "File") {
-          yield* fileSystem.rename(attachment.stagingPath, attachment.finalPath);
-        } else if (finalInfo?.type !== "File") {
-          yield* sql`DELETE FROM attachments WHERE attachment_id = ${attachment.attachmentId}`;
-          continue;
-        }
-        yield* sql`
+        for (const attachment of staged) {
+          if (
+            !isOwnedAttachmentPath(attachment.stagingPath) ||
+            !isOwnedAttachmentPath(attachment.finalPath)
+          ) {
+            yield* Effect.logWarning("discarding attachment metadata with unsafe staging paths", {
+              attachmentId: attachment.attachmentId,
+            });
+            yield* sql`DELETE FROM attachments WHERE attachment_id = ${attachment.attachmentId}`;
+            continue;
+          }
+          const stagingInfo = yield* fileSystem
+            .stat(attachment.stagingPath)
+            .pipe(Effect.catch(() => Effect.succeed(null)));
+          const finalInfo = yield* fileSystem
+            .stat(attachment.finalPath)
+            .pipe(Effect.catch(() => Effect.succeed(null)));
+          if (stagingInfo?.type === "File") {
+            yield* fileSystem.rename(attachment.stagingPath, attachment.finalPath);
+          } else if (finalInfo?.type !== "File") {
+            yield* sql`DELETE FROM attachments WHERE attachment_id = ${attachment.attachmentId}`;
+            continue;
+          }
+          yield* sql`
           UPDATE attachments SET lifecycle = 'ready', staging_path = NULL, updated_at = ${now()}
           WHERE attachment_id = ${attachment.attachmentId}
         `;
-      }
+        }
 
-      const abandonedIngress = yield* sql<{
-        readonly attachmentId: string;
-        readonly stagingPath: string | null;
-        readonly finalPath: string;
-      }>`
+        const abandonedIngress = yield* sql<{
+          readonly attachmentId: string;
+          readonly stagingPath: string | null;
+          readonly finalPath: string;
+        }>`
         SELECT attachment.attachment_id AS "attachmentId",
           attachment.staging_path AS "stagingPath", attachment.final_path AS "finalPath"
         FROM attachments AS attachment
@@ -1716,53 +1884,54 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               AND live_owner.owner_kind != 'ingress'
           )
       `;
-      for (const attachment of abandonedIngress) {
-        for (const candidate of [attachment.stagingPath, attachment.finalPath]) {
-          if (candidate !== null && isOwnedAttachmentPath(candidate)) {
-            yield* fileSystem
-              .remove(candidate, { force: true })
-              .pipe(Effect.catch(() => Effect.void));
+        for (const attachment of abandonedIngress) {
+          for (const candidate of [attachment.stagingPath, attachment.finalPath]) {
+            if (candidate !== null && isOwnedAttachmentPath(candidate)) {
+              yield* fileSystem
+                .remove(candidate, { force: true })
+                .pipe(Effect.catch(() => Effect.void));
+            }
           }
+          yield* sql`DELETE FROM attachments WHERE attachment_id = ${attachment.attachmentId}`;
         }
-        yield* sql`DELETE FROM attachments WHERE attachment_id = ${attachment.attachmentId}`;
-      }
-      const remainingStaged = yield* sql<{ readonly count: number }>`
+        const remainingStaged = yield* sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM attachments WHERE lifecycle = 'staged'
       `;
-      if ((remainingStaged[0]?.count ?? 0) === 0) {
-        yield* fileSystem
-          .remove(nodePath.join(config.attachmentsDir, ".staging"), {
-            recursive: true,
-            force: true,
-          })
-          .pipe(Effect.catch(() => Effect.void));
-      }
+        if ((remainingStaged[0]?.count ?? 0) === 0) {
+          yield* fileSystem
+            .remove(nodePath.join(config.attachmentsDir, ".staging"), {
+              recursive: true,
+              force: true,
+            })
+            .pipe(Effect.catch(() => Effect.void));
+        }
 
-      const rows = yield* sql<{ readonly attachmentId: string }>`
+        const rows = yield* sql<{ readonly attachmentId: string }>`
         SELECT attachment_id AS "attachmentId"
         FROM next_turn_queue_orphaned_attachments
       `;
-      for (const row of rows) {
-        const matches = yield* fileSystem
-          .readDirectory(config.attachmentsDir)
-          .pipe(Effect.catch(() => Effect.succeed([])));
-        yield* Effect.forEach(
-          matches.filter((entry) => entry.startsWith(`${row.attachmentId}.`)),
-          (entry) =>
-            fileSystem
-              .remove(`${config.attachmentsDir}/${entry}`, { force: true })
-              .pipe(Effect.catch(() => Effect.void)),
-          { discard: true },
-        );
-        yield* sql`
+        for (const row of rows) {
+          const matches = yield* fileSystem
+            .readDirectory(config.attachmentsDir)
+            .pipe(Effect.catch(() => Effect.succeed([])));
+          yield* Effect.forEach(
+            matches.filter((entry) => entry.startsWith(`${row.attachmentId}.`)),
+            (entry) =>
+              fileSystem
+                .remove(`${config.attachmentsDir}/${entry}`, { force: true })
+                .pipe(Effect.catch(() => Effect.void)),
+            { discard: true },
+          );
+          yield* sql`
           DELETE FROM attachments WHERE attachment_id = ${row.attachmentId}
         `;
-        yield* sql`
+          yield* sql`
           DELETE FROM next_turn_queue_orphaned_attachments
           WHERE attachment_id = ${row.attachmentId}
         `;
-      }
-    }).pipe(Effect.mapError(normalizeError)),
+        }
+      }),
+    ).pipe(Effect.mapError(normalizeError)),
 
     purgeSettledSubmissions: sql`
       DELETE FROM turn_submissions

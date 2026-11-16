@@ -1,6 +1,7 @@
 import { readNativeTaskIdentity } from "@t3tools/shared/nativeTaskIdentity";
 import type {
   NativeOperationCommand,
+  NativeHistoryRecovery,
   NativeOperationRecord,
   OrchestrationThreadActivity,
   ProviderSessionCapabilities,
@@ -21,9 +22,15 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { cn } from "~/lib/utils";
 import { readNativeApi } from "../../nativeApi";
+import {
+  selectSurfaceHeaderState,
+  selectThreadRightPanelState,
+  useRightPanelStore,
+} from "../../rightPanelStore";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -47,8 +54,10 @@ import { Spinner } from "../ui/spinner";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME } from "./composer/ComposerTray";
+import { StatusChip, useComposerStatusStripHost } from "./composer/ComposerStatusStrip";
 import {
   describeBackgroundTask,
+  describeBackgroundWorkChip,
   formatByteSize,
   isNativeOperationInFlight,
   nativeOperationLabel,
@@ -98,6 +107,12 @@ interface NativeRuntimeTrayProps {
   prompt: string;
   latestMessageAt?: string | undefined;
   onSuggestion: (text: string) => void;
+  onViewAgents?: (() => void) | undefined;
+  /**
+   * `chip` moves background tasks out of the tray into a status-strip chip
+   * (portalled into the strip's slot); without a mounted strip they stay rows.
+   */
+  backgroundTasksPresentation?: "row" | "chip" | undefined;
 }
 
 export function NativeRuntimeTray(props: NativeRuntimeTrayProps) {
@@ -109,6 +124,8 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
   const { threadId, capabilities, activities, prompt } = props;
   const [records, setRecords] = useState<readonly NativeOperationRecord[]>([]);
   const [tasks, setTasks] = useState<readonly ThreadBackgroundWorkEntry[]>([]);
+  const [historyRecovery, setHistoryRecovery] = useState<NativeHistoryRecovery | null>(null);
+  const [reviewingHistory, setReviewingHistory] = useState(false);
   const [busy, setBusy] = useState(false);
   const [stopping, setStopping] = useState(false);
   const mounted = useRef(true);
@@ -117,6 +134,9 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
   const [inspection, setInspection] = useState<TaskInspection | null>(null);
   const [reading, setReading] = useState(false);
   const [tasksExpanded, setTasksExpanded] = useState(false);
+  const [tasksChipOpen, setTasksChipOpen] = useState(false);
+  const statusStripHost = useComposerStatusStripHost();
+  const tasksAsChip = props.backgroundTasksPresentation === "chip" && statusStripHost !== null;
   // Elapsed times advance with the poll rather than a separate timer.
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [mountedAt] = useState(() => new Date().toISOString());
@@ -127,6 +147,20 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
     capabilities?.actions.some((entry) => entry.action === action && entry.supported) === true;
   const canInspectTasks = supported("childTaskInspection");
   const canStopTasks = supported("childTaskStop");
+  // Hidden once the Agents surface is on screen; the link would point at nothing.
+  const agentsOpen = useRightPanelStore(
+    (store) =>
+      selectSurfaceHeaderState(
+        selectThreadRightPanelState(store.byThreadId, threadId),
+        "agents",
+      ) === "active",
+  );
+  const viewAgents =
+    props.onViewAgents && !agentsOpen ? (
+      <Button size="xs" variant="ghost" aria-label="View agents" onClick={props.onViewAgents}>
+        View
+      </Button>
+    ) : null;
   // The server holds one native-operation reservation per thread until a stop
   // settles, so a second stop sent earlier is refused.
   const stopBlocked =
@@ -156,6 +190,8 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
   useEffect(() => {
     // A group that shrinks to one row starts collapsed if it grows again.
     if (shownTaskCount < 2) setTasksExpanded(false);
+    // A chip that disappears with its last task must not reopen with the next one.
+    if (shownTaskCount === 0) setTasksChipOpen(false);
   }, [shownTaskCount]);
   const shownSuggestionBefore = useRef(shownSuggestionId);
   const promptBefore = useRef(prompt);
@@ -195,14 +231,19 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
       refreshing = true;
       try {
         const version = mutationVersion.current;
-        const [next, snapshot] = await Promise.all([
+        const [next, snapshot, recovery] = await Promise.all([
           api.nativeOperations.list({ threadId }),
           api.agents.getSnapshot(),
+          api.nativeOperations.historyRecovery?.({ threadId, action: "inspect" }) ??
+            Promise.resolve(null),
         ]);
         if (alive) {
           // A poll that started before a local receipt is older than that
           // receipt; the next poll replaces the list authoritatively.
-          if (version === mutationVersion.current) setRecords(next);
+          if (version === mutationVersion.current) {
+            setRecords(next);
+            setHistoryRecovery(recovery);
+          }
           setTasks(snapshot.entries.filter((entry) => entry.threadId === threadId));
           setNowMs(Date.now());
         }
@@ -301,6 +342,8 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
   };
   const inspect = async (nativeId: string, task: BackgroundTaskDescription, cursor?: string) => {
     if (!capabilities) return;
+    // The output dialog replaces the chip's popover rather than stacking on it.
+    setTasksChipOpen(false);
     const api = readNativeApi()?.nativeOperations;
     if (!api?.inspect) {
       showError("Task output unavailable", "Native output API is unavailable.");
@@ -380,6 +423,7 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
             .filter(Boolean)
             .join(" · ")}
         </span>
+        {indented ? null : viewAgents}
         {canInspectTasks && (
           <Button
             size="xs"
@@ -434,10 +478,64 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
         .join(" · ")
     : null;
 
-  if (!capabilities) return null;
+  if (!capabilities && !historyRecovery) return null;
 
   return (
     <>
+      {historyRecovery ? (
+        <div className={ROW_CLASS_NAME} role="status">
+          <TriangleAlertIcon aria-hidden className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">Provider history is incomplete</span>
+          <Button size="xs" variant="outline" onClick={() => setReviewingHistory(true)}>
+            Review recovery
+          </Button>
+        </div>
+      ) : null}
+      <AlertDialog open={reviewingHistory} onOpenChange={setReviewingHistory}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Accept incomplete provider history?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Some provider output could not be saved, including reasoning, tools or images.
+              Continuing accepts incomplete local history and stops the provider. It will not resend
+              the interrupted turn.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={busy} />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              disabled={busy || !historyRecovery}
+              onClick={() => {
+                const api = readNativeApi()?.nativeOperations;
+                if (!api?.historyRecovery || !historyRecovery || busy) return;
+                setBusy(true);
+                mutationVersion.current++;
+                void api
+                  .historyRecovery({ threadId, action: "acknowledge", expected: historyRecovery })
+                  .then((current) => {
+                    if (mounted.current) {
+                      setHistoryRecovery(current);
+                      setReviewingHistory(false);
+                    }
+                  })
+                  .catch((cause) =>
+                    showError(
+                      "History recovery failed",
+                      errorMessage(cause, "Review the current provider history before retrying."),
+                    ),
+                  )
+                  .finally(() => {
+                    if (mounted.current) setBusy(false);
+                  });
+              }}
+            >
+              Stop provider and accept incomplete history
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       {rows.map((row) => {
         switch (row.kind) {
           case "suggestion":
@@ -516,10 +614,89 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
               >
                 <Spinner aria-hidden className="size-3.5 shrink-0" />
                 {nativeOperationLabel(row.record.command.kind)} running…
+                {row.record.command.kind === "aside" && (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => {
+                      const api = readNativeApi()?.nativeOperations;
+                      if (!api?.resolve || !capabilities) return;
+                      setBusy(true);
+                      void api
+                        .resolve({
+                          threadId,
+                          operationId: row.record.operationId,
+                          generation: capabilities.generation,
+                          action: "cancel",
+                        })
+                        .then(() => api.list({ threadId }))
+                        .then((next) => {
+                          if (mounted.current) {
+                            mutationVersion.current += 1;
+                            setRecords(next);
+                          }
+                        })
+                        .catch((cause) =>
+                          showError(
+                            "Could not cancel aside",
+                            errorMessage(cause, "Cancellation failed."),
+                          ),
+                        )
+                        .finally(() => {
+                          if (mounted.current) setBusy(false);
+                        });
+                    }}
+                  >
+                    Cancel aside
+                  </Button>
+                )}
               </div>
             );
           case "tasks": {
             const { tasks: shownTasks } = row;
+            if (tasksAsChip) {
+              const descriptions = shownTasks.map((task) => describeBackgroundTask(task, nowMs));
+              const chip = describeBackgroundWorkChip(descriptions);
+              const chipLabel = [chip.counts, chip.elapsed].filter(Boolean).join(" · ");
+              return createPortal(
+                <StatusChip
+                  chipId="background-work"
+                  icon={TerminalIcon}
+                  ariaLabel={`Background work: ${chipLabel}`}
+                  popupLabel="Background work"
+                  label={<span className="tabular-nums">{chipLabel}</span>}
+                  open={tasksChipOpen}
+                  onOpenChange={setTasksChipOpen}
+                >
+                  <div className="flex items-center gap-2 px-3 pt-2.5 text-xs">
+                    <span className="font-medium text-foreground">Background work</span>
+                    <span className="min-w-0 flex-1 text-muted-foreground">
+                      {shownTasks.length} running
+                    </span>
+                    {shownTasks.length > 1 && canStopTasks ? (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        disabled={stopBlocked}
+                        onClick={() => void stopTasks(shownTasks)}
+                      >
+                        Stop all
+                      </Button>
+                    ) : null}
+                  </div>
+                  <div
+                    role="group"
+                    aria-label="Background tasks"
+                    className="divide-y divide-border"
+                  >
+                    {shownTasks.map((task) => renderTaskRow(task, false))}
+                  </div>
+                </StatusChip>,
+                statusStripHost,
+                "tasks",
+              );
+            }
             if (shownTasks.length === 1) return renderTaskRow(shownTasks[0]!, false);
             const newest = describeBackgroundTask(shownTasks.at(-1)!, nowMs);
             const ToggleIcon = tasksExpanded ? ChevronDownIcon : ChevronRightIcon;
@@ -548,6 +725,7 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
                     </span>
                     <ToggleIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
                   </button>
+                  {viewAgents}
                   {tasksExpanded && canStopTasks && (
                     <Button
                       size="xs"

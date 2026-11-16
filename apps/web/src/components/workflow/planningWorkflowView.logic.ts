@@ -1,5 +1,5 @@
 import { isDocumentWorkflow, documentReaderPassPhase } from "@t3tools/shared/documentWorkflow";
-import type { PlanningWorkflow } from "@t3tools/contracts";
+import type { PlanningWorkflowSummary as PlanningWorkflow } from "@t3tools/contracts";
 import { planningWorkflowBranchFailureStage } from "@t3tools/shared/planningWorkflow";
 
 export type PlanningWorkflowErrorDetail = {

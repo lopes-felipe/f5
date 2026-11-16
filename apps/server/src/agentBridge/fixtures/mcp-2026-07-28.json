@@ -1,0 +1,49 @@
+{
+  "version": "2026-07-28",
+  "description": "Discovery lifecycle: server/discover without initialize, then tools/* with the version header on every request.",
+  "exchanges": [
+    {
+      "request": { "jsonrpc": "2.0", "id": 1, "method": "server/discover" },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "supportedVersions": ["2026-07-28", "2025-06-18"],
+          "capabilities": { "tools": { "listChanged": false } },
+          "serverInfo": { "name": "F5 Agent Bridge", "title": "F5 Agent Bridge" }
+        }
+      }
+    },
+    {
+      "headers": { "mcp-protocol-version": "2026-07-28" },
+      "request": { "jsonrpc": "2.0", "id": 2, "method": "tools/list" },
+      "toolNames": [
+        "list_projects",
+        "list_providers",
+        "list_threads",
+        "get_thread",
+        "get_thread_diff",
+        "create_thread",
+        "send_message",
+        "wait_for_submission"
+      ]
+    },
+    {
+      "headers": { "mcp-protocol-version": "2026-07-28" },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": { "name": "get_thread", "arguments": { "threadId": "missing" } }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "isError": true,
+          "structuredContent": { "error": "Thread not found." }
+        }
+      }
+    }
+  ]
+}

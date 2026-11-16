@@ -3,7 +3,7 @@ import { ThreadId } from "@t3tools/contracts";
 import { useEffect, useMemo, useRef } from "react";
 
 import { isSnoozedThread } from "../lib/threadOrdering";
-import { useStore } from "../store";
+import { useThreadSummaries, useThreadSummary } from "../threadSelectors";
 import { wakeThread } from "../threadPinSnooze";
 
 export function SnoozedThreadWakeController() {
@@ -11,11 +11,8 @@ export function SnoozedThreadWakeController() {
     strict: false,
     select: (params) => (params.threadId ? ThreadId.makeUnsafe(params.threadId) : null),
   });
-  const threads = useStore((state) => state.threads);
-  const thread = useMemo(
-    () => (routeThreadId ? threads.find((entry) => entry.id === routeThreadId) : undefined),
-    [routeThreadId, threads],
-  );
+  const threads = useThreadSummaries();
+  const thread = useThreadSummary(routeThreadId);
   const snoozedThreads = useMemo(
     () => threads.filter((entry) => entry.snoozedUntil != null),
     [threads],

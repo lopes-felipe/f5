@@ -1,0 +1,164 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-13T10:10:55.950Z",
+  "repositoryCommit": "1c964b078d602725cdefb74b303e0bc38419b9bd",
+  "workingTreeDirty": false,
+  "sourceHashes": {
+    "rehearsal": "cb0ef92369392fdfc21b168f6de8e4d9a363a6e31e1c2c79d5889764b11cb274",
+    "protection": "1cc7f3ecf911ff84107e57a77ad0f2c2766b21d45adc2418d5c9bb4874958b8a",
+    "browserFixture": "980f1bead7f66ae169616cf654cdc36a8003c3fad819935293aafd4ca69aff15",
+    "apps": "61f56c0ef57d1b3531ddde075d23abcf20c3b7059f7de7bef7e3a0e3f2742c54",
+    "pixels": "4c368f8ad4a2b8ee3d892db980423e0fa20bab9ae2a0dec1c6e1dcb68dda7e48",
+    "excludedFixture": "2be162612affa388dbc43a26787c5e6a184298c737c502f50ded22e94e057260",
+    "chromeExecutable": "428dccc1a45819d23c5db4fb37388883f8d9ba64611cbd6c42395eac4a18b6a4",
+    "helper": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5"
+  },
+  "chromeVersion": "155.0.8059.40",
+  "displayGeometry": [
+    {
+      "displayId": "3",
+      "geometryGeneration": "3:0.0:0.0:3337.0:1397.0:6674:2794:0.0",
+      "primary": true,
+      "nativeBounds": {
+        "x": 0,
+        "y": 0,
+        "width": 3337,
+        "height": 1397
+      },
+      "pixelSize": {
+        "width": 6674,
+        "height": 2794
+      },
+      "rotation": 0,
+      "modelSize": {
+        "width": 1456,
+        "height": 609
+      }
+    },
+    {
+      "displayId": "1",
+      "geometryGeneration": "1:902.0:1397.0:1728.0:1117.0:3456:2234:0.0",
+      "primary": false,
+      "nativeBounds": {
+        "x": 902,
+        "y": 1397,
+        "width": 1728,
+        "height": 1117
+      },
+      "pixelSize": {
+        "width": 3456,
+        "height": 2234
+      },
+      "rotation": 0,
+      "modelSize": {
+        "width": 1333,
+        "height": 862
+      }
+    }
+  ],
+  "captureTargets": {
+    "secureBoundsKnown": true,
+    "browserMarkerBoundsKnown": true,
+    "fixtureMarkerBoundsKnown": true,
+    "secureDisplayId": "3",
+    "browserMarkerDisplayId": "3",
+    "fixtureMarkerDisplayId": "3"
+  },
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "scope": "unsigned-native-helper-terminal-and-isolated-chrome-protection",
+  "signed": false,
+  "certified": false,
+  "state": "passed",
+  "physicalInterruption": false,
+  "retainedTerminal": false,
+  "retainedChrome": false,
+  "mockKeychain": true,
+  "browserStartup": {
+    "pageRequested": true,
+    "stateReported": true,
+    "stateRejected": false,
+    "ownedProcessObserved": true,
+    "launcherExited": true,
+    "launcherSignal": null
+  },
+  "browserFixture": {
+    "secureValueUnchanged": true,
+    "inputEvents": 0
+  },
+  "checks": [
+    {
+      "name": "Terminal and Chrome initially closed",
+      "state": "passed",
+      "elapsedMs": 133
+    },
+    {
+      "name": "Granted click-tier Terminal opens and is inspectable",
+      "state": "passed",
+      "elapsedMs": 599
+    },
+    {
+      "name": "Terminal without typing grant rejects keyboard input",
+      "state": "passed",
+      "elapsedMs": 16
+    },
+    {
+      "name": "Terminal without typing grant rejects semantic setValue",
+      "state": "passed",
+      "elapsedMs": 32
+    },
+    {
+      "name": "Chrome inspection identifies the synthetic secure field and omits its value",
+      "state": "passed",
+      "elapsedMs": 35
+    },
+    {
+      "name": "Chrome secure semantic setValue is refused",
+      "state": "passed",
+      "elapsedMs": 16
+    },
+    {
+      "name": "Focused Chrome password refuses keyboard typing with unchanged DOM value",
+      "state": "passed",
+      "elapsedMs": 431
+    },
+    {
+      "name": "Capture targets have known bounds on the same display",
+      "state": "passed",
+      "elapsedMs": 0
+    },
+    {
+      "name": "Capture positive control includes both granted markers and masks Chrome password",
+      "state": "passed",
+      "elapsedMs": 553
+    },
+    {
+      "name": "Revoked app inspection is refused",
+      "state": "passed",
+      "elapsedMs": 1
+    },
+    {
+      "name": "Capture omits revoked app marker while preserving browser marker and secure mask",
+      "state": "passed",
+      "elapsedMs": 202
+    },
+    {
+      "name": "Chrome password zoom is masked",
+      "state": "passed",
+      "elapsedMs": 100
+    },
+    {
+      "name": "Revoked browser inspection and capture exclude its fixture",
+      "state": "passed",
+      "elapsedMs": 173
+    }
+  ],
+  "limitations": [
+    "Scripted native-helper grants and permit; no F5 renderer consent, provider transport, overlay or cross-profile proof",
+    "Fresh local Chrome fixture/profile with test-only mock keychain; no real keychain, autofill, signed-in sites, extensions, popups or arbitrary browser/app trees tested",
+    "Single display, fixed app windows; no moving-window, multi-display, system-surface or complete capture privacy matrix",
+    "Terminal typing remains disabled; no command, chord or allow-typing workflow tested",
+    "Unsigned development helper only; signed installed-build attribution, Windows runtime and all release gates remain pending"
+  ]
+}

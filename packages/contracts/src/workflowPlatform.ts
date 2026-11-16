@@ -1,3 +1,4 @@
+import { WorkflowDetails } from "./workflowSummary";
 import { Schema } from "effect";
 
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
@@ -108,6 +109,7 @@ export const WorkflowPlatformCreateRunResult = Schema.Struct({
 export type WorkflowPlatformCreateRunResult = typeof WorkflowPlatformCreateRunResult.Type;
 
 export const WorkflowPlatformInspectRunInput = Schema.Struct({
+  includeWorkflow: Schema.optional(Schema.Boolean),
   runKind: WorkflowRunKind,
   workflowId: TrimmedNonEmptyString,
 });
@@ -160,6 +162,7 @@ export const WorkflowRunInspection = Schema.Struct({
 export type WorkflowRunInspection = typeof WorkflowRunInspection.Type;
 
 export const WorkflowPlatformInspectRunResult = Schema.Struct({
+  workflowDetails: Schema.optional(WorkflowDetails),
   inspection: WorkflowRunInspection,
 });
 export type WorkflowPlatformInspectRunResult = typeof WorkflowPlatformInspectRunResult.Type;

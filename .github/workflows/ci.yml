@@ -1,148 +1,854 @@
 name: CI
-
 on:
   pull_request:
   push:
-    branches:
-      - main
-
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 permissions:
   contents: read
-
-# Turbo runs at most two test packages at once. Bound every Vitest pool so
-# their combined workers do not exhaust the hosted runners.
 env:
   VITEST_MAX_WORKERS: "2"
-
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+  # Keep exact-SHA runs isolated. ci-supersede.yml drops older queued pushes
+  # after checking intent changes through the API; push payloads omit file lists.
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  quality:
-    name: Quality and full test suite
+  static:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.1
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.9
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
+      - uses: ./.github/actions/setup
+        id: install
       - name: Check formatting
-        run: bun run fmt:check
-
-      - name: Lint
-        run: bun run lint
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Audit Claude SDK
-        run: bun run sdk:audit
-
-      - name: Audit pinned Codex request shapes
-        run: bun run protocol:audit:requests:baseline
-
-      - name: Audit Codex protocol
-        run: bun run protocol:audit:baseline
-
-      - name: Run full test suite
-        run: bun run test:full
-
-      - name: Fetch authoritative upstream history
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
-          git remote add upstream https://github.com/pingdotgg/t3code.git
-          git fetch --no-prune --no-tags upstream refs/heads/main:refs/remotes/upstream/main
-
-      - name: Validate upstream port ledger
+          bun run fmt:check
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run lint
+      - name: Lint workflows
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          # Dependabot does not update this Docker image; update its digest deliberately.
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run typecheck
+      - name: Validate release intent on the merge result
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/check-release-intent.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Boot server under Bun
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run test:bun-server-boot
+      - name: Audit Claude SDK
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run sdk:audit
+      - name: Audit Codex requests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run protocol:audit:requests:baseline
+      - name: Audit Codex protocol
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run protocol:audit:baseline
+      - name: Audit Muse protocol
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run protocol:audit:muse
+      - name: Release smoke
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run release:smoke
+      - name: Check computer tier table drift
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/generate-computer-tiers.ts --check
+      - name: Validate authoritative upstream port ledger
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
           F5_REQUIRE_UPSTREAM: "1"
-        run: bun run upstream-ports:check
-
-      - name: Install Chromium for browser tests
-        run: bun run --cwd apps/web test:browser:install
-
-      - name: Run browser tests
-        run: bun run --cwd apps/web test:browser
-
-      - name: Run desktop smoke tests
-        run: xvfb-run --auto-servernum bun run test:desktop-smoke
-
-      - name: Run real profile backend lifecycle checks
-        run: node scripts/profile-lifecycle-smoke.cjs
-
-  windows:
-    name: Windows build and integration suite
-    runs-on: windows-latest
-    timeout-minutes: 25
+        run: |
+          if ! git remote get-url upstream >/dev/null 2>&1; then
+            git remote add upstream https://github.com/pingdotgg/t3code.git
+          fi
+          git remote set-url --push upstream DISABLED
+          git fetch --no-prune --no-tags upstream refs/heads/main:refs/remotes/upstream/main
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            # The full-history checkout already has the PR base; enforce immutability and ledger-only PRs.
+            if ! git rev-parse --verify --quiet "refs/remotes/origin/${GITHUB_BASE_REF}" >/dev/null; then
+              echo "::error::origin/${GITHUB_BASE_REF} is not in the checkout; the upstream ledger base-ref rules need it."
+              exit 1
+            fi
+            export F5_LEDGER_BASE_REF="origin/${GITHUB_BASE_REF}"
+          fi
+          bun run upstream-ports:check
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     steps:
-      # Preserve repository LF policy so this lane also detects accidental CRLF assumptions.
-      - name: Configure Git line endings
-        shell: pwsh
-        run: git config --global core.autocrlf false
-
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 24.13.1
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Workspace suites
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run test:ci:workspaces
+      - name: Server Git smoke
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_CI_SUITE_ID: "server-git-smoke"
+        run: |
+          bun run --cwd apps/server test:git:smoke
+      - name: Server integration
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_CI_SUITE_ID: "server-integration"
+        run: |
+          bun run --cwd apps/server test:integration
+      - name: Server Git extended
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_CI_SUITE_ID: "server-git-extended"
+        run: |
+          bun run --cwd apps/server test:git:extended
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts test
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          bun-version: 1.3.9
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Run Windows unit and integration tests
-        run: bun run test
-
-      - name: Build desktop bundles
-        run: bun run build:desktop
-
-      - name: Run desktop smoke tests
-        run: bun run test:desktop-smoke
-
-      - name: Run real profile backend lifecycle checks
-        run: node scripts/profile-lifecycle-smoke.cjs
-
-      # The hosted runner does not have real codex/cursor/grok/opencode installs.
-      # Provider end-to-end spawning and authenticated Claude sessions remain a manual Windows pass.
-
-  macos-profiles:
-    name: macOS profile storage and lifecycle checks
-    runs-on: macos-latest
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  server-unit:
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    defaults:
+      run:
+        shell: bash
+    env:
+      VITEST_MAX_WORKERS: "4"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 24.13.1
-      - uses: oven-sh/setup-bun@v2
+          persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
+      - uses: ./.github/actions/setup
+        id: install
+        if: steps.changes.outputs.heavy == 'true'
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Server unit shard
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_CI_SUITE_ID: "server-unit-${{ matrix.shard }}"
+        run: |
+          bun run test:server:shard --shard=${{ matrix.shard }}/2
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts server-unit-${{ matrix.shard }}
+      - name: Upload test reports
+        if: always() && steps.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          bun-version: 1.3.9
-      - run: bun install --frozen-lockfile
-      - name: Check profile locks, provisioning, homes and account lifecycle
-        run: bun run --cwd apps/server test:file src/profiles src/provider/Drivers/ClaudeHome.test.ts src/provider/Drivers/CodexHomeLayout.test.ts
-      # Native account/keychain certification requires dedicated accounts and is
-      # recorded separately before release; no credentials are exposed to PR jobs.
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  windows-server-unit:
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Configure Git line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
+      - uses: ./.github/actions/setup
+        id: install
+        if: steps.changes.outputs.heavy == 'true'
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Server unit shard
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_CI_SUITE_ID: "server-unit-${{ matrix.shard }}"
+          # Per-file storage accounting evidence for the Windows logical-byte gap.
+        run: |
+          bun run test:server:shard --shard=${{ matrix.shard }}/3
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts server-unit-${{ matrix.shard }}
+      - name: Upload test reports
+        if: always() && steps.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  browser:
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    env:
+      # Match the locked Playwright version; browsers and OS libraries are bundled.
+      PLAYWRIGHT_IMAGE: mcr.microsoft.com/playwright:v1.58.2-noble@sha256:6446946a1d9fd62d9ae501312a2d76a43ee688542b21622056a372959b65d63d
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
+      - uses: ./.github/actions/setup
+        id: install
+        if: steps.changes.outputs.heavy == 'true'
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Browser tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_CI_SUITE_ID: "web-browser"
+        run: |
+          # Leave headroom for the growing suite on shared runners; individual
+          # tests still have Vitest's 30-second timeout.
+          # Keep setup on the runner (the browser image does not include Bun's
+          # bootstrap tools). Only tests run in Docker, with the pinned Node
+          # executable and host UID so reports remain readable by upload steps.
+          docker run --rm --init --shm-size=1gb \
+            --user "$(id -u):$(id -g)" \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=$GITHUB_WORKSPACE" \
+            --mount "type=bind,source=$RUNNER_TEMP,target=$RUNNER_TEMP" \
+            --mount "type=bind,source=$(command -v node),target=/usr/local/bin/node,readonly" \
+            --workdir "$GITHUB_WORKSPACE/apps/web" \
+            --env VITEST_MAX_WORKERS \
+            --env F5_CI_SUITE_ID \
+            --env F5_CI_REPORT_DIR \
+            --env F5_CI_ARTIFACT_DIR \
+            --env CI=true \
+            "$PLAYWRIGHT_IMAGE" \
+            timeout --signal=TERM --kill-after=20s 10m \
+            node node_modules/vitest/vitest.mjs run --config vitest.browser.config.ts
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts browser
+      - name: Upload test reports
+        if: always() && steps.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Stage browser diagnostics
+        if: always() && steps.changes.outputs.heavy == 'true'
+        env:
+          ARTIFACT_SOURCE: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          ARTIFACT_STAGING: ${{ runner.temp }}/ci-upload/browser
+        run: |
+          mkdir -p "$ARTIFACT_STAGING"
+          if [[ -d "$ARTIFACT_SOURCE" ]]; then
+            cp -R "$ARTIFACT_SOURCE/." "$ARTIFACT_STAGING/"
+          fi
+      - name: Upload diagnostics
+        if: always() && steps.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-upload/browser
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  desktop:
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
+      - uses: ./.github/actions/setup
+        id: install
+        if: steps.changes.outputs.heavy == 'true'
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Configure Electron sandbox
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        working-directory: apps/desktop
+        run: |
+          electron_sandbox="$(node -e 'const path = require("node:path"); console.log(path.join(path.dirname(require("electron")), "chrome-sandbox"))')"
+          sudo chown root:root "$electron_sandbox"
+          sudo chmod 4755 "$electron_sandbox"
+      - name: Desktop smoke
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-retry-once.ts --step desktop-smoke -- xvfb-run --auto-servernum bun run test:desktop-smoke
+      - name: Profile lifecycle
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/profile-lifecycle-smoke.cjs
+      - name: Marketing production build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run build:marketing
+      - name: Upload test reports
+        if: always() && steps.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload diagnostics
+        if: always() && steps.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  windows-build:
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Configure Git line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
+      - uses: ./.github/actions/setup
+        id: install
+        if: steps.changes.outputs.heavy == 'true'
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        with:
+          workspaces: |
+            apps/desktop/native/windows -> target
+            apps/desktop/native/windows/fixture -> target
+      - name: Check computer tier table drift
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/generate-computer-tiers.ts --check
+      - name: Test Windows helper
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          cargo test --locked --manifest-path apps/desktop/native/windows/Cargo.toml
+      - name: Check Windows helper
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/build-computer-helper.ts --platform win --arch x64 --check
+      - name: Test Windows fixture
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          cargo test --locked --manifest-path apps/desktop/native/windows/fixture/Cargo.toml
+      - name: Check Windows fixture
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          cargo run --locked --manifest-path apps/desktop/native/windows/fixture/Cargo.toml -- --check
+      - name: Workspace suites
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run test:ci:workspaces
+      - name: Server Git smoke
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_CI_SUITE_ID: "server-git-smoke"
+        run: |
+          bun run --cwd apps/server test:git:smoke
+      - name: Server integration
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_CI_SUITE_ID: "server-integration"
+        run: |
+          bun run --cwd apps/server test:integration
+      - name: Build desktop
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run build:desktop
+      - name: Desktop smoke
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-retry-once.ts --step desktop-smoke -- bun run test:desktop-smoke
+      - name: Profile lifecycle
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/profile-lifecycle-smoke.cjs
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts windows-build
+      - name: Upload test reports
+        if: always() && steps.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload diagnostics
+        if: always() && steps.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-profiles:
+    permissions:
+      contents: read
+      pull-requests: read
+    # macos-latest is arm64: the pinned Claude CLI binary for the certified record.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
+      - uses: ./.github/actions/setup
+        id: install
+        if: steps.changes.outputs.heavy == 'true'
+      # These checks run before the report directory is set, so they write no
+      # test reports outside this job's summary inventory.
+      - name: Check Claude in Chrome descriptor drift
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun apps/server/scripts/generate-claude-chrome-descriptor.ts --check
+      - name: Certification record checks
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run --cwd packages/shared test src/providerIntegrationCertification.test.ts
+      - name: Verify native watchdog and power command safety
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_REQUIRE_NATIVE_WATCHDOG_TESTS: "1"
+        run: bun run --cwd apps/desktop test src/keepAwake
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Check computer tier table drift
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/generate-computer-tiers.ts --check
+      - name: Test Swift computer helper
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          swift test --package-path apps/desktop/native/macos
+      - name: Check universal computer helper
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/build-computer-helper.ts --platform mac --arch universal --check
+      - name: Profile checks
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_CI_SUITE_ID: "macos-profiles"
+        run: |
+          bun run --cwd apps/server test:file src/profiles src/provider/Drivers/ClaudeHome.test.ts src/provider/Drivers/CodexHomeLayout.test.ts
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts macos-profiles
+      - name: Upload test reports
+        if: always() && steps.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-workspaces:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Prepare AppKit compiler modules
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        # The former monolith warmed these through its native helper checks.
+        # Keep cold SDK compilation outside the bitmap fixture's 30-second hook.
+        run: swift -e 'import AppKit; print("AppKit compiler modules ready")'
+      - name: Workspace suites
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: bun run test:ci:workspaces
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts macos-workspaces
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-server-unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      F5_CI_DURATION_SHARDING: "true"
+    runs-on: macos-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Server unit shard
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "server-unit-${{ matrix.shard }}"
+        run: bun run test:server:shard --shard=${{ matrix.shard }}/2
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts server-unit-${{ matrix.shard }}
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-integration:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Git smoke
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "server-git-smoke"
+        run: bun run --cwd apps/server test:git:smoke
+      - name: Integration
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "server-integration"
+        run: bun run --cwd apps/server test:integration
+      - name: Real Git extended
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "server-git-extended"
+          # One file at a time keeps the concurrency each former per-suite runner had
+          # (--maxConcurrency=4); two workers ran 8 Git-heavy tests on 3 vCPUs and
+          # pushed GitCore's live config-lock test past its 15 s timeout.
+          F5_TEST_MAX_WORKERS: "1"
+        run: bun run --cwd apps/server test:git:extended
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts macos-integration
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-desktop:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Build desktop
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "Build desktop"
+        run: bun run build:desktop
+      - name: Desktop smoke
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "Desktop smoke"
+        run: node scripts/ci-retry-once.ts --step desktop-smoke -- bun run test:desktop-smoke
+      - name: Profile lifecycle
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "Profile lifecycle"
+        run: node scripts/profile-lifecycle-smoke.cjs
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  ci-result:
+    name: CI result
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs:
+      [
+        static,
+        test,
+        server-unit,
+        windows-server-unit,
+        browser,
+        desktop,
+        windows-build,
+        macos-profiles,
+        macos-workspaces,
+        macos-server-unit,
+        macos-integration,
+        macos-desktop,
+      ]
+    steps:
+      - name: Require every job verdict
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        shell: bash
+        run: |
+          printf '%s\n' "$NEEDS" | jq -e '
+            length > 0 and all(.[]; .result == "success" or .result == "skipped")'

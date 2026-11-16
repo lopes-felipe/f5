@@ -9,7 +9,12 @@
  */
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { resolveClaudeCliInvocation } from "../../provider/claudeSdkExecutable.ts";
+import {
+  claudeCliSpawnEnvironment,
+  resolveClaudeCliInvocation,
+} from "../../provider/claudeSdkExecutable.ts";
+import { terminateOnRelease } from "../../spawn/terminateOnRelease.ts";
+import { hasClaudeManagedMcpConfig } from "../../provider/claudeInventory.ts";
 import {
   claudeThinkingCliArgs,
   claudeThinkingConfig,
@@ -19,6 +24,7 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   ProviderInstanceId,
   type ClaudeSettings,
+  type ModelCapabilities,
   type ModelSelection,
 } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
@@ -32,6 +38,7 @@ import {
   buildThreadTitlePrompt,
 } from "../Prompts.ts";
 import {
+  classifyCliFailureKind,
   normalizeCliError,
   sanitizeCommitSubject,
   sanitizePrTitle,
@@ -54,6 +61,9 @@ import {
 import { makeClaudeEnvironment } from "../../provider/Drivers/ClaudeHome.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
+const NO_SESSION_PERSISTENCE = "--no-session-persistence";
+// Claude Code before 2.0.63 rejects this flag before executing the prompt.
+const NO_SESSION_PERSISTENCE_REJECTED = "error: unknown option '--no-session-persistence'";
 const DEFAULT_CLAUDE_MODEL_SELECTION = createModelSelection(
   ProviderInstanceId.make("claudeAgent"),
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER.claudeAgent,
@@ -79,9 +89,29 @@ const ClaudeOutputMessage = Schema.Struct({
   structured_output: Schema.optionalKey(Schema.Unknown),
 });
 
+const isClaudeErrorResult = Schema.is(
+  Schema.Struct({ is_error: Schema.Literal(true), result: Schema.String }),
+);
+const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
+/**
+ * The error a failed `claude -p --output-format json` run reports on stdout.
+ * Stderr may only hold notices from a wrapper around the binary, so callers
+ * prefer this when present.
+ */
+export function claudeErrorResult(stdout: string): string | undefined {
+  const output = Option.getOrUndefined(decodeJsonOption(stdout));
+  const messages: ReadonlyArray<unknown> = Array.isArray(output) ? output : [output];
+  return messages
+    .filter(isClaudeErrorResult)
+    .map((message) => message.result.trim())
+    .findLast((result) => result.length > 0);
+}
+
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
   claudeSettings: ClaudeSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  resolveCapabilities?: (model: string) => Effect.Effect<ModelCapabilities>,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -127,14 +157,16 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     modelSelection: ModelSelection;
   }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
     const jsonSchemaStr = JSON.stringify(toJsonSchemaObject(outputSchemaJson));
-    const caps = getClaudeModelCapabilities(modelSelection.model);
+    const caps = resolveCapabilities
+      ? yield* resolveCapabilities(modelSelection.model)
+      : getClaudeModelCapabilities(modelSelection.model);
     const descriptors = getProviderOptionDescriptors({
       caps,
       selections: modelSelection.options,
     });
     const findDescriptor = (id: string) => descriptors.find((descriptor) => descriptor.id === id);
     const rawEffortSelection = getModelSelectionStringOptionValue(modelSelection, "effort");
-    const resolvedEffort = resolveClaudeEffort(caps, rawEffortSelection);
+    const resolvedEffort = resolveClaudeEffort(caps, rawEffortSelection, modelSelection.model);
     const cliEffort = normalizeClaudeCliEffort(resolvedEffort);
     const thinkingDescriptor = findDescriptor("thinking");
     const fastModeDescriptor = findDescriptor("fastMode");
@@ -157,7 +189,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ...(fastMode ? { fastMode: true } : {}),
     };
 
-    const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
+    const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
+      noSessionPersistence: boolean,
+    ) {
       const configuredBinary = claudeSettings.binaryPath.trim() || "claude";
       const binaryPath =
         configuredBinary.includes("/") || configuredBinary.includes("\\")
@@ -178,7 +212,14 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         "--tools",
         "",
         "--disable-slash-commands",
-        "--strict-mcp-config",
+        ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
+        // A default permission mode from the user's settings (plan mode, for one) must not
+        // change how metadata is generated.
+        "--permission-mode",
+        "dontAsk",
+        // Claude refuses the strict flag next to a managed-mcp.json, which
+        // already excludes every other MCP source.
+        ...(hasClaudeManagedMcpConfig() ? [] : ["--strict-mcp-config"]),
       ];
       const invocation = yield* Effect.try({
         try: () => resolveClaudeCliInvocation(binaryPath, args, claudeEnvironment, { cwd }),
@@ -195,7 +236,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ),
         );
       const command = ChildProcess.make(invocation.file, [...invocation.args], {
-        env: claudeEnvironment,
+        env: claudeCliSpawnEnvironment(invocation, claudeEnvironment),
         extendEnv: false,
         cwd: isolatedCwd,
         stdin: {
@@ -211,13 +252,13 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         },
       });
 
-      const child = yield* commandSpawner
-        .spawn(command)
-        .pipe(
-          Effect.mapError((cause) =>
-            normalizeCliError("claude", operation, cause, "Failed to spawn Claude CLI process"),
-          ),
-        );
+      const child = yield* commandSpawner.spawn(command).pipe(
+        Effect.mapError((cause) =>
+          normalizeCliError("claude", operation, cause, "Failed to spawn Claude CLI process"),
+        ),
+        Effect.tap(terminateOnRelease),
+        Effect.uninterruptible,
+      );
 
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
@@ -232,30 +273,44 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         { concurrency: "unbounded" },
       );
 
-      if (exitCode !== 0) {
-        const stderrDetail = stderr.trim();
-        const stdoutDetail = stdout.trim();
-        const detail = stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
-        return yield* new TextGenerationError({
-          operation,
-          detail:
-            detail.length > 0
-              ? `Claude CLI command failed: ${detail}`
-              : `Claude CLI command failed with code ${exitCode}.`,
-        });
-      }
-
-      return stdout;
+      return { stdout, stderr, exitCode };
     });
 
-    const rawStdout = yield* runClaudeCommand().pipe(
+    const rawStdout = yield* runClaudeCommand(true).pipe(
+      Effect.flatMap((result) =>
+        result.exitCode !== 0 && result.stderr.includes(NO_SESSION_PERSISTENCE_REJECTED)
+          ? runClaudeCommand(false)
+          : Effect.succeed(result),
+      ),
+      Effect.flatMap(({ stdout, stderr, exitCode }) => {
+        if (exitCode === 0) return Effect.succeed(stdout);
+        const stderrDetail = stderr.trim();
+        const stdoutDetail = stdout.trim();
+        const detail =
+          claudeErrorResult(stdoutDetail) ??
+          (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
+        return Effect.fail(
+          new TextGenerationError({
+            operation,
+            detail:
+              detail.length > 0
+                ? `Claude CLI command failed: ${detail}`
+                : `Claude CLI command failed with code ${exitCode}.`,
+            kind: classifyCliFailureKind(detail),
+          }),
+        );
+      }),
       Effect.scoped,
       Effect.timeoutOption(CLAUDE_TIMEOUT_MS),
       Effect.flatMap(
         Option.match({
           onNone: () =>
             Effect.fail(
-              new TextGenerationError({ operation, detail: "Claude CLI request timed out." }),
+              new TextGenerationError({
+                operation,
+                detail: "Claude CLI request timed out.",
+                kind: "timeout",
+              }),
             ),
           onSome: (value) => Effect.succeed(value),
         }),
@@ -272,6 +327,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           new TextGenerationError({
             operation,
             detail: "Claude CLI returned unexpected output format.",
+            kind: "invalid-output",
             cause,
           }),
         ),
@@ -287,6 +343,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           new TextGenerationError({
             operation,
             detail: "Claude returned invalid structured output.",
+            kind: "invalid-output",
             cause,
           }),
         ),
@@ -379,11 +436,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
   const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = Effect.fn(
     "ClaudeTextGeneration.generateThreadTitle",
   )(function* (input) {
-    const { prompt, outputSchema } = buildThreadTitlePrompt({
-      message: input.message,
-      previousTitle: input.previousTitle,
-      attachments: input.attachments,
-    });
+    const { prompt, outputSchema } = buildThreadTitlePrompt(input);
 
     const generated = yield* runClaudeJson({
       operation: "generateThreadTitle",

@@ -10,6 +10,7 @@ import {
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useRecoveryStateStore } from "../recoveryStateStore";
 import { useStore } from "../store";
+import { useThreadSummaries } from "../threadSelectors";
 import type { Project, Thread } from "../types";
 import { isStartupReady } from "./startupReady";
 
@@ -27,7 +28,7 @@ export interface OnboardingLiteState {
 interface OnboardingLiteSnapshot {
   settings: AppSettings;
   projects: ReadonlyArray<Project>;
-  threads: ReadonlyArray<Thread>;
+  threads: ReadonlyArray<Pick<Thread, "id">>;
   draftThreadsByProjectId: ReadonlyMap<string, string>;
   threadsHydrated: boolean;
   recoveryEpoch: number;
@@ -85,7 +86,7 @@ export function deriveOnboardingLiteState(snapshot: OnboardingLiteSnapshot): Onb
 export function useOnboardingLiteState(): OnboardingLiteState {
   const { settings } = useAppSettings();
   const projects = useStore((store) => store.projects);
-  const threads = useStore((store) => store.threads);
+  const threads = useThreadSummaries();
   const threadsHydrated = useStore((store) => store.threadsHydrated);
   const draftThreadIdsByProjectId = useComposerDraftStore(
     (store) => store.projectDraftThreadIdByProjectId,

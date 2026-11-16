@@ -1,3 +1,16 @@
+import { CliCommandSettings } from "../CliCommandSettings";
+import { useDesktopUpdate } from "../../sidebar/useDesktopUpdate";
+import {
+  getDesktopUpdateStatusSummary,
+  isAboutUpdateActionDisabled,
+  resolveAboutUpdateAction,
+} from "../../desktopUpdate.logic";
+import {
+  DesktopUpdateDownloadProgress,
+  DesktopUpdateInstallProgress,
+} from "../../DesktopUpdateProgress";
+import { DesktopUpdateReleaseLink } from "../../DesktopUpdateReleaseLink";
+import { Switch } from "../../ui/switch";
 import { useNavigate } from "@tanstack/react-router";
 
 import { APP_VERSION } from "../../../branding";
@@ -8,6 +21,11 @@ export { ABOUT_SETTINGS_DESCRIPTORS } from "./AboutSettings.descriptors";
 
 export function AboutSettings() {
   const navigate = useNavigate();
+  const updates = useDesktopUpdate();
+  const state = updates.state;
+  const canCheck = typeof window.desktopBridge?.checkForUpdates === "function";
+  const canSetChannel = typeof window.desktopBridge?.setUpdateChannel === "function";
+  const action = state ? resolveAboutUpdateAction(state) : "none";
   const { settings, updateSettings } = useSettingsRouteContext();
   const showResetOnboardingButton =
     settings.onboardingLiteStatus !== "eligible" && settings.onboardingLiteStatus !== "reopened";
@@ -31,6 +49,80 @@ export function AboutSettings() {
         </div>
         <code className="text-xs font-medium text-muted-foreground">{APP_VERSION}</code>
       </div>
+
+      {state && canCheck ? (
+        <div className="border-b border-border py-3" data-settings-search-target="about.updates">
+          <p className="text-sm font-medium">Updates</p>
+          <p className="text-xs text-muted-foreground" role="status">
+            {getDesktopUpdateStatusSummary(state)}
+          </p>
+          {state.status === "downloading" ? (
+            <div className="mt-2 max-w-sm">
+              <DesktopUpdateDownloadProgress state={state} />
+            </div>
+          ) : state.status === "preparing" ? (
+            <div className="mt-2 max-w-sm">
+              <DesktopUpdateInstallProgress state={state} />
+            </div>
+          ) : null}
+          {state.availableVersion && state.releaseNotes ? (
+            <div className="my-2">
+              <p className="max-h-80 overflow-y-auto whitespace-pre-wrap text-xs">
+                {state.releaseNotes}
+              </p>
+              <DesktopUpdateReleaseLink version={state.availableVersion} />
+            </div>
+          ) : null}
+          <Button
+            className="mt-2"
+            size="xs"
+            variant="outline"
+            disabled={isAboutUpdateActionDisabled(state)}
+            onClick={updates.handleAboutAction}
+          >
+            {state.status === "preparing"
+              ? "Preparing update…"
+              : state.status === "checking"
+                ? "Checking…"
+                : state.status === "downloading"
+                  ? "Downloading…"
+                  : action === "download"
+                    ? "Download update"
+                    : action === "install"
+                      ? "Restart to update"
+                      : "Check for updates"}
+          </Button>
+        </div>
+      ) : null}
+      {state && canSetChannel ? (
+        <div
+          className="flex items-center justify-between gap-4 py-3"
+          data-settings-search-target="about.betaUpdates"
+        >
+          <div>
+            <p className="text-sm font-medium">Beta updates</p>
+            <p className="text-xs text-muted-foreground">
+              Receive pre-release builds. Turning this off keeps your current version until a newer
+              stable release ships.
+            </p>
+          </div>
+          <Switch
+            aria-label="Beta updates"
+            checked={state.channel === "beta"}
+            disabled={
+              updates.channelPending ||
+              state.status === "checking" ||
+              state.status === "preparing" ||
+              state.status === "downloading"
+            }
+            onCheckedChange={(checked) => {
+              void updates.setChannel(checked ? "beta" : "stable");
+            }}
+          />
+        </div>
+      ) : null}
+
+      <CliCommandSettings />
 
       {showResetOnboardingButton ? (
         <div className="mt-4 flex justify-end" data-settings-search-target="about.onboarding">

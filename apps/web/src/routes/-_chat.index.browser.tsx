@@ -16,7 +16,7 @@ import { render } from "vitest-browser-react";
 
 import { displayProfilePatchFor, parsePersistedAppSettings, useAppSettings } from "../appSettings";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
-import { ChatIndexRouteView } from "./_chat.index";
+import { ChatIndexRouteView } from "../components/home/ChatIndexRouteView";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useRecoveryStateStore } from "../recoveryStateStore";
@@ -254,7 +254,7 @@ describe("_chat.index onboarding lite", () => {
 
       await vi.waitFor(() => {
         expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeNull();
-        expect(document.body.textContent).toContain("Add a project to get started.");
+        expect(document.querySelector('[data-slot="home-quick-start"]')).not.toBeNull();
       });
       expect(document.body.textContent).not.toContain("Planning workflows");
     } finally {
@@ -290,7 +290,7 @@ describe("_chat.index onboarding lite", () => {
 
       await vi.waitFor(() => {
         expect(readPersistedSettings().onboardingLiteStatus).toBe("dismissed");
-        expect(document.body.textContent).toContain("Add a project to get started.");
+        expect(document.querySelector('[data-slot="home-quick-start"]')).not.toBeNull();
       });
     } finally {
       firstRender.queryClient.clear();
@@ -300,7 +300,7 @@ describe("_chat.index onboarding lite", () => {
     const secondRender = await renderIndexRoute();
 
     try {
-      expect(document.body.textContent).toContain("Add a project to get started.");
+      expect(document.querySelector('[data-slot="home-quick-start"]')).not.toBeNull();
       expect(document.body.textContent).not.toContain("Planning workflows");
     } finally {
       secondRender.queryClient.clear();
@@ -450,7 +450,9 @@ describe("_chat.index onboarding lite", () => {
 
       await vi.waitFor(() => {
         expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeNull();
-        expect(document.body.textContent).toContain("Continue: Thread");
+        // Home itself: its quick-start bar and, with nothing waiting, the empty queue.
+        expect(document.querySelector('[data-slot="home-quick-start"]')).toBeTruthy();
+        expect(document.body.textContent).toContain("Nothing needs you");
       });
       expect(document.body.textContent).not.toContain("Planning workflows");
       expect(document.body.textContent).not.toContain("Add a project to get started.");
@@ -466,7 +468,7 @@ describe("_chat.index onboarding lite", () => {
     });
 
     try {
-      expect(document.body.textContent).toContain("Add a project to get started.");
+      expect(document.querySelector('[data-slot="home-quick-start"]')).not.toBeNull();
       expect(document.body.textContent).not.toContain("Planning workflows");
     } finally {
       screen.queryClient.clear();

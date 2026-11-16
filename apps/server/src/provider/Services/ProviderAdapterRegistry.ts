@@ -13,6 +13,7 @@ import type { Effect, PubSub, Scope, Stream } from "effect";
 
 import type { ProviderAdapterError, ProviderUnsupportedError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "./ProviderAdapter.ts";
+import type { ProviderInstallTarget } from "../providerInstallChannel.ts";
 import type { ProviderContinuationIdentity } from "../ProviderDriver.ts";
 
 export interface ProviderInstanceRoutingInfo {
@@ -23,6 +24,7 @@ export interface ProviderInstanceRoutingInfo {
   readonly enabled: boolean;
   readonly continuationIdentity: ProviderContinuationIdentity;
   readonly launchIdentity?: string;
+  readonly resolveInstallTarget?: (() => ProviderInstallTarget | null) | undefined;
 }
 
 /**

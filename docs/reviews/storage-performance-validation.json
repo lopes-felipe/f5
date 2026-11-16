@@ -1,0 +1,113 @@
+{
+  "fixture": "100,000 empty files in 100 directories; baseline node/bun results use 2 checkpoints, reviewCheckpointBenchmark uses 70 checkpoints; generated temporary data only",
+  "node": {
+    "runtime": "Node 26.11.1",
+    "measurement": {
+      "fileCount": 100000,
+      "entries": 100101,
+      "durationMs": 290,
+      "fsCalls": 100202,
+      "maxInFlight": 16,
+      "peakRssGrowthBytes": 58195968,
+      "maxEventLoopLagMs": 1,
+      "warnings": 0
+    }
+  },
+  "bun": {
+    "runtime": "Bun 1.3.11",
+    "measurement": {
+      "fileCount": 100000,
+      "entries": 100101,
+      "durationMs": 440,
+      "fsCalls": 100202,
+      "maxInFlight": 16,
+      "peakRssGrowthBytes": 63537152,
+      "maxEventLoopLagMs": 2,
+      "warnings": 0
+    }
+  },
+  "limits": {
+    "filesystemConcurrency": 16,
+    "gitReadinessConcurrency": 4,
+    "gitReadinessTimeoutSeconds": 15
+  },
+  "bundledNodeCompaction": {
+    "response": {
+      "compacted": true
+    },
+    "autoVacuum": 2,
+    "beforeBytes": 4112384,
+    "afterBytes": 12288
+  },
+  "scope": "Synthetic filesystem benchmark, a temporary SQLite database, and a read-only traversal of the existing profile. No profile data was modified or deleted. Profile traversal timings exclude database queries and Git readiness checks.",
+  "profileTraversal": {
+    "runtime": "Node 26.11.1",
+    "entries": 2796713,
+    "durationMs": 24817,
+    "peakRssGrowthBytes": 97976320,
+    "totalBytes": 73438814208,
+    "segments": [
+      {
+        "name": "logs",
+        "bytes": 1989390336
+      },
+      {
+        "name": "worktrees",
+        "bytes": 60372238336
+      },
+      {
+        "name": "provider-homes",
+        "bytes": 8514715648
+      },
+      {
+        "name": "attachments",
+        "bytes": 204926976
+      }
+    ],
+    "warningCount": 0,
+    "readOnly": true
+  },
+  "baselineCheckpointCount": 2,
+  "reviewCheckpointBenchmark": {
+    "node": {
+      "fileCount": 100000,
+      "checkpoints": 70,
+      "entries": 100101,
+      "durationMs": 372,
+      "fsCalls": 100202,
+      "maxInFlight": 16,
+      "peakRssGrowthBytes": 62636032,
+      "maxEventLoopLagMs": 1,
+      "warnings": 0
+    },
+    "bun": {
+      "fileCount": 100000,
+      "checkpoints": 70,
+      "entries": 100101,
+      "durationMs": 352,
+      "fsCalls": 100202,
+      "maxInFlight": 16,
+      "peakRssGrowthBytes": 57622528,
+      "maxEventLoopLagMs": 3,
+      "warnings": 0
+    }
+  },
+  "reviewValidation": {
+    "parentDeath": "Real VACUUM with a held reader transaction; kill the owning process, require helper-pipe EOF within 1.5 seconds, then verify a replacement writer succeeds.",
+    "purgeLockOrder": "Production acceptCleanup overlaps automatic purge of the same thread; attachment access remains available during provider quiescence.",
+    "cancellation": "Both managed and legacy worktrees remain intact when cancelled during a lifecycle-lock wait.",
+    "profileTimingScope": "The earlier profile traversal timing is a baseline filesystem-only measurement; a complete live-profile scan or purge was not performed."
+  },
+  "reviewBundledNodeParentDeath": {
+    "runtime": "v26.11.1",
+    "helper": "bundled Node maintenance",
+    "exitedAfterOwnerDeath": true,
+    "exitLatencyMs": 14,
+    "rowCount": 1001
+  },
+  "reviewBundledNodeNormalExit": {
+    "runtime": "v26.11.1",
+    "compacted": true,
+    "exitedNormally": true
+  }
+}

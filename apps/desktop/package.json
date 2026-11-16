@@ -1,22 +1,25 @@
 {
   "name": "@t3tools/desktop",
-  "version": "0.0.10",
+  "version": "0.1.9",
   "private": true,
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/boot.js",
   "scripts": {
     "dev": "bun run --parallel dev:bundle dev:electron",
     "dev:bundle": "node node_modules/tsdown/dist/run.mjs --config tsdown.config.mts --watch",
     "dev:electron": "bun run scripts/dev-electron.mjs",
-    "build": "node node_modules/tsdown/dist/run.mjs --config tsdown.config.mts",
+    "build": "node ../../scripts/build-computer-helper.ts && node node_modules/tsdown/dist/run.mjs --config tsdown.config.mts",
     "start": "bun run scripts/start-electron.mjs",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
-    "test": "node node_modules/vitest/vitest.mjs run --passWithNoTests",
-    "smoke-test": "node scripts/smoke-test.mjs"
+    "test": "node node_modules/vitest/vitest.mjs run",
+    "smoke-test": "node scripts/smoke-test.mjs",
+    "test:preview-snapshot:browser": "node scripts/preview-snapshot-browser-smoke.mjs",
+    "test:preview-snapshot:electron": "node scripts/preview-snapshot-electron-smoke.mjs"
   },
   "dependencies": {
+    "dbus-next": "0.10.2",
     "effect": "catalog:",
-    "electron": "40.6.0",
-    "electron-updater": "^6.6.2"
+    "electron": "44.10.1",
+    "electron-updater": "6.8.3"
   },
   "devDependencies": {
     "@t3tools/contracts": "workspace:*",
@@ -27,5 +30,5 @@
     "vitest": "catalog:",
     "wait-on": "^8.0.2"
   },
-  "productName": "F5 (Alpha)"
+  "productName": "F5"
 }

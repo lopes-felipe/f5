@@ -119,7 +119,7 @@ export function requireThreadNotArchived(input: {
         : Effect.fail(
             invariantError(
               input.command.type,
-              `Thread '${input.threadId}' is already archived and cannot be archived twice.`,
+              `Thread '${input.threadId}' is already archived. Restore it before this operation.`,
             ),
           ),
     ),

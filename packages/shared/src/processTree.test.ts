@@ -1,10 +1,11 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { killProcessTree, type ProcessTreeChild } from "./processTree";
+import { killProcessTree, killProcessTreeAsync, type ProcessTreeChild } from "./processTree";
 
 function makeChild(pid = 123): ProcessTreeChild & { kill: ReturnType<typeof vi.fn> } {
   return { pid, kill: vi.fn(() => true) };
@@ -70,6 +71,47 @@ describe("killProcessTree", () => {
     const directChild = makeChild();
     killProcessTree(directChild, { platform: "linux", isGroupLeader: false });
     expect(directChild.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("kills asynchronously and falls back when taskkill never exits", async () => {
+    const child = makeChild();
+    const hung = Object.assign(new EventEmitter(), { kill: vi.fn(), unref: vi.fn() });
+    const spawnTaskkill = vi.fn(() => hung as unknown as ChildProcess);
+    const pending = killProcessTreeAsync(child, {
+      platform: "win32",
+      isGroupLeader: false,
+      environment: { SystemRoot: "D:\\Windows" },
+      timeoutMs: 20,
+      spawnTaskkill,
+    });
+    // The caller is never blocked while taskkill runs.
+    expect(child.kill).not.toHaveBeenCalled();
+    await expect(pending).resolves.toMatchObject({ terminated: true, usedFallback: true });
+    expect(spawnTaskkill).toHaveBeenCalledWith("D:\\Windows\\System32\\taskkill.exe", [
+      "/pid",
+      "123",
+      "/T",
+      "/F",
+    ]);
+    expect(hung.kill).toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("resolves from the taskkill exit status", async () => {
+    const child = makeChild();
+    const taskkill = Object.assign(new EventEmitter(), { kill: vi.fn(), unref: vi.fn() });
+    const pending = killProcessTreeAsync(child, {
+      platform: "win32",
+      isGroupLeader: false,
+      spawnTaskkill: () => taskkill as unknown as ChildProcess,
+    });
+    taskkill.emit("exit", 0);
+    await expect(pending).resolves.toEqual({
+      terminated: true,
+      usedFallback: false,
+      taskkillStatus: 0,
+    });
+    expect(child.kill).not.toHaveBeenCalled();
   });
 
   it.skipIf(process.platform !== "win32")(

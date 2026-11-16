@@ -1,5 +1,5 @@
 import type { ProviderKind } from "@t3tools/contracts";
-import { normalizeModelSlug } from "@t3tools/shared/model";
+import { formatModelDisplayName, normalizeModelSlug } from "@t3tools/shared/model";
 
 import { getAppModelOptions } from "../../appSettings";
 import { cn } from "../../lib/utils";
@@ -17,7 +17,11 @@ export function resolveModelChipName(provider: ProviderKind, model: string): str
   const option =
     options.find((candidate) => candidate.slug === model) ??
     options.find((candidate) => candidate.slug === normalized);
-  return option ? getTriggerDisplayModelName(option) : model;
+  return option?.isCustom && option.name === option.slug
+    ? (formatModelDisplayName(provider, normalized ?? model) ?? getTriggerDisplayModelName(option))
+    : option
+      ? getTriggerDisplayModelName(option)
+      : model;
 }
 
 /**

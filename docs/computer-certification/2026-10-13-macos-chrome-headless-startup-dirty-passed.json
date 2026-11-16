@@ -1,0 +1,34 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-13T08:48:32.139Z",
+  "repositoryCommit": "03f52ac0e25f692c36942cf69e3d0094db04a1d2",
+  "workingTreeDirty": true,
+  "chromeVersion": "155.0.8059.40",
+  "sourceHashes": {
+    "startup": "136e48597d2cfafb787d0828e247d8c27ed5a00ea398d30449b7de145311793f",
+    "fixture": "980f1bead7f66ae169616cf654cdc36a8003c3fad819935293aafd4ca69aff15",
+    "protection": "f3a40193768860d26d6668a487f3ab97940c493dcb59dba5d112eb46f42ffed1",
+    "chromeExecutable": "428dccc1a45819d23c5db4fb37388883f8d9ba64611cbd6c42395eac4a18b6a4"
+  },
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "scope": "headless-isolated-chrome-fixture-startup-only",
+  "mockKeychain": true,
+  "signed": false,
+  "certified": false,
+  "state": "passed",
+  "checks": {
+    "launchCompleted": true,
+    "fixtureInDom": true,
+    "fixtureRequested": true,
+    "independentReadyObservation": true,
+    "noRejectedObservations": true,
+    "syntheticValueUnchanged": true
+  },
+  "limitations": [
+    "No desktop window, helper, grants, provider, accessibility, capture, masking or OS input exercised",
+    "Test-only mock keychain and temporary local profile; real keychain/autofill and signed-in browser behavior unproven",
+    "Setup diagnostic only; all release certification gates remain closed"
+  ]
+}

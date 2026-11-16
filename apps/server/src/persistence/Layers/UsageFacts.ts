@@ -1,35 +1,189 @@
-import { isKnownProviderKind, UsageTurnFact } from "@t3tools/contracts";
-import { Effect, Layer } from "effect";
+import {
+  isKnownProviderKind,
+  TurnId,
+  USAGE_ASIDE_TURN_ID_PREFIX,
+  UsageThreadTurn,
+  UsageTurnFact,
+} from "@t3tools/contracts";
+import { Effect, Layer, Option, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import type * as Statement from "effect/unstable/sql/Statement";
 
 import { toPersistenceSqlError } from "../Errors.ts";
+import { museRecordedIntervals } from "../../usage/museRecordedIntervals.ts";
 import {
   UsageFactRepository,
-  type HourlyUsageFactSummary,
+  type BucketUsageSummaryRow,
+  type ScopeUsageSummaryRow,
+  type UsageBucketSummaryInput,
   type UsageFactRepositoryShape,
+  type UsageScopeTitle,
 } from "../Services/UsageFacts.ts";
 
-interface HourlyUsageDbRow {
-  readonly hourStartedAt: string;
-  readonly provider: string;
-  readonly model: string | null;
-  readonly estimationEligibleTurnCount?: number;
-  readonly turnCount: number;
-  readonly reportedTokenTurnCount: number;
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly cacheReadTokens: number;
-  readonly cacheWriteTokens: number;
-  readonly totalTokens: number;
-  readonly providerReportedCostUsd: number | null;
-  readonly pricedTurnCount: number;
-  readonly unpricedTurnCount: number;
-  readonly historicalCostTurnCount: number;
+// A row that fails the contract (a stray model string, say) is skipped rather
+// than failing the whole thread's history.
+const decodeThreadTurn = Schema.decodeUnknownOption(UsageThreadTurn);
+
+interface TitleDbRow {
+  readonly id: string;
+  readonly title: string | null;
+  readonly deletedAt: string | null;
+  readonly projectId?: string | null;
+}
+
+function usageSqlFragments(sql: SqlClient.SqlClient) {
+  const legacyProvider = sql`json_extract(e.payload_json, '$.session.providerName')`;
+  return {
+    // Persisted nullable columns drive field coverage: a reported zero counts
+    // as present, and a stored derived total counts as a known total.
+    factAggregates: sql`
+      f.provider_name AS provider,
+      f.model AS model,
+      COUNT(*) AS "turnCount",
+      SUM(CASE WHEN f.input_tokens IS NOT NULL AND f.output_tokens IS NOT NULL THEN 1 ELSE 0 END)
+        AS "estimationEligibleTurnCount",
+      SUM(CASE WHEN f.token_provenance <> 'unreported' THEN 1 ELSE 0 END)
+        AS "reportedTokenTurnCount",
+      COALESCE(SUM(f.input_tokens), 0) AS "inputTokens",
+      COALESCE(SUM(f.output_tokens), 0) AS "outputTokens",
+      COALESCE(SUM(f.cache_read_tokens), 0) AS "cacheReadTokens",
+      COALESCE(SUM(f.cache_write_tokens), 0) AS "cacheWriteTokens",
+      COALESCE(SUM(f.total_tokens), 0) AS "totalTokens",
+      CASE
+        WHEN SUM(CASE WHEN f.provider_cost_usd IS NOT NULL THEN 1 ELSE 0 END) > 0
+          THEN SUM(f.provider_cost_usd)
+        ELSE NULL
+      END AS "providerReportedCostUsd",
+      SUM(CASE WHEN f.provider_cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS "pricedTurnCount",
+      SUM(CASE WHEN f.provider_cost_usd IS NULL THEN 1 ELSE 0 END) AS "unpricedTurnCount",
+      COUNT(*) AS "recordedTurnCount",
+      0 AS "legacyCostEventCount",
+      COUNT(f.input_tokens) AS "inputTokenTurnCount",
+      COUNT(f.output_tokens) AS "outputTokenTurnCount",
+      COUNT(f.cache_read_tokens) AS "cacheReadTokenTurnCount",
+      COUNT(f.cache_write_tokens) AS "cacheWriteTokenTurnCount",
+      COUNT(f.total_tokens) AS "totalTokenTurnCount"
+    `,
+    factPartitions: sql`
+      f.provider_name,
+      f.model,
+      f.provider_cost_usd IS NULL,
+      f.token_provenance,
+      f.input_tokens IS NOT NULL AND f.output_tokens IS NOT NULL,
+      f.total_tokens IS NOT NULL
+    `,
+    legacyProvider,
+    legacyAggregates: sql`
+      ${legacyProvider} AS provider,
+      NULL AS model,
+      COUNT(*) AS "turnCount",
+      0 AS "estimationEligibleTurnCount",
+      0 AS "reportedTokenTurnCount",
+      0 AS "inputTokens",
+      0 AS "outputTokens",
+      0 AS "cacheReadTokens",
+      0 AS "cacheWriteTokens",
+      0 AS "totalTokens",
+      SUM(CAST(json_extract(e.payload_json, '$.session.turnCostUsd') AS REAL))
+        AS "providerReportedCostUsd",
+      COUNT(*) AS "pricedTurnCount",
+      0 AS "unpricedTurnCount",
+      0 AS "recordedTurnCount",
+      COUNT(*) AS "legacyCostEventCount",
+      0 AS "inputTokenTurnCount",
+      0 AS "outputTokenTurnCount",
+      0 AS "cacheReadTokenTurnCount",
+      0 AS "cacheWriteTokenTurnCount",
+      0 AS "totalTokenTurnCount"
+    `,
+    legacyCostPredicate: sql`
+      e.event_type = 'thread.session-set'
+      AND json_type(e.payload_json, '$.session.turnCostUsd') IN ('integer', 'real')
+      AND CAST(json_extract(e.payload_json, '$.session.turnCostUsd') AS REAL) >= 0
+    `,
+    legacyThreadId: sql`json_extract(e.payload_json, '$.threadId')`,
+  };
+}
+
+/**
+ * Bucket aggregation statements. Bucket descriptors arrive as parameterized
+ * JSON; CROSS JOIN pins the bucket list as the outer loop so every bucket is
+ * an indexed range search over unwrapped timestamp columns. Exported so tests
+ * can `EXPLAIN QUERY PLAN` the exact statements.
+ */
+/** `provider` narrows to one provider; `hiddenProviders` leaves providers out. */
+function providerFilter(
+  sql: SqlClient.SqlClient,
+  column: Statement.Fragment,
+  input: { readonly provider?: string; readonly hiddenProviders?: ReadonlyArray<string> },
+) {
+  const only = input.provider ? sql`AND ${column} = ${input.provider}` : sql``;
+  const hidden = input.hiddenProviders?.length
+    ? sql`AND ${column} NOT IN (SELECT value FROM json_each(${JSON.stringify(input.hiddenProviders)}))`
+    : sql``;
+  return sql`${only} ${hidden}`;
+}
+
+export function makeUsageBucketStatements(
+  sql: SqlClient.SqlClient,
+  input: UsageBucketSummaryInput,
+  factCutoverAt: string,
+) {
+  const fragments = usageSqlFragments(sql);
+  const buckets = JSON.stringify(
+    input.buckets.map((bucket) => ({
+      key: bucket.key,
+      startAt: bucket.startAt,
+      endAt: bucket.endAt,
+    })),
+  );
+  const facts = sql<BucketUsageSummaryRow>`
+    SELECT
+      json_extract(b.value, '$.key') AS "bucketKey",
+      ${fragments.factAggregates}
+    FROM json_each(${buckets}) AS b
+    CROSS JOIN projection_turn_usage_facts AS f
+    WHERE f.completed_at >= json_extract(b.value, '$.startAt')
+      AND f.completed_at < json_extract(b.value, '$.endAt')
+      ${providerFilter(sql, sql`f.provider_name`, input)}
+      ${input.projectId ? sql`AND f.project_id = ${input.projectId}` : sql``}
+      AND COALESCE(f.recorded_at, f.completed_at) >= ${factCutoverAt}
+    GROUP BY "bucketKey", ${fragments.factPartitions}
+    ORDER BY "bucketKey" ASC, f.provider_name ASC, f.model ASC
+  `;
+  const legacy =
+    input.buckets.length > 0 && input.buckets[0]!.startAt < factCutoverAt
+      ? sql<BucketUsageSummaryRow>`
+          SELECT
+            json_extract(b.value, '$.key') AS "bucketKey",
+            ${fragments.legacyAggregates}
+          FROM json_each(${buckets}) AS b
+          CROSS JOIN orchestration_events AS e
+          WHERE e.occurred_at >= json_extract(b.value, '$.startAt')
+            AND e.occurred_at < json_extract(b.value, '$.endAt')
+            AND e.occurred_at < ${factCutoverAt}
+            AND ${fragments.legacyCostPredicate}
+            ${providerFilter(sql, fragments.legacyProvider, input)}
+            ${
+              input.projectId
+                ? sql`AND EXISTS (
+                    SELECT 1 FROM projection_threads AS t
+                    WHERE t.thread_id = ${fragments.legacyThreadId}
+                      AND t.project_id = ${input.projectId}
+                  )`
+                : sql``
+            }
+          GROUP BY "bucketKey", ${fragments.legacyProvider}
+          ORDER BY "bucketKey" ASC
+        `
+      : null;
+  return { facts, legacy };
 }
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const fragments = usageSqlFragments(sql);
 
   const recordQuery = SqlSchema.void({
     Request: UsageTurnFact,
@@ -52,6 +206,7 @@ const make = Effect.gen(function* () {
         completed_at,
         recorded_at,
         source_event_id
+        , native_session_id, started_at
       ) VALUES (
         ${fact.turnId},
         ${fact.threadId},
@@ -70,6 +225,7 @@ const make = Effect.gen(function* () {
         ${fact.completedAt},
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
         ${fact.sourceEventId}
+        , ${fact.nativeSessionId ?? null}, ${fact.startedAt ?? null}
       )
       ON CONFLICT (turn_id) DO UPDATE SET
         thread_id = excluded.thread_id,
@@ -86,15 +242,27 @@ const make = Effect.gen(function* () {
         token_provenance = excluded.token_provenance,
         cost_provenance = excluded.cost_provenance,
         completed_at = excluded.completed_at,
-        source_event_id = excluded.source_event_id
+        source_event_id = excluded.source_event_id,
+        native_session_id = COALESCE(excluded.native_session_id, projection_turn_usage_facts.native_session_id),
+        started_at = COALESCE(excluded.started_at, projection_turn_usage_facts.started_at)
       WHERE excluded.completed_at >= projection_turn_usage_facts.completed_at
     `,
   });
 
   const record: UsageFactRepositoryShape["record"] = (fact) =>
-    recordQuery(fact).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.record")));
+    Effect.gen(function* () {
+      if (fact.nativeSessionId && !fact.startedAt) {
+        const turns = yield* sql<{ startedAt: string }>`
+          SELECT COALESCE(started_at, requested_at) AS "startedAt" FROM projection_turns
+          WHERE thread_id = ${fact.threadId} AND turn_id = ${fact.turnId} LIMIT 1
+        `;
+        const startedAt = turns[0]?.startedAt;
+        if (startedAt) return yield* recordQuery({ ...fact, startedAt });
+      }
+      return yield* recordQuery(fact);
+    }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.record")));
 
-  const readUsageMetadata = sql<{
+  const readUsageMetadata: UsageFactRepositoryShape["readUsageMetadata"] = sql<{
     readonly coverageStartedAt: string;
     readonly factCutoverAt: string;
   }>`
@@ -119,80 +287,170 @@ const make = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("UsageFactRepository.readCoverageStartedAt")),
     );
 
-  const summarizeHourly: UsageFactRepositoryShape["summarizeHourly"] = (input) =>
+  const summarizeBuckets: UsageFactRepositoryShape["summarizeBuckets"] = (input) =>
+    Effect.gen(function* () {
+      if (input.buckets.length === 0) return [];
+      const { factCutoverAt } = yield* readUsageMetadata;
+      const statements = makeUsageBucketStatements(sql, input, factCutoverAt);
+      const factRows = yield* statements.facts;
+      const legacyRows = statements.legacy ? yield* statements.legacy : [];
+      return [...factRows, ...legacyRows].filter(
+        (row) => typeof row.bucketKey === "string" && isKnownProviderKind(row.provider),
+      );
+    }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.summarizeBuckets")));
+
+  const summarizeByScope: UsageFactRepositoryShape["summarizeByScope"] = (input) =>
     Effect.gen(function* () {
       const { factCutoverAt } = yield* readUsageMetadata;
-      const factRows = yield* sql<HourlyUsageDbRow>`
+      const factRows = yield* sql<ScopeUsageSummaryRow>`
         SELECT
-          strftime('%Y-%m-%dT%H:00:00.000Z', completed_at) AS "hourStartedAt",
-          provider_name AS provider,
-          model,
-          COUNT(*) AS "turnCount",
-          SUM(CASE WHEN input_tokens IS NOT NULL AND output_tokens IS NOT NULL THEN 1 ELSE 0 END) AS "estimationEligibleTurnCount",
-          SUM(CASE WHEN token_provenance <> 'unreported' THEN 1 ELSE 0 END)
-            AS "reportedTokenTurnCount",
-          COALESCE(SUM(input_tokens), 0) AS "inputTokens",
-          COALESCE(SUM(output_tokens), 0) AS "outputTokens",
-          COALESCE(SUM(cache_read_tokens), 0) AS "cacheReadTokens",
-          COALESCE(SUM(cache_write_tokens), 0) AS "cacheWriteTokens",
-          COALESCE(SUM(total_tokens), 0) AS "totalTokens",
-          CASE
-            WHEN SUM(CASE WHEN provider_cost_usd IS NOT NULL THEN 1 ELSE 0 END) > 0
-              THEN SUM(provider_cost_usd)
-            ELSE NULL
-          END AS "providerReportedCostUsd",
-          SUM(CASE WHEN provider_cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS "pricedTurnCount",
-          SUM(CASE WHEN provider_cost_usd IS NULL THEN 1 ELSE 0 END) AS "unpricedTurnCount",
-          0 AS "historicalCostTurnCount"
-        FROM projection_turn_usage_facts
-        WHERE completed_at >= ${input.startedAt}
-          AND completed_at < ${input.endedAt}
-          AND (${input.provider ?? null} IS NULL OR provider_name = ${input.provider ?? null})
-          AND COALESCE(recorded_at, completed_at) >= ${factCutoverAt}
-        GROUP BY hourStartedAt, provider_name, model, provider_cost_usd IS NULL, token_provenance, input_tokens IS NOT NULL AND output_tokens IS NOT NULL
-        ORDER BY hourStartedAt ASC, provider_name ASC, model ASC
+          f.thread_id AS "threadId",
+          f.project_id AS "projectId",
+          ${fragments.factAggregates}
+        FROM projection_turn_usage_facts AS f
+        WHERE f.completed_at >= ${input.startedAt}
+          AND f.completed_at < ${input.endedAt}
+          ${providerFilter(sql, sql`f.provider_name`, input)}
+          AND COALESCE(f.recorded_at, f.completed_at) >= ${factCutoverAt}
+        GROUP BY f.thread_id, f.project_id, ${fragments.factPartitions}
       `;
-
       const legacyEndedAt = factCutoverAt < input.endedAt ? factCutoverAt : input.endedAt;
       const legacyRows =
         input.startedAt < legacyEndedAt
-          ? yield* sql<HourlyUsageDbRow>`
+          ? yield* sql<ScopeUsageSummaryRow>`
               SELECT
-                strftime('%Y-%m-%dT%H:00:00.000Z', occurred_at) AS "hourStartedAt",
-                json_extract(payload_json, '$.session.providerName') AS provider,
-                NULL AS model,
-                COUNT(*) AS "turnCount",
-                0 AS "reportedTokenTurnCount",
-                0 AS "inputTokens",
-                0 AS "outputTokens",
-                0 AS "cacheReadTokens",
-                0 AS "cacheWriteTokens",
-                0 AS "totalTokens",
-                SUM(CAST(json_extract(payload_json, '$.session.turnCostUsd') AS REAL))
-                  AS "providerReportedCostUsd",
-                COUNT(*) AS "pricedTurnCount",
-                0 AS "unpricedTurnCount",
-                COUNT(*) AS "historicalCostTurnCount"
-              FROM orchestration_events
-              WHERE
-                event_type = 'thread.session-set'
-                AND occurred_at >= ${input.startedAt}
-                AND occurred_at < ${legacyEndedAt}
-                AND (${input.provider ?? null} IS NULL OR json_extract(payload_json, '$.session.providerName') = ${input.provider ?? null})
-                AND json_type(payload_json, '$.session.turnCostUsd') IN ('integer', 'real')
-                AND CAST(json_extract(payload_json, '$.session.turnCostUsd') AS REAL) >= 0
-              GROUP BY hourStartedAt, provider
-              ORDER BY hourStartedAt ASC, provider ASC
+                ${fragments.legacyThreadId} AS "threadId",
+                t.project_id AS "projectId",
+                ${fragments.legacyAggregates}
+              FROM orchestration_events AS e
+              LEFT JOIN projection_threads AS t ON t.thread_id = ${fragments.legacyThreadId}
+              WHERE e.occurred_at >= ${input.startedAt}
+                AND e.occurred_at < ${legacyEndedAt}
+                AND ${fragments.legacyCostPredicate}
+                ${providerFilter(sql, fragments.legacyProvider, input)}
+              GROUP BY ${fragments.legacyThreadId}, t.project_id, ${fragments.legacyProvider}
             `
           : [];
+      return [...factRows, ...legacyRows]
+        .filter((row) => isKnownProviderKind(row.provider))
+        .map((row) => ({
+          ...row,
+          threadId: typeof row.threadId === "string" && row.threadId ? row.threadId : null,
+          projectId: typeof row.projectId === "string" && row.projectId ? row.projectId : null,
+        }));
+    }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.summarizeByScope")));
 
-      return [...factRows, ...legacyRows].filter(
-        (row): row is HourlyUsageFactSummary =>
-          typeof row.hourStartedAt === "string" && isKnownProviderKind(row.provider),
-      );
-    }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.summarizeHourly")));
+  const toTitles = (
+    ids: ReadonlyArray<string>,
+    rows: ReadonlyArray<TitleDbRow>,
+  ): Array<UsageScopeTitle> => {
+    const found = new Map(rows.map((row) => [row.id, row]));
+    return ids.map((id) => {
+      const row = found.get(id);
+      if (!row) return { id, title: null, deleted: true, projectId: null };
+      return {
+        id,
+        title: row.title?.trim() ? row.title.trim() : null,
+        deleted: row.deletedAt !== null,
+        ...(row.projectId !== undefined ? { projectId: row.projectId } : {}),
+      };
+    });
+  };
 
-  return { record, readCoverageStartedAt, summarizeHourly } satisfies UsageFactRepositoryShape;
+  const readScopeTitles: UsageFactRepositoryShape["readScopeTitles"] = (input) =>
+    Effect.gen(function* () {
+      const threadIds = [...new Set(input.threadIds)];
+      const projectIds = [...new Set(input.projectIds)];
+      const threadRows =
+        threadIds.length > 0
+          ? yield* sql<TitleDbRow>`
+              SELECT
+                thread_id AS id,
+                title,
+                deleted_at AS "deletedAt",
+                project_id AS "projectId"
+              FROM projection_threads
+              WHERE ${sql.in("thread_id", threadIds)}
+            `
+          : [];
+      const projectRows =
+        projectIds.length > 0
+          ? yield* sql<TitleDbRow>`
+              SELECT project_id AS id, title, deleted_at AS "deletedAt"
+              FROM projection_projects
+              WHERE ${sql.in("project_id", projectIds)}
+            `
+          : [];
+      return {
+        threads: toTitles(threadIds, threadRows),
+        projects: toTitles(projectIds, projectRows),
+      };
+    }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.readScopeTitles")));
+
+  const listByThread: UsageFactRepositoryShape["listByThread"] = (input) =>
+    Effect.gen(function* () {
+      // Asides are recorded on the thread but are not conversation turns.
+      const conversationTurn = sql`thread_id = ${input.threadId}
+        AND turn_id NOT LIKE ${`${USAGE_ASIDE_TURN_ID_PREFIX}%`}`;
+      const rows = yield* sql<{ readonly provider: string }>`
+        SELECT * FROM (
+          SELECT
+            turn_id AS "turnId",
+            provider_name AS "provider",
+            model,
+            input_tokens AS "inputTokens",
+            output_tokens AS "outputTokens",
+            cache_read_tokens AS "cacheReadTokens",
+            cache_write_tokens AS "cacheWriteTokens",
+            total_tokens AS "totalTokens",
+            token_provenance AS "tokenProvenance",
+            completed_at AS "completedAt"
+          FROM projection_turn_usage_facts
+          WHERE ${conversationTurn}
+          ORDER BY completed_at DESC, turn_id DESC
+          LIMIT ${input.limit}
+        )
+        ORDER BY "completedAt" ASC, "turnId" ASC
+      `;
+      const [thread] = yield* sql<{
+        readonly firstTurnId: string | null;
+        readonly turnCount: number;
+      }>`
+        SELECT
+          (
+            SELECT turn_id FROM projection_turn_usage_facts
+            WHERE ${conversationTurn}
+            ORDER BY completed_at ASC, turn_id ASC
+            LIMIT 1
+          ) AS "firstTurnId",
+          (SELECT COUNT(*) FROM projection_turn_usage_facts WHERE ${conversationTurn})
+            AS "turnCount"
+      `;
+      const turns = rows.flatMap((row): Array<UsageThreadTurn> => {
+        if (!isKnownProviderKind(row.provider)) return [];
+        const turn = decodeThreadTurn(row);
+        return Option.isSome(turn) ? [turn.value] : [];
+      });
+      return {
+        turns,
+        firstTurnId: thread?.firstTurnId ? TurnId.makeUnsafe(thread.firstTurnId) : null,
+        // Counted before undecodable rows are dropped, so labels keep their place.
+        earlierTurnCount: Math.max(0, (thread?.turnCount ?? 0) - rows.length),
+      };
+    }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.listByThread")));
+
+  return {
+    record,
+    readMuseRecordedIntervals: museRecordedIntervals(sql).pipe(
+      Effect.mapError(toPersistenceSqlError("UsageFactRepository.readMuseRecordedIntervals")),
+    ),
+    readCoverageStartedAt,
+    readUsageMetadata,
+    summarizeBuckets,
+    summarizeByScope,
+    readScopeTitles,
+    listByThread,
+  } satisfies UsageFactRepositoryShape;
 });
 
 export const UsageFactRepositoryLive = Layer.effect(UsageFactRepository, make);

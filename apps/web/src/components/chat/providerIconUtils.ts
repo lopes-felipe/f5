@@ -5,10 +5,22 @@ import {
   type ProviderKind,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { ClaudeAI, CursorIcon, Gemini, GrokIcon, Icon, OpenAI, OpenCodeIcon } from "../Icons";
+import {
+  ACPRegistryIcon,
+  ClaudeAI,
+  CursorIcon,
+  Gemini,
+  GrokIcon,
+  Icon,
+  MuseIcon,
+  PiIcon,
+  OpenAI,
+  OpenCodeIcon,
+} from "../Icons";
 import { PROVIDER_OPTIONS, type ProviderPickerKind } from "../../session-logic";
 
 export type ModelEsque = {
+  isUnlisted?: boolean | undefined;
   slug: string;
   name: string;
   shortName?: string | undefined;
@@ -23,6 +35,9 @@ export const PROVIDER_LABEL_BY_PROVIDER: Record<ProviderKind, string> = {
   opencode: "OpenCode",
   grok: "Grok",
   antigravity: "Antigravity",
+  muse: "Muse Code",
+  acp: "Custom ACP agent",
+  pi: "Pi",
 };
 
 export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<string, Icon>> = {
@@ -32,6 +47,9 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<string, Icon>> = {
   [ProviderDriverKind.make("opencode")]: OpenCodeIcon,
   [ProviderDriverKind.make("grok")]: GrokIcon,
   [ProviderDriverKind.make("antigravity")]: Gemini,
+  [ProviderDriverKind.make("muse")]: MuseIcon,
+  [ProviderDriverKind.make("acp")]: ACPRegistryIcon,
+  [ProviderDriverKind.make("pi")]: PiIcon,
 };
 
 export const PROVIDER_ICON_BY_PICKER_KIND: Record<ProviderPickerKind, Icon> = {
@@ -41,6 +59,9 @@ export const PROVIDER_ICON_BY_PICKER_KIND: Record<ProviderPickerKind, Icon> = {
   opencode: OpenCodeIcon,
   grok: GrokIcon,
   antigravity: Gemini,
+  muse: MuseIcon,
+  acp: ACPRegistryIcon,
+  pi: PiIcon,
 };
 
 export const COMING_SOON_PROVIDER_OPTIONS = [
@@ -111,9 +132,21 @@ export function describeProviderStatus(label: string, status: ServerProvider | n
   return message ? `${label}. ${message}` : `${label} is unavailable.`;
 }
 
+/**
+ * A sub-provider whose name reads as its provider plus a qualifier ("OpenCode
+ * Zen" under "OpenCode") stands alone, since joining the two would show
+ * "OpenCode · OpenCode Zen".
+ */
 export function getProviderLabel(provider: ProviderKind, model?: ModelPickerModelOption): string {
   const providerLabel = PROVIDER_LABEL_BY_PROVIDER[provider];
-  return model?.subProvider ? `${providerLabel} · ${model.subProvider}` : providerLabel;
+  const subProvider = model?.subProvider?.trim();
+  if (!subProvider) {
+    return providerLabel;
+  }
+  if (subProvider.toLowerCase().startsWith(`${providerLabel.toLowerCase()} `)) {
+    return subProvider;
+  }
+  return `${providerLabel} · ${subProvider}`;
 }
 
 export function getDisplayModelName(
@@ -133,4 +166,11 @@ export function getTriggerDisplayModelName(model: ModelPickerModelOption): strin
 export function getTriggerDisplayModelLabel(model: ModelPickerModelOption): string {
   const title = getTriggerDisplayModelName(model);
   return model.subProvider ? `${model.subProvider} · ${title}` : title;
+}
+
+export function filterPickerVisibleModels<T extends ModelEsque>(
+  models: ReadonlyArray<T>,
+  selectedSlugs: ReadonlySet<string>,
+): T[] {
+  return models.filter((model) => model.isUnlisted !== true || selectedSlugs.has(model.slug));
 }

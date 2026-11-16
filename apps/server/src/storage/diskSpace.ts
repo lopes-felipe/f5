@@ -15,11 +15,11 @@ import { formatByteSize } from "@t3tools/shared/byteSize";
 import { describeDiskSpaceRoles } from "@t3tools/shared/diskSpace";
 import { Effect, Path as EffectPath, Schema } from "effect";
 
-import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
-import { resolveClaudeConfigDir } from "../provider/Layers/ClaudeAdapter.ts";
+import { makeClaudeEnvironment, resolveClaudeConfigDir } from "../provider/Drivers/ClaudeHome.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { buildAccountExecutionEnvironment } from "../providerProcessEnv.ts";
 import { resolveCodexLaunchHomes } from "./codexMarketplaceStaging.ts";
+import { resolveWorktreesDirectory } from "../worktreesDirectoryPaths.ts";
 
 /**
  * Free disk space on the volumes F5 writes to (its userdata and worktrees)
@@ -112,6 +112,22 @@ export const resolveWatchedPaths = Effect.fn("resolveWatchedPaths")(function* (i
     { path: input.worktreesDir, role: "userdata" },
   ];
   if (input.settings === null) return watched;
+  for (const setting of new Set([
+    input.settings.worktreesDirectory,
+    ...input.settings.previousWorktreesDirectories,
+  ])) {
+    const path = resolveWorktreesDirectory(setting, input.worktreesDir);
+    if (
+      path &&
+      path !== input.worktreesDir &&
+      (yield* Effect.promise(() =>
+        FS.stat(path)
+          .then((stat) => stat.isDirectory())
+          .catch(() => false),
+      ))
+    )
+      watched.push({ path, role: "userdata" });
+  }
   for (const path of yield* resolveClaudeLaunchConfigDirs({
     settings: input.settings,
     profile: input.profile,

@@ -1,7 +1,9 @@
+import { ProviderDriverKind } from "@t3tools/contracts";
+import { getWorkflowModelCapabilities } from "../../providerModels";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ModelSlug,
-  PlanningWorkflow,
+  PlanningWorkflowSummary as PlanningWorkflow,
   ProviderKind,
   ProviderModelOptions,
   RuntimeMode,
@@ -44,28 +46,11 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { normalizeWorkflowSlotModelOptions } from "./WorkflowCreateDialog";
+import { normalizeWorkflowSlotModelOptions, getSingleProviderModelOptions } from "./workflowSlots";
 import { SlotRow } from "./SlotRow";
 import { WorkflowOptionCheckbox, WorkflowOptionField, WorkflowOptions } from "./WorkflowOptions";
 import { RUNTIME_MODE_PRESENTATION } from "../chat/runtimeModePresentation";
-
-function getSingleProviderModelOptions(
-  provider: ProviderKind,
-  modelOptions: ProviderModelOptions | null | undefined,
-): ProviderModelOptions | undefined {
-  switch (provider) {
-    case "codex":
-      return modelOptions?.codex ? { codex: modelOptions.codex } : undefined;
-    case "claudeAgent":
-      return modelOptions?.claudeAgent ? { claudeAgent: modelOptions.claudeAgent } : undefined;
-    case "cursor":
-      return modelOptions?.cursor ? { cursor: modelOptions.cursor } : undefined;
-    case "opencode":
-      return modelOptions?.opencode ? { opencode: modelOptions.opencode } : undefined;
-    case "grok":
-      return undefined;
-  }
-}
+import { fieldSurfaceClassName } from "../ui/input";
 
 function resolveImplementationDefaults(workflow: PlanningWorkflow) {
   const slotProvider = workflow.merge.mergeSlot.provider;
@@ -90,14 +75,12 @@ function BaseBranchPicker(props: {
   const { settings } = useAppSettings();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
   const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
 
   const branchesQuery = useQuery(
     gitBranchesQueryOptions({
       cwd: props.cwd,
       autoRefresh: gitAutoRefreshEnabled,
-      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
 
@@ -292,6 +275,11 @@ export function WorkflowImplementDialog(props: {
         provider,
         selection,
         modelOptions,
+        getWorkflowModelCapabilities(
+          serverConfigQuery.data?.providers ?? [],
+          ProviderDriverKind.make(provider),
+          selection,
+        ),
       );
       const providerOptions = resolveProviderOptionsForDispatch({
         settings,
@@ -328,6 +316,7 @@ export function WorkflowImplementDialog(props: {
         </DialogHeader>
         <DialogPanel className="flex flex-col gap-4">
           <SlotRow
+            providers={serverConfigQuery.data?.providers}
             label="Implementation model"
             provider={provider}
             model={selection}
@@ -344,7 +333,16 @@ export function WorkflowImplementDialog(props: {
               recordModelSelection(
                 provider,
                 selection,
-                normalizeWorkflowSlotModelOptions(provider, selection, nextModelOptions),
+                normalizeWorkflowSlotModelOptions(
+                  provider,
+                  selection,
+                  nextModelOptions,
+                  getWorkflowModelCapabilities(
+                    serverConfigQuery.data?.providers ?? [],
+                    ProviderDriverKind.make(provider),
+                    selection,
+                  ),
+                ),
               );
             }}
           />
@@ -405,7 +403,7 @@ export function WorkflowImplementDialog(props: {
             >
               <select
                 id="workflow-runtime-mode"
-                className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-colors focus-visible:border-ring/60"
+                className={`${fieldSurfaceClassName} h-9 w-full px-3 text-sm`}
                 value={runtimeMode}
                 onChange={(event) => setRuntimeMode(event.currentTarget.value as RuntimeMode)}
               >

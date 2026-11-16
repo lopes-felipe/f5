@@ -7,6 +7,9 @@ import {
 } from "@t3tools/contracts";
 import {
   getComposerProviderState,
+  withImplicitFastModeDefault,
+  withComposerModelDefaults,
+  getComposerReasoningStep,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
 } from "./composerProviderState";
@@ -17,6 +20,70 @@ import {
 
 const PROVIDER: ProviderDriverKind = ProviderDriverKind.make("codex");
 const MODEL = "test-model";
+
+it("defaults reasoning to High while retaining explicit choices and unsupported models", () => {
+  const caps = {
+    optionDescriptors: [
+      selectDescriptor("effort", [
+        { id: "medium", label: "Medium", isDefault: true },
+        { id: "high", label: "High" },
+      ]),
+    ],
+  };
+  expect(withComposerModelDefaults(caps, undefined)).toEqual([{ id: "effort", value: "high" }]);
+  expect(withComposerModelDefaults(caps, [{ id: "effort", value: "medium" }])).toEqual([
+    { id: "effort", value: "medium" },
+  ]);
+  expect(withComposerModelDefaults({ optionDescriptors: [] }, undefined)).toBeUndefined();
+});
+
+it("defaults Fast to Normal only when the model supports it and no choice was saved", () => {
+  const caps = {
+    optionDescriptors: [
+      { id: "fastMode", label: "Fast", type: "boolean" as const, currentValue: true },
+    ],
+  };
+  expect(withImplicitFastModeDefault(caps, undefined)).toEqual([{ id: "fastMode", value: false }]);
+  for (const value of [true, false]) {
+    expect(withImplicitFastModeDefault(caps, [{ id: "fastMode", value }])).toEqual([
+      { id: "fastMode", value },
+    ]);
+  }
+  expect(withImplicitFastModeDefault({ optionDescriptors: [] }, undefined)).toBeUndefined();
+});
+
+it("dispatches High for a known model before its catalog capabilities arrive", () => {
+  const state = getComposerProviderState({
+    provider: PROVIDER,
+    model: "gpt-6-luna",
+    models: [],
+    modelOptions: undefined,
+  });
+  expect(state.promptEffort).toBe("high");
+  expect(state.modelOptionsForDispatch).toContainEqual({ id: "reasoningEffort", value: "high" });
+  const saved = getComposerProviderState({
+    provider: PROVIDER,
+    model: "gpt-6-luna",
+    models: [],
+    modelOptions: [
+      { id: "reasoningEffort", value: "low" },
+      { id: "fastMode", value: true },
+    ],
+  });
+  expect(saved.modelOptionsForDispatch).toContainEqual({ id: "fastMode", value: true });
+  expect(saved.promptEffort).toBe("low");
+  const partial = getComposerProviderState({
+    provider: PROVIDER,
+    model: "gpt-6-luna",
+    models: modelWith([booleanDescriptor("fastMode")]).map((model) => ({
+      ...model,
+      slug: "gpt-6-luna",
+    })),
+    modelOptions: [{ id: "fastMode", value: true }],
+  });
+  expect(partial.promptEffort).toBe("high");
+  expect(partial.modelOptionsForDispatch).toContainEqual({ id: "fastMode", value: true });
+});
 
 function selectDescriptor(
   id: string,
@@ -235,5 +302,63 @@ describe("provider traits render guards", () => {
 
     expect(renderProviderTraitsPicker(args)).toBeNull();
     expect(renderProviderTraitsMenuContent(args)).toBeNull();
+  });
+});
+
+describe("composer reasoning steps", () => {
+  it("uses the Codex picker's fallback efforts without dropping other selections", () => {
+    expect(
+      getComposerReasoningStep({
+        provider: PROVIDER,
+        model: "gpt-5",
+        models: [],
+        modelOptions: selections(["reasoningEffort", "low"], ["fastMode", true]),
+        direction: 1,
+      }),
+    ).toEqual(selections(["fastMode", true], ["reasoningEffort", "medium"]));
+  });
+  it("honors an explicit no-effort report", () => {
+    expect(
+      getComposerReasoningStep({
+        provider: PROVIDER,
+        model: MODEL,
+        models: [
+          {
+            slug: MODEL,
+            name: MODEL,
+            isCustom: false,
+            capabilities: { source: "reported", supportsEffort: false, optionDescriptors: [] },
+          },
+        ],
+        modelOptions: selections(["reasoningEffort", "high"]),
+        direction: 1,
+      }),
+    ).toBeNull();
+  });
+  it("steps only through a reported effort subset", () => {
+    expect(
+      getComposerReasoningStep({
+        provider: PROVIDER,
+        model: MODEL,
+        models: [
+          {
+            slug: MODEL,
+            name: MODEL,
+            isCustom: false,
+            capabilities: {
+              source: "reported",
+              optionDescriptors: [
+                selectDescriptor("reasoningEffort", [
+                  { id: "low", label: "Low", isDefault: true },
+                  { id: "high", label: "High" },
+                ]),
+              ],
+            },
+          },
+        ],
+        modelOptions: selections(["reasoningEffort", "low"], ["fastMode", true]),
+        direction: 1,
+      }),
+    ).toEqual(selections(["fastMode", true], ["reasoningEffort", "high"]));
   });
 });

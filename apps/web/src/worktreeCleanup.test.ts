@@ -72,6 +72,54 @@ describe("getOrphanedWorktreePathForThread", () => {
     expect(result).toBeNull();
   });
 
+  it.each([
+    ["/tmp/repo/worktrees/feature-a", "/tmp/repo/worktrees/feature-a/"],
+    ["/tmp/repo/worktrees/feature-a", "/tmp/repo/worktrees/feature-a//"],
+    ["C:\\repo\\worktrees\\feature-a", "c:/repo/worktrees/feature-a/"],
+    ["/tmp/repo/worktrees/feature-a", " /tmp/repo/worktrees/feature-a/ "],
+  ])("treats %s and %s as the same worktree", (targetPath, otherPath) => {
+    const threads = [
+      makeThread({ id: ThreadId.makeUnsafe("thread-1"), worktreePath: targetPath }),
+      makeThread({ id: ThreadId.makeUnsafe("thread-2"), worktreePath: otherPath }),
+    ];
+    expect(getOrphanedWorktreePathForThread(threads, ThreadId.makeUnsafe("thread-1"))).toBeNull();
+    expect(getOrphanedWorktreePathForThread(threads, ThreadId.makeUnsafe("thread-2"))).toBeNull();
+  });
+
+  it("keeps case-sensitive POSIX worktrees apart", () => {
+    const threads = [
+      makeThread({
+        id: ThreadId.makeUnsafe("thread-1"),
+        worktreePath: "/tmp/repo/worktrees/Feature",
+      }),
+      makeThread({
+        id: ThreadId.makeUnsafe("thread-2"),
+        worktreePath: "/tmp/repo/worktrees/feature",
+      }),
+    ];
+    expect(getOrphanedWorktreePathForThread(threads, ThreadId.makeUnsafe("thread-1"))).toBe(
+      "/tmp/repo/worktrees/Feature",
+    );
+  });
+
+  it("ignores blank worktree paths", () => {
+    expect(
+      getOrphanedWorktreePathForThread(
+        [makeThread({ worktreePath: "   " })],
+        ThreadId.makeUnsafe("thread-1"),
+      ),
+    ).toBeNull();
+  });
+
+  it("preserves the orphaned path spelling for removal", () => {
+    expect(
+      getOrphanedWorktreePathForThread(
+        [makeThread({ worktreePath: " C:\\Repo\\Feature\\ " })],
+        ThreadId.makeUnsafe("thread-1"),
+      ),
+    ).toBe("C:\\Repo\\Feature\\");
+  });
+
   it("ignores threads linked to different worktrees", () => {
     const threads = [
       makeThread({

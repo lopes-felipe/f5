@@ -17,9 +17,13 @@ import type { PtyProcess } from "../terminal/Services/PTY";
 import type { ServerSettingsShape } from "../serverSettings";
 import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration";
 import { buildAccountExecutionEnvironment } from "../providerProcessEnv";
-import { resolveClaudeCliInvocation } from "../provider/claudeSdkExecutable";
+import {
+  claudeCliSpawnEnvironment,
+  resolveClaudeCliInvocation,
+} from "../provider/claudeSdkExecutable";
+import { resolveCodexCommand } from "../provider/codexExecutable.ts";
 import { resolveInvocation } from "../spawn/resolveCommand";
-import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome";
+import { makeClaudeProcessEnvironment } from "../provider/Drivers/ClaudeHome";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { acquireInstanceLock } from "./InstanceLock";
 import { isProfilePortBindable } from "./ProfileRegistryStore";
@@ -55,7 +59,14 @@ export class ProviderAccountService {
     ) => Promise<void> = async () => {},
   ) {}
   async resolve(instanceId: ProviderInstanceId) {
-    const settings = await Effect.runPromise(this.settings.getSettings);
+    return ProviderAccountService.resolve(this.config, this.settings, instanceId);
+  }
+  static async resolve(
+    serverConfig: ServerConfigShape,
+    settingsService: ServerSettingsShape,
+    instanceId: ProviderInstanceId,
+  ) {
+    const settings = await Effect.runPromise(settingsService.getSettings);
     const instance = deriveProviderInstanceConfigMap(settings)[instanceId];
     if (!instance || (instance.driver !== "codex" && instance.driver !== "claudeAgent"))
       throw new Error(
@@ -65,21 +76,23 @@ export class ProviderAccountService {
       instance.driver === "codex"
         ? Schema.decodeUnknownSync(CodexSettings)(instance.config ?? {})
         : Schema.decodeUnknownSync(ClaudeSettings)(instance.config ?? {});
-    await validateManagedHome(this.config, config.homePath);
+    await validateManagedHome(serverConfig, config.homePath);
     let environment = buildAccountExecutionEnvironment({
       purpose: "account",
-      profile: this.config.profile,
-      stateDir: this.config.stateDir,
+      profile: serverConfig.profile,
+      stateDir: serverConfig.stateDir,
       baseEnv: process.env,
       instance: instance.environment,
     });
     if (instance.driver === "claudeAgent")
       environment = await Effect.runPromise(
-        makeClaudeEnvironment(config, environment).pipe(Effect.provide(NodeServices.layer)),
+        makeClaudeProcessEnvironment(config, environment, instance.environment).pipe(
+          Effect.provide(NodeServices.layer),
+        ),
       );
     else if (config.homePath) environment.CODEX_HOME = config.homePath;
     await validateProviderCompatibility(
-      this.config,
+      serverConfig,
       instance.driver,
       config.binaryPath,
       environment,
@@ -88,9 +101,9 @@ export class ProviderAccountService {
       instance.driver === "claudeAgent"
         ? resolveClaudeCliInvocation(config.binaryPath, args, environment)
         : resolveInvocation(
-            config.binaryPath,
+            resolveCodexCommand(config.binaryPath),
             [
-              ...(this.config.profile?.isDefault === false
+              ...(serverConfig.profile?.isDefault === false
                 ? ["-c", 'cli_auth_credentials_store="file"']
                 : []),
               ...args,
@@ -116,7 +129,7 @@ export class ProviderAccountService {
       resolved.instance.driver === "codex" ? ["login", "status"] : ["auth", "status"],
     );
     const result = await runProcess(command.file, command.args, {
-      env: resolved.environment,
+      env: claudeCliSpawnEnvironment(command, resolved.environment),
       timeoutMs: 15000,
       allowNonZeroExit: true,
     });
@@ -224,7 +237,7 @@ export class ProviderAccountService {
               createProcess!({
                 shell: command.file,
                 args: [...command.args],
-                env: resolved!.environment,
+                env: claudeCliSpawnEnvironment(command, resolved!.environment),
                 cwd: this.config.stateDir,
                 cols: 100,
                 rows: 26,

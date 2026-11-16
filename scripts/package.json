@@ -3,15 +3,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prepare": "node node_modules/@effect/language-service/cli.js patch",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "test": "node node_modules/vitest/vitest.mjs run"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
+    "@muse-code/sdk": "1.4.8",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@effect/language-service": "catalog:",

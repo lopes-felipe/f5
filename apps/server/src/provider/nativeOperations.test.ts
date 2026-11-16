@@ -49,6 +49,18 @@ const callbacks = {
 };
 
 describe("native operation coordinator", () => {
+  it("fails a lost aside response and releases the reservation without reconciliation", async () => {
+    const h = harness();
+    const input = { ...h.input, command: { kind: "aside" as const, question: "Why?" } };
+    const result = await Effect.runPromise(
+      h.coordinator.execute(input, {
+        ...callbacks,
+        dispatch: Effect.fail(new Error("Provider exited")),
+      }),
+    );
+    expect(result.state).toBe("failed");
+    expect(hasNativeOperationReservation(input.threadId)).toBe(false);
+  });
   it("persists ordered receipts before dispatch and applies under the shared reentrant lock", async () => {
     const h = harness();
     let applied = false;

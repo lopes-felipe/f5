@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import { ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 
@@ -13,7 +14,8 @@ export const EDITORS = [
   },
   { id: "vscodium", label: "VSCodium", command: "codium", supportsGoto: true },
   { id: "zed", label: "Zed", command: "zed", supportsGoto: false },
-  { id: "antigravity", label: "Antigravity", command: "agy", supportsGoto: false },
+  // `agy` is the standalone Antigravity CLI, not the IDE; the IDE bundle ships `antigravity-ide`.
+  { id: "antigravity", label: "Antigravity", command: "antigravity-ide", supportsGoto: false },
   { id: "kiro", label: "Kiro", command: "kiro", supportsGoto: true },
   // Uses --line/--column instead of --goto; handled in apps/server/src/open.ts.
   { id: "idea", label: "IntelliJ IDEA", command: "idea", supportsGoto: false },
@@ -24,7 +26,7 @@ export const EditorId = Schema.Literals(EDITORS.map((e) => e.id));
 export type EditorId = typeof EditorId.Type;
 
 export const OpenInEditorInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   editor: EditorId,
 });
 export type OpenInEditorInput = typeof OpenInEditorInput.Type;
@@ -34,5 +36,8 @@ export const RevealInFileManagerInput = Schema.Struct({
   threadId: ThreadId,
   relativePath: TrimmedNonEmptyString,
   kind: Schema.optional(Schema.Literals(["file", "directory"])),
+  // Caller-selected absolute directory for external file reveals, as with
+  // projects.readFile. This is not a registered-project authorization boundary.
+  cwd: Schema.optional(FilesystemPath),
 });
 export type RevealInFileManagerInput = typeof RevealInFileManagerInput.Type;

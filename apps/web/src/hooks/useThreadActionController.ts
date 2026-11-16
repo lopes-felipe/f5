@@ -1,14 +1,21 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ThreadId } from "@t3tools/contracts";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useRef } from "react";
 
-import { useAppSettings } from "~/appSettings";
+import { readAppSettingsSnapshot, useAppSettingsSelector } from "~/appSettings";
 import { deleteThreadsWithCleanup, setThreadArchived } from "~/archiveActions";
 import { useComposerDraftStore } from "~/composerDraftStore";
-import { gitRemoveWorktreeMutationOptions } from "~/lib/gitReactQuery";
+import { scheduledTasksQueryOptions } from "~/lib/scheduledTasksQuery";
 import { isSnoozedThread } from "~/lib/threadOrdering";
-import { resolveSnoozePreset } from "~/lib/snoozePresets";
+import {
+  DEFAULT_SNOOZE_PRESETS,
+  pickSnoozePreset,
+  resolveSnoozePresets,
+  type SnoozePreset,
+} from "~/lib/snoozePresets";
+import { formatTimeOfDay } from "~/timestampFormat";
 import { newCommandId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import { useStore } from "~/store";
@@ -19,76 +26,237 @@ import {
   toggleThreadPin,
   wakeThread,
 } from "~/threadPinSnooze";
-import type { Thread } from "~/types";
+import { selectThreadById } from "~/threadSelectors";
+import type { Thread, ThreadListItem } from "~/types";
 import { toastManager } from "~/components/ui/toast";
 
 import { useCopyToClipboard } from "./useCopyToClipboard";
 
+export type ScheduledTaskMenuState =
+  | { state: "available"; name: string }
+  | { state: "loading" | "unavailable" | "removed" };
+/** The server's reason a settle was refused, without the invariant prefix or a stack. */
+export function settlementErrorDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const reason = /invariant failed \(thread\.(?:un)?settle\): ([^\n]+)/.exec(message)?.[1];
+  return reason?.trim() || "Check pending work on the thread, then retry.";
+}
+
 export type ThreadActionId =
+  | "scheduled-origin"
+  | "edit-schedule"
+  | "schedule-in-conversation"
   | "rename"
   | "regenerate-title"
   | "title-regeneration-pending"
   | "pin"
   | "unpin"
   | "wake"
-  | "snooze-three-hours"
-  | "snooze-tomorrow"
-  | "snooze-next-week"
+  | SnoozeThreadActionId
+  | "settle"
+  | "unsettle"
   | "archive"
   | "unarchive"
   | "mark-unread"
   | "copy-path"
+  | "copy"
+  | "copy-branch"
   | "copy-thread-id"
   | "delete";
+
+/** One per configured snooze option, keyed by its preset id. */
+export type SnoozeThreadActionId = `snooze:${string}`;
+
+const SNOOZE_ACTION_PREFIX = "snooze:";
+
+function isSnoozeThreadActionId(actionId: ThreadActionId): actionId is SnoozeThreadActionId {
+  return actionId.startsWith(SNOOZE_ACTION_PREFIX);
+}
+
+/** The menu label: "Snooze: Tomorrow (9:00 AM)". */
+export function snoozeThreadActionLabel(preset: SnoozePreset): string {
+  return `Snooze: ${preset.label} (${preset.whenLabel})`;
+}
+
+/**
+ * The snooze options as a menu opened now shows them, in the user's time format. With no
+ * option left (none configured, or only today's times that have passed) menus offer the
+ * defaults, so snooze never disappears from them.
+ */
+export function resolveSnoozeMenuPresets(now = new Date()): ReadonlyArray<SnoozePreset> {
+  const settings = readAppSettingsSnapshot();
+  const formatTime = (date: Date) => formatTimeOfDay(date, settings.timestampFormat);
+  const configured = resolveSnoozePresets(settings.snoozePresets, now, formatTime);
+  return configured.length > 0
+    ? configured
+    : resolveSnoozePresets(DEFAULT_SNOOZE_PRESETS, now, formatTime);
+}
+
+/** A menu's snooze choice as picked now; warns and returns undefined once its time has passed. */
+export function pickSnoozeMenuPreset(
+  shown: ReadonlyArray<SnoozePreset>,
+  actionId: SnoozeThreadActionId,
+): SnoozePreset | undefined {
+  const preset = pickSnoozePreset({
+    shown,
+    id: actionId.slice(SNOOZE_ACTION_PREFIX.length),
+    presets: readAppSettingsSnapshot().snoozePresets,
+  });
+  if (!preset) {
+    toastManager.add({
+      type: "warning",
+      title: "Could not snooze thread",
+      description: "That snooze time has passed. Choose another time.",
+    });
+  }
+  return preset;
+}
 
 export interface ThreadActionMenuItem {
   readonly id: ThreadActionId;
   readonly label: string;
   readonly destructive?: boolean;
   readonly disabled?: boolean;
+  readonly separatorBefore?: boolean;
+  readonly icon?: string;
+  readonly children?: readonly ThreadActionMenuItem[];
+}
+
+/** Only a server conversation that has already sent a message has settings a task can reuse. */
+export function canScheduleIntoThread(
+  serverThread: Pick<Thread, "modelSelection"> | undefined,
+): boolean {
+  return serverThread?.modelSelection != null;
 }
 
 export function buildThreadActionMenuItems(input: {
-  readonly thread: Pick<Thread, "archivedAt" | "titleRegeneration">;
+  readonly thread: Pick<
+    Thread,
+    "archivedAt" | "titleRegeneration" | "scheduledOrigin" | "settledAt"
+  > & { readonly branch?: string | null };
   readonly pinned: boolean;
   readonly snoozed: boolean;
+  /** Resolved snooze options, soonest first; defaults to the built-in options. */
+  readonly snoozePresets?: ReadonlyArray<SnoozePreset>;
+  readonly schedule?: ScheduledTaskMenuState;
+  /** A server thread that a new task can send its runs into. */
+  readonly canScheduleInConversation?: boolean;
 }): ThreadActionMenuItem[] {
   const { thread, pinned, snoozed } = input;
-  return [
-    { id: "rename", label: "Rename thread" },
-    thread.titleRegeneration
-      ? { id: "title-regeneration-pending", label: "Regenerating title…", disabled: true }
-      : { id: "regenerate-title", label: "Regenerate title" },
-    ...(thread.archivedAt === null
+  const schedulable =
+    input.canScheduleInConversation === true &&
+    thread.archivedAt === null &&
+    !thread.scheduledOrigin;
+  const items: ThreadActionMenuItem[] = [
+    ...(thread.scheduledOrigin
       ? [
-          { id: pinned ? "unpin" : "pin", label: pinned ? "Unpin" : "Pin" } as const,
-          ...(snoozed
-            ? ([{ id: "wake", label: "Wake" }] as const)
-            : ([
-                { id: "snooze-three-hours", label: "Snooze for 3 hours" },
-                { id: "snooze-tomorrow", label: "Snooze until tomorrow morning" },
-                { id: "snooze-next-week", label: "Snooze until next week" },
-              ] as const)),
+          {
+            id: "scheduled-origin" as const,
+            label:
+              input.schedule?.state === "available"
+                ? `Scheduled task: ${input.schedule.name}`
+                : input.schedule?.state === "removed"
+                  ? "Scheduled task removed"
+                  : input.schedule?.state === "unavailable"
+                    ? "Scheduled task unavailable"
+                    : "Loading scheduled task…",
+            disabled: true,
+          },
+          ...(input.schedule?.state === "available"
+            ? [{ id: "edit-schedule" as const, label: "Edit scheduled task…" }]
+            : []),
         ]
       : []),
     {
+      id: "rename",
+      label: "Rename thread",
+      ...(thread.scheduledOrigin ? { separatorBefore: true } : {}),
+    },
+    thread.titleRegeneration
+      ? { id: "title-regeneration-pending", label: "Regenerating title…", disabled: true }
+      : { id: "regenerate-title", label: "Regenerate title" },
+    ...(schedulable
+      ? [{ id: "schedule-in-conversation" as const, label: "Schedule in this conversation…" }]
+      : []),
+    ...(thread.archivedAt === null
+      ? [
+          {
+            id: pinned ? "unpin" : "pin",
+            label: pinned ? "Unpin" : "Pin",
+            separatorBefore: true,
+          } as const,
+          ...(snoozed
+            ? ([{ id: "wake", label: "Wake" }] as const)
+            : (input.snoozePresets ?? resolveSnoozePresets(DEFAULT_SNOOZE_PRESETS)).map(
+                (preset) => ({
+                  id: `${SNOOZE_ACTION_PREFIX}${preset.id}` as const,
+                  label: snoozeThreadActionLabel(preset),
+                }),
+              )),
+        ]
+      : []),
+    ...(thread.archivedAt === null
+      ? [
+          {
+            id: thread.settledAt ? ("unsettle" as const) : ("settle" as const),
+            label: thread.settledAt ? "Unsettle" : "Settle",
+            disabled: !thread.settledAt && (pinned || snoozed),
+          },
+        ]
+      : []),
+    { id: "mark-unread", label: "Mark unread" },
+    {
+      id: "copy",
+      label: "Copy",
+      separatorBefore: true,
+      children: [
+        { id: "copy-path", label: "Path", icon: "folder" },
+        ...(thread.branch
+          ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
+          : []),
+        { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
+      ],
+    },
+    {
       id: thread.archivedAt === null ? "archive" : "unarchive",
       label: thread.archivedAt === null ? "Archive" : "Unarchive",
+      separatorBefore: true,
     },
-    { id: "mark-unread", label: "Mark unread" },
-    { id: "copy-path", label: "Copy path" },
-    { id: "copy-thread-id", label: "Copy thread ID" },
     { id: "delete", label: "Delete", destructive: true },
   ];
+  return items.map((item) => {
+    const icon = item.id.startsWith("snooze:") ? "clock" : THREAD_ACTION_ICONS[item.id];
+    return icon ? { ...item, icon } : item;
+  });
 }
+
+const THREAD_ACTION_ICONS: Readonly<Record<string, string>> = {
+  rename: "pencil",
+  "regenerate-title": "refresh-cw",
+  "title-regeneration-pending": "refresh-cw",
+  pin: "pin",
+  unpin: "pin-off",
+  wake: "clock",
+  settle: "circle-check",
+  unsettle: "circle-check",
+  archive: "archive",
+  unarchive: "archive",
+  "mark-unread": "mail-open",
+  copy: "copy",
+  delete: "trash",
+};
 
 export function nativeThreadActionMenuItems(
   items: ReadonlyArray<ThreadActionMenuItem>,
-): ReadonlyArray<{ id: ThreadActionId; label: string; destructive?: boolean }> {
-  return items.map(({ id, label, destructive }) => ({
+): ReadonlyArray<import("@t3tools/contracts").ContextMenuItem<ThreadActionId>> {
+  return items.map(({ id, label, destructive, disabled, separatorBefore, icon, children }) => ({
     id,
     label,
     ...(destructive === true ? { destructive: true } : {}),
+    ...(disabled === true ? { disabled: true } : {}),
+    ...(separatorBefore === true ? { separatorBefore: true } : {}),
+    ...(icon ? { icon } : {}),
+    ...(children ? { children: nativeThreadActionMenuItems(children) } : {}),
   }));
 }
 
@@ -96,14 +264,26 @@ export function useThreadActionController(input: {
   readonly activeThreadId: ThreadId | null;
   readonly onRenameRequested?: ((threadId: ThreadId) => void) | undefined;
 }) {
-  const threads = useStore((state) => state.threads);
+  // Threads are read from the store when a handler runs, so this hook does not
+  // re-render its host for every streaming delta.
   const projects = useStore((state) => state.projects);
+  const activeScheduledTaskId = useStore((state) =>
+    input.activeThreadId
+      ? selectThreadById(state, input.activeThreadId)?.scheduledOrigin?.taskId
+      : undefined,
+  );
+  const queryClient = useQueryClient();
+  // The chat header also keeps this list cached for every conversation; only a scheduled
+  // conversation's host subscribes, so task changes do not re-render the others.
+  const schedules = useQuery({
+    ...scheduledTasksQueryOptions(),
+    enabled: activeScheduledTaskId !== undefined,
+    subscribed: activeScheduledTaskId !== undefined,
+  });
   const pinRevision = useStore((state) => state.pinRevision ?? 0);
   const markThreadUnread = useStore((state) => state.markThreadUnread);
-  const { settings } = useAppSettings();
+  const confirmThreadDelete = useAppSettingsSelector((settings) => settings.confirmThreadDelete);
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
   const clearComposerDraftForThread = useComposerDraftStore((state) => state.clearThreadDraft);
   const clearProjectDraftThreadById = useComposerDraftStore(
     (state) => state.clearProjectDraftThreadById,
@@ -128,39 +308,81 @@ export function useThreadActionController(input: {
       });
     },
   });
-  const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
+  const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{
+    path: string;
+    kind?: "Branch";
+  }>({
     onCopy: (context) => {
       toastManager.add({
         type: "success",
-        title: "Path copied",
+        title: `${context.kind ?? "Path"} copied`,
         description: context.path,
       });
     },
     onError: (error) => {
       toastManager.add({
         type: "error",
-        title: "Failed to copy path",
+        title: "Failed to copy workspace value",
         description: error instanceof Error ? error.message : "An error occurred.",
       });
     },
   });
 
-  const pinnedThreadIds = useMemo(() => new Set(orderedPinnedThreadIds(threads)), [threads]);
-  const pinnedThreadIdsRef = useRef(pinnedThreadIds);
-  pinnedThreadIdsRef.current = pinnedThreadIds;
+  // The options the newest menu showed, so a pick keeps the wake time it displayed.
+  const shownSnoozePresetsRef = useRef<ReadonlyArray<SnoozePreset>>([]);
+  const buildMenu = useCallback((thread: ThreadListItem, schedule: ScheduledTaskMenuState) => {
+    const snoozePresets = resolveSnoozeMenuPresets();
+    shownSnoozePresetsRef.current = snoozePresets;
+    return buildThreadActionMenuItems({
+      thread,
+      pinned: orderedPinnedThreadIds(useStore.getState().threads).includes(thread.id),
+      snoozed: isSnoozedThread(thread),
+      snoozePresets,
+      schedule,
+      canScheduleInConversation: canScheduleIntoThread(
+        selectThreadById(useStore.getState(), thread.id),
+      ),
+    });
+  }, []);
+
   const menuItemsForThread = useCallback(
-    (thread: Thread): ThreadActionMenuItem[] =>
-      buildThreadActionMenuItems({
+    (thread: ThreadListItem): ThreadActionMenuItem[] => {
+      const task = schedules.data?.tasks.find(
+        (entry) => entry.task.id === thread.scheduledOrigin?.taskId,
+      )?.task;
+      return buildMenu(
         thread,
-        pinned: pinnedThreadIdsRef.current.has(thread.id),
-        snoozed: isSnoozedThread(thread),
-      }),
-    [],
+        schedules.isError
+          ? { state: "unavailable" }
+          : task
+            ? { state: "available", name: task.name }
+            : { state: schedules.data ? "removed" : "loading" },
+      );
+    },
+    [buildMenu, schedules.data, schedules.isError],
+  );
+  const loadMenuItemsForThread = useCallback(
+    async (thread: ThreadListItem) => {
+      if (!thread.scheduledOrigin) return menuItemsForThread(thread);
+      try {
+        const data = await queryClient.fetchQuery(scheduledTasksQueryOptions());
+        const task = data.tasks.find(
+          (entry) => entry.task.id === thread.scheduledOrigin?.taskId,
+        )?.task;
+        return buildMenu(
+          thread,
+          task ? { state: "available", name: task.name } : { state: "removed" },
+        );
+      } catch {
+        return buildMenu(thread, { state: "unavailable" });
+      }
+    },
+    [buildMenu, menuItemsForThread, queryClient],
   );
 
   const renameThread = useCallback(
     async (threadId: ThreadId, nextTitle: string): Promise<boolean> => {
-      const thread = threads.find((entry) => entry.id === threadId);
+      const thread = selectThreadById(useStore.getState(), threadId);
       if (!thread) return false;
       const title = nextTitle.trim();
       if (title.length === 0) {
@@ -187,7 +409,7 @@ export function useThreadActionController(input: {
         return false;
       }
     },
-    [threads],
+    [],
   );
 
   const archiveThread = useCallback(async (threadId: ThreadId, archived: boolean) => {
@@ -199,7 +421,7 @@ export function useThreadActionController(input: {
       return await deleteThreadsWithCleanup({
         threadIds,
         getThreads: () => useStore.getState().threads,
-        threads,
+        threads: useStore.getState().threads,
         projects,
         activeThreadId: input.activeThreadId,
         clearComposerDraftForThread,
@@ -215,7 +437,6 @@ export function useThreadActionController(input: {
         navigateHome: () => {
           void navigate({ to: "/", replace: true });
         },
-        removeWorktree: (removeInput) => removeWorktreeMutation.mutateAsync(removeInput),
       });
     },
     [
@@ -225,8 +446,6 @@ export function useThreadActionController(input: {
       input.activeThreadId,
       navigate,
       projects,
-      removeWorktreeMutation,
-      threads,
     ],
   );
 
@@ -240,11 +459,43 @@ export function useThreadActionController(input: {
 
   const executeAction = useCallback(
     async (threadId: ThreadId, actionId: ThreadActionId): Promise<void> => {
-      const thread = threads.find((entry) => entry.id === threadId);
+      const thread = selectThreadById(useStore.getState(), threadId);
       if (!thread) return;
       const api = readNativeApi();
       if (!api) return;
 
+      if (actionId === "scheduled-origin") return;
+      if (actionId === "edit-schedule") {
+        if (!thread.scheduledOrigin) return;
+        try {
+          const data = await queryClient.fetchQuery({
+            ...scheduledTasksQueryOptions(),
+            staleTime: 0,
+          });
+          const task = data.tasks.find(
+            (entry) => entry.task.id === thread.scheduledOrigin?.taskId,
+          )?.task;
+          if (!task) {
+            toastManager.add({ type: "warning", title: "Scheduled task removed" });
+            return;
+          }
+          await navigate({ to: "/scheduled", search: { taskId: task.id, edit: true } });
+        } catch (error) {
+          toastManager.add({
+            type: "error",
+            title: "Unable to open scheduled task",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          });
+        }
+        return;
+      }
+      if (actionId === "schedule-in-conversation") {
+        await navigate({
+          to: "/scheduled",
+          search: { projectId: thread.projectId, threadId: thread.id },
+        });
+        return;
+      }
       if (actionId === "rename") {
         input.onRenameRequested?.(threadId);
         return;
@@ -268,15 +519,17 @@ export function useThreadActionController(input: {
       }
       if (actionId === "title-regeneration-pending") return;
       if (actionId === "pin" || actionId === "unpin") {
-        await toggleThreadPin({ threadId, threads, expectedRevision: pinRevision }).catch(
-          (error) => {
-            toastManager.add({
-              type: "error",
-              title: "Failed to update pinned threads",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            });
-          },
-        );
+        await toggleThreadPin({
+          threadId,
+          threads: useStore.getState().threads,
+          expectedRevision: pinRevision,
+        }).catch((error) => {
+          toastManager.add({
+            type: "error",
+            title: "Failed to update pinned threads",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          });
+        });
         return;
       }
       if (actionId === "wake") {
@@ -289,17 +542,11 @@ export function useThreadActionController(input: {
         });
         return;
       }
-      const snoozePreset =
-        actionId === "snooze-three-hours"
-          ? "three-hours"
-          : actionId === "snooze-tomorrow"
-            ? "tomorrow-morning"
-            : actionId === "snooze-next-week"
-              ? "next-week"
-              : null;
-      if (snoozePreset !== null) {
+      if (isSnoozeThreadActionId(actionId)) {
+        const preset = pickSnoozeMenuPreset(shownSnoozePresetsRef.current, actionId);
+        if (!preset) return;
         try {
-          await snoozeThread(threadId, resolveSnoozePreset(snoozePreset));
+          await snoozeThread(threadId, preset.snoozedUntil);
           if (input.activeThreadId === threadId) {
             await navigate({ to: "/", replace: true });
           }
@@ -308,6 +555,23 @@ export function useThreadActionController(input: {
             type: "error",
             title: "Failed to snooze thread",
             description: error instanceof Error ? error.message : "An error occurred.",
+          });
+        }
+        return;
+      }
+      if (actionId === "settle" || actionId === "unsettle") {
+        try {
+          await api.orchestration.dispatchCommand({
+            type: actionId === "settle" ? "thread.settle" : "thread.unsettle",
+            commandId: newCommandId(),
+            threadId,
+            createdAt: new Date().toISOString(),
+          });
+        } catch (error) {
+          toastManager.add({
+            type: "error",
+            title: actionId === "settle" ? "Could not settle thread" : "Could not unsettle thread",
+            description: settlementErrorDetail(error),
           });
         }
         return;
@@ -321,10 +585,7 @@ export function useThreadActionController(input: {
         return;
       }
       if (actionId === "copy-path") {
-        const workspacePath =
-          thread.worktreePath ??
-          projects.find((project) => project.id === thread.projectId)?.cwd ??
-          null;
+        const workspacePath = resolveThreadWorkspaceCwd({ thread, projects }) ?? null;
         if (!workspacePath) {
           toastManager.add({
             type: "error",
@@ -340,8 +601,13 @@ export function useThreadActionController(input: {
         copyThreadIdToClipboard(threadId, { threadId });
         return;
       }
+      if (actionId === "copy-branch") {
+        if (thread.branch)
+          copyPathToClipboard(thread.branch, { path: thread.branch, kind: "Branch" });
+        return;
+      }
       if (actionId !== "delete") return;
-      if (settings.confirmThreadDelete) {
+      if (confirmThreadDelete) {
         const confirmed = await api.dialogs.confirm(
           [
             `Delete thread "${thread.title}"?`,
@@ -363,8 +629,8 @@ export function useThreadActionController(input: {
       navigate,
       pinRevision,
       projects,
-      settings.confirmThreadDelete,
-      threads,
+      queryClient,
+      confirmThreadDelete,
     ],
   );
 
@@ -374,6 +640,7 @@ export function useThreadActionController(input: {
     deleteThreads,
     executeAction,
     menuItemsForThread,
+    loadMenuItemsForThread,
     renameThread,
   } as const;
 }

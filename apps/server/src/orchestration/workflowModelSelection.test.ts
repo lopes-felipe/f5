@@ -45,9 +45,9 @@ describe("resolveAvailableWorkflowModelSlot", () => {
     } as const;
     expect(
       resolveAvailableWorkflowModelSlot(slot, [
-        claudeProvider(["claude-opus-5", "claude-fable-5-1"]),
+        claudeProvider(["claude-opus-5", "claude-fable-5-2"]),
       ]),
-    ).toEqual({ ...slot, model: "claude-fable-5-1" });
+    ).toEqual({ ...slot, model: "claude-fable-5-2" });
     expect(
       resolveAvailableWorkflowModelSlot(slot, [
         claudeProvider(["claude-opus-5", "claude-fable-5"]),
@@ -137,4 +137,18 @@ describe("resolveAvailableWorkflowModelSlot", () => {
       providerOptions: { claudeAgent: { subagentsEnabled: false } },
     });
   });
+});
+
+it("does not dispatch a version-gated model retained for existing threads", () => {
+  const provider = claudeProvider(["claude-opus-5-5", "claude-opus-4-6"]);
+  const gated = {
+    ...provider,
+    models: provider.models.map((model) => ({
+      ...model,
+      isUnlisted: model.slug === "claude-opus-5-5",
+    })),
+  };
+  expect(
+    resolveAvailableWorkflowModelSlot({ provider: "claudeAgent", model: "opus" }, [gated]).model,
+  ).toBe("claude-opus-4-6");
 });

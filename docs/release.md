@@ -1,161 +1,358 @@
-# Release Checklist
+# Releasing F5
 
-This document covers how to run desktop releases from one tag, first without signing, then with signing.
+Main merges build one immutable candidate alongside CI. Publication joins successful
+qualification for the exact source SHA and publishes those files directly. A tag
+never starts another build. The automation starts in **shadow** mode; it creates
+neither tags nor releases until the maintainer enables publication.
 
-## What the workflow does
+## Routine releases
 
-- Trigger: push tag matching `v*.*.*`.
-- Runs quality gates first: lint, typecheck, test.
-- Builds four artifacts in parallel:
-  - macOS `arm64` DMG
-  - macOS `x64` DMG
-  - Linux `x64` AppImage
-  - Windows `x64` NSIS installer
-- Publishes one GitHub Release with all produced files.
-  - Versions with a suffix after `X.Y.Z` (for example `1.2.3-alpha.1`) are published as GitHub prereleases.
-  - Only plain `X.Y.Z` releases are marked as the repository's latest release.
-- Includes Electron auto-update metadata (for example `latest*.yml` and `*.blockmap`) in release assets.
-- Publishes the CLI package (`apps/server`, npm package `t3`) with OIDC trusted publishing.
-- Signing is optional and auto-detected per platform from secrets.
+Betas need no version PR or dispatch. After stable 0.1.1, main candidates are
+0.1.2-beta.N, where N is the first-parent distance from the stable base. Rerunning
+the same commit keeps its version. Gaps are intentional. The newest commit whose
+required CI jobs pass supersedes older unpublished betas, even while its candidate
+is still building; a failed newer candidate does not cause an older beta to ship.
+In beta/all automation modes, the publisher automatically reruns a selected failed
+or timed-out candidate's failed jobs, up to three total attempts (including manual
+reruns). Publication waits for the rerun without falling back to an older candidate.
+Automatic reruns use `GITHUB_TOKEN`. If their completion does not trigger another
+publisher workflow, publication resumes through the ten-minute scheduled
+reconciliation. GitHub may delay scheduled runs when capacity is constrained.
+After the third attempt, or for a cancelled run, manually rerun failed jobs with
+`gh run rerun <run-id> --failed`. Shadow mode never reruns candidates.
 
-## Desktop auto-update notes
+A beta's release notes list the changelog entries added since the previous
+published release, beta or stable, whose commit is an ancestor of the candidate:
+fragments added under `changes/` and any bullets added to `CHANGELOG.md`'s
+Unreleased section. An entry whose first line the previous release already had,
+in its changelog or its fragments, is not listed again, so renamed fragments and
+entries folded back by a withdrawal are not announced twice. Fragments added or
+modified since that release are read, so a fragment reworded after a beta
+appears again with its new wording. Unpublished and
+superseded betas do not count, so their entries appear in the next published
+beta. The desktop updater shows every intermediate release's notes in a row, so
+each entry appears once there. If git fails while collecting entries, the notes
+fall back to the source and run lines rather than blocking publication.
 
-- Runtime updater: `electron-updater` in `apps/desktop/src/main.ts`.
-- Update UX:
-  - Background checks run on startup delay + interval.
-  - No automatic download or install.
-  - The desktop UI shows a rocket update button when an update is available; click once to download, click again after download to restart/install.
-- Provider: GitHub Releases (`provider: github`) configured at build time.
-- Release notes are normalized to bounded plain text in the desktop process and shown from the
-  update control. Remote updater content is never rendered as HTML.
-- Repository slug source:
-  - `T3CODE_DESKTOP_UPDATE_REPOSITORY` (format `owner/repo`), if set.
-  - otherwise `GITHUB_REPOSITORY` from GitHub Actions.
-- Temporary private-repo auth workaround:
-  - set `T3CODE_DESKTOP_UPDATE_GITHUB_TOKEN` (or `GH_TOKEN`) in the desktop app runtime environment.
-  - the app forwards it as an `Authorization: Bearer <token>` request header for updater HTTP calls.
-- Required release assets for updater:
-  - platform installers (`.exe`, `.dmg`, `.AppImage`, plus macOS `.zip` for Squirrel.Mac update payloads)
-  - `latest*.yml` metadata
-  - `*.blockmap` files (used for differential downloads)
-- macOS metadata note:
-  - `electron-updater` reads `latest-mac.yml` for both Intel and Apple Silicon.
-  - The workflow merges the per-arch mac manifests into one `latest-mac.yml` before publishing the GitHub Release.
+Every failed or recovered publisher run updates one `release-blocked` issue titled
+"Release publication blocked" through `release-status.yml`. A failure opens it with
+the run link and the last error lines, and comments again only when that error
+changes. The next successful publisher run closes it. Cancelled and out-of-order
+results are ignored. Dispatch the workflow with a `run_id` to report a specific run.
 
-### Test auto-updates locally
+CI queue cleanup supersedes older queued runs before their replacement passes.
+If that replacement later fails, intermediate sources whose CI was cancelled
+cannot qualify until manually rerun; publication may wait for a newer eligible
+main source to pass. Cleanup skips replacements already known to have failed.
 
-Development builds read an uncommitted `dev-app-update.yml` from `app.getAppPath()`. Copy the
-fields from a generated `app-update.yml`, point them at a disposable release feed, and start the
-desktop app normally. Do not commit this file because it may contain private feed details. The
-`T3CODE_DISABLE_AUTO_UPDATE=1` environment variable disables the updater while testing unrelated
-desktop work. Reducer and release-note normalization tests cover the state transitions without a
-live release feed.
+For a stable release:
 
-## 0) npm OIDC trusted publishing setup (CLI)
+```sh
+bun run release:prepare --stable 0.1.2
+```
 
-The workflow publishes the CLI with `bun publish` from `apps/server` after bumping
-the package version to the release tag version.
+The release App opens a version/changelog PR with `release-intent.json` containing
+the version and a UUID. It moves the Unreleased entries and every fragment under
+`changes/` into a new `## [0.1.2]` section of `CHANGELOG.md`, grouped by category,
+and deletes the fragments; `bun run changelog:preview` shows that section beforehand.
+Fragments that land on main while the PR is open ship in the merge commit: the
+stable release notes include them, and the next preparation adds them to this
+version's section. Review and merge that PR. Its exact main merge commit is
+the stable candidate, and its merge authorizes publication once all gates pass.
+That commit produces no beta. Subsequent main commits target 0.1.3-beta.N.
 
-Checklist:
+A pending stable request holds later betas across build failures, reruns, missed
+events and restarts. Later merges never cancel or silently change its candidate.
+Its main CI is retried like its build: in beta/all mode the publisher reruns failed
+or timed-out CI jobs on the stable source up to three total attempts. After that,
+or for a cancelled CI run, the publisher fails with `Stable CI is blocked` and the
+rerun command instead of waiting silently.
+After automatic retries are exhausted, rerun failed jobs when the source is sound.
+For a source fix, merge it and request an explicit recovery PR for the same
+unpublished version:
 
-1. Confirm npm org/user owns package `t3` (or rename package first if needed).
-2. In npm package settings, configure Trusted Publisher:
-   - Provider: GitHub Actions
-   - Repository: this repo
-   - Workflow file: `.github/workflows/release.yml`
-   - Environment (if used): match your npm trusted publishing config
-3. Ensure npm account and org policies allow trusted publishing for the package.
-4. Create release tag `vX.Y.Z` and push; workflow will:
-   - set `apps/server/package.json` version to `X.Y.Z`
-   - build web + server
-   - run `bun publish --access public`
+```sh
+bun run release:prepare --stable 0.1.2 --recover <failed-request-uuid>
+```
 
-## 1) Dry-run release without signing
+The recovery PR has a new UUID and `supersedes` the failed request. It folds any
+changelog fragments that landed since the failed preparation into the same
+version's section. Its merge pins a new commit. Published versions, tags and assets are never replaced. Dependency,
+signature, hash, upgrade, missing certification and expired-artifact failures block
+publication. Missing artifacts require explicit recovery, not an implicit rebuild.
+Once publication has reserved a version's immutable tag, resume that exact
+candidate's publication; a recovery PR cannot move the reserved tag to another source.
 
-Use this first to validate the release pipeline.
+To abandon a pending request, open an explicit withdrawal PR:
 
-1. Confirm no signing secrets are required for this test.
-2. Create a test tag:
-   - `git tag v0.0.0-test.1`
-   - `git push origin v0.0.0-test.1`
-3. Wait for `.github/workflows/release.yml` to finish.
-4. Verify the GitHub Release contains all platform artifacts.
-5. Download each artifact and sanity-check installation on each OS.
+```sh
+bun run release:prepare --withdraw <request-uuid> --reason "Abandon this release"
+```
 
-## 2) Apple signing + notarization setup (macOS)
+Withdrawals retain the original history, remove the request and its recovery lineage
+from the publication queue, and restore package versions to the remaining stable
+base. An invalid or deleted historical intent can be acknowledged by its exact
+commit SHA instead; comma-separated targets are supported. Reverting an intent
+never repins a previously seen UUID. A reserved tag remains immutable; after
+abandoning it, prepare a higher unused stable version. Required static CI checks
+the PR merge result, package versions and pending-request constraints. Require
+CODEOWNERS review and up-to-date `CI result` checks for intent edits.
 
-Required secrets used by the workflow:
+Stable releases become **Latest**. Betas are prereleases and never become Latest.
+Global version ordering is enforced across both channels; stable clients retain
+stable preferences, beta clients retain beta preferences, and no path downgrades.
 
-- `CSC_LINK`
-- `CSC_KEY_PASSWORD`
-- `APPLE_API_KEY`
-- `APPLE_API_KEY_ID`
-- `APPLE_API_ISSUER`
+## Pipeline and evidence
 
-Checklist:
+- `release.yml` plans the version and builds four desktops (macOS arm64/x64, Linux
+  x64 and Windows x64) and five native CLI archives. It starts alongside main CI.
+  It uses pinned runtimes, Bun/Electron/builder caches and the Windows Rust cache.
+  Every main merge starts its candidate, including signing and notarization.
+  The independent release coordinator stops unfinished obsolete betas only after
+  a newer main source passes every required CI job. Stable requests, matching
+  reserved tags and active upgrade proofs remain protected. A publisher records
+  when selection finishes, including an explicit no-candidate marker while a
+  newer build is pending. Selected builds are normally already complete; the
+  lease additionally protects a rerun of that build while publication continues.
+  Unrelated obsolete betas can stop after selection. Missing markers fail closed.
+  Cancellation runs only in beta/all mode; shadow or an unset mode disables it.
+  Stable builds are never cancelled by a later merge.
+- macOS packages are signed/notarized. The final mounted DMG passes codesign,
+  stapler, Gatekeeper and the bundled Claude SDK spawn check on its native runner.
+- Every native CLI archive passes clean-PATH runtime/server/backup smoke, a real
+  isolated HTTPS installation, and a supervised update from the published stable
+  CLI baseline. The loopback feed trusts a private test certificate; TLS checking
+  stays enabled. No machine-wide service or user installation is touched.
+- Windows published-client upgrade checks begin immediately after the Windows
+  installer finishes. Stable candidates test stable and beta preferences on fresh
+  runners. Synthetic failure/recovery checks reuse the compiled Windows bundles
+  in separate fixture staging directories and preserve shipping artifacts.
+- Component receipts bind the source SHA, version, run/attempt, native toolchain
+  and runner image to each file's size and SHA-256. The candidate manifest binds
+  those receipts to immutable Actions artifact IDs and ZIP digests. Failed-job
+  reruns can retain successful components from earlier attempts of the same run.
+  `f5-release-qualification.json` records the actual publication baselines and
+  upgrade proof key/run/attempt separately from the original candidate provenance.
+- `release-publish.yml` reconciles on CI/candidate/upgrade completion and every
+  ten minutes. A shared concurrency group serializes both channels; selection
+  comes from first-parent history and stable intent, not event arrival order.
+  Required jobs and matrix variants are derived from that SHA's CI result.
+- The publisher validates trusted repository/workflow identities and downloads
+  platform artifacts directly. It merges updater/CLI manifests, generates
+  checksums and verifies the exact asset set. There is no intermediate release
+  bundle upload. `f5-release-candidate.json` is published with the checksums so
+  provenance remains available after Actions artifact retention expires.
+- Changed published Windows or CLI baselines dispatch `release-upgrade.yml`
+  against existing candidate artifacts. Only affected upgrade checks rerun; no
+  shipping artifact is rebuilt. The proof binds the candidate run/attempt and
+  baseline fingerprint.
+- Publication creates an exact-SHA tag and draft, uploads only missing assets,
+  verifies uploaded sizes and API SHA-256 digests, preserves the existing provider
+  certification policy, then undrafts. A matching complete published release is
+  success on retry. Mismatched existing assets block rather than overwrite.
+  A retry can remove an expected incomplete `starter` upload from its matching
+  draft before uploading it again. Complete assets and public releases are never
+  removed or replaced.
+- Draft creation uses the REST response's release ID, without relying on an
+  immediately consistent release listing. An ambiguous creation response gets
+  one discovery attempt after five seconds, never a blind repeated POST.
+  Downloads and uploads use at most three workers each; failures stop new work
+  and drain active transfers. Uploads and promotion use the validated release ID.
+- Main CI ends with its required validation result. Status issue reporting runs
+  independently after trusted main push CI completion, rejecting stale SHAs and
+  attempts inside a separate serialized reporting job. Pending reports queue
+  without cancelling one another; their runner queue cannot delay release eligibility.
+- A missing macOS signing timestamp gets one retry after five seconds against
+  the same compiled app. Certificate, entitlement and verification failures do
+  not retry. Signing retries are included in component receipts; all signing,
+  notarization and mounted-DMG gates still apply.
+- Public checks verify all installer/CLI download URLs, update manifests, candidate
+  provenance, the Atom feed, and stable Latest aliases. Transient public/dependency
+  failures retry once locally. Persistent failures remain visible for rerun.
+  Published retries use public provenance/checksums and API asset digests, so
+  expiring Actions artifacts do not break verification or trigger downloads of
+  the original multi-gigabyte components.
+- `release-summary.json` records source/version, build run/attempt, merge-to-public
+  and candidate durations, retries and artifact reuse. Shadow verification is
+  memoized by candidate/baseline identities plus a content hash of publisher
+  tooling, dependencies and certification inputs. Unrelated main merges do not
+  invalidate that verification. Reconciliation qualifies the newest passing
+  source only; a stable barrier qualifies only its pinned source. Failed build
+  and upgrade-proof runs fail reconciliation visibly.
 
-1. Apple Developer account access:
-   - Team has rights to create Developer ID certificates.
-2. Create `Developer ID Application` certificate.
-3. Export certificate + private key as `.p12` from Keychain.
-4. Base64-encode the `.p12` and store as `CSC_LINK`.
-5. Store the `.p12` export password as `CSC_KEY_PASSWORD`.
-6. In App Store Connect, create an API key (Team key).
-7. Add API key values:
-   - `APPLE_API_KEY`: contents of the downloaded `.p8`
-   - `APPLE_API_KEY_ID`: Key ID
-   - `APPLE_API_ISSUER`: Issuer ID
-8. Re-run a tag release and confirm macOS artifacts are signed/notarized.
+The desktop profile and asset contract remain in `scripts/lib/release-profile.ts`.
+`release-profile.json` currently ships `all`. Once any public Mac/Linux feed
+exists, neither preparation nor publication may revert to Windows-only.
 
-Notes:
+Publication checks that every certifying integration record's evidence commit is in
+the candidate's history, before any tag or draft is created and again after uploads.
+Per-build operator acceptance is not required: a certified record ships in every build
+that embeds it, and its runtime checks (signatures, identity, inventory digest) still
+close the integration when anything drifts. The mounted runtime smoke is not
+authenticated provider or physical-input evidence.
 
-- `APPLE_API_KEY` is stored as raw key text in secrets.
-- The workflow writes it to a temporary `AuthKey_<id>.p8` file at runtime.
+The acceptance checklist remains available for a manual check of a candidate DMG:
 
-## 3) Azure Trusted Signing setup (Windows)
+```sh
+bun run integrations:accept --integration codex-chrome --candidate-run <run-id> --artifact <candidate.dmg>
+```
 
-Required secrets used by the workflow:
+Its report under `docs/computer-certification/acceptance-*.json` is informational;
+such evidence-only commits do not supersede the current candidate.
+See [agent-browser.md](agent-browser.md) for certification procedures.
 
-- `AZURE_TENANT_ID`
-- `AZURE_CLIENT_ID`
-- `AZURE_CLIENT_SECRET`
-- `AZURE_TRUSTED_SIGNING_ENDPOINT`
-- `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`
-- `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`
-- `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`
+## One-time maintainer setup
 
-Checklist:
+Repository security and credentials are maintained by a human. These settings
+must be completed before enabling publication:
 
-1. Create Azure Trusted Signing account and certificate profile.
-2. Record ATS values:
-   - Endpoint
-   - Account name
-   - Certificate profile name
-   - Publisher name
-3. Create/choose an Entra app registration (service principal).
-4. Grant service principal permissions required by Trusted Signing.
-5. Create a client secret for the service principal.
-6. Add Azure secrets listed above in GitHub Actions secrets.
-7. Re-run a tag release and confirm Windows installer is signed.
+1. Install a dedicated GitHub App on **this repository only**, with Contents,
+   Pull requests and Actions write permissions. Create a `release-publish`
+   environment restricted to `main`, without per-run approval. Set environment
+   variable `F5_RELEASE_APP_ID` and environment secret `F5_RELEASE_APP_PRIVATE_KEY`
+   there. Never keep a repository- or organization-scoped copy of the key.
+   Both preparation and publication jobs declare this environment.
+   Preparation requests Contents/Pull requests write; publication requests
+   Contents/Actions write. App-authored preparation PRs start normal CI without
+   the extra approval needed by token-authored PRs.
+2. Permit that App to **create** `v*` tags. Keep independent rules forbidding tag
+   updates/deletion, and retain release immutability. Do not give the App a blanket
+   bypass of update/delete restrictions. Publishing never needs main write access.
+3. Configure the `release` signing environment to allow trusted `main` automation
+   without per-run approval. Do not allow PR or fork refs. Keep signing credentials
+   there; the read-only candidate jobs never receive publication credentials.
+4. Keep Apple secrets `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_API_KEY` (p8
+   contents), `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`. Missing values fail signed
+   Mac packaging. The temporary p8 file is removed after packaging.
+5. Optional Windows signing uses `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+   `AZURE_CLIENT_SECRET`, `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`,
+   `AZURE_TRUSTED_SIGNING_ENDPOINT`, `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`
+   and `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`. Set
+   `F5_WINDOWS_SIGNING_REQUIRED=true` when available. Otherwise the installer is
+   explicitly unsigned, retaining the existing published-client policy.
+6. Set `F5_RELEASE_AUTOMATION_MODE` to `shadow` (also the default when unset).
+   Keep scheduled workflows enabled; GitHub may disable them after inactivity.
 
-## 4) Ongoing release checklist
+App setup follows [GitHub token rules](https://docs.github.com/en/actions/concepts/security/github_token).
+Publication does not depend on [concurrency dispatch ordering](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
-1. Ensure `main` is green in CI.
-2. Bump app version as needed.
-3. Create release tag: `vX.Y.Z`.
-4. Push tag.
-5. Verify workflow steps:
-   - preflight passes
-   - all matrix builds pass
-   - release job uploads expected files
-6. Smoke test downloaded artifacts.
+## Rollout and recovery qualification
 
-## 5) Troubleshooting
+Keep existing public releases untouched throughout rollout.
 
-- macOS build unsigned when expected signed:
-  - Check all Apple secrets are populated and non-empty.
-- Windows build unsigned when expected signed:
-  - Check all Azure ATS and auth secrets are populated and non-empty.
-- Build fails with signing error:
-  - Retry with secrets removed to confirm unsigned path still works.
-  - Re-check certificate/profile names and tenant/client credentials.
+1. Pass formatting, lint, typecheck, full tests, upstream ledger validation and
+   actionlint. Merge the workflow changes with shadow mode retained.
+2. Let main CI and the signed, native cross-platform candidate finish. Require a
+   successful shadow publisher summary, component receipts, mounted-DMG checks,
+   all five installed CLI checks and both Windows qualification paths. Record
+   observed queue/build/validation timings; **20–25 minutes is a target, not a
+   measured result of local checks**.
+3. Enable `beta` mode after that successful hosted rehearsal. Confirm that a
+   routine main merge publishes without action, a duplicate publisher dispatch
+   changes no assets, and out-of-order candidate completion does not publish a
+   superseded beta.
+4. Exercise a stable preparation PR in `all` mode. Verify the stable barrier
+   while a later main merge completes, then stable Latest and beta preference
+   retention. Verify a failed stable request remains held until explicit recovery.
+5. Use isolated fixture uploads to exercise interruption/retry, checking that
+   existing asset IDs/digests stay unchanged. Exercise stale-baseline requalification
+   against existing artifacts and expired/corrupt artifact rejection in fixtures.
+   Do not inject deliberate failures into production releases.
+
+To retry publication, rerun/dispatch **Release publisher**. To retry a failed
+upgrade-only qualification, rerun its failed jobs; reconciliation reuses its proof.
+For a corrupt or mismatching uploaded asset, stop and investigate: automation
+never deletes or replaces complete assets or assets in public releases. Only
+recognized incomplete `starter` uploads in a matching draft can be removed
+automatically for retry. An administrator handles other destructive cleanup.
+A failed public availability check can be retried after publication without
+replacing or rebuilding the release.
+
+Manual UI acceptance for import, accessibility permissions, SmartScreen/Smart App
+Control, macOS Squirrel staging and AppImage behavior remains useful for product
+changes, but routine releases do not depend on laptop commands or an agent polling CI.
+
+### Finish the production rollout
+
+After merging release hardening, keep `beta` mode and require the merge's beta
+and the next legitimate main merge to publish through completion events without
+manual dispatch. Supersession may skip version numbers. Verify provenance,
+public feeds/downloads and stable Latest, then safely dispatch a duplicate
+publisher and confirm asset IDs/digests remain unchanged.
+
+Deliberate failure injection belongs only in fixture tests. The hosted workspace
+suite runs the local-HTTP release rehearsal on Linux/macOS: real archive hashing,
+reconciliation, assembly and resumable upload logic, with fixture GitHub responses,
+no production token and external network requests rejected. Additional fixtures
+cover cancellation protections, ordering, stable recovery, changed baselines,
+expired/corrupt artifacts and timestamp retry limits.
+
+Once unattended beta validation passes, run `bun run release:prepare --stable 0.1.2`.
+Review changelog/scope and green PR CI, confirm no unrelated pending request,
+then enable `all` before the maintainer merges that preparation PR. Its exact
+merge SHA is built once as stable; it is not a retag or byte-identical promotion
+of the preceding beta. Verify immutable stable assets, Latest, both Windows
+preferences, all CLI upgrades and mandatory certification. Subsequent main
+merges produce `0.1.3-beta.N`; stale baselines requalify retained artifacts only.
+
+After three routine beta publications, measure from the hardening merge SHA:
+
+```sh
+bun run release:performance --since <hardening-main-merge-sha>
+```
+
+This reads successful event/schedule-triggered publisher summaries and independently
+checks public release identities/timestamps. It records the first three distinct
+beta releases in beta or all mode, excluding stable releases and manual dispatches,
+and reports median merge-to-public
+against 1,500 seconds, including queues. Missing/expired evidence blocks the
+report; fewer than three samples remains pending. Missed targets leave the
+performance milestone open with a capacity/critical-path follow-up, without
+changing runners or weakening qualification.
+
+Summary schema v2 retains existing fields and adds outcome, component artifact
+IDs/attempts/signing retries, reused completed uploads, phase durations and
+transient retries, including waiting/blocked/failed runs. Parallel phase intervals
+are counted once. Per-job queue estimates use first-step start minus dependency
+completion; unresolved dependencies are null. The candidate/CI queue fields
+report the largest known individual job queue, not a sum; the publication field
+is eligibility-to-reconciliation delay. Timing API/parse failures record null
+measurements and diagnostics without invalidating verified publication or shadow
+memoization. Summary retention is 90 days.
+
+## Build and validate CLI archives
+
+The user guide for the standalone CLI is [Standalone F5 CLI](user/standalone-cli.md). Use a matching native runner and Node **26.10.0** for each target:
+
+```sh
+bun run dist:cli:archive --target darwin-arm64 --node /path/to/node
+bun run test:cli-smoke release-cli/f5-0.0.10-darwin-arm64.tar.gz release-cli/f5-0.0.10-darwin-arm64.json
+bun run dist:cli:manifest release-cli/f5-cli-release.json release-cli/f5-0.0.10-{darwin-arm64,linux-x64,linux-arm64,win32-x64,win32-arm64}.json
+```
+
+`--output PATH` selects an artifact directory; `--skip-build` uses existing server web assets. The script bundles the standalone server, builds a SEA with snapshots/code cache disabled, pins native dependency roots and transitive overrides to the repository lockfile, resolves with scripts disabled, verifies every resulting package version and integrity against that lock, then installs with `--frozen-lockfile`, and emits an archive plus its manifest fragment. It rejects unsupported and cross-architecture native builds. A universal macOS Node is thinned to arm64 before injection. macOS artifacts are ad hoc signed for local execution; public distribution signing/notarization is a separate release workflow. Desktop's narrow ASAR unpack policy is unchanged.
+
+The merge script requires all five targets and matching versions. Packaging scripts
+never publish or change repository settings; the separate trusted publisher owns publication.
+
+The packaged Claude runtime check runs the bundled server's `claude-runtime-smoke.mjs` through Electron with `ELECTRON_RUN_AS_NODE=1`. Windows and Linux run it from `afterPack`; signed macOS builds run it after signing and before notarization. It checks CLI discovery and SDK initialization using a disposable home without a prompt or account credentials. macOS/Linux use F5's process-group wrapper; Windows uses the SDK's native spawn. The check rejects virtual ASAR executable paths, and native Claude platform packages are explicitly unpacked. A failed or timed-out smoke check blocks release packaging.
+
+Linux's `afterPack` hook then removes group and other write access from the packed app before `.deb` or AppImage creation, preserving executable and special mode bits without following symlinks.
+
+Validation in the CLI PR: macOS arm64 archive build and smoke with a disposable home and restricted PATH; native PTY and native file search; update rollback after a failing migration; interrupted trial/restoration and durable-commit recovery; architecture rejection; required workspace and real-Git checks. Packaged Windows/Linux and clean-machine VM smoke runs remain release gates and are not certified by a macOS-only run.
+
+The real archive integration test can also run on each release runner with `F5_CLI_SMOKE_ARCHIVE` and `F5_CLI_SMOKE_MANIFEST` set, using `bun run --cwd apps/server test:file integration/standaloneArchive.integration.test.ts`. It stages the archive, preflights the stable launcher, verifies that a prepared trial has no HTTP listener, rejects an activation message for another update ID, and checks the correlated bootstrap after activation. It also starts the installed stable service launcher, verifies that malformed update metadata is quarantined without stopping the server, and checks graceful shutdown. It uses a disposable state directory and leaves the user profile untouched.
+
+### Standalone update internals
+
+`update` stages and verifies the same-architecture release and queues a unique update ID. It does not replace a running executable or run npm. The stable built-in-only launcher preflights the candidate, stops the old child, and snapshots SQLite main/WAL/SHM. The trial completes migrations and service acquisition before reporting prepared. Background workers and HTTP activation wait for the launcher to durably commit the new version. Failure before the durable commit stops the trial, restores the snapshot, and restarts the old runtime. After the commit, recovery always rolls forward and preserves the new database, including activation and journal-cleanup failures.
+
+`current.json`, `pending.json`, `handoff.json`, and `outcome.json` record the handoff. The journal records the canonical database path and rejects recovery with another `--state-dir`. An incomplete snapshot or a live previous child blocks recovery. The child exits when its launcher's IPC channel disappears. Reconnect bootstrap carries the update ID, terminal outcome, and actual version; the UI reports success or rollback from those fields, never from a connection opening alone.
+
+Installer archives are downloaded with bounded size/time, checked against exact byte length and SHA-256, inspected for traversal and links, then staged into immutable version directories. Native PTY/search, version, architecture, and launcher protocol are checked before use. A launcher owns the default profile of its explicit state directory; it rejects `--profile` overrides and validates the actual database path before migrations.
+
+## Signing hardening and remaining backend limitation
+
+Signed macOS builds use JIT plus Apple Events only for the main application, JIT only for Electron child processes, and an empty entitlement set for the Swift computer helper. Library validation and unsigned executable memory exemptions are removed. Packaging disables `NODE_OPTIONS` and CLI inspector fuses and enables ASAR integrity validation on macOS/Windows with ASAR-only application loading.
+
+`RunAsNode` remains enabled because the backend currently re-executes the bundled Electron binary through the macOS GUI-denial sandbox and uses Node IPC. These fuse changes do **not** eliminate the risk of another local process launching that signed binary with arbitrary Node code. Before treating the first signed release as hardened against that threat, migrate the backend to a separately signed minimal Node helper or a utility process with equivalent kernel GUI isolation, preserve the computer-host IPC authentication, disable `RunAsNode`, and rehearse backend/session restarts and native modules. Do not substitute an unsandboxed utility process merely to disable a fuse. This architectural follow-up is not implemented by this PR.

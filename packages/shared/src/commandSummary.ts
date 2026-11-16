@@ -234,8 +234,39 @@ interface SearchToolConfig {
   readonly rejectFlags?: ReadonlySet<string>;
 }
 
+export type CommandExecutionBackgroundStatus = "running" | "completed" | "failed" | "stopped";
+
+export interface ParsedCommandExecutionTitle {
+  readonly baseTitle: string;
+  readonly backgroundStatus: CommandExecutionBackgroundStatus | null;
+}
+
+// Claude retitles backgrounded tools as "<title> — <status>" (see the Claude
+// adapter's backgroundToolTitle); the suffix is the only stored background marker.
+const BACKGROUND_TITLE_PATTERN = /^(.*\S)\s+—\s+(running|completed|failed|stopped)$/s;
+
+export function parseCommandExecutionTitle(title: string): ParsedCommandExecutionTitle {
+  const trimmed = title.trim();
+  const match = BACKGROUND_TITLE_PATTERN.exec(trimmed);
+  if (!match?.[1] || !match[2]) {
+    return { baseTitle: trimmed, backgroundStatus: null };
+  }
+  return {
+    baseTitle: match[1],
+    backgroundStatus: match[2] as CommandExecutionBackgroundStatus,
+  };
+}
+
+export function commandExecutionBackgroundStatus(
+  execution: Pick<ComparableCommandExecutionLike, "title">,
+): CommandExecutionBackgroundStatus | null {
+  return execution.title ? parseCommandExecutionTitle(execution.title).backgroundStatus : null;
+}
+
 export function isGenericCommandTitle(title: string): boolean {
-  return /^(?:ran|running) command$|^command run$/i.test(title.trim());
+  return /^(?:ran|running) command$|^command run$/i.test(
+    parseCommandExecutionTitle(title).baseTitle,
+  );
 }
 
 function shellBasename(command: string): string {
@@ -441,13 +472,16 @@ export function resolveCommandExecutionSummaryText(
   execution: Pick<ComparableCommandExecutionLike, "command" | "detail" | "title">,
 ): string {
   const displayCommand = resolveCommandExecutionDisplayCommand(execution);
-  const searchSummary = deriveSearchCommandSummary(displayCommand);
-  return execution.title &&
-    execution.title !== execution.command &&
-    execution.title !== displayCommand &&
-    !isGenericCommandTitle(execution.title)
-    ? execution.title
-    : (searchSummary ?? displayCommand);
+  const baseTitle = execution.title ? parseCommandExecutionTitle(execution.title).baseTitle : null;
+  if (
+    baseTitle &&
+    baseTitle !== execution.command &&
+    baseTitle !== displayCommand &&
+    !isGenericCommandTitle(baseTitle)
+  ) {
+    return baseTitle;
+  }
+  return deriveSearchCommandSummary(displayCommand) ?? displayCommand;
 }
 
 function parseSedFileReadCommand(command: string): FileReadCommandMatch | null {
@@ -1661,4 +1695,418 @@ export function isShellOperatorToken(token: string): boolean {
 
 export function isShellCommandSeparatorToken(token: string): boolean {
   return SHELL_COMMAND_SEPARATORS.has(token);
+}
+
+// Header labels for command cards whose provider sends no description (Codex,
+// Cursor, OpenCode, Pi). They say what a command does, never why it ran, and stay
+// null for anything unrecognized rather than restating the command.
+const MAX_COMMAND_LABELS = 2;
+const COMMAND_LABEL_SETUP_PROGRAMS = new Set([
+  "cd",
+  "pushd",
+  "popd",
+  "export",
+  "unset",
+  "set",
+  "source",
+  ".",
+  "true",
+  "echo",
+  "printf",
+]);
+const COMMAND_LABEL_REDIRECTIONS_WITH_TARGET = new Set([
+  ">",
+  ">>",
+  "1>",
+  "2>",
+  "1>>",
+  "2>>",
+  "&>",
+  "&>>",
+  "<",
+  "<<",
+]);
+const COMMAND_LABEL_WRAPPER_FLAGS_WITH_VALUE = new Map<string, ReadonlySet<string>>([
+  ["env", new Set(["-u", "--unset", "-C", "--chdir"])],
+  ["time", new Set(["-f", "--format", "-o", "--output"])],
+  ["timeout", new Set(["-s", "--signal", "-k", "--kill-after"])],
+  ["sudo", new Set(["-u", "--user", "-g", "--group"])],
+  ["nice", new Set(["-n", "--adjustment"])],
+  ["npx", new Set(["-p", "--package"])],
+  ["bunx", new Set(["-p", "--package"])],
+]);
+const COMMAND_LABEL_TWO_WORD_WRAPPERS = new Set([
+  "bun x",
+  "npm exec",
+  "pnpm exec",
+  "pnpm dlx",
+  "yarn exec",
+  "yarn dlx",
+  "uv run",
+]);
+const NO_FLAGS_WITH_VALUE: ReadonlySet<string> = new Set();
+const PACKAGE_MANAGER_FLAGS_WITH_VALUE = new Set([
+  "--cwd",
+  "--filter",
+  "-F",
+  "--prefix",
+  "-C",
+  "--dir",
+  "--workspace",
+  "--config",
+]);
+const CARGO_FLAGS_WITH_VALUE = new Set(["-C", "-Z", "--config", "--color"]);
+const GIT_FLAGS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
+const GH_FLAGS_WITH_VALUE = new Set(["-R", "--repo"]);
+const MAKE_FLAGS_WITH_VALUE = new Set(["-C", "-f", "--directory", "--file", "--makefile"]);
+const SCRIPT_RUNNER_FLAGS_WITH_VALUE = new Set(["-r", "--require", "--import", "--loader"]);
+const SCRIPT_RUNNER_INLINE_FLAGS = new Set(["-c", "-e", "--eval", "-p", "--print"]);
+const CARGO_SUBCOMMAND_LABELS = new Map([
+  ["test", "Run tests"],
+  ["fmt", "Format code"],
+  ["clippy", "Lint"],
+  ["check", "Check build"],
+  ["build", "Build"],
+  ["run", "Run binary"],
+]);
+const GIT_SUBCOMMAND_LABELS = new Map([
+  ["status", "Git status"],
+  ["diff", "Show diff"],
+  ["log", "Show git log"],
+  ["show", "Show commit"],
+  ["add", "Stage changes"],
+  ["commit", "Commit"],
+  ["push", "Push"],
+  ["pull", "Pull"],
+  ["fetch", "Fetch"],
+  ["checkout", "Switch branch"],
+  ["switch", "Switch branch"],
+  ["stash", "Stash changes"],
+  ["rebase", "Rebase"],
+  ["merge", "Merge"],
+  ["worktree", "Manage worktrees"],
+]);
+const GH_COMMAND_LABELS = new Map([
+  ["pr checks", "Check PR CI"],
+  ["pr view", "View PR"],
+  ["pr diff", "Show PR diff"],
+  ["pr list", "List PRs"],
+  ["pr create", "Create PR"],
+  ["run view", "Inspect CI run"],
+  ["run list", "List CI runs"],
+  ["run watch", "Watch CI run"],
+]);
+
+interface CommandLabelSegment {
+  readonly rawWords: ReadonlyArray<string>;
+  readonly words: ReadonlyArray<string>;
+}
+
+function splitCommandLabelSegments(command: string): ReadonlyArray<CommandLabelSegment> {
+  const segments: CommandLabelSegment[] = [];
+  let rawWords: string[] = [];
+  let skipNextWord = false;
+  let inComment = false;
+  const flush = () => {
+    if (rawWords.length > 0) {
+      segments.push({ rawWords, words: rawWords.map(maybeUnquoteShellToken) });
+    }
+    rawWords = [];
+    skipNextWord = false;
+    inComment = false;
+  };
+
+  for (const token of lexShellCommand(command)) {
+    if (token.trim().length === 0) {
+      if (token.includes("\n")) flush();
+      continue;
+    }
+    if (inComment) continue;
+    if (isShellCommandSeparatorToken(token)) {
+      flush();
+      continue;
+    }
+    if (COMMAND_LABEL_REDIRECTIONS_WITH_TARGET.has(token)) {
+      skipNextWord = true;
+      continue;
+    }
+    if (isShellOperatorToken(token) || /^\\\s+$/.test(token)) continue;
+    if (skipNextWord) {
+      skipNextWord = false;
+      continue;
+    }
+    if (token.startsWith("#")) {
+      inComment = true;
+      continue;
+    }
+    rawWords.push(token);
+  }
+  flush();
+  return segments;
+}
+
+function commandLabelProgram(word: string): string {
+  return shellBasename(word)
+    .toLowerCase()
+    .replace(/\.exe$/, "");
+}
+
+function commandLabelPathBasename(path: string): string {
+  return shellBasename(path.replace(/[\\/]+$/, "")) || path;
+}
+
+function skipLeadingFlags(
+  words: ReadonlyArray<string>,
+  start: number,
+  flagsWithValue: ReadonlySet<string>,
+): number {
+  let index = start;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (word === "--") return index + 1;
+    if (!word.startsWith("-")) return index;
+    index += flagsWithValue.has(word) ? 2 : 1;
+  }
+  return index;
+}
+
+/** Index of the first word after env assignments and wrappers like `env`, `timeout 5`. */
+function commandLabelProgramIndex(words: ReadonlyArray<string>): number {
+  let index = 0;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
+      index += 1;
+      continue;
+    }
+    const program = commandLabelProgram(word);
+    const next = words[index + 1];
+    if (next !== undefined && COMMAND_LABEL_TWO_WORD_WRAPPERS.has(`${program} ${next}`)) {
+      index = skipLeadingFlags(words, index + 2, NO_FLAGS_WITH_VALUE);
+      continue;
+    }
+    const wrapperFlags = COMMAND_LABEL_WRAPPER_FLAGS_WITH_VALUE.get(program);
+    if (!wrapperFlags) return index;
+    index = skipLeadingFlags(words, index + 1, wrapperFlags);
+    if (program === "timeout") index += 1;
+  }
+  return index;
+}
+
+function positionalArgs(
+  args: ReadonlyArray<string>,
+  flagsWithValue: ReadonlySet<string> = NO_FLAGS_WITH_VALUE,
+): ReadonlyArray<string> {
+  const positionals: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--") break;
+    if (arg.startsWith("-")) {
+      if (flagsWithValue.has(arg)) index += 1;
+      continue;
+    }
+    positionals.push(arg);
+  }
+  return positionals;
+}
+
+function isScriptFilePath(value: string): boolean {
+  return /[\\/]/.test(value) || /\.(?:[cm]?[jt]sx?|sh|py)$/i.test(value);
+}
+
+function labelPackageScript(script: string): string | null {
+  if (isScriptFilePath(script)) return `Run ${commandLabelPathBasename(script)}`;
+  if (!/^[\w@:.-]+$/.test(script)) return null;
+  const name = script.toLowerCase();
+  if (name === "test" || name.startsWith("test:")) return "Run tests";
+  if (name === "typecheck" || name.startsWith("typecheck:") || name === "tsc") return "Typecheck";
+  if (name.startsWith("lint")) return "Lint";
+  if (name === "fmt" || name.startsWith("fmt:") || name.startsWith("format")) return "Format code";
+  if (name.startsWith("build")) return "Build";
+  if (name === "dev" || name === "start") return "Start dev server";
+  return `Run ${script}`;
+}
+
+function labelPackageManagerCommand(program: string, args: ReadonlyArray<string>): string | null {
+  if (program === "yarn" && args.length === 0) return "Install dependencies";
+  const [first, second] = positionalArgs(args, PACKAGE_MANAGER_FLAGS_WITH_VALUE);
+  if (first === undefined) return null;
+  switch (first) {
+    case "run":
+    case "run-script":
+      return second ? labelPackageScript(second) : null;
+    case "install":
+    case "i":
+    case "ci":
+      return "Install dependencies";
+    case "add":
+      return second ? `Add ${second}` : null;
+    case "remove":
+    case "rm":
+    case "uninstall":
+      return second ? `Remove ${second}` : null;
+    case "test":
+    case "t":
+      return "Run tests";
+  }
+  if (program === "npm") return first === "start" ? "Start dev server" : null;
+  return labelPackageScript(first);
+}
+
+function labelFetchCommand(args: ReadonlyArray<string>): string {
+  const url = args.find((arg) => /^https?:\/\//i.test(arg));
+  if (url) {
+    try {
+      return `Fetch ${new URL(url).host}`;
+    } catch {
+      // Fall through to the generic label for unparseable URLs.
+    }
+  }
+  return "Fetch URL";
+}
+
+function labelScriptRunnerCommand(program: string, args: ReadonlyArray<string>): string | null {
+  if (args.some((arg) => SCRIPT_RUNNER_INLINE_FLAGS.has(arg))) return null;
+  const moduleIndex = args.indexOf("-m");
+  if (moduleIndex >= 0) {
+    const moduleName = args[moduleIndex + 1];
+    if (!moduleName) return null;
+    return moduleName === "pytest" ? "Run tests" : `Run ${moduleName}`;
+  }
+  const positionals = positionalArgs(args, SCRIPT_RUNNER_FLAGS_WITH_VALUE);
+  if (program === "deno") {
+    if (positionals[0] === "test") return "Run tests";
+    if (positionals[0] === "run") {
+      return positionals[1] ? `Run ${commandLabelPathBasename(positionals[1])}` : null;
+    }
+  }
+  return positionals[0] ? `Run ${commandLabelPathBasename(positionals[0])}` : null;
+}
+
+function labelCommandWords(words: ReadonlyArray<string>): string | null {
+  const [first, ...args] = words;
+  if (first === undefined) return null;
+  const program = commandLabelProgram(first);
+  switch (program) {
+    case "bun":
+    case "npm":
+    case "pnpm":
+    case "yarn":
+      return labelPackageManagerCommand(program, args);
+    case "vitest":
+    case "jest":
+    case "pytest":
+      return "Run tests";
+    case "tsc":
+      return "Typecheck";
+    case "eslint":
+    case "oxlint":
+      return "Lint";
+    case "prettier":
+    case "oxfmt":
+    case "gofmt":
+    case "rustfmt":
+      return "Format code";
+    case "biome": {
+      const subcommand = positionalArgs(args)[0];
+      return subcommand === "lint" ? "Lint" : subcommand === "format" ? "Format code" : null;
+    }
+    case "go":
+      return positionalArgs(args)[0] === "test" ? "Run tests" : null;
+    case "cargo": {
+      const subcommand = positionalArgs(args, CARGO_FLAGS_WITH_VALUE).find(
+        (arg) => !arg.startsWith("+"),
+      );
+      return subcommand ? (CARGO_SUBCOMMAND_LABELS.get(subcommand) ?? null) : null;
+    }
+    case "git": {
+      const subcommand = positionalArgs(args, GIT_FLAGS_WITH_VALUE)[0];
+      if (!subcommand || !/^[a-z][a-z-]*$/.test(subcommand)) return null;
+      return GIT_SUBCOMMAND_LABELS.get(subcommand) ?? `Run git ${subcommand}`;
+    }
+    case "gh": {
+      const [area, action] = positionalArgs(args, GH_FLAGS_WITH_VALUE);
+      if (area === "api") return "Call GitHub API";
+      if (area === "issue") return "View issue";
+      return area && action ? (GH_COMMAND_LABELS.get(`${area} ${action}`) ?? null) : null;
+    }
+    case "ls":
+    case "tree":
+      return "List files";
+    case "find":
+      return "Find files";
+    case "mkdir":
+      return "Create directory";
+    case "rm":
+      return "Delete files";
+    case "mv":
+      return "Move files";
+    case "cp":
+      return "Copy files";
+    case "chmod":
+      return "Change permissions";
+    case "curl":
+    case "wget":
+      return labelFetchCommand(args);
+    case "make": {
+      const target = positionalArgs(args, MAKE_FLAGS_WITH_VALUE).find((arg) => !arg.includes("="));
+      return target ? `Make ${target}` : "Make";
+    }
+    case "sleep":
+      return "Wait";
+    case "ps":
+    case "pgrep":
+      return "List processes";
+    case "kill":
+    case "pkill":
+      return "Stop process";
+    case "which": {
+      const name = positionalArgs(args)[0];
+      return name ? `Locate ${name}` : null;
+    }
+    case "command":
+      return (args[0] === "-v" || args[0] === "-V") && args[1] ? `Locate ${args[1]}` : null;
+    case "node":
+    case "python":
+    case "python3":
+    case "deno":
+    case "tsx":
+      return labelScriptRunnerCommand(program, args);
+    default:
+      return null;
+  }
+}
+
+function labelReadOrSearchCommand(command: string): string | null {
+  const searchSummary = deriveSearchCommandSummary(command);
+  if (searchSummary) return searchSummary;
+  const fileRead = detectFileReadCommand(command);
+  if (!fileRead) return null;
+  const [onlyPath] = fileRead.filePaths;
+  return fileRead.filePaths.length === 1 && onlyPath
+    ? `Read ${commandLabelPathBasename(onlyPath)}`
+    : `Read ${fileRead.filePaths.length} files`;
+}
+
+export function deriveCommandExecutionLabel(command: string): string | null {
+  const displayCommand = displayCommandExecutionCommand(command).trim();
+  if (displayCommand.length === 0) return null;
+  const wholeCommandLabel = labelReadOrSearchCommand(displayCommand);
+  if (wholeCommandLabel) return wholeCommandLabel;
+
+  const labels: string[] = [];
+  for (const segment of splitCommandLabelSegments(displayCommand)) {
+    const programIndex = commandLabelProgramIndex(segment.words);
+    const words = segment.words.slice(programIndex);
+    const program = words[0];
+    if (program === undefined || COMMAND_LABEL_SETUP_PROGRAMS.has(commandLabelProgram(program))) {
+      continue;
+    }
+    const label =
+      labelReadOrSearchCommand(segment.rawWords.slice(programIndex).join(" ")) ??
+      labelCommandWords(words);
+    if (label && !labels.includes(label)) labels.push(label);
+    if (labels.length === MAX_COMMAND_LABELS) break;
+  }
+  return labels.length > 0 ? labels.join(", ") : null;
 }

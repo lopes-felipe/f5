@@ -1,3 +1,4 @@
+import { mergeCreditRemovalEnabled, readGitHubMergeMessage } from "../git/githubMergeMessage.ts";
 import { Effect } from "effect";
 import type { SourceControlPullRequestRef } from "@t3tools/contracts";
 import { GitHubCliError } from "../git/Errors.ts";
@@ -14,6 +15,8 @@ import {
 } from "../sourceControl/ForgeSourceControlProvider.ts";
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 import { record, text } from "./forgeModel.ts";
+import { GITHUB_AUTO_MERGE_QUERY, gitHubAutoMergeAvailable } from "./githubAutoMerge.ts";
+import { failedGitHubWorkflowRuns, gitHubWorkflowRunOf } from "./githubChecks.ts";
 
 export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvider {
   const scope = <A>(
@@ -52,14 +55,17 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
     suffix: string,
     method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" = "GET",
     body?: unknown,
-  ) =>
-    scope(ref, (context) =>
+  ) => {
+    // The request layer refuses a query string inside the endpoint, so it travels apart.
+    const [path = "", search] = suffix.split("?", 2);
+    return scope(ref, (context) =>
       github
         .request({
           cwd,
           context,
           method,
-          endpoint: `repos/${ref.repository.split("/").map(encodeURIComponent).join("/")}${suffix}`,
+          endpoint: `repos/${ref.repository.split("/").map(encodeURIComponent).join("/")}${path}`,
+          ...(search ? { query: Object.fromEntries(new URLSearchParams(search)) } : {}),
           ...(body === undefined ? {} : { body }),
         })
         .pipe(
@@ -78,6 +84,7 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
           ),
         ),
     );
+  };
   // CLI adapter errors retain dispatch knowledge for durable recovery.
   const graphql = (
     ref: SourceControlPullRequestRef,
@@ -111,6 +118,7 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
       return {
         number: ref.number,
         title: text(r.title)!,
+        updatedAt: text(r.updated_at),
         url: text(r.html_url) ?? `https://${ref.host}/${ref.repository}/pull/${ref.number}`,
         baseRefName: text(base.ref) ?? "",
         headRefName: text(head.ref) ?? "",
@@ -149,10 +157,69 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
       }
       return yield* failure("comments", "The bounded comment read exceeds 1,000 records.");
     });
+  const workflowRuns: NonNullable<ForgeProvider["workflowRuns"]> = {
+    listFailed: ({ ref, expectedHeadOid }) =>
+      Effect.gen(function* () {
+        const detail = yield* getDetail(ref);
+        if (detail.headRefOid !== expectedHeadOid)
+          return yield* failure("rerun-failed-checks", "The pull request head has changed.");
+        const listing = failedGitHubWorkflowRuns(
+          yield* request(
+            ref,
+            `/actions/runs?head_sha=${encodeURIComponent(expectedHeadOid)}&per_page=100`,
+          ),
+          expectedHeadOid,
+        );
+        if (!listing.complete)
+          return yield* failure("rerun-failed-checks", "The workflow run list is incomplete.");
+        if (listing.runs.length === 0)
+          return yield* failure(
+            "rerun-failed-checks",
+            "No failed GitHub Actions run can be re-run at this revision. A check from another app is re-run from its own page.",
+          );
+        return listing.runs;
+      }),
+    rerunFailedJobs: ({ ref, runId }) =>
+      scope(ref, (context) =>
+        github.request({
+          cwd,
+          context,
+          method: "POST",
+          endpoint: `repos/${ref.repository.split("/").map(encodeURIComponent).join("/")}/actions/runs/${runId}/rerun-failed-jobs`,
+        }),
+      ).pipe(
+        Effect.flatMap((response) => {
+          if (response.status >= 200 && response.status < 300) return Effect.succeed(null);
+          // A 4xx is GitHub's answer: this run was not restarted. A 5xx may have been.
+          if (response.status >= 500)
+            return Effect.fail(
+              failure(
+                "rerun-failed-checks",
+                `GitHub did not confirm the re-run (${response.status}).`,
+                true,
+              ),
+            );
+          const reason = text(record(response.body).message)?.slice(0, 200);
+          return Effect.succeed(
+            `GitHub refused to re-run a workflow run (${response.status})${reason ? `: ${reason}` : "."}`,
+          );
+        }),
+      ),
+    get: ({ ref, runId }) =>
+      request(ref, `/actions/runs/${runId}`).pipe(
+        Effect.flatMap((value) => {
+          const run = gitHubWorkflowRunOf(value);
+          return run
+            ? Effect.succeed(run)
+            : Effect.fail(failure("rerun-failed-checks", "GitHub returned an invalid run."));
+        }),
+      ),
+  };
   const original = makeGitHubSourceControlProvider(github);
   return {
     ...original,
     forgeCapabilities: GITHUB_FORGE_CAPABILITIES,
+    workflowRuns,
     getDetail,
     listPullRequests: (ref, limit = 100) =>
       request(ref, `/pulls?state=open&per_page=${Math.min(limit, 100)}`).pipe(
@@ -238,20 +305,28 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
         return files;
       }),
     getDiff: (ref) =>
-      scope(ref, () =>
+      scope(ref, (context) =>
         github
-          .execute({
+          .request({
             cwd,
-            args: [
-              "api",
-              `repos/${ref.repository}/pulls/${ref.number}`,
-              "--hostname",
-              ref.host,
-              "-H",
-              "Accept: application/vnd.github.diff",
-            ],
+            context,
+            method: "GET",
+            endpoint: `repos/${ref.repository}/pulls/${ref.number}`,
+            accept: "application/vnd.github.diff",
           })
-          .pipe(Effect.map((r) => r.stdout)),
+          .pipe(
+            Effect.flatMap((response) =>
+              response.status === 200 && typeof response.body === "string"
+                ? Effect.succeed(response.body)
+                : Effect.fail(
+                    new GitHubCliError({
+                      operation: "diff",
+                      kind: response.status === 404 ? "not_found" : "invalid_json",
+                      detail: "GitHub did not return the pull request diff.",
+                    }),
+                  ),
+            ),
+          ),
       ),
     getComments: (ref) =>
       Effect.gen(function* () {
@@ -302,16 +377,25 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
         const ref = input.ref;
         switch (input.action) {
           case "merge":
-            return yield* request(ref, `/pulls/${ref.number}/merge`, "PUT", {
-              merge_method: input.method ?? "merge",
-              sha: input.expectedHeadOid,
-            }).pipe(
-              Effect.flatMap((value) =>
-                record(value).merged === true
-                  ? Effect.succeed(value)
-                  : Effect.fail(failure("merge", "GitHub did not merge this pull request.", true)),
-              ),
+            return yield* scope(ref, () =>
+              github.mergePullRequest({
+                cwd,
+                url: `https://${ref.host}/${ref.repository}/pull/${ref.number}`,
+                method: input.method ?? "merge",
+                expectedHeadOid: input.expectedHeadOid,
+                ...(input.removeAgentCreditsOnMerge === undefined
+                  ? {}
+                  : { removeAgentCreditsOnMerge: input.removeAgentCreditsOnMerge }),
+              }),
             );
+          case "delete-branch":
+            if (!original.deletePullRequestBranch || !input.expectedHeadOid)
+              return yield* failure("delete-branch", "A prepared branch revision is required.");
+            return yield* original.deletePullRequestBranch({
+              cwd,
+              url: `https://${ref.host}/${ref.repository}/pull/${ref.number}`,
+              expectedHeadOid: input.expectedHeadOid,
+            });
           case "close":
           case "reopen":
             return yield* request(ref, `/pulls/${ref.number}`, "PATCH", {
@@ -352,28 +436,74 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
               { id },
             );
           }
-          case "enable-auto-merge":
-          case "disable-auto-merge": {
-            const id = yield* node(ref);
+          case "enable-auto-merge": {
+            const detail = yield* getDetail(ref);
+            const id = text(detail.raw.node_id);
+            const head = input.expectedHeadOid ?? detail.headRefOid;
+            if (!id || !head || detail.headRefOid !== head)
+              return yield* failure(
+                "enable-auto-merge",
+                "The prepared pull request head is missing or changed.",
+              );
+            const [owner, name] = ref.repository.split("/");
+            const availability = yield* graphql(ref, GITHUB_AUTO_MERGE_QUERY, {
+              owner: owner!,
+              name: name!,
+              number: ref.number,
+            });
+            if (!gitHubAutoMergeAvailable(availability, head))
+              return yield* failure(
+                "enable-auto-merge",
+                "Auto-merge is unavailable or this pull request can already merge. Refresh before choosing a merge action.",
+              );
+            const message = yield* readGitHubMergeMessage({
+              ref,
+              method: input.method ?? "merge",
+              expectedHeadOid: head,
+              enabled: yield* mergeCreditRemovalEnabled(input.removeAgentCreditsOnMerge).pipe(
+                Effect.mapError(mapGitHubCliError),
+              ),
+              query: (document, variables) => graphql(ref, document, variables),
+              invalid: (detail) => failure("enable-auto-merge", detail),
+            });
+            const body = message.commitBody;
+            // GitHub's expectedHeadOid also fences auto-merge activation (see its input schema).
             return yield* graphql(
               ref,
-              input.action === "enable-auto-merge"
-                ? "mutation($id:ID!,$method:PullRequestMergeMethod!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method}){pullRequest{id}}}"
-                : "mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){pullRequest{id}}}",
+              `mutation($id:ID!,$head:GitObjectID!,$method:PullRequestMergeMethod!${body === undefined ? "" : ",$body:String!"}){enablePullRequestAutoMerge(input:{pullRequestId:$id,expectedHeadOid:$head,mergeMethod:$method${body === undefined ? "" : ",commitBody:$body"}}){pullRequest{id}}}`,
               {
                 id,
-                ...(input.action === "enable-auto-merge"
-                  ? { method: (input.method ?? "merge").toUpperCase() }
-                  : {}),
+                head,
+                method: (input.method ?? "merge").toUpperCase(),
+                ...(body === undefined ? {} : { body }),
               },
             );
           }
+          case "disable-auto-merge":
+            return yield* graphql(
+              ref,
+              "mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){pullRequest{id}}}",
+              { id: yield* node(ref) },
+            );
           case "revert":
             return yield* graphql(
               ref,
               "mutation($id:ID!){revertPullRequest(input:{pullRequestId:$id}){revertPullRequest{id url}}}",
               { id: yield* node(ref) },
             );
+          case "rerun-failed-checks": {
+            if (!input.expectedHeadOid)
+              return yield* failure("rerun-failed-checks", "A prepared head revision is required.");
+            const runs = yield* workflowRuns.listFailed({
+              ref,
+              expectedHeadOid: input.expectedHeadOid,
+            });
+            for (const run of runs) {
+              const refused = yield* workflowRuns.rerunFailedJobs({ ref, runId: run.id });
+              if (refused !== null) return yield* failure("rerun-failed-checks", refused, true);
+            }
+            return null;
+          }
           case "approve-workflows": {
             const detail = yield* getDetail(ref);
             if (!detail.isCrossRepository) return null;

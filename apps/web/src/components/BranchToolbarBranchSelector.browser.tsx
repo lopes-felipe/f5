@@ -18,9 +18,13 @@ vi.mock("../nativeApi", () => ({
   readNativeApi: () => ({ git: api }),
   ensureNativeApi: () => ({ git: api }),
 }));
-vi.mock("../appSettings", () => ({
-  useAppSettings: () => ({ settings: { gitStatusAutoRefreshIntervalSeconds: 0 } }),
-}));
+vi.mock("../appSettings", () => {
+  const settings = { gitStatusAutoRefreshIntervalSeconds: 0 };
+  return {
+    useAppSettings: () => ({ settings }),
+    useAppSettingsSelector: <T,>(selector: (value: typeof settings) => T) => selector(settings),
+  };
+});
 
 const cwd = "/repo/worktrees/thread";
 const conflict = { cwd, branch: "main", files: ["index.css", "ChatComposer.tsx"] };
@@ -85,7 +89,7 @@ async function selectMain() {
 describe("branch checkout recovery", () => {
   it("checks out main in the selected worktree and keeps the thread there", async () => {
     await selectMain();
-    await expect.poll(() => onSetThreadBranch.mock.calls).toEqual([["main", cwd]]);
+    await expect.poll(() => onSetThreadBranch.mock.calls).toEqual([["main", cwd, true]]);
     expect(api.checkout).toHaveBeenCalledWith({ cwd, branch: "main" });
   });
 
@@ -167,7 +171,7 @@ describe("recovery ownership and workspace choices", () => {
     await expect.element(page.getByText("/repo", { exact: true })).toBeVisible();
     expect(onSetThreadBranch).not.toHaveBeenCalled();
     await page.getByRole("button", { name: "Use this workspace", exact: true }).click();
-    await expect.poll(() => onSetThreadBranch.mock.calls).toEqual([["main", null]]);
+    await expect.poll(() => onSetThreadBranch.mock.calls).toEqual([["main", null, true]]);
     expect(api.checkout).not.toHaveBeenCalled();
   });
 
@@ -285,5 +289,52 @@ describe("local and remote checkout recovery", () => {
     expect(api.prepareWorktree).toHaveBeenCalledWith(
       expect.objectContaining({ cwd, branch: "origin/x" }),
     );
+  });
+});
+
+describe("missing worktree", () => {
+  it("explains that a send recreates the worktree instead of offering branch actions", async () => {
+    api.listBranches.mockResolvedValue({
+      isRepo: false,
+      hasOriginRemote: false,
+      branches: [],
+      worktreeMissing: true,
+    });
+    api.status.mockRejectedValue(new Error("missing"));
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    screen = await render(selector());
+    await page.getByText("thread", { exact: true }).click();
+    const message = "Worktree missing. Send a message to recreate it on thread.";
+    await expect.element(page.getByText(message, { exact: true })).toBeVisible();
+    await expect.element(page.getByText("No branches found.")).not.toBeInTheDocument();
+
+    await page.getByPlaceholder("Search branches...").fill("feature");
+    await expect.element(page.getByText(message, { exact: true })).toBeVisible();
+    await expect.element(page.getByText(/Create new branch/)).not.toBeInTheDocument();
+  });
+
+  it("does not promise recreation when a local thread's project folder is gone", async () => {
+    api.listBranches.mockResolvedValue({
+      isRepo: false,
+      hasOriginRemote: false,
+      branches: [],
+      worktreeMissing: true,
+    });
+    api.status.mockRejectedValue(new Error("missing"));
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    screen = await render(
+      selector({
+        activeWorktreePath: null,
+        branchCwd: "/repo",
+        effectiveEnvMode: "local",
+        envLocked: true,
+      }),
+    );
+    await page.getByText("thread", { exact: true }).click();
+    await expect.element(page.getByText("No branches found.", { exact: true })).toBeVisible();
+    await expect.element(page.getByText(/Worktree missing/)).not.toBeInTheDocument();
+
+    await page.getByPlaceholder("Search branches...").fill("feature");
+    await expect.element(page.getByText(/Create new branch/)).not.toBeInTheDocument();
   });
 });

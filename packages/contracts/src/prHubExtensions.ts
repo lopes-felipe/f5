@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 import { ForgeAction, SourceControlProviderKind } from "./sourceControl";
-import { PullRequestKey } from "./prHub";
+import { PullRequestKey, PrCheckRollup, PrReviewDecision, PrMergeable } from "./prHub";
 import { ThreadPullRequestLink } from "./orchestration";
 
 export const ForgeAccount = Schema.Struct({
@@ -42,6 +42,20 @@ export const PrHubPeek = Schema.Struct({
   url: Schema.String,
   state: Schema.Literals(["open", "closed", "merged"]),
   author: Schema.NullOr(Schema.String),
+  isDraft: Schema.Boolean,
+  additions: Schema.NullOr(Schema.Int),
+  deletions: Schema.NullOr(Schema.Int),
+  createdAt: Schema.NullOr(Schema.String),
+  updatedAt: Schema.NullOr(Schema.String),
+  mergedAt: Schema.NullOr(Schema.String),
+  status: Schema.optional(
+    Schema.Struct({
+      checkRollup: PrCheckRollup,
+      reviewDecision: PrReviewDecision,
+      mergeable: PrMergeable,
+      unresolvedThreadCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  ),
 });
 export type PrHubPeek = typeof PrHubPeek.Type;
 export const PrHubStackInput = Schema.Struct({
@@ -106,6 +120,7 @@ export const ForgeMutationPayload = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("action"),
     action: ForgeAction,
+    deleteBranch: Schema.optional(Schema.Boolean),
     method: Schema.optional(Schema.Literals(["merge", "squash", "rebase"])),
   }),
   Schema.Struct({
@@ -169,6 +184,7 @@ export const ForgeOperationInput = Schema.Struct({
 });
 export type ForgeOperationInput = typeof ForgeOperationInput.Type;
 export const ForgeOperation = Schema.Struct({
+  warning: Schema.optional(Schema.String),
   ...ForgePrepareOperationInput.fields,
   status: Schema.Literals([
     "prepared",

@@ -1,16 +1,17 @@
 import type {
   OrchestrationCommandExecutionCursor,
   OrchestrationCommandExecutionSummary,
-  CodeReviewWorkflow as ContractCodeReviewWorkflow,
-  InvestigationWorkflow as ContractInvestigationWorkflow,
+  CodeReviewWorkflowSummary as ContractCodeReviewWorkflow,
+  InvestigationWorkflowSummary as ContractInvestigationWorkflow,
   OrchestrationLatestTurn,
   OrchestrationProposedPlanId,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
   OrchestrationThreadActivityCursor,
   OrchestrationMessageCursor,
+  OrchestrationMessage,
   ThreadCompaction as ContractThreadCompaction,
-  PlanningWorkflow as ContractPlanningWorkflow,
+  PlanningWorkflowSummary as ContractPlanningWorkflow,
   ProjectMemory as ContractProjectMemory,
   ProjectSkill as ContractProjectSkill,
   ProjectScript as ContractProjectScript,
@@ -31,6 +32,7 @@ import type {
   ProviderInteractionMode,
   RuntimeMode,
   ProjectIcon,
+  ProjectKind,
   ThreadEnvMode,
   UserMessageSkillCall as ContractUserMessageSkillCall,
 } from "@t3tools/contracts";
@@ -104,7 +106,10 @@ export interface ChatMessage {
   id: MessageId;
   role: "user" | "assistant" | "system";
   text: string;
+  authorship?: OrchestrationMessage["authorship"];
   reasoningText?: string;
+  reasoningTokens?: number;
+  reasoningTokensEstimated?: boolean;
   skillCall?: UserMessageSkillCall;
   attachments?: ChatAttachment[];
   turnId?: TurnId | null;
@@ -132,6 +137,7 @@ export interface TurnDiffFileChange {
 
 export interface TurnDiffSummary {
   turnId: TurnId;
+  startedAt?: string | undefined;
   completedAt: string;
   status?: string | undefined;
   files: TurnDiffFileChange[];
@@ -144,6 +150,8 @@ export interface Project {
   defaultModel?: string | null;
   defaultModelSelection?: ModelSelection | null | undefined;
   id: ProjectId;
+  /** `scratch` is the server-owned home for threads without a project. */
+  kind?: ProjectKind | undefined;
   name: string;
   cwd: string;
   model: string;
@@ -161,6 +169,9 @@ export interface Thread {
   codexThreadId: string | null;
   projectId: ProjectId;
   title: string;
+  scheduledOrigin?: import("@t3tools/contracts").ScheduledOrigin | null;
+  /** PRs linked to this thread, newest first. */
+  pullRequests?: ReadonlyArray<import("@t3tools/contracts").ThreadPullRequestLink> | undefined;
   model: string;
   modelSelection?: ModelSelection | undefined;
   runtimeMode: RuntimeMode;
@@ -169,9 +180,17 @@ export interface Thread {
   messages: ChatMessage[];
   commandExecutions: OrchestrationCommandExecutionSummary[];
   proposedPlans: ProposedPlan[];
+  /**
+   * The startup snapshot left this archived thread's plans out: `proposedPlans`
+   * is not authoritative until thread details load (`useThreadPlansHydrated`).
+   */
+  proposedPlansOmitted?: boolean;
   error: string | null;
   createdAt: string;
   archivedAt: string | null;
+  settledAt?: string | null;
+  settledBy?: import("@t3tools/contracts").ThreadSettledBy | null;
+  autoSettleDisabled?: boolean;
   pinnedAt?: string | null;
   pinOrderKey?: number | null;
   snoozedUntil?: string | null;
@@ -189,6 +208,8 @@ export interface Thread {
   lastVisitedAt?: string | undefined;
   branch: string | null;
   worktreePath: string | null;
+  /** A thread without a project works in this folder of its own. */
+  scratchPath?: string | null | undefined;
   compaction?: ThreadCompaction | null | undefined;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
@@ -203,6 +224,51 @@ export interface Thread {
   sessionNotes?: ThreadSessionNotes | null | undefined;
   threadReferences?: ThreadReference[] | undefined;
 }
+
+/**
+ * The list-level fields of a thread. `Thread` is assignable to it, so list
+ * helpers typed against it accept both full threads (and unsaved drafts) and
+ * summaries.
+ *
+ * `lastInteractionAt` is an ordering key here: it refreshes only when the
+ * relative activity order of threads changes, so every streaming delta does
+ * not produce a new summary. Sorting by it always matches sorting the live
+ * threads. Render a live timestamp with `useThreadActivityAt` instead.
+ */
+export type ThreadListItem = Pick<
+  Thread,
+  | "id"
+  | "projectId"
+  | "title"
+  | "scheduledOrigin"
+  | "pullRequests"
+  | "titleState"
+  | "titleSource"
+  | "titleRevision"
+  | "titleUpdatedAt"
+  | "titleRegeneration"
+  | "model"
+  | "modelSelection"
+  | "runtimeMode"
+  | "interactionMode"
+  | "codexThreadId"
+  | "createdAt"
+  | "archivedAt"
+  | "settledAt"
+  | "settledBy"
+  | "autoSettleDisabled"
+  | "pinnedAt"
+  | "pinOrderKey"
+  | "snoozedUntil"
+  | "snoozedAt"
+  | "lastVisitedAt"
+  | "lastInteractionAt"
+  | "branch"
+  | "worktreePath"
+  | "scratchPath"
+  | "threadReferences"
+  | "error"
+>;
 
 export interface ThreadSession {
   provider: ProviderKind;

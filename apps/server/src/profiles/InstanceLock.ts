@@ -25,11 +25,19 @@ export async function acquireInstanceLock(lockPath: string): Promise<{ release()
     database = process.versions.bun
       ? new (await import("bun:sqlite")).Database(lockPath)
       : new (await import("node:sqlite")).DatabaseSync(lockPath);
-    database.exec(
-      "PRAGMA busy_timeout = 0; PRAGMA journal_mode = DELETE; PRAGMA locking_mode = EXCLUSIVE; CREATE TABLE IF NOT EXISTS owner (pid INTEGER); BEGIN EXCLUSIVE; DELETE FROM owner; INSERT INTO owner VALUES (" +
-        process.pid +
-        "); COMMIT;",
-    );
+    // Execute individually: Bun's multi-statement exec can continue after a
+    // busy BEGIN and mask it with a later "no transaction is active" error.
+    for (const statement of [
+      "PRAGMA busy_timeout = 0",
+      "PRAGMA journal_mode = DELETE",
+      "PRAGMA locking_mode = EXCLUSIVE",
+      "CREATE TABLE IF NOT EXISTS owner (pid INTEGER)",
+      "BEGIN EXCLUSIVE",
+      "DELETE FROM owner",
+      `INSERT INTO owner VALUES (${process.pid})`,
+      "COMMIT",
+    ])
+      database.exec(statement);
     await FS.writeFile(lockPath + ".owner", String(process.pid), { mode: 0o600 });
     let released = false;
     const owned = database;

@@ -1,3 +1,6 @@
+import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
+import { withUpdateRequiredModels } from "../updateRequiredModels.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 /**
  * ProviderRegistryLive — aggregates per-instance snapshot streams into a
  * single materialized list.
@@ -30,7 +33,7 @@ import {
   type ServerProvider,
   type ServerProviderProbeOutcome,
 } from "@t3tools/contracts";
-import { Cause, Effect, Equal, FileSystem, Layer, Path, PubSub, Ref, Stream } from "effect";
+import { Cause, Effect, Equal, FileSystem, Layer, Option, Path, PubSub, Ref, Stream } from "effect";
 import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../../config.ts";
@@ -99,6 +102,7 @@ const mergeProviderModels = (
   retainMissingModels: boolean,
   previousModels: ReadonlyArray<ServerProvider["models"][number]>,
   nextModels: ReadonlyArray<ServerProvider["models"][number]>,
+  catalogAware = false,
 ): ReadonlyArray<ServerProvider["models"][number]> => {
   // Custom models are authoritative settings data, not probe-discovered inventory.
   const retainablePrevious = previousModels.filter((model) => !model.isCustom);
@@ -108,6 +112,7 @@ const mergeProviderModels = (
 
   const previousBySlug = new Map(previousModels.map((model) => [model.slug, model] as const));
   const mergedModels = nextModels.map((model) => {
+    if (catalogAware && model.isCustom) return model;
     const previousModel = previousBySlug.get(model.slug);
     // A probe that could not read the executable's catalog falls back to
     // built-ins; keep the capabilities the executable reported earlier.
@@ -120,7 +125,13 @@ const mergeProviderModels = (
     ) {
       return { ...model, capabilities: previousModel.capabilities };
     }
-    if (!previousModel || hasModelCapabilities(model) || !hasModelCapabilities(previousModel)) {
+    if (
+      !previousModel ||
+      model.capabilities?.source === "reported" ||
+      hasModelCapabilities(model) ||
+      (catalogAware && !retainMissingModels && isReportedModel(previousModel)) ||
+      !hasModelCapabilities(previousModel)
+    ) {
       return model;
     }
     return {
@@ -140,6 +151,51 @@ export const mergeProviderSnapshot = (
 ): ServerProvider => {
   if (!previousProvider) {
     return nextProvider;
+  }
+  if (nextProvider.modelCatalog) {
+    const catalog = nextProvider.modelCatalog;
+    const compatible =
+      previousProvider.instanceId === nextProvider.instanceId &&
+      previousProvider.driver === nextProvider.driver &&
+      previousProvider.version === nextProvider.version &&
+      previousProvider.configurationFingerprint === nextProvider.configurationFingerprint &&
+      nextProvider.enabled &&
+      nextProvider.availability !== "unavailable";
+    const prior = compatible ? previousProvider.modelCatalog : undefined;
+    const success = catalog.status === "complete" || catalog.status === "menu";
+    const lastSuccessAt = success ? catalog.lastSuccessAt : prior?.lastSuccessAt;
+    const firstPartialAt = success ? undefined : (prior?.firstPartialAt ?? catalog.firstPartialAt);
+    const start = lastSuccessAt ?? firstPartialAt;
+    const age = start ? Date.parse(nextProvider.checkedAt) - Date.parse(start) : Infinity;
+    const retain = compatible && !success && age >= 0 && age < 24 * 60 * 60 * 1000;
+    const incomingBySlug = new Map(nextProvider.models.map((model) => [model.slug, model]));
+    const models = mergeProviderModels(
+      retain,
+      previousProvider.models,
+      nextProvider.models,
+      true,
+    ).map((model) => {
+      const previous = previousProvider.models.find((row) => row.slug === model.slug);
+      return retain &&
+        !model.isCustom &&
+        incomingBySlug.get(model.slug)?.capabilities?.source !== "reported" &&
+        previous
+        ? {
+            ...model,
+            ...(previous.isUnlisted !== undefined ? { isUnlisted: previous.isUnlisted } : {}),
+            capabilities: previous.capabilities,
+          }
+        : model;
+    });
+    return {
+      ...nextProvider,
+      models,
+      modelCatalog: {
+        status: catalog.status,
+        ...(lastSuccessAt ? { lastSuccessAt } : {}),
+        ...(firstPartialAt ? { firstPartialAt } : {}),
+      },
+    };
   }
   const outcome = probeOutcome(nextProvider);
   const outcomeStartedAt = probeOutcomeStartedAt(previousProvider, nextProvider, outcome);
@@ -182,11 +238,16 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  return Effect.succeed(
-    source.configurationFingerprint
-      ? { ...snapshot, configurationFingerprint: source.configurationFingerprint }
-      : snapshot,
-  );
+  // Every fresh source probe needs an explicit outcome, including catalog-aware drivers
+  // whose merge path can retain models independently of the executable health check.
+  return Effect.succeed({
+    ...snapshot,
+    probeOutcome: probeOutcome(snapshot),
+    probeOutcomeStartedAt: snapshot.probeOutcomeStartedAt ?? snapshot.checkedAt,
+    ...(source.configurationFingerprint
+      ? { configurationFingerprint: source.configurationFingerprint }
+      : {}),
+  });
 };
 
 /**
@@ -211,6 +272,7 @@ const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource
     : {}),
   getSnapshot: instance.snapshot.getSnapshot,
   refresh: (instance.invalidateAccountStatus ?? Effect.void).pipe(
+    Effect.andThen(instance.invalidateModelCatalog ?? Effect.void),
     Effect.andThen(instance.snapshot.refresh),
   ),
   streamChanges: instance.snapshot.streamChanges,
@@ -220,6 +282,16 @@ export const ProviderRegistryLive = Layer.effect(
   ProviderRegistry,
   Effect.gen(function* () {
     const instanceRegistry = yield* ProviderInstanceRegistry;
+    const settingsService = yield* Effect.serviceOption(ServerSettingsService);
+    const globalSnapshots = (snapshots: ReadonlyArray<ServerProvider>) =>
+      Option.isSome(settingsService)
+        ? settingsService.value.getSettings.pipe(
+            Effect.map((settings) => projectProviderSnapshots(snapshots, settings)),
+            Effect.catch(() =>
+              Effect.succeed(snapshots.map((provider) => ({ ...provider, enabled: false }))),
+            ),
+          )
+        : Effect.succeed(snapshots);
     const config = yield* ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -299,9 +371,9 @@ export const ProviderRegistryLive = Layer.effect(
     // interleave two passes clobbering each other's fiber bookkeeping.
     const syncSemaphore = yield* Semaphore.make(1);
 
-    const getLiveSources: Effect.Effect<ReadonlyArray<ProviderSnapshotSource>> = Ref.get(
+    const getLiveInstances: Effect.Effect<ReadonlyArray<ProviderInstance>> = Ref.get(
       liveSubsRef,
-    ).pipe(Effect.map((map) => Array.from(map.values(), buildSnapshotSource)));
+    ).pipe(Effect.map((map) => Array.from(map.values())));
 
     const persistProvider = (provider: ServerProvider) =>
       Effect.gen(function* () {
@@ -324,7 +396,8 @@ export const ProviderRegistryLive = Layer.effect(
         );
       });
 
-    const upsertProviders = Effect.fn("upsertProviders")(function* (
+    const catalogUpdateLock = yield* Semaphore.make(1);
+    const upsertProvidersUnlocked = Effect.fn("upsertProviders")(function* (
       nextProviders: ReadonlyArray<ServerProvider>,
       options?: {
         readonly publish?: boolean;
@@ -352,9 +425,11 @@ export const ProviderRegistryLive = Layer.effect(
             updatedKeys.add(key);
             mergedProviders.set(
               key,
-              options?.replace === true
-                ? provider
-                : mergeProviderSnapshot(mergedProviders.get(key), provider),
+              withUpdateRequiredModels(
+                options?.replace === true
+                  ? provider
+                  : mergeProviderSnapshot(mergedProviders.get(key), provider),
+              ),
             );
           }
 
@@ -366,6 +441,10 @@ export const ProviderRegistryLive = Layer.effect(
         },
       );
 
+      for (const provider of providersToPersist) {
+        const instance = yield* instanceRegistry.getInstance(provider.instanceId);
+        if (instance?.updateModelCatalog) yield* instance.updateModelCatalog(provider.models);
+      }
       if (haveProvidersChanged(previousProviders, providers)) {
         if (options?.persist !== false) {
           yield* Effect.forEach(providersToPersist, persistProvider, {
@@ -374,12 +453,16 @@ export const ProviderRegistryLive = Layer.effect(
           });
         }
         if (options?.publish !== false) {
-          yield* PubSub.publish(changesPubSub, providers);
+          // Instance removal can commit while cache persistence is suspended.
+          yield* PubSub.publish(changesPubSub, yield* Ref.get(providersRef));
         }
       }
 
       return providers;
     });
+
+    const upsertProviders = (...args: Parameters<typeof upsertProvidersUnlocked>) =>
+      upsertProvidersUnlocked(...args).pipe(catalogUpdateLock.withPermits(1));
 
     const syncProvider = Effect.fn("syncProvider")(function* (
       provider: ServerProvider,
@@ -390,21 +473,28 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* upsertProviders([provider], options);
     });
 
-    const refreshOneSource = Effect.fn("refreshOneSource")(function* (
-      providerSource: ProviderSnapshotSource,
-    ) {
-      return yield* providerSource.refresh.pipe(
-        Effect.flatMap((nextProvider) =>
-          correlateSnapshotWithSource(providerSource, nextProvider).pipe(
-            Effect.flatMap(syncProvider),
-          ),
-        ),
+    const refreshOneSource = Effect.fn("refreshOneSource")(function* (instance: ProviderInstance) {
+      const providerSource = buildSnapshotSource(instance);
+      const probe = yield* providerSource.refresh.pipe(
+        Effect.andThen(providerSource.getSnapshot),
+        Effect.exit,
       );
+      return yield* Effect.gen(function* () {
+        // Check after acquiring the publication lock: a rebuild may have retired
+        // this instance while its probe or a preceding publication was running.
+        if ((yield* instanceRegistry.getInstance(instance.instanceId)) !== instance) {
+          return yield* Ref.get(providersRef);
+        }
+        const nextProvider = yield* probe;
+        return yield* correlateSnapshotWithSource(providerSource, nextProvider).pipe(
+          Effect.flatMap((provider) => upsertProvidersUnlocked([provider])),
+        );
+      }).pipe(catalogUpdateLock.withPermits(1));
     });
 
     const refreshAll = Effect.fn("refreshAll")(function* () {
-      const sources = yield* getLiveSources;
-      return yield* Effect.forEach(sources, (source) => refreshOneSource(source), {
+      const instances = yield* getLiveInstances;
+      return yield* Effect.forEach(instances, (instance) => refreshOneSource(instance), {
         concurrency: "unbounded",
         discard: true,
       }).pipe(Effect.andThen(Ref.get(providersRef)));
@@ -416,25 +506,23 @@ export const ProviderRegistryLive = Layer.effect(
       }
       // Kind-scoped refreshes target the default instance for that driver.
       const defaultInstanceId = defaultInstanceIdForDriver(provider);
-      const sources = yield* getLiveSources;
-      const providerSource = sources.find(
-        (candidate) => candidate.instanceId === defaultInstanceId,
-      );
-      if (!providerSource) {
+      const instances = yield* getLiveInstances;
+      const instance = instances.find((candidate) => candidate.instanceId === defaultInstanceId);
+      if (!instance) {
         return yield* Ref.get(providersRef);
       }
-      return yield* refreshOneSource(providerSource);
+      return yield* refreshOneSource(instance);
     });
 
     const refreshInstance = Effect.fn("refreshInstance")(function* (
       instanceId: ProviderInstanceId,
     ) {
-      const sources = yield* getLiveSources;
-      const providerSource = sources.find((candidate) => candidate.instanceId === instanceId);
-      if (!providerSource) {
+      const instances = yield* getLiveInstances;
+      const instance = instances.find((candidate) => candidate.instanceId === instanceId);
+      if (!instance) {
         return yield* Ref.get(providersRef);
       }
-      return yield* refreshOneSource(providerSource);
+      return yield* refreshOneSource(instance);
     });
 
     /**
@@ -513,8 +601,7 @@ export const ProviderRegistryLive = Layer.effect(
         // swallowed so one bad driver can't wedge the whole registry.
         yield* Effect.forEach(
           newlyAdded,
-          ([, instance]) =>
-            refreshOneSource(buildSnapshotSource(instance)).pipe(Effect.ignoreCause({ log: true })),
+          ([, instance]) => refreshOneSource(instance).pipe(Effect.ignoreCause({ log: true })),
           { concurrency: "unbounded", discard: true },
         );
         yield* upsertProviders(unavailableProviders, {
@@ -615,13 +702,29 @@ export const ProviderRegistryLive = Layer.effect(
     });
 
     return {
-      getProviders: Ref.get(providersRef),
+      getProviders: Ref.get(providersRef).pipe(Effect.flatMap(globalSnapshots)),
       refresh: (provider?: ProviderDriverKind) =>
-        refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
+        refresh(provider).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+          Effect.flatMap(globalSnapshots),
+        ),
       refreshInstance: (instanceId: ProviderInstanceId) =>
-        refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+        refreshInstance(instanceId).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+          Effect.flatMap(globalSnapshots),
+        ),
       get streamChanges() {
-        return Stream.fromPubSub(changesPubSub);
+        const changes = Stream.fromPubSub(changesPubSub);
+        return (
+          Option.isSome(settingsService)
+            ? Stream.merge(
+                changes,
+                settingsService.value.streamChanges.pipe(
+                  Stream.mapEffect(() => Ref.get(providersRef)),
+                ),
+              )
+            : changes
+        ).pipe(Stream.mapEffect(globalSnapshots));
       },
     } satisfies ProviderRegistryShape;
   }),

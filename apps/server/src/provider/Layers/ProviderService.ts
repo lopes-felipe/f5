@@ -1,4 +1,28 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
+import { captureRestartTurnMarkers } from "../../nextTurnQueue/restartMarkerCapture.ts";
+import { resolveProjectProviderInstanceEnabled } from "@t3tools/shared/serverSettings";
+import { registerProviderRuntimeFanout } from "../../observability/Metrics.ts";
+import { readIncompleteHistory } from "../runtimePayload.ts";
+import { ProviderControlTarget } from "../controlTarget.ts";
+import { registerShutdown, ServerShutdown } from "../../shutdown.ts";
+import { resolveOwnedMcpServerName } from "../mcpObservation.ts";
+import { carryPreparedComputerEvidence } from "../prepareAutomationRuntimeEvent";
+import { resolveBindingInstanceId } from "../bindingIdentity.ts";
+import { makeOperationGate } from "../operationGate.ts";
+import { withWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
+import { canonicalWorktreePath } from "../../git/worktreePaths.ts";
+import { assertWorktreeReady } from "../../project/worktreeReadiness.ts";
+import { GitCore } from "../../git/Services/GitCore.ts";
+import { assertMcpRuntimeConfig, mcpConfigErrorMessage } from "@t3tools/shared/mcpValidation";
+import { readCodexMcpOAuthCallbackConfig } from "@t3tools/shared/mcpTranslation";
+import { resolveClaudeLaunchAppendSystemPrompt } from "../claudeAppendSystemPrompt.ts";
+import { DeliveryAttemptContext } from "../deliveryAttemptContext";
+import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
+import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
+import { redactProviderRuntimeFailure } from "../failureText.ts";
 import {
   makeNativeOperationCoordinator,
   nativeOperationSqlRepository,
@@ -13,7 +37,7 @@ import {
   getProviderAttachmentLimitError,
   nativeProviderAttachments,
 } from "@t3tools/shared/attachmentLimits";
-import { withAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
+import { hasProviderUpdate, withAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import { ensureWorkspaceDirectory } from "../workspaceDirectory.ts";
 /**
  * ProviderServiceLive - Cross-provider orchestration layer.
@@ -50,10 +74,14 @@ import {
   ProviderStopSessionInput,
   ProviderDriverKind,
   defaultInstanceIdForDriver,
-  type ProviderInstanceId,
+  ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ProviderSessionAction,
   type McpReloadResult,
+  type McpSessionReloadOutcome,
+  type McpSessionSummary,
+  PROVIDER_DISPLAY_NAMES,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { describeMcpReloadFailure, MCP_RELOAD_RETRY_DELAYS_MS } from "../mcpReconcile.ts";
@@ -64,6 +92,7 @@ import {
   Duration,
   Deferred,
   Effect,
+  Fiber,
   Layer,
   Option,
   PubSub,
@@ -88,10 +117,15 @@ import {
   withMetrics,
 } from "../../observability/Metrics.ts";
 import {
+  asPreSendDeliveryError,
+  isNotSentProviderError,
   type ProviderAdapterError,
+  type ProviderServiceError,
   ProviderSessionActionUnavailableError,
+  ProviderUnsupportedError,
   ProviderValidationError,
   ProviderTurnDeliveryError,
+  ProviderAdapterRequestError,
 } from "../Errors.ts";
 import {
   buildProviderSessionCapabilities,
@@ -108,7 +142,11 @@ import {
   ProviderSessionDirectory,
   type ProviderRuntimeBinding,
 } from "../Services/ProviderSessionDirectory.ts";
-import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import {
+  writeProviderEventLog,
+  type EventNdjsonLogger,
+  makeEventNdjsonLogger,
+} from "./EventNdjsonLogger.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import {
   ProjectMcpConfigService,
@@ -120,6 +158,7 @@ import {
   readPersistedCwd,
   readPersistedInstructionContext,
   readPersistedProviderOptions,
+  readPersistedUnconvergedMcpConfigVersion,
   readPersistedRuntimePayloadRecord,
   readPersistedStartConfig,
   sanitizeProviderOptionsForPersistence,
@@ -209,6 +248,16 @@ const decodeInputOrValidationError = <S extends Schema.Top>(input: {
     ),
   );
 
+/** Stopped rows with no active turn are settled; shutdown leaves them untouched. */
+function isSettledBinding(binding: {
+  readonly status?: string | undefined;
+  readonly runtimePayload?: unknown;
+}): boolean {
+  return (
+    binding.status === "stopped" && readPersistedActiveTurnId(binding.runtimePayload) === undefined
+  );
+}
+
 function toRuntimeStatus(session: ProviderSession): "starting" | "running" | "stopped" | "error" {
   switch (session.status) {
     case "connecting":
@@ -237,6 +286,13 @@ function toRuntimePayloadFromSession(
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
+    ...(session.computerConfigurationFingerprint !== undefined
+      ? {
+          computerConfigurationFingerprint: session.computerConfigurationFingerprint,
+          computerBackendSelection: session.computerBackendSelection ?? null,
+          computerToolsInstalled: session.computerToolsInstalled ?? false,
+        }
+      : {}),
     ...(extra?.sessionGeneration !== undefined
       ? {
           ...sessionGenerationPayload(extra.sessionGeneration),
@@ -265,13 +321,25 @@ function mergeResolvedMcpProviderOptions(input: {
   };
 }
 
-function resolveBindingInstanceId(binding: {
-  readonly provider: ProviderKind;
-  readonly providerInstanceId?: ProviderInstanceId | null;
-}): ProviderInstanceId {
-  return (
-    binding.providerInstanceId ??
-    defaultInstanceIdForDriver(ProviderDriverKind.make(binding.provider))
+/**
+ * Claude resolves its append launch arguments at start. Check them before any
+ * stop, so a replacement with a bad path leaves the live session running.
+ */
+function checkClaudeAppendSystemPrompt(
+  operation: string,
+  input: {
+    readonly provider: string | undefined;
+    readonly providerOptions?: ProviderStartOptions | undefined;
+    readonly cwd?: string | undefined;
+  },
+): Effect.Effect<void, ProviderValidationError> {
+  if (input.provider !== "claudeAgent") return Effect.void;
+  return resolveClaudeLaunchAppendSystemPrompt({
+    launchArgs: input.providerOptions?.claudeAgent?.launchArgs,
+    cwd: input.cwd,
+  }).pipe(
+    Effect.asVoid,
+    Effect.mapError((error) => toValidationError(operation, error.message, error)),
   );
 }
 
@@ -324,6 +392,148 @@ function toInstructionContextFromSessionStartInput(
 const makeProviderService = (options?: ProviderServiceLiveOptions) =>
   Effect.gen(function* () {
     const nativeScope = yield* Effect.scope;
+    const settingsOption = yield* Effect.serviceOption(ServerSettingsService);
+    const requireProjectProvider = (binding: ProviderRuntimeBinding) =>
+      Effect.gen(function* () {
+        if (Option.isNone(settingsOption)) return;
+        const settings = yield* settingsOption.value.getSettings.pipe(
+          Effect.mapError(
+            () =>
+              new ProviderTurnDeliveryError({
+                certainty: "not_sent",
+                retryable: false,
+                detail: "Provider settings could not be read.",
+              }),
+          ),
+        );
+        if (
+          !resolveProjectProviderInstanceEnabled(
+            settings,
+            binding.projectId,
+            resolveBindingInstanceId(binding),
+          )
+        )
+          return yield* new ProviderTurnDeliveryError({
+            certainty: "not_sent",
+            retryable: false,
+            detail:
+              "This provider is disabled for the project. Enable it or select another provider before sending.",
+          });
+      });
+
+    let accepting = true;
+    let nativePolling: Fiber.Fiber<unknown, never> | undefined;
+    const ensureAccepting = Effect.suspend(() =>
+      accepting
+        ? Effect.void
+        : Effect.fail(
+            new ProviderTurnDeliveryError({
+              certainty: "not_sent",
+              retryable: true,
+              detail: "The server is shutting down before provider work was sent.",
+            }),
+          ),
+    );
+    yield* registerShutdown("provider-admission", "admission", () =>
+      Effect.gen(function* () {
+        accepting = false;
+        if (nativePolling) yield* Fiber.interrupt(nativePolling);
+      }),
+    );
+    const workspaceGit = yield* Effect.serviceOption(GitCore);
+    const workspaceSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+    const checkWorkspace = (
+      threadId: ThreadId,
+      sessionCwd?: string,
+      options: { readonly allowBranchDrift?: boolean } = {},
+    ) =>
+      Effect.gen(function* () {
+        if (Option.isNone(workspaceSql)) return;
+        const switching =
+          yield* workspaceSql.value`SELECT 1 FROM workspace_transitions WHERE thread_id = ${threadId}
+          AND phase IN ('reserved','stopping','applying','applied','needs_recovery') LIMIT 1`;
+        if (switching.length)
+          return yield* Effect.fail(
+            new Error("A workspace transition must be resolved before provider delivery."),
+          );
+        const rows = yield* workspaceSql.value<{
+          worktreePath: string | null;
+          scratchPath: string | null;
+          branch: string | null;
+          projectCwd: string | null;
+          projectKind: string | null;
+        }>`SELECT t.worktree_path AS "worktreePath", t.scratch_path AS "scratchPath", t.branch AS "branch", p.workspace_root AS "projectCwd", p.kind AS "projectKind" FROM projection_threads t LEFT JOIN projection_projects p ON p.project_id = t.project_id WHERE t.thread_id = ${threadId}`;
+        const blocks = yield* workspaceSql.value<{
+          token: string | null;
+        }>`SELECT worktree_block_token AS token FROM next_turn_queue_state WHERE thread_id = ${threadId}`;
+        if (blocks[0]?.token)
+          return yield* Effect.fail(
+            new Error("Workspace preparation must finish before provider delivery."),
+          );
+        const row = rows[0];
+        // A thread without a project works only in its own folder, never the shared root.
+        if (row?.projectKind === "scratch") {
+          const scratchCwd = threadWorkspaceCwd(row, {
+            kind: "scratch",
+            cwd: row.projectCwd ?? "",
+          });
+          if (!scratchCwd)
+            return yield* Effect.fail(new Error("This thread's folder is not ready yet."));
+          if (
+            sessionCwd !== undefined &&
+            (yield* Effect.tryPromise(() => canonicalWorktreePath(sessionCwd))) !==
+              (yield* Effect.tryPromise(() => canonicalWorktreePath(scratchCwd)))
+          )
+            return yield* Effect.fail(
+              new Error(
+                "The provider session is attached to a different folder. Restart the session before sending.",
+              ),
+            );
+          return;
+        }
+        if (!row?.worktreePath) return;
+        if (!row.projectCwd || Option.isNone(workspaceGit))
+          return yield* Effect.fail(new Error("Workspace identity cannot be verified."));
+        if (sessionCwd === undefined)
+          return yield* Effect.fail(
+            new Error("The provider session workspace cannot be verified."),
+          );
+        if (
+          (yield* Effect.tryPromise(() => canonicalWorktreePath(sessionCwd))) !==
+          (yield* Effect.tryPromise(() => canonicalWorktreePath(row.worktreePath!)))
+        )
+          return yield* Effect.fail(
+            new Error(
+              "The provider session is attached to a different workspace. Restart the session before sending.",
+            ),
+          );
+        yield* assertWorktreeReady(
+          workspaceGit.value,
+          {
+            projectCwd: row.projectCwd,
+            worktreePath: row.worktreePath,
+            branch: row.branch,
+          },
+          false,
+          options,
+        );
+      }).pipe(
+        Effect.mapError(
+          (error) => new ProviderValidationError({ operation: "workspace", issue: error.message }),
+        ),
+      );
+
+    const historyRuntimeId = randomUUID();
+    const submissionTokens = new Map<ThreadId, symbol>();
+    interface SubmissionCompletion {
+      threadId: ThreadId;
+      turnId: TurnId | undefined;
+      terminalIds: Set<TurnId>;
+      instanceId?: ProviderInstanceId;
+      generation?: number;
+      done: Deferred.Deferred<void, import("../Errors").ProviderServiceError>;
+    }
+    const submissionCompletions = new Map<symbol, SubmissionCompletion>();
     const analytics = yield* Effect.service(AnalyticsService);
     const canonicalEventLogger =
       options?.canonicalEventLogger ??
@@ -341,6 +551,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const projectMcpConfigService = yield* ProjectMcpConfigService;
     const serverConfig = yield* ServerConfig;
     const previewAutomationBroker = yield* Effect.serviceOption(PreviewAutomationBroker);
+    const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
     // Terminal receipts are persisted in order within each thread. Bound the
     // queue so a prolonged SQLite outage applies backpressure to provider
     // streams instead of allowing process memory to grow without limit.
@@ -352,6 +563,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       readonly event: ProviderRuntimeEvent;
     }>(PROVIDER_RUNTIME_EVENT_QUEUE_CAPACITY);
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+    const unregisterFanout = registerProviderRuntimeFanout(() => PubSub.size(runtimeEventPubSub));
+    yield* Effect.addFinalizer(() => Effect.sync(unregisterFanout));
     // The generation a session is being started as, published before the
     // adapter starts so requests it opens during startup carry the generation
     // that will own them, and can be answered without the start lock.
@@ -361,28 +574,105 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       : undefined;
     const startingSessions = new Map<
       ThreadId,
-      { readonly generation: number; readonly adapter: ProviderAdapterShape<ProviderAdapterError> }
+      {
+        readonly generation: number;
+        readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+        readonly session: ProviderSession;
+      }
     >();
     const whileStarting = <A, E, R>(
       threadId: ThreadId,
       generation: number,
       adapter: ProviderAdapterShape<ProviderAdapterError>,
+      workspace: Pick<ProviderSession, "cwd" | "runtimeMode" | "providerInstanceId">,
       effect: Effect.Effect<A, E, R>,
-    ) =>
-      Effect.acquireUseRelease(
-        Effect.sync(() => startingSessions.set(threadId, { generation, adapter })),
+    ) => {
+      const reserve = checkWorkspace(threadId, workspace.cwd).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            const at = new Date().toISOString();
+            startingSessions.set(threadId, {
+              generation,
+              adapter,
+              session: {
+                threadId,
+                provider: adapter.provider,
+                ...workspace,
+                status: "connecting",
+                createdAt: at,
+                updatedAt: at,
+              },
+            });
+          }),
+        ),
+      );
+      return Effect.acquireUseRelease(
+        workspace.cwd
+          ? withWorktreeLifecycleLock(workspace.cwd, reserve).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ProviderValidationError({ operation: "workspace", issue: error.message }),
+              ),
+            )
+          : reserve,
         () => effect,
         () => Effect.sync(() => startingSessions.delete(threadId)),
       );
+    };
 
+    const sessionEventIdentities = new Map<
+      ThreadId,
+      { instanceId: ProviderInstanceId; generation: number }
+    >();
+    const currentMcpIdentity = (threadId: ThreadId) => {
+      const starting = startingSessions.get(threadId);
+      return starting?.session.providerInstanceId
+        ? { instanceId: starting.session.providerInstanceId, generation: starting.generation }
+        : sessionEventIdentities.get(threadId);
+    };
+    // Legacy adapters are stamped at admission, never after waiting in the service queue.
+    const stampRuntimeEventAtAdmission = (
+      event: ProviderRuntimeEvent,
+      source: ProviderInstanceId,
+    ): ProviderRuntimeEvent => {
+      const identity = currentMcpIdentity(event.threadId);
+      if (!identity || identity.instanceId !== source) return event;
+      if (event.type !== "mcp.status.updated")
+        return event.sessionGeneration === undefined
+          ? { ...event, sessionGeneration: identity.generation }
+          : event;
+      return {
+        ...event,
+        payload: {
+          status: {
+            ...event.payload.status,
+            providerInstanceId: event.payload.status.providerInstanceId ?? source,
+            sessionGeneration: event.payload.status.sessionGeneration ?? identity.generation,
+          },
+        },
+      };
+    };
     const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
-      Effect.succeed(event).pipe(
-        Effect.tap((canonicalEvent) =>
-          canonicalEventLogger ? canonicalEventLogger.write(canonicalEvent, null) : Effect.void,
-        ),
-        Effect.flatMap((canonicalEvent) => PubSub.publish(runtimeEventPubSub, canonicalEvent)),
-        Effect.asVoid,
-      );
+      Effect.gen(function* () {
+        if (event.type === "mcp.status.updated") {
+          const identity = currentMcpIdentity(event.threadId);
+          const stamp = event.payload.status;
+          if (
+            stamp.sessionGeneration !== undefined &&
+            (!identity ||
+              stamp.sessionGeneration !== identity.generation ||
+              stamp.providerInstanceId !== identity.instanceId)
+          )
+            return;
+        }
+        if (canonicalEventLogger)
+          yield* writeProviderEventLog(
+            canonicalEventLogger,
+            automationEventSanitizer.sanitize(event.threadId, event),
+            null,
+          );
+        yield* PubSub.publish(runtimeEventPubSub, event);
+      });
 
     const upsertSessionBinding = (
       session: ProviderSession,
@@ -397,28 +687,43 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         readonly sessionGeneration?: number;
       },
     ) =>
-      directory.upsert({
-        threadId,
-        ...(extra?.projectId !== undefined ? { projectId: extra.projectId } : {}),
-        provider: session.provider,
-        providerInstanceId:
-          session.providerInstanceId ??
-          defaultInstanceIdForDriver(ProviderDriverKind.make(session.provider)),
-        runtimeMode: session.runtimeMode,
-        status: toRuntimeStatus(session),
-        ...(extra?.mcpEffectiveConfigVersion !== undefined
-          ? { mcpEffectiveConfigVersion: extra.mcpEffectiveConfigVersion }
-          : {}),
-        ...(extra?.launchFingerprint !== undefined
-          ? { launchFingerprint: extra.launchFingerprint }
-          : {}),
-        ...(session.resumeCursor !== undefined
-          ? { resumeCursor: session.resumeCursor }
-          : extra?.clearMissingResumeCursor
-            ? { resumeCursor: null }
+      directory
+        .upsert({
+          threadId,
+          ...(extra?.projectId !== undefined ? { projectId: extra.projectId } : {}),
+          provider: session.provider,
+          providerInstanceId:
+            session.providerInstanceId ??
+            defaultInstanceIdForDriver(ProviderDriverKind.make(session.provider)),
+          runtimeMode: session.runtimeMode,
+          status: toRuntimeStatus(session),
+          ...(extra?.mcpEffectiveConfigVersion !== undefined
+            ? { mcpEffectiveConfigVersion: extra.mcpEffectiveConfigVersion }
             : {}),
-        runtimePayload: toRuntimePayloadFromSession(session, extra),
-      });
+          ...(extra?.launchFingerprint !== undefined
+            ? { launchFingerprint: extra.launchFingerprint }
+            : {}),
+          ...(session.resumeCursor !== undefined
+            ? { resumeCursor: session.resumeCursor }
+            : extra?.clearMissingResumeCursor
+              ? { resumeCursor: null }
+              : {}),
+          runtimePayload: toRuntimePayloadFromSession(session, extra),
+        })
+        .pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              if (extra?.sessionGeneration !== undefined)
+                sessionEventIdentities.set(threadId, {
+                  instanceId:
+                    session.providerInstanceId ??
+                    defaultInstanceIdForDriver(ProviderDriverKind.make(session.provider)),
+                  generation: extra.sessionGeneration,
+                });
+              if (session.status === "closed") sessionEventIdentities.delete(threadId);
+            }),
+          ),
+        );
 
     const readExecutableVersion = (instanceId: ProviderInstanceId) =>
       Option.match(providerRegistry, {
@@ -474,6 +779,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             }
 
             const binding = bindingOption.value;
+            if (
+              event.sessionGeneration !== undefined &&
+              event.sessionGeneration !== readPersistedSessionGeneration(binding.runtimePayload)
+            )
+              return;
             if (binding.provider !== event.provider) {
               yield* Effect.logWarning("provider runtime resume cursor provider mismatch", {
                 expectedProvider: binding.provider,
@@ -527,6 +837,99 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ),
           );
 
+    // Persistence outages must not remove the send fence. Only the matching
+    // generation may inspect/acknowledge a marker held here until storage recovers.
+    const incompleteHistoryFallbacks = new Map<
+      ThreadId,
+      {
+        instanceId: ProviderInstanceId;
+        generation: number;
+        eventId: string;
+      }
+    >();
+    const rememberIncompleteHistory = (
+      threadId: ThreadId,
+      marker: { instanceId: ProviderInstanceId; generation: number; eventId: string },
+    ) => {
+      const current = currentMcpIdentity(threadId);
+      if (
+        current &&
+        (current.instanceId !== marker.instanceId ||
+          (marker.generation >= 0 && current.generation !== marker.generation))
+      )
+        return;
+      const previous = incompleteHistoryFallbacks.get(threadId);
+      if (
+        previous &&
+        previous.instanceId === marker.instanceId &&
+        previous.generation > marker.generation
+      )
+        return;
+      incompleteHistoryFallbacks.set(threadId, marker);
+    };
+    const eventPersistenceRetry = { times: 2, schedule: Schedule.spaced("100 millis") };
+    const requireHistoryReconciliation: NonNullable<
+      ProviderServiceShape["requireHistoryReconciliation"]
+    > = (event) =>
+      Effect.gen(function* () {
+        const instanceId =
+          event.providerInstanceId ??
+          currentMcpIdentity(event.threadId)?.instanceId ??
+          ProviderInstanceId.make(event.provider);
+        const generation =
+          event.sessionGeneration ??
+          currentMcpIdentity(event.threadId)?.generation ??
+          (yield* nativeGeneration(event.threadId).pipe(Effect.orElseSucceed(() => -1)));
+        rememberIncompleteHistory(event.threadId, {
+          instanceId,
+          generation,
+          eventId: event.eventId,
+        });
+        // Cleanup runs in the service scope, outside the shared ingestion worker.
+        // A launch holding this thread's lock must not stall unrelated conversations
+        // or delay the durable fence below. The in-memory fence already gates sends.
+        yield* withProviderThreadAccess(
+          event.threadId,
+          Effect.gen(function* () {
+            const current = currentMcpIdentity(event.threadId);
+            if (!current || current.instanceId !== instanceId || current.generation !== generation)
+              return;
+            const adapter = yield* registry.getByInstance(instanceId);
+            const session = (yield* adapter.listSessions()).find(
+              (session) => session.threadId === event.threadId,
+            );
+            // Turnless or late events cannot identify which work failed.
+            if (!event.turnId || event.turnId !== session?.activeTurnId) return;
+            yield* adapter
+              .interruptTurn(event.threadId, session.activeTurnId)
+              .pipe(Effect.catch(() => adapter.stopSession(event.threadId)));
+          }),
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("failed to stop provider after history ingestion failure", {
+              threadId: event.threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+          Effect.forkIn(nativeScope),
+        );
+        const binding = Option.getOrUndefined(
+          yield* directory.getBinding(event.threadId).pipe(Effect.retry(eventPersistenceRetry)),
+        );
+        const cursor = binding?.resumeCursor;
+        const historyIdentity =
+          isRecord(cursor) && typeof cursor.threadId === "string" ? cursor.threadId : null;
+        const persisted = yield* directory
+          .updateHistoryReconciliationIfCurrent({
+            threadId: event.threadId,
+            instanceId,
+            generation,
+            marker: { eventId: event.eventId, turnId: event.turnId ?? null, historyIdentity },
+          })
+          .pipe(Effect.retry(eventPersistenceRetry));
+        if (persisted && incompleteHistoryFallbacks.get(event.threadId)?.eventId === event.eventId)
+          incompleteHistoryFallbacks.delete(event.threadId);
+      });
     const processRuntimeEvent = (item: {
       readonly source: {
         readonly instanceId: ProviderInstanceId;
@@ -536,9 +939,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     }): Effect.Effect<void> =>
       Effect.gen(function* () {
         let event: ProviderRuntimeEvent = {
-          ...item.event,
+          ...redactProviderRuntimeFailure(item.event),
           providerInstanceId: item.event.providerInstanceId ?? item.source.instanceId,
         };
+        carryPreparedComputerEvidence(item.event, event);
         if (event.provider !== item.source.provider) {
           yield* Effect.logWarning("provider runtime event provider mismatch", {
             sourceProvider: item.source.provider,
@@ -565,6 +969,56 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           }
           return;
         }
+        const terminalGeneration =
+          event.type === "turn.completed" ||
+          event.type === "turn.aborted" ||
+          event.type === "session.exited"
+            ? (event.sessionGeneration ??
+              currentMcpIdentity(event.threadId)?.generation ??
+              (yield* nativeGeneration(event.threadId).pipe(Effect.orElseSucceed(() => -1))))
+            : undefined;
+        if ((event.type === "turn.completed" || event.type === "turn.aborted") && event.turnId) {
+          for (const [id, completion] of submissionCompletions) {
+            if (
+              completion.threadId !== event.threadId ||
+              completion.instanceId !== item.source.instanceId ||
+              completion.instanceId !== event.providerInstanceId ||
+              completion.generation !== terminalGeneration
+            )
+              continue;
+            if (completion.turnId === event.turnId) {
+              yield* Deferred.succeed(completion.done, undefined);
+              submissionCompletions.delete(id);
+            } else if (completion.turnId === undefined) {
+              if (completion.terminalIds.size < 16) completion.terminalIds.add(event.turnId);
+              else {
+                yield* Deferred.fail(
+                  completion.done,
+                  toValidationError(
+                    "ProviderService.submitTurn",
+                    "Completion correlation buffer overflow; inspect provider history.",
+                  ),
+                );
+                submissionCompletions.delete(id);
+              }
+            }
+          }
+        }
+        if (event.type === "session.exited") {
+          for (const [id, completion] of submissionCompletions) {
+            if (
+              completion.threadId !== event.threadId ||
+              completion.instanceId !== item.source.instanceId ||
+              completion.instanceId !== event.providerInstanceId ||
+              completion.generation !== terminalGeneration
+            )
+              continue;
+            yield* Deferred.succeed(completion.done, undefined);
+            submissionCompletions.delete(id);
+          }
+        }
+        if (event.type === "runtime.error" && event.payload.historyReconciliationRequired)
+          yield* requireHistoryReconciliation(event).pipe(Effect.orDie);
         yield* persistResumeCursorFromRuntimeEvent(event);
         if (event.type === "user-input.requested" && event.payload.elicitation) {
           // The owning generation is what a later private answer must match.
@@ -590,10 +1044,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
         if (isProviderTerminalRuntimeEvent(event) && options?.recordTerminalEvent !== undefined) {
           // Do not fan out a terminal event until its recovery receipt is durable.
-          // Retrying in place preserves provider event order while SQLite is unavailable.
+          // Bounded retries preserve order during a brief outage. Persistent failure
+          // becomes a visible, fenced recovery state and releases this lane.
           yield* options
             .recordTerminalEvent(event)
-            .pipe(Effect.retry({ schedule: Schedule.spaced("1 second") }), Effect.orDie);
+            .pipe(Effect.retry(eventPersistenceRetry), Effect.orDie);
         }
         yield* publishRuntimeEvent(event);
         yield* increment(providerRuntimeEventsTotal, {
@@ -629,7 +1084,52 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               return next;
             });
             if (!next) return;
-            yield* processRuntimeEvent(next).pipe(Effect.ensuring(laneBudget.release(1)));
+            yield* processRuntimeEvent(next).pipe(
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+                return Effect.gen(function* () {
+                  const generation =
+                    next.event.sessionGeneration ??
+                    currentMcpIdentity(threadId)?.generation ??
+                    (yield* nativeGeneration(threadId).pipe(Effect.orElseSucceed(() => -1)));
+                  const eventId = EventId.makeUnsafe(`${next.event.eventId}:persistence-failed`);
+                  yield* Effect.logError(
+                    "provider event persistence failed; history recovery required",
+                    {
+                      threadId,
+                      eventId: next.event.eventId,
+                      cause: Cause.pretty(cause),
+                    },
+                  );
+                  const failure: ProviderRuntimeEvent = {
+                    type: "runtime.error",
+                    eventId,
+                    threadId,
+                    ...(next.event.turnId ? { turnId: next.event.turnId } : {}),
+                    provider: next.source.provider,
+                    providerInstanceId: next.source.instanceId,
+                    ...(generation >= 0 ? { sessionGeneration: generation } : {}),
+                    createdAt: new Date().toISOString(),
+                    payload: {
+                      message:
+                        "Provider output could not be persisted. Review incomplete history before continuing.",
+                      class: "transport_error",
+                      historyReconciliationRequired: true,
+                    },
+                  };
+                  yield* requireHistoryReconciliation(failure).pipe(
+                    Effect.catchCause((persistCause) =>
+                      Effect.logError(
+                        "history recovery marker remains in memory until storage recovers",
+                        { threadId, cause: Cause.pretty(persistCause) },
+                      ),
+                    ),
+                  );
+                  yield* publishRuntimeEvent(failure);
+                });
+              }),
+              Effect.ensuring(laneBudget.release(1)),
+            );
           }
         }).pipe(
           Effect.ensuring(
@@ -641,8 +1141,22 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         );
         yield* Effect.forkScoped(drain);
       });
+    let pendingRuntimeAdmissions = 0;
     const worker = Effect.forever(
-      Queue.take(runtimeEventQueue).pipe(Effect.flatMap(dispatchRuntimeEvent)),
+      Queue.take(runtimeEventQueue).pipe(
+        Effect.flatMap((item) =>
+          Effect.acquireUseRelease(
+            Effect.sync(() => {
+              pendingRuntimeAdmissions++;
+            }),
+            () => dispatchRuntimeEvent(item),
+            () =>
+              Effect.sync(() => {
+                pendingRuntimeAdmissions--;
+              }),
+          ),
+        ),
+      ),
     );
     yield* Effect.forkScoped(worker);
 
@@ -669,7 +1183,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           yield* Stream.runForEach(adapter.streamEvents, (event) =>
             Queue.offer(runtimeEventQueue, {
               source: { instanceId, provider: adapter.provider },
-              event,
+              event: stampRuntimeEventAtAdmission(event, instanceId),
             }).pipe(Effect.asVoid),
           ).pipe(Effect.forkScoped);
         }
@@ -683,12 +1197,47 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       () => reconcileInstanceSubscriptions,
     ).pipe(Effect.forkScoped);
 
+    // Lock order: reactor turn gate, then this service gate. Never enter the reactor here.
+    const withSessionOperation = makeOperationGate<ThreadId>();
+
+    const assertControlTarget = (threadId: ThreadId) =>
+      Effect.gen(function* () {
+        const expected = yield* ProviderControlTarget;
+        if (!expected) return;
+        const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        let matches =
+          expected.threadId === threadId &&
+          (binding?.provider ?? null) === expected.provider &&
+          (binding ? resolveBindingInstanceId(binding) : null) === expected.instanceId &&
+          (binding ? readPersistedSessionGeneration(binding.runtimePayload) : null) ===
+            expected.generation;
+        if (matches && binding && expected.activeTurnId !== null) {
+          const adapter = yield* registry.getByInstance(resolveBindingInstanceId(binding));
+          const sessions = yield* adapter.listSessions();
+          matches = sessions.some(
+            (session) =>
+              session.threadId === threadId && session.activeTurnId === expected.activeTurnId,
+          );
+        }
+        if (!matches)
+          return yield* toValidationError(
+            "ProviderService.control",
+            "The provider session or turn changed before this action ran. The action was not sent.",
+          );
+      });
+    const withControlTarget = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
+      withProviderThreadAccess(
+        threadId,
+        assertControlTarget(threadId).pipe(Effect.andThen(effect)),
+      );
+
     const recoverSessionForThread = (input: {
       readonly binding: ProviderRuntimeBinding;
       readonly operation: string;
       readonly fallbackActiveTurnId?: TurnId;
     }) =>
       Effect.gen(function* () {
+        yield* requireProjectProvider(input.binding);
         const bindingInstanceId = resolveBindingInstanceId(input.binding);
         yield* Effect.annotateCurrentSpan({
           "provider.operation": "recover-session",
@@ -735,7 +1284,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const resolvedProjectMcp =
           input.binding.projectId !== undefined && input.binding.projectId !== null
             ? yield* projectMcpConfigService
-                .readEffectiveStoredConfig(input.binding.projectId)
+                .readEffectiveRuntimeConfig(input.binding.projectId)
                 .pipe(
                   Effect.mapError(
                     toProjectMcpProviderError(
@@ -748,6 +1297,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const resumedProviderOptions = mergeResolvedMcpProviderOptions({
           providerOptions: persistedProviderOptions as ProviderStartOptions | undefined,
           projectMcpServers: resolvedProjectMcp?.servers,
+        });
+
+        yield* Effect.try({
+          try: () => {
+            assertMcpRuntimeConfig(resumedProviderOptions?.mcpServers, input.binding.provider);
+            if (input.binding.provider === "codex")
+              readCodexMcpOAuthCallbackConfig(resumedProviderOptions?.mcpServers);
+          },
+          catch: (cause) => toValidationError(input.operation, mcpConfigErrorMessage(cause)),
+        });
+        yield* checkClaudeAppendSystemPrompt(input.operation, {
+          provider: input.binding.provider,
+          providerOptions: resumedProviderOptions,
+          cwd: persistedCwd,
         });
 
         const recoveredRuntimeMode = input.binding.runtimeMode ?? DEFAULT_RUNTIME_MODE;
@@ -856,6 +1419,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             `Cannot recover thread '${input.binding.threadId}' because no provider resume state is persisted.`,
           );
         }
+        yield* checkWorkspace(input.binding.threadId, persistedCwd);
         if (persistedCwd) yield* ensureWorkspaceDirectory(persistedCwd);
         const resumedGeneration = readPersistedSessionGeneration(input.binding.runtimePayload) + 1;
         // Covers the binding write, as in startSession.
@@ -863,13 +1427,23 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           input.binding.threadId,
           resumedGeneration,
           adapter,
+          {
+            cwd: persistedCwd,
+            runtimeMode: recoveredRuntimeMode,
+            providerInstanceId: bindingInstanceId,
+          },
           Effect.gen(function* () {
             if (hasNativeOperationReservation(input.binding.threadId))
               return yield* toValidationError(
                 input.operation,
                 "A native operation is pending; session recovery is unavailable.",
               );
+            yield* ensureAccepting;
             const resumed = yield* adapter.startSession({
+              mcpEventIdentity: {
+                providerInstanceId: bindingInstanceId,
+                sessionGeneration: resumedGeneration,
+              },
               threadId: input.binding.threadId,
               ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
               provider: input.binding.provider,
@@ -930,7 +1504,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
         return { adapter, session: resumedWithCapabilities, orphanedTurnId } as const;
       }).pipe(
-        withAccountAdmission(
+        withProviderAdmission(
           serverConfig.stateDir,
           resolveBindingInstanceId(input.binding),
           input.operation,
@@ -943,7 +1517,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }),
       );
 
-    const resolveRoutableSession = (input: {
+    const resolveRoutableSessionUnlocked = (input: {
       readonly threadId: ThreadId;
       readonly operation: string;
       readonly allowRecovery: boolean;
@@ -1025,6 +1599,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         } as const;
       });
 
+    const resolveRoutableSession = (input: Parameters<typeof resolveRoutableSessionUnlocked>[0]) =>
+      resolveRoutableSessionUnlocked({ ...input, allowRecovery: false }).pipe(
+        Effect.flatMap((routed) => {
+          if (routed.isActive || !input.allowRecovery) return Effect.succeed(routed);
+          // Only recovery mutates lifecycle state. Live controls remain usable during reconciliation.
+          const { binding: _binding, ...request } = input;
+          return withSessionOperation(input.threadId, resolveRoutableSessionUnlocked(request));
+        }),
+      );
+
     const stopStaleSessionsForThread = Effect.fnUntraced(function* (input: {
       readonly threadId: ThreadId;
       readonly currentInstanceId: ProviderInstanceId;
@@ -1060,8 +1644,37 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       );
     });
 
+    // Resolve physical identity only while updating, including aliases added during the update.
+    const withProviderAdmission =
+      (stateDir: string, instanceId: string, operation: string) =>
+      <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.gen(function* () {
+          let installKey: string | undefined;
+          if (hasProviderUpdate(stateDir) && instanceId) {
+            const info = yield* registry.getInstanceInfo(ProviderInstanceId.make(instanceId));
+            const target = yield* Effect.try({
+              try: () => info.resolveInstallTarget?.(),
+              catch: () =>
+                toValidationError(
+                  operation,
+                  "Could not identify this installation while a provider update is running. Try again after it finishes.",
+                ),
+            });
+            if (info.resolveInstallTarget && !target)
+              return yield* toValidationError(
+                operation,
+                "Could not identify this installation while a provider update is running. Try again after it finishes.",
+              );
+            installKey = target?.installKey;
+          }
+          return yield* effect.pipe(
+            withAccountAdmission(stateDir, instanceId, operation, installKey),
+          );
+        });
+
     const startSession: ProviderServiceShape["startSession"] = (threadId, rawInput) =>
       Effect.gen(function* () {
+        yield* ensureAccepting;
         if (hasNativeOperationReservation(threadId))
           return yield* toValidationError(
             "ProviderService.startSession",
@@ -1073,6 +1686,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           payload: rawInput,
         });
 
+        yield* Effect.try({
+          try: () => assertMcpRuntimeConfig(parsed.providerOptions?.mcpServers),
+          catch: (cause) =>
+            toValidationError("ProviderService.startSession", mcpConfigErrorMessage(cause)),
+        });
         const requestedInstanceId = resolveStartInstanceId(parsed);
         yield* Effect.annotateCurrentSpan({
           "provider.operation": "start-session",
@@ -1086,12 +1704,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const resolvedProvider = instanceInfo.driverKind as ProviderKind;
           metricProvider = resolvedProvider;
           if (
-            (resolvedProvider === "grok" || resolvedProvider === "antigravity") &&
+            (resolvedProvider === "grok" ||
+              resolvedProvider === "antigravity" ||
+              resolvedProvider === "muse") &&
             parsed.workflowExecutionProfile?.endsWith("readonly")
           ) {
             return yield* toValidationError(
               "ProviderService.startSession",
-              `${resolvedProvider === "grok" ? "Grok" : "Antigravity"} cannot enforce read-only workflow turns.`,
+              `${PROVIDER_DISPLAY_NAMES[resolvedProvider]} cannot enforce read-only workflow turns.`,
             );
           }
           if (parsed.provider !== undefined && parsed.provider !== resolvedProvider) {
@@ -1100,7 +1720,21 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               `Provider instance '${requestedInstanceId}' belongs to driver '${resolvedProvider}', not '${parsed.provider}'.`,
             );
           }
-          if (!instanceInfo.enabled) {
+          const enabledForProject = Option.isSome(settingsOption)
+            ? resolveProjectProviderInstanceEnabled(
+                yield* settingsOption.value.getSettings.pipe(
+                  Effect.mapError(() =>
+                    toValidationError(
+                      "ProviderService.startSession",
+                      "Provider settings could not be read.",
+                    ),
+                  ),
+                ),
+                parsed.projectId,
+                requestedInstanceId,
+              )
+            : instanceInfo.enabled;
+          if (!enabledForProject) {
             return yield* toValidationError(
               "ProviderService.startSession",
               `Provider instance '${requestedInstanceId}' is disabled in settings.`,
@@ -1173,7 +1807,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const resolvedProjectMcp =
             input.projectId !== undefined
               ? yield* projectMcpConfigService
-                  .readEffectiveStoredConfig(input.projectId)
+                  .readEffectiveRuntimeConfig(input.projectId)
                   .pipe(
                     Effect.mapError(
                       toProjectMcpProviderError("ProviderService.startSession", input.projectId),
@@ -1187,6 +1821,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               projectMcpServers: resolvedProjectMcp?.servers,
             }),
           };
+          yield* Effect.try({
+            try: () => {
+              assertMcpRuntimeConfig(adapterInput.providerOptions?.mcpServers, resolvedProvider);
+              if (resolvedProvider === "codex")
+                readCodexMcpOAuthCallbackConfig(adapterInput.providerOptions?.mcpServers);
+            },
+            catch: (cause) =>
+              toValidationError("ProviderService.startSession", mcpConfigErrorMessage(cause)),
+          });
+          yield* checkClaudeAppendSystemPrompt("ProviderService.startSession", {
+            provider: resolvedProvider,
+            providerOptions: adapterInput.providerOptions,
+            cwd: adapterInput.cwd,
+          });
           const launchFingerprint = computeProviderLaunchFingerprint({
             provider: resolvedProvider,
             providerInstanceId: requestedInstanceId,
@@ -1207,6 +1855,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             threadId,
             currentInstanceId: requestedInstanceId,
           });
+          yield* checkWorkspace(threadId, adapterInput.cwd);
           if (adapterInput.cwd) yield* ensureWorkspaceDirectory(adapterInput.cwd);
           // Generations only grow per thread, across instance switches too, so a
           // browser can never mistake a new session for the one it looked at.
@@ -1218,8 +1867,17 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             threadId,
             sessionGeneration,
             adapter,
+            {
+              cwd: adapterInput.cwd,
+              runtimeMode: adapterInput.runtimeMode,
+              providerInstanceId: requestedInstanceId,
+            },
             Effect.gen(function* () {
-              const session = yield* adapter.startSession(adapterInput);
+              yield* ensureAccepting;
+              const session = yield* adapter.startSession({
+                ...adapterInput,
+                mcpEventIdentity: { providerInstanceId: requestedInstanceId, sessionGeneration },
+              });
               if (session.provider !== adapter.provider) {
                 return yield* toValidationError(
                   "ProviderService.startSession",
@@ -1271,7 +1929,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
           return sessionWithInstance;
         }).pipe(
-          withAccountAdmission(
+          withProviderAdmission(
             serverConfig.stateDir,
             requestedInstanceId,
             "ProviderService.startSession",
@@ -1316,17 +1974,19 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           allowRecovery: false,
         });
         const action =
-          input.command.kind === "compact"
-            ? "nativeCompaction"
-            : input.command.kind === "review"
-              ? "nativeReview"
-              : input.command.kind === "fork"
-                ? "nativeFork"
-                : input.command.kind === "stopTask"
-                  ? "childTaskStop"
-                  : input.command.kind === "revertFiles"
-                    ? "fileCheckpointing"
-                    : "nativeGoals";
+          input.command.kind === "aside"
+            ? "nativeAside"
+            : input.command.kind === "compact"
+              ? "nativeCompaction"
+              : input.command.kind === "review"
+                ? "nativeReview"
+                : input.command.kind === "fork"
+                  ? "nativeFork"
+                  : input.command.kind === "stopTask"
+                    ? "childTaskStop"
+                    : input.command.kind === "revertFiles"
+                      ? "fileCheckpointing"
+                      : "nativeGoals";
         const admitted = yield* Deferred.make<
           import("@t3tools/contracts").NativeOperationRecord,
           import("../Errors.ts").ProviderServiceError
@@ -1341,7 +2001,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ...(prepare
               ? {
                   prepare: prepare.pipe(
-                    withAccountAdmission(
+                    withProviderAdmission(
                       serverConfig.stateDir,
                       routed.instanceId,
                       "ProviderService.nativeOperation.prepare",
@@ -1385,7 +2045,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   );
               }
             }).pipe(
-              withAccountAdmission(
+              withProviderAdmission(
                 serverConfig.stateDir,
                 routed.instanceId,
                 "ProviderService.nativeOperation.validate",
@@ -1399,7 +2059,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 ),
               ),
           })
-          .pipe(Effect.mapError(nativeError));
+          .pipe(
+            withProviderAdmission(
+              serverConfig.stateDir,
+              routed.instanceId,
+              "ProviderService.nativeOperation",
+            ),
+            Effect.mapError(nativeError),
+          );
         if (!background) return yield* execution;
         yield* execution.pipe(
           Effect.tap((record) => Deferred.succeed(admitted, record)),
@@ -1409,6 +2076,88 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return yield* Deferred.await(admitted);
       });
     const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
+      markRead: (threadId) =>
+        Effect.gen(function* () {
+          const routed = yield* resolveRoutableSession({
+            threadId,
+            operation: "nativeOperation.markRead",
+            allowRecovery: false,
+          });
+          if (routed.adapter.markNativeThreadRead)
+            yield* routed.adapter.markNativeThreadRead(threadId);
+        }).pipe(Effect.catchCause(() => Effect.void)),
+      historyRecovery: (input) =>
+        withProviderThreadAccess(
+          input.threadId,
+          withSessionOperation(
+            input.threadId,
+            Effect.gen(function* () {
+              const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+              if (!binding) return null;
+              const instanceId = resolveBindingInstanceId(binding);
+              const generation = readPersistedSessionGeneration(binding.runtimePayload);
+              const durable = readIncompleteHistory(binding.runtimePayload);
+              const fallback = incompleteHistoryFallbacks.get(input.threadId);
+              const marker =
+                fallback?.instanceId === instanceId &&
+                (fallback.generation === generation || fallback.generation < 0)
+                  ? fallback
+                  : durable;
+              if (!marker) return null;
+              const current = { instanceId, generation, eventId: marker.eventId };
+              if (input.action === "inspect") return current;
+              if (
+                input.expected?.instanceId !== instanceId ||
+                input.expected.generation !== generation ||
+                input.expected.eventId !== marker.eventId
+              )
+                return yield* nativeError(
+                  "The provider history changed. Review the current recovery warning before continuing.",
+                );
+              // Explicit acceptance never resumes/resends the interrupted turn. Stop
+              // its source before releasing the matching incomplete-history fence.
+              yield* stopSessionUnlocked({ threadId: input.threadId });
+              // Source draining can admit another failure while stop is awaited.
+              // Accept only the history the user inspected, retaining newer fences.
+              const stopped = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+              const stoppedDurable = readIncompleteHistory(stopped?.runtimePayload);
+              const stoppedFallback = incompleteHistoryFallbacks.get(input.threadId);
+              if (
+                !stopped ||
+                resolveBindingInstanceId(stopped) !== instanceId ||
+                readPersistedSessionGeneration(stopped.runtimePayload) !== generation ||
+                (stoppedDurable &&
+                  stoppedDurable.eventId !== marker.eventId &&
+                  stoppedDurable.eventId !== durable?.eventId) ||
+                (stoppedFallback?.instanceId === instanceId &&
+                  stoppedFallback.generation === generation &&
+                  stoppedFallback.eventId !== marker.eventId)
+              )
+                return yield* nativeError(
+                  "Provider history changed while stopping. Review recovery again.",
+                );
+              if (stoppedDurable) {
+                const cleared = yield* directory.updateHistoryReconciliationIfCurrent({
+                  threadId: input.threadId,
+                  instanceId,
+                  generation,
+                  marker: null,
+                  expectedMarkerId: stoppedDurable.eventId,
+                });
+                if (!cleared)
+                  return yield* nativeError("The provider session changed during recovery.");
+              }
+              const adapter = yield* registry.getByInstance(instanceId);
+              yield* (
+                adapter.acknowledgeHistoryReconciliation?.(input.threadId, marker.eventId) ??
+                  Effect.void
+              );
+              if (incompleteHistoryFallbacks.get(input.threadId)?.eventId === marker.eventId)
+                incompleteHistoryFallbacks.delete(input.threadId);
+              return null;
+            }),
+          ),
+        ).pipe(Effect.mapError(nativeError)),
       list: (threadId) =>
         nativeCoordinator
           ? nativeCoordinator.list(threadId).pipe(Effect.mapError(nativeError))
@@ -1422,10 +2171,31 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             const record = (yield* nativeCoordinator.list(input.threadId)).find(
               (entry) => entry.operationId === input.operationId,
             );
-            if (!record || (yield* nativeGeneration(input.threadId)) !== input.generation)
+            if (
+              !record ||
+              record.generation !== input.generation ||
+              (yield* nativeGeneration(input.threadId)) !== input.generation
+            )
               return yield* nativeError(
                 "The provider session changed. Reload before resolving this outcome.",
               );
+            if (input.action === "cancel") {
+              if (record.command.kind !== "aside")
+                return yield* nativeError("Only aside sampling can be cancelled here.");
+              if (!["requested", "dispatched", "running"].includes(record.state)) return record;
+              yield* assertSessionAction({
+                threadId: input.threadId,
+                action: "nativeAside",
+                expectedGeneration: input.generation,
+              });
+              const routed = yield* resolveRoutableSession({
+                threadId: input.threadId,
+                operation: "nativeOperation.cancel",
+                allowRecovery: false,
+              });
+              yield* routed.adapter.interruptTurn(input.threadId);
+              return record;
+            }
             if (input.action === "reconcile") {
               yield* nativeCoordinator
                 .reconcileThread(input.threadId, checkNativeOperation)
@@ -1453,9 +2223,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 ? "childTaskInspection"
                 : input.kind === "filePreview"
                   ? "fileCheckpointing"
-                  : input.kind === "goal"
-                    ? "nativeGoals"
-                    : "nativeAttachments";
+                  : input.kind === "memory"
+                    ? "nativeAside"
+                    : input.kind === "goal" || input.kind === "usage"
+                      ? "nativeGoals"
+                      : "nativeAttachments";
             yield* assertSessionAction({
               threadId: input.threadId,
               action,
@@ -1494,8 +2266,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         ),
       );
 
-    const sendTurn: ProviderServiceShape["sendTurn"] = (rawInput) =>
+    const sendTurn = (
+      rawInput: Parameters<ProviderServiceShape["sendTurn"]>[0],
+      onPrepared: (instanceId: ProviderInstanceId, generation: number) => void = () => {},
+    ) =>
       Effect.gen(function* () {
+        yield* ensureAccepting;
         if (isRecord(rawInput) && typeof rawInput.input === "string") {
           const inputLengthIssue = getProviderTurnInputLengthIssue(rawInput.input);
           if (inputLengthIssue) {
@@ -1519,6 +2295,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           ...parsed,
           attachments: parsed.attachments ?? [],
         };
+        const submissionToken = Symbol("provider-submission");
         if (!input.input && input.attachments.length === 0) {
           return yield* toValidationError(
             "ProviderService.sendTurn",
@@ -1532,163 +2309,335 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           "provider.attachment_count": input.attachments.length,
         });
         const binding = yield* directory.getBinding(input.threadId);
+        if (Option.isSome(binding)) yield* requireProjectProvider(binding.value);
         const instanceId = Option.isSome(binding) ? resolveBindingInstanceId(binding.value) : "";
         let metricProvider = "unknown";
         let metricModel = input.model;
         return yield* Effect.gen(function* () {
-          const routed = yield* resolveRoutableSession({
-            threadId: input.threadId,
-            operation: "ProviderService.sendTurn",
-            allowRecovery: input.expectedTurnId === undefined,
-            binding,
-          });
-          metricProvider = routed.adapter.provider;
-          if (
-            (routed.adapter.provider === "grok" || routed.adapter.provider === "antigravity") &&
-            input.workflowExecutionProfile?.endsWith("readonly")
-          ) {
-            return yield* toValidationError(
-              "ProviderService.sendTurn",
-              `${routed.adapter.provider === "grok" ? "Grok" : "Antigravity"} cannot enforce read-only workflow turns.`,
-            );
-          }
-          metricModel = input.model;
-          yield* Effect.annotateCurrentSpan({
-            "provider.kind": routed.adapter.provider,
-            ...(input.model ? { "provider.model": input.model } : {}),
-          });
-          const limitError = getProviderAttachmentLimitError(
-            input.attachments,
-            routed.adapter.provider,
-          );
-          if (limitError) return yield* toValidationError("ProviderService.sendTurn", limitError);
-          const attachmentPaths = input.attachments.map((attachment) => {
-            switch (attachment.type) {
-              case "file":
-              case "image": {
-                const localPath = resolveAttachmentPath({
-                  attachmentsDir: serverConfig.attachmentsDir,
-                  attachment,
-                });
-                return { attachment, localPath };
-              }
-              default:
-                throw new Error(
-                  `Unsupported provider attachment type '${String((attachment as { type?: unknown }).type)}'.`,
+          const { routed, nativeAttachments, resolvedAttachments, generation, token } =
+            yield* withProviderThreadAccess(
+              input.threadId,
+              Effect.gen(function* () {
+                // Recovering the session runs before the send, so a failure
+                // there, such as an unresumable transcript, is not sent.
+                const routed = yield* resolveRoutableSession({
+                  threadId: input.threadId,
+                  operation: "ProviderService.sendTurn",
+                  allowRecovery:
+                    input.expectedTurnId === undefined && input.continuationRequestId === undefined,
+                  binding,
+                }).pipe(
+                  Effect.mapError((error) =>
+                    isNotSentProviderError(error) ? error : asPreSendDeliveryError(error),
+                  ),
                 );
-            }
-          });
-          const missingAttachmentIds = (yield* Effect.promise(() =>
-            Promise.all(
-              attachmentPaths.map(async ({ attachment, localPath }) => {
-                if (localPath === null) return attachment.id;
-                try {
-                  const current = await lstat(localPath);
-                  return current.isFile() && current.size === attachment.sizeBytes
-                    ? null
-                    : attachment.id;
-                } catch {
-                  return attachment.id;
+                metricProvider = routed.adapter.provider;
+                if (
+                  (routed.adapter.provider === "grok" ||
+                    routed.adapter.provider === "antigravity" ||
+                    routed.adapter.provider === "muse") &&
+                  input.workflowExecutionProfile?.endsWith("readonly")
+                ) {
+                  return yield* toValidationError(
+                    "ProviderService.sendTurn",
+                    `${PROVIDER_DISPLAY_NAMES[routed.adapter.provider]} cannot enforce read-only workflow turns.`,
+                  );
                 }
+                metricModel = input.model;
+                yield* Effect.annotateCurrentSpan({
+                  "provider.kind": routed.adapter.provider,
+                  ...(input.model ? { "provider.model": input.model } : {}),
+                });
+                const limitError = getProviderAttachmentLimitError(
+                  input.attachments,
+                  routed.adapter.provider,
+                );
+                if (limitError)
+                  return yield* toValidationError("ProviderService.sendTurn", limitError);
+                const attachmentPaths = input.attachments.map((attachment) => {
+                  switch (attachment.type) {
+                    case "file":
+                    case "image": {
+                      const localPath = resolveAttachmentPath({
+                        attachmentsDir: serverConfig.attachmentsDir,
+                        attachment,
+                      });
+                      return { attachment, localPath };
+                    }
+                    default:
+                      throw new Error(
+                        `Unsupported provider attachment type '${String((attachment as { type?: unknown }).type)}'.`,
+                      );
+                  }
+                });
+                const missingAttachmentIds = (yield* Effect.promise(() =>
+                  Promise.all(
+                    attachmentPaths.map(async ({ attachment, localPath }) => {
+                      if (localPath === null) return attachment.id;
+                      try {
+                        const current = await lstat(localPath);
+                        return current.isFile() && current.size === attachment.sizeBytes
+                          ? null
+                          : attachment.id;
+                      } catch {
+                        return attachment.id;
+                      }
+                    }),
+                  ),
+                )).filter((id): id is string => id !== null);
+                if (missingAttachmentIds.length > 0) {
+                  return yield* toValidationError(
+                    "ProviderService.sendTurn",
+                    `The following attachments changed or are no longer available: ${missingAttachmentIds.join(", ")}`,
+                  );
+                }
+                const resolvedAttachments = attachmentPaths.map(({ attachment, localPath }) => ({
+                  ...attachment,
+                  localPath: localPath!,
+                }));
+                const nativeAttachments = nativeProviderAttachments(
+                  input.attachments,
+                  routed.adapter.provider,
+                );
+                if (input.expectedTurnId !== undefined && !routed.adapter.steerTurn) {
+                  return yield* new ProviderTurnDeliveryError({
+                    certainty: "not_sent",
+                    retryable: false,
+                    detail: "This provider does not support steering.",
+                  });
+                }
+                // Steering re-checks the routed generation and executable support, so
+                // a stale browser cannot steer a session restarted since it looked.
+                if (input.expectedTurnId !== undefined) {
+                  yield* assertSessionAction({
+                    threadId: input.threadId,
+                    action: "steer",
+                    ...(input.expectedSessionGeneration !== undefined
+                      ? { expectedGeneration: input.expectedSessionGeneration }
+                      : {}),
+                  });
+                }
+                const generation = yield* nativeGeneration(input.threadId);
+                onPrepared(routed.instanceId, generation);
+                if (input.expectedTurnId === undefined) {
+                  if (submissionTokens.has(input.threadId))
+                    return yield* new ProviderTurnDeliveryError({
+                      certainty: "not_sent",
+                      retryable: true,
+                      detail: "An earlier submission still owns this thread.",
+                    });
+                  submissionTokens.set(input.threadId, submissionToken);
+                }
+                return {
+                  routed,
+                  nativeAttachments,
+                  resolvedAttachments,
+                  generation,
+                  token: submissionToken,
+                };
               }),
-            ),
-          )).filter((id): id is string => id !== null);
-          if (missingAttachmentIds.length > 0) {
-            return yield* toValidationError(
-              "ProviderService.sendTurn",
-              `The following attachments changed or are no longer available: ${missingAttachmentIds.join(", ")}`,
             );
+          const deliveryAttempt = yield* DeliveryAttemptContext;
+          let nativeHistoryIdentity: string | null = null;
+          if (deliveryAttempt) {
+            const baseline = yield* routed.adapter
+              .readThread(input.threadId)
+              .pipe(Effect.catchCause(() => Effect.succeed(null)));
+            nativeHistoryIdentity = baseline?.history?.identity ?? null;
+            yield* deliveryAttempt.prepared(
+              baseline
+                ? {
+                    ...baseline,
+                    history: baseline.history
+                      ? {
+                          ...baseline.history,
+                          runtimeId:
+                            baseline.history.provenance === "runtime-local"
+                              ? `${historyRuntimeId}:${generation}`
+                              : null,
+                        }
+                      : {
+                          identity: null,
+                          provenance: "unavailable",
+                          coverage: "unavailable",
+                          boundary: null,
+                          runtimeId: null,
+                        },
+                  }
+                : null,
+            );
+            const stillCurrent = yield* withProviderThreadAccess(
+              input.threadId,
+              nativeGeneration(input.threadId),
+            );
+            if (
+              stillCurrent !== generation ||
+              (input.expectedTurnId === undefined && submissionTokens.get(input.threadId) !== token)
+            )
+              return yield* new ProviderTurnDeliveryError({
+                certainty: "not_sent",
+                retryable: false,
+                detail: "The provider session changed before dispatch.",
+              });
           }
-          const resolvedAttachments = attachmentPaths.map(({ attachment, localPath }) => ({
-            ...attachment,
-            localPath: localPath!,
-          }));
-          const nativeAttachments = nativeProviderAttachments(
-            input.attachments,
-            routed.adapter.provider,
-          );
-          if (input.expectedTurnId !== undefined && !routed.adapter.steerTurn) {
+          const deliveryBinding = yield* directory.getBinding(input.threadId);
+          if (
+            Option.isNone(deliveryBinding) ||
+            readPersistedSessionGeneration(deliveryBinding.value.runtimePayload) !== generation
+          )
             return yield* new ProviderTurnDeliveryError({
               certainty: "not_sent",
               retryable: false,
-              detail: "This provider does not support steering.",
+              detail: "The provider session changed before dispatch.",
             });
-          }
-          // Steering re-checks the routed generation and executable support, so
-          // a stale browser cannot steer a session restarted since it looked.
-          if (input.expectedTurnId !== undefined) {
-            yield* assertSessionAction({
-              threadId: input.threadId,
-              action: "steer",
-              ...(input.expectedSessionGeneration !== undefined
-                ? { expectedGeneration: input.expectedSessionGeneration }
-                : {}),
+          const fallback = incompleteHistoryFallbacks.get(input.threadId);
+          if (
+            readIncompleteHistory(deliveryBinding.value.runtimePayload) ||
+            (fallback?.instanceId === resolveBindingInstanceId(deliveryBinding.value) &&
+              (fallback.generation === generation || fallback.generation < 0))
+          )
+            return yield* new ProviderTurnDeliveryError({
+              certainty: "not_sent",
+              retryable: false,
+              detail:
+                "Provider output is incomplete. Review history recovery before starting another turn.",
             });
-          }
-          const turn = yield* input.expectedTurnId !== undefined
-            ? routed.adapter.steerTurn!({
-                ...input,
-                expectedTurnId: input.expectedTurnId,
-                attachments: nativeAttachments,
-                resolvedAttachments,
-              })
-            : routed.adapter.sendTurn({
-                ...input,
-                attachments: nativeAttachments,
-                resolvedAttachments,
-              });
-          const inlineIds = new Set(nativeAttachments.map((attachment) => attachment.id));
-          const overflowImages = input.attachments.filter(
-            (attachment) => attachment.type === "image" && !inlineIds.has(attachment.id),
+          yield* checkWorkspace(
+            input.threadId,
+            Option.isSome(deliveryBinding)
+              ? readPersistedCwd(deliveryBinding.value.runtimePayload)
+              : undefined,
+            { allowBranchDrift: input.expectedTurnId !== undefined },
+          ).pipe(
+            Effect.mapError(
+              (error) =>
+                new ProviderTurnDeliveryError({
+                  certainty: "not_sent",
+                  retryable: false,
+                  detail: error.message,
+                }),
+            ),
           );
-          if (overflowImages.length)
-            yield* publishRuntimeEvent({
-              type: "runtime.warning",
-              eventId: EventId.makeUnsafe(randomUUID()),
-              provider: routed.adapter.provider,
-              threadId: input.threadId,
-              turnId: turn.turnId,
-              createdAt: new Date().toISOString(),
-              payload: {
-                category: "provider",
-                message: `${overflowImages.length} image(s) delivered as files because this provider's inline image limit was reached. Saved paths remain available to the agent.`,
-                actionable: false,
-              },
+          yield* requireProjectProvider(deliveryBinding.value);
+          yield* ensureAccepting;
+          const turn = yield* (
+            input.expectedTurnId !== undefined
+              ? routed.adapter.steerTurn!({
+                  ...input,
+                  expectedTurnId: input.expectedTurnId,
+                  attachments: nativeAttachments,
+                  resolvedAttachments,
+                })
+              : routed.adapter.sendTurn({
+                  ...input,
+                  attachments: nativeAttachments,
+                  resolvedAttachments,
+                })
+          ).pipe(
+            Effect.mapError((error) =>
+              Schema.is(ProviderAdapterRequestError)(error) && error.deliveryCertainty
+                ? new ProviderTurnDeliveryError({
+                    certainty: error.deliveryCertainty,
+                    retryable:
+                      error.deliveryCertainty === "not_sent" && error.deliveryRetryable === true,
+                    detail: error.detail,
+                    ...(error.usageLimit ? { usageLimit: error.usageLimit } : {}),
+                  })
+                : error,
+            ),
+          );
+          if (deliveryAttempt)
+            yield* deliveryAttempt.accepted(turn, {
+              runtimeGeneration: generation,
+              nativeHistoryIdentity,
             });
-          const persistedBinding = yield* directory.getBinding(input.threadId);
-          const persistedRuntimePayload = Option.match(persistedBinding, {
-            onNone: () => undefined,
-            onSome: (binding) => readPersistedRuntimePayloadRecord(binding.runtimePayload),
-          });
-          const persistedInstructionContext = Option.match(persistedBinding, {
-            onNone: () => undefined,
-            onSome: (binding) => readPersistedInstructionContext(binding.runtimePayload),
-          });
-          yield* directory.upsert({
-            threadId: input.threadId,
-            provider: routed.adapter.provider,
-            providerInstanceId: routed.instanceId,
-            status: "running",
-            ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
-            runtimePayload: {
-              ...persistedRuntimePayload,
-              activeTurnId: turn.turnId,
-              lastRuntimeEvent: "provider.sendTurn",
-              lastRuntimeEventAt: new Date().toISOString(),
-              instructionContext: persistedInstructionContext ?? null,
-              firstTurnSent: true,
-            },
-          });
-          yield* analytics.record("provider.turn.sent", {
-            provider: routed.adapter.provider,
-            model: input.model,
-            interactionMode: input.interactionMode,
-            attachmentCount: input.attachments.length,
-            hasInput: typeof input.input === "string" && input.input.trim().length > 0,
-          });
-          return turn;
+          return yield* withProviderThreadAccess(
+            input.threadId,
+            Effect.gen(function* () {
+              const persistedBinding = yield* directory.getBinding(input.threadId);
+              if (
+                Option.isNone(persistedBinding) ||
+                readPersistedSessionGeneration(persistedBinding.value.runtimePayload) !==
+                  generation ||
+                (input.expectedTurnId === undefined &&
+                  submissionTokens.get(input.threadId) !== token)
+              ) {
+                return yield* new ProviderTurnDeliveryError({
+                  certainty: "unknown",
+                  retryable: false,
+                  detail: "The provider session changed while dispatching this turn.",
+                });
+              }
+              const inlineIds = new Set(nativeAttachments.map((attachment) => attachment.id));
+              const overflowImages = input.attachments.filter(
+                (attachment) => attachment.type === "image" && !inlineIds.has(attachment.id),
+              );
+              if (overflowImages.length)
+                yield* publishRuntimeEvent({
+                  type: "runtime.warning",
+                  eventId: EventId.makeUnsafe(timeOrderedUuid()),
+                  provider: routed.adapter.provider,
+                  threadId: input.threadId,
+                  turnId: turn.turnId,
+                  createdAt: new Date().toISOString(),
+                  payload: {
+                    category: "provider",
+                    message: `${overflowImages.length} image(s) delivered as files because this provider's inline image limit was reached. Saved paths remain available to the agent.`,
+                    actionable: false,
+                  },
+                });
+              const persistedRuntimePayload = Option.match(persistedBinding, {
+                onNone: () => undefined,
+                onSome: (binding) => readPersistedRuntimePayloadRecord(binding.runtimePayload),
+              });
+              const persistedInstructionContext = Option.match(persistedBinding, {
+                onNone: () => undefined,
+                onSome: (binding) => readPersistedInstructionContext(binding.runtimePayload),
+              });
+              // Acceptance can name a queued turn. Persist the adapter's running
+              // turn so Stop and recovery target the same native work as the UI.
+              const liveSession = (yield* routed.adapter.listSessions()).find(
+                (session) => session.threadId === routed.threadId,
+              );
+              const activeTurnId =
+                liveSession?.status === "running"
+                  ? (liveSession.activeTurnId ?? turn.turnId)
+                  : turn.turnId;
+              yield* directory.upsert({
+                threadId: input.threadId,
+                provider: routed.adapter.provider,
+                providerInstanceId: routed.instanceId,
+                status: "running",
+                ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
+                runtimePayload: {
+                  ...persistedRuntimePayload,
+                  activeTurnId: routed.adapter.capabilities.turnCompletionOnReturn
+                    ? null
+                    : activeTurnId,
+                  lastRuntimeEvent: "provider.sendTurn",
+                  lastRuntimeEventAt: new Date().toISOString(),
+                  instructionContext: persistedInstructionContext ?? null,
+                  firstTurnSent: true,
+                },
+              });
+              yield* analytics.record("provider.turn.sent", {
+                provider: routed.adapter.provider,
+                model: input.model,
+                interactionMode: input.interactionMode,
+                attachmentCount: input.attachments.length,
+                hasInput: typeof input.input === "string" && input.input.trim().length > 0,
+              });
+              return turn;
+            }),
+          );
         }).pipe(
-          withAccountAdmission(serverConfig.stateDir, instanceId, "ProviderService.sendTurn"),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (submissionTokens.get(input.threadId) === submissionToken)
+                submissionTokens.delete(input.threadId);
+            }),
+          ),
+          withProviderAdmission(serverConfig.stateDir, instanceId, "ProviderService.sendTurn"),
           withMetrics({
             counter: providerTurnsTotal,
             timer: providerTurnDuration,
@@ -1921,7 +2870,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             );
           });
 
-    const stopSession: ProviderServiceShape["stopSession"] = (rawInput) =>
+    const stopSessionUnlocked: ProviderServiceShape["stopSession"] = (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
           operation: "ProviderService.stopSession",
@@ -1930,7 +2879,27 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
         let metricProvider = "unknown";
         return yield* Effect.gen(function* () {
-          const routed = yield* resolveRoutableSession({
+          const computerGeneration = Option.isSome(computerAutomationBroker)
+            ? computerAutomationBroker.value.generation(input.threadId)
+            : undefined;
+          const releaseControls = Effect.gen(function* () {
+            if (Option.isSome(previewAutomationBroker))
+              yield* previewAutomationBroker.value.releaseThread(input.threadId);
+            if (Option.isSome(computerAutomationBroker) && computerGeneration)
+              computerAutomationBroker.value.releaseSession(input.threadId, computerGeneration);
+          });
+          const binding = yield* directory.getBinding(input.threadId);
+          if (Option.isNone(binding) && !startingSessions.has(input.threadId)) {
+            yield* releaseControls;
+            submissionTokens.delete(input.threadId);
+            for (const [id, completion] of submissionCompletions)
+              if (completion.threadId === input.threadId) {
+                yield* Deferred.succeed(completion.done, undefined);
+                submissionCompletions.delete(id);
+              }
+            return;
+          }
+          const routed = yield* resolveRoutableSessionUnlocked({
             threadId: input.threadId,
             operation: "ProviderService.stopSession",
             allowRecovery: false,
@@ -1941,13 +2910,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.kind": routed.adapter.provider,
             "provider.thread_id": input.threadId,
           });
-          if (routed.isActive) {
-            yield* routed.adapter.stopSession(routed.threadId);
-          }
-          // Unpin any hidden agent-controlled preview this session was using.
-          if (Option.isSome(previewAutomationBroker)) {
-            yield* previewAutomationBroker.value.releaseThread(input.threadId);
-          }
+          if (routed.isActive)
+            yield* routed.adapter
+              .stopSession(routed.threadId)
+              .pipe(Effect.ensuring(releaseControls));
+          else yield* releaseControls;
+          submissionTokens.delete(input.threadId);
           yield* directory.upsert({
             threadId: input.threadId,
             provider: routed.adapter.provider,
@@ -1967,6 +2935,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               wasActive: routed.isActive,
             },
           );
+          for (const [id, completion] of submissionCompletions)
+            if (completion.threadId === input.threadId) {
+              yield* Deferred.succeed(completion.done, undefined);
+              submissionCompletions.delete(id);
+            }
+          sessionEventIdentities.delete(input.threadId);
           yield* analytics.record("provider.session.stopped", {
             provider: routed.adapter.provider,
           });
@@ -1981,6 +2955,38 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         );
       });
 
+    const stopSession: ProviderServiceShape["stopSession"] = (input) =>
+      withSessionOperation(input.threadId, stopSessionUnlocked(input));
+
+    const replaceSession: ProviderServiceShape["replaceSession"] = (threadId, input, expected) =>
+      withProviderThreadAccess(
+        threadId,
+        withSessionOperation(
+          threadId,
+          Effect.gen(function* () {
+            const current = Option.getOrUndefined(yield* directory.getBinding(threadId));
+            if (
+              !current ||
+              resolveBindingInstanceId(current) !== expected.instanceId ||
+              readPersistedSessionGeneration(current.runtimePayload) !== expected.generation
+            )
+              return null;
+            // startSession checks again; this copy runs before the stop.
+            const target = yield* registry
+              .getInstanceInfo(resolveStartInstanceId(input))
+              .pipe(Effect.option);
+            if (Option.isSome(target))
+              yield* checkClaudeAppendSystemPrompt("ProviderService.replaceSession", {
+                provider: target.value.driverKind,
+                providerOptions: input.providerOptions,
+                cwd: input.cwd,
+              });
+            yield* stopSessionUnlocked({ threadId });
+            return yield* startSession(threadId, input);
+          }),
+        ),
+      );
+
     const listSessions: ProviderServiceShape["listSessions"] = () =>
       Effect.gen(function* () {
         const currentAdapters = yield* getAdapterEntries;
@@ -1994,20 +3000,17 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ),
           ),
         );
-        const activeSessions = sessionsByProvider.flatMap((sessions) => sessions);
-        const persistedBindings = yield* directory.listThreadIds().pipe(
-          Effect.flatMap((threadIds) =>
-            Effect.forEach(
-              threadIds,
-              (threadId) =>
-                directory
-                  .getBinding(threadId)
-                  .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
-              { concurrency: "unbounded" },
-            ),
-          ),
-          Effect.orElseSucceed(() => [] as Array<Option.Option<ProviderRuntimeBinding>>),
+        const activeSessions: ProviderSession[] = sessionsByProvider.flatMap(
+          (sessions) => sessions,
         );
+        const persistedBindings = yield* Effect.forEach(
+          [...new Set(activeSessions.map((session) => session.threadId))],
+          (threadId) =>
+            directory
+              .getBinding(threadId)
+              .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
+          { concurrency: "unbounded" },
+        ).pipe(Effect.orElseSucceed(() => [] as Array<Option.Option<ProviderRuntimeBinding>>));
         const bindingsByThreadId = new Map<ThreadId, ProviderRuntimeBinding>();
         for (const bindingOption of persistedBindings) {
           const binding = Option.getOrUndefined(bindingOption);
@@ -2040,8 +3043,24 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
       });
 
-    const getCapabilities: ProviderServiceShape["getCapabilities"] = (provider) =>
-      registry.getByProvider(provider).pipe(Effect.map((adapter) => adapter.capabilities));
+    const getCapabilities: ProviderServiceShape["getCapabilities"] = (provider, instanceId) =>
+      (instanceId ? registry.getByInstance(instanceId) : registry.getByProvider(provider)).pipe(
+        Effect.flatMap((adapter) =>
+          adapter.provider === provider
+            ? Effect.succeed(adapter.capabilities)
+            : Effect.fail(new ProviderUnsupportedError({ provider })),
+        ),
+      );
+
+    const classifyTurnInput: NonNullable<ProviderServiceShape["classifyTurnInput"]> = (input) =>
+      registry.getByInstance(input.instanceId).pipe(
+        Effect.flatMap((adapter) => {
+          const classification =
+            adapter.classifyTurnInput?.(input.threadId, input.text, input.cwd) ?? "prompt";
+          return Effect.isEffect(classification) ? classification : Effect.succeed(classification);
+        }),
+        Effect.orElseSucceed(() => "prompt" as const),
+      );
 
     const getSessionCapabilities: ProviderServiceShape["getSessionCapabilities"] = (threadId) =>
       Effect.gen(function* () {
@@ -2085,6 +3104,49 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return capabilities;
       });
 
+    // Read-only viewers use current support without imposing a mutation generation fence.
+    const isSessionActionAvailable = (threadId: ThreadId, action: ProviderSessionAction) =>
+      getSessionCapabilities(threadId).pipe(
+        Effect.map(
+          (capabilities) =>
+            capabilities !== null && checkSessionAction({ capabilities, action }) === undefined,
+        ),
+      );
+
+    const withLiveMcpApps = <A, E>(
+      threadId: ThreadId,
+      run: (
+        apps: NonNullable<
+          import("../Services/ProviderAdapter.ts").ProviderAdapterShape<
+            import("../Errors.ts").ProviderAdapterError
+          >["mcpApps"]
+        >,
+      ) => Effect.Effect<A, E>,
+    ) =>
+      withProviderThreadAccess(
+        threadId,
+        Effect.gen(function* () {
+          const routed = yield* resolveRoutableSession({
+            threadId,
+            operation: "ProviderService.mcpApps",
+            allowRecovery: false,
+          });
+          if (
+            !routed.isActive ||
+            !MCP_APP_PROVIDERS.has(routed.adapter.provider) ||
+            !routed.adapter.mcpApps
+          )
+            return yield* toValidationError("McpApps", "Send a message to reconnect.");
+          return yield* run(routed.adapter.mcpApps);
+        }),
+      );
+    const mcpApps: NonNullable<ProviderServiceShape["mcpApps"]> = {
+      identity: (threadId) => withLiveMcpApps(threadId, (apps) => apps.identity(threadId)),
+      listTools: (input) => withLiveMcpApps(input.threadId, (apps) => apps.listTools(input)),
+      callTool: (input) => withLiveMcpApps(input.threadId, (apps) => apps.callTool(input)),
+      readResource: (input) => withLiveMcpApps(input.threadId, (apps) => apps.readResource(input)),
+    };
+
     const readThread: ProviderServiceShape["readThread"] = (rawThreadId) =>
       Effect.gen(function* () {
         const threadId = yield* decodeInputOrValidationError({
@@ -2102,7 +3164,34 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           "provider.kind": routed.adapter.provider,
           "provider.thread_id": threadId,
         });
-        return yield* routed.adapter.readThread(routed.threadId);
+        const originBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        const origin = {
+          instanceId: originBinding
+            ? resolveBindingInstanceId(originBinding)
+            : defaultInstanceIdForDriver(ProviderDriverKind.make(routed.adapter.provider)),
+          generation: readPersistedSessionGeneration(originBinding?.runtimePayload),
+        };
+        const snapshot = yield* routed.adapter.readThread(routed.threadId);
+        return {
+          ...snapshot,
+          history: snapshot.history
+            ? {
+                ...snapshot.history,
+                origin,
+                runtimeId:
+                  snapshot.history.provenance === "runtime-local"
+                    ? `${historyRuntimeId}:${yield* nativeGeneration(threadId)}`
+                    : null,
+              }
+            : {
+                identity: null,
+                origin,
+                provenance: "unavailable" as const,
+                coverage: "unavailable" as const,
+                boundary: null,
+                runtimeId: null,
+              },
+        };
       });
 
     const rollbackConversation: ProviderServiceShape["rollbackConversation"] = (rawInput) =>
@@ -2172,6 +3261,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
     const runOneOffPrompt: ProviderServiceShape["runOneOffPrompt"] = (rawInput) =>
       Effect.gen(function* () {
+        yield* ensureAccepting;
         const input = yield* decodeInputOrValidationError({
           operation: "ProviderService.runOneOffPrompt",
           schema: ProviderConversationCompactionInputSchema,
@@ -2246,7 +3336,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 Effect.map((response) => ({ text: response.summary })),
               )
         ).pipe(
-          withAccountAdmission(
+          withProviderAdmission(
             serverConfig.stateDir,
             input.modelSelection?.instanceId ??
               defaultInstanceIdForDriver(ProviderDriverKind.make(provider)),
@@ -2270,224 +3360,628 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         })),
       );
 
+    const hasLiveMcpSession = (binding: ProviderRuntimeBinding) =>
+      registry.getByInstance(resolveBindingInstanceId(binding)).pipe(
+        Effect.flatMap((adapter) => adapter.hasSession(binding.threadId)),
+        Effect.orElseSucceed(() => false),
+      );
+    const readMcpScopeBindings = (input: {
+      projectId: ProjectId;
+      provider: ProviderKind;
+      instanceId?: ProviderInstanceId | undefined;
+    }) =>
+      directory
+        .listBindingsByProject(input.projectId)
+        .pipe(
+          Effect.map((bindings) =>
+            bindings.filter(
+              (binding) =>
+                binding.provider === input.provider &&
+                binding.status === "running" &&
+                (!input.instanceId || resolveBindingInstanceId(binding) === input.instanceId),
+            ),
+          ),
+        );
+
+    /** Live sessions, preferring the desired config version, then the most recently seen. */
+    const listLiveMcpSessions = (input: {
+      projectId: ProjectId;
+      provider: ProviderKind;
+      instanceId?: ProviderInstanceId | undefined;
+      desiredVersion?: string | undefined;
+    }) =>
+      Effect.gen(function* () {
+        const bindings = yield* readMcpScopeBindings(input).pipe(
+          Effect.flatMap((bindings) => Effect.filter(bindings, hasLiveMcpSession)),
+        );
+        const sessions: McpSessionSummary[] = bindings
+          .map((binding) => ({
+            threadId: binding.threadId,
+            instanceId: resolveBindingInstanceId(binding),
+            generation: readPersistedSessionGeneration(binding.runtimePayload),
+            lastSeenAt: binding.lastSeenAt,
+            busy: Boolean(
+              binding.runtimePayload &&
+              typeof binding.runtimePayload === "object" &&
+              "activeTurnId" in binding.runtimePayload &&
+              binding.runtimePayload.activeTurnId,
+            ),
+            ...(binding.mcpEffectiveConfigVersion
+              ? { appliedVersion: binding.mcpEffectiveConfigVersion }
+              : {}),
+            ...(readPersistedUnconvergedMcpConfigVersion(binding.runtimePayload)
+              ? {
+                  unconvergedVersion: readPersistedUnconvergedMcpConfigVersion(
+                    binding.runtimePayload,
+                  )!,
+                }
+              : {}),
+          }))
+          .toSorted(
+            (a, b) =>
+              Number(b.appliedVersion === input.desiredVersion) -
+                Number(a.appliedVersion === input.desiredVersion) ||
+              b.lastSeenAt.localeCompare(a.lastSeenAt),
+          );
+        return sessions;
+      });
+
+    const readMcpSessionStatuses: NonNullable<ProviderServiceShape["readMcpSessionStatuses"]> = (
+      input,
+    ) =>
+      Effect.gen(function* () {
+        const sessions = yield* listLiveMcpSessions(input);
+        const selected = input.threadId
+          ? sessions.find((session) => session.threadId === input.threadId)
+          : sessions[0];
+        if (input.threadId && !selected)
+          return yield* toValidationError(
+            "mcp.status",
+            "The conversation is not running in this project and account.",
+          );
+        if (!selected) return { sessions };
+        const matches = (binding: ProviderRuntimeBinding | undefined) =>
+          binding?.projectId === input.projectId &&
+          binding.provider === input.provider &&
+          binding.status === "running" &&
+          resolveBindingInstanceId(binding) === selected.instanceId &&
+          readPersistedSessionGeneration(binding.runtimePayload) === selected.generation;
+        const adapter = yield* withSessionOperation(
+          selected.threadId,
+          Effect.gen(function* () {
+            const binding = Option.getOrUndefined(yield* directory.getBinding(selected.threadId));
+            if (!matches(binding))
+              return yield* toValidationError(
+                "mcp.status",
+                "The MCP observation was superseded. Refresh to observe the current session.",
+              );
+            return yield* registry.getByInstance(selected.instanceId);
+          }),
+        );
+        if (!adapter.getMcpServerStatuses)
+          return {
+            sessions,
+            selected,
+            observation: {
+              servers: [],
+              complete: false,
+              omissions: ["This provider runtime cannot report MCP status."],
+              capabilities: { tools: false, inputSchemas: false, resources: false },
+            },
+          };
+        // Never hold the lifecycle gate across read I/O; replacement must remain possible.
+        const observation = yield* adapter.getMcpServerStatuses(selected.threadId);
+        yield* withSessionOperation(
+          selected.threadId,
+          Effect.gen(function* () {
+            const binding = Option.getOrUndefined(yield* directory.getBinding(selected.threadId));
+            if (
+              !matches(binding) ||
+              (binding?.mcpEffectiveConfigVersion ?? undefined) !== selected.appliedVersion
+            )
+              return yield* toValidationError(
+                "mcp.status",
+                "The MCP observation was superseded. Refresh to observe the current session.",
+              );
+          }),
+        );
+        return { sessions, selected, observation };
+      });
+
+    const getMcpReconnectTargets: NonNullable<ProviderServiceShape["getMcpReconnectTargets"]> = (
+      input,
+    ) =>
+      Effect.gen(function* () {
+        const bindings = yield* readMcpScopeBindings(input);
+        if (
+          input.threadIds?.some(
+            (threadId) => !bindings.some((binding) => binding.threadId === threadId),
+          )
+        )
+          return yield* toValidationError(
+            "mcp.reconnect",
+            "Every conversation must be running in the selected project and account.",
+          );
+        const targets: ThreadId[] = [];
+        const failures: Array<{ threadId: ThreadId; message: string }> = [];
+        for (const binding of bindings) {
+          if (input.threadIds && !input.threadIds.includes(binding.threadId)) continue;
+          const result = yield* Effect.gen(function* () {
+            const adapter = yield* registry.getByInstance(resolveBindingInstanceId(binding));
+            if (!(yield* adapter.hasSession(binding.threadId)))
+              return yield* toValidationError(
+                "mcp.reconnect",
+                "This conversation no longer has a running provider session; it will connect when a session starts.",
+              );
+            const owned = adapter.getOwnedMcpServerNames
+              ? yield* adapter.getOwnedMcpServerNames(binding.threadId)
+              : [];
+            return resolveOwnedMcpServerName(owned, input.serverName, input.provider);
+          }).pipe(Effect.result);
+          if (result._tag === "Failure")
+            failures.push({ threadId: binding.threadId, message: result.failure.message });
+          else if (result.success) targets.push(binding.threadId);
+        }
+        return { threadIds: targets, failures };
+      });
+
+    const reconnectMcpServerForProject: NonNullable<
+      ProviderServiceShape["reconnectMcpServerForProject"]
+    > = (input) =>
+      Effect.gen(function* () {
+        const bindings = yield* readMcpScopeBindings(input);
+        if (
+          input.threadIds?.some(
+            (threadId) => !bindings.some((binding) => binding.threadId === threadId),
+          )
+        )
+          return yield* toValidationError(
+            "mcp.reconnect",
+            "Every conversation must be running in the selected project and account.",
+          );
+        const targets = bindings.filter(
+          (binding) =>
+            (!input.threadIds || input.threadIds.includes(binding.threadId)) &&
+            !input.excludeThreadIds?.includes(binding.threadId),
+        );
+        const failures: Array<{ threadId: ThreadId; message: string }> = [];
+        let matched = 0;
+        let reconnected = 0;
+        const sessions: McpSessionReloadOutcome[] = [];
+        yield* Effect.forEach(
+          targets,
+          (target) =>
+            Effect.gen(function* () {
+              const result = yield* withSessionOperation(
+                target.threadId,
+                Effect.gen(function* () {
+                  const current = Option.getOrUndefined(
+                    yield* directory.getBinding(target.threadId),
+                  );
+                  if (
+                    !current ||
+                    current.status !== "running" ||
+                    current.projectId !== input.projectId ||
+                    current.provider !== input.provider ||
+                    resolveBindingInstanceId(current) !== resolveBindingInstanceId(target) ||
+                    readPersistedSessionGeneration(current.runtimePayload) !==
+                      readPersistedSessionGeneration(target.runtimePayload)
+                  )
+                    return yield* toValidationError(
+                      "mcp.reconnect",
+                      "The session was replaced before reconnect.",
+                    );
+                  const adapter = yield* registry.getByInstance(resolveBindingInstanceId(target));
+                  if (!(yield* adapter.hasSession(target.threadId)))
+                    return yield* toValidationError(
+                      "mcp.reconnect",
+                      "This conversation no longer has a running provider session; it will connect when a session starts.",
+                    );
+                  const owned = adapter.getOwnedMcpServerNames
+                    ? yield* adapter.getOwnedMcpServerNames(target.threadId)
+                    : [];
+                  // External names are passed exactly; the adapter verifies ownership itself.
+                  const serverName =
+                    resolveOwnedMcpServerName(owned, input.serverName, input.provider) ??
+                    (input.allowExternal ? input.serverName : undefined);
+                  if (!adapter.reconnectMcpServer || !serverName) return false;
+                  const result = yield* adapter
+                    .reconnectMcpServer({
+                      threadId: target.threadId,
+                      serverName,
+                      ...(input.allowExternal ? { allowExternal: true } : {}),
+                    })
+                    .pipe(Effect.timeoutOption("10 seconds"));
+                  if (Option.isNone(result))
+                    return yield* toValidationError(
+                      "mcp.reconnect",
+                      "MCP reconnect timed out. Try Reconnect again or stop the conversation.",
+                    );
+                  return result.value;
+                }),
+              ).pipe(Effect.result);
+              if (result._tag === "Failure" || result.success)
+                sessions.push({
+                  threadId: target.threadId,
+                  instanceId: resolveBindingInstanceId(target),
+                  generation: readPersistedSessionGeneration(target.runtimePayload),
+                  requestedVersion: target.mcpEffectiveConfigVersion ?? "",
+                  attemptedVersion: target.mcpEffectiveConfigVersion ?? "",
+                  disposition: result._tag === "Failure" ? "failed" : "applied",
+                  result: {
+                    converged: result._tag === "Success",
+                    restartRequired: false,
+                    servers: [],
+                    errors:
+                      result._tag === "Failure"
+                        ? [{ server: input.serverName, message: result.failure.message }]
+                        : [],
+                  },
+                });
+              if (result._tag === "Failure") {
+                matched++;
+                failures.push({ threadId: target.threadId, message: result.failure.message });
+              } else if (result.success) {
+                matched++;
+                reconnected++;
+              }
+            }),
+          { concurrency: 4 },
+        );
+        return {
+          settingsConnectionReloaded: false,
+          sessionsMatched: matched,
+          sessionsReconnected: reconnected,
+          failures,
+          sessions,
+        };
+      });
+
+    const getLiveMcpSession: NonNullable<ProviderServiceShape["getLiveMcpSession"]> = (input) =>
+      listLiveMcpSessions(input).pipe(
+        Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
+      );
+
+    const authenticateMcpServerForProject: NonNullable<
+      ProviderServiceShape["authenticateMcpServerForProject"]
+    > = (input) =>
+      Effect.gen(function* () {
+        const sessions = yield* listLiveMcpSessions(input);
+        const selected = input.threadId
+          ? sessions.find((session) => session.threadId === input.threadId)
+          : sessions[0];
+        if (!selected)
+          return yield* toValidationError(
+            "mcp.authenticate",
+            input.threadId
+              ? "The conversation is not running in this project and account."
+              : "Start a conversation in this project to sign in to MCP servers.",
+          );
+        return yield* withSessionOperation(
+          selected.threadId,
+          Effect.gen(function* () {
+            const binding = Option.getOrUndefined(yield* directory.getBinding(selected.threadId));
+            if (
+              !binding ||
+              binding.status !== "running" ||
+              binding.projectId !== input.projectId ||
+              binding.provider !== input.provider ||
+              resolveBindingInstanceId(binding) !== selected.instanceId ||
+              readPersistedSessionGeneration(binding.runtimePayload) !== selected.generation
+            )
+              return yield* toValidationError(
+                "mcp.authenticate",
+                "The session was replaced before sign-in. Try again.",
+              );
+            const adapter = yield* registry.getByInstance(selected.instanceId);
+            if (!adapter.authenticateMcpServer)
+              return yield* toValidationError(
+                "mcp.authenticate",
+                "This provider does not support MCP sign-in from a conversation.",
+              );
+            const result = yield* adapter
+              .authenticateMcpServer({
+                threadId: selected.threadId,
+                serverName: input.serverName,
+              })
+              .pipe(Effect.timeoutOption("30 seconds"));
+            if (Option.isNone(result))
+              return yield* toValidationError(
+                "mcp.authenticate",
+                "MCP sign-in did not start in time. Try again.",
+              );
+            return {
+              ...result.value,
+              threadId: selected.threadId,
+              instanceId: selected.instanceId,
+              generation: selected.generation,
+            };
+          }),
+        );
+      });
+
+    // A newer reconciliation supersedes sleeping retries even within the same generation.
+    const mcpReloadAttempts = new Map<ThreadId, symbol>();
     const reloadMcpConfigForProject: ProviderServiceShape["reloadMcpConfigForProject"] = (input) =>
       Effect.gen(function* () {
         const bindings = yield* directory.listBindingsByProject(input.projectId);
-        const matchingBindings = bindings.filter((binding) => {
-          if (binding.provider !== input.provider) {
-            return false;
-          }
-          if (input.threadIds && !input.threadIds.includes(binding.threadId)) {
-            return false;
-          }
-          if (binding.status === "stopped") {
-            return false;
-          }
-          if (binding.projectId !== input.projectId) {
-            return false;
-          }
-          if (!input.providerOptions) {
-            return true;
-          }
-          const persistedProviderOptions = readPersistedProviderOptions(binding.runtimePayload);
-          return (
-            getProviderEnvironmentKey(
-              binding.provider,
-              persistedProviderOptions as ProviderStartOptions | undefined,
-            ) === getProviderEnvironmentKey(binding.provider, input.providerOptions)
-          );
-        });
-
-        if (matchingBindings.length === 0) {
-          return { sessions: [] };
-        }
-
-        const currentProjectMcp = yield* projectMcpConfigService
-          .readEffectiveStoredConfig(input.projectId)
-          .pipe(
-            Effect.mapError(
-              toProjectMcpProviderError(
-                "ProviderService.reloadMcpConfigForProject",
-                input.projectId,
-              ),
-            ),
-          );
-
-        // `reached` is false when the reload request itself failed, so the
-        // session may not hold the new config at all.
-        const reloadOnce = (
-          reloadMcpConfig: NonNullable<
-            ProviderAdapterShape<ProviderAdapterError>["reloadMcpConfig"]
-          >,
-          threadId: ThreadId,
-        ) =>
-          reloadMcpConfig({ threadId, mcpServers: currentProjectMcp.servers }).pipe(
-            Effect.map((result) => ({ result, reached: true })),
-            Effect.catch((error) =>
-              Effect.succeed({
-                result: {
-                  converged: false,
-                  restartRequired: false,
-                  servers: [],
-                  errors: [{ message: error.message.trim() || "The MCP reload request failed." }],
-                } satisfies McpReloadResult,
-                reached: false,
+        const matchingBindings = bindings.filter(
+          (binding) =>
+            binding.provider === input.provider &&
+            binding.status !== "stopped" &&
+            (!input.instanceId || resolveBindingInstanceId(binding) === input.instanceId) &&
+            (!input.threadIds || input.threadIds.includes(binding.threadId)) &&
+            (input.instanceId !== undefined ||
+              !input.providerOptions ||
+              getProviderEnvironmentKey(
+                binding.provider,
+                readPersistedProviderOptions(binding.runtimePayload),
+              ) === getProviderEnvironmentKey(binding.provider, input.providerOptions)),
+        );
+        const reloadSession = (
+          selected: ProviderRuntimeBinding,
+        ): Effect.Effect<ReadonlyArray<McpSessionReloadOutcome>, ProviderServiceError> => {
+          const token = Symbol("mcp-reload");
+          const instanceId = resolveBindingInstanceId(selected);
+          const generation = readPersistedSessionGeneration(selected.runtimePayload);
+          const emptyResult: McpReloadResult = {
+            converged: false,
+            restartRequired: false,
+            servers: [],
+            errors: [],
+          };
+          const base = {
+            threadId: selected.threadId,
+            instanceId,
+            generation,
+            requestedVersion: input.requestedVersion ?? "",
+            attemptedVersion: "",
+          };
+          const isCurrent = (binding: ProviderRuntimeBinding | undefined) =>
+            binding !== undefined &&
+            binding.status !== "stopped" &&
+            binding.projectId === input.projectId &&
+            binding.provider === input.provider &&
+            resolveBindingInstanceId(binding) === instanceId &&
+            readPersistedSessionGeneration(binding.runtimePayload) === generation;
+          return Effect.gen(function* () {
+            const prepared = yield* withSessionOperation(
+              selected.threadId,
+              Effect.gen(function* () {
+                const current = Option.getOrUndefined(
+                  yield* directory.getBinding(selected.threadId),
+                );
+                if (!isCurrent(current))
+                  return {
+                    sessions: [
+                      { ...base, disposition: "superseded" as const, result: emptyResult },
+                    ],
+                  };
+                const adapter = Option.getOrUndefined(
+                  yield* registry.getByInstance(instanceId).pipe(Effect.option),
+                );
+                if (!adapter?.reloadMcpConfig) return { sessions: [] };
+                const config = yield* projectMcpConfigService
+                  .readEffectiveRuntimeConfig(input.projectId)
+                  .pipe(Effect.result);
+                if (config._tag === "Failure")
+                  return {
+                    sessions: [
+                      {
+                        ...base,
+                        disposition: "failed" as const,
+                        result: {
+                          ...emptyResult,
+                          errors: [{ message: mcpConfigErrorMessage(config.failure) }],
+                        },
+                      },
+                    ],
+                  };
+                // Capture once; never replace this snapshot during a backoff window.
+                const snapshot = {
+                  ...config.success,
+                  servers: structuredClone(config.success.servers),
+                };
+                const metadata = {
+                  ...base,
+                  requestedVersion: input.requestedVersion ?? snapshot.effectiveVersion,
+                  attemptedVersion: snapshot.effectiveVersion,
+                };
+                const valid = yield* Effect.try({
+                  try: () => {
+                    assertMcpRuntimeConfig(snapshot.servers, input.provider);
+                    if (input.provider === "codex")
+                      readCodexMcpOAuthCallbackConfig(snapshot.servers);
+                  },
+                  catch: mcpConfigErrorMessage,
+                }).pipe(Effect.result);
+                if (valid._tag === "Failure")
+                  return {
+                    sessions: [
+                      {
+                        ...metadata,
+                        disposition: "failed" as const,
+                        result: { ...emptyResult, errors: [{ message: valid.failure }] },
+                      },
+                    ],
+                  };
+                if (!(yield* adapter.hasSession(selected.threadId))) return { sessions: [] };
+                mcpReloadAttempts.set(selected.threadId, token);
+                return { metadata, snapshot, reload: adapter.reloadMcpConfig };
+              }),
+            );
+            if ("sessions" in prepared) return prepared.sessions;
+            const { metadata, snapshot, reload } = prepared;
+            const stillCurrent = Effect.gen(function* () {
+              const binding = Option.getOrUndefined(yield* directory.getBinding(selected.threadId));
+              return mcpReloadAttempts.get(selected.threadId) === token && isCurrent(binding);
+            });
+            const reloadOnce = () =>
+              withSessionOperation(
+                selected.threadId,
+                Effect.gen(function* () {
+                  if (!(yield* stillCurrent)) return null;
+                  return yield* reload({
+                    threadId: selected.threadId,
+                    mcpServers: snapshot.servers,
+                  }).pipe(
+                    Effect.map((result) => ({ result, reached: true })),
+                    Effect.catch((error) =>
+                      Effect.succeed({
+                        reached: false,
+                        result: {
+                          ...emptyResult,
+                          errors: [
+                            { message: error.message.trim() || "The MCP reload request failed." },
+                          ],
+                        },
+                      }),
+                    ),
+                  );
+                }),
+              );
+            let outcome = yield* reloadOnce();
+            if (!outcome)
+              return [{ ...metadata, disposition: "superseded" as const, result: emptyResult }];
+            const delays =
+              input.retry === false ? [] : (input.retryDelaysMs ?? MCP_RELOAD_RETRY_DELAYS_MS);
+            for (const delay of delays) {
+              if (outcome.result.converged || outcome.result.restartRequired) break;
+              // Stop, replacement, recovery, and turn delivery can proceed while we wait.
+              yield* Effect.sleep(Duration.millis(delay));
+              const retried = yield* reloadOnce();
+              if (!retried)
+                return [
+                  { ...metadata, disposition: "superseded" as const, result: outcome.result },
+                ];
+              outcome = retried;
+            }
+            const { result, reached } = outcome;
+            return yield* withSessionOperation(
+              selected.threadId,
+              Effect.gen(function* () {
+                if (!(yield* stillCurrent))
+                  return [{ ...metadata, disposition: "superseded" as const, result }];
+                const committed = yield* directory.updateMcpStateIfCurrent({
+                  threadId: selected.threadId,
+                  instanceId,
+                  generation,
+                  ...(reached && !result.restartRequired
+                    ? { effectiveVersion: snapshot.effectiveVersion }
+                    : {}),
+                  unconvergedVersion: result.converged ? null : snapshot.effectiveVersion,
+                });
+                if (!committed)
+                  return [{ ...metadata, disposition: "superseded" as const, result }];
+                if (result.errors.length > 0 && (input.warn !== false || result.restartRequired)) {
+                  yield* publishRuntimeEvent({
+                    type: "runtime.warning",
+                    eventId: EventId.makeUnsafe(timeOrderedUuid()),
+                    provider: selected.provider,
+                    threadId: selected.threadId,
+                    createdAt: new Date().toISOString(),
+                    payload: {
+                      category: "provider",
+                      message: describeMcpReloadFailure(result),
+                      actionable: !result.restartRequired,
+                    },
+                  });
+                }
+                return [
+                  {
+                    ...metadata,
+                    result,
+                    disposition: result.restartRequired
+                      ? ("restart-required" as const)
+                      : result.converged
+                        ? ("applied" as const)
+                        : ("failed" as const),
+                  },
+                ];
+              }),
+            );
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (mcpReloadAttempts.get(selected.threadId) === token)
+                  mcpReloadAttempts.delete(selected.threadId);
               }),
             ),
           );
-        // Bounded backoff: a restart-required result is final, as is convergence.
-        const retryDelays = input.retry === false ? [] : MCP_RELOAD_RETRY_DELAYS_MS;
-        const reloadWithRetry = (
-          reloadMcpConfig: NonNullable<
-            ProviderAdapterShape<ProviderAdapterError>["reloadMcpConfig"]
-          >,
-          threadId: ThreadId,
-          attempt: number,
-        ): Effect.Effect<{ readonly result: McpReloadResult; readonly reached: boolean }> =>
-          reloadOnce(reloadMcpConfig, threadId).pipe(
-            Effect.flatMap((outcome) => {
-              const delayMs = retryDelays[attempt];
-              if (
-                outcome.result.converged ||
-                outcome.result.restartRequired ||
-                delayMs === undefined
-              ) {
-                return Effect.succeed(outcome);
-              }
-              return Effect.sleep(Duration.millis(delayMs)).pipe(
-                Effect.andThen(reloadWithRetry(reloadMcpConfig, threadId, attempt + 1)),
-              );
-            }),
-          );
-
-        const sessions = yield* Effect.forEach(
-          matchingBindings,
-          (binding) =>
-            Effect.gen(function* () {
-              // Custom instances have their own adapter; resolve it per binding.
-              const adapter = yield* registry
-                .getByInstance(resolveBindingInstanceId(binding))
-                .pipe(Effect.option);
-              const reloadMcpConfig = Option.getOrUndefined(adapter)?.reloadMcpConfig;
-              if (
-                Option.isNone(adapter) ||
-                !reloadMcpConfig ||
-                !(yield* adapter.value.hasSession(binding.threadId))
-              ) {
-                return [];
-              }
-              const { result, reached } = yield* reloadWithRetry(
-                reloadMcpConfig,
-                binding.threadId,
-                0,
-              );
-              // A broken server stays broken after a restart, so only a
-              // restart-required (or undelivered) reload keeps the version
-              // stale; the next turn start restarts that session. A reload
-              // that did not converge is marked so Apply still retries it.
-              if (reached && !result.restartRequired) {
-                yield* directory.upsert({
-                  threadId: binding.threadId,
-                  projectId: input.projectId,
-                  provider: binding.provider,
-                  // The directory resets an omitted instance to the default one.
-                  providerInstanceId: resolveBindingInstanceId(binding),
-                  mcpEffectiveConfigVersion: currentProjectMcp.effectiveVersion,
-                  runtimePayload: {
-                    mcpUnconvergedConfigVersion: result.converged
-                      ? null
-                      : currentProjectMcp.effectiveVersion,
-                  },
-                });
-              }
-              // A restart-required result is final, so a caller's own retries
-              // cannot change it: always say so.
-              if (result.errors.length > 0 && (input.warn !== false || result.restartRequired)) {
-                yield* publishRuntimeEvent({
-                  type: "runtime.warning",
-                  eventId: EventId.makeUnsafe(randomUUID()),
-                  provider: binding.provider,
-                  threadId: binding.threadId,
-                  createdAt: new Date().toISOString(),
-                  payload: {
-                    category: "provider",
-                    message: describeMcpReloadFailure(result),
-                    actionable: !result.restartRequired,
-                  },
-                });
-              }
-              return [{ threadId: binding.threadId, result }];
-            }),
-          // Bound the wall time of Apply when several sessions retry.
-          { concurrency: 4 },
-        );
+        };
+        const sessions = yield* Effect.forEach(matchingBindings, reloadSession, { concurrency: 4 });
         return { sessions: sessions.flat() };
       });
 
-    const settingsOption = yield* Effect.serviceOption(ServerSettingsService);
     const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
     const markRestartTurns = Effect.gen(function* () {
       if (Option.isNone(settingsOption) || Option.isNone(sqlOption)) return;
       const settings = yield* settingsOption.value.getSettings;
       const sql = sqlOption.value;
-      const sessions = yield* listSessions();
-      for (const session of sessions) {
-        if (!session.activeTurnId) continue;
-        const thread = (yield* sql<{
-          readonly projectId: string;
-        }>`SELECT project_id AS "projectId" FROM projection_threads WHERE thread_id = ${session.threadId}`)[0];
-        const enabled = thread
-          ? (settings.projectSettingsOverrides[
-              thread.projectId as import("@t3tools/contracts").ProjectId
-            ]?.resumeActiveTurnsAfterRestart ?? settings.resumeActiveTurnsAfterRestart)
-          : false;
-        if (!enabled) continue;
-        const continuation =
-          yield* sql`SELECT c.continuation_id FROM restart_continuations c LEFT JOIN provider_turn_deliveries d ON d.delivery_id = c.continuation_id WHERE c.thread_id = ${session.threadId} AND (c.provider_turn_id = ${session.activeTurnId} OR d.provider_turn_id = ${session.activeTurnId} OR d.state = 'sending' OR EXISTS (SELECT 1 FROM projection_turns t WHERE t.thread_id = c.thread_id AND t.turn_id = ${session.activeTurnId} AND t.pending_message_id = c.continuation_id))`;
-        const recovery =
-          yield* sql`SELECT pending_message_id FROM projection_turns WHERE thread_id = ${session.threadId} AND turn_id = ${session.activeTurnId} AND pending_message_id LIKE 'usage-resume:%'`;
-        if (continuation.length || recovery.length) continue;
-        const continuationId = `resume:${session.threadId}:${session.activeTurnId}`;
-        yield* sql`INSERT INTO restart_turn_markers VALUES (${session.threadId}, ${session.activeTurnId}, ${new Date().toISOString()}, ${continuationId}) ON CONFLICT(thread_id) DO UPDATE SET turn_id = excluded.turn_id, marked_at = excluded.marked_at, continuation_id = excluded.continuation_id`;
-      }
+      yield* captureRestartTurnMarkers({
+        sessions: yield* listSessions(),
+        bindings: yield* directory.listBindings(),
+        settings,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     });
 
     const runStopAll = () =>
       Effect.gen(function* () {
-        const threadIds = yield* directory.listThreadIds();
+        const bindings = yield* directory.listBindings();
         const currentAdapters = yield* getAdapterEntries;
+        const stopFailures: unknown[] = [];
         yield* markRestartTurns.pipe(
           Effect.catchCause((cause) =>
             Effect.logError("failed to mark active turns for restart", {
               cause: Cause.pretty(cause),
             }),
           ),
-        );
-        yield* Effect.forEach(currentAdapters, ([, adapter]) => adapter.stopAll()).pipe(
-          Effect.asVoid,
-        );
-        yield* Effect.forEach(threadIds, (threadId) =>
-          directory.getBinding(threadId).pipe(
-            Effect.flatMap((bindingOption) => {
-              const binding = Option.getOrUndefined(bindingOption);
-              if (!binding) return Effect.void;
-              return directory.upsert({
-                threadId,
-                provider: binding.provider,
-                providerInstanceId: resolveBindingInstanceId(binding),
-                status: "stopped",
-                runtimePayload: {
-                  lastRuntimeEvent: "provider.stopAll",
-                  lastRuntimeEventAt: new Date().toISOString(),
-                },
-              });
-            }),
+          Effect.ensuring(
+            Effect.forEach(
+              currentAdapters,
+              ([instanceId, adapter]) =>
+                adapter.stopAll().pipe(
+                  Effect.catchCause((cause) => {
+                    if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+                    stopFailures.push(cause);
+                    return Effect.logWarning("provider stop incomplete", { instanceId, cause });
+                  }),
+                ),
+              { concurrency: "unbounded", discard: true },
+            ),
           ),
+        );
+        // Stopped rows stay for their resume cursors, so long-lived installs hold
+        // thousands. Only rewrite the ones this shutdown actually stops.
+        yield* Effect.forEach(
+          bindings.filter((binding) => !isSettledBinding(binding)),
+          (binding) =>
+            directory.upsert({
+              threadId: binding.threadId,
+              provider: binding.provider,
+              providerInstanceId: resolveBindingInstanceId(binding),
+              status: "stopped",
+              runtimePayload: {
+                lastRuntimeEvent: "provider.stopAll",
+                lastRuntimeEventAt: new Date().toISOString(),
+              },
+            }),
         ).pipe(Effect.asVoid);
+        submissionTokens.clear();
+        sessionEventIdentities.clear();
+        for (const completion of submissionCompletions.values())
+          yield* Deferred.succeed(completion.done, undefined);
+        submissionCompletions.clear();
         yield* analytics.record("provider.sessions.stopped_all", {
-          sessionCount: threadIds.length,
+          sessionCount: bindings.length,
         });
         yield* analytics.flush;
+        if (stopFailures.length > 0)
+          return yield* new ProviderValidationError({
+            operation: "ProviderService.stopAll",
+            issue: `${stopFailures.length} provider shutdown operation(s) did not finish.`,
+            cause: new AggregateError(stopFailures, "Provider shutdown incomplete"),
+          });
       });
 
     const checkNativeOperation = (record: import("@t3tools/contracts").NativeOperationRecord) =>
@@ -2509,7 +4003,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     if (nativeCoordinator) {
       // Restore every durable reservation before exposing the layer; provider reads happen later.
       yield* nativeCoordinator.restoreReservations.pipe(Effect.orDie);
-      yield* nativeCoordinator.reconcile(checkNativeOperation).pipe(
+      nativePolling = yield* nativeCoordinator.reconcile(checkNativeOperation).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("Native operation reconciliation failed", { cause }),
         ),
@@ -2517,23 +4011,184 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         Effect.forkIn(nativeScope),
       );
     }
+    const shutdown = yield* Effect.serviceOption(ServerShutdown);
+    yield* registerShutdown("providers", "producers", () => runStopAll());
+    yield* registerShutdown("provider-event-delivery", "drain", () =>
+      Effect.gen(function* () {
+        // Producers have closed and finished preparation. Let adapter subscriptions
+        // hand off their final queued events, then wait for both admission and lanes.
+        let idlePasses = 0;
+        while (idlePasses < 2) {
+          yield* Effect.sleep("1 millis");
+          const pending = yield* Queue.size(runtimeEventQueue);
+          const fanout = yield* PubSub.size(runtimeEventPubSub);
+          idlePasses =
+            pending <= 0 && pendingRuntimeAdmissions === 0 && lanes.size === 0 && fanout === 0
+              ? idlePasses + 1
+              : 0;
+        }
+      }),
+    );
     yield* Effect.addFinalizer(() =>
-      Effect.catch(runStopAll(), (cause) =>
-        Effect.logWarning("failed to stop provider service", { cause }),
+      Effect.catch(
+        Option.isSome(shutdown) && shutdown.value.started ? Effect.void : runStopAll(),
+        (cause) => Effect.logWarning("failed to stop provider service", { cause }),
+      ).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            submissionTokens.clear();
+            sessionEventIdentities.clear();
+            for (const completion of submissionCompletions.values())
+              yield* Deferred.fail(
+                completion.done,
+                toValidationError(
+                  "ProviderService.submitTurn",
+                  "Provider service shut down before completion.",
+                ),
+              );
+            submissionCompletions.clear();
+          }),
+        ),
       ),
     );
 
+    const submitTurn: NonNullable<ProviderServiceShape["submitTurn"]> = (input) =>
+      Effect.gen(function* () {
+        if (!accepting) {
+          const rejected = Effect.fail(
+            new ProviderTurnDeliveryError({
+              certainty: "not_sent",
+              retryable: true,
+              detail: "The server is shutting down before provider work was sent.",
+            }),
+          );
+          return { acceptance: rejected, completion: rejected };
+        }
+        const acceptance = yield* Deferred.make<
+          import("@t3tools/contracts").ProviderTurnStartResult,
+          import("../Errors").ProviderServiceError
+        >();
+        const completion = yield* Deferred.make<void, import("../Errors").ProviderServiceError>();
+        const id = Symbol("owned-submission");
+        const state: SubmissionCompletion = {
+          threadId: input.threadId,
+          turnId: undefined,
+          terminalIds: new Set<TurnId>(),
+          done: completion,
+        };
+        submissionCompletions.set(id, state);
+        yield* Effect.forkIn(
+          Effect.gen(function* () {
+            const result = yield* Effect.exit(
+              sendTurn(input, (instanceId, generation) => {
+                state.instanceId = instanceId;
+                state.generation = generation;
+              }),
+            );
+            yield* Deferred.done(acceptance, result);
+            if (result._tag === "Failure") {
+              yield* Deferred.failCause(completion, result.cause);
+              submissionCompletions.delete(id);
+              return;
+            }
+            state.turnId = result.value.turnId;
+            if (state.terminalIds.has(result.value.turnId)) {
+              yield* Deferred.succeed(completion, undefined);
+              submissionCompletions.delete(id);
+            }
+          }),
+          nativeScope,
+        );
+        return { acceptance: Deferred.await(acceptance), completion: Deferred.await(completion) };
+      });
+
+    const acknowledgeHistoryReconciliation: NonNullable<
+      ProviderServiceShape["acknowledgeHistoryReconciliation"]
+    > = (input) =>
+      withProviderThreadAccess(
+        input.threadId,
+        Effect.gen(function* () {
+          const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+          const marker = readIncompleteHistory(binding?.runtimePayload);
+          if (
+            !binding ||
+            !marker ||
+            marker.eventId !== input.markerId ||
+            marker.historyIdentity !== input.historyIdentity
+          )
+            return false;
+          const cleared = yield* directory.updateHistoryReconciliationIfCurrent({
+            threadId: input.threadId,
+            instanceId: input.instanceId,
+            generation: input.generation,
+            marker: null,
+            expectedMarkerId: input.markerId,
+          });
+          if (cleared) {
+            const adapter = yield* registry.getByInstance(input.instanceId);
+            yield* (
+              adapter.acknowledgeHistoryReconciliation?.(input.threadId, input.markerId) ??
+                Effect.void
+            );
+          }
+          return cleared;
+        }),
+      );
+
     return {
+      requireHistoryReconciliation,
+      acknowledgeHistoryReconciliation,
+      getStartingSessionIdentity: (threadId) => {
+        const starting = startingSessions.get(threadId);
+        return starting?.session.providerInstanceId
+          ? { instanceId: starting.session.providerInstanceId, generation: starting.generation }
+          : undefined;
+      },
       nativeOperations,
+      readChildThreadItems: (input) =>
+        Effect.gen(function* () {
+          const binding = yield* directory.getBinding(input.threadId);
+          if (
+            Option.isNone(binding) ||
+            binding.value.provider !== "codex" ||
+            (binding.value.providerInstanceId ?? null) !== input.providerInstanceId
+          )
+            return { kind: "session-not-running" as const };
+          const routed = yield* resolveRoutableSession({
+            threadId: input.threadId,
+            operation: "agents.readTranscript",
+            allowRecovery: false,
+            binding,
+          });
+          if (!routed.isActive) return { kind: "session-not-running" as const };
+          if (
+            !(yield* isSessionActionAvailable(input.threadId, "childTaskInspection")) ||
+            !routed.adapter.readChildThreadItems
+          )
+            return { kind: "unsupported-provider" as const };
+          const page = yield* routed.adapter.readChildThreadItems(
+            input.threadId,
+            input.childId,
+            input.cursor,
+            input.limit,
+          );
+          if (page === "unsupported-provider") return { kind: "unsupported-provider" as const };
+          return page
+            ? { kind: "page" as const, ...page }
+            : { kind: "session-not-running" as const };
+        }),
       renameThread,
+      replaceSession,
       startSession: (threadId, input) =>
-        withProviderThreadAccess(threadId, startSession(threadId, input)),
-      sendTurn: (input) => withProviderThreadAccess(input.threadId, sendTurn(input)),
-      interruptTurn: (input) => withProviderThreadAccess(input.threadId, interruptTurn(input)),
-      respondToRequest: (input) =>
-        withProviderThreadAccess(input.threadId, respondToRequest(input)),
-      respondToUserInput: (input) =>
-        withProviderThreadAccess(input.threadId, respondToUserInput(input)),
+        withProviderThreadAccess(
+          threadId,
+          withSessionOperation(threadId, startSession(threadId, input)),
+        ),
+      submitTurn,
+      sendTurn: (input) => submitTurn(input).pipe(Effect.flatMap((handle) => handle.acceptance)),
+      interruptTurn: (input) => withControlTarget(input.threadId, interruptTurn(input)),
+      respondToRequest: (input) => withControlTarget(input.threadId, respondToRequest(input)),
+      respondToUserInput: (input) => withControlTarget(input.threadId, respondToUserInput(input)),
       respondToElicitation: (input) =>
         Effect.suspend(() => {
           // The start holds the thread lock until the adapter returns, so a
@@ -2543,17 +4198,31 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ? respondToStartingElicitation(input, starting.adapter)
             : withProviderThreadAccess(input.threadId, respondToElicitation(input));
         }),
-      stopSession,
+      stopSession: (input) => withControlTarget(input.threadId, stopSession(input)),
+      listStartingWorkspaces: () =>
+        Effect.sync(() =>
+          Array.from(startingSessions, ([threadId, { session }]) => ({
+            threadId,
+            ...(session.cwd !== undefined ? { cwd: session.cwd } : {}),
+          })),
+        ),
       listSessions,
       getCapabilities,
+      classifyTurnInput,
       getSessionCapabilities,
       assertSessionAction,
+      mcpApps,
       readThread: (threadId) => withProviderThreadAccess(threadId, readThread(threadId)),
       rollbackConversation: (input) =>
         withProviderThreadAccess(input.threadId, rollbackConversation(input)),
       runOneOffPrompt,
       compactConversation,
       reloadMcpConfigForProject,
+      readMcpSessionStatuses,
+      getMcpReconnectTargets,
+      reconnectMcpServerForProject,
+      authenticateMcpServerForProject,
+      getLiveMcpSession,
       // Each access creates a fresh PubSub subscription so that multiple
       // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
       // independently receive all runtime events.

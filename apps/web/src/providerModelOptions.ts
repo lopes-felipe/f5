@@ -1,10 +1,14 @@
 import {
+  PI_THINKING_LEVELS,
+  type PiModelOptions,
   type ClaudeCodeEffort,
   type ClaudeModelOptions,
   type CodexModelOptions,
   type CodexReasoningEffort,
   type CursorModelOptions,
   type CursorReasoningOption,
+  type MuseModelOptions,
+  type MuseReasoningEffort,
   type OpenCodeModelOptions,
   type ProviderKind,
   type ProviderModelOptions,
@@ -35,6 +39,10 @@ function readCursorReasoning(value: unknown): CursorReasoningOption | undefined 
     : undefined;
 }
 
+function readMuseReasoningEffort(value: unknown): MuseReasoningEffort | undefined {
+  return value === "low" || value === "medium" || value === "high" ? value : undefined;
+}
+
 function readCodexReasoningEffort(value: unknown): CodexReasoningEffort | undefined {
   return typeof value === "string"
     ? (resolveReasoningEffortForProvider("codex", value) ?? undefined)
@@ -56,24 +64,27 @@ export function normalizeProviderModelOptions(
   const cursorCandidate = readRecordField(candidate, "cursor");
   const openCodeCandidate = readRecordField(candidate, "opencode");
   const grokCandidate = readRecordField(candidate, "grok");
+  const museCandidate = readRecordField(candidate, "muse");
+  const piCandidate = readRecordField(candidate, "pi");
 
   const codexReasoningEffort =
     readCodexReasoningEffort(codexCandidate?.reasoningEffort) ??
     (provider === "codex" ? readCodexReasoningEffort(legacy?.effort) : undefined);
   const codexFastMode =
-    codexCandidate?.fastMode === true ||
-    (provider === "codex" && legacy?.codexFastMode === true) ||
-    legacy?.serviceTier === "fast";
+    readBoolean(codexCandidate?.fastMode) ??
+    ((provider === "codex" && legacy?.codexFastMode === true) || legacy?.serviceTier === "fast"
+      ? true
+      : undefined);
   // No model is known here, so every valid effort is kept: a model's reported
   // default can differ from the provider-wide one (Sol reports "low"), and only
   // `normalizeCodexModelOptions` knows which effort is the default to omit.
   const codex = codexReasoningEffort
     ? {
         reasoningEffort: codexReasoningEffort,
-        ...(codexFastMode ? { fastMode: true } : {}),
+        ...(codexFastMode !== undefined ? { fastMode: codexFastMode } : {}),
       }
-    : codexFastMode
-      ? { fastMode: true }
+    : codexFastMode !== undefined
+      ? { fastMode: codexFastMode }
       : undefined;
 
   const claudeThinking = claudeCandidate?.thinking === false ? false : undefined;
@@ -130,7 +141,14 @@ export function normalizeProviderModelOptions(
 
   const grok = grokCandidate ? {} : undefined;
 
-  if (!codex && !claude && !cursor && !opencode && !grok) {
+  const museReasoningEffort = readMuseReasoningEffort(museCandidate?.reasoningEffort);
+  const muse: MuseModelOptions | undefined = museReasoningEffort
+    ? { reasoningEffort: museReasoningEffort }
+    : undefined;
+
+  const thinking = PI_THINKING_LEVELS.find((level) => level === piCandidate?.thinking);
+  const pi: PiModelOptions | undefined = thinking ? { thinking } : undefined;
+  if (!codex && !claude && !cursor && !opencode && !grok && !muse && !pi) {
     return null;
   }
   return {
@@ -139,6 +157,8 @@ export function normalizeProviderModelOptions(
     ...(cursor ? { cursor } : {}),
     ...(opencode ? { opencode } : {}),
     ...(grok ? { grok } : {}),
+    ...(muse ? { muse } : {}),
+    ...(pi ? { pi } : {}),
   };
 }
 
@@ -193,6 +213,17 @@ export function providerSelectionsToModelOptions(
           ...(stringValue("agent") ? { agent: stringValue("agent") } : {}),
         },
       });
+    case "muse":
+      return normalizeProviderModelOptions({
+        muse: {
+          ...(stringValue("reasoningEffort")
+            ? { reasoningEffort: stringValue("reasoningEffort") }
+            : {}),
+        },
+      });
+    case "pi":
+      return normalizeProviderModelOptions({ pi: { thinking: stringValue("thinking") } });
+    case "acp":
     case "antigravity":
     case "grok":
       return null;
@@ -251,6 +282,15 @@ export function providerModelOptionsToSelections(
       pushString("agent", openCodeOptions.agent);
       break;
     }
+    case "muse": {
+      const museOptions = providerOptions as MuseModelOptions;
+      pushString("reasoningEffort", museOptions.reasoningEffort);
+      break;
+    }
+    case "pi":
+      pushString("thinking", (providerOptions as PiModelOptions).thinking);
+      break;
+    case "acp":
     case "antigravity":
     case "grok":
       break;

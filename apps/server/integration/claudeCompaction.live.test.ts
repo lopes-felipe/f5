@@ -10,10 +10,8 @@ import { Effect, Fiber, Layer, Stream } from "effect";
 import { SqlClient } from "effect/unstable/sql/SqlClient";
 import { describe, expect, it, vi } from "vitest";
 import { ServerConfig } from "../src/config.ts";
-import {
-  makeClaudeAdapterLive,
-  resolveClaudeConfigDir,
-} from "../src/provider/Layers/ClaudeAdapter.ts";
+import { resolveClaudeConfigDir } from "../src/provider/Drivers/ClaudeHome.ts";
+import { makeClaudeAdapterLive } from "../src/provider/Layers/ClaudeAdapter.ts";
 import { ClaudeAdapter } from "../src/provider/Services/ClaudeAdapter.ts";
 import {
   makeNativeOperationCoordinator,

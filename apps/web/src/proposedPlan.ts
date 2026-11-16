@@ -1,3 +1,7 @@
+import { threadReferencesToLabels } from "@t3tools/shared/threadReferences";
+
+import { downloadTextFile } from "./lib/downloadTextFile";
+
 export function proposedPlanTitle(planMarkdown: string): string | null {
   const heading = planMarkdown.match(/^\s{0,3}#{1,6}\s+(.+)$/m)?.[1]?.trim();
   return heading && heading.length > 0 ? heading : null;
@@ -70,8 +74,13 @@ function sanitizePlanFileSegment(input: string, fallback = "plan"): string {
   return sanitized.length > 0 ? sanitized : fallback;
 }
 
+/**
+ * The agent wrote the plan, so a thread reference in it would turn into a read grant once the
+ * person sends it. References become their plain labels so only references a person adds
+ * themselves grant access.
+ */
 export function buildPlanImplementationPrompt(planMarkdown: string): string {
-  return `PLEASE IMPLEMENT THIS PLAN:\n${planMarkdown.trim()}`;
+  return `PLEASE IMPLEMENT THIS PLAN:\n${threadReferencesToLabels(planMarkdown.trim())}`;
 }
 
 export function resolvePlanFollowUpSubmission(input: { draftText: string; planMarkdown: string }): {
@@ -113,13 +122,5 @@ export function normalizePlanMarkdownForExport(planMarkdown: string): string {
 }
 
 export function downloadPlanAsTextFile(filename: string, contents: string): void {
-  const blob = new Blob([contents], { type: "text/markdown;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  window.setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 0);
+  downloadTextFile(filename, contents, "text/markdown;charset=utf-8");
 }

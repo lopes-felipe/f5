@@ -5,14 +5,73 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import {
   type AcpToolCallState,
   extractModelConfigId,
+  findModelConfigOption,
   decideToolCallUpdateEmission,
   mergeToolCallState,
   parsePermissionRequest,
+  withTrackedPermissionToolCall,
   parseSessionModeState,
   parseSessionUpdateEvent,
 } from "./AcpRuntimeModel.ts";
 
 describe("AcpRuntimeModel", () => {
+  it("recovers a title-only command from an actually parsed tracked call", () => {
+    const parsed = parseSessionUpdateEvent({
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "title-only",
+        kind: "execute",
+        title: "git status",
+        status: "pending",
+        rawInput: {},
+      },
+    });
+    const event = parsed.events[0];
+    expect(event?._tag).toBe("ToolCallUpdated");
+    if (event?._tag !== "ToolCallUpdated") throw new Error("Expected tracked tool call");
+    expect(
+      parsePermissionRequest(
+        withTrackedPermissionToolCall(
+          {
+            sessionId: "s",
+            toolCall: { toolCallId: "title-only" },
+            options: [],
+          },
+          event.toolCall,
+        ),
+      ),
+    ).toMatchObject({ kind: "execute", detail: "git status" });
+  });
+  it("fills ID-only approvals but preserves explicit clears and non-execution kinds", () => {
+    const tracked = {
+      toolCallId: "tool",
+      kind: "execute",
+      data: { title: "git status", rawInput: { command: "git status" } },
+    };
+    const request = { sessionId: "session", toolCall: { toolCallId: "tool" }, options: [] };
+    expect(parsePermissionRequest(withTrackedPermissionToolCall(request, tracked))).toMatchObject({
+      kind: "execute",
+      detail: "git status",
+    });
+    expect(
+      withTrackedPermissionToolCall(
+        {
+          ...request,
+          toolCall: {
+            toolCallId: "tool",
+            kind: null,
+            title: null,
+            rawInput: null,
+          },
+        },
+        tracked,
+      ).toolCall,
+    ).toMatchObject({ kind: null, title: null, rawInput: null });
+    expect(
+      withTrackedPermissionToolCall(request, { ...tracked, kind: "read" }).toolCall.kind,
+    ).toBeUndefined();
+  });
   it("keeps thinking chunks separate from assistant output", () => {
     expect(
       parseSessionUpdateEvent({
@@ -95,6 +154,30 @@ describe("AcpRuntimeModel", () => {
     expect(modelConfigId).toBe("model");
   });
 
+  it("discovers and selects models from the same config option", () => {
+    const select = (id: string, category?: string) =>
+      ({
+        id,
+        name: id,
+        ...(category ? { category } : {}),
+        type: "select",
+        currentValue: `${id}-current`,
+        options: [{ value: `${id}-current`, name: id }],
+      }) satisfies EffectAcpSchema.SessionConfigOption;
+    const configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> = [
+      { id: "model_fast", name: "Fast", category: "model", type: "boolean", currentValue: false },
+      select("model"),
+      select("llm", "model"),
+      select("subagent_llm", "model"),
+    ];
+
+    expect(findModelConfigOption(configOptions)?.id).toBe("llm");
+    expect(extractModelConfigId({ sessionId: "session-1", configOptions })).toBe("llm");
+    expect(findModelConfigOption([select("mode", "mode"), select("model")])?.id).toBe("model");
+    expect(findModelConfigOption([select("mode", "mode")])).toBeUndefined();
+    expect(findModelConfigOption(undefined)).toBeUndefined();
+  });
+
   it("projects typed ACP tool call updates into runtime events", () => {
     const created = parseSessionUpdateEvent({
       sessionId: "session-1",
@@ -132,6 +215,7 @@ describe("AcpRuntimeModel", () => {
           detail: "bun run typecheck",
           data: {
             toolCallId: "tool-1",
+            title: "Terminal",
             kind: "execute",
             command: "bun run typecheck",
             rawInput: {
@@ -198,6 +282,38 @@ describe("AcpRuntimeModel", () => {
         command: "bun run typecheck",
       });
     }
+  });
+
+  it("ends a tool call that ACP reports as cancelled", () => {
+    const toolCall = (status: "in_progress" | "cancelled") => {
+      const parsed = parseSessionUpdateEvent({
+        sessionId: "session-1",
+        update: {
+          sessionUpdate: status === "in_progress" ? "tool_call" : "tool_call_update",
+          toolCallId: "tool-1",
+          title: "Run sleep 60",
+          kind: "execute",
+          status,
+        },
+      } as EffectAcpSchema.SessionNotification);
+      const event = parsed.events[0];
+      if (event?._tag !== "ToolCallUpdated") {
+        throw new Error("expected a tool call update");
+      }
+      return event.toolCall;
+    };
+
+    const running = toolCall("in_progress");
+    const cancelled = mergeToolCallState(running, toolCall("cancelled"));
+    expect(cancelled.status).toBe("failed");
+    expect(
+      decideToolCallUpdateEmission({
+        previous: running,
+        next: cancelled,
+        lastEmittedDetailLength: 0,
+        skippedSinceEmit: 0,
+      }).emit,
+    ).toBe(true);
   });
 
   it("trims padded current mode updates before emitting a mode change", () => {
@@ -364,6 +480,177 @@ describe("AcpRuntimeModel", () => {
     ).update;
     expect(rawUpdate.content[0]?.content.text.length).toBeLessThan(8_100);
     expect(JSON.stringify(event).length).toBeLessThan(hugeText.length);
+  });
+
+  it.each([
+    [undefined, "pending"],
+    [undefined, "inProgress"],
+    ["unchanged detail", "pending"],
+    ["unchanged detail", "inProgress"],
+  ] as const)("emits status transitions with detail %s and next status %s", (detail, status) => {
+    const previous: AcpToolCallState = {
+      toolCallId: "status",
+      title: "Inspect repository",
+      status: status === "pending" ? "inProgress" : "pending",
+      ...(detail ? { detail } : {}),
+      data: {},
+    };
+    expect(
+      decideToolCallUpdateEmission({
+        previous,
+        next: { ...previous, status },
+        lastEmittedDetailLength: detail?.length,
+        skippedSinceEmit: 0,
+      }),
+    ).toEqual({ emit: true, skippedSinceEmit: 0 });
+  });
+
+  it("emits first tool state and title-only changes without detail text", () => {
+    const first: AcpToolCallState = {
+      toolCallId: "title",
+      title: "Inspect repository",
+      status: "pending",
+      data: {},
+    };
+    expect(
+      decideToolCallUpdateEmission({
+        previous: undefined,
+        next: first,
+        lastEmittedDetailLength: undefined,
+        skippedSinceEmit: 0,
+      }).emit,
+    ).toBe(true);
+    expect(
+      decideToolCallUpdateEmission({
+        previous: first,
+        next: { ...first, title: "Renamed tool" },
+        lastEmittedDetailLength: undefined,
+        skippedSinceEmit: 4,
+      }),
+    ).toEqual({ emit: true, skippedSinceEmit: 0 });
+  });
+
+  it("emits changed structured output immediately while ignoring identical snapshots", () => {
+    const previous: AcpToolCallState = {
+      toolCallId: "output",
+      status: "inProgress",
+      detail: "Tool output",
+      data: { rawOutput: { text: "first" } },
+    };
+    expect(
+      decideToolCallUpdateEmission({
+        previous,
+        next: { ...previous, data: { rawOutput: { text: "other" } } },
+        lastEmittedDetailLength: previous.detail?.length,
+        skippedSinceEmit: 0,
+      }),
+    ).toEqual({ emit: true, skippedSinceEmit: 0 });
+    expect(
+      decideToolCallUpdateEmission({
+        previous,
+        next: { ...previous, data: { rawOutput: { text: "first" } } },
+        lastEmittedDetailLength: previous.detail?.length,
+        skippedSinceEmit: 0,
+      }),
+    ).toEqual({ emit: false, skippedSinceEmit: 0 });
+  });
+
+  it.each(["rawInput", "diff"] as const)(
+    "samples argument-only %s updates every ten changes and keeps the exact terminal state",
+    (kind) => {
+      let previous: AcpToolCallState = {
+        toolCallId: "arguments",
+        title: "Write file",
+        status: "inProgress",
+        detail: "Write file",
+        data: {},
+      };
+      let skippedSinceEmit = 0;
+      const emitted: AcpToolCallState[] = [];
+      for (let index = 1; index <= 120; index++) {
+        const data =
+          kind === "rawInput"
+            ? { rawInput: { path: "/fixture/file", content: "x".repeat(index) } }
+            : {
+                content: [
+                  { type: "diff", path: "/fixture/file", oldText: "", newText: "x".repeat(index) },
+                ],
+              };
+        const next = { ...previous, data };
+        const decision = decideToolCallUpdateEmission({
+          previous,
+          next,
+          lastEmittedDetailLength: previous.detail?.length,
+          skippedSinceEmit,
+        });
+        skippedSinceEmit = decision.skippedSinceEmit;
+        previous = next;
+        if (decision.emit) emitted.push(next);
+      }
+      expect(emitted).toHaveLength(12);
+      expect(emitted.at(-1)).toEqual(previous);
+      expect(
+        decideToolCallUpdateEmission({
+          previous,
+          next: { ...previous, status: "completed" },
+          lastEmittedDetailLength: previous.detail?.length,
+          skippedSinceEmit,
+        }).emit,
+      ).toBe(true);
+      // Repeated snapshots must not manufacture progress or spend a sampling slot.
+      expect(
+        decideToolCallUpdateEmission({
+          previous,
+          next: JSON.parse(JSON.stringify(previous)),
+          lastEmittedDetailLength: previous.detail?.length,
+          skippedSinceEmit: 3,
+        }),
+      ).toEqual({ emit: false, skippedSinceEmit: 3 });
+    },
+  );
+
+  it.each([
+    ["read", "Read file"],
+    ["execute", "Ran command"],
+    ["edit", "Changed files"],
+    ["search", "Searched files"],
+    ["other", "Tool"],
+    ["other", "Tool call"],
+    [undefined, "Read file"],
+    [undefined, "Ran command"],
+  ] as const)("keeps empty %s/%s placeholders hidden through status changes", (kind, title) => {
+    const previous: AcpToolCallState = {
+      toolCallId: "placeholder",
+      ...(kind ? { kind } : {}),
+      title,
+      status: "pending",
+      data: { rawInput: {} },
+    };
+    expect(
+      decideToolCallUpdateEmission({
+        previous: undefined,
+        next: previous,
+        lastEmittedDetailLength: undefined,
+        skippedSinceEmit: 0,
+      }).emit,
+    ).toBe(false);
+    const next = { ...previous, status: "inProgress" as const };
+    expect(
+      decideToolCallUpdateEmission({
+        previous,
+        next,
+        lastEmittedDetailLength: undefined,
+        skippedSinceEmit: 0,
+      }).emit,
+    ).toBe(false);
+    expect(
+      decideToolCallUpdateEmission({
+        previous: next,
+        next: { ...next, status: "completed" },
+        lastEmittedDetailLength: undefined,
+        skippedSinceEmit: 0,
+      }).emit,
+    ).toBe(true);
   });
 
   it("coalesces 1000 rapid cumulative tool_call_update notifications for a redrawing progress bar", () => {

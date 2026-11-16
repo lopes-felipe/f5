@@ -1,23 +1,21 @@
 "use client";
 
+import { ProviderUpdateDialog } from "./ProviderUpdateDialog";
+import { isDefaultProviderBinary } from "@t3tools/shared/providerBinary";
+import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
+import { useProfileState } from "../../profileState";
+import { toastManager } from "../ui/toast";
+
 import type { CustomModelSetting } from "@t3tools/contracts";
 import {
   customModelSlug,
   normalizeCustomModels,
   readCustomModels,
 } from "@t3tools/shared/customModels";
-import { ProviderAccountPanel } from "./ProviderAccountPanel";
+import { Link } from "@tanstack/react-router";
 
-import {
-  ArrowUpCircleIcon,
-  CheckIcon,
-  ChevronDownIcon,
-  CopyIcon,
-  PlusIcon,
-  Trash2Icon,
-  XIcon,
-} from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ChevronDownIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   isProviderDriverKind,
   type ProviderInstanceConfig,
@@ -26,6 +24,7 @@ import {
   type ProviderDriverKind,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerRunProviderUpdateResult,
 } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 
@@ -36,20 +35,20 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
-import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { Switch } from "../ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import type { DriverOption } from "./providerDriverMeta";
+import { decodeDriverConfigField, readDriverConfigField } from "./providerConfigFields";
+import type { DriverFieldDef, DriverOption } from "./providerDriverMeta";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInventorySection } from "./ProviderInventorySection";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import {
   PROVIDER_STATUS_STYLES,
-  formatProviderUpdateCommand,
-  getProviderVersionAdvisoryPresentation,
+  formatProviderInstallChannel,
+  getProviderUpdateResultMessage,
+  hasProviderUpdateNotification,
   getProviderSummary,
   getProviderVersionLabel,
   type ProviderStatusKey,
@@ -100,20 +99,6 @@ function redactedEmailPlaceholder(email: string): string {
     if (char === "@" || char === "." || char === "-" || char === "_") return char;
     return nextChar();
   }).join("");
-}
-
-/**
- * Read a string value at `key` from the opaque per-driver config blob.
- * Returns an empty string when the key is missing or the stored value is
- * not a string. The permissive shape reflects that `config` is
- * `Schema.Unknown` at the contract boundary — forks may populate it with
- * non-string values that the built-in UI should round-trip without
- * throwing.
- */
-function readConfigString(config: unknown, key: string): string {
-  if (config === null || typeof config !== "object") return "";
-  const value = (config as Record<string, unknown>)[key];
-  return typeof value === "string" ? value : "";
 }
 
 /**
@@ -236,10 +221,11 @@ function ProviderAuthEmail(props: {
   );
 }
 
-function ProviderEnvironmentSection(props: {
+export function ProviderEnvironmentSection(props: {
   readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
   readonly onChange: (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => void;
 }) {
+  const hintId = useId();
   const [rows, setRows] = useState<ReadonlyArray<EnvironmentDraftRow>>(() =>
     props.environment.map(makeEnvironmentDraftRow),
   );
@@ -295,6 +281,7 @@ function ProviderEnvironmentSection(props: {
         <span className="text-xs font-medium text-foreground">Environment variables</span>
         <Button
           type="button"
+          aria-label="Add environment variable"
           size="sm"
           variant="outline"
           className="h-7 gap-1.5 px-2 text-xs"
@@ -328,6 +315,8 @@ function ProviderEnvironmentSection(props: {
               <DraftInput
                 value={variable.name}
                 onCommit={(name) => updateVariable(variable.id, { name: name.trim() })}
+                disabled={variable.valueRedacted === true}
+                aria-describedby={variable.valueRedacted === true ? hintId : undefined}
                 placeholder="VARIABLE_NAME"
                 spellCheck={false}
                 aria-label={`Environment variable name ${index + 1}`}
@@ -348,6 +337,8 @@ function ProviderEnvironmentSection(props: {
                   type="checkbox"
                   className="size-3.5"
                   checked={variable.sensitive}
+                  disabled={variable.valueRedacted === true}
+                  aria-describedby={variable.valueRedacted === true ? hintId : undefined}
                   onChange={(event) => {
                     const sensitive = event.currentTarget.checked;
                     updateVariable(variable.id, {
@@ -374,8 +365,11 @@ function ProviderEnvironmentSection(props: {
           ))}
         </div>
       )}
-      <span className="text-xs text-muted-foreground">
+      <span id={hintId} className="text-xs text-muted-foreground">
         Sensitive values are stored separately and are not returned to the app after saving.
+        {rows.some((row) => row.valueRedacted === true)
+          ? " Remove and re-add a saved variable to rename it or make it plain text."
+          : null}
       </span>
     </div>
   );
@@ -399,6 +393,9 @@ interface ProviderInstanceCardProps {
    * `exactOptionalPropertyTypes: true`, where an absent key and
    * `{ onDelete: undefined }` are treated as distinct shapes.
    */
+  readonly onRunProviderUpdate?: (() => Promise<ServerRunProviderUpdateResult>) | undefined;
+  readonly onCheckProviderUpdates?: (() => Promise<void>) | undefined;
+  readonly providers?: readonly ServerProvider[] | undefined;
   readonly onDelete?: (() => void) | undefined;
   /**
    * Optional outer reset button rendered next to the driver icon. Built-in
@@ -447,6 +444,9 @@ export function ProviderInstanceCard({
   onExpandedChange,
   onUpdate,
   onDelete,
+  onRunProviderUpdate,
+  onCheckProviderUpdates,
+  providers,
   dismissedProviderUpdateAdvisory,
   onDismissProviderUpdateAdvisory,
   headerAction,
@@ -458,6 +458,7 @@ export function ProviderInstanceCard({
   onModelOrderChange,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
+  const isolatedProfile = useProfileState((state) => state.active?.isDefault === false);
   // The server-reported status wins when present; otherwise fall back to
   // "disabled"/"warning" based on the local `enabled` flag so the dot
   // reflects the persisted intent even before the first probe completes.
@@ -473,13 +474,43 @@ export function ProviderInstanceCard({
     : null;
   const summary = rawSummary;
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
-  const versionAdvisory = enabled
-    ? getProviderVersionAdvisoryPresentation(liveProvider, dismissedProviderUpdateAdvisory)
-    : null;
-  const updateCommandDisplay = versionAdvisory
-    ? formatProviderUpdateCommand(versionAdvisory.updateCommand)
-    : null;
-  const { copyToClipboard, isCopied } = useCopyToClipboard<{ readonly providerName: string }>();
+  const [updateOperation, setUpdateOperation] = useState<{
+    running: boolean;
+    message: string;
+    output?: string;
+    outputTruncated?: boolean;
+  } | null>(null);
+  const runProviderUpdate = () => {
+    if (!onRunProviderUpdate || updateOperation?.running) return;
+    const advisory = liveProvider?.versionAdvisory;
+    setUpdateOperation({ running: true, message: `Updating ${displayName}…` });
+    void onRunProviderUpdate()
+      .then((result) => {
+        if (result.outcome === "updated") {
+          toastManager.add({
+            type: "success",
+            title: `${displayName} updated to v${result.currentVersion}`,
+          });
+          setUpdateOperation(null);
+        } else
+          setUpdateOperation({
+            running: false,
+            message: getProviderUpdateResultMessage(
+              result,
+              formatProviderInstallChannel(advisory?.installChannel),
+              advisory?.latestVersion ?? null,
+            ),
+            output: result.output,
+            outputTruncated: result.outputTruncated,
+          });
+      })
+      .catch((error: unknown) =>
+        setUpdateOperation({
+          running: false,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+  };
   const FallbackIconComponent = driverOption?.icon;
   const displayName =
     instance.displayName?.trim() || driverOption?.label || String(instance.driver);
@@ -492,6 +523,30 @@ export function ProviderInstanceCard({
   const driverKind: ProviderDriverKind | null = isProviderDriverKind(instance.driver)
     ? instance.driver
     : null;
+  const bundledProvider = driverKind === "codex" || driverKind === "claudeAgent";
+  const binaryPath =
+    typeof instance.config === "object" &&
+    instance.config !== null &&
+    "binaryPath" in instance.config &&
+    typeof instance.config.binaryPath === "string"
+      ? instance.config.binaryPath.trim()
+      : "";
+  const customBinary =
+    bundledProvider &&
+    !isDefaultProviderBinary(binaryPath, driverKind === "codex" ? "codex" : "claude");
+  const binaryUnavailable =
+    liveProvider?.installed === false ||
+    (driverKind === "claudeAgent" && isolatedProfile && customBinary);
+  const binaryLabel = bundledProvider
+    ? (customBinary
+        ? "Custom · " + binaryPath
+        : "Bundled · " + (driverKind === "codex" ? "Codex" : "Claude")) +
+      (binaryUnavailable
+        ? " (unavailable)"
+        : versionLabel
+          ? (customBinary ? " · " : " ") + versionLabel.replace(/^v/, "")
+          : "")
+    : versionLabel;
 
   const customModels = readCustomModels(instance.config);
   // Server-returned models may lag behind settings writes. Treat probe
@@ -532,14 +587,24 @@ export function ProviderInstanceCard({
     );
   };
 
-  const updateConfigField = (key: string, value: string) => {
-    const nextConfig = nextConfigBlobWithString(instance.config, key, value);
+  const updateConfigField = (field: DriverFieldDef, value: string) => {
+    let nextConfig: Record<string, unknown> | undefined;
+    try {
+      const decoded = decodeDriverConfigField(field, value);
+      nextConfig =
+        decoded === undefined
+          ? nextConfigBlobWithString(instance.config, field.key, "")
+          : nextConfigBlobWithValue(instance.config, field.key, decoded);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Check provider configuration",
+        description: error instanceof Error ? error.message : "Invalid field value.",
+      });
+      return;
+    }
     const { config: _omit, ...rest } = instance;
-    onUpdate(
-      nextConfig !== undefined
-        ? ({ ...rest, config: nextConfig } as ProviderInstanceConfig)
-        : (rest as ProviderInstanceConfig),
-    );
+    onUpdate(nextConfig !== undefined ? { ...rest, config: nextConfig } : rest);
   };
 
   const updateCustomModels = (next: ReadonlyArray<CustomModelSetting>) => {
@@ -608,98 +673,33 @@ export function ProviderInstanceCard({
                   {driverOption.badgeLabel}
                 </Badge>
               ) : null}
-              {versionLabel ? (
-                <code className="text-xs text-muted-foreground">{versionLabel}</code>
+              {binaryLabel ? (
+                <code
+                  className="min-w-0 truncate text-xs text-muted-foreground"
+                  title={
+                    bundledProvider
+                      ? "Configured runtime; version comes from its latest successful health check."
+                      : undefined
+                  }
+                >
+                  {binaryLabel}
+                </code>
               ) : null}
-              {versionAdvisory && updateCommandDisplay ? (
-                <Popover>
-                  <PopoverTrigger
-                    render={
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant="outline"
-                        className="h-5 shrink-0 gap-1 rounded-full border-warning/50 px-1.5 text-2xs text-warning hover:text-warning"
-                        aria-label="Update available - view details"
-                      >
-                        <ArrowUpCircleIcon className="size-3" />
-                        Update
-                      </Button>
-                    }
-                  />
-                  <PopoverPopup
-                    side="bottom"
-                    align="start"
-                    className="w-[min(21rem,calc(100vw-1.5rem))] [--popup-width:min(21rem,calc(100vw-1.5rem))]"
-                  >
-                    <div className="grid min-w-0 gap-3">
-                      <div className="grid gap-1">
-                        <p className="text-ui leading-tight font-semibold text-foreground">
-                          Update available
-                        </p>
-                        <p className="text-xs leading-snug text-muted-foreground">
-                          {versionAdvisory.message}
-                        </p>
-                      </div>
-                      <div className="grid gap-1.5">
-                        <p className="text-2xs font-medium text-muted-foreground">
-                          {versionAdvisory.updateCommand.channel} install command
-                        </p>
-                        <div className="flex min-w-0 items-center gap-1 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
-                          <ScrollArea scrollFade className="h-8 min-w-0 flex-1 rounded-none">
-                            <code className="flex h-full w-max items-center pr-3 font-mono text-2xs whitespace-nowrap text-foreground">
-                              {updateCommandDisplay}
-                            </code>
-                          </ScrollArea>
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <Button
-                                  type="button"
-                                  size="icon-xs"
-                                  variant="ghost"
-                                  className="size-6 shrink-0 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                                  onClick={() =>
-                                    copyToClipboard(updateCommandDisplay, {
-                                      providerName: displayName,
-                                    })
-                                  }
-                                  aria-label="Copy update command"
-                                >
-                                  {isCopied ? (
-                                    <CheckIcon className="size-3" />
-                                  ) : (
-                                    <CopyIcon className="size-3" />
-                                  )}
-                                </Button>
-                              }
-                            />
-                            <TooltipPopup side="top">
-                              {isCopied ? "Copied" : "Copy command"}
-                            </TooltipPopup>
-                          </Tooltip>
-                        </div>
-                      </div>
-                      <p className="text-xs leading-snug text-muted-foreground">
-                        If you installed via Homebrew or another channel, use that channel's upgrade
-                        command.
-                      </p>
-                      {onDismissProviderUpdateAdvisory ? (
-                        <Button
-                          type="button"
-                          size="xs"
-                          variant="ghost"
-                          className="justify-self-start text-muted-foreground"
-                          onClick={() =>
-                            onDismissProviderUpdateAdvisory(versionAdvisory.latestVersion)
-                          }
-                        >
-                          Dismiss
-                        </Button>
-                      ) : null}
-                    </div>
-                  </PopoverPopup>
-                </Popover>
+              {enabled &&
+              liveProvider?.versionAdvisory &&
+              liveProvider.versionAdvisory.status !== "unknown" ? (
+                <ProviderUpdateDialog
+                  advisory={liveProvider.versionAdvisory}
+                  displayName={displayName}
+                  providers={providers}
+                  showBadge={hasProviderUpdateNotification(
+                    liveProvider.versionAdvisory,
+                    dismissedProviderUpdateAdvisory,
+                  )}
+                  onRun={onRunProviderUpdate ? runProviderUpdate : undefined}
+                  onCheck={onCheckProviderUpdates}
+                  onDismiss={onDismissProviderUpdateAdvisory}
+                />
               ) : null}
               {headerAction ? (
                 <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
@@ -742,6 +742,50 @@ export function ProviderInstanceCard({
               )}
               {summary.detail ? <span>- {summary.detail}</span> : null}
             </p>
+            {liveProvider?.versionAdvisory?.status === "check_failed" ? (
+              <p className="text-xs text-muted-foreground">
+                Update check failed
+                {liveProvider.versionAdvisory.retryAt
+                  ? ` · retry after ${new Date(liveProvider.versionAdvisory.retryAt).toLocaleString()}`
+                  : ""}
+              </p>
+            ) : null}
+            {updateOperation || liveProvider?.versionAdvisory?.activeUpdate ? (
+              <div className="mt-2 grid min-w-0 gap-2 rounded-md border p-2 text-xs" role="status">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p>
+                      {liveProvider?.versionAdvisory?.activeUpdate
+                        ? `Updating ${displayName}…`
+                        : (updateOperation?.message ?? `Updating ${displayName}…`)}
+                    </p>
+                    {liveProvider?.versionAdvisory?.activeUpdate &&
+                    updateOperation &&
+                    !updateOperation.running ? (
+                      <p className="mt-1 text-muted-foreground">{updateOperation.message}</p>
+                    ) : null}
+                  </div>
+                  {updateOperation && !updateOperation.running ? (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      onClick={() => setUpdateOperation(null)}
+                      aria-label="Dismiss update result"
+                    >
+                      Dismiss
+                    </Button>
+                  ) : null}
+                </div>
+                {updateOperation?.output ? (
+                  <ScrollArea className="max-h-48 min-w-0">
+                    <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-2xs">
+                      {updateOperation.outputTruncated ? "(earlier output truncated)\n" : ""}
+                      {updateOperation.output}
+                    </pre>
+                  </ScrollArea>
+                ) : null}
+              </div>
+            ) : null}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button
@@ -874,6 +918,33 @@ export function ProviderInstanceCard({
                     />
                   </label>
                 ))}
+                <label className="flex items-center justify-between gap-2 text-xs">
+                  <span>
+                    Confine file edits to the workspace (applies at next session start)
+                    <span className="block text-muted-foreground">
+                      Write, Edit and NotebookEdit refuse paths outside the working directories.
+                      Removes worktree switching; does not limit Bash.
+                    </span>
+                  </span>
+                  <Switch
+                    checked={
+                      typeof instance.config === "object" &&
+                      instance.config !== null &&
+                      "confineWritesToWorkspace" in instance.config &&
+                      instance.config.confineWritesToWorkspace === true
+                    }
+                    onCheckedChange={(value) =>
+                      onUpdate({
+                        ...instance,
+                        config: nextConfigBlobWithValue(
+                          instance.config,
+                          "confineWritesToWorkspace",
+                          value,
+                        ),
+                      })
+                    }
+                  />
+                </label>
                 <label className="block text-xs">
                   Auto-compact window (tokens; 0 uses the CLI default)
                   <input
@@ -923,24 +994,78 @@ export function ProviderInstanceCard({
                     className="mt-1.5"
                     type={field.type === "password" ? "password" : undefined}
                     autoComplete={field.type === "password" ? "off" : undefined}
-                    value={readConfigString(instance.config, field.key)}
-                    onCommit={(next) => updateConfigField(field.key, next)}
+                    value={readDriverConfigField(instance.config, field)}
+                    onCommit={(next) => updateConfigField(field, next)}
                     placeholder={field.placeholder}
+                    disabled={
+                      field.key === "binaryPath" && driverKind === "claudeAgent" && isolatedProfile
+                    }
                     spellCheck={false}
                   />
+                  {field.key === "binaryPath" && driverKind === "claudeAgent" && isolatedProfile ? (
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      Isolated profiles use the bundled Claude runtime to keep keychain sign-ins
+                      separate.
+                    </span>
+                  ) : null}
                   {field.description ? (
                     <span className="mt-1 block text-xs text-muted-foreground">
                       {field.description}
+                    </span>
+                  ) : null}
+                  {field.key === "binaryPath" && driverKind === "codex" ? (
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      Default binary paths now use bundled Codex {CODEX_PROTOCOL_BASELINE_VERSION},
+                      which may be older than your PATH install. Set an absolute path to keep a
+                      newer CLI or wrapper.
                     </span>
                   ) : null}
                 </label>
               </div>
             ))}
 
+            {customBinary ? (
+              <div className="border-t px-4 py-3">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() =>
+                    onUpdate({
+                      ...instance,
+                      config: nextConfigBlobWithString(instance.config, "binaryPath", ""),
+                    })
+                  }
+                >
+                  Use bundled
+                </Button>
+              </div>
+            ) : null}
             {(driverKind === "codex" ||
               driverKind === "claudeAgent" ||
               driverKind === "antigravity") && (
-              <ProviderAccountPanel instanceId={instanceId} driver={instance.driver} />
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2">
+                <p className="min-w-0 text-xs text-muted-foreground">
+                  {liveProvider?.auth.status === "authenticated"
+                    ? `Signed in${authEmail?.trim() ? ` as ${authEmail.trim()}` : ""}.`
+                    : liveProvider?.auth.status === "unauthenticated"
+                      ? "Not signed in."
+                      : "Sign-in status unknown."}{" "}
+                  Sign in and out from Profiles &amp; Accounts.
+                </p>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="shrink-0"
+                  render={
+                    <Link
+                      to="/settings"
+                      search={{ category: "accounts", item: "accounts.providers" }}
+                    />
+                  }
+                >
+                  Manage in Accounts
+                </Button>
+              </div>
             )}
             {providerRuntimeCapabilities(String(instance.driver)).instanceInventory && (
               <ProviderInventorySection instanceId={instanceId} />

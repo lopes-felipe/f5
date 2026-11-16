@@ -4,14 +4,57 @@ import {
   type NativeApi,
   type ProjectSearchContentsInput,
 } from "@t3tools/contracts";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as nativeApi from "../nativeApi";
-import { projectSearchContentsQueryOptions } from "./projectReactQuery";
+import {
+  projectSearchContentsQueryOptions,
+  projectSearchEntriesQueryOptions,
+} from "./projectReactQuery";
+import { detectComposerTrigger, isPathSuggestionCurrent } from "../composer-logic";
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("projectSearchEntriesQueryOptions", () => {
+  it("keeps the original search target on placeholder results while another query loads", async () => {
+    const searchEntries = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [{ path: "alpha.ts", kind: "file" }], truncated: false })
+      .mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(nativeApi, "ensureNativeApi").mockReturnValue({
+      projects: { searchEntries },
+    } as unknown as NativeApi);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const initial = projectSearchEntriesQueryOptions({ cwd: "/repo", query: "alpha" });
+    await client.fetchQuery(initial);
+    const observer = new QueryObserver(client, initial);
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      for (const target of [
+        { cwd: "/repo", query: "beta" },
+        { cwd: "/other", query: "alpha" },
+      ]) {
+        observer.setOptions(projectSearchEntriesQueryOptions(target));
+        const result = observer.getCurrentResult();
+        expect(result.isPlaceholderData).toBe(true);
+        expect(result.data?.searchedTarget).toEqual({ cwd: "/repo", query: "alpha" });
+        const text = "@" + target.query;
+        expect(
+          isPathSuggestionCurrent(
+            result.data!.searchedTarget,
+            detectComposerTrigger(text, text.length),
+            target.cwd,
+          ),
+        ).toBe(false);
+      }
+    } finally {
+      unsubscribe();
+      client.clear();
+    }
+  });
 });
 
 describe("projectSearchContentsQueryOptions", () => {

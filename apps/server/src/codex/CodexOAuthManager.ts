@@ -34,7 +34,7 @@ function nowIso(): string {
 }
 
 function statusKeyFor(input: McpOauthLoginStatusRequest): string {
-  return `${input.projectId}\u0000${input.binaryPath ?? ""}\u0000${input.homePath ?? ""}\u0000${input.serverName}`;
+  return `${input.projectId}\u0000${input.instanceId ?? "codex"}\u0000${input.binaryPath ?? ""}\u0000${input.homePath ?? ""}\u0000${input.serverName}`;
 }
 
 function makeIdleStatus(input: McpOauthLoginStatusRequest): McpOauthLoginStatusResult {
@@ -118,6 +118,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
       provider: "codex",
       scope: "project",
       projectId: input.projectId,
+      ...(input.instanceId ? { instanceId: input.instanceId } : {}),
       reason: "oauth-completed",
       ...(metadata.mcpEffectiveConfigVersion
         ? { configVersion: metadata.mcpEffectiveConfigVersion }
@@ -132,6 +133,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
       reloadCodexMcpConfigAfterLogin({
         providerService,
         projectId: input.projectId,
+        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
         serverName: input.serverName,
         ...(metadata.providerOptions ? { providerOptions: metadata.providerOptions } : {}),
       }).pipe(
@@ -174,6 +176,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
       const existingStatus = statusByKey.get(key);
       const nextStatus: McpOauthLoginStatusResult = {
         projectId: input.projectId,
+        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
         serverName: input.serverName,
         status: payload.success ? "completed" : "failed",
         startedAt: existingStatus?.startedAt ?? nowIso(),
@@ -209,7 +212,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
     metadata.nextReconcileAtMs = nowMs + OAUTH_RECONCILE_INTERVAL_MS;
 
     return Effect.tryPromise({
-      try: () => listAllCodexServerStatuses(metadata.client),
+      try: () => listAllCodexServerStatuses(metadata.client, input.serverName),
       catch: (cause) =>
         cause instanceof Error
           ? new CodexOAuthManagerError({ message: cause.message })
@@ -236,6 +239,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
           yield* Effect.logWarning("Failed to reconcile pending Codex MCP OAuth login status.", {
             cause,
             projectId: input.projectId,
+            ...(input.instanceId ? { instanceId: input.instanceId } : {}),
             serverName: input.serverName,
           });
           return existing;
@@ -270,6 +274,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
 
       const hasLease = yield* registry.hasOauthLease({
         projectId: input.projectId,
+        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
         serverName: input.serverName,
         ...(metadata?.providerOptions ? { providerOptions: metadata.providerOptions } : {}),
         ...(metadata?.mcpEffectiveConfigVersion !== undefined
@@ -322,6 +327,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         const key = statusKeyFor(input);
         const pendingStatus: McpOauthLoginStatusResult = {
           projectId: input.projectId,
+          ...(input.instanceId ? { instanceId: input.instanceId } : {}),
           serverName: input.serverName,
           status: "pending",
           startedAt,
@@ -331,6 +337,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         const lease = yield* registry
           .acquireOauthClient({
             projectId: input.projectId,
+            ...(input.instanceId ? { instanceId: input.instanceId } : {}),
             serverName: input.serverName,
             ...(providerOptions ? { providerOptions } : {}),
             mcpEffectiveConfigVersion: stored.effectiveVersion,
@@ -405,6 +412,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
             runBackgroundTask(
               Effect.logWarning("Ignoring OAuth completion for unexpected MCP server name.", {
                 projectId: input.projectId,
+                ...(input.instanceId ? { instanceId: input.instanceId } : {}),
                 expectedServerName: input.serverName,
                 receivedServerName: payloadName,
               }),
@@ -470,6 +478,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
             }
             const nextStatus: McpOauthLoginStatusResult = {
               projectId: input.projectId,
+              ...(input.instanceId ? { instanceId: input.instanceId } : {}),
               serverName: input.serverName,
               status: "pending",
               startedAt,

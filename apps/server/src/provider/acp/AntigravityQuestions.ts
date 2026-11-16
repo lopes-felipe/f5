@@ -11,8 +11,11 @@ export function antigravityQuestion(
   if (!request.toolCall.toolCallId.startsWith("interaction_") || request.options.length === 0)
     return undefined;
   const labels = request.options.map((option) => option.name.trim() || option.optionId);
+  const values = request.options.map((option) => option.optionId);
   if (
     new Set(labels).size !== labels.length ||
+    new Set(values).size !== values.length ||
+    values.some((value) => !value.trim()) ||
     labels.some((label) => !label || label.length > 512)
   )
     return undefined;
@@ -21,7 +24,12 @@ export function antigravityQuestion(
     header: "Antigravity question",
     question: (request.toolCall.title?.trim() || "Choose an option.").slice(0, 8000),
     multiSelect: false,
-    options: labels.map((label) => ({ label, description: label })),
+    allowCustomAnswer: false,
+    options: labels.map((label, index) => ({
+      label,
+      description: label,
+      value: request.options[index]!.optionId,
+    })),
   };
 }
 
@@ -38,7 +46,10 @@ export function antigravityQuestionResponse(
       : Array.isArray(raw) && raw.length === 1 && typeof raw[0] === "string"
         ? raw[0]
         : undefined;
-  const index = question.options.findIndex((option) => option.label === answer);
+  // Older persisted question cards contain labels only; retain that response path.
+  const exact = question.options.findIndex((option) => option.value === answer);
+  const index =
+    exact >= 0 ? exact : question.options.findIndex((option) => option.label === answer);
   const option = request.options[index];
   return option ? { outcome: { outcome: "selected", optionId: option.optionId } } : undefined;
 }

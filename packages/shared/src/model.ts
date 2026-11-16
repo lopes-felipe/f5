@@ -31,10 +31,14 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
   opencode: new Set(MODEL_OPTIONS_BY_PROVIDER.opencode.map((option) => option.slug)),
   grok: new Set(MODEL_OPTIONS_BY_PROVIDER.grok.map((option) => option.slug)),
   antigravity: new Set(MODEL_OPTIONS_BY_PROVIDER.antigravity.map((option) => option.slug)),
+  muse: new Set(MODEL_OPTIONS_BY_PROVIDER.muse.map((option) => option.slug)),
+  acp: new Set(MODEL_OPTIONS_BY_PROVIDER.acp.map((option) => option.slug)),
+  pi: new Set(MODEL_OPTIONS_BY_PROVIDER.pi.map((option) => option.slug)),
 };
 
 const CLAUDE_FABLE_5_MODEL = "claude-fable-5";
 const CLAUDE_FABLE_5_1_MODEL = "claude-fable-5-1";
+const CLAUDE_FABLE_5_2_MODEL = "claude-fable-5-2";
 const CLAUDE_SONNET_5_MODEL = "claude-sonnet-5";
 const CLAUDE_OPUS_5_5_MODEL = "claude-opus-5-5";
 const CLAUDE_OPUS_5_MODEL = "claude-opus-5";
@@ -62,6 +66,16 @@ interface ClaudeModelMetadata {
 }
 
 const CLAUDE_MODEL_METADATA: Record<ClaudeBuiltInModelSlug, ClaudeModelMetadata> = {
+  "claude-sonnet-5-5": {
+    contextWindowTokens: 1_000_000,
+    effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
+    defaultEffort: "high",
+  },
+  "claude-haiku-5-5": {
+    contextWindowTokens: 1_000_000,
+    effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
+    defaultEffort: "medium",
+  },
   [CLAUDE_OPUS_5_5_MODEL]: {
     contextWindowTokens: 1_000_000,
     effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
@@ -73,6 +87,11 @@ const CLAUDE_MODEL_METADATA: Record<ClaudeBuiltInModelSlug, ClaudeModelMetadata>
     effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
     defaultEffort: "high",
     supportsFastMode: true,
+  },
+  [CLAUDE_FABLE_5_2_MODEL]: {
+    contextWindowTokens: 1_000_000,
+    effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
+    defaultEffort: "high",
   },
   [CLAUDE_FABLE_5_1_MODEL]: {
     contextWindowTokens: 1_000_000,
@@ -95,7 +114,8 @@ const CLAUDE_MODEL_METADATA: Record<ClaudeBuiltInModelSlug, ClaudeModelMetadata>
     contextWindowTokens: 1_000_000,
     effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
     defaultEffort: "xhigh",
-    supportsFastMode: true,
+    // Fast mode is deprecated for Opus 4.8 (removed 2026-11-30); only an
+    // executable-reported capability still offers it.
     supportsContextWindow: true,
   },
   [CLAUDE_OPUS_4_7_MODEL]: {
@@ -134,6 +154,11 @@ interface CodexModelMetadata {
 }
 
 const CODEX_MODEL_METADATA: Record<string, CodexModelMetadata> = {
+  "gpt-6-sol": { contextWindowTokens: 1_050_000 },
+  "gpt-6-luna": {
+    contextWindowTokens: 1_050_000,
+    effortOptions: ["max", "xhigh", "high", "medium", "low"],
+  },
   "gpt-6.1-sol": { contextWindowTokens: 1_050_000 },
   "gpt-6-astra": {
     contextWindowTokens: 1_050_000,
@@ -217,6 +242,9 @@ function toBuiltInProviderKind(provider: ProviderKind | ProviderDriverKind): Pro
     case "opencode":
     case "grok":
     case "antigravity":
+    case "muse":
+    case "acp":
+    case "pi":
       return provider as ProviderKind;
     default:
       return "codex";
@@ -555,7 +583,8 @@ function stripClaudeContextWindowSuffix(model: string): string {
   return model.replace(/\[(?:1m|200k)\]$/i, "");
 }
 
-export function normalizeModelSlug(
+/** Clean a custom slug without rewriting names that also happen to be static aliases. */
+export function normalizeCustomModelSlug(
   model: string | null | undefined,
   provider: ProviderKind | ProviderDriverKind = "codex",
 ): ModelSlug | null {
@@ -571,7 +600,19 @@ export function normalizeModelSlug(
   const builtInProvider = toBuiltInProviderKind(provider);
   const slug =
     builtInProvider === "claudeAgent" ? stripClaudeContextWindowSuffix(trimmed) : trimmed;
-  const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[builtInProvider] as Record<string, ModelSlug>;
+  return slug as ModelSlug;
+}
+
+export function normalizeModelSlug(
+  model: string | null | undefined,
+  provider: ProviderKind | ProviderDriverKind = "codex",
+): ModelSlug | null {
+  const slug = normalizeCustomModelSlug(model, provider);
+  if (slug === null) return null;
+  const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[toBuiltInProviderKind(provider)] as Record<
+    string,
+    ModelSlug
+  >;
   const aliased = Object.prototype.hasOwnProperty.call(aliases, slug) ? aliases[slug] : undefined;
   return typeof aliased === "string" ? aliased : (slug as ModelSlug);
 }
@@ -782,6 +823,17 @@ export function resolveCodexReasoningEffortForModel(
   return getDefaultReasoningEffort("codex", model);
 }
 
+/** An omitted choice inherits Codex's global service tier. Explicit off remains off. */
+export function resolveCodexFastMode(
+  options: CodexModelOptions | null | undefined,
+  reported?: ModelCapabilities | null,
+): boolean {
+  return (
+    options?.fastMode ??
+    (reported?.defaultServiceTier === "fast" || reported?.defaultServiceTier === "priority")
+  );
+}
+
 export function normalizeCodexModelOptions(
   model: string | null | undefined,
   modelOptions: CodexModelOptions | null | undefined,
@@ -790,13 +842,17 @@ export function normalizeCodexModelOptions(
 ): CodexModelOptions | undefined {
   if (reported?.source === "reported") {
     const capabilities = resolveModelCapabilities("codex", model, reported);
-    const requested = modelOptions?.reasoningEffort;
-    const effort =
-      requested && capabilities.effortOptions.includes(requested) ? requested : undefined;
+    // Walk an unsupported pick down as `turn/start` does, so saving another
+    // option (fast mode) keeps the effort the picker showed.
+    const effort = modelOptions?.reasoningEffort
+      ? resolveCodexEffectiveReasoningEffort(model, modelOptions.reasoningEffort, reported)
+      : undefined;
     const reportedOptions: CodexModelOptions = {
       ...(effort && effort !== capabilities.defaultEffort ? { reasoningEffort: effort } : {}),
-      ...(modelOptions?.fastMode === true && capabilities.supportsFastMode
-        ? { fastMode: true }
+      ...(modelOptions?.fastMode !== undefined &&
+      capabilities.supportsFastMode &&
+      (modelOptions.fastMode || resolveCodexFastMode(undefined, reported))
+        ? { fastMode: modelOptions.fastMode }
         : {}),
     };
     return Object.keys(reportedOptions).length > 0 ? reportedOptions : undefined;
@@ -814,22 +870,20 @@ export function normalizeCodexModelOptions(
 export function normalizeClaudeModelOptions(
   model: string | null | undefined,
   modelOptions: ClaudeModelOptions | null | undefined,
+  reported?: ModelCapabilities | null,
 ): ClaudeModelOptions | undefined {
-  const reasoningOptions = getReasoningEffortOptions("claudeAgent", model);
-  const defaultReasoningEffort = getDefaultReasoningEffort("claudeAgent", model);
-  const resolvedEffort = resolveReasoningEffortForProvider("claudeAgent", modelOptions?.effort);
+  const capabilities = resolveModelCapabilities("claudeAgent", model, reported);
+  const defaultReasoningEffort = capabilities.defaultEffort;
+  const resolvedEffort = resolveClaudeModelEffort(model, modelOptions?.effort, reported);
   const effort =
-    resolvedEffort &&
-    resolvedEffort !== "ultrathink" &&
-    reasoningOptions.includes(resolvedEffort) &&
-    resolvedEffort !== defaultReasoningEffort
+    resolvedEffort && resolvedEffort !== "ultrathink" && resolvedEffort !== defaultReasoningEffort
       ? resolvedEffort
       : undefined;
   const thinking =
-    supportsClaudeThinkingToggle(model) && modelOptions?.thinking === false ? false : undefined;
+    capabilities.supportsThinkingToggle && modelOptions?.thinking === false ? false : undefined;
   const fastMode =
-    supportsClaudeFastMode(model) && modelOptions?.fastMode === true ? true : undefined;
-  const contextWindow = supportsClaudeContextWindow(model)
+    capabilities.supportsFastMode && modelOptions?.fastMode === true ? true : undefined;
+  const contextWindow = capabilities.supportsContextWindow
     ? normalizeClaudeContextWindow(modelOptions?.contextWindow)
     : undefined;
   const nextOptions: ClaudeModelOptions = {
@@ -840,6 +894,8 @@ export function normalizeClaudeModelOptions(
   };
   return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
 }
+
+export const CLAUDE_ULTRATHINK_PROMPT_PREFIX = "Ultrathink:";
 
 export function applyClaudePromptEffortPrefix(
   text: string,
@@ -852,10 +908,10 @@ export function applyClaudePromptEffortPrefix(
   if (effort !== "ultrathink") {
     return trimmed;
   }
-  if (trimmed.startsWith("Ultrathink:")) {
+  if (trimmed.startsWith(CLAUDE_ULTRATHINK_PROMPT_PREFIX)) {
     return trimmed;
   }
-  return `Ultrathink:\n${trimmed}`;
+  return `${CLAUDE_ULTRATHINK_PROMPT_PREFIX}\n${trimmed}`;
 }
 
 /**
@@ -938,7 +994,10 @@ export function resolveModelCapabilities(
               [
                 ...effortDescriptor.options.map((option) => option.id),
                 // The prompt keyword is F5 metadata; executables never report it.
-                ...(builtInEfforts.includes("ultrathink") ? ["ultrathink"] : []),
+                ...(builtInEfforts.includes("ultrathink") &&
+                effortDescriptor.options.some((option) => option.id === "max")
+                  ? ["ultrathink"]
+                  : []),
               ],
               CLAUDE_CODE_EFFORT_OPTIONS,
             )
@@ -1039,6 +1098,75 @@ export function resolveSupportedEffort(
   return null;
 }
 
+/** Preserve explicit SDK efforts when no catalog or runtime effort facts are known. */
+export function resolveClaudeModelEffort(
+  model: string | null | undefined,
+  requested: string | null | undefined,
+  reported?: ModelCapabilities | null,
+): ClaudeCodeEffort | null {
+  const effort = resolveReasoningEffortForProvider("claudeAgent", requested);
+  const capabilities = resolveModelCapabilities("claudeAgent", model, reported);
+  if (
+    !getClaudeModelMetadata(model) &&
+    !(
+      reported?.source === "reported" &&
+      (reported.supportsEffort === false || selectDescriptor(reported, "effort"))
+    )
+  ) {
+    return getEffectiveClaudeCodeEffort(effort);
+  }
+  return resolveSupportedEffort(capabilities, effort) as ClaudeCodeEffort | null;
+}
+
+/**
+ * The Codex effort a turn runs at, as `turn/start` resolves it: the requested
+ * effort walked down to one the model supports, else the model default.
+ * Reported capabilities win over the built-in table. `undefined` only when a
+ * reported model takes no effort.
+ */
+export function resolveCodexEffectiveReasoningEffort(
+  model: string | null | undefined,
+  effort: string | null | undefined,
+  reported?: ModelCapabilities | null,
+): CodexReasoningEffort | undefined {
+  if (reported?.source !== "reported") {
+    return resolveCodexReasoningEffortForModel(model, effort);
+  }
+  const capabilities = resolveModelCapabilities("codex", model, reported);
+  const requested = resolveReasoningEffortForProvider("codex", effort);
+  if (requested) {
+    const start = CODEX_REASONING_EFFORT_OPTIONS.indexOf(requested);
+    for (const candidate of CODEX_REASONING_EFFORT_OPTIONS.slice(start)) {
+      if (capabilities.effortOptions.includes(candidate)) return candidate;
+    }
+  }
+  return capabilities.defaultEffort as CodexReasoningEffort | undefined;
+}
+
+/**
+ * Codex options to send or save for a turn. Unlike `normalizeCodexModelOptions`
+ * (draft persistence), the effective effort stays explicit even when it is the
+ * default, so a session whose `model/list` reports another default (or reports
+ * one the client never saw) cannot substitute it.
+ */
+export function resolveCodexDispatchModelOptions(
+  model: string | null | undefined,
+  modelOptions: CodexModelOptions | null | undefined,
+  reported?: ModelCapabilities | null,
+): CodexModelOptions | undefined {
+  const normalized = normalizeCodexModelOptions(model, modelOptions, reported);
+  const reasoningEffort = resolveCodexEffectiveReasoningEffort(
+    model,
+    modelOptions?.reasoningEffort,
+    reported,
+  );
+  const nextOptions: CodexModelOptions = {
+    ...normalized,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  };
+  return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
+}
+
 /** Subset of the SDK's `ModelInfo` that F5 reads. */
 export interface ReportedClaudeModelInfo {
   readonly value: string;
@@ -1071,13 +1199,14 @@ export function createReportedClaudeModelCapabilities(
   const optionDescriptors: ProviderOptionDescriptor[] = [];
   if (info.supportsEffort === false) {
     // Explicitly no effort: no descriptor, and the resolver sends none.
-  } else if (efforts.length === 0) {
+  } else if (info.supportedEffortLevels === undefined) {
     // Levels not reported: keep F5's own effort choices for this model.
     if (builtInEffort) optionDescriptors.push(builtInEffort);
   } else {
-    const withKeyword = builtInEffort?.promptInjectedValues?.includes("ultrathink")
-      ? [...efforts, "ultrathink" as const]
-      : efforts;
+    const withKeyword =
+      efforts.includes("max") && builtInEffort?.promptInjectedValues?.includes("ultrathink")
+        ? [...efforts, "ultrathink" as const]
+        : efforts;
     optionDescriptors.push({
       id: "effort",
       label: "Reasoning",
@@ -1115,7 +1244,13 @@ export function createReportedClaudeModelCapabilities(
   return {
     optionDescriptors,
     source: "reported",
-    ...(info.supportsEffort !== undefined ? { supportsEffort: info.supportsEffort } : {}),
+    ...(info.supportsEffort !== undefined || info.supportedEffortLevels !== undefined
+      ? {
+          supportsEffort:
+            info.supportsEffort !== false &&
+            (info.supportedEffortLevels === undefined || efforts.length > 0),
+        }
+      : {}),
     ...(info.supportsFastMode !== undefined ? { supportsFastMode: info.supportsFastMode } : {}),
     ...(info.supportsAdaptiveThinking !== undefined
       ? { supportsAdaptiveThinking: info.supportsAdaptiveThinking }
@@ -1203,7 +1338,11 @@ export function createReportedCodexModelCapabilities(
     // A reported empty list means "none"; an absent field leaves F5's defaults.
     ...(effortsReported ? { supportsEffort: efforts.length > 0 } : {}),
     ...(tiersReported
-      ? { supportsFastMode: serviceTiers.some((tier) => tier.id === CODEX_FAST_SERVICE_TIER) }
+      ? {
+          supportsFastMode: serviceTiers.some(
+            (tier) => tier.id === CODEX_FAST_SERVICE_TIER || tier.id === "priority",
+          ),
+        }
       : {}),
     ...(serviceTiers.length > 0 ? { serviceTiers } : {}),
     ...(defaultServiceTier ? { defaultServiceTier } : {}),
@@ -1212,3 +1351,46 @@ export function createReportedCodexModelCapabilities(
 }
 
 export { CLAUDE_CODE_EFFORT_OPTIONS, CODEX_REASONING_EFFORT_OPTIONS };
+
+/** Readable names for executable-discovered models; unknown naming schemes stay verbatim. */
+export function formatModelDisplayName(provider: string, slug: string): string | undefined {
+  if (provider === "claudeAgent") {
+    const match = /^claude-([a-z]+)-(\d{1,2})(?:-(\d{1,2}))?$/.exec(slug.replace(/-\d{8}$/, ""));
+    if (match)
+      return `Claude ${match[1]![0]!.toUpperCase()}${match[1]!.slice(1)} ${match[2]}${match[3] ? "." + match[3] : ""}`;
+  }
+  if (provider === "codex") {
+    const match = /^gpt-(\d+(?:\.\d+)?)(?:-([a-z][a-z0-9-]*))?$/.exec(slug);
+    if (match)
+      return `GPT-${match[1]}${
+        match[2]
+          ? " " +
+            match[2]
+              .split("-")
+              .map((word) => word[0]!.toUpperCase() + word.slice(1))
+              .join(" ")
+          : ""
+      }`;
+  }
+  return undefined;
+}
+
+export function isListedModel(model: {
+  readonly isCustom?: boolean | undefined;
+  readonly isUnlisted?: boolean | undefined;
+}): boolean {
+  return model.isCustom === true || model.isUnlisted !== true;
+}
+export function pickPreferredModel<
+  T extends {
+    readonly slug: string;
+    readonly isCustom?: boolean | undefined;
+    readonly isUnlisted?: boolean | undefined;
+  },
+>(options: ReadonlyArray<T>, preferred: ReadonlyArray<string> = []): T | undefined {
+  for (const slug of preferred) {
+    const model = options.find((option) => option.slug === slug && isListedModel(option));
+    if (model) return model;
+  }
+  return options.find(isListedModel) ?? options[0];
+}

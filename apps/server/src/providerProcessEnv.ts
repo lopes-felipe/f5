@@ -1,16 +1,37 @@
 import { githubShellEnvironment } from "./git/githubShellStartup";
+import { CODEX_PACKAGE_MANAGER_ENV_NAMES } from "./provider/codexExecutable.ts";
+import {
+  BROWSER_OPEN_TOKEN_ENV,
+  browserLauncherDir,
+  browserLauncherPath,
+  browserOpenEnabled,
+} from "./browser/BrowserOpenLauncher";
 import { githubLauncherDir } from "./git/GithubCliLauncher";
 import { profileGithubEnvironment } from "./git/profileGithubEnvironment";
 import { appendGitConfigPairs, profileSessionGitConfigPairs } from "./git/gitConfigEnvironment";
 import { knownGithubHostsSync } from "./git/GithubCliProjection";
 import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
+import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
+import { SERVER_AUTH_TOKEN_ENV } from "./serverAuth";
 const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_", "F5_LAUNCHER_", "F5_UPDATE_"] as const;
+const CODEX_PACKAGE_MANAGER_ENV = new Set<string>(CODEX_PACKAGE_MANAGER_ENV_NAMES);
 
 function isBlockedProviderEnvKey(key: string): boolean {
   const normalizedKey = key.toUpperCase();
   return (
-    ["F5_STANDALONE", "F5_STANDALONE_DIR", "F5_INSTALL_ROOT"].includes(normalizedKey) ||
+    // Only the spawn site that knows the thread may set a browser-open token; an inherited one
+    // (for example, F5 started from another F5's terminal) never reaches F5's children.
+    // The backend's own credential never reaches them either: a child holding it could connect
+    // as a client, answer its own approval requests and open terminals.
+    [
+      "F5_STANDALONE",
+      "F5_STANDALONE_DIR",
+      "F5_INSTALL_ROOT",
+      BROWSER_OPEN_TOKEN_ENV,
+      SERVER_AUTH_TOKEN_ENV,
+    ].includes(normalizedKey) ||
+    CODEX_PACKAGE_MANAGER_ENV.has(normalizedKey) ||
     BLOCKED_PROVIDER_ENV_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))
   );
 }
@@ -39,6 +60,7 @@ export function buildProviderChildProcessEnv(
   }
 
   for (const [key, value] of Object.entries(overrides)) {
+    if (CODEX_PACKAGE_MANAGER_ENV.has(key.toUpperCase())) continue;
     if (process.platform === "win32") {
       for (const inherited of Object.keys(env))
         if (inherited.toUpperCase() === key.toUpperCase()) delete env[inherited];
@@ -54,6 +76,9 @@ export function buildProviderChildProcessEnv(
   return env;
 }
 
+/** Marks processes F5 launches for agents and terminals. */
+export const AGENT_PROCESS_ENV = "F5_AGENT_PROCESS";
+
 export const PROFILE_ISOLATED_CREDENTIAL_ENV_NAMES = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
@@ -64,6 +89,24 @@ export const PROFILE_ISOLATED_CREDENTIAL_ENV_NAMES = [
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
   "CODEX_HOME",
+  "PI_CODING_AGENT_DIR",
+  "OPENROUTER_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GROQ_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "MISTRAL_API_KEY",
+  "COHERE_API_KEY",
+  "TOGETHER_API_KEY",
+  "FIREWORKS_API_KEY",
+  "XAI_API_KEY",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_PROFILE",
+  "AWS_SHARED_CREDENTIALS_FILE",
+  "AWS_CONFIG_FILE",
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "GH_ENTERPRISE_TOKEN",
@@ -71,7 +114,7 @@ export const PROFILE_ISOLATED_CREDENTIAL_ENV_NAMES = [
   "GH_CONFIG_DIR",
 ] as const;
 const reservedEnvironment =
-  /^(?:HOME|USERPROFILE|HOMEDRIVE|HOMEPATH|APPDATA|LOCALAPPDATA|XDG_.*|CODEX_HOME|CLAUDE_CONFIG_DIR|CLAUDE_SECURESTORAGE_CONFIG_DIR|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH|GIT_SSH_COMMAND|F5_.*|T3CODE_.*)$/i;
+  /^(?:HOME|USERPROFILE|HOMEDRIVE|HOMEPATH|APPDATA|LOCALAPPDATA|XDG_.*|CODEX_HOME|PI_CODING_AGENT_DIR|CLAUDE_CONFIG_DIR|CLAUDE_SECURESTORAGE_CONFIG_DIR|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH|GIT_SSH_COMMAND|F5_.*|T3CODE_.*)$/i;
 export function assertAccountEnvironmentOverrides(environment: NodeJS.ProcessEnv): void {
   for (const key of Object.keys(environment))
     if (reservedEnvironment.test(key))
@@ -107,16 +150,31 @@ export function buildAccountExecutionEnvironment(input: {
   );
   if (isolated) {
     assertAccountEnvironmentOverrides(instance);
-    if (input.overrides) assertAccountEnvironmentOverrides(input.overrides);
+    // F5 sets the project script variables itself; configured instance env still may not.
+    if (input.overrides)
+      assertAccountEnvironmentOverrides(
+        Object.fromEntries(
+          Object.entries(input.overrides).filter(
+            ([key]) => !PROJECT_SCRIPT_ENV_NAMES.some((name) => name === key.toUpperCase()),
+          ),
+        ),
+      );
   }
   const environment = profileGithubEnvironment(
     buildProviderChildProcessEnv(base, { ...instance, ...input.overrides }),
     input.stateDir,
   );
   if (input.purpose === "provider" || input.purpose === "terminal") {
+    // Recursion guard: the Agent Bridge STDIO shim serves no tools to F5's own agents.
+    environment[AGENT_PROCESS_ENV] = "1";
     const pathKey = Object.keys(environment).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
     environment[pathKey] =
       githubLauncherDir(input.stateDir) + Path.delimiter + (environment[pathKey] ?? "");
+    if (browserOpenEnabled()) {
+      environment.BROWSER = browserLauncherPath(input.stateDir);
+      environment[pathKey] =
+        browserLauncherDir(input.stateDir) + Path.delimiter + environment[pathKey];
+    }
     if (isolated)
       appendGitConfigPairs(
         environment,

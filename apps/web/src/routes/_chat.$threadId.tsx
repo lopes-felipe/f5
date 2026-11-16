@@ -4,7 +4,15 @@ import {
   type ProjectId,
   type TaskItem,
 } from "@t3tools/contracts";
-import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  retainSearchParams,
+  useNavigate,
+  useRouter,
+  useRouterState,
+} from "@tanstack/react-router";
+
+import { RouteErrorView } from "../components/RouteErrorView";
 import {
   Suspense,
   lazy,
@@ -17,8 +25,10 @@ import {
 } from "react";
 
 import { Schema } from "effect";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { getLocalStorageItem } from "../hooks/useLocalStorage";
-import { useAppSettings } from "../appSettings";
+import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../appSettings";
 import ChatView from "../components/ChatView";
 import { DiffSurfaceBoundary } from "../components/DiffSurfaceBoundary";
 import PlanSidebar from "../components/PlanSidebar";
@@ -35,6 +45,7 @@ import {
 import { Button } from "../components/ui/button";
 import { toastManager } from "../components/ui/toast";
 import { workspaceIdentityForRoot } from "../components/fileTreeDragMention";
+import { useThreadLinkPrompt } from "../components/promptLinks/useThreadLinkPrompt";
 import { useComposerDraftStore } from "../composerDraftStore";
 import {
   clearFileViewSearchParams,
@@ -43,8 +54,10 @@ import {
   parseDiffRouteSearch,
 } from "../diffRouteSearch";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { useContextDocumentTitle } from "../hooks/useDocumentTitle";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useAgentsPanelStore } from "../agentsPanelStore";
+import { AgentTranscriptPanel } from "../components/AgentTranscriptPanel";
 import { useAgentsPanelModel } from "../lib/agentsReactQuery";
 import { useThreadDetail } from "../lib/orchestrationReactQuery";
 import { useStartupReady } from "../lib/startupReady";
@@ -56,6 +69,7 @@ import {
 } from "../rightPanelNavigation";
 import {
   selectThreadRightPanelState,
+  selectFilePreviewVisible,
   type RightPanelSurface,
   useRightPanelStore,
 } from "../rightPanelStore";
@@ -65,9 +79,21 @@ import {
   isLatestTurnSettled,
 } from "../session-logic";
 import { useStore } from "../store";
+import { survivingThreadAfterDeletion } from "../lib/threadOrdering";
+import { useThread } from "../threadSelectors";
+import { resolveThreadRouteRenderState } from "../threadRoutes";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 import { AppTitlebar } from "~/components/AppTitlebar";
+import { workspaceAreaProps } from "~/lib/workspaceFocus";
 
+function selectThreadRouteSettings(settings: AppSettings) {
+  return {
+    timestampFormat: settings.timestampFormat,
+    workspaceFileTreeEntryLimit: settings.workspaceFileTreeEntryLimit,
+  };
+}
+
+const PrLinkedPanel = lazy(() => import("../components/prHub/PrLinkedPanel"));
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const AgentsPanel = lazy(() =>
   import("../components/AgentsPanel").then((module) => ({ default: module.AgentsPanel })),
@@ -78,6 +104,7 @@ const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_w
 const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
 const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH = 26 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
+const RIGHT_PANEL_WORKSPACE_AREA = workspaceAreaProps("panel", 4, "Workspace panel");
 const EMPTY_ACTIVITIES: ReadonlyArray<OrchestrationThreadActivity> = [];
 const EMPTY_TASKS: ReadonlyArray<TaskItem> = [];
 type RightPanelRenderMode = Extract<DiffPanelMode, "sheet" | "sidebar">;
@@ -105,11 +132,17 @@ const LazyFileViewPanel = (props: {
   mode: DiffPanelMode;
   surface: FileRightPanelSurface;
   onClose: () => void;
+  openInShortcutEnabled: boolean;
 }) => {
   return (
     <DiffSurfaceBoundary fallback={<DiffLoadingFallback mode={props.mode} />}>
       <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
-        <FileViewPanel mode={props.mode} surface={props.surface} onClose={props.onClose} />
+        <FileViewPanel
+          mode={props.mode}
+          surface={props.surface}
+          onClose={props.onClose}
+          openInShortcutEnabled={props.openInShortcutEnabled}
+        />
       </Suspense>
     </DiffSurfaceBoundary>
   );
@@ -181,18 +214,18 @@ const RightPanelInlineSidebar = (props: {
   children: ReactNode;
 }) => {
   const { open, onClose, onOpenDefaultSurface, threadId } = props;
-  const { settings, updateSettings } = useAppSettings();
+  const rightPanelWidths = useAppSettingsSelector((settings) => settings.rightPanelWidths);
   const width =
-    settings.rightPanelWidths[threadId] ??
+    rightPanelWidths[threadId] ??
     getLocalStorageItem(RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY, Schema.Finite);
   const saveWidth = useCallback(
     (nextWidth: number) => {
-      const entries = Object.entries(settings.rightPanelWidths).filter(([id]) => id !== threadId);
-      updateSettings({
+      const entries = Object.entries(rightPanelWidths).filter(([id]) => id !== threadId);
+      updateAppSettings({
         rightPanelWidths: Object.fromEntries([...entries.slice(-49), [threadId, nextWidth]]),
       });
     },
-    [settings.rightPanelWidths, threadId, updateSettings],
+    [rightPanelWidths, threadId],
   );
   const onOpenChange = useCallback(
     (open: boolean) => {
@@ -270,6 +303,8 @@ const RightPanelInlineSidebar = (props: {
         collapsible="offcanvas"
         // A second canvas beside the main one: same 8px gutter on the chrome.
         className="border-l-0 bg-transparent py-2 pe-2 text-foreground *:data-[slot=sidebar-inner]:overflow-hidden *:data-[slot=sidebar-inner]:rounded-xl *:data-[slot=sidebar-inner]:surface-canvas"
+        {...RIGHT_PANEL_WORKSPACE_AREA}
+        data-workspace-unavailable={open ? undefined : "true"}
         resizable={{
           minWidth: RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
           shouldAcceptWidth: shouldAcceptInlineSidebarWidth,
@@ -326,29 +361,49 @@ function ThreadDetailErrorView(props: {
 function ChatThreadRouteView() {
   const startupReady = useStartupReady();
   const navigate = useNavigate();
+  const router = useRouter();
+  const navigationPending = useRouterState({ select: (state) => state.isLoading });
   const threadId = Route.useParams({
     select: (params) => ThreadId.makeUnsafe(params.threadId),
   });
   const search = Route.useSearch();
-  const { settings } = useAppSettings();
-  const thread = useStore((store) => store.threads.find((entry) => entry.id === threadId));
-  const threadExists = useStore((store) => store.threads.some((thread) => thread.id === threadId));
+  const settings = useAppSettingsSelector(selectThreadRouteSettings);
+  const thread = useThread(threadId);
+  const lastKnownThreadId = useRef<ThreadId | null>(null);
+  useEffect(() => {
+    if (thread) lastKnownThreadId.current = thread.id;
+  }, [thread]);
+  const threadExists = thread !== undefined;
   const draftThread = useComposerDraftStore(
     (store) => store.draftThreadsByThreadId[threadId] ?? null,
   );
   const effectiveProjectId = thread?.projectId ?? draftThread?.projectId ?? null;
-  const effectiveWorktreePath = thread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const activeProject = useStore((store) =>
     effectiveProjectId
       ? (store.projects.find((project) => project.id === effectiveProjectId) ?? null)
       : null,
   );
   const routeThreadExists = threadExists || draftThread !== null;
-  const threadDetailQuery = useThreadDetail(thread ? threadId : null);
+  useThreadLinkPrompt(threadId, startupReady && routeThreadExists);
+  useContextDocumentTitle({
+    projectName: activeProject?.name ?? null,
+    itemTitle: thread?.title ?? (draftThread ? "New thread" : null),
+  });
+  const threadDetailQuery = useThreadDetail(
+    thread || (startupReady && !draftThread) ? threadId : null,
+  );
+  const routeRenderState = resolveThreadRouteRenderState({
+    startupReady,
+    threadExists,
+    draftThreadExists: draftThread !== null,
+    detail: threadDetailQuery.data,
+    detailFetching: threadDetailQuery.isFetching,
+  });
   const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const rightPanelState = useRightPanelStore((store) =>
     selectThreadRightPanelState(store.byThreadId, threadId),
   );
+  const filePreviewVisible = selectFilePreviewVisible(rightPanelState);
   const agentsPanelVisible =
     rightPanelState.isOpen &&
     rightPanelState.surfaces.some(
@@ -393,9 +448,13 @@ function ChatThreadRouteView() {
       threadTasks,
     ],
   );
-  const markdownCwd = effectiveWorktreePath ?? activeProject?.cwd ?? undefined;
-  const workspaceRoot = activeProject?.cwd ?? undefined;
-  const workspaceBrowserRoot = effectiveWorktreePath ?? activeProject?.cwd ?? null;
+  const markdownCwd = threadWorkspaceCwd(thread ?? draftThread, activeProject);
+  // A thread without a project treats its own folder as the root; the shared scratch root is
+  // never shown.
+  const workspaceRoot = isScratchProject(activeProject)
+    ? markdownCwd
+    : (activeProject?.cwd ?? undefined);
+  const workspaceBrowserRoot = markdownCwd ?? null;
   const workspaceBrowserName = activeProject?.name ?? "Workspace";
   const workspaceBrowserIdentity =
     effectiveProjectId && workspaceBrowserRoot
@@ -431,8 +490,16 @@ function ChatThreadRouteView() {
       currentState.surfaces.find((surface) => surface.id === currentState.activeSurfaceId) ?? null;
 
     if (search.diff === "1") {
-      rightPanelStore.open(threadId, "diff");
-    } else if (currentState.surfaces.some((surface) => surface.kind === "diff")) {
+      // The initiating action already opened the surface. Reconciliation must
+      // not turn an automatic offer into a new manual panel choice.
+      if (!currentState.isOpen || activeSurface?.kind !== "diff") {
+        rightPanelStore.open(threadId, "diff");
+      }
+      rightPanelStore.finishProactiveDiffNavigation(threadId);
+    } else if (
+      !rightPanelStore.pendingProactiveDiffNavigationByThreadId[threadId] &&
+      currentState.surfaces.some((surface) => surface.kind === "diff")
+    ) {
       rightPanelStore.closeSurface(threadId, "diff");
     }
     if (search.fileViewPath) {
@@ -465,12 +532,22 @@ function ChatThreadRouteView() {
       return;
     }
 
-    if (!routeThreadExists) {
+    if (routeRenderState === "missing") {
+      // Bootstrap rollback can rekey a draft and navigate in the same tick.
+      // The old route must not cancel that navigation with a stale redirect.
+      if (router.state.isLoading || router.state.location.pathname !== "/" + threadId) return;
       useRightPanelStore.getState().removeThread(threadId);
+      if (lastKnownThreadId.current === threadId) {
+        const fallback = survivingThreadAfterDeletion(useStore.getState().threads);
+        if (fallback) {
+          void navigate({ to: "/$threadId", params: { threadId: fallback.id }, replace: true });
+          return;
+        }
+      }
       void navigate({ to: "/", replace: true });
       return;
     }
-  }, [navigate, routeThreadExists, startupReady, threadId]);
+  }, [navigate, navigationPending, routeRenderState, router, startupReady, threadId]);
 
   const clearSearchParamsForSurfaces = useCallback(
     (surfaces: ReadonlyArray<RightPanelSurface>) => {
@@ -647,6 +724,24 @@ function ChatThreadRouteView() {
     (mode: RightPanelRenderMode, loadingOnly = false) =>
       (surface: RightPanelSurface): ReactNode => {
         switch (surface.kind) {
+          case "pull-request":
+            return loadingOnly ? (
+              <DiffPanelLoadingState label="Loading pull request..." />
+            ) : (
+              <Suspense fallback={<DiffPanelLoadingState label="Loading pull request..." />}>
+                <PrLinkedPanel
+                  url={surface.url}
+                  threadId={threadId}
+                  initialAction={surface.initialAction}
+                  onInitialActionHandled={() => {
+                    if (surface.initialAction)
+                      useRightPanelStore
+                        .getState()
+                        .consumePullRequestAction(threadId, surface.id, surface.initialAction.id);
+                  }}
+                />
+              </Suspense>
+            );
           case "diff":
             return loadingOnly ? (
               <DiffLoadingFallback mode={mode} />
@@ -660,6 +755,7 @@ function ChatThreadRouteView() {
               <LazyFileViewPanel
                 mode={mode}
                 surface={surface}
+                openInShortcutEnabled={filePreviewVisible}
                 onClose={() => closeRightPanelSurface(surface)}
               />
             );
@@ -713,6 +809,20 @@ function ChatThreadRouteView() {
                 />
               </Suspense>
             );
+          case "agent-transcript":
+            return loadingOnly ? (
+              <DiffPanelLoadingState label="Loading agent transcript..." />
+            ) : (
+              <AgentTranscriptPanel
+                threadId={threadId}
+                nativeWorkItemId={surface.id.slice(6)}
+                focusActivityId={surface.focusActivityId}
+                workItemIds={surface.workItemIds}
+                title={surface.title}
+                visible={rightPanelState.isOpen}
+                cwd={workspaceBrowserRoot ?? undefined}
+              />
+            );
         }
       },
     [
@@ -729,6 +839,7 @@ function ChatThreadRouteView() {
       retryAgents,
       rightPanelState.activeSurfaceId,
       rightPanelState.isOpen,
+      filePreviewVisible,
       settings.timestampFormat,
       threadId,
       workspaceBrowserName,
@@ -792,7 +903,17 @@ function ChatThreadRouteView() {
   }
 
   if (!routeThreadExists) {
-    return null;
+    if (threadDetailQuery.isError && !threadDetailQuery.isFetching) {
+      return (
+        <ThreadDetailErrorView
+          title="Thread"
+          error={threadDetailQuery.error}
+          onRetry={() => void threadDetailQuery.refetch()}
+          retrying={threadDetailQuery.isFetching}
+        />
+      );
+    }
+    return routeRenderState === "loading" ? <StartupThreadRouteSkeleton /> : null;
   }
 
   if (
@@ -848,6 +969,7 @@ function ChatThreadRouteView() {
           <ChatView
             key={threadId}
             threadId={threadId}
+            openInShortcutEnabled={!filePreviewVisible}
             liveAgentCount={agentsLiveBadgeCount}
             focusTimelineEntryId={search.timelineEntryId}
             focusTimelineEntryKind={search.timelineEntryKind}
@@ -872,6 +994,7 @@ function ChatThreadRouteView() {
         <ChatView
           key={threadId}
           threadId={threadId}
+          openInShortcutEnabled={!filePreviewVisible}
           liveAgentCount={agentsLiveBadgeCount}
           focusTimelineEntryId={search.timelineEntryId}
           focusTimelineEntryKind={search.timelineEntryKind}
@@ -905,4 +1028,5 @@ export const Route = createFileRoute("/_chat/$threadId")({
     ],
   },
   component: ChatThreadRouteView,
+  errorComponent: RouteErrorView,
 });

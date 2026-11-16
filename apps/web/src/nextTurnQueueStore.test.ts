@@ -157,4 +157,54 @@ describe("scheduled usage resume indicator", () => {
       getNextTurnQueueScheduledResumeAt(useNextTurnQueueStore.getState(), threadId),
     ).toBeNull();
   });
+
+  it("keeps an edit draft until its item leaves the queue", () => {
+    const itemId = CommandId.makeUnsafe("draft-item");
+    const item = {
+      itemId,
+      threadId,
+      submissionId: CommandId.makeUnsafe("draft-submission"),
+      position: 0,
+      status: "queued" as const,
+      command: {
+        type: "thread.turn.start" as const,
+        commandId: CommandId.makeUnsafe("draft-command"),
+        threadId,
+        message: {
+          messageId: MessageId.makeUnsafe("draft-message"),
+          role: "user" as const,
+          text: "original",
+          attachments: [],
+        },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        createdAt: "2026-10-08T12:00:00.000Z",
+      },
+      attemptCount: 0,
+      notBefore: null,
+      dispatchStartedAt: null,
+      lastErrorCode: null,
+      lastErrorDetail: null,
+      createdAt: "2026-10-08T12:00:00.000Z",
+      updatedAt: "2026-10-08T12:00:00.000Z",
+    };
+    const draft = {
+      text: "edited",
+      model: "",
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+    };
+    const store = useNextTurnQueueStore.getState();
+    store.applySnapshot(snapshot(1, { items: [item] }));
+    store.setEditDraft(threadId, itemId, draft);
+
+    store.invalidateSnapshots();
+    store.applySnapshot(snapshot(2, { items: [item], paused: true, blockedKind: "error" }));
+    expect(useNextTurnQueueStore.getState().byThreadId[threadId]?.editDrafts[itemId]).toEqual(
+      draft,
+    );
+
+    store.applySnapshot(snapshot(3, { items: [] }));
+    expect(useNextTurnQueueStore.getState().byThreadId[threadId]?.editDrafts).toEqual({});
+  });
 });

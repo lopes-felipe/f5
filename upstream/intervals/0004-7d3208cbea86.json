@@ -1,0 +1,1305 @@
+{
+  "baseSha": "550f119c3ac12b2df070c4fd545ab8b41222debb",
+  "commits": [
+    {
+      "pr": 25493,
+      "sha": "7d3208cbea86b91574366bb6e87d05f93c975127",
+      "subject": "test(web): say why the useStableCallback test renders without a router (#25493)",
+      "topic": "pr-25493"
+    },
+    {
+      "pr": 25489,
+      "sha": "f0dd86f16482595c6cfffe0ac64dc12bffb634f9",
+      "subject": "fix(web): stable callbacks refresh before layout effects read them (#25489)",
+      "topic": "pr-25489"
+    },
+    {
+      "pr": 25458,
+      "sha": "28df7a246f9f7063180f9a4c509ee17c6823b32b",
+      "subject": "refactor(web): terminal output no longer re-renders the drawer, theme search runs from handlers (#25458)",
+      "topic": "pr-25458"
+    },
+    {
+      "pr": 25457,
+      "sha": "d5a791b94041555dc9a47f0dac9369c9cab7ef06",
+      "subject": "fix(client): drafts for answered questions are cleared even when their thread is not open (#25457)",
+      "topic": "pr-25457"
+    },
+    {
+      "pr": 25477,
+      "sha": "59a3f52ad332bc93f3fe20e3c634da474d203cab",
+      "subject": "fix(mobile): a new thread's first send no longer sticks on Starting (#25477)",
+      "topic": "pr-25477"
+    },
+    {
+      "pr": 25463,
+      "sha": "3cb16cf16509e74e2f483f541010996a9e6fac34",
+      "subject": "fix(web): find shows its match after a thread switch, and the timeline hears scrolling through one viewport signal (#25463)",
+      "topic": "pr-25463"
+    },
+    {
+      "pr": 25464,
+      "sha": "9d7997afc5db09462e140de19f799c709655094c",
+      "subject": "refactor(web): resize drags, panel shells and the browser host own their listeners (#25464)",
+      "topic": "pr-25464"
+    },
+    {
+      "pr": 25459,
+      "sha": "2acc7b55cfef71f493d189a6c95c2372f2598d80",
+      "subject": "refactor(web): review guide runs are watched from their answers, not from mounted components (#25459)",
+      "topic": "pr-25459"
+    },
+    {
+      "pr": 25456,
+      "sha": "3f3c1b9bcfd497eea2647e7a570a07e52b7c8872",
+      "subject": "refactor(web): HTML previews handle frame messages in one listener (#25456)",
+      "topic": "pr-25456"
+    },
+    {
+      "pr": 25364,
+      "sha": "071239804e375078dd3fae3b14704b4def57e048",
+      "subject": "refactor(web): pull request list remembers each answer for the next start (#25364)",
+      "topic": "pr-25364"
+    },
+    {
+      "pr": 25426,
+      "sha": "cc0b86ddf12a34bd65dce88d6f2ae1f069ef841e",
+      "subject": "fix(server): goals stop the running turn, clear while working, no echoes (#25426)",
+      "topic": "pr-25426"
+    },
+    {
+      "sha": "3e47c1cabc463145e485f1ee02e092832cd45c34",
+      "subject": "fix(mobile): e2e landscape poses rotate for real on tablets and folds",
+      "topic": "c-3e47c1cabc46"
+    },
+    {
+      "sha": "6a1c8d1e34e8b3e74111072bdc1c841e5530c76e",
+      "subject": "fix(mobile): mobile:install no longer requires --prepare",
+      "topic": "c-6a1c8d1e34e8"
+    },
+    {
+      "pr": 24269,
+      "sha": "3433ba15fdfec1acaad273f293098e773fc97bee",
+      "subject": "fix(mobile): select the correct draft after adding a project (#24269)",
+      "topic": "pr-24269"
+    },
+    {
+      "sha": "911091ba7efc9e97128ec1f6243f3935df2d1474",
+      "subject": "chore(mobile): e2e poses for current devices, Duo and landscape fixes",
+      "topic": "c-911091ba7efc"
+    },
+    {
+      "pr": 25376,
+      "sha": "6ffde5ba39ba6a718b658e2ef846e8f674c9ee6e",
+      "subject": "refactor(mobile): composer pastes and picks are cancelled by their draft, not by the composer (#25376)",
+      "topic": "pr-25376"
+    },
+    {
+      "pr": 25370,
+      "sha": "6ea34149bb6ea7657f5905e34085c2bfee3f7f6d",
+      "subject": "refactor(client): composers share one workspace snapshot refresh per provider and cwd (#25370)",
+      "topic": "pr-25370"
+    },
+    {
+      "pr": 25371,
+      "sha": "1316d48b0c68151afd8b47eb0c11a114cf0b4daa",
+      "subject": "fix(web): citations to older responses load their history instead of failing (#25371)",
+      "topic": "pr-25371"
+    },
+    {
+      "pr": 25377,
+      "sha": "a2404082424b3c9baedce6783a63d0caa35b7d26",
+      "subject": "refactor(web): file breadcrumb menus refetch on a new workspace change, not on every open (#25377)",
+      "topic": "pr-25377"
+    },
+    {
+      "pr": 25415,
+      "sha": "184d915d8774615a01ebae0350235a1039852e85",
+      "subject": "feat(mobile): thread rows drop the branch and lead with the title (#25415)",
+      "topic": "pr-25415"
+    },
+    {
+      "pr": 25412,
+      "sha": "cc93cc564b052a9dcf73323783e7b60506cda5e0",
+      "subject": "revert(web): composer body ref goes back to the #25079 ref callback (#25412)",
+      "topic": "pr-25412"
+    },
+    {
+      "pr": 25390,
+      "sha": "91f47a1a27c223bf8e7a741671e052b15177263a",
+      "subject": "fix(mobile): mobile:install builds on a cache miss for pooled devices, iOS on EAS (#25390)",
+      "topic": "pr-25390"
+    },
+    {
+      "pr": 25368,
+      "sha": "0a20d7ea73dc1f80b5fec1ccefd77f19f3931832",
+      "subject": "fix(web): switching threads no longer delays the next thread's visit by up to 10s (#25368)",
+      "topic": "pr-25368"
+    },
+    {
+      "pr": 25409,
+      "sha": "e1c750e7bd3eabe85e94a0052100638f77dbedf9",
+      "subject": "fix(web): composer body ref stops re-attaching on every render (#25409)",
+      "topic": "pr-25409"
+    },
+    {
+      "pr": 25099,
+      "sha": "72dde22b6f092491fac4ddc480bc609bb8092bfd",
+      "subject": "chore(lint): enforce effectFnOpportunity (#25099)",
+      "topic": "pr-25099"
+    },
+    {
+      "sha": "d171a88fc4fa00b1ca7ce6af7854e55cc3cc88ec",
+      "subject": "feat(mobile): run the chrome e2e across poses on the device pool",
+      "topic": "c-d171a88fc4fa"
+    },
+    {
+      "pr": 25363,
+      "sha": "fb8fc1ffd3c038bf00050dc087e329b2f4add4eb",
+      "subject": "refactor(web): disconnect and reconnect delays read a shared deadline instead of effect timers (#25363)",
+      "topic": "pr-25363"
+    },
+    {
+      "pr": 25156,
+      "sha": "1ecb1a0f9346c7902e98d4362cee0ececd93962c",
+      "subject": "fix(mobile): avoid crashes opening wrapped source links (#25156)",
+      "topic": "pr-25156"
+    },
+    {
+      "pr": 25372,
+      "sha": "572cf74275bc0fc4dcdaee754db64fb3d5b575c1",
+      "subject": "fix(server): retry stalled MCP registration for resumed Claude turns (#25372)",
+      "topic": "pr-25372"
+    },
+    {
+      "pr": 24268,
+      "sha": "bfc7177f9f54b0a4b9d3571d30723a51cd4b31bd",
+      "subject": "fix(mobile): pause videos outside visible thread and PR content (#24268)",
+      "topic": "pr-24268"
+    },
+    {
+      "pr": 24274,
+      "sha": "9eac774602a9462a90f9ea5a029e0f6ac35d03f4",
+      "subject": "test(mobile): run React hooks with the release compiler (#24274)",
+      "topic": "pr-24274"
+    },
+    {
+      "pr": 25358,
+      "sha": "5a38e6b859e8c08fa29371d9c1d6670b3f0e6f54",
+      "subject": "fix(web): model picker no longer jumps when switching providers (#25358)",
+      "topic": "pr-25358"
+    },
+    {
+      "pr": 24618,
+      "sha": "2763bbeb739e64c181d7800ddb9c1459f678dea4",
+      "subject": "fix(server): preview snapshots preserve blurred backdrops (#24618)",
+      "topic": "pr-24618"
+    },
+    {
+      "pr": 25365,
+      "sha": "3e70f55baccc16d5bba67ddde6f63625f3600385",
+      "subject": "fix(dev): skip auto-seeding large databases (#25365)",
+      "topic": "pr-25365"
+    },
+    {
+      "pr": 25359,
+      "sha": "3ed0688c10ed6737b68ed364dacb3aedb9976a45",
+      "subject": "fix(server): remove one-child-per-model instruction (#25359)",
+      "topic": "pr-25359"
+    },
+    {
+      "pr": 24912,
+      "sha": "10629afaace9a57511bac9a2a7d63a69e98bee94",
+      "subject": "fix(server): select the active iPhone Duo display for screenshots (#24912)",
+      "topic": "pr-24912"
+    },
+    {
+      "sha": "3d5364fb06e3270613ee2e505b72fb1d4583fce4",
+      "subject": "fix(task-cache): name Android native client downloads .apk",
+      "topic": "c-3d5364fb06e3"
+    },
+    {
+      "pr": 25353,
+      "sha": "cbd72e5847985fd175dd795a4a4dee0cf12d138e",
+      "subject": "fix(task-cache): avoid cross-request admission waiters (#25353)",
+      "topic": "pr-25353"
+    },
+    {
+      "pr": 25355,
+      "sha": "03851b8e7b17d2f3970b9a8cc45c8c80357e8984",
+      "subject": "fix(web): keep large thread counts from shrinking labels (#25355)",
+      "topic": "pr-25355"
+    },
+    {
+      "sha": "69f85ef34e5f0560aa18c5040bffec2dad530d6d",
+      "subject": "chore(task-cache): name native client downloads so agent-device can install them by URL",
+      "topic": "c-69f85ef34e5f"
+    },
+    {
+      "pr": 25345,
+      "sha": "433837752cf0561e8bcab297d959380ba9f5a894",
+      "subject": "feat(web): \"failed to start\" screen helps users recover and report the crash (#25345)",
+      "topic": "pr-25345"
+    },
+    {
+      "pr": 25343,
+      "sha": "4e493b1492c295475e5c4d1b971677b1bd305960",
+      "subject": "docs: read GitHub Actions logs through cafe (#25343)",
+      "topic": "pr-25343"
+    },
+    {
+      "pr": 25120,
+      "sha": "695f5c9963f59da6229e7386f9e45e64e91153c4",
+      "subject": "chore(lint): enforce t3code/no-polling-loop-in-tests (#25120)",
+      "topic": "pr-25120"
+    },
+    {
+      "pr": 25114,
+      "sha": "d53b446284b33b4fb71bb0acb15bc3408bf9660a",
+      "subject": "chore(lint): enforce oxc/no-accumulating-spread (#25114)",
+      "topic": "pr-25114"
+    },
+    {
+      "pr": 25113,
+      "sha": "2931461619133d3e4d53a08d487746216a0f6e64",
+      "subject": "chore(lint): enforce t3code/no-inline-schema-compile (#25113)",
+      "topic": "pr-25113"
+    },
+    {
+      "pr": 25098,
+      "sha": "d8597159d96219b0745e681041da71b618ea8713",
+      "subject": "chore(lint): enforce abortControllerInEffect (#25098)",
+      "topic": "pr-25098"
+    },
+    {
+      "pr": 25096,
+      "sha": "6618ccbebc53ebb8bda5404a51e571f84acd82df",
+      "subject": "chore(lint): enforce runEffectInsideEffect (#25096)",
+      "topic": "pr-25096"
+    },
+    {
+      "pr": 25082,
+      "sha": "931bd53614874db79830ec5bd2bcee4a1f952416",
+      "subject": "chore(lint): enforce flatMapConditionalToFilterOrFail (#25082)",
+      "topic": "pr-25082"
+    },
+    {
+      "pr": 25081,
+      "sha": "80f411f13d2bd0a8b3ef5ba30972c6d4fc9f1bbe",
+      "subject": "chore(lint): enforce catchConditionalRefailToCatchIf (#25081)",
+      "topic": "pr-25081"
+    },
+    {
+      "pr": 25335,
+      "sha": "62245d8e3ad5858abe6c5c0e2e8fba42ed245e9f",
+      "subject": "fix(web): composer bottom toolbar keeps its background under update notices (#25335)",
+      "topic": "pr-25335"
+    },
+    {
+      "pr": 25336,
+      "sha": "32507803daba90107aab1f506ade8f951502c2bb",
+      "subject": "fix(web): usage tabs no longer jump when switching to Limits (#25336)",
+      "topic": "pr-25336"
+    },
+    {
+      "pr": 25317,
+      "sha": "6f3f0d46ea9838385e30f0f3cb3ad9e1ccf6aa53",
+      "subject": "feat(web): \"could not load\" screen tells users how to debug it (#25317)",
+      "topic": "pr-25317"
+    },
+    {
+      "pr": 25270,
+      "sha": "1549046fd2c4060a2f6637b34121a8a00844e039",
+      "subject": "fix(web): thread undo notice sits above the bottom shelves instead of pushing the list (#25270)",
+      "topic": "pr-25270"
+    },
+    {
+      "pr": 25329,
+      "sha": "aa2c80b9e3b093ebe382bf0a555ce2dd0dc33d22",
+      "subject": "fix(web): stacked notices above the composer no longer cast a dark band (#25329)",
+      "topic": "pr-25329"
+    },
+    {
+      "pr": 25226,
+      "sha": "c66f13ce97d6e02e495f0ed8c7cb8a91f16dc303",
+      "subject": "refactor(mobile): stream and MCP webviews tie their work to the view's lifetime (#25226)",
+      "topic": "pr-25226"
+    },
+    {
+      "pr": 25328,
+      "sha": "70b0abceda6e500e3f33612b9b6227fbd72dacd3",
+      "subject": "fix(web): short branch names no longer get clipped in thread details (#25328)",
+      "topic": "pr-25328"
+    },
+    {
+      "pr": 25119,
+      "sha": "7f26969c510eca3558f9e4f8f9a8fb4acb41f564",
+      "subject": "chore(lint): enforce react/set-state-in-effect (#25119)",
+      "topic": "pr-25119"
+    },
+    {
+      "pr": 25324,
+      "sha": "f40c7c6435e390fc91f1d7eac6caf61bd9fe0e0e",
+      "subject": "feat(web): new design is on by default (#25324)",
+      "topic": "pr-25324"
+    },
+    {
+      "pr": 25323,
+      "sha": "7df7cb99996810445cb7e3f2a9b620be106943d9",
+      "subject": "fix(web): sent messages stand out on the black canvas in the new design (#25323)",
+      "topic": "pr-25323"
+    },
+    {
+      "pr": 25321,
+      "sha": "f1b87583160d3f9ec1c42dfc5d595b30886d6353",
+      "subject": "fix(web): VS Code icon in thread details no longer has a box around it (#25321)",
+      "topic": "pr-25321"
+    },
+    {
+      "pr": 25316,
+      "sha": "72d4dc9b1e80393aa1fffe77f49bbb5adf27cd13",
+      "subject": "fix(web): composer corners and context strip no longer show double edges (#25316)",
+      "topic": "pr-25316"
+    },
+    {
+      "pr": 25118,
+      "sha": "85f17ea2465c185ef63944b9a488413571414f94",
+      "subject": "chore(lint): enforce react/exhaustive-effect-dependencies (#25118)",
+      "topic": "pr-25118"
+    },
+    {
+      "pr": 25315,
+      "sha": "9d6a2e57fce3fd397a7286740351a1aef7b81453",
+      "subject": "fix(web): new thread shortcut focuses palette search, not the Back button (#25315)",
+      "topic": "pr-25315"
+    },
+    {
+      "pr": 25116,
+      "sha": "beeb2159e132f2e3bfb60cbd217d9ed386ce7699",
+      "subject": "chore(lint): enforce react/refs (#25116)",
+      "topic": "pr-25116"
+    },
+    {
+      "pr": 25234,
+      "sha": "6a3a460b09e70f06eebfd46ad304c74b96afa179",
+      "subject": "refactor(web): sidebar thread lists derive state instead of syncing it in effects (#25234)",
+      "topic": "pr-25234"
+    },
+    {
+      "pr": 25233,
+      "sha": "8a4ad9452a7b999fa7c9f80e0875aed4212737fa",
+      "subject": "refactor(web): root notification and toast coordinators start with the app (#25233)",
+      "topic": "pr-25233"
+    },
+    {
+      "pr": 25295,
+      "sha": "04a21bb1c1cec0e60aa831bef11e67feae95885e",
+      "subject": "fix(web): app loads again after a chunk cycle blanked it at boot (#25295)",
+      "topic": "pr-25295"
+    },
+    {
+      "pr": 25038,
+      "sha": "1de64942be496d0f4b64416e9b125eebe2126cd7",
+      "subject": "chore(lint): enforce react/purity (#25038)",
+      "topic": "pr-25038"
+    },
+    {
+      "pr": 25229,
+      "sha": "7510e5e43c6cb40d454530c9aaa9a8fbb43ab1bf",
+      "subject": "fix(mobile): Android dialogs raised before or during activity replacement now show (#25229)",
+      "topic": "pr-25229"
+    },
+    {
+      "pr": 25223,
+      "sha": "a2589f22d3b63c927c386721efa5eaf562ca3b1e",
+      "subject": "fix(mobile): review opens on Changes and keeps the section you picked (#25223)",
+      "topic": "pr-25223"
+    },
+    {
+      "pr": 25227,
+      "sha": "d593081034ee04e2de56346a169e07ad7cc22dd9",
+      "subject": "refactor(mobile): settings and usage screens drop sync effects (#25227)",
+      "topic": "pr-25227"
+    },
+    {
+      "pr": 25239,
+      "sha": "02f4ba75a20f28a5383bdb95a1c250e6892556e9",
+      "subject": "fix(web): SSH password prompts wait for their dialog, and the app shell drops its sync effects (#25239)",
+      "topic": "pr-25239"
+    },
+    {
+      "pr": 25251,
+      "sha": "c3888da8b4fa39b5edd3d0aa69479068647413cf",
+      "subject": "feat(web): New design brings back color where it means something (#25251)",
+      "topic": "pr-25251"
+    },
+    {
+      "pr": 25265,
+      "sha": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
+      "subject": "refactor(web): device panel reads hub state from atoms (#25265)",
+      "topic": "pr-25265"
+    },
+    {
+      "pr": 25238,
+      "sha": "f512ff6159ba8d6c0cab4fe66f3c723b50edd2c7",
+      "subject": "fix(web): composer banners, menus and pickers act in their handlers (#25238)",
+      "topic": "pr-25238"
+    },
+    {
+      "pr": 25246,
+      "sha": "f279070244b413eb385cfa827dceb6ce51eec621",
+      "subject": "fix(web): Escape and copy work in chat media and markdown widgets, which attach through ref callbacks (#25246)",
+      "topic": "pr-25246"
+    },
+    {
+      "pr": 25117,
+      "sha": "d487078f11f80543da83e5316a82d43b0a8addbb",
+      "subject": "chore(lint): enforce react/memo-dependencies (#25117)",
+      "topic": "pr-25117"
+    },
+    {
+      "pr": 25260,
+      "sha": "f88b33a16de988f86782343b348631d11432ddf2",
+      "subject": "fix(web): thread find exports the timeline fields type its context names (#25260)",
+      "topic": "pr-25260"
+    },
+    {
+      "pr": 25148,
+      "sha": "80b48cc96ca8b78d64a2f55ca44d8675e8c9c13e",
+      "subject": "refactor(mobile): thread detail and feed reset by key and share one follow owner (#25148)",
+      "topic": "pr-25148"
+    },
+    {
+      "pr": 25050,
+      "sha": "d1f701849b32889d60d09bc17e8a162bb747815f",
+      "subject": "chore(lint): disable returnEffectInGen (#25050)",
+      "topic": "pr-25050"
+    },
+    {
+      "pr": 25049,
+      "sha": "1cd44f0d555f6804e15a1d03e483039251164437",
+      "subject": "chore(lint): disable eslint/no-control-regex (#25049)",
+      "topic": "pr-25049"
+    },
+    {
+      "pr": 25048,
+      "sha": "d75fb04fa63e1a250ef2691b5efa06565d9de928",
+      "subject": "chore(lint): disable typescript/no-this-alias (#25048)",
+      "topic": "pr-25048"
+    },
+    {
+      "pr": 25047,
+      "sha": "f10a04b7fa2a98ca48d52182fd595494f3add284",
+      "subject": "chore(lint): disable unicorn/prefer-add-event-listener (#25047)",
+      "topic": "pr-25047"
+    },
+    {
+      "pr": 25045,
+      "sha": "cf21b986f12ff07d37844add1f5c06bb4c7d28dd",
+      "subject": "chore(lint): disable unicorn/prefer-string-starts-ends-with (#25045)",
+      "topic": "pr-25045"
+    },
+    {
+      "pr": 25044,
+      "sha": "78d89dd401f6f5f328bad054820ae529fda18714",
+      "subject": "chore(lint): disable unicorn/prefer-set-has (#25044)",
+      "topic": "pr-25044"
+    },
+    {
+      "pr": 25043,
+      "sha": "e5a551572b0411e1608198ccd5b6a6270492cfc3",
+      "subject": "chore(lint): disable unicorn/prefer-array-find (#25043)",
+      "topic": "pr-25043"
+    },
+    {
+      "pr": 25042,
+      "sha": "751a37fefdaf5d92a8ee297101088d493b300e0a",
+      "subject": "chore(lint): disable unicorn/no-new-array (#25042)",
+      "topic": "pr-25042"
+    },
+    {
+      "pr": 25041,
+      "sha": "56d13e2daaa52036ff668689f69ef379ca3586b0",
+      "subject": "chore(lint): disable unicorn/no-array-reverse (#25041)",
+      "topic": "pr-25041"
+    },
+    {
+      "pr": 25040,
+      "sha": "c5eb559d57b05c0e725e5269d6568e4eea6d2d6f",
+      "subject": "chore(lint): disable react/no-object-type-as-default-prop (#25040)",
+      "topic": "pr-25040"
+    },
+    {
+      "pr": 25039,
+      "sha": "8a84d408862fb681b5988c7980e91c1dfae7bc31",
+      "subject": "chore(lint): disable react/jsx-no-constructed-context-values (#25039)",
+      "topic": "pr-25039"
+    },
+    {
+      "pr": 25115,
+      "sha": "908226fc88e81750e4629830c43d336570c8045e",
+      "subject": "chore(lint): enforce react/immutability (#25115)",
+      "topic": "pr-25115"
+    },
+    {
+      "pr": 25112,
+      "sha": "f44fea47a0b37f0b1839b1deb33cf50d45b67e27",
+      "subject": "chore(lint): enforce react/no-array-index-key (#25112)",
+      "topic": "pr-25112"
+    },
+    {
+      "pr": 25111,
+      "sha": "7e20a5b8f626c5abf9af3fccedb719960ae35bde",
+      "subject": "chore(lint): enforce react/no-unstable-nested-components (#25111)",
+      "topic": "pr-25111"
+    },
+    {
+      "pr": 25110,
+      "sha": "285b19d52eee750585d41aed5101b907a6205215",
+      "subject": "chore(lint): enforce react/static-components (#25110)",
+      "topic": "pr-25110"
+    },
+    {
+      "pr": 25184,
+      "sha": "fd71ddc223091093d172a431f4080772fa41c2a9",
+      "subject": "fix(desktop): hidden preview tabs throttle instead of running at full speed (#25184)",
+      "topic": "pr-25184"
+    },
+    {
+      "pr": 25109,
+      "sha": "53896aea76145325136a85f0e2da435c5426b41a",
+      "subject": "chore(lint): enforce react/capitalized-calls (#25109)",
+      "topic": "pr-25109"
+    },
+    {
+      "pr": 25108,
+      "sha": "d19ec7da40a861d3776989754500fad2326a44b5",
+      "subject": "chore(lint): enforce typescript/no-extraneous-class (#25108)",
+      "topic": "pr-25108"
+    },
+    {
+      "pr": 25101,
+      "sha": "670083429cb30049ad45ee69f11489dfec261e42",
+      "subject": "chore(lint): enforce eslint/no-empty-pattern (#25101)",
+      "topic": "pr-25101"
+    },
+    {
+      "pr": 21469,
+      "sha": "34ead566d44881a29e7438b949a421636742ab20",
+      "subject": "feat(web): preview opendocument, epub, rich text, and notebooks (#21469)",
+      "topic": "pr-21469"
+    },
+    {
+      "pr": 21467,
+      "sha": "9d17a02782ae93b34f57df7e9c810968901b9fdd",
+      "subject": "feat(web): preview archives, sqlite databases, and decoded images (#21467)",
+      "topic": "pr-21467"
+    },
+    {
+      "pr": 21466,
+      "sha": "73afb57097d7bb0d1f943a563b65c16261b98707",
+      "subject": "feat(web): virtualize large file previews (#21466)",
+      "topic": "pr-21466"
+    },
+    {
+      "pr": 21362,
+      "sha": "d69810a97a98747e165b641a51fb1a3080f8382f",
+      "subject": "feat(web): preview office files, fonts, and mermaid diagrams (#21362)",
+      "topic": "pr-21362"
+    },
+    {
+      "pr": 25190,
+      "sha": "3de45c6254345f968fbdc64db7b149bf4f429855",
+      "subject": "feat(sidebar): working section is on by default (#25190)",
+      "topic": "pr-25190"
+    },
+    {
+      "pr": 25206,
+      "sha": "fe585bc5b67ac826ccf4fd05e7c7a5641d5342bd",
+      "subject": "fix(server): use asSome for initial worktree measurement (#25206)",
+      "topic": "pr-25206"
+    },
+    {
+      "pr": 25196,
+      "sha": "b16728af846ab00903867737f80bbd4d75cf973d",
+      "subject": "refactor(web): preview tab sync subscribes to the preview store instead of its own listener sets (#25196)",
+      "topic": "pr-25196"
+    },
+    {
+      "pr": 25186,
+      "sha": "3ca62a5644572aab1cf7a058944aa44df516734c",
+      "subject": "refactor(client): terminal sessions keep one driver per mode (#25186)",
+      "topic": "pr-25186"
+    },
+    {
+      "pr": 22520,
+      "sha": "122c5f8ffc01710988043ee72fadc3eee6763da7",
+      "subject": "fix(web): keep Windows thread notifications clickable until handled (#22520)",
+      "topic": "pr-22520"
+    },
+    {
+      "sha": "e856833a66e8663316645776a1c101644beb4a32",
+      "subject": "fix(mobile): native client fingerprints match across macOS and Linux",
+      "topic": "c-e856833a66e8"
+    },
+    {
+      "pr": 21458,
+      "sha": "888a3d47d3b4d22487311a4cb4594243e9a2dd52",
+      "subject": "fix(server): make document attachments readable to agents (#21458)",
+      "topic": "pr-21458"
+    },
+    {
+      "sha": "d9abfdd1cb595d186391ed5a28000554d425b5fc",
+      "subject": "feat(mobile): mobile:install --session installs into an agent-device session",
+      "topic": "c-d9abfdd1cb59"
+    },
+    {
+      "pr": 25152,
+      "sha": "7a95549b94742dc55dd40f1075dda71d3bb40646",
+      "subject": "refactor(client): drop the VCS wake and dispatcher element scope options nobody uses (#25152)",
+      "topic": "pr-25152"
+    },
+    {
+      "pr": 25150,
+      "sha": "06e80ac27e0e0d5f9668254cfb3cc8c291a5ce71",
+      "subject": "refactor(mobile): cloud account transitions run in the shared account service (#25150)",
+      "topic": "pr-25150"
+    },
+    {
+      "pr": 25076,
+      "sha": "4e43779f82d4eff16d37932a776df743fb37d3d7",
+      "subject": "fix(web): theme editor returns to its spot after the window shrinks and grows back (#25076)",
+      "topic": "pr-25076"
+    },
+    {
+      "pr": 25107,
+      "sha": "3a1b3a77662355584db76ff7ad22addda511995f",
+      "subject": "chore(lint): enforce eslint/no-new (#25107)",
+      "topic": "pr-25107"
+    },
+    {
+      "pr": 25104,
+      "sha": "6f21f01612a42bd8eb78d5d62f8569043e6b12c5",
+      "subject": "chore(lint): enforce unicorn/no-useless-spread (#25104)",
+      "topic": "pr-25104"
+    },
+    {
+      "pr": 25100,
+      "sha": "a320762cbcabeb4be5ffdd9cec3a52d02d7a5787",
+      "subject": "chore(lint): enforce eslint/no-unused-vars (#25100)",
+      "topic": "pr-25100"
+    },
+    {
+      "pr": 25097,
+      "sha": "a0b246d0deec3b9ab5153f856aa251272abfe17f",
+      "subject": "chore(lint): enforce tryCatchInEffectGen (#25097)",
+      "topic": "pr-25097"
+    },
+    {
+      "pr": 25095,
+      "sha": "c4dbf19e11daf52829afe77e9e32f32d9dc200ef",
+      "subject": "chore(lint): enforce schemaStructWithTag (#25095)",
+      "topic": "pr-25095"
+    },
+    {
+      "pr": 25094,
+      "sha": "a8b692b3b8a03dc566b7edba67b0bb2bc40df158",
+      "subject": "chore(lint): enforce preferTypedSchemaDecoder (#25094)",
+      "topic": "pr-25094"
+    },
+    {
+      "pr": 25093,
+      "sha": "686e3944683c93273f3513e22b9fc3320be42bf8",
+      "subject": "chore(lint): enforce catchUnfailableEffect (#25093)",
+      "topic": "pr-25093"
+    },
+    {
+      "pr": 25092,
+      "sha": "269deb8bfbcac81d9bd3470277485c52585f08b6",
+      "subject": "chore(lint): enforce raceFirstWithSleepToTimeout (#25092)",
+      "topic": "pr-25092"
+    },
+    {
+      "pr": 25091,
+      "sha": "a0f360690d721db5f8b0d57a861a4d32b4b9e9e6",
+      "subject": "chore(lint): enforce redundantMapError (#25091)",
+      "topic": "pr-25091"
+    },
+    {
+      "pr": 25088,
+      "sha": "f5ad87d3054cad7aff4327508286510505871b97",
+      "subject": "chore(lint): enforce optionMatchToFromOption (#25088)",
+      "topic": "pr-25088"
+    },
+    {
+      "pr": 25087,
+      "sha": "f4ba6ae1fb71b7d8f3508befd2d3e2000c80fa00",
+      "subject": "chore(lint): enforce catchToIgnore (#25087)",
+      "topic": "pr-25087"
+    },
+    {
+      "pr": 25086,
+      "sha": "ef005d6f3b9f96e73b8db39c7733c5bec54aa590",
+      "subject": "chore(lint): enforce unnecessaryEffectGen (#25086)",
+      "topic": "pr-25086"
+    },
+    {
+      "pr": 25085,
+      "sha": "16573c48f900eba453c6ab27298a843da8563bf3",
+      "subject": "chore(lint): enforce allOfMapToForEach (#25085)",
+      "topic": "pr-25085"
+    },
+    {
+      "pr": 25084,
+      "sha": "9ae08d550ebc0ff789091fea6f529b006272da19",
+      "subject": "chore(lint): enforce catchToOrElseSucceed (#25084)",
+      "topic": "pr-25084"
+    },
+    {
+      "pr": 25083,
+      "sha": "312a12d726cad18faef0be545b14d4428c4405b1",
+      "subject": "chore(lint): enforce unnecessaryFailYieldableError (#25083)",
+      "topic": "pr-25083"
+    },
+    {
+      "pr": 25080,
+      "sha": "9c02109b19ce3815293f3d9205783cbda4455913",
+      "subject": "chore(lint): enforce preferSucceedSomeOrNone (#25080)",
+      "topic": "pr-25080"
+    },
+    {
+      "pr": 25074,
+      "sha": "11bd26e4b59063ec28383c3ce0d3c91a9b6f67b1",
+      "subject": "chore(lint): enforce effectSucceedWithVoid (#25074)",
+      "topic": "pr-25074"
+    },
+    {
+      "pr": 25006,
+      "sha": "9296c20e82cef89371e2a4fb433f31c314384261",
+      "subject": "refactor(web): browser panel tabs follow preview sessions without ChatView effects (#25006)",
+      "topic": "pr-25006"
+    },
+    {
+      "pr": 25073,
+      "sha": "f16ae12bb6ed6e50dcaffff79c4205ca0f2169ad",
+      "subject": "refactor(web): thread find state lives in one store instead of event buses and mirrors (#25073)",
+      "topic": "pr-25073"
+    },
+    {
+      "pr": 25072,
+      "sha": "9f7b8ade1b27e45d6d85a368f197abfbcde3f03f",
+      "subject": "refactor(web): branch toolbar and dialogs stop syncing through effects (#25072)",
+      "topic": "pr-25072"
+    },
+    {
+      "pr": 25071,
+      "sha": "5786e12981f82adbe9d1f18fd5a490496817b5f9",
+      "subject": "refactor(mobile): terminal lifecycle runs in a session store, not screen effects (#25071)",
+      "topic": "pr-25071"
+    },
+    {
+      "pr": 25070,
+      "sha": "e14d08c664f9e6fcfdac94c7dc8451f4a5e98da2",
+      "subject": "fix(web): settings panels derive state instead of syncing it with effects (#25070)",
+      "topic": "pr-25070"
+    },
+    {
+      "pr": 25011,
+      "sha": "c8c6deb6139a4dfb0ef353a003aa8d19761b720f",
+      "subject": "refactor(mobile): shared AppState, reduce-motion and back-button helpers (#25011)",
+      "topic": "pr-25011"
+    },
+    {
+      "pr": 25176,
+      "sha": "0bf4d1678268cc3d16f424872a00706bf2d00e89",
+      "subject": "feat(mobile): composer placeholder reads \"Ask anything\" (#25176)",
+      "topic": "pr-25176"
+    },
+    {
+      "pr": 25065,
+      "sha": "0b42aa94767b849bc6375a1c7ccb66fb47cc7a94",
+      "subject": "chore(devices): bump agent-device to 0.21.31 (#25065)",
+      "topic": "pr-25065"
+    },
+    {
+      "pr": 25008,
+      "sha": "f4e140764fba579ccb77a3dabe2dd0bcee98d037",
+      "subject": "fix(web): pull request checks stay current after a checks refresh (#25008)",
+      "topic": "pr-25008"
+    },
+    {
+      "pr": 25009,
+      "sha": "5fee09a2c109fa973294c1d5fc3729bfd1a7f093",
+      "subject": "refactor(web): terminal focus requests name the terminal they focus (#25009)",
+      "topic": "pr-25009"
+    },
+    {
+      "pr": 25169,
+      "sha": "07066c0406753d70de387bfd99ef4a2b2ea8542e",
+      "subject": "fix(client): a queued-edit save keeps its claim until it finishes (#25169)",
+      "topic": "pr-25169"
+    },
+    {
+      "pr": 25170,
+      "sha": "0ad399c6c5fc521f26e42cfcd50ec056390e4870",
+      "subject": "test(web): the diff boundary observer counter lives in its fixture (#25170)",
+      "topic": "pr-25170"
+    },
+    {
+      "pr": 25163,
+      "sha": "c58beff8102e179493d8aae66d5e44c3c8cd0f46",
+      "subject": "chore(lint): a new React effect states its reason instead of raising the budget (#25163)",
+      "topic": "pr-25163"
+    },
+    {
+      "pr": 25164,
+      "sha": "738fd087076623e159b677e1f87ffe23d2bc7e88",
+      "subject": "fix(infra): task cache cleanup test provides its service directly (#25164)",
+      "topic": "pr-25164"
+    },
+    {
+      "pr": 25005,
+      "sha": "03df289735527354a500c8e8cf371c11d4c75d3c",
+      "subject": "fix(client): usage-limit Snooze disables at reset even weeks away, via a shared deadline clock (#25005)",
+      "topic": "pr-25005"
+    },
+    {
+      "pr": 25079,
+      "sha": "65822d8e17428eb870f62cce16e0f9cb08a2ab33",
+      "subject": "refactor(web): composer editor stops mirroring props into refs with effects (#25079)",
+      "topic": "pr-25079"
+    },
+    {
+      "pr": 25067,
+      "sha": "4db2ffc8d9333f6a43d944c718c554a699877ef1",
+      "subject": "refactor(mobile): branch picker owns its search and checkout guard (#25067)",
+      "topic": "pr-25067"
+    },
+    {
+      "pr": 25068,
+      "sha": "f9956434fa2f032111a249b2ca4ca09af77c9778",
+      "subject": "fix(web): preview favicons resolve their project without ChatView syncing it (#25068)",
+      "topic": "pr-25068"
+    },
+    {
+      "pr": 25106,
+      "sha": "2eccc57f1e551ce455efc29ed1b2526f951ee2f2",
+      "subject": "chore(lint): enforce eslint/no-unsafe-optional-chaining (#25106)",
+      "topic": "pr-25106"
+    },
+    {
+      "pr": 25105,
+      "sha": "b0f5d44475d9c8df7f7d5300aed05dafa8d96884",
+      "subject": "chore(lint): enforce eslint/no-unneeded-ternary (#25105)",
+      "topic": "pr-25105"
+    },
+    {
+      "pr": 25103,
+      "sha": "15c6e6b4baaf949cbd9ef386449eafd76f0ecab2",
+      "subject": "chore(lint): enforce unicorn/no-useless-fallback-in-spread (#25103)",
+      "topic": "pr-25103"
+    },
+    {
+      "pr": 25102,
+      "sha": "10d800cfed1d3609c520d10ab1184e5cd4ed0141",
+      "subject": "chore(lint): enforce unicorn/require-module-specifiers (#25102)",
+      "topic": "pr-25102"
+    },
+    {
+      "pr": 25090,
+      "sha": "8bdf3785218f9274998c72df075035a50b2093cd",
+      "subject": "chore(lint): enforce provideLayerSucceedToProvideService (#25090)",
+      "topic": "pr-25090"
+    },
+    {
+      "pr": 25089,
+      "sha": "05ef5ff67b0abc0c3af4d9db4a234723fe6fd5bc",
+      "subject": "chore(lint): enforce flatMapIgnoredParamToAndThen (#25089)",
+      "topic": "pr-25089"
+    },
+    {
+      "pr": 25078,
+      "sha": "0aeb620a1cc077594f6826c4299f453ea346f8b2",
+      "subject": "chore(lint): enforce mapSomeToAsSome (#25078)",
+      "topic": "pr-25078"
+    },
+    {
+      "pr": 25143,
+      "sha": "2ee1529504e6324d10eb415c3ba9ec0d33832ea4",
+      "subject": "fix(infra): keep task cache cleanup ahead of uploads (#25143)",
+      "topic": "pr-25143"
+    },
+    {
+      "pr": 25141,
+      "sha": "44df3360165ba96a6902496812feca2b60c7fcc9",
+      "subject": "fix(mobile): upgrade react-native-keyboard-controller to 1.22.8 for the Duo fold composer (#25141)",
+      "topic": "pr-25141"
+    },
+    {
+      "pr": 25145,
+      "sha": "1a13127c15b24132a896eb72fda060d36f705c08",
+      "subject": "test(web): Arabic arrow-key test no longer drops its first key press (#25145)",
+      "topic": "pr-25145"
+    },
+    {
+      "pr": 25077,
+      "sha": "f89855713db6184f18ada149a4964e7539be1f5d",
+      "subject": "chore(lint): enforce unnecessaryPipeChain (#25077)",
+      "topic": "pr-25077"
+    },
+    {
+      "pr": 24996,
+      "sha": "3e9d97ae1f7cd567376fed6dfc6c929f3bc881cb",
+      "subject": "feat(server): count how guest sharing gets used (#24996)",
+      "topic": "pr-24996"
+    },
+    {
+      "pr": 20990,
+      "sha": "481b9b71929b2c7c9f120712a3264fe218cf2b95",
+      "subject": "fix(server): compact superseded turn-item snapshots (#20990)",
+      "topic": "pr-20990"
+    },
+    {
+      "pr": 24986,
+      "sha": "796fc0aef161e33d2fc4e98b3e13023341e005ee",
+      "subject": "fix(mobile): center toast actions beside wrapped messages (#24986)",
+      "topic": "pr-24986"
+    },
+    {
+      "pr": 25134,
+      "sha": "c298a401f2d68693003d8027b08bc915da739f9e",
+      "subject": "perf(web): diff file boundaries observe visibility once instead of on every render (#25134)",
+      "topic": "pr-25134"
+    },
+    {
+      "pr": 25126,
+      "sha": "3ddfcfc44ebb1f03358d38d0a1c057fed6ae981e",
+      "subject": "docs: open and track PRs through GitCafe when origin is git.cafe (#25126)",
+      "topic": "pr-25126"
+    },
+    {
+      "pr": 25133,
+      "sha": "264969317c48e5cffcdcbf1e60d46bf84cf7af56",
+      "subject": "fix(client): a thread opened before its shell loads still counts as opened (#25133)",
+      "topic": "pr-25133"
+    },
+    {
+      "pr": 25128,
+      "sha": "dd2842f238e415e030c990c1950a9c45cf827de4",
+      "subject": "fix(web): a stale queued-edit save no longer clears a newer edit (#25128)",
+      "topic": "pr-25128"
+    },
+    {
+      "pr": 25122,
+      "sha": "b6c326d12f0a455a154e89f98b64f337d2d4a4f0",
+      "subject": "fix(server): background compactions no longer flip threads to Working (#25122)",
+      "topic": "pr-25122"
+    },
+    {
+      "pr": 24265,
+      "sha": "b76a110aa4cf011345ec9d63d37c2dcdf4b751ad",
+      "subject": "perf(mobile): compact persisted thread snapshots (#24265)",
+      "topic": "pr-24265"
+    },
+    {
+      "pr": 20877,
+      "sha": "d5b921ce4bf0d687e5cedbf956839dd5ebabeaa2",
+      "subject": "fix(server): keep history discovery off the writer and pace compaction (#20877)",
+      "topic": "pr-20877"
+    },
+    {
+      "pr": 25007,
+      "sha": "1c10563ddb33dcdb2cc87ef480da390dc171d4b5",
+      "subject": "refactor(web): the theme store and diff worker pool stop syncing the theme through effects (#25007)",
+      "topic": "pr-25007"
+    },
+    {
+      "pr": 25020,
+      "sha": "c6b9c389ff057f2e68bb596127cc7a241ccd74f3",
+      "subject": "refactor(web): shared intersection and document-activity stores (#25020)",
+      "topic": "pr-25020"
+    },
+    {
+      "pr": 25016,
+      "sha": "b457b64a76d77db92b0fd90ed7c195c945c6a044",
+      "subject": "refactor(web): app shell shortcuts register once through one command dispatcher (#25016)",
+      "topic": "pr-25016"
+    },
+    {
+      "pr": 25004,
+      "sha": "4ee47883efefff2cea5a309d50b7ef642ac3005e",
+      "subject": "refactor(web): document appearance and title are applied from app start (#25004)",
+      "topic": "pr-25004"
+    },
+    {
+      "pr": 24975,
+      "sha": "604ecb6d9a5c666928f9bbfdd8cb5b75bf462d88",
+      "subject": "refactor(client): one VCS status refresh owner per checkout (#24975)",
+      "topic": "pr-24975"
+    },
+    {
+      "pr": 24974,
+      "sha": "60169698879d771ea10b32fe59da151b36eeb758",
+      "subject": "refactor(client): cloud account transitions run in one service (#24974)",
+      "topic": "pr-24974"
+    },
+    {
+      "pr": 24973,
+      "sha": "d99776351c20ad00d88b61fa583981c0df514921",
+      "subject": "refactor(mobile): thread visits are tracked outside React (#24973)",
+      "topic": "pr-24973"
+    },
+    {
+      "pr": 24972,
+      "sha": "7561c2e6317aab30c3f0cf9e3d63784fec20586c",
+      "subject": "fix(web): queued-message edits survive navigation and settle once (#24972)",
+      "topic": "pr-24972"
+    },
+    {
+      "pr": 24970,
+      "sha": "b2baf7533704d70490ec78d73bef7e317a6f2577",
+      "subject": "fix(web): asset URLs re-mint per revision and before expiry without effects (#24970)",
+      "topic": "pr-24970"
+    },
+    {
+      "pr": 24980,
+      "sha": "2dfd6bf0ea04a57fd12dbe4fb23b9fbdb02aa4cb",
+      "subject": "chore(web): measure renders before/after with render scenarios (#24980)",
+      "topic": "pr-24980"
+    },
+    {
+      "pr": 24985,
+      "sha": "92125d612d114c348da1f3883a34aab139c471c6",
+      "subject": "feat(mobile): open threads and devices in a resizable iOS inspector (#24985)",
+      "topic": "pr-24985"
+    },
+    {
+      "pr": 22846,
+      "sha": "725ada6eaa32d4a32c361ee42a1717a3e65568d1",
+      "subject": "fix(server): ended roots no longer leave provider turns running (#22846)",
+      "topic": "pr-22846"
+    },
+    {
+      "pr": 25055,
+      "sha": "69234b1f96a68e5f67232e560f87b86db85b76a3",
+      "subject": "chore(lint): main passes lint again with effects merged after the budget (#25055)",
+      "topic": "pr-25055"
+    },
+    {
+      "sha": "3e69171f9b03136ca09b077bfcf25c4a98907a15",
+      "subject": "fix(knip): mobile-e2e runs agent-device's CLI by path",
+      "topic": "c-3e69171f9b03"
+    },
+    {
+      "pr": 23972,
+      "sha": "20ee805de9ee5b911ac2fd586c197dcc0e9a63e0",
+      "subject": "fix(observability): resources add OTel semconv runtime and browser keys (#23972)",
+      "topic": "pr-23972"
+    },
+    {
+      "pr": 22872,
+      "sha": "313ca2715fbef89e3ed7395a3d146661e2223fd9",
+      "subject": "fix(web): terminal drag selection scrolls faster the farther past the edge (#22872)",
+      "topic": "pr-22872"
+    },
+    {
+      "pr": 22915,
+      "sha": "a27b246162a895cc94f96925c361ab73b094154e",
+      "subject": "fix(web): usage-limit banner reset time follows the Time format setting (#22915)",
+      "topic": "pr-22915"
+    },
+    {
+      "pr": 24262,
+      "sha": "2050a12b6d6d6705a42239b9b8b09491c0895bcc",
+      "subject": "fix(mobile): retain requested PR environment while connecting (#24262)",
+      "topic": "pr-24262"
+    },
+    {
+      "pr": 22918,
+      "sha": "2fd28bf93804845403f8ed4947c09a3878b546d0",
+      "subject": "fix(client-runtime): \"Codex (hub)\" badges read CH instead of C( (#22918)",
+      "topic": "pr-22918"
+    },
+    {
+      "pr": 22902,
+      "sha": "7ee8a5b12374a7460ccf2ca7cfefea7ced3281ec",
+      "subject": "fix(server): resume fallback keeps the latest turn when an older handoff is pending (#22902)",
+      "topic": "pr-22902"
+    },
+    {
+      "sha": "2ed92618e60f5ee6ecc694eb834c28105a502d09",
+      "subject": "fix: restore files reverted by 5f1f604",
+      "topic": "c-2ed92618e60f"
+    },
+    {
+      "sha": "5f1f604733c65b50ad6d289971103b1330e943bf",
+      "subject": "feat(mobile): on-demand chrome e2e runner across simulators",
+      "topic": "c-5f1f604733c6"
+    },
+    {
+      "pr": 22849,
+      "sha": "e3592efe7f5dbd3a869e46e608d8f6815e1bb7f6",
+      "subject": "fix(server): Grok refresh no longer restores removed models from cache (#22849)",
+      "topic": "pr-22849"
+    },
+    {
+      "pr": 22907,
+      "sha": "03d1a909153d593805a80b4c691eda31ac3f3c46",
+      "subject": "fix(install): stable installs no longer fail behind a page of nightlies (#22907)",
+      "topic": "pr-22907"
+    },
+    {
+      "pr": 23973,
+      "sha": "01fe8d91887af5e0669a0378b77a97c9114c43c6",
+      "subject": "fix(observability): every exported resource names its service instance (#23973)",
+      "topic": "pr-23973"
+    },
+    {
+      "pr": 24964,
+      "sha": "762b047f673aa68fb892b2ea9d53798183ea300b",
+      "subject": "chore(lint): React effects can't grow past each file's budget (#24964)",
+      "topic": "pr-24964"
+    },
+    {
+      "pr": 24340,
+      "sha": "a960f5602fb5eaf8786b619cfcd24a4d441a0473",
+      "subject": "fix(observability): every app reports its own environment and release channel (#24340)",
+      "topic": "pr-24340"
+    },
+    {
+      "pr": 23966,
+      "sha": "1646a471409d977eec983cf43277144e606dba84",
+      "subject": "fix(server): orchestrator records command count and duration again (#23966)",
+      "topic": "pr-23966"
+    },
+    {
+      "pr": 24899,
+      "sha": "abd9d9f9709b8873f542f53dd12d26b33690d5e1",
+      "subject": "perf: opening a thread loads 85% less data (#24899)",
+      "topic": "pr-24899"
+    },
+    {
+      "pr": 25001,
+      "sha": "1a4bb085ce2a03b500fd1d8143999afc0a903777",
+      "subject": "test(server): tests no longer depend on the host machine (#25001)",
+      "topic": "pr-25001"
+    },
+    {
+      "pr": 24865,
+      "sha": "38162960213e4952d6d225c5054c3976234f41e6",
+      "subject": "feat(web): UI design overhaul, with the new look behind a Beta toggle (#24865)",
+      "topic": "pr-24865"
+    },
+    {
+      "pr": 24994,
+      "sha": "0f4d050edee976297cb3886c0b2b07fc6937b3f3",
+      "subject": "feat(infra): native client cache panels on the task cache dashboard (#24994)",
+      "topic": "pr-24994"
+    },
+    {
+      "sha": "8b3b2eac409b6542dcfc282dd95db498ea1566ef",
+      "subject": "fix(mobile): report native client installs under the fleet machine label",
+      "topic": "c-8b3b2eac409b"
+    },
+    {
+      "sha": "e5ed5c59017b86aa28c79708c116625cca41bb15",
+      "subject": "feat(infra): native client cache panels on the task cache dashboard",
+      "topic": "c-e5ed5c59017b"
+    },
+    {
+      "pr": 22583,
+      "sha": "b3b2c55369ec4bb1842bd2fcdac0744a8c787b6b",
+      "subject": "perf(source-control): pull request previews read only the pull request (#22583)",
+      "topic": "pr-22583"
+    },
+    {
+      "pr": 24965,
+      "sha": "0191d6c647fe0c9af09717d675b91b5a611b3b9e",
+      "subject": "feat(mobile): one cached native-client install command for agents and machines (#24965)",
+      "topic": "pr-24965"
+    },
+    {
+      "sha": "94231a0f716bef1478a325a05518f25f38e8cc22",
+      "subject": "fix(ci): shorten delegated follow-up comment",
+      "topic": "c-94231a0f716b"
+    },
+    {
+      "pr": 24966,
+      "sha": "aa247c52a01de58c69e6944268125ffdfe76318f",
+      "subject": "perf(ci): cache server tests individually across shards (#24966)",
+      "topic": "pr-24966"
+    },
+    {
+      "pr": 24887,
+      "sha": "557db6cb4eb7ebe5d9b1300ecce8e05f1929fc39",
+      "subject": "fix(server): running delegates tell agents to end the turn (#24887)",
+      "topic": "pr-24887"
+    },
+    {
+      "pr": 23542,
+      "sha": "0504c99205e427ed1a6a571b2d4c4ece910a8a65",
+      "subject": "fix(server): notify parents after delegated background runs (#23542)",
+      "topic": "pr-23542"
+    },
+    {
+      "pr": 23255,
+      "sha": "d414cb51032f302c268ebd11a486240139dfd3c0",
+      "subject": "fix(web): question options show a radio and an aligned shortcut key (#23255)",
+      "topic": "pr-23255"
+    },
+    {
+      "pr": 24263,
+      "sha": "ba006f2dfa68962247025dc87dc3be8d637b90ad",
+      "subject": "perf(mobile): bound streaming markdown cache and pending work (#24263)",
+      "topic": "pr-24263"
+    },
+    {
+      "pr": 22697,
+      "sha": "5d9a5c980347418daa84c9ef5bd8082533162a16",
+      "subject": "perf(pull-requests): faster pull request timeline, code tab, summary and search (#22697)",
+      "topic": "pr-22697"
+    },
+    {
+      "pr": 21363,
+      "sha": "34e9c56b9b548ccf5f145bbe1d049eecbb55f329",
+      "subject": "feat(web): play audio inline and open any file the agent shares in the viewer (#21363)",
+      "topic": "pr-21363"
+    },
+    {
+      "pr": 21353,
+      "sha": "7bafc40c17ab2a1cb8f0eb675cde4d6d3153f119",
+      "subject": "feat(mobile): play audio inline and open shared files in the viewer (#21353)",
+      "topic": "pr-21353"
+    },
+    {
+      "pr": 21358,
+      "sha": "532023a241278d43a3acaab39191c1c6ad30fc73",
+      "subject": "feat(server): send pdf attachments to claude and antigravity as documents (#21358)",
+      "topic": "pr-21358"
+    },
+    {
+      "sha": "728aba305c479b9ed79a2fbbba982ad06475034f",
+      "subject": "fix(infra): share cache dashboard with the organization",
+      "topic": "c-728aba305c47"
+    },
+    {
+      "pr": 21355,
+      "sha": "efea68679fac762bba56df1ea0d8de787b24267e",
+      "subject": "feat(web): attach svg files to messages (#21355)",
+      "topic": "pr-21355"
+    },
+    {
+      "pr": 21352,
+      "sha": "140de68f25c5aeb3728596a7005635a6dfdf2989",
+      "subject": "fix(mobile): images picked with choose files reach the agent as images (#21352)",
+      "topic": "pr-21352"
+    }
+  ],
+  "count": 218,
+  "createdAt": "2026-10-26T14:50:59.216Z",
+  "digest": "7cb32307120b09b8ace9c932cb659b2b149f556939e7602031b67b8f974ebff7",
+  "interval": 4,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "7d3208cbea86b91574366bb6e87d05f93c975127"
+}

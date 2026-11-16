@@ -6,7 +6,7 @@ import { roughTokenEstimateFromCharacters } from "@t3tools/shared/model";
 
 import {
   buildClaudeAssistantInstructions,
-  buildCodexAssistantInstructions,
+  buildCodexInstructionsText,
   type SharedInstructionInput,
 } from "./sharedAssistantContract.ts";
 
@@ -64,7 +64,7 @@ export async function estimateProviderInstructionTokens(input: {
   const instructionText =
     input.provider === "claudeAgent"
       ? buildClaudeAssistantInstructions(sharedInstructionInput)
-      : buildCodexAssistantInstructions(sharedInstructionInput);
+      : buildCodexInstructionsText(sharedInstructionInput);
   const workspaceAgentsCharacters = await readWorkspaceAgentsCharacters(sharedInstructionInput.cwd);
 
   return roughTokenEstimateFromCharacters(instructionText.length + workspaceAgentsCharacters);

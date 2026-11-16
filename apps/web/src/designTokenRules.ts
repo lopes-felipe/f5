@@ -58,6 +58,12 @@ export const DESIGN_TOKEN_RULES = {
   fadedText: /\btext-(?:muted-)?foreground\/(?!0\b)\d+/g,
   /** Pixel radii (`rounded-[10px]`); use the radius scale. */
   pxRadius: /\brounded(?:-\w+)?-\[\d+px\]/g,
+  /**
+   * The retired coss-ui control chrome (`dark:bg-input/32` fills, `before:`
+   * inner-highlight shadows, `bg-clip-padding`); controls are quiet tonal
+   * (`bg-secondary`, see `fieldSurfaceClassName` in `components/ui/input.tsx`).
+   */
+  legacyControlChrome: /\bbg-input\/\d+|before:shadow-\[0_-?1px|\bbg-clip-padding\b/g,
 } as const;
 
 export type DesignTokenRuleName = keyof typeof DESIGN_TOKEN_RULES;

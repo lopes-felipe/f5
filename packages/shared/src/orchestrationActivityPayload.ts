@@ -1,3 +1,5 @@
+import { claudeSkillToolTitle } from "./toolActivity";
+import { sanitizeComputerStep } from "./computerAction";
 import {
   type CompactMcpOauthActivityPayload,
   type CompactMcpStatusActivityPayload,
@@ -20,6 +22,13 @@ import {
 } from "./commandSummary";
 
 type UnknownRecord = Record<string, unknown>;
+
+/**
+ * One upserted record per turn saying whether the provider is reasoning.
+ * It drives the live Working label only: it never appears in the work log
+ * and never changes thread recency.
+ */
+export const REASONING_STATUS_ACTIVITY_KIND = "reasoning.status";
 
 const MAX_CHANGED_FILE_PREVIEW = 12;
 const MAX_COMPACT_TEXT_CHARS = 4_000;
@@ -431,6 +440,9 @@ function readSubagentPayload(payload: UnknownRecord): Partial<CompactToolActivit
     ...(subagentPrompt ? { subagentPrompt } : {}),
     ...(subagentResult ? { subagentResult } : {}),
     ...(subagentModel ? { subagentModel } : {}),
+    ...(asTrimmedString(payload.reasoningEffort)
+      ? { reasoningEffort: asTrimmedString(payload.reasoningEffort)! }
+      : {}),
     ...(subagentThreadId ? { subagentThreadId } : {}),
     ...(subagentPath ? { subagentPath } : {}),
     ...(subagentSenderThreadId ? { subagentSenderThreadId } : {}),
@@ -649,15 +661,17 @@ function readNormalizedDynamicToolPayload(
   const searchSummary = readToolSearchSummary(toolName, input);
   const normalizedToolName = toolName?.trim().toLowerCase();
 
+  const skillTitle = claudeSkillToolTitle(toolName, input);
   const normalizedTitle =
-    isGenericToolTitle(title) || !title
+    skillTitle ??
+    (isGenericToolTitle(title) || !title
       ? (searchSummary ??
         (readPaths && readPaths.length > 0
           ? "Read file"
           : normalizedToolName === "ls"
             ? "List directory"
             : title))
-      : title;
+      : title);
 
   return {
     ...(normalizedTitle ? { title: normalizedTitle } : {}),
@@ -768,6 +782,10 @@ const isToolCompletionEnvelope = Schema.is(ToolCompletionEnvelope);
 function compactToolPayload(payload: CompactToolActivityPayload): Record<string, unknown> {
   return {
     itemType: payload.itemType,
+    ...(payload.computerTool === true ? { computerTool: true } : {}),
+    ...(payload.computerTool === true && payload.computerStep
+      ? { computerStep: payload.computerStep }
+      : {}),
     ...(payload.completion ? { completion: payload.completion } : {}),
     ...(payload.imagePath ? { imagePath: payload.imagePath } : {}),
     ...(payload.providerItemId ? { providerItemId: payload.providerItemId } : {}),
@@ -867,6 +885,9 @@ function compactRuntimeConfiguredPayload(
     ...(payload.claudeCodeVersion ? { claudeCodeVersion: payload.claudeCodeVersion } : {}),
     ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
     ...(payload.fastModeState ? { fastModeState: payload.fastModeState } : {}),
+    ...(payload.fastModeDisabledReason
+      ? { fastModeDisabledReason: payload.fastModeDisabledReason }
+      : {}),
     ...(payload.effort ? { effort: payload.effort } : {}),
     ...(payload.reasoning ? { reasoning: payload.reasoning } : {}),
     ...(payload.contextWindow ? { contextWindow: payload.contextWindow } : {}),
@@ -943,8 +964,13 @@ export function readToolActivityPayload(payload: unknown): CompactToolActivityPa
       ? record.completion
       : undefined;
 
+  const computerStep =
+    record.computerTool === true ? sanitizeComputerStep(record.computerStep) : undefined;
+
   return {
     itemType: record.itemType,
+    ...(record.computerTool === true ? { computerTool: true } : {}),
+    ...(computerStep ? { computerStep } : {}),
     ...(completion ? { completion } : {}),
     ...(imagePath ? { imagePath } : {}),
     ...(providerItemId ? { providerItemId } : {}),
@@ -1042,11 +1068,15 @@ function readRuntimeAgentBrowser(
   if (!record) return undefined;
   const preview = asRecord(record.preview);
   const serverName = asTrimmedString(preview?.serverName);
+  const computer = asRecord(record.computer);
+  const computerServerName = asTrimmedString(computer?.serverName);
   const chrome = readAgentCapabilityState(record.chrome);
   const computerUse = readAgentCapabilityState(record.computerUse);
   const rawBackend = asTrimmedString(asRecord(record.computerUse)?.backend);
-  const backend: "claude" | "native" | undefined =
-    rawBackend === "claude" || rawBackend === "native" ? rawBackend : undefined;
+  const backend: "claude-builtin" | "codex-builtin" | "native" | undefined =
+    rawBackend === "claude-builtin" || rawBackend === "codex-builtin" || rawBackend === "native"
+      ? rawBackend
+      : undefined;
   const result: NonNullable<CompactRuntimeConfiguredActivityPayload["agentBrowser"]> = {
     ...(preview && serverName
       ? {
@@ -1054,6 +1084,15 @@ function readRuntimeAgentBrowser(
             serverName,
             installed: preview.installed === true,
             ...(typeof preview.verified === "boolean" ? { verified: preview.verified } : {}),
+          },
+        }
+      : {}),
+    ...(computer && computerServerName
+      ? {
+          computer: {
+            serverName: computerServerName,
+            installed: computer.installed === true,
+            ...(typeof computer.verified === "boolean" ? { verified: computer.verified } : {}),
           },
         }
       : {}),
@@ -1106,6 +1145,14 @@ export function readRuntimeConfiguredPayload(
     ...(readConfiguredValue(record.fastModeState, config?.fast_mode_state)
       ? {
           fastModeState: readConfiguredValue(record.fastModeState, config?.fast_mode_state)!,
+        }
+      : {}),
+    ...(readConfiguredValue(record.fastModeDisabledReason, config?.fast_mode_disabled_reason)
+      ? {
+          fastModeDisabledReason: readConfiguredValue(
+            record.fastModeDisabledReason,
+            config?.fast_mode_disabled_reason,
+          )!,
         }
       : {}),
     ...(readConfiguredValue(record.effort, config?.effort)
@@ -1185,7 +1232,8 @@ export function readMcpStatusActivityPayload(
     statusValue !== "starting" &&
     statusValue !== "ready" &&
     statusValue !== "failed" &&
-    statusValue !== "cancelled"
+    statusValue !== "cancelled" &&
+    statusValue !== "needs-auth"
   ) {
     return null;
   }
@@ -1195,6 +1243,17 @@ export function readMcpStatusActivityPayload(
     ...(name ? { name } : {}),
     ...(error ? { error } : {}),
     ...(toolCount !== undefined ? { toolCount } : {}),
+    ...(typeof record.providerInstanceId === "string"
+      ? {
+          providerInstanceId:
+            record.providerInstanceId as CompactMcpStatusActivityPayload["providerInstanceId"],
+        }
+      : {}),
+    ...(typeof record.sessionGeneration === "number" &&
+    Number.isInteger(record.sessionGeneration) &&
+    record.sessionGeneration >= 0
+      ? { sessionGeneration: record.sessionGeneration }
+      : {}),
   };
 }
 
@@ -1246,4 +1305,23 @@ export function compactThreadActivityPayload(input: {
     default:
       return payload;
   }
+}
+
+/** A new stamped generation retires every older and unstamped server observation. */
+export function latestMcpStatusActivities(
+  activities: ReadonlyArray<{ kind: string; payload: unknown }>,
+) {
+  const entries = activities
+    .filter((activity) => activity.kind === "mcp.status.updated")
+    .map((activity) => readMcpStatusActivityPayload(activity.payload))
+    .filter((entry): entry is CompactMcpStatusActivityPayload => entry !== null);
+  const generation = entries.reduce(
+    (max, entry) => Math.max(max, entry.sessionGeneration ?? -1),
+    -1,
+  );
+  const latest = new Map<string, CompactMcpStatusActivityPayload>();
+  for (const entry of entries)
+    if ((entry.sessionGeneration ?? -1) === generation)
+      latest.set(entry.name ?? "__unnamed__", entry);
+  return latest;
 }

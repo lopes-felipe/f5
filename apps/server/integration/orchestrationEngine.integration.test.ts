@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 import {
@@ -18,6 +19,7 @@ import {
   gitRefExists,
   gitShowFileAtRef,
   makeOrchestrationIntegrationHarness,
+  seedOrchestrationProjectAndThread,
   type OrchestrationIntegrationHarness,
 } from "./OrchestrationEngineHarness.integration.ts";
 import { checkpointRefForThreadTurn } from "../src/checkpointing/Utils.ts";
@@ -102,34 +104,7 @@ function withRealCodexHarness<A, E>(
   );
 }
 
-const seedProjectAndThread = (harness: OrchestrationIntegrationHarness) =>
-  Effect.gen(function* () {
-    const createdAt = nowIso();
-
-    yield* harness.engine.dispatch({
-      type: "project.create",
-      commandId: CommandId.makeUnsafe("cmd-project-create"),
-      projectId: PROJECT_ID,
-      title: "Integration Project",
-      workspaceRoot: harness.workspaceDir,
-      defaultModel: "gpt-5-codex",
-      createdAt,
-    });
-
-    yield* harness.engine.dispatch({
-      type: "thread.create",
-      commandId: CommandId.makeUnsafe("cmd-thread-create"),
-      threadId: THREAD_ID,
-      projectId: PROJECT_ID,
-      title: "Integration Thread",
-      model: "gpt-5-codex",
-      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-      runtimeMode: "approval-required",
-      branch: null,
-      worktreePath: harness.workspaceDir,
-      createdAt,
-    });
-  });
+const seedProjectAndThread = seedOrchestrationProjectAndThread;
 
 const startTurn = (input: {
   readonly harness: OrchestrationIntegrationHarness;
@@ -265,7 +240,8 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
           branch: null,
-          worktreePath: harness.workspaceDir,
+          // This fixture uses the project checkout, not a linked worktree.
+          worktreePath: null,
           createdAt,
         });
 
@@ -592,14 +568,13 @@ it.live("tracks approval requests and resolves pending approvals on user respons
 it.live("records failed turn runtime state and checkpoint status as error", () =>
   withHarness((harness) =>
     Effect.gen(function* () {
-      yield* seedProjectAndThread(harness);
-
-      yield* harness.engine.dispatch({
-        type: "thread.meta.update",
-        commandId: CommandId.makeUnsafe("failed-turn-branch"),
-        threadId: THREAD_ID,
-        branch: "t3code/1234abcd",
-      });
+      yield* Effect.sync(() =>
+        execFileSync("git", ["checkout", "-b", "t3code/1234abcd"], {
+          cwd: harness.workspaceDir,
+          stdio: "pipe",
+        }),
+      );
+      yield* seedProjectAndThread(harness, "t3code/1234abcd");
 
       yield* harness.adapterHarness!.queueTurnResponseForNextSession({
         events: [

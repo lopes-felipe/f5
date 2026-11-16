@@ -128,13 +128,13 @@ describe("resolveClaudeTranscriptCleanupDir", () => {
         isolatedProfile: true,
         configDir: "/state/provider-homes/claude/.claude",
       }),
-    ).toBe("/state/provider-homes/claude/.claude");
+    ).toBe(NodePath.resolve("/state/provider-homes/claude/.claude"));
     expect(
       resolveClaudeTranscriptCleanupDir({
         ...base,
         homePath: "/work-home",
         configDir: "/work-home/.claude",
       }),
-    ).toBe("/work-home/.claude");
+    ).toBe(NodePath.resolve("/work-home/.claude"));
   });
 });

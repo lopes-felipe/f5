@@ -6,8 +6,9 @@ import {
 import { type ReactNode } from "react";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
 import { compareThreadsByActivity, isSnoozedThread } from "../lib/threadOrdering";
-import { resolveThreadStatusPillForThread, type ThreadStatusPill } from "../threadStatus";
-import type { Project, Thread } from "../types";
+import { pillForStatus, type ThreadStatus, type ThreadStatusPill } from "../threadStatus";
+import type { Project, ThreadListItem } from "../types";
+import { isScratchProject, withoutScratchProjects } from "@t3tools/shared/scratchProject";
 
 export const RECENT_THREAD_LIMIT = 12;
 export const ITEM_ICON_CLASS = "size-4 text-muted-foreground";
@@ -48,6 +49,63 @@ export interface CommandPaletteView {
   readonly addonIcon: ReactNode;
   readonly groups: ReadonlyArray<CommandPaletteGroup>;
   readonly initialQuery?: string;
+}
+
+export type CommandPaletteRow =
+  | {
+      readonly kind: "label";
+      readonly key: string;
+      readonly label: string;
+      readonly first: boolean;
+    }
+  | {
+      readonly kind: "item";
+      readonly key: string;
+      readonly item: CommandPaletteActionItem | CommandPaletteSubmenuItem;
+      /** Position in the highlightable item order. */
+      readonly itemIndex: number;
+    };
+
+/**
+ * Flattens groups into the rows a virtualized list renders. `itemValues` is the
+ * highlightable item order Base UI navigates; `rowIndexByItemIndex` maps a
+ * highlight back to its row for scrolling.
+ */
+export function buildCommandPaletteRows(groups: ReadonlyArray<CommandPaletteGroup>) {
+  const rows: CommandPaletteRow[] = [];
+  const itemValues: string[] = [];
+  const rowIndexByItemIndex: number[] = [];
+  for (const group of groups) {
+    if (group.label) {
+      rows.push({
+        kind: "label",
+        key: `group:${group.value}`,
+        label: group.label,
+        first: rows.length === 0,
+      });
+    }
+    for (const item of group.items) {
+      const itemIndex = itemValues.length;
+      itemValues.push(item.value);
+      rowIndexByItemIndex.push(rows.length);
+      rows.push({ kind: "item", key: `${group.value}:${item.value}`, item, itemIndex });
+    }
+  }
+  return { rows, itemValues, rowIndexByItemIndex };
+}
+
+/** The item Enter should run for a highlight, whether or not its row is mounted. */
+export function findHighlightedCommandPaletteItem(
+  groups: ReadonlyArray<CommandPaletteGroup>,
+  highlightedItemValue: string | null,
+): CommandPaletteActionItem | CommandPaletteSubmenuItem | null {
+  if (highlightedItemValue === null) return null;
+  for (const group of groups) {
+    for (const item of group.items) {
+      if (item.value === highlightedItemValue) return item;
+    }
+  }
+  return null;
 }
 
 export type CommandPaletteFilterMode = "all" | "files" | "content";
@@ -109,13 +167,50 @@ export function buildProjectActionItems(input: {
   }));
 }
 
+/** Keep Enter aimed at the current project while preserving the remaining sidebar order. */
+export function buildNewThreadInProjectItems(input: {
+  projects: ReadonlyArray<Project>;
+  currentProjectId: Project["id"] | null;
+  noProjectItem: CommandPaletteActionItem;
+  icon: (project: Project) => ReactNode;
+  runProject: (project: Project) => Promise<void>;
+}): CommandPaletteActionItem[] {
+  const current = input.projects.find((project) => project.id === input.currentProjectId);
+  const projects = withoutScratchProjects(input.projects);
+  const ordered =
+    current && !isScratchProject(current)
+      ? [current, ...projects.filter((project) => project.id !== current.id)]
+      : projects;
+  const items = buildProjectActionItems({
+    projects: ordered,
+    valuePrefix: "new-thread-in",
+    icon: input.icon,
+    runProject: input.runProject,
+  }).map((item, index) =>
+    ordered[index]?.id === input.currentProjectId
+      ? { ...item, description: "Current · " + item.description }
+      : item,
+  );
+  const currentIsScratch = isScratchProject(current);
+  const noProjectItem = currentIsScratch
+    ? { ...input.noProjectItem, description: "Current" }
+    : input.noProjectItem;
+  items.splice(current && !currentIsScratch ? 1 : 0, 0, noProjectItem);
+  return items;
+}
+
+/** A palette thread; summaries carry their status, plain list items show none. */
+export type CommandPaletteThread = ThreadListItem & { readonly status?: ThreadStatus };
+
 export function buildThreadActionItems(input: {
-  threads: ReadonlyArray<Thread>;
-  activeThreadId?: Thread["id"];
+  threads: ReadonlyArray<CommandPaletteThread>;
+  activeThreadId?: ThreadListItem["id"];
   projectTitleById: ReadonlyMap<Project["id"], string>;
   icon: ReactNode;
-  runThread: (thread: Thread) => Promise<void>;
-  queuedCountByThreadId?: ReadonlyMap<Thread["id"], number>;
+  runThread: (thread: ThreadListItem) => Promise<void>;
+  queuedCountByThreadId?: ReadonlyMap<ThreadListItem["id"], number>;
+  /** Live activity time for the label; summaries only carry an ordering key. */
+  activityAtOf?: (thread: ThreadListItem) => string | null | undefined;
   limit?: number;
 }): CommandPaletteActionItem[] {
   const sortedThreads = input.threads
@@ -151,8 +246,10 @@ export function buildThreadActionItems(input: {
       searchTerms: [thread.title, thread.id, projectTitle ?? "", thread.branch ?? ""],
       title: thread.title,
       description: descriptionParts.join(" · "),
-      timestamp: formatRelativeTimeLabel(thread.lastInteractionAt ?? thread.createdAt),
-      statusPill: resolveThreadStatusPillForThread(thread),
+      timestamp: formatRelativeTimeLabel(
+        input.activityAtOf?.(thread) ?? thread.lastInteractionAt ?? thread.createdAt,
+      ),
+      statusPill: pillForStatus(thread.status ?? "none"),
       icon: input.icon,
       run: async () => {
         await input.runThread(thread);
@@ -237,16 +334,34 @@ function rankCommandPaletteItemMatch(
   return 0;
 }
 
+/** Rows a root search shows from submenu options, after the root's own matches. */
+export const NESTED_SEARCH_LIMIT = 3;
+
 export function filterCommandPaletteGroups(input: {
   activeGroups: ReadonlyArray<CommandPaletteGroup>;
   query: string;
   isInSubmenu: boolean;
+  /** Submenu options join the root search, and a submenu with no match falls back to it. */
+  allOptions?: {
+    readonly rootGroups: ReadonlyArray<CommandPaletteGroup>;
+    readonly nestedItems: ReadonlyArray<CommandPaletteActionItem>;
+  };
   fileSearchItems?: ReadonlyArray<CommandPaletteActionItem>;
   contentSearchItems?: ReadonlyArray<CommandPaletteActionItem>;
   searchMode?: CommandPaletteFilterMode;
   projectSearchItems: ReadonlyArray<CommandPaletteActionItem>;
   threadSearchItems: ReadonlyArray<CommandPaletteActionItem>;
 }): CommandPaletteGroup[] {
+  if (input.allOptions && input.isInSubmenu) {
+    const { allOptions, ...submenuInput } = input;
+    const scoped = filterCommandPaletteGroups(submenuInput);
+    if (scoped.length > 0 || normalizeSearchText(input.query).length === 0) return scoped;
+    return filterCommandPaletteGroups({
+      ...input,
+      activeGroups: allOptions.rootGroups,
+      isInSubmenu: false,
+    });
+  }
   const searchMode = input.searchMode ?? "all";
   if (searchMode === "files") {
     return input.fileSearchItems?.length
@@ -283,6 +398,13 @@ export function filterCommandPaletteGroups(input: {
   }
 
   const searchableGroups = [...baseGroups];
+  if (!input.isInSubmenu && input.allOptions && input.allOptions.nestedItems.length > 0) {
+    searchableGroups.push({
+      value: "nested-search",
+      label: "Suggestions",
+      items: input.allOptions.nestedItems,
+    });
+  }
   if (!input.isInSubmenu && !isActionsFilter) {
     if (input.projectSearchItems.length > 0) {
       searchableGroups.push({
@@ -319,6 +441,7 @@ export function filterCommandPaletteGroups(input: {
           entry !== null,
       )
       .toSorted((left, right) => right.rank - left.rank || left.index - right.index)
+      .slice(0, group.value === "nested-search" ? NESTED_SEARCH_LIMIT : undefined)
       .map((entry) => entry.item);
 
     if (items.length === 0) {
@@ -346,6 +469,33 @@ export function filterCommandPaletteGroups(input: {
   }
 
   return filteredGroups;
+}
+
+/** Every option inside a submenu as one row, e.g. "New thread in web" or "Choose theme: Dracula". */
+export function buildNestedSearchItems(
+  items: ReadonlyArray<CommandPaletteActionItem | CommandPaletteSubmenuItem>,
+  query: string,
+): CommandPaletteActionItem[] {
+  const topLevelTitles = new Set(
+    items.flatMap((item) => (typeof item.title === "string" ? [item.title] : [])),
+  );
+  const normalizedQuery = normalizeSearchText(query);
+  return items.flatMap((parent) => {
+    if (parent.kind !== "submenu" || typeof parent.title !== "string") return [];
+    const stem = parent.title.replace(/(\.\.\.|…)$/u, "");
+    // A query that only names the submenu ("new thread in") wants the submenu row itself.
+    if (normalizeSearchText(stem).startsWith(normalizedQuery)) return [];
+    const prefix = stem === parent.title ? `${stem}: ` : `${stem.trimEnd()} `;
+    return parent.groups.flatMap((group) =>
+      group.items.flatMap((child) => {
+        if (child.kind !== "action" || typeof child.title !== "string") return [];
+        const title = `${prefix}${child.title}`;
+        if (topLevelTitles.has(title)) return [];
+        // Only the combined title: child keywords like a project path would list every project.
+        return [{ ...child, title, searchTerms: [title] }];
+      }),
+    );
+  });
 }
 
 export function buildBrowseGroups(input: {

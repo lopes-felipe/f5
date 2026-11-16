@@ -3,6 +3,37 @@ import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { AssistantQuoteToolbar } from "./AssistantQuoteToolbar";
 
+it("offers a quote when paragraph selection ends beyond an unselectable tool row", async () => {
+  const insert = vi.fn(() => ({ inserted: true }));
+  const screen = await render(
+    <>
+      <p data-message-role="assistant" data-message-id="answer">
+        Selected answer
+      </p>
+      <div style={{ userSelect: "none" }}>Tool output</div>
+      <p data-message-role="assistant" data-message-id="next">
+        Next answer
+      </p>
+      <AssistantQuoteToolbar onInsert={insert} currentLength={0} maxLength={120000} />
+    </>,
+  );
+  try {
+    const paragraph = document.querySelector('[data-message-id="answer"]')!;
+    const next = document.querySelector('[data-message-id="next"]')!;
+    window.getSelection()!.setBaseAndExtent(paragraph.firstChild!, 0, next, 0);
+    paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    await page.getByRole("button", { name: "Quote reply" }).click();
+    await page.getByRole("button", { name: "Add quote to composer" }).click();
+    expect(insert).toHaveBeenCalledWith(
+      { messageId: "answer", text: "Selected answer", comment: "" },
+      false,
+    );
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
 it("dismisses selection actions on other buttons and never inserts a cancelled quote", async () => {
   const insert = vi.fn(() => ({ inserted: true }));
   const screen = await render(

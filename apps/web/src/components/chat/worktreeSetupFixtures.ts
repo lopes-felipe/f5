@@ -39,6 +39,7 @@ export function makeWorktreeSetupSnapshot(
       tail: [],
     })),
     error: null,
+    generation: 0,
     sequence: 1,
     ...overrides,
   };

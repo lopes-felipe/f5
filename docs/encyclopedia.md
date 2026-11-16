@@ -1,5 +1,7 @@
 # Encyclopedia
 
+> Contributors: a glossary of terms used in the codebase.
+
 This is a living glossary for F5. It explains what common terms mean in this codebase.
 
 ## Table of contents
@@ -10,6 +12,7 @@ This is a living glossary for F5. It explains what common terms mean in this cod
 - [Provider runtime](#provider-runtime)
 - [Checkpointing](#checkpointing)
 - [Next-turn queue](#next-turn-queue)
+- [Upstream ports](#upstream-ports)
 
 ## Concepts
 
@@ -169,6 +172,34 @@ The patch difference between two checkpoints. Query logic lives in [CheckpointDi
 
 The file patch and changed-file summary for one turn. It is usually computed in [CheckpointDiffQuery.ts][20], represented in [the contracts][1], and recorded into thread state by [projector.ts][4].
 
+### Upstream ports
+
+Upstream ports track a forked-from repository commit by commit. The ledger lives in the repository under `upstream/`; the server module is [upstreamPorts/][28] and the shared format is [upstreamPorts.ts][29]. See [upstream-ports.md][30].
+
+#### Upstream topic
+
+One reviewable upstream change: one or more upstream commits grouped by triage, with a stored status (`inbox`, `port`, `skip`, `declined`, `watch`, `equivalent`) and a suggestion. The page shows a derived state (Inbox, Ready, In progress, Watch, Done, Skipped) computed from the status, `Upstream-Topic:` trailers on the default branch, and linked port threads.
+
+#### Upstream lane
+
+The bucket a topic is ranked in: Security, Bug, Perf, Feature or Maintenance. It is derived from the suggestion's stored `kind` (conventional-commit prefix, model output, security hints), or from commit subjects for topics triaged before classification. Lanes are never stored in the ledger.
+
+#### Upstream score
+
+A 0–100 rank derived at read time from the lane (and security severity or feature area policy), user impact, whether the changed source files exist in f5, and the suggestion. The Inbox Shortlist shows the top topics scoring 50 or more. Weights live in [upstreamPortsScore.ts][31].
+
+#### Expired unreviewed
+
+The `aged-out` skip reason: an Inbox topic outside the Security lane that waited longer than the budget's expiry window (twice as long for high scores) is skipped with `decidedBy: rule`. Reopen it like any skip.
+
+#### Topic epoch
+
+A counter on each topic that increments when a topic returns to Inbox or Watch from Port or Done. Trailers and port threads count only for the current epoch, so an old port cannot complete a reopened topic. Port commits carry `Upstream-Topic: <id>` for epoch 1 and `Upstream-Topic: <id>#<epoch>` after that.
+
+#### Ledger PR
+
+The single rolling pull request through which F5 publishes recorded decisions and coverage intervals. Decisions are local first; the publisher commits them on a branch without touching the working tree and replays any left over after a merge on a fresh branch.
+
 ## Practical Shortcuts
 
 - If you see `requested`, think "intent recorded".
@@ -183,6 +214,7 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 - [provider-architecture.md][16]
 - [runtime-modes.md][18]
 - [workspace-layout.md][2]
+- [upstream-ports.md][30]
 
 [1]: ../packages/contracts/src/orchestration.ts
 [2]: ./workspace-layout.md
@@ -211,6 +243,10 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [25]: ../packages/contracts/src/nextTurnQueue.ts
 [26]: ../apps/server/src/nextTurnQueue/Layers/NextTurnQueueStore.ts
 [27]: ../apps/server/src/orchestration/Layers/ProviderTurnDeliveryWorker.ts
+[28]: ../apps/server/src/upstreamPorts/
+[29]: ../packages/shared/src/upstreamPorts.ts
+[30]: ./user/upstream-ports.md
+[31]: ../packages/shared/src/upstreamPortsScore.ts
 
 ## Profile
 

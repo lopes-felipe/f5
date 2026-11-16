@@ -1,7 +1,9 @@
+import { Option } from "effect";
+import { PreviewMcpHttpServer } from "../../mcp/PreviewMcpHttpServer";
+import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import * as NodeOS from "node:os";
 import { makeProviderLimits } from "../../usage/providerLimits.ts";
 import { acquireAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
-import { createModelCapabilities } from "@t3tools/shared/model";
 import * as AcpErrors from "effect-acp/errors";
 import { ProviderDriverError } from "../Errors.ts";
 import {
@@ -15,8 +17,12 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { ServerConfig } from "../../config.ts";
 import { makeGrokTextGeneration } from "../../git/Layers/GrokTextGeneration.ts";
 import { makeGrokAdapter } from "../Layers/GrokAdapter.ts";
-import { checkAntigravityProviderStatus } from "../Layers/AntigravityProvider.ts";
+import {
+  buildAntigravityModels,
+  checkAntigravityProviderStatus,
+} from "../Layers/AntigravityProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import { findModelConfigOption } from "../acp/AcpRuntimeModel.ts";
 import { makeAntigravityAcpRuntime } from "../acp/AntigravityAcpSupport.ts";
 import type { GrokAcpRuntimeInput } from "../acp/GrokAcpSupport.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -63,30 +69,26 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       let models: ReadonlyArray<ServerProviderModel> | undefined;
       let refreshSnapshot: Effect.Effect<void> = Effect.void;
       let readModelChoices: Effect.Effect<void> = Effect.void;
+      const previewMcp = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
+      const computerBroker = Option.getOrUndefined(
+        yield* Effect.serviceOption(ComputerAutomationBroker),
+      );
       const adapter = yield* makeGrokAdapter(
         { enabled, binaryPath: "", customModels: config.customModels },
         {
           provider: "antigravity",
+          ...(previewMcp ? { previewMcpHttpServer: previewMcp } : {}),
+          ...(computerBroker ? { computerAutomationBroker: computerBroker } : {}),
           nativeCompaction: config.nativeCompaction,
           onRuntimeReady: (runtime) =>
             Effect.gen(function* () {
               readModelChoices = Effect.gen(function* () {
-                const configOptions = yield* runtime.getConfigOptions;
-                const model = configOptions.find(
-                  (option) => option.id === "model" || option.category === "model",
-                );
-                if (model?.type === "select") {
+                const model = findModelConfigOption(yield* runtime.getConfigOptions);
+                if (model) {
                   const choices = model.options.flatMap((option) =>
                     "value" in option ? [option] : option.options,
                   );
-                  models = choices
-                    .filter((choice) => choice.value.trim())
-                    .map((choice) => ({
-                      slug: choice.value,
-                      name: choice.name,
-                      isCustom: false,
-                      capabilities: createModelCapabilities({ optionDescriptors: [] }),
-                    }));
+                  models = buildAntigravityModels(choices);
                 }
               });
               yield* refreshSnapshot;

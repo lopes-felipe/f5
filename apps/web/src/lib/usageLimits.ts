@@ -1,4 +1,5 @@
 import { PROVIDER_DISPLAY_NAMES, type UsageAccounts } from "@t3tools/contracts";
+import { quotaWindowsFromSection } from "@t3tools/shared/usageLimit";
 
 /** Local clock time; adds the date only when it is not today. */
 export function formatUsageResumeTime(value: string, now = new Date()): string {
@@ -11,13 +12,14 @@ export function formatUsageResumeTime(value: string, now = new Date()): string {
   });
 }
 
-/** Minute-granular countdown ("in 1h 39m", "in 12m", "in <1m"); null once due. */
+/** Countdown ("in 5d 10h", "in 1h 39m", "in 12m", "in <1m"); null once due. */
 export function formatTimeUntil(value: string, nowMs = Date.now()): string | null {
   const remainingMs = Date.parse(value) - nowMs;
   if (!Number.isFinite(remainingMs) || remainingMs <= 0) return null;
   const minutes = Math.floor(remainingMs / 60_000);
   if (minutes < 1) return "in <1m";
   const hours = Math.floor(minutes / 60);
+  if (hours >= 24) return `in ${Math.floor(hours / 24)}d ${hours % 24}h`;
   return hours > 0 ? `in ${hours}h ${minutes % 60}m` : `in ${minutes}m`;
 }
 
@@ -47,39 +49,31 @@ export function formatUsageLimitActivityLabel(display: UsageLimitActivityDisplay
   return `${display.providerLabel} ${window}limit reached${reset}`;
 }
 
+const STALE_SNAPSHOT_MS = 15 * 60_000;
+
 /** Formats the cached snapshot only; callers must use refresh: "none". */
-export function formatUsageLimits(accounts: UsageAccounts): string {
+export function formatUsageLimits(accounts: UsageAccounts, nowMs = Date.now()): string {
   const remaining = (label: string, used: number | null) =>
     `${label}: ${used === null ? "unknown" : `${Math.max(0, 100 - used).toFixed(0)}% remaining`}`;
   return (
     accounts
       .map((account) => {
-        const windows = account.sections.flatMap((section) => {
-          if (section.kind === "provider-limits" && section.snapshot)
-            return section.snapshot.data.windows.map((window) =>
-              remaining(window.label, window.usedPercent),
-            );
-          if (section.kind === "claude-usage" && section.snapshot)
-            return section.snapshot.data.windows.map((window) =>
-              remaining(window.label, window.utilization),
-            );
-          if (section.kind === "codex-limits" && section.snapshot)
-            return section.snapshot.data.rateLimits
-              .filter((limit) => limit.id === "codex")
-              .flatMap((limit) => [limit.primary, limit.secondary])
-              .flatMap((window) =>
-                window
-                  ? [
-                      remaining(
-                        window.windowDurationMins === 10080 ? "Weekly" : "Session",
-                        window.usedPercent,
-                      ),
-                    ]
-                  : [],
-              );
-          return [];
-        });
-        return `${account.displayName}: ${windows.join(", ") || "Unavailable"}`;
+        const windows = account.sections.flatMap((section) =>
+          quotaWindowsFromSection(section)
+            .filter(
+              (window) => section.kind !== "codex-limits" || window.windowKey.startsWith("codex:"),
+            )
+            .map((window) => remaining(window.label, window.usedPercent)),
+        );
+        const newest = account.sections
+          .flatMap((section) => (section.snapshot ? [section.snapshot.fetchedAt] : []))
+          .sort()
+          .at(-1);
+        const stale =
+          newest !== undefined && nowMs - Date.parse(newest) > STALE_SNAPSHOT_MS
+            ? ` (as of ${formatUsageResumeTime(newest, new Date(nowMs))})`
+            : "";
+        return `${account.displayName}: ${windows.join(", ") || "Unavailable"}${stale}`;
       })
       .join("; ") || "No account snapshots available."
   );

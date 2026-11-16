@@ -1,5 +1,7 @@
+import { serverConfigQueryOptions } from "../lib/serverReactQuery";
+import { deriveProviderInstanceEntries } from "../providerInstances";
 import type { ProviderSessionCapabilities, ThreadId } from "@t3tools/contracts";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   BotIcon,
@@ -18,6 +20,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAgentsPanelStore, type AgentsPanelScope } from "../agentsPanelStore";
 import {
   buildAgentsPanelModel,
+  resolveAgentProviderName,
   countAgentsByStatus,
   filterAgentsPanelEntries,
   type AgentsPanelEntry,
@@ -39,6 +42,7 @@ import {
 import { cn } from "../lib/utils";
 import { useRightPanelStore } from "../rightPanelStore";
 import { useStore } from "../store";
+import { useShallow } from "zustand/react/shallow";
 import { AgentRow, type AgentRowActions } from "./AgentsPanelRow";
 import {
   AlertDialog,
@@ -84,6 +88,7 @@ export interface AgentsPanelLiveCounts {
 export interface AgentsPanelViewProps {
   /** Unfiltered model for the selected scope. */
   readonly model: AgentsPanelModel;
+  readonly providerName?: (entry: AgentsPanelEntry) => string | undefined;
   readonly scope: AgentsPanelScope;
   readonly liveCounts: AgentsPanelLiveCounts;
   readonly loading: boolean;
@@ -102,6 +107,7 @@ export interface AgentsPanelViewProps {
   readonly onBackgroundTasksExpandedChange: (expanded: boolean) => void;
   readonly onRetry: () => void;
   readonly onNavigate: (entry: AgentsPanelEntry) => void;
+  readonly onOpenTranscript?: (entry: AgentsPanelEntry) => void;
   readonly onOpenThread: (threadId: ThreadId) => void;
   readonly onStop: (entry: AgentsPanelEntry) => void;
   readonly onStopAll: (entries: ReadonlyArray<AgentsPanelEntry>) => void;
@@ -296,6 +302,7 @@ function EntryList(props: {
           onStop: () => view.onStop(entry),
           onDismiss: () => view.onDismiss(entry),
           onNavigate: () => view.onNavigate(entry),
+          onOpenTranscript: () => view.onOpenTranscript?.(entry),
           onOpenThread: () => view.onOpenThread(entry.threadId),
           onInspect: (cursor) => view.onInspect(entry, cursor),
           onLoadPrompt: () => view.onLoadPrompt(entry),
@@ -304,6 +311,7 @@ function EntryList(props: {
           <AgentRow
             key={entry.id}
             entry={entry}
+            providerName={view.providerName?.(entry)}
             now={view.now}
             expanded={props.expandedId === entry.id}
             showThread={props.showThread}
@@ -648,6 +656,19 @@ export function AgentsPanel(props: {
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const providers = useQuery({
+    ...serverConfigQueryOptions(),
+    select: (config) => config.providers,
+  }).data;
+  const providerName = useMemo(() => {
+    const instances = new Map(
+      deriveProviderInstanceEntries(providers ?? []).map((instance) => [
+        instance.instanceId,
+        instance,
+      ]),
+    );
+    return (entry: AgentsPanelEntry) => resolveAgentProviderName(entry, instances);
+  }, [providers]);
   const now = useAgentsClock(props.model.liveCount > 0);
   const scope = useAgentsPanelStore((state) => state.scope);
   const statusFilter = useAgentsPanelStore((state) => state.statusFilter);
@@ -669,14 +690,17 @@ export function AgentsPanel(props: {
     }
     return ids;
   }, [pendingStops, props.model]);
-  const threads = useStore((state) => state.threads);
-  const capabilitiesByThreadId = useMemo(() => {
-    const map = new Map<ThreadId, ProviderSessionCapabilities>();
-    for (const thread of threads) {
-      if (thread.session?.capabilities) map.set(thread.id, thread.session.capabilities);
-    }
-    return map;
-  }, [threads]);
+  // Shallow-compared map: streaming deltas keep each session's capabilities
+  // reference, so the panel does not re-render for every token.
+  const capabilitiesByThreadId = useStore(
+    useShallow((state) => {
+      const map = new Map<ThreadId, ProviderSessionCapabilities>();
+      for (const thread of state.threads) {
+        if (thread.session?.capabilities) map.set(thread.id, thread.session.capabilities);
+      }
+      return map;
+    }),
+  );
 
   const targetFor = (entry: AgentsPanelEntry): NativeTaskTarget | null => {
     const capabilities = capabilitiesByThreadId.get(entry.threadId);
@@ -724,6 +748,7 @@ export function AgentsPanel(props: {
   return (
     <AgentsPanelView
       model={props.model}
+      providerName={providerName}
       scope={scope}
       liveCounts={props.liveCounts}
       loading={props.loading}
@@ -746,6 +771,10 @@ export function AgentsPanel(props: {
       onBackgroundTasksExpandedChange={setBackgroundTasksExpanded}
       onRetry={props.onRetry}
       onNavigate={(entry) => navigateToThread(entry.threadId, entry.focusActivityId)}
+      onOpenTranscript={(entry) => {
+        navigateToThread(entry.threadId, null);
+        useRightPanelStore.getState().openAgentTranscript(entry.threadId, entry);
+      }}
       onOpenThread={(threadId) => navigateToThread(threadId, null)}
       onStop={(entry) => stop([entry])}
       onStopAll={stop}

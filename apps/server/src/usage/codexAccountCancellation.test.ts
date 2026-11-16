@@ -130,7 +130,7 @@ it.effect(
           sections: [emptyAccountSection("codex-tokens"), emptyAccountSection("codex-limits")],
         },
         probeCodexAccountSections({ cwd: process.cwd() }),
-        { readerOwnsTimeout: true },
+        { identity: "test:codex", readerOwnsTimeout: true },
       ).pipe(Effect.provideService(Scope.Scope, scope));
       yield* capability.refresh("force", permits);
       yield* Effect.promise(() => harness.started);
@@ -178,7 +178,12 @@ it.effect("instance usage keeps managed homes, credentials and cached totals sep
       const homePath = process.cwd() + "/provider-homes/" + name;
       const harness = processHarness("success", true, tokens);
       const capability = yield* makeCodexAccountUsage(
-        { instanceId: ProviderInstanceId.make(name), displayName: name, enabled: true },
+        {
+          instanceId: ProviderInstanceId.make(name),
+          displayName: name,
+          enabled: true,
+          identity: `test:${name}`,
+        },
         {
           cwd: process.cwd(),
           homePath,
@@ -220,7 +225,12 @@ it.effect("a failed managed usage probe never retries with the ambient account",
     });
     const permits = yield* Semaphore.make(1);
     const capability = yield* makeCodexAccountUsage(
-      { instanceId: ProviderInstanceId.make("personal"), displayName: "Personal", enabled: true },
+      {
+        instanceId: ProviderInstanceId.make("personal"),
+        displayName: "Personal",
+        enabled: true,
+        identity: "test:personal",
+      },
       {
         cwd: process.cwd(),
         homePath: process.cwd() + "/provider-homes/personal",

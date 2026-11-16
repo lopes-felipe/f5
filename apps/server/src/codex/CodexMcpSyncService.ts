@@ -1,6 +1,7 @@
 import {
   type McpCodexStatusResult,
   type ProjectId,
+  type ProviderInstanceId,
   type ProviderStartOptions,
 } from "@t3tools/contracts";
 import { Effect, Layer, ServiceMap } from "effect";
@@ -12,6 +13,7 @@ import { isMethodNotFoundError } from "./CodexControlClient.ts";
 export interface CodexMcpSyncServiceShape {
   readonly getStatus: (input: {
     readonly projectId: ProjectId;
+    readonly instanceId?: ProviderInstanceId;
     readonly providerOptions?: ProviderStartOptions;
   }) => Effect.Effect<McpCodexStatusResult, never>;
 }
@@ -26,12 +28,13 @@ const makeCodexMcpSyncService = Effect.gen(function* () {
   const projectMcpConfigService = yield* ProjectMcpConfigService;
 
   return {
-    getStatus: ({ projectId, providerOptions }) =>
+    getStatus: ({ projectId, providerOptions, instanceId }) =>
       projectMcpConfigService.readCodexServers(projectId).pipe(
         Effect.flatMap((stored) =>
           registry
             .getAdminClient({
               projectId,
+              ...(instanceId ? { instanceId } : {}),
               ...(providerOptions ? { providerOptions } : {}),
               mcpEffectiveConfigVersion: stored.effectiveVersion,
               mcpServers: stored.servers,

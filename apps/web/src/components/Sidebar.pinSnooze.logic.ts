@@ -1,12 +1,12 @@
 import type { ThreadId } from "@t3tools/contracts";
 
 import { isSnoozedThread, sortThreadsByActivity } from "../lib/threadOrdering";
-import type { Thread } from "../types";
+import type { Thread, ThreadListItem } from "../types";
 
-export function orderActiveSidebarThreads(input: {
-  readonly threads: ReadonlyArray<Thread>;
+export function orderActiveSidebarThreads<T extends ThreadListItem>(input: {
+  readonly threads: ReadonlyArray<T>;
   readonly draftThreadId: ThreadId | null;
-}): Thread[] {
+}): T[] {
   return input.threads
     .filter((thread) => !isSnoozedThread(thread))
     .toSorted((left, right) => {
@@ -22,10 +22,10 @@ export function orderActiveSidebarThreads(input: {
     });
 }
 
-export function projectSnoozedThreads(
-  threads: ReadonlyArray<Thread>,
+export function projectSnoozedThreads<T extends ThreadListItem>(
+  threads: ReadonlyArray<T>,
   projectId: Thread["projectId"],
-): Thread[] {
+): T[] {
   return sortThreadsByActivity(
     threads.filter(
       (thread) =>

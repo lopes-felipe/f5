@@ -38,26 +38,26 @@ function renderCard(markup: ReactElement): string {
 }
 
 describe("CommandTranscriptCard", () => {
-  it("renders completed badges with the success palette", () => {
+  it("renders completed status as a labelled success icon and accent", () => {
     const markup = renderCard(
       <CommandTranscriptCard
         execution={makeExecution({
           status: "completed",
         })}
         expanded={false}
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
       />,
     );
 
-    expect(markup).toContain("border-success/32");
-    expect(markup).toContain("bg-success/8");
-    expect(markup).toContain("text-success-foreground");
+    expect(markup).toContain('aria-label="Completed"');
+    expect(markup).toContain("border-l-success/70");
+    expect(markup).toContain("text-success");
+    expect(markup).not.toContain(">completed<");
   });
 
-  it("renders running badges with the info palette", () => {
+  it("renders running status as a spinning info icon", () => {
     const markup = renderCard(
       <CommandTranscriptCard
         execution={makeExecution({
@@ -67,16 +67,205 @@ describe("CommandTranscriptCard", () => {
           updatedAt: "2026-03-20T12:00:00.500Z",
         })}
         expanded={false}
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
       />,
     );
 
-    expect(markup).toContain("border-info/32");
-    expect(markup).toContain("bg-info/8");
-    expect(markup).toContain("text-info-foreground");
+    expect(markup).toContain('aria-label="Running"');
+    expect(markup).toContain("border-l-info/70");
+    expect(markup).toContain("animate-spin");
+  });
+
+  it("shows the command, not the title, for Claude background commands", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          command: "/bin/zsh -lc 'df -h /System/Volumes/Data'",
+          title: "Command run — completed",
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).not.toContain("Command run");
+    expect(markup).toContain("/System/Volumes/Data");
+    expect(markup).toContain(">background</span>");
+    expect(markup).toContain("Ran in the background (completed)");
+  });
+
+  it("renders the provider description above the command", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ description: "Check free disk space" })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Check free disk space");
+    expect(markup).not.toContain(">background</span>");
+  });
+
+  it("derives a header label when the provider sends no description", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          command: "/bin/zsh -lc 'bun typecheck > /tmp/typecheck.log 2>&1'",
+          title: "Ran command",
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).toContain(
+      '<span class="min-w-0 truncate text-xs text-muted-foreground">Typecheck</span>',
+    );
+  });
+
+  it("keeps the provider description over a derived label", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          command: "/bin/zsh -lc 'bun typecheck'",
+          description: "Verify types after the refactor",
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Verify types after the refactor");
+    expect(markup).not.toContain(">Typecheck</span>");
+  });
+
+  it("does not repeat a search summary already shown in the body as the header", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ command: "rg -n 'foo' apps packages", title: "Ran command" })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup.match(/Searching apps, packages for foo/g)).toHaveLength(1);
+    expect(markup).not.toContain("min-w-0 truncate text-xs text-muted-foreground");
+  });
+
+  it("only shows non-zero exit codes and keeps the start time in a tooltip", () => {
+    const success = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ exitCode: 0 })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+    const failure = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ status: "failed", exitCode: 2, output: "" })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(success).not.toContain("exit 0");
+    expect(success).toContain('title="Started ');
+    expect(success).toContain("<span>1.0s</span>");
+    expect(failure).toContain("exit 2");
+    expect(failure).toContain('aria-label="Failed"');
+  });
+
+  it("shows the last output lines of a collapsed failed command", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          status: "failed",
+          exitCode: 1,
+          output: ["line-1", "line-2", "", "line-3", "line-4", "error: boom", "  "].join("\n"),
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("line-2\nline-3\nline-4\nerror: boom</pre>");
+    expect(markup).not.toContain("line-1");
+    // The tail sits outside the toggle button so its text stays selectable.
+    const buttonMarkup = markup.slice(0, markup.indexOf("</button>"));
+    expect(buttonMarkup).not.toContain("command-failed-output-tail");
+  });
+
+  it("keeps the end of an oversized single-line failure within the tail budget", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          status: "failed",
+          exitCode: 1,
+          output: `${"x".repeat(250_000)}FINAL-ERROR`,
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    const tail = /data-testid="command-failed-output-tail"[^>]*>([^<]*)<\/pre>/.exec(markup)?.[1];
+    expect(tail?.endsWith("FINAL-ERROR")).toBe(true);
+    expect(tail?.startsWith("…")).toBe(true);
+    expect(tail?.length).toBeLessThanOrEqual(600);
+  });
+
+  it("does not show an output tail for collapsed successful commands", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ output: "SUCCESS-OUTPUT" })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).not.toContain("SUCCESS-OUTPUT");
+  });
+
+  it("shows the cwd only when it differs from the workspace root", () => {
+    const renderWithCwd = (cwd: string) =>
+      renderCard(
+        <CommandTranscriptCard
+          execution={makeExecution({ cwd })}
+          expanded
+          timestampFormat="locale"
+          workspaceRoot="/Users/me/project/"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />,
+      );
+
+    expect(renderWithCwd("/Users/me/project")).not.toContain("in project");
+    expect(renderWithCwd("/users/ME/Project")).not.toContain(">in ");
+    expect(renderWithCwd("/Users/me/project/apps/web")).toContain("in project/apps/web");
+    expect(renderWithCwd("/tmp/scratch")).toContain("in /tmp/scratch");
   });
 
   it("does not repeat the same command in header, command, and detail sections", () => {
@@ -89,7 +278,6 @@ describe("CommandTranscriptCard", () => {
           detail: command,
         })}
         expanded
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
@@ -112,7 +300,6 @@ describe("CommandTranscriptCard", () => {
           title: "Echo greeting",
         })}
         expanded
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
@@ -136,7 +323,6 @@ describe("CommandTranscriptCard", () => {
           title: "Ran command",
         })}
         expanded
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
@@ -159,7 +345,6 @@ describe("CommandTranscriptCard", () => {
           title: "Ran command",
         })}
         expanded
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
@@ -184,7 +369,6 @@ describe("CommandTranscriptCard", () => {
           title: "Command run",
         })}
         expanded
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
@@ -203,7 +387,6 @@ describe("CommandTranscriptCard", () => {
           command: "/bin/zsh -lc 'FOO=bar bun --watch $HOME ./script.sh $(pwd) 42'",
         })}
         expanded
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
@@ -237,7 +420,6 @@ describe("CommandTranscriptCard", () => {
           output: "/Users/felipelopes/dev/wolt/f3-code",
         })}
         expanded
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
@@ -255,7 +437,6 @@ describe("CommandTranscriptCard", () => {
       <CommandTranscriptCard
         execution={makeExecution()}
         expanded={false}
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
@@ -272,7 +453,6 @@ describe("CommandTranscriptCard", () => {
       <CommandTranscriptCard
         execution={makeExecution()}
         expanded
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
@@ -281,6 +461,22 @@ describe("CommandTranscriptCard", () => {
 
     expect(markup).toContain('title="Copy command"');
     expect(markup).toContain(">Output</p>");
+    expect(markup).toContain('aria-label="Copy output"');
+  });
+
+  it("hides the copy output button when there is no output", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ output: "" })}
+        expanded
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("(no output)");
+    expect(markup).not.toContain('aria-label="Copy output"');
   });
 
   it("shows a compact preview for very large outputs by default", () => {
@@ -296,7 +492,6 @@ describe("CommandTranscriptCard", () => {
           ].join("\n"),
         })}
         expanded
-        nowIso="2026-03-20T12:00:02.000Z"
         timestampFormat="locale"
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
@@ -306,7 +501,9 @@ describe("CommandTranscriptCard", () => {
     expect(markup).toContain("preview-start");
     expect(markup).toContain("preview-end");
     expect(markup).toContain("[... output preview shortened ...]");
+    expect(markup).toContain("Shortened preview, 16K of 18K characters");
     expect(markup).toContain("Show full output");
+    expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain("MIDDLE-SENTINEL");
   });
 });

@@ -24,6 +24,15 @@ export function terminalChunks(): ReadonlyArray<string> {
   );
 }
 
+/** Assistant delta text with a deterministic length in [minDeltaChars, maxDeltaChars]. */
+export function assistantStreamDelta(stream: number, index: number): string {
+  const { minDeltaChars, maxDeltaChars } = fixture.assistantStream;
+  const mixed = Math.imul(fixture.seed ^ (stream * 7919 + index * 104729), 2654435761) >>> 0;
+  const length = minDeltaChars + (mixed % (maxDeltaChars - minDeltaChars + 1));
+  const word = `s${stream}d${index} `;
+  return word.repeat(Math.ceil(length / word.length)).slice(0, length);
+}
+
 export function repositoryFile(index: number) {
   return {
     path: `src/group-${index % fixture.repository.directories}/file-${index}.ts`,

@@ -1,42 +1,24 @@
-import {
-  ProjectSettingsScope,
-  SettingsScopePicker,
-} from "../components/settings/ProjectSettingsScope";
-import { ProjectId } from "@t3tools/contracts";
-import { createFileRoute } from "@tanstack/react-router";
-import { useCallback } from "react";
+import { getSettingsItemDescriptor } from "../components/settings/settingsCategories";
+import { SettingsScopePicker } from "../components/settings/ProjectSettingsScope";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+
+import { RouteErrorView } from "../components/RouteErrorView";
 
 import { SettingsLayout } from "../components/settings/SettingsLayout";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { SettingsRouteContext } from "../components/settings/SettingsRouteContext";
 import {
-  getSettingsItemDescriptor,
-  isSettingsCategory,
-  resolveSettingsProjectIdFromSearch,
-  type SettingsCategory,
-} from "../components/settings/settingsCategories";
+  isProjectSettingsCategory,
+  resolveSettingsSearch,
+  type SettingsSearch,
+} from "../components/settings/settingsRouting";
 import { useSettingsRouteState } from "../components/settings/useSettingsRouteState";
 
 function SettingsRouteView() {
   const search = Route.useSearch();
+  useDocumentTitle("Settings");
   const navigate = Route.useNavigate();
-  const handleProjectIdChange = useCallback(
-    (projectId: ProjectId | null) => {
-      void navigate({
-        replace: true,
-        search: (prev) => {
-          const { projectId: _previousProjectId, ...rest } = prev;
-          return projectId ? { ...rest, projectId } : rest;
-        },
-      });
-    },
-    [navigate],
-  );
-  const routeState = useSettingsRouteState({
-    projectSelection: {
-      projectId: search.projectId ?? null,
-      onProjectIdChange: handleProjectIdChange,
-    },
-  });
+  const routeState = useSettingsRouteState({ projectId: search.project ?? null });
 
   return (
     <SettingsRouteContext.Provider value={routeState}>
@@ -45,16 +27,24 @@ function SettingsRouteView() {
           <SettingsScopePicker
             projectId={search.project}
             onChange={(project) => {
+              // Stay on the same page when it exists in the new scope.
               void navigate({
-                search: (prev) => {
-                  const { project: _old, ...rest } = prev;
-                  return project ? { ...rest, project } : rest;
-                },
+                search: (prev): SettingsSearch =>
+                  project
+                    ? {
+                        category: isProjectSettingsCategory(prev.category)
+                          ? prev.category
+                          : "project",
+                        project,
+                      }
+                    : { category: prev.category === "project" ? "projects" : prev.category },
               });
             }}
           />
         }
-        scopedContent={search.project ? <ProjectSettingsScope projectId={search.project} /> : null}
+        projectId={search.project}
+        projectName={routeState.selectedProject?.name}
+        projectUnavailable={routeState.selectedProjectUnavailable}
         category={search.category}
         item={search.item}
         onCategoryChange={(category) => {
@@ -82,30 +72,29 @@ function SettingsRouteView() {
 }
 
 export const Route = createFileRoute("/_chat/settings")({
-  validateSearch: (
-    input,
-  ): {
-    category: SettingsCategory;
-    item?: string;
-    projectId?: ProjectId;
-    project?: ProjectId;
-  } => {
-    const raw = input as {
-      category?: unknown;
-      item?: unknown;
-      projectId?: unknown;
-      project?: unknown;
-    };
-    const item = getSettingsItemDescriptor(raw.item);
-    const projectId = resolveSettingsProjectIdFromSearch(raw);
-    return {
-      category: item?.category ?? (isSettingsCategory(raw.category) ? raw.category : "general"),
-      ...(item ? { item: item.id } : {}),
-      ...(projectId ? { projectId } : {}),
-      ...(typeof raw.project === "string" && raw.project
-        ? { project: ProjectId.makeUnsafe(raw.project) }
-        : {}),
-    };
+  // Accepts legacy category names, item IDs and the old `projectId` param, and
+  // rewrites them to the canonical `category`/`item`/`project` search.
+  validateSearch: (input): SettingsSearch => resolveSettingsSearch(input),
+  // The router merges raw search params into the validated ones and never
+  // rewrites the address bar, so replace legacy URLs once with the canonical form.
+  beforeLoad: ({ location }) => {
+    const raw = location.search as Record<string, unknown>;
+    const canonical = resolveSettingsSearch(raw);
+    const stale =
+      "projectId" in raw ||
+      (raw.category !== undefined && raw.category !== canonical.category) ||
+      (raw.item !== undefined && raw.item !== canonical.item) ||
+      (raw.project !== undefined && raw.project !== canonical.project);
+    if (!stale) return;
+    const {
+      projectId: _projectId,
+      category: _category,
+      item: _item,
+      project: _project,
+      ...rest
+    } = raw;
+    throw redirect({ to: "/settings", search: { ...rest, ...canonical } as never, replace: true });
   },
   component: SettingsRouteView,
+  errorComponent: RouteErrorView,
 });

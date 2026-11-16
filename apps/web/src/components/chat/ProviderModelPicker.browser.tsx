@@ -1,15 +1,36 @@
 import "../../index.css";
 
-import { page } from "vitest/browser";
+import type {} from "@vitest/browser-playwright";
+import { cdp, page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
-import type { ModelSlug, ProviderKind, ServerProvider } from "@t3tools/contracts";
+import type {
+  ModelSlug,
+  ProviderKind,
+  ResolvedKeybindingsConfig,
+  ServerProvider,
+} from "@t3tools/contracts";
 
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import type { ModelPickerModelOption } from "./providerIconUtils";
 import { parsePersistedAppSettings } from "../../appSettings";
+import { shortcutLabelForCommand } from "../../keybindings";
 import { useModelPreferencesStore } from "../../modelPreferencesStore";
 import { createTestServerProvider } from "../../testServerProvider";
+
+const rowRenders = vi.hoisted(() => new Map<string, number>());
+
+vi.mock("./ModelListRow", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ModelListRow")>();
+  const { createElement, memo } = await import("react");
+  type RowProps = Parameters<typeof actual.ModelListRow>[0];
+  return {
+    ModelListRow: memo(function CountedModelListRow(props: RowProps) {
+      rowRenders.set(props.model.slug, (rowRenders.get(props.model.slug) ?? 0) + 1);
+      return createElement(actual.ModelListRow, props);
+    }),
+  };
+});
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const NOW_ISO = "2026-05-04T12:00:00.000Z";
@@ -37,7 +58,36 @@ const MODEL_OPTIONS_BY_PROVIDER = {
   opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
   grok: [{ slug: "grok-build", name: "Grok Build" }],
   antigravity: [],
+  muse: [],
+  acp: [],
+  pi: [],
 } satisfies Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
+
+const PICKER_KEYBINDINGS: ResolvedKeybindingsConfig = [
+  {
+    command: "modelPicker.toggle",
+    shortcut: {
+      key: "m",
+      metaKey: false,
+      ctrlKey: true,
+      shiftKey: true,
+      altKey: false,
+      modKey: false,
+    },
+  },
+  {
+    command: "modelPicker.jump.1",
+    shortcut: {
+      key: "1",
+      metaKey: false,
+      ctrlKey: true,
+      shiftKey: false,
+      altKey: false,
+      modKey: false,
+    },
+    whenAst: { type: "identifier", name: "modelPickerOpen" },
+  },
+];
 
 async function mountPicker(props?: {
   provider?: ProviderKind;
@@ -56,20 +106,7 @@ async function mountPicker(props?: {
       lockedProvider={props?.lockedProvider ?? null}
       providers={props?.providers ?? READY_PROVIDERS}
       modelOptionsByProvider={props?.modelOptionsByProvider ?? MODEL_OPTIONS_BY_PROVIDER}
-      keybindings={[
-        {
-          command: "modelPicker.jump.1",
-          shortcut: {
-            key: "1",
-            metaKey: false,
-            ctrlKey: true,
-            shiftKey: false,
-            altKey: false,
-            modKey: false,
-          },
-          whenAst: { type: "identifier", name: "modelPickerOpen" },
-        },
-      ]}
+      keybindings={PICKER_KEYBINDINGS}
       onProviderModelChange={onProviderModelChange}
     />,
     { container: host },
@@ -89,6 +126,33 @@ function readStoredFavoriteModels() {
 }
 
 describe("ProviderModelPicker", () => {
+  it("ignores composition confirmation and dismissal keys", async () => {
+    const mounted = await mountPicker();
+    try {
+      await page.getByRole("button", { name: /GPT-5.5/ }).click();
+      const search = page.getByPlaceholder("Search models...");
+      await search.fill("GPT-5.4 Mini");
+      for (const native of [{ isComposing: true }, { keyCode: 229 }]) {
+        for (const key of ["Enter", "Escape"]) {
+          const event = new KeyboardEvent("keydown", {
+            key,
+            ...native,
+            bubbles: true,
+            cancelable: true,
+          });
+          search.element().dispatchEvent(event);
+          expect(event.defaultPrevented).toBe(false);
+          await expect.element(search).toBeVisible();
+          expect(mounted.onProviderModelChange).not.toHaveBeenCalled();
+        }
+      }
+      await search.fill("GPT-5.4 Mini");
+      await userEvent.keyboard("{Enter}");
+      await expect.poll(() => mounted.onProviderModelChange.mock.calls.length).toBe(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
   beforeEach(() => {
     localStorage.clear();
     useModelPreferencesStore.setState({
@@ -101,6 +165,46 @@ describe("ProviderModelPicker", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("only closes the picker when an outside touch lands over another control", async () => {
+    await page.viewport(1024, 900);
+    await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    const outside = document.createElement("button");
+    outside.textContent = "Fork thread";
+    outside.style.cssText = "position:fixed;bottom:10px;right:10px;width:100px;height:40px";
+    const fork = vi.fn();
+    outside.addEventListener("click", fork);
+    document.body.append(outside);
+    const mounted = await mountPicker();
+    try {
+      expect(matchMedia("(pointer: coarse)").matches).toBe(true);
+      await page.getByRole("button", { name: /GPT-5.5/ }).click();
+      await expect.element(page.getByPlaceholder("Search models...")).toBeVisible();
+      const bounds = outside.getBoundingClientRect();
+      const frame = window.frameElement?.getBoundingClientRect();
+      // Vitest scales its test iframe to fit the runner window.
+      const scaleX = frame ? frame.width / window.innerWidth : 1;
+      const scaleY = frame ? frame.height / window.innerHeight : 1;
+      const touchPoints = [
+        {
+          x: (bounds.x + bounds.width / 2) * scaleX + (frame?.left ?? 0),
+          y: (bounds.y + bounds.height / 2) * scaleY + (frame?.top ?? 0),
+        },
+      ];
+      await cdp().send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints });
+      await cdp().send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await expect.element(page.getByPlaceholder("Search models...")).not.toBeInTheDocument();
+      expect(fork).not.toHaveBeenCalled();
+      // Once closed, the same tap still activates the underlying control normally.
+      await cdp().send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints });
+      await cdp().send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await vi.waitFor(() => expect(fork).toHaveBeenCalledOnce());
+    } finally {
+      await mounted.cleanup();
+      outside.remove();
+      await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    }
   });
 
   it("opens from the trigger, focuses search, and filters across providers", async () => {
@@ -122,6 +226,43 @@ describe("ProviderModelPicker", () => {
         expect(text).toContain("Sonnet 4.6");
         expect(text).not.toContain("GPT-5.4 Mini");
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("names the toggle shortcut in the trigger tooltip", async () => {
+    const mounted = await mountPicker();
+
+    try {
+      const shortcut = shortcutLabelForCommand(PICKER_KEYBINDINGS, "modelPicker.toggle");
+      expect(shortcut).toBeTruthy();
+      await page.getByText("GPT-5.5", { exact: true }).hover();
+      const chip = page.getByText(shortcut!, { exact: true });
+      await expect.element(chip).toBeVisible();
+      expect(chip.element().parentElement?.textContent).toBe(`GPT-5.5${shortcut}`);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not re-render an unchanged row while the search query is typed", async () => {
+    const mounted = await mountPicker();
+
+    try {
+      await page.getByRole("button", { name: /GPT-5.5/ }).click();
+      await page.getByPlaceholder("Search models...").fill("sonn");
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").not.toContain("GPT-5.4 Mini");
+        expect(rowRenders.get("claude-sonnet-4-6")).toBeGreaterThan(0);
+      });
+      const before = rowRenders.get("claude-sonnet-4-6");
+
+      await page.getByPlaceholder("Search models...").fill("sonne");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(document.body.textContent ?? "").toContain("Sonnet 4.6");
+      expect(rowRenders.get("claude-sonnet-4-6")).toBe(before);
     } finally {
       await mounted.cleanup();
     }
@@ -239,6 +380,9 @@ describe("ProviderModelPicker", () => {
       opencode: [],
       grok: [],
       antigravity: [],
+      muse: [],
+      acp: [],
+      pi: [],
     } satisfies Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
     const mounted = await mountPicker({
       provider: "codex",
@@ -304,6 +448,36 @@ describe("ProviderModelPicker", () => {
       );
 
       expect(mounted.onProviderModelChange).not.toHaveBeenCalled();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("sizes a short list to its rows and holds that height while searching", async () => {
+    const mounted = await mountPicker({
+      provider: "codex",
+      model: "gpt-5.5",
+      lockedProvider: "codex",
+    });
+
+    try {
+      await page.getByRole("button", { name: /GPT-5.5/ }).click();
+      const content = () =>
+        document.querySelector<HTMLElement>('[data-model-picker-content="true"]');
+      let fittedHeight = 0;
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").toContain("GPT-5.4 Mini");
+        fittedHeight = content()!.offsetHeight;
+        // Three rows plus the locked header fit well under the 384px cap.
+        expect(fittedHeight).toBeGreaterThan(0);
+        expect(fittedHeight).toBeLessThan(320);
+      });
+
+      await page.getByPlaceholder("Search models...").fill("mini");
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").not.toContain("openai/gpt-oss-120b");
+        expect(content()!.offsetHeight).toBe(fittedHeight);
+      });
     } finally {
       await mounted.cleanup();
     }

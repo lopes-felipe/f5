@@ -8,10 +8,6 @@ You can still open an issue or PR, but please do so knowing there is a high chan
 
 If that sounds annoying, that is because it is. This project is still early and we are trying to keep scope, quality, and direction under control.
 
-PRs are automatically labeled with a `vouch:*` trust status and a `size:*` diff size based on changed lines.
-
-If you are an external contributor, expect `vouch:unvouched` until we explicitly add you to [.github/VOUCHED.td](.github/VOUCHED.td).
-
 ## What We Are Most Likely To Accept
 
 Small, focused bug fixes.
@@ -50,6 +46,34 @@ If the change depends on motion, timing, transitions, or interaction details, in
 
 If we have to guess what changed, we are much less likely to review it.
 
+## Changelog entries
+
+The required `Changelog` check fails a PR that changes shipped code without adding a
+changelog fragment: a new file `changes/<category>/<slug>.md` holding one or more `- `
+bullets, where the category is `added`, `changed`, `performance`, `deprecated`,
+`removed`, `fixed` or `security` (see [`changes/README.md`](changes/README.md)).
+Describe the change the way a user would notice it. Releases publish these notes, so a
+missing entry means a separate notes PR at release time. Editing an existing fragment
+does not count as a new entry.
+
+Each PR adds its own file, so entries never conflict between parallel PRs. Do not add
+bullets to `CHANGELOG.md`; release preparation moves the fragments into it. A new
+bullet under `## [Unreleased]` still passes for PRs opened before fragments, with a
+warning. The check fails, even with the `no-changelog` label, when a file under
+`changes/` has the wrong path or content, since it would break release preparation.
+
+The check passes without an entry when:
+
+- the PR has the `no-changelog` label (use it for refactors, CI, and tooling users never see);
+- every changed file is `CHANGELOG.md`, a Markdown file, under `docs/`, `.github/`,
+  `upstream/` or `apps/server/integration/`, a `*.test.{ts,tsx,js,mjs,cjs}` file, or a
+  `*.browser.tsx` file; or
+- it comes from this repository's automation: a `dependabot/` branch opened by
+  Dependabot, a `release/prepare-` branch opened by the release app, or an
+  `f5/upstream-ledger-` branch.
+
+Adding or removing the label reruns the check without a new push.
+
 ## Issues First
 
 If you are thinking about a non-trivial change, open an issue first.
@@ -63,6 +87,20 @@ Opening a PR does not create an obligation on our side.
 We may close it. We may ignore it. We may ask you to shrink it. We may reimplement the idea ourselves later.
 
 If you are fine with that, proceed.
+
+## Running the full test suite
+
+Install the locked dependency tree before testing; a stale `node_modules` can hold an
+older Claude SDK than the one pinned, and the SDK contract probes fail fast when it does:
+
+```sh
+bun install --frozen-lockfile
+env -i PATH="$PATH" HOME="$HOME" bun run test:full
+```
+
+`env -i` matters when you run tests from inside an F5 session: profile variables such as
+`F5_PROFILE_ISOLATED` and `CLAUDE_*` leak into direct vitest runs and change server
+behavior under test. `test:full` includes the extended Git matrix.
 
 ## Harness version bumps
 
@@ -84,7 +122,21 @@ Codex app-server bump:
   revisions, spike outcomes and any unverified checks. Apply the wire-version policy
   when decoded browser shapes change.
 
-Audit research covers Claude SDK 0.2.113–0.3.295 and Codex 0.89.0–0.162.0. Earlier
+Audit research covers Claude SDK 0.2.113–0.3.317 and Codex 0.89.0–0.162.0. Earlier
 versions are checked only for a specifically retained behavior, and recorded explicitly.
 Release 0 keeps the browser queue contract and wire protocol unchanged; submission
 provenance is stamped and stored solely on the server.
+
+## CI and dependency maintenance
+
+See [docs/ci.md](docs/ci.md) for the parallel jobs and the single `CI result` gate.
+Dependabot opens reviewed updates, without automatic merges. Runtime and provider
+harness upgrades stay manual and follow the audit procedure above, including Muse
+protocol auditing (`bun run protocol:audit:muse`) when its SDK changes. Codex protocol
+manifest pins are source constants and also stay manual.
+
+MSW worker regeneration is explicit so frozen installs leave tracked files unchanged.
+When upgrading MSW, run `node apps/web/node_modules/msw/cli/index.js init apps/web/public --no-save`, then
+`bun fmt`, and commit the generated worker with the dependency update. The worker
+install test rejects a version mismatch so an MSW upgrade cannot silently keep an
+outdated worker.

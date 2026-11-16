@@ -1,0 +1,118 @@
+{
+  "reportVersion": 1,
+  "scope": "unsigned-real-electron-claude-approval-mode-read-only-discovery-diagnostic",
+  "state": "failed",
+  "repositoryCommit": "3ae2f8baecd9368f4f2cc851d08a93f68db5505b",
+  "workingTreeDirty": false,
+  "recordedAt": "2026-10-13T20:33:36.753Z",
+  "provider": "claude",
+  "runtimeMode": "approval-required",
+  "helperSha256": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+  "buildHashes": {
+    "desktopMain": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+    "serverBundle": "c63d9d93b292e61888db6417c531527303c47e9137f585c56ccded97e8ded08a",
+    "rendererIndex": "bce13111e750f11643541389f5a8826d58fdc00f43433d0ce23638d54a129f32",
+    "rehearsalSource": "0feafda806114a454612214d549a0b0e9de2ed3cf5bcaabacdc173341bf7bbf4",
+    "observerSource": "70d7271c2e6ffcc96c89879466433f5bbfbdbfcd784a53a5dd8f01e34fd85605",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "externalClientSource": "26dea6aed6480fa4e3c93b2f51fc8ecf4216f7d78d69b070c42ddfc4d4cb26fc",
+    "grantMemorySource": "f58ed4f0e879f91d86fab96be0f55a3e2a0592a54caa9a2fc0414be52725b830",
+    "sessionActionsSource": "d82ceb8de727ec5091054a3c7113d21d006e7ed622cb2b3c3b5ce3f0fd2b1dcb",
+    "windowlessEvidenceSource": "068ae403069aae9a7b9720c772dc8d943e03aa35663543cd42f1fc9d87971610",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "421b64d0a245f9f7fccd9d356b8d2d694410d8c4819f973f4ae4c44be12e8140",
+    "claudeLaunchSource": "aadef868ab32b858a0078ae619922dd69fd4b1f9cde03640f119e28bfb7559df"
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "readOnlyTurnsCompleted": true,
+    "noComputerLeaseAcquired": true,
+    "threeCorrelatedMetadataResponses": true,
+    "approvalDiagnosticSameSession": false,
+    "noTaggedProviderErrors": true,
+    "hostAvailableAtEnd": true,
+    "noConsentRequested": true
+  },
+  "cleanup": {
+    "applicationClosed": true,
+    "childrenClosed": true,
+    "fixtureClosed": true,
+    "realAppsClosed": true,
+    "documentClosed": true,
+    "confirmed": true
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": false,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "activityMessages": 0,
+    "activityThumbnails": 0,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "pendingResponses": 0,
+    "accessRequests": 0,
+    "accessAnswersForwarded": 0,
+    "accessAnswerSummaries": [],
+    "sessionGenerationsObserved": 2,
+    "requestSessions": [
+      {
+        "op": "listApps",
+        "sessionOrdinal": 1
+      },
+      {
+        "op": "listApps",
+        "sessionOrdinal": 2
+      },
+      {
+        "op": "listApps",
+        "sessionOrdinal": 2
+      }
+    ],
+    "backendRestarts": [
+      {
+        "reasons": ["runtime-mode-changed"]
+      }
+    ],
+    "backendLifecycle": [],
+    "grantChanges": 4,
+    "lastGrantCount": 0,
+    "operations": [
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      }
+    ]
+  },
+  "approvalModeVerifiedTurns": 3,
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "Three genuine read-only provider turns completed with no consent, capture or input",
+    "One runtime-mode-changed restart occurred between the first two turns despite approval-required thread configuration",
+    "Cold lifecycle and terminal regression tests reproduce full-access metadata before session binding; four fail before the fix",
+    "The metadata fallback fix still requires fresh live continuity and approval-action validation"
+  ]
+}

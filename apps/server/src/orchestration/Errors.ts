@@ -81,6 +81,16 @@ export class ThreadTurnAlreadyActiveError extends Schema.TaggedErrorClass<Thread
   }
 }
 
+/** The conversation's model or mode changed after a scheduled turn was admitted. */
+export class ThreadSettingsChangedError extends Schema.TaggedErrorClass<ThreadSettingsChangedError>()(
+  "ThreadSettingsChangedError",
+  { threadId: Schema.String },
+) {
+  override get message(): string {
+    return `Thread '${this.threadId}' settings changed before the scheduled turn started.`;
+  }
+}
+
 /** Readiness changed between the queue gate and command acceptance; retry the same identity. */
 export class ThreadTurnNotReadyError extends Schema.TaggedErrorClass<ThreadTurnNotReadyError>()(
   "ThreadTurnNotReadyError",
@@ -117,12 +127,31 @@ export class OrchestrationListenerCallbackError extends Schema.TaggedErrorClass<
   }
 }
 
+/** Admission rejected before committing intent; retrying the same command is safe. */
+export class OrchestrationOverloadError extends Schema.TaggedErrorClass<OrchestrationOverloadError>()(
+  "OrchestrationOverloadError",
+  {
+    lane: Schema.Literals(["ordinary", "control"]),
+    reason: Schema.Literals(["full", "closed", "superseded"]),
+  },
+) {
+  get retryable(): boolean {
+    return this.reason !== "superseded";
+  }
+  readonly deliveryCertainty = "not_sent";
+  override get message(): string {
+    return `Orchestration ${this.lane} admission is ${this.reason}; the command was not sent.`;
+  }
+}
+
 export type OrchestrationDispatchError =
+  | OrchestrationOverloadError
   | ProjectionRepositoryError
   | OrchestrationCommandIdConflictError
   | OrchestrationCommandInvariantError
   | OrchestrationCommandPreviouslyRejectedError
   | ThreadTurnAlreadyActiveError
+  | ThreadSettingsChangedError
   | ThreadTurnNotReadyError
   | OrchestrationProjectorDecodeError
   | OrchestrationListenerCallbackError;

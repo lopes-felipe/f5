@@ -1,0 +1,160 @@
+name: Windows release checks
+# The Windows half of a release: CLI archives and the installed-upgrade rehearsal
+# (which also packages the unsigned NSIS installer twice). The release workflow
+# calls this; pull requests run it too, so Windows failures surface before merge
+# instead of in a release dry run. It uses no secrets or environments.
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      channel:
+        type: string
+        required: true
+      bundle:
+        type: string
+        default: ""
+        description: Existing compiled Windows bundles from the candidate build
+  pull_request:
+    paths:
+      - .github/workflows/release*.yml
+      - .github/actions/release-desktop/**
+      - .github/actions/setup/**
+      - .github/workflows/windows-release-checks.yml
+      - apps/desktop/**
+      - apps/server/package.json
+      - apps/server/src/distribution/**
+      - apps/server/tsdown*.ts
+      - assets/**
+      - bun.lock
+      - package.json
+      - packages/shared/src/cliRelease.ts
+      - packages/shared/src/windowsPath.ts
+      - scripts/build-cli-archive.ts
+      - scripts/build-computer-helper.ts
+      - scripts/build-desktop-artifact.ts
+      - scripts/cli-archive-smoke.ts
+      - scripts/lib/**
+      - scripts/release/**
+      - scripts/cli-*.ts
+      - scripts/*candidate*.ts
+      - scripts/*upgrade*.ts
+      - scripts/record-release*.ts
+      - scripts/retry-install.ts
+      - scripts/update-release-package-versions.ts
+      - scripts/verify-staged-lockfile.ts
+      - scripts/windows-update-rehearsal.ts
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  # PR updates cancel obsolete checks; release callers and manual runs remain independent.
+  group: windows-release-checks-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  cli:
+    if: inputs.version == ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: win32-x64 }
+          # Shared setup applies the checked-in native ARM64 Bun exception.
+          - { os: windows-11-arm, target: win32-arm64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: echo "version=${INPUT_VERSION:-$(node -p 'require("./apps/desktop/package.json").version.split("-")[0].split(".").map((n,i)=>Number(n)+(i===2?1:0)).join(".")')-check.$GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+      - id: runtime
+        run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.runtime.outputs.version }}
+      - env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          node scripts/update-release-package-versions.ts "$VERSION"
+          node scripts/build-cli-archive.ts --target "$TARGET" --output release-cli
+          node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
+      # Only release runs ship the archives.
+      - if: inputs.version
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: release-cli/*
+  # Every profile ships Windows, so every release passes an installed upgrade first.
+  update-rehearsal:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      CHANNEL: ${{ inputs.channel || 'latest' }}
+      T3CODE_DESKTOP_UPDATE_CHANNEL: ${{ inputs.channel || 'latest' }}
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - id: versions
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-$(node -p 'require("./apps/desktop/package.json").version.split("-")[0]')-check.$GITHUB_RUN_NUMBER}"
+          VERSION="$version" node --input-type=module -e 'import { rehearsalVersions } from "./scripts/lib/update-rehearsal.ts"; const v = rehearsalVersions(process.env.VERSION, process.env.CHANNEL); console.log(`baseline=${v.baseline}\ntarget=${v.target}`)' >> "$GITHUB_OUTPUT"
+      - if: inputs.bundle != ''
+        id: bundle
+        run: node scripts/resolve-candidate-artifact.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_ARTIFACT: ${{ inputs.bundle }}
+      - if: inputs.bundle != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: compiled-bundles
+      - if: inputs.bundle != ''
+        run: tar -xzf compiled-bundles/windows-bundles.tar.gz
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: apps/desktop/native/windows -> target
+      - name: Build unpublished baseline and target installers
+        env:
+          BASELINE: ${{ steps.versions.outputs.baseline }}
+          TARGET: ${{ steps.versions.outputs.target }}
+          COMPILED_BUNDLE: ${{ inputs.bundle }}
+        run: |
+          node scripts/update-release-package-versions.ts "$BASELINE"
+          if [[ -z "$COMPILED_BUNDLE" ]]; then bun run build:desktop; fi
+          for version in "$BASELINE" "$TARGET"; do
+            node scripts/build-desktop-artifact.ts --skip-build --platform win --arch x64 --target nsis --build-version "$version" --output-dir "rehearsal/$version"
+          done
+      - name: Install, upgrade and uninstall through a loopback feed
+        env:
+          BASELINE: ${{ steps.versions.outputs.baseline }}
+          TARGET: ${{ steps.versions.outputs.target }}
+        # The script hides every Node/Bun directory F5 could find, so it runs from a copy.
+        run: |
+          mkdir -p "$RUNNER_TEMP/rehearsal-node"
+          cp "$(command -v node)" "$RUNNER_TEMP/rehearsal-node/node.exe"
+          "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir "rehearsal/$BASELINE" --target-dir "rehearsal/$TARGET" --baseline "$BASELINE" --target "$TARGET" --channel "$CHANNEL" --log-dir rehearsal-logs
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-update-rehearsal-logs-attempt-${{ github.run_attempt }}
+          path: rehearsal-logs/**
+          if-no-files-found: ignore

@@ -27,8 +27,14 @@ function normalizeImageBlob(blob: Blob, fallbackMimeType: string): Blob {
   return blobMimeType === mimeType ? blob : blob.slice(0, blob.size, mimeType);
 }
 
-export async function fetchImageAttachmentBlob(item: ImageAttachmentActionItem): Promise<Blob> {
+export async function fetchImageAttachmentBlob(
+  item: ImageAttachmentActionItem,
+  options?: { signal?: AbortSignal; maxBytes?: number },
+): Promise<Blob> {
   if (item.sourceBlob) {
+    if (options?.maxBytes !== undefined && item.sourceBlob.size > options.maxBytes) {
+      throw imageActionError("The image attachment exceeds the source size limit.");
+    }
     const blob = normalizeImageBlob(item.sourceBlob, item.mimeType);
     if (blob.size === 0) {
       throw imageActionError("The image attachment is empty.");
@@ -44,6 +50,7 @@ export async function fetchImageAttachmentBlob(item: ImageAttachmentActionItem):
       // headers. Reusing that entry for fetch() then fails before the response
       // reaches this code, even though the image is already visible.
       cache: "no-store",
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
   } catch (error) {
     throw imageActionError("F5 could not load the image attachment.", error);
@@ -56,7 +63,31 @@ export async function fetchImageAttachmentBlob(item: ImageAttachmentActionItem):
     );
   }
 
-  const blob = normalizeImageBlob(await response.blob(), item.mimeType);
+  let source: Blob;
+  if (options?.maxBytes !== undefined && response.body) {
+    const reader = response.body.getReader();
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > options.maxBytes)
+          throw imageActionError("The image attachment exceeds the source size limit.");
+        chunks.push(new Uint8Array(value));
+      }
+      source = new Blob(chunks, { type: response.headers.get("content-type") ?? item.mimeType });
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
+  } else {
+    source = await response.blob();
+  }
+  if (options?.maxBytes !== undefined && source.size > options.maxBytes)
+    throw imageActionError("The image attachment exceeds the source size limit.");
+  const blob = normalizeImageBlob(source, item.mimeType);
   if (blob.size === 0) {
     throw imageActionError("The image attachment is empty.");
   }

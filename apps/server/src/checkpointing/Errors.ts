@@ -35,9 +35,27 @@ export class CheckpointInvariantError extends Schema.TaggedErrorClass<Checkpoint
   }
 }
 
+/**
+ * CheckpointUnsupportedError - The workspace cannot hold checkpoints, such as a
+ * folder its parent repository ignores with no tracked files inside.
+ */
+export class CheckpointUnsupportedError extends Schema.TaggedErrorClass<CheckpointUnsupportedError>()(
+  "CheckpointUnsupportedError",
+  {
+    operation: Schema.String,
+    cwd: Schema.String,
+    detail: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Checkpoints are unsupported in ${this.cwd}: ${this.detail}`;
+  }
+}
+
 export type CheckpointStoreError =
   | GitCommandError
   | CheckpointInvariantError
-  | CheckpointUnavailableError;
+  | CheckpointUnavailableError
+  | CheckpointUnsupportedError;
 
 export type CheckpointServiceError = CheckpointStoreError | ProjectionRepositoryError;

@@ -1,0 +1,140 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-13T05:44:33.996Z",
+  "scope": "unsigned-real-electron-claude-read-only-discovery-diagnostic",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "repositoryCommit": "6826b08a0d61c9f92a58a9a7e74d318d68b6aff0",
+  "workingTreeDirty": true,
+  "helperSha256": "a11ef2e783c9d344372f9b12a86e0a1a67ec40ddecaafc1e0f5a27cfcd8d7c9e",
+  "buildHashes": {
+    "desktopMain": "cd0f182b9f352998908652fe3bf3c80bb7a4f4a176ccb27aa98c6116d86206d9",
+    "serverBundle": "4e880cd60ded1d912017af59b63a01c8c3be6f8f5d966de4e26d627b00f58a30",
+    "rendererIndex": "f40903b377ac9e9ae9f0e100b7f022405c7d0668877feb94315d20dc7cb728fe",
+    "rehearsalSource": "6a5c9791a98c0516d9d4bb192ff24d5abc3608dab26f2fa7e7066b68574ea7ea",
+    "observerSource": "c8981ec95d88a05cb8e6f514d9c77822cbd655f05e5e162c151a4911522c03ed",
+    "responseSource": "67ac5a452671b78d9de5c231ec718c6206d05bf3223ea3e106be0196924fa4b8",
+    "stopObserverSource": "3a8d1c4ed469049f6a5c78e445605a57642fb9c936bf4d64b06aa9c313794202",
+    "stopMeasurementSource": "f76e628f10441238ed4fd98527b9f0637fc05c7e55c61300c7276f70255c0ae0",
+    "stopFixtureSource": "bcfa8b28fd23448027e6672be0eaa1db138c806f273a130709750b84fcd16451",
+    "claudeLaunchSource": "aadef868ab32b858a0078ae619922dd69fd4b1f9cde03640f119e28bfb7559df"
+  },
+  "signed": false,
+  "certified": false,
+  "provider": "claude",
+  "claudeAuthentication": {
+    "status": "authenticated",
+    "credentialFileCopied": false,
+    "selectedProfileSecureStorage": true
+  },
+  "runtimeMode": "full-access",
+  "state": "passed",
+  "interrupted": false,
+  "permissionStatus": {
+    "available": true,
+    "displays": [
+      {
+        "displayId": "1",
+        "geometryGeneration": "1:0.0:0.0:1728.0:1117.0:3456:2234:0.0",
+        "primary": true,
+        "nativeBounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1728,
+          "height": 1117
+        },
+        "pixelSize": {
+          "width": 3456,
+          "height": 2234
+        },
+        "rotation": 0,
+        "modelSize": {
+          "width": 1333,
+          "height": 862
+        }
+      }
+    ]
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": false,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "activityMessages": 0,
+    "activityThumbnails": 0,
+    "toolOutcomeErrors": [],
+    "traceComplete": true,
+    "accessRequests": 0,
+    "accessAnswersForwarded": 0,
+    "operations": [
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok",
+        "validApps": true
+      }
+    ]
+  },
+  "threadObservation": {
+    "found": true,
+    "runtimeMode": "full-access",
+    "sessionRuntimeMode": "full-access",
+    "interactionMode": "plan",
+    "turnState": "completed",
+    "pendingUserInputs": 0,
+    "hasUsageLimit": false,
+    "requestedInstance": "claudeAgent",
+    "sessionInstance": "claudeAgent",
+    "sessionErrorCode": "none"
+  },
+  "consentObservation": {
+    "requested": false,
+    "trustedClick": false,
+    "settled": false,
+    "allowed": false,
+    "fixtureGranted": false,
+    "cardHasError": false,
+    "dialogPresentInDom": true
+  },
+  "providerErrorCodes": [],
+  "toolOutcomeErrors": [],
+  "thumbnailObservation": {
+    "visible": false,
+    "loaded": false
+  },
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "readOnlyTurnsCompleted": true,
+    "noComputerLeaseAcquired": true,
+    "threeCorrelatedMetadataResponses": true,
+    "noTaggedProviderErrors": true,
+    "hostAvailableAtEnd": true,
+    "noConsentRequested": true
+  },
+  "limitations": [
+    "Read-only tool discovery/status/app metadata only; no consent, screenshots, OS input or human controls tested",
+    "No installed-build TCC attribution, signed packaging, multi-profile/display or complete real-app certification",
+    "Overlay capture exclusion, hung-renderer/host stop latency, Stop interruption and Windows runtime remain pending",
+    "Provider built-in and Chrome gates remain closed; no image bytes, typed values, accessibility content or raw errors retained"
+  ]
+}

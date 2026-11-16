@@ -1,23 +1,85 @@
 import { createContext, useContext, useCallback } from "react";
+import { useRouter } from "@tanstack/react-router";
+import { formatSourceControlPullRequestKey } from "@t3tools/shared/sourceControl";
+import { parsePullRequestReference } from "../lib/pullRequestReference";
 import { ThreadId } from "@t3tools/contracts";
-import { useAppSettings } from "../appSettings";
+import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import * as nativeApi from "../nativeApi";
 import { useRightPanelStore } from "../rightPanelStore";
+import { threadIdOfThreadReferenceUrl } from "@t3tools/shared/threadReferences";
+import { toastManager } from "../components/ui/toast";
+import { useStore } from "../store";
+import { selectThreadById } from "../threadSelectors";
 export function setMostRecentOpenLinkThread(_thread: ThreadId): void {}
 export const OpenLinkThread = createContext<ThreadId | undefined>(undefined);
 /** Web builds always use the system browser. Preview URLs require a current thread. */
-export function useOpenLink(threadId?: ThreadId) {
-  const { settings } = useAppSettings();
+function selectOpenLinkSettings(settings: AppSettings) {
+  return {
+    linkOpenTarget: settings.linkOpenTarget,
+    pullRequestLinksOpenInApp: settings.pullRequestLinksOpenInApp,
+    previewDefaults: { colorScheme: settings.previewDefaults.colorScheme },
+  };
+}
+
+/** Whether `useOpenLink(...)(url, { preview: true })` can open the integrated browser here. */
+export function useCanOpenLinkInPreview(threadId?: ThreadId): boolean {
   const currentThread = useContext(OpenLinkThread);
+  return (
+    typeof window !== "undefined" &&
+    Boolean(window.desktopBridge?.preview && (threadId ?? currentThread))
+  );
+}
+
+export function useOpenLink(threadId?: ThreadId) {
+  // Every rendered markdown fragment calls this, so it must ignore unrelated setting writes.
+  const settings = useAppSettingsSelector(selectOpenLinkSettings);
+  const currentThread = useContext(OpenLinkThread);
+  const router = useRouter({ warn: false });
   threadId ??= currentThread;
   return useCallback(
-    async (url: string) => {
+    async (
+      url: string,
+      // `preview` opens http(s) links in the integrated browser regardless of the link settings.
+      options?: { external?: boolean; preview?: boolean },
+    ) => {
+      // A thread reference always opens in the app, even when an external open is requested;
+      // the OS opener would hand it back to F5 or to nothing.
+      const referencedThreadId = threadIdOfThreadReferenceUrl(url);
+      if (referencedThreadId) {
+        const referenced = selectThreadById(
+          useStore.getState(),
+          ThreadId.makeUnsafe(referencedThreadId),
+        );
+        if (!referenced || !router) {
+          toastManager.add({ type: "info", title: "That thread is no longer available." });
+          return;
+        }
+        await router.navigate({ to: "/$threadId", params: { threadId: referenced.id } });
+        return;
+      }
       const target = new URL(url, window.location.href);
       if (!["http:", "https:", "mailto:"].includes(target.protocol)) return;
       const owner = threadId;
+      const pr = parsePullRequestReference(target.href);
+      if (!options?.external && !options?.preview && settings.pullRequestLinksOpenInApp && pr) {
+        if (owner) {
+          useRightPanelStore.getState().openPullRequest(owner, {
+            key: formatSourceControlPullRequestKey(pr),
+            url: target.href,
+          });
+          return;
+        }
+        if (router) {
+          await router.navigate({ to: "/pull-requests", search: { url: target.href } });
+          return;
+        }
+      }
       if (
+        !options?.external &&
+        (options?.preview ||
+          (!(pr && !settings.pullRequestLinksOpenInApp) &&
+            settings.linkOpenTarget === "preview")) &&
         window.desktopBridge?.preview &&
-        settings.linkOpenTarget === "preview" &&
         owner &&
         ["http:", "https:"].includes(target.protocol)
       ) {
@@ -35,6 +97,12 @@ export function useOpenLink(threadId?: ThreadId) {
       }
       await window.desktopBridge.openExternal(target.href);
     },
-    [settings.linkOpenTarget, settings.previewDefaults.colorScheme, threadId],
+    [
+      settings.linkOpenTarget,
+      settings.pullRequestLinksOpenInApp,
+      settings.previewDefaults.colorScheme,
+      threadId,
+      router,
+    ],
   );
 }

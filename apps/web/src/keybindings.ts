@@ -1,6 +1,7 @@
 import { isElectron } from "./env";
 import {
   type KeybindingCommand,
+  MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   type ModelPickerJumpKeybindingCommand,
   type ResolvedKeybindingRule,
@@ -19,6 +20,8 @@ export { formatShortcutLabel } from "@t3tools/shared/keybindings";
 export interface ShortcutEventLike {
   type?: string;
   key: string;
+  /** Physical key (`KeyboardEvent.code`); lets Option combos match on macOS. */
+  code?: string;
   metaKey: boolean;
   ctrlKey: boolean;
   shiftKey: boolean;
@@ -50,12 +53,33 @@ function normalizeEventKey(key: string): string {
   return normalized;
 }
 
+/**
+ * macOS Option rewrites `event.key` (Option+1 is `¡`, Option+K is `˚`), so a
+ * binding such as `alt+1` would never match by the typed key. In that one case
+ * the physical key stands in. Elsewhere the typed key always decides: AltGr on
+ * Windows is Ctrl+Alt and types real characters, and a layout such as AZERTY
+ * puts `a` on the physical Q key, so a physical match there would run the
+ * wrong command or swallow the character.
+ */
+function physicalOptionKey(event: ShortcutEventLike, platform: string): string | null {
+  if (!event.altKey || event.ctrlKey || !event.code || !isMacPlatform(platform)) return null;
+  if (/^[a-z0-9]$/iu.test(event.key)) return null;
+  const digit = /^Digit(\d)$/u.exec(event.code);
+  if (digit) return digit[1]!;
+  const letter = /^Key([A-Z])$/u.exec(event.code);
+  return letter ? letter[1]!.toLowerCase() : null;
+}
+
+type ShortcutKeyMatch = "typed" | "physical";
+
 function matchesShortcut(
   event: ShortcutEventLike,
   shortcut: KeybindingShortcut,
   platform = navigator.platform,
+  keyMatch: ShortcutKeyMatch = "typed",
 ): boolean {
-  const key = normalizeEventKey(event.key);
+  const key =
+    keyMatch === "typed" ? normalizeEventKey(event.key) : physicalOptionKey(event, platform);
   if (key !== shortcut.key) return false;
 
   const useMetaForMod = isMacPlatform(platform);
@@ -116,21 +140,44 @@ function isWorkingRibbonKey(event: ShortcutEventLike): boolean {
   return Boolean(document.activeElement?.closest?.(WORKING_RIBBON_STAGE_SELECTOR));
 }
 
+/**
+ * Marks an expanded composer form and the popups it owns (they render in a
+ * portal, outside the form).
+ */
+export const EXPANDED_COMPOSER_ATTRIBUTE = "data-composer-expanded";
+const EXPANDED_COMPOSER_SELECTOR = `[${EXPANDED_COMPOSER_ATTRIBUTE}="true"]`;
+
+/**
+ * A bare Escape inside an expanded composer belongs to the composer (close a
+ * popup, dismiss suggestions, then shrink the editor), so a bare binding such
+ * as `escape` for `thread.stop` cannot fire under it.
+ */
+export function isExpandedComposerEscape(event: ShortcutEventLike): boolean {
+  if (event.key !== "Escape" && event.key.toLowerCase() !== "escape") return false;
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false;
+  if (typeof document === "undefined") return false;
+  return Boolean(document.activeElement?.closest?.(EXPANDED_COMPOSER_SELECTOR));
+}
+
 export function resolveShortcutBinding(
   event: ShortcutEventLike,
   keybindings: ResolvedKeybindingsConfig,
   options?: ShortcutMatchOptions,
 ): ResolvedKeybindingRule | null {
-  if (isWorkingRibbonKey(event)) return null;
+  if (isWorkingRibbonKey(event) || isExpandedComposerEscape(event)) return null;
   const platform = resolvePlatform(options);
   const context = resolveContext(options);
 
-  for (let index = keybindings.length - 1; index >= 0; index -= 1) {
-    const binding = keybindings[index];
-    if (!binding) continue;
-    if (!matchesWhenClause(binding.whenAst, context)) continue;
-    if (!matchesShortcut(event, binding.shortcut, platform)) continue;
-    return binding;
+  // A rule matching the typed key always beats one matching only the physical key.
+  for (const keyMatch of ["typed", "physical"] as const) {
+    if (keyMatch === "physical" && physicalOptionKey(event, platform) === null) break;
+    for (let index = keybindings.length - 1; index >= 0; index -= 1) {
+      const binding = keybindings[index];
+      if (!binding) continue;
+      if (!matchesWhenClause(binding.whenAst, context)) continue;
+      if (!matchesShortcut(event, binding.shortcut, platform, keyMatch)) continue;
+      return binding;
+    }
   }
 
   return null;
@@ -295,6 +342,11 @@ export function modelPickerJumpIndexFromCommand(command: string): number | null 
   return index === -1 ? null : index;
 }
 
+export function modelFavoriteJumpIndexFromCommand(command: string): number | null {
+  const index = (MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS as readonly string[]).indexOf(command);
+  return index === -1 ? null : index;
+}
+
 export function isTerminalClearShortcut(
   event: ShortcutEventLike,
   platform = navigator.platform,
@@ -339,6 +391,29 @@ export function terminalDeleteShortcutData(
   return event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
     ? TERMINAL_DELETE_TO_LINE_START
     : null;
+}
+
+/**
+ * Local scrollback keys: Cmd+A on macOS or Ctrl+Shift+A elsewhere selects all
+ * retained output; Ctrl+Shift+Home/End (Cmd on macOS) jumps to its start or the
+ * latest output. Ctrl+A stays with the shell. xterm already pages with
+ * Shift+PageUp/Down.
+ */
+export function terminalScrollbackShortcut(
+  event: ShortcutEventLike,
+  platform = navigator.platform,
+): "select-all" | "top" | "bottom" | null {
+  if (event.type !== undefined && event.type !== "keydown") return null;
+  if (event.altKey) return null;
+  const mac = isMacPlatform(platform);
+  const primary = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (!primary) return null;
+  const key = normalizeEventKey(event.key);
+  if (key === "a" && event.shiftKey !== mac) return "select-all";
+  if (!event.shiftKey) return null;
+  if (key === "home") return "top";
+  if (key === "end") return "bottom";
+  return null;
 }
 
 export function terminalNavigationShortcutData(

@@ -6,21 +6,20 @@ import type {
 } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
+import { Input, fieldSurfaceClassName } from "../ui/input";
 
-const PROVIDERS = [
-  ["github", "GitHub", "github.com"],
-  ["gitlab", "GitLab", "gitlab.com"],
-  ["bitbucket", "Bitbucket Cloud", "bitbucket.org"],
-  ["azure-devops", "Azure DevOps", "dev.azure.com"],
-  ["forgejo", "Forgejo / Gitea", ""],
-] as const;
-const providerLabel = (provider: SourceControlProviderKind) =>
-  PROVIDERS.find(([kind]) => kind === provider)?.[1] ?? provider;
+import {
+  FORGE_PROVIDERS as PROVIDERS,
+  forgeProviderLabel as providerLabel,
+} from "./forgePresentation";
 const accountLabel = (account: ForgeAccount) =>
   `${providerLabel(account.provider)} · ${account.host} · ${account.login}`;
-const selectClass = "h-8 rounded-md border border-input bg-background px-2 text-sm";
+const selectClass = `${fieldSurfaceClassName} h-8 px-2 text-sm`;
 
+/**
+ * Forge accounts and repository routing, shown in Settings → Accounts. The queue only
+ * offers a switcher between the accounts saved here.
+ */
 export function PrAccounts({
   selectedAccountId,
   onSelect,
@@ -44,8 +43,12 @@ export function PrAccounts({
   useEffect(() => {
     mounted.current = true;
     let cancelled = false;
-    const api = ensureNativeApi().prHub;
-    void Promise.all([api.listAccounts(), api.listAccountRouting()]).then(
+    // Async, so a server that is not reachable yet fails this panel and not the settings page.
+    const load = async () => {
+      const api = ensureNativeApi().prHub;
+      return Promise.all([api.listAccounts(), api.listAccountRouting()]);
+    };
+    void load().then(
       ([nextAccounts, nextRouting]) => {
         if (!cancelled) {
           setAccounts(nextAccounts);
@@ -140,8 +143,7 @@ export function PrAccounts({
           ))}
         </select>
       </label>
-      <details className="rounded-md border p-2 text-xs">
-        <summary className="cursor-pointer font-medium">Manage accounts</summary>
+      <div className="text-xs">
         <div className="mt-3 space-y-4">
           {accounts.map((account) => (
             <div key={account.id} className="flex items-center justify-between gap-2">
@@ -322,7 +324,7 @@ export function PrAccounts({
             </p>
           )}
         </div>
-      </details>
+      </div>
     </div>
   );
 }

@@ -12,11 +12,13 @@ packages/*/dist
 build/
 .logs/
 release/
+# Release automation is source; other release/ directories remain build output.
+!scripts/release/
+!scripts/release/**
 .t3
 .idea/
 apps/web/.playwright
 apps/web/playwright-report
-apps/web/src/components/__screenshots__
 .vitest-*
 
 # Keep repository-wide agent instructions under version control even when a
@@ -38,3 +40,13 @@ scripts/upstream-ports.json.tmp-*
 # Standalone CLI build outputs.
 apps/server/dist-exe/
 release-cli/
+release-summary.json
+release-performance.json
+release-publication-lease.json
+
+# Native computer helper build outputs.
+apps/desktop/dist-native/
+apps/desktop/native-bin/
+apps/desktop/native/macos/.build/
+apps/desktop/native/windows/target/
+apps/desktop/native/windows/fixture/target/

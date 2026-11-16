@@ -1,5 +1,16 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
-import { Gemini, ClaudeAI, CursorIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
+import {
+  ACPRegistryIcon,
+  Gemini,
+  ClaudeAI,
+  CursorIcon,
+  GrokIcon,
+  type Icon,
+  MuseIcon,
+  PiIcon,
+  OpenAI,
+  OpenCodeIcon,
+} from "../Icons";
 
 /**
  * A single editable field exposed on a provider instance. `key` must match
@@ -14,6 +25,8 @@ export interface DriverFieldDef {
   readonly placeholder?: string;
   readonly description?: string;
   readonly type?: "text" | "password";
+  readonly format?: "json-array" | "json-record";
+  readonly required?: boolean;
 }
 
 /**
@@ -37,6 +50,56 @@ export interface DriverOption {
 }
 
 export const DRIVER_OPTIONS: readonly DriverOption[] = [
+  {
+    value: ProviderDriverKind.make("acp"),
+    label: "Custom ACP agent",
+    icon: ACPRegistryIcon,
+    fields: [
+      {
+        key: "command",
+        label: "Command",
+        placeholder: "/path/to/agent",
+        required: true,
+        description: "Executable for an ACP agent already set up on this machine.",
+      },
+      {
+        key: "args",
+        label: "Arguments (JSON)",
+        placeholder: '["--acp"]',
+        format: "json-array",
+        description: "Each array item is one argument; shell expansion is not used.",
+      },
+      {
+        key: "env",
+        label: "Environment defaults (JSON)",
+        placeholder: '{"AGENT_HOME":"/path/to/home"}',
+        format: "json-record",
+        description:
+          "For credentials, use sensitive environment variables in the instance settings.",
+      },
+    ],
+  },
+  {
+    value: ProviderDriverKind.make("pi"),
+    label: "Pi",
+    icon: PiIcon,
+    badgeLabel: "Early Access",
+    fields: [
+      {
+        key: "binaryPath",
+        label: "Binary path",
+        placeholder: "pi",
+        description: "Pi 0.80.5 or newer, installed on the server machine.",
+      },
+      {
+        key: "launchArgs",
+        label: "Launch arguments",
+        placeholder: "--provider vendor --model model-id",
+        description:
+          "Pi model and extension flags. F5 owns RPC mode, sessions and permission policy.",
+      },
+    ],
+  },
   { value: ProviderDriverKind.make("antigravity"), label: "Antigravity", icon: Gemini, fields: [] },
   {
     value: ProviderDriverKind.make("codex"),
@@ -47,7 +110,8 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
         key: "binaryPath",
         label: "Binary path",
         placeholder: "codex",
-        description: "Path to the Codex binary used by this instance.",
+        description:
+          "Empty or codex uses bundled Codex. Set another command or path to override it.",
       },
       {
         key: "homePath",
@@ -80,7 +144,8 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
         key: "binaryPath",
         label: "Binary path",
         placeholder: "claude",
-        description: "Path to the Claude binary used by this instance.",
+        description:
+          "Empty or claude uses bundled Claude. The Default profile can use a custom path.",
       },
       {
         key: "homePath",
@@ -154,6 +219,21 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
         label: "Binary path",
         placeholder: "grok",
         description: "Path to the Grok CLI binary.",
+      },
+    ],
+  },
+  {
+    value: ProviderDriverKind.make("muse"),
+    label: "Muse Code",
+    icon: MuseIcon,
+    badgeLabel: "Early Access",
+    fields: [
+      {
+        key: "binaryPath",
+        label: "Binary path",
+        placeholder: "muse",
+        description:
+          "Path to the Muse Code CLI. Set META_API_KEY in this instance's environment to use an API key.",
       },
     ],
   },

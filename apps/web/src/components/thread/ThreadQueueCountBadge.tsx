@@ -31,11 +31,14 @@ export function ThreadQueueCountBadge({
 
   if (badge === "none") return null;
 
-  const label = scheduledResumeAt
-    ? `Continues at ${new Date(scheduledResumeAt).toLocaleString()}`
-    : badge === "paused"
-      ? `${count} queued turns, paused`
-      : `${count} queued turns`;
+  const emptyPaused = count === 0 && badge === "paused";
+  const label = emptyPaused
+    ? "Queue paused"
+    : scheduledResumeAt
+      ? `Continues at ${new Date(scheduledResumeAt).toLocaleString()}`
+      : badge === "paused"
+        ? `${count} queued turns, paused`
+        : `${count} queued turns`;
   const Icon = scheduledResumeAt ? ClockIcon : badge === "paused" ? PauseIcon : ListOrderedIcon;
   return (
     <Badge
@@ -45,7 +48,9 @@ export function ThreadQueueCountBadge({
       title={label}
       className={cn("shrink-0 rounded-full px-1.5 tabular-nums", compact && "gap-0.5", className)}
     >
-      {compact ? (
+      {emptyPaused ? (
+        "Queue paused"
+      ) : compact ? (
         <>
           <Icon aria-hidden="true" className="size-3" />
           {count}

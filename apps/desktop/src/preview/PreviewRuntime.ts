@@ -1,4 +1,4 @@
-import { captureBoundedPage } from "./capture";
+import { captureBoundedPage, releasePreviewCaptures } from "./capture";
 import path from "node:path";
 
 import type {
@@ -11,6 +11,7 @@ import type {
 import type { WebContents } from "electron";
 
 import { PreviewArtifactStore } from "./PreviewArtifactStore";
+import { previewDebugger } from "./previewDebugger";
 
 export interface PreviewTabEntry {
   ownerWebContentsId: number | null;
@@ -49,7 +50,6 @@ interface ActiveRecording {
     method: string,
     params: Record<string, unknown>,
   ) => void;
-  readonly detachDebuggerOnStop: boolean;
   readonly limitTimer: ReturnType<typeof setTimeout>;
   readonly removeGuestListeners: () => void;
   stopped: boolean;
@@ -143,8 +143,16 @@ export class PreviewRuntime {
     const guest = this.#getWebContents(tabId);
     if (!guest || guest.isDestroyed()) return false;
     try {
-      if (!guest.debugger.isAttached()) guest.debugger.attach("1.3");
-      await guest.debugger.sendCommand("Emulation.setEmulatedMedia", {
+      if (!previewDebugger(guest).isAttached()) previewDebugger(guest).attach("1.3");
+      // Electron gives `<webview>` guests a transparent base, and Chromium paints its
+      // dark canvas for dark-scheme pages only over an opaque one. Without this, pages
+      // with no background of their own (text/plain, such as .md files) render white
+      // text on white. White matches the webview's backing, so light pages look the
+      // same. Every registration applies the scheme, so this also covers webview swaps.
+      await previewDebugger(guest).sendCommand("Emulation.setDefaultBackgroundColorOverride", {
+        color: { r: 255, g: 255, b: 255, a: 1 },
+      });
+      await previewDebugger(guest).sendCommand("Emulation.setEmulatedMedia", {
         features: [
           {
             name: "prefers-color-scheme",
@@ -188,7 +196,7 @@ export class PreviewRuntime {
       width: viewport?.width ?? captureSize.width,
       height: viewport?.height ?? captureSize.height,
     });
-    const detachDebuggerOnStop = !guest.debugger.isAttached();
+    const needsDebugger = !previewDebugger(guest).isAttached();
 
     let recording!: ActiveRecording;
     const onGuestLost = () => {
@@ -202,7 +210,6 @@ export class PreviewRuntime {
       recordingId: recordingHandle.recordingId,
       tabId,
       guest,
-      detachDebuggerOnStop,
       limitTimer,
       removeGuestListeners: () => {
         guest.off("destroyed", onGuestLost);
@@ -232,8 +239,8 @@ export class PreviewRuntime {
                 : (viewport?.height ?? captureSize.height),
           });
         } finally {
-          if (sessionId !== null && guest.debugger.isAttached()) {
-            void guest.debugger
+          if (sessionId !== null && previewDebugger(guest).isAttached()) {
+            void previewDebugger(guest)
               .sendCommand("Page.screencastFrameAck", { sessionId })
               .catch(() => undefined);
           }
@@ -243,11 +250,11 @@ export class PreviewRuntime {
     this.#recordings.set(recording.recordingId, recording);
     guest.once("destroyed", onGuestLost);
     guest.once("render-process-gone", onGuestLost);
-    guest.debugger.on("message", recording.onDebuggerMessage);
+    previewDebugger(guest).on("message", recording.onDebuggerMessage);
     try {
-      if (detachDebuggerOnStop) guest.debugger.attach("1.3");
-      await guest.debugger.sendCommand("Page.enable");
-      await guest.debugger.sendCommand("Page.startScreencast", {
+      if (needsDebugger) previewDebugger(guest).attach("1.3");
+      await previewDebugger(guest).sendCommand("Page.enable");
+      await previewDebugger(guest).sendCommand("Page.startScreencast", {
         format: "jpeg",
         quality: 75,
         maxWidth: 2560,
@@ -322,6 +329,7 @@ export class PreviewRuntime {
       }
       const guest = this.#getWebContents(tabId);
       entry.webContentsId = null;
+      if (guest) releasePreviewCaptures(guest);
       if (guest && !guest.isDestroyed()) {
         guest.close();
       }
@@ -345,12 +353,13 @@ export class PreviewRuntime {
     recording.stopped = true;
     clearTimeout(recording.limitTimer);
     recording.removeGuestListeners();
-    recording.guest.debugger.off("message", recording.onDebuggerMessage);
-    if (recording.guest.debugger.isAttached()) {
-      await recording.guest.debugger.sendCommand("Page.stopScreencast").catch(() => undefined);
-      if (recording.detachDebuggerOnStop && recording.guest.debugger.isAttached()) {
-        recording.guest.debugger.detach();
-      }
+    previewDebugger(recording.guest).off("message", recording.onDebuggerMessage);
+    if (previewDebugger(recording.guest).isAttached()) {
+      await previewDebugger(recording.guest)
+        .sendCommand("Page.stopScreencast")
+        .catch(() => undefined);
+      // The pinned debugger is shared with snapshots and input. Keep it for the guest's
+      // lifetime; recording shutdown must not detach a click waiting for its mouseup.
     }
   }
 }

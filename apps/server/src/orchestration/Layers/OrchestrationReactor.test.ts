@@ -119,6 +119,7 @@ describe("OrchestrationReactor", () => {
                   acknowledged += 1;
                 }),
               recheck: () => Effect.succeed(null),
+              recheckWithReason: () => Effect.succeed({ delivery: null }),
               retry: () => Effect.die("unsupported"),
               discard: () => Effect.die("unsupported"),
             }),
@@ -189,6 +190,7 @@ describe("OrchestrationReactor", () => {
           ),
           Layer.provideMerge(
             Layer.succeed(ProjectSkillSyncService, {
+              getWarnings: () => Effect.succeed([]),
               start: Effect.sync(() => {
                 started.push("project-skill-sync-service");
               }),
@@ -230,6 +232,7 @@ describe("OrchestrationReactor", () => {
               unarchiveWorkflow: () => Effect.die("unsupported"),
               deleteWorkflow: () => Effect.die("unsupported"),
               retryWorkflow: () => Effect.die("unsupported"),
+              postWorkflow: () => Effect.die("unsupported"),
               workflowForThread: () => Effect.succeed(null),
             }),
           ),

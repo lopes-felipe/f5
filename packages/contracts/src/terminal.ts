@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import { TrimmedNonEmptyString } from "./baseSchemas";
 
@@ -36,7 +37,8 @@ export type TerminalSessionInput = Schema.Codec.Encoded<typeof TerminalSessionIn
 
 export const TerminalOpenInput = Schema.Struct({
   ...TerminalSessionInput.fields,
-  cwd: TrimmedNonEmptyStringSchema,
+  stopOnSettle: Schema.optional(Schema.Boolean),
+  cwd: FilesystemPath,
   cols: Schema.optional(TerminalColsSchema),
   rows: Schema.optional(TerminalRowsSchema),
   env: Schema.optional(TerminalEnvSchema),
@@ -61,7 +63,7 @@ export type TerminalClearInput = Schema.Codec.Encoded<typeof TerminalClearInput>
 
 export const TerminalRestartInput = Schema.Struct({
   ...TerminalSessionInput.fields,
-  cwd: TrimmedNonEmptyStringSchema,
+  cwd: FilesystemPath,
   cols: TerminalColsSchema,
   rows: TerminalRowsSchema,
   env: Schema.optional(TerminalEnvSchema),
@@ -78,13 +80,24 @@ export type TerminalCloseInput = Schema.Codec.Encoded<typeof TerminalCloseInput>
 export const TerminalSessionStatus = Schema.Literals(["starting", "running", "exited", "error"]);
 export type TerminalSessionStatus = typeof TerminalSessionStatus.Type;
 
+const TerminalRevisionFields = {
+  epoch: Schema.String,
+  generation: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+};
+export const TerminalSnapshotInput = TerminalSessionInput;
+export type TerminalSnapshotInput = typeof TerminalSnapshotInput.Type;
+
 export const TerminalSessionSnapshot = Schema.Struct({
+  ...TerminalRevisionFields,
   threadId: Schema.String.check(Schema.isNonEmpty()),
   terminalId: Schema.String.check(Schema.isNonEmpty()),
-  cwd: Schema.String.check(Schema.isNonEmpty()),
+  cwd: FilesystemPath,
   status: TerminalSessionStatus,
   pid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
   history: Schema.String,
+  cols: Schema.optional(TerminalColsSchema),
+  rows: Schema.optional(TerminalRowsSchema),
   exitCode: Schema.NullOr(Schema.Int),
   exitSignal: Schema.NullOr(Schema.Int),
   updatedAt: Schema.String,
@@ -92,6 +105,7 @@ export const TerminalSessionSnapshot = Schema.Struct({
 export type TerminalSessionSnapshot = typeof TerminalSessionSnapshot.Type;
 
 const TerminalEventBaseSchema = Schema.Struct({
+  ...TerminalRevisionFields,
   threadId: Schema.String.check(Schema.isNonEmpty()),
   terminalId: Schema.String.check(Schema.isNonEmpty()),
   createdAt: Schema.String,
@@ -147,5 +161,11 @@ export const TerminalEvent = Schema.Union([
   TerminalClearedEvent,
   TerminalRestartedEvent,
   TerminalActivityEvent,
+  Schema.Struct({
+    ...TerminalEventBaseSchema.fields,
+    type: Schema.Literal("resized"),
+    cols: TerminalColsSchema,
+    rows: TerminalRowsSchema,
+  }),
 ]);
 export type TerminalEvent = typeof TerminalEvent.Type;

@@ -94,6 +94,39 @@ it("retains unsubmitted comment text after a server restart under the same numer
     .toHaveValue("Keep this unsent text");
   auth.generation = "account";
 });
+it("previews a timeline comment with Cmd/Ctrl+Enter and never submits it directly", async () => {
+  api.getCommentOperation.mockResolvedValue(null);
+  const prepareComment = vi.fn(async (input: { id: string; body: string }) => ({
+    id: input.id,
+    payloadHash: "hash",
+    status: "prepared",
+    payload: { body: input.body, markedBody: `${input.body}\n\n<!-- F5 comment nonce -->` },
+  }));
+  Object.assign(api, { prepareComment, submitComment: vi.fn() });
+  await render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PrCommentSubmit prKey={key} />
+    </QueryClientProvider>,
+  );
+  const textbox = page.getByRole("textbox", { name: "PR timeline comment" });
+  await textbox.fill("Ship it");
+  const press = (init: KeyboardEventInit) =>
+    textbox
+      .element()
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, ...init }));
+  press({ metaKey: true, shiftKey: true });
+  expect(prepareComment).not.toHaveBeenCalled();
+  press({ ctrlKey: true });
+  await expect
+    .element(page.getByLabelText("Comment submission preview"))
+    .toHaveTextContent("<!-- F5 comment nonce -->");
+  expect(prepareComment).toHaveBeenCalledTimes(1);
+  expect(prepareComment.mock.calls[0]![0]).toMatchObject({ key, body: "Ship it" });
+  expect(
+    (api as unknown as { submitComment: ReturnType<typeof vi.fn> }).submitComment,
+  ).not.toHaveBeenCalled();
+});
+
 it("requires an immutable preview and cancellation before editing a quick review", async () => {
   api.getReviewOperation.mockResolvedValue(null);
   api.getFiles.mockResolvedValue({ comparison });

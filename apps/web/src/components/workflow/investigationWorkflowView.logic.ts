@@ -1,4 +1,7 @@
-import { deriveInvestigationWorkflowStatus, type InvestigationWorkflow } from "@t3tools/contracts";
+import {
+  deriveInvestigationWorkflowStatus,
+  type InvestigationWorkflowSummary as InvestigationWorkflow,
+} from "@t3tools/contracts";
 
 export function statusLabel(workflow: InvestigationWorkflow): string {
   switch (deriveInvestigationWorkflowStatus(workflow)) {

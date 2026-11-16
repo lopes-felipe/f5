@@ -1,3 +1,6 @@
+import { summarizeTraceFile } from "./observability/traceSummary.ts";
+import { registerShutdown, ServerShutdown, ServerShutdownLive } from "./shutdown.ts";
+import { terminateRunningProcesses } from "./processRunner.ts";
 import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
 import * as ProfileFS from "node:fs/promises";
@@ -8,6 +11,7 @@ import {
   isProfilePortBindable,
 } from "./profiles/ProfileRegistryStore";
 import { instanceLock } from "./profiles/InstanceLock";
+import { shutdownOnLauncherLoss } from "./launcherPipes";
 /**
  * CliConfig - CLI/runtime bootstrap service definitions.
  *
@@ -17,7 +21,8 @@ import { instanceLock } from "./profiles/InstanceLock";
  * @module CliConfig
  */
 import { Config, Data, Effect, FileSystem, Layer, Option, Path, Schema, ServiceMap } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/unstable/cli";
+import { openInDesktopApp } from "@t3tools/shared/desktopAppControl";
 import { NetService } from "@t3tools/shared/Net";
 import { legacyT3UserdataStateDir } from "@t3tools/shared/appStatePaths";
 import {
@@ -31,6 +36,10 @@ import {
 } from "./config";
 import { applyPendingRestore } from "./backupService.ts";
 import { fixPath, resolveBaseDir, resolveStateDir } from "./os-jank";
+import { agentBridgeLocalCredentialsPath } from "./agentBridge/localCredentials.ts";
+import { runAgentBridgeStdio } from "./agentBridge/stdioShim.ts";
+import { makeThreadCommand } from "./threadCli/command.ts";
+import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { Open } from "./open";
 import * as SqlitePersistence from "./persistence/Layers/Sqlite";
 import { makeServerProviderLayer, makeServerRuntimeServicesLayer } from "./serverLayers";
@@ -42,7 +51,11 @@ import {
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { Server } from "./wsServer";
 import { ServerLoggerLive } from "./serverLogger";
-import { MIN_REMOTE_AUTH_TOKEN_BYTES } from "./serverAuth";
+import {
+  makeTrustedProxyCheck,
+  MIN_REMOTE_AUTH_TOKEN_BYTES,
+  SERVER_AUTH_TOKEN_ENV,
+} from "./serverAuth";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { withStartupPhaseTiming } from "./startupTiming";
@@ -62,6 +75,7 @@ interface CliInput {
   readonly devUrl: Option.Option<URL>;
   readonly noBrowser: Option.Option<boolean>;
   readonly authToken: Option.Option<string>;
+  readonly trustedProxies?: Option.Option<string>;
   readonly autoBootstrapProjectFromCwd: Option.Option<boolean>;
   readonly logWebSocketEvents: Option.Option<boolean>;
 }
@@ -99,7 +113,7 @@ export class CliConfig extends ServiceMap.Service<CliConfig, CliConfigShape>()(
       const path = yield* Path.Path;
       return {
         cwd: process.cwd(),
-        fixPath: Effect.promise(fixPath),
+        fixPath: Effect.promise(() => fixPath()),
         resolveStaticDir: resolveStaticDir().pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
@@ -134,7 +148,11 @@ const CliEnvConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
-  authToken: Config.string("T3CODE_AUTH_TOKEN").pipe(
+  authToken: Config.string(SERVER_AUTH_TOKEN_ENV).pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  trustedProxies: Config.string("F5_TRUSTED_PROXIES").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
@@ -283,6 +301,10 @@ const ServerConfigLive = (input: CliInput) => {
       const derivedPaths = yield* deriveServerPaths({ baseDir, defaultStateDir, profile });
       const noBrowser = resolveBooleanFlag(input.noBrowser, env.noBrowser ?? mode === "desktop");
       const authToken = trimToUndefined(Option.getOrUndefined(input.authToken) ?? env.authToken);
+      // ServerConfig holds the token from here on. Many spawn sites pass `process.env` straight
+      // through (Git and its hooks, setup scripts, maintenance workers), so drop the variable
+      // from this process instead of relying on each of them to filter it.
+      delete process.env[SERVER_AUTH_TOKEN_ENV];
       const autoBootstrapProjectFromCwd = resolveBooleanFlag(
         input.autoBootstrapProjectFromCwd,
         env.autoBootstrapProjectFromCwd ?? mode === "web",
@@ -313,6 +335,22 @@ const ServerConfigLive = (input: CliInput) => {
         });
       }
 
+      const trustedProxies = (
+        (input.trustedProxies ? Option.getOrUndefined(input.trustedProxies) : undefined) ??
+        env.trustedProxies ??
+        ""
+      )
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+      try {
+        makeTrustedProxyCheck(trustedProxies);
+      } catch (cause) {
+        return yield* new StartupError({
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+
       const config: ServerConfigShape = {
         profile: {
           id: profile.id,
@@ -333,6 +371,7 @@ const ServerConfigLive = (input: CliInput) => {
         devUrl,
         noBrowser,
         authToken,
+        trustedProxies,
         autoBootstrapProjectFromCwd,
         logWebSocketEvents,
         observabilityEnabled: env.observabilityEnabled ?? false,
@@ -474,7 +513,10 @@ const makeCliRuntimeLayer = (): typeof CliRuntimeLayerLive =>
   isTestRuntime() ? CliRuntimeLayerTest : CliRuntimeLayerLive;
 
 const LayerLive = (input: CliInput) =>
-  makeCliRuntimeLayer().pipe(Layer.provideMerge(ServerConfigLive(input)));
+  makeCliRuntimeLayer().pipe(
+    Layer.provideMerge(ServerConfigLive(input)),
+    Layer.provideMerge(ServerShutdownLive),
+  );
 
 const isWildcardHost = (host: string | undefined): boolean =>
   host === "0.0.0.0" || host === "::" || host === "[::]";
@@ -530,6 +572,16 @@ const makeServerProgram = (input: CliInput) =>
     const openDeps = yield* Open;
 
     const config = yield* withStartupPhaseTiming("config.resolve", ServerConfig.asEffect());
+    if (config.mode === "desktop" && !isTestRuntime()) {
+      // A dead launcher shuts down through the signal path, which runs finalizers and exits.
+      // Windows keeps an orphan's parent PID, so only the pipes can tell there.
+      yield* Effect.sync(() =>
+        shutdownOnLauncherLoss({
+          streams: [process.stdout, process.stderr],
+          watchParent: process.platform !== "win32",
+        }),
+      );
+    }
     yield* Effect.logInfo("server instrumentation flags", {
       threadOpenTimingsEnv: process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS ?? null,
       threadOpenTimingsEnabled:
@@ -560,6 +612,13 @@ const makeServerProgram = (input: CliInput) =>
     }
 
     yield* withStartupPhaseTiming("server.start", start);
+    // Detached gh/git helpers would otherwise outlive the backend.
+    yield* registerShutdown("helper-processes", "producers", (deadline) =>
+      Effect.promise(() => terminateRunningProcesses(deadline)),
+    );
+    const shutdown = yield* ServerShutdown;
+    // This finalizer runs before the runtime layers release their resources.
+    yield* Effect.addFinalizer(() => Effect.promise(() => shutdown.run()));
     if (!isTestRuntime()) {
       yield* withStartupPhaseTiming(
         "telemetry.heartbeat.fork",
@@ -575,12 +634,13 @@ const makeServerProgram = (input: CliInput) =>
     const { authToken, devUrl, ...safeConfig } = config;
     yield* Effect.logInfo("F5 running", {
       ...safeConfig,
-      devUrl: devUrl?.toString(),
+      devUrl: devUrl?.origin,
       authEnabled: Boolean(authToken),
     });
 
     if (!config.noBrowser) {
       const baseTarget = config.devUrl?.toString() ?? bindUrl;
+      const publicTarget = config.devUrl?.origin ?? bindUrl;
       const target =
         config.authToken && !config.devUrl
           ? `${baseTarget.replace(/#.*$/u, "")}#token=${encodeURIComponent(config.authToken)}`
@@ -588,11 +648,14 @@ const makeServerProgram = (input: CliInput) =>
       yield* withStartupPhaseTiming(
         "browser.open",
         openDeps.openBrowser(target).pipe(
+          // The target can contain a launch token. Neither a failed subprocess
+          // nor its arguments may be exported in a trace.
+          Effect.withTracerEnabled(false),
           Effect.catch(() =>
             Effect.logInfo("browser auto-open unavailable", {
               hint: config.authToken
-                ? `Open ${baseTarget} and supply the configured launch token in the URL fragment.`
-                : `Open ${baseTarget} in your browser.`,
+                ? `Open ${publicTarget} and supply the configured launch token in the URL fragment.`
+                : `Open ${publicTarget} in your browser.`,
             }),
           ),
         ),
@@ -641,6 +704,12 @@ const authTokenFlag = Flag.string("auth-token").pipe(
   Flag.withAlias("token"),
   Flag.optional,
 );
+const trustedProxiesFlag = Flag.string("trusted-proxy").pipe(
+  Flag.withDescription(
+    "Comma-separated addresses or CIDR ranges of reverse proxies whose X-Forwarded-For names the client, and whose X-Forwarded-Proto is honored when they are on another host (equivalent to F5_TRUSTED_PROXIES).",
+  ),
+  Flag.optional,
+);
 const autoBootstrapProjectFromCwdFlag = Flag.boolean("auto-bootstrap-project-from-cwd").pipe(
   Flag.withDescription(
     "Create a project for the current working directory on startup when missing.",
@@ -655,7 +724,7 @@ const logWebSocketEventsFlag = Flag.boolean("log-websocket-events").pipe(
   Flag.optional,
 );
 
-export const t3Cli = Command.make("t3", {
+const t3Base = Command.make("t3", {
   mode: modeFlag,
   port: portFlag,
   host: hostFlag,
@@ -668,9 +737,157 @@ export const t3Cli = Command.make("t3", {
   devUrl: devUrlFlag,
   noBrowser: noBrowserFlag,
   authToken: authTokenFlag,
+  trustedProxies: trustedProxiesFlag,
   autoBootstrapProjectFromCwd: autoBootstrapProjectFromCwdFlag,
   logWebSocketEvents: logWebSocketEventsFlag,
+});
+
+/** Shared profile selection for local clients; never starts a server or takes its lock. */
+const resolveCliProfileStateDir = Effect.gen(function* () {
+  const parent = yield* t3Base;
+  const path = yield* Path.Path;
+  const explicitStateDir =
+    optionStringToTrimmedUndefined(parent.stateDir) ??
+    trimToUndefined(process.env.F5_STATE_DIR) ??
+    trimToUndefined(process.env.T3CODE_STATE_DIR);
+  const resolvedStateDir =
+    explicitStateDir !== undefined ? yield* resolveStateDir(explicitStateDir) : undefined;
+  const baseDir =
+    resolvedStateDir !== undefined
+      ? path.dirname(resolvedStateDir)
+      : yield* resolveBaseDir(
+          optionStringToTrimmedUndefined(parent.t3Home) ??
+            trimToUndefined(process.env.F5_HOME) ??
+            trimToUndefined(process.env.T3CODE_HOME),
+        );
+  const defaultStateDir = resolvedStateDir ?? path.join(baseDir, "userdata");
+  const profileRef =
+    optionStringToTrimmedUndefined(parent.profile) ?? trimToUndefined(process.env.F5_PROFILE);
+  const read = yield* Effect.promise(() => new ProfileRegistryStore(defaultStateDir).read());
+  const records = read.ok ? read.registry.profiles : [fallbackDefaultProfile(defaultStateDir)];
+  const profile =
+    records.find((record) => record.slug === (profileRef ?? "default")) ??
+    records.find((record) => record.id === profileRef);
+  if (!profile) {
+    return yield* new StartupError({ message: "Unknown F5 profile '" + profileRef + "'." });
+  }
+  return profileStateDir(defaultStateDir, profile);
+});
+
+const agentBridgeStdioCommand = Command.make("agent-bridge-stdio", {}).pipe(
+  Command.withDescription("Connect an MCP client over STDIO to this profile's F5 Agent Bridge."),
+  Command.withHandler(() =>
+    Effect.gen(function* () {
+      const stateDir = yield* resolveCliProfileStateDir;
+      yield* Effect.promise(() =>
+        runAgentBridgeStdio({
+          credentialsPath: agentBridgeLocalCredentialsPath(stateDir),
+          input: process.stdin,
+          output: process.stdout,
+        }),
+      );
+    }).pipe(
+      Effect.catchTag("StartupError", (error) =>
+        Effect.sync(() => {
+          process.stderr.write(error.message + "\n");
+          process.exitCode = 1;
+        }),
+      ),
+    ),
+  ),
+);
+
+const traceSummarizeCommand = Command.make("summarize", {
+  file: Flag.string("file").pipe(Flag.optional),
 }).pipe(
+  Command.withDescription("Summarize a trace file without loading it into memory."),
+  Command.withHandler(({ file }) =>
+    Effect.gen(function* () {
+      const parent = yield* t3Base;
+      const path = yield* Path.Path;
+      let filename = Option.getOrUndefined(file);
+      if (!filename) {
+        const explicit =
+          optionStringToTrimmedUndefined(parent.stateDir) ??
+          trimToUndefined(process.env.F5_STATE_DIR) ??
+          trimToUndefined(process.env.T3CODE_STATE_DIR);
+        const base = explicit
+          ? path.dirname(yield* resolveStateDir(explicit))
+          : yield* resolveBaseDir(
+              optionStringToTrimmedUndefined(parent.t3Home) ??
+                trimToUndefined(process.env.F5_HOME) ??
+                trimToUndefined(process.env.T3CODE_HOME),
+            );
+        const state = explicit ? yield* resolveStateDir(explicit) : path.join(base, "userdata");
+        const registry = yield* Effect.promise(() => new ProfileRegistryStore(state).read());
+        const profiles = registry.ok ? registry.registry.profiles : [fallbackDefaultProfile(state)];
+        const reference =
+          optionStringToTrimmedUndefined(parent.profile) ??
+          trimToUndefined(process.env.F5_PROFILE) ??
+          "default";
+        const profile = profiles.find(
+          (entry) => entry.slug === reference || entry.id === reference,
+        );
+        if (!profile) return yield* new StartupError({ message: "Unknown F5 profile." });
+        const paths = yield* deriveServerPaths({ baseDir: base, defaultStateDir: state, profile });
+        filename = path.join(paths.logsDir, "observability", "traces.ndjson");
+      }
+      const summary = yield* Effect.tryPromise({
+        try: () => summarizeTraceFile(filename!),
+        catch: () => new StartupError({ message: "The trace file could not be read." }),
+      });
+      process.stdout.write(
+        `${summary.records} spans; ${summary.errors} failures; ${summary.stalls} event-loop stalls; ${summary.malformed} malformed lines\n`,
+      );
+      for (const span of summary.slowest)
+        process.stdout.write(`${span.durationMs.toFixed(2)} ms  ${span.name}\n`);
+    }),
+  ),
+);
+const traceCommand = Command.make("trace", {}).pipe(
+  Command.withSubcommands([traceSummarizeCommand]),
+);
+const appCommand = Command.make("app", {
+  path: Argument.string("path").pipe(Argument.optional),
+}).pipe(
+  Command.withDescription("Open a project in the running F5 desktop app."),
+  Command.withHandler(({ path: directory }) =>
+    Effect.gen(function* () {
+      const parent = yield* t3Base;
+      const base = yield* resolveBaseDir(
+        optionStringToTrimmedUndefined(parent.t3Home) ??
+          process.env.F5_HOME ??
+          process.env.T3CODE_HOME,
+      );
+      const state =
+        optionStringToTrimmedUndefined(parent.stateDir) ??
+        process.env.F5_STATE_DIR ??
+        process.env.T3CODE_STATE_DIR;
+      const stateDir = state
+        ? yield* resolveStateDir(state)
+        : (yield* Path.Path).join(base, "userdata");
+      yield* Effect.tryPromise({
+        try: () =>
+          openInDesktopApp(
+            stateDir,
+            Option.getOrElse(directory, () => process.cwd()),
+          ),
+        catch: (error) =>
+          new StartupError({
+            message: error instanceof Error ? error.message : "Cannot reach the desktop app.",
+          }),
+      });
+    }),
+  ),
+);
+
+export const t3Cli = t3Base.pipe(
   Command.withDescription("Run the F5 server."),
   Command.withHandler((input) => Effect.scoped(makeServerProgram(input))),
+  Command.withSubcommands([
+    agentBridgeStdioCommand,
+    makeThreadCommand(resolveCliProfileStateDir),
+    traceCommand,
+    appCommand,
+  ]),
 );

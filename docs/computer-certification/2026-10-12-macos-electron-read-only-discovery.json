@@ -1,0 +1,112 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-12T15:28:46.086Z",
+  "scope": "unsigned-real-electron-codex-read-only-status-diagnostic",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "repositoryCommit": "6e349a444dc26fe4c20886a7837b1307acfe88b2",
+  "workingTreeDirty": true,
+  "helperSha256": "84b3ebffa19536f6b7afe3e93c7d9f91ce2da333baafe610b10aca04cfe0b5c8",
+  "buildHashes": {
+    "desktopMain": "0d3437aef20c0c68680cb3f07610539da151e548618375d0962ceb8e9b6bd7f8",
+    "serverBundle": "58ea410c61b4f72882520abee1f56ae080ab547fac5b909a1dddd6f2da851615",
+    "rendererIndex": "29d45db0634582532f59b9c71e10e881ae000066541e9e3b96e7af28d27d4fb7",
+    "rehearsalSource": "ace6850e655f37a0a12c61c7d8cd41fab883d9054c9d18f2a5315ce6ce2b6341"
+  },
+  "signed": false,
+  "certified": false,
+  "provider": "codex",
+  "runtimeMode": "full-access",
+  "state": "passed",
+  "interrupted": false,
+  "permissionStatus": {
+    "available": true,
+    "displays": [
+      {
+        "displayId": "1",
+        "geometryGeneration": "1:0.0:0.0:1728.0:1117.0:3456:2234:0.0",
+        "primary": true,
+        "nativeBounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1728,
+          "height": 1117
+        },
+        "pixelSize": {
+          "width": 3456,
+          "height": 2234
+        },
+        "rotation": 0,
+        "modelSize": {
+          "width": 1333,
+          "height": 862
+        }
+      }
+    ]
+  },
+  "nativeObservation": {
+    "responses": {
+      "nativeCaptureSucceeded": false,
+      "nativeInspectionSucceeded": false,
+      "nativeInputSucceeded": false
+    },
+    "hostStatus": {
+      "available": true
+    },
+    "held": false,
+    "leaseObserved": false,
+    "pauseObserved": false,
+    "resumeObserved": false,
+    "captureResponses": 0,
+    "inspectionResponses": 0,
+    "traceComplete": true,
+    "accessRequests": 0,
+    "accessAnswersForwarded": 0,
+    "operations": [
+      {
+        "op": "listApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok"
+      },
+      {
+        "op": "listApps",
+        "outcome": "ok"
+      }
+    ]
+  },
+  "threadObservation": {
+    "found": true,
+    "runtimeMode": "full-access",
+    "sessionRuntimeMode": "full-access",
+    "interactionMode": "default",
+    "turnState": "completed",
+    "pendingUserInputs": 0
+  },
+  "consentObservation": {
+    "requested": false,
+    "trustedClick": false,
+    "settled": false,
+    "allowed": false,
+    "fixtureGranted": false,
+    "cardHasError": false,
+    "dialogPresentInDom": true
+  },
+  "providerErrorCodes": [],
+  "checks": {
+    "realElectronPermissionsAvailable": true,
+    "readOnlyTurnsCompleted": true,
+    "noComputerLeaseAcquired": true,
+    "threeCorrelatedMetadataResponses": true
+  },
+  "limitations": [
+    "One real provider and one synthetic AppKit app, on the current display only",
+    "Human app consent and pause/resume; no session-actions consent in full-access mode",
+    "No installed-build TCC attribution, signed packaging, real-app or multi-profile/display certification",
+    "Overlay capture exclusion, hung-renderer/host stop latency, Stop interruption and Windows runtime remain pending",
+    "Provider built-in and Chrome gates remain closed; no image bytes, typed values, accessibility content or raw errors retained"
+  ]
+}

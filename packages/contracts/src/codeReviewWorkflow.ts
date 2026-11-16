@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import {
+  CommandId,
   IsoDateTime,
   ProjectId,
   ThreadId,
@@ -8,6 +9,14 @@ import {
   makeEntityId,
 } from "./baseSchemas";
 import { WorkflowModelSlot, WorkflowStepStatus } from "./planningWorkflow";
+import { WorkflowArchiveRestorations } from "./workflowArchive";
+
+/**
+ * The `thread.turn.start` command that began a stage's current attempt. Only
+ * that command's turn may complete the stage; absent on stages recorded
+ * before this field existed, which keep the older any-finished-turn rule.
+ */
+export const WorkflowStageDispatchCommandId = Schema.optional(Schema.NullOr(CommandId));
 
 export const CodeReviewWorkflowId = makeEntityId("CodeReviewWorkflowId");
 export type CodeReviewWorkflowId = typeof CodeReviewWorkflowId.Type;
@@ -30,6 +39,7 @@ export const CodeReviewReviewer = Schema.Struct({
   pinnedAssistantMessageId: Schema.NullOr(TrimmedNonEmptyString),
   error: Schema.NullOr(Schema.String),
   retryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
+  dispatchCommandId: WorkflowStageDispatchCommandId,
   updatedAt: IsoDateTime,
 });
 export type CodeReviewReviewer = typeof CodeReviewReviewer.Type;
@@ -42,9 +52,42 @@ export const CodeReviewConsolidation = Schema.Struct({
   pinnedAssistantMessageId: Schema.NullOr(TrimmedNonEmptyString),
   error: Schema.NullOr(Schema.String),
   retryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
+  dispatchCommandId: WorkflowStageDispatchCommandId,
   updatedAt: IsoDateTime,
 });
 export type CodeReviewConsolidation = typeof CodeReviewConsolidation.Type;
+
+/**
+ * The pull request a code review targets, resolved once when the workflow is
+ * created. `key` is the provider-qualified PR Hub key (`github:host/owner/repo#n`).
+ */
+export const CodeReviewPullRequest = Schema.Struct({
+  url: TrimmedNonEmptyString,
+  key: TrimmedNonEmptyString,
+});
+export type CodeReviewPullRequest = typeof CodeReviewPullRequest.Type;
+
+export const CodeReviewPostStatus = Schema.Literals([
+  "posting",
+  "posted",
+  "failed",
+  "needs_recovery",
+]);
+export type CodeReviewPostStatus = typeof CodeReviewPostStatus.Type;
+
+/** Delivery of the merged review to the pull request as a timeline comment. */
+export const CodeReviewPost = Schema.Struct({
+  trigger: Schema.Literals(["auto", "manual"]),
+  status: CodeReviewPostStatus,
+  /** PR Hub comment operation id; reused on resume so a restart never resends. */
+  operationId: TrimmedNonEmptyString,
+  /** The consolidation turn whose merged review this post delivers. */
+  consolidationTurnId: Schema.NullOr(TrimmedNonEmptyString),
+  commentUrl: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+  updatedAt: IsoDateTime,
+});
+export type CodeReviewPost = typeof CodeReviewPost.Type;
 
 export const CodeReviewWorkflow = Schema.Struct({
   id: CodeReviewWorkflowId,
@@ -57,6 +100,11 @@ export const CodeReviewWorkflow = Schema.Struct({
   templateVersion: Schema.optional(Schema.Int).pipe(Schema.withDecodingDefault(() => 1)),
   reviewPrompt: TrimmedNonEmptyString,
   branch: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optional(Schema.NullOr(CodeReviewPullRequest)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  autoPost: Schema.optional(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),
+  post: Schema.optional(Schema.NullOr(CodeReviewPost)).pipe(Schema.withDecodingDefault(() => null)),
   reviewerA: CodeReviewReviewer,
   reviewerB: CodeReviewReviewer,
   consolidation: CodeReviewConsolidation,
@@ -67,6 +115,7 @@ export const CodeReviewWorkflow = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
+  archiveRestorations: WorkflowArchiveRestorations,
   deletedAt: Schema.NullOr(IsoDateTime),
 });
 export type CodeReviewWorkflow = typeof CodeReviewWorkflow.Type;

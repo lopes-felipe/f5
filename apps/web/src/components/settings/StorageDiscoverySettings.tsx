@@ -1,0 +1,118 @@
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useSettings } from "../../hooks/useSettings";
+import { ensureNativeApi } from "../../nativeApi";
+import { serverQueryKeys } from "../../lib/serverReactQuery";
+import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
+import { toastManager } from "../ui/toast";
+
+export function StorageDiscoverySettings({
+  implicitRoots = [],
+}: {
+  /** Project folders that are not repositories, searched for repositories automatically. */
+  readonly implicitRoots?: ReadonlyArray<string>;
+}) {
+  const settings = useSettings((s) => s.storageDiscovery);
+  const client = useQueryClient();
+  const [roots, setRoots] = useState(settings.repositoryRoots.join("\n"));
+  const [enabled, setEnabled] = useState(settings.machineCleanupEnabled);
+  const [searchProjectFolders, setSearchProjectFolders] = useState(settings.searchProjectFolders);
+  const [pending, setPending] = useState(false);
+  useEffect(() => {
+    setRoots(settings.repositoryRoots.join("\n"));
+    setEnabled(settings.machineCleanupEnabled);
+    setSearchProjectFolders(settings.searchProjectFolders);
+  }, [settings]);
+  const save = async () => {
+    setPending(true);
+    try {
+      const repositoryRoots = [
+        ...new Set(
+          roots
+            .split("\n")
+            .map((root) => root.trim())
+            .filter(Boolean),
+        ),
+      ];
+      await ensureNativeApi().server.updateSettings({
+        storageDiscovery: { machineCleanupEnabled: enabled, repositoryRoots, searchProjectFolders },
+      });
+      await client.invalidateQueries({ queryKey: serverQueryKeys.config() });
+      await ensureNativeApi().storage.getUsage({ force: true });
+      await client.invalidateQueries({ queryKey: ["storage", "usage"] });
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not update storage discovery",
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <section className="space-y-3 rounded-xl border border-border bg-card p-5">
+      <h2 className="text-sm font-medium">Storage discovery</h2>
+      <p className="text-xs text-muted-foreground">
+        These folders and caches belong to the F5 server machine. Machine cleanup always requires
+        manual selection.
+      </p>
+      <label className="flex items-center justify-between gap-3 text-sm">
+        Scan developer caches, browser downloads, unused Docker images, Chrome caches, and
+        BambuStudio logs
+        <Switch
+          aria-label="Scan machine cleanup candidates"
+          checked={enabled}
+          disabled={pending}
+          onCheckedChange={setEnabled}
+        />
+      </label>
+      <label className="block space-y-2 text-xs">
+        <span>Repository search folders (one absolute path per line)</span>
+        <textarea
+          className="min-h-20 w-full rounded border border-border bg-background p-2 font-mono"
+          aria-label="Repository search folders"
+          value={roots}
+          onChange={(event) => setRoots(event.target.value)}
+          disabled={pending}
+        />
+      </label>
+      <label className="flex items-center justify-between gap-3 text-sm">
+        Search project folders that are not repositories, such as a folder of clones
+        <Switch
+          aria-label="Search project folders for repositories"
+          checked={searchProjectFolders}
+          disabled={pending}
+          onCheckedChange={setSearchProjectFolders}
+        />
+      </label>
+      {searchProjectFolders && implicitRoots.length > 0 ? (
+        <div className="space-y-1 text-xs">
+          <span>From projects</span>
+          <ul
+            aria-label="Repository search folders from projects"
+            className="space-y-1 rounded border border-border bg-background p-2 font-mono text-muted-foreground"
+          >
+            {implicitRoots.map((root) => (
+              <li key={root}>{root}</li>
+            ))}
+          </ul>
+          <p className="text-muted-foreground">
+            Their repositories' worktrees, dependency folders and interrupted Git downloads are
+            offered for cleanup. Your home folder and the folders above it are never searched this
+            way.
+          </p>
+        </div>
+      ) : null}
+      <p className="text-xs text-muted-foreground">
+        Repositories are discovered without adding projects. Scans skip dependencies, build output,
+        symlinks, and other mounted volumes. Prefer specific source-code folders: selecting an
+        entire home folder or filesystem root can include many unrelated repositories.
+      </p>
+      <Button size="sm" onClick={() => void save()} disabled={pending}>
+        {pending ? "Saving…" : "Save and rescan"}
+      </Button>
+    </section>
+  );
+}

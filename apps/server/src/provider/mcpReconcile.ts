@@ -8,11 +8,8 @@ import type {
 /** Delays between in-place reconcile attempts before the result is reported as-is. */
 export const MCP_RELOAD_RETRY_DELAYS_MS = [500, 1_500, 4_000] as const;
 
-export interface ObservedMcpServer {
-  readonly name: string;
-  readonly status: McpObservedServerStatus;
-  readonly error?: string;
-}
+import { classifyMcpOwnership, type ObservedMcpServer } from "./mcpObservation.ts";
+export type { ObservedMcpServer } from "./mcpObservation.ts";
 
 const trimmed = (value: string | undefined, max = 2_000): string | undefined => {
   const text = value?.trim();
@@ -32,6 +29,15 @@ export function claudeObservedMcpStatus(status: string): McpObservedServerStatus
   }
 }
 
+/**
+ * Codex reports a server that needs (re)authentication as a failed startup whose error
+ * asks the user to run `codex mcp login <name>`. Other wording, such as a wrapped CLI's
+ * "is not logged in", stays a failure: Codex OAuth cannot fix it.
+ */
+export function isCodexMcpLoginRequiredError(error: string | undefined): boolean {
+  return !!error && /\brun `?codex mcp login\b/i.test(error);
+}
+
 export function codexObservedMcpStatus(input: {
   readonly startupStatus?: string;
   readonly authStatus?: string;
@@ -39,17 +45,21 @@ export function codexObservedMcpStatus(input: {
   /** Codex 0.160.1 omits `startupStatus` from the list; reported tools mean it connected. */
   readonly hasTools?: boolean;
 }): McpObservedServerStatus {
+  if (input.authStatus === "notLoggedIn") return "needs-auth";
   switch (input.startupStatus) {
     case "ready":
       return "connected";
     case "starting":
       return "pending";
     case "failed":
-      return "failed";
+      return isCodexMcpLoginRequiredError(input.error) ? "needs-auth" : "failed";
     case "cancelled":
       return "disabled";
+    case "needs-auth":
+      return "needs-auth";
   }
-  if (input.authStatus === "notLoggedIn") return "needs-auth";
+  if (input.startupStatus !== undefined) return "unknown";
+  if (isCodexMcpLoginRequiredError(input.error)) return "needs-auth";
   if (trimmed(input.error)) return "failed";
   return input.hasTools ? "connected" : "unknown";
 }
@@ -92,15 +102,21 @@ function summarizeBlockingMcpReload(input: {
     servers.push({
       name,
       status: server.status,
-      owned: isDesired(name),
+      owned: server.ownership === "managed" || (server.ownership === undefined && isDesired(name)),
       ...(error ? { error } : {}),
     });
   }
 
   if (input.observed !== undefined) {
     for (const name of input.desired) {
-      const observed = servers.find((server) => sameName(server.name, name));
-      if (!observed) {
+      const matches = servers.filter((server) => sameName(server.name, name));
+      const observed = matches.length === 1 && matches[0]?.owned ? matches[0] : undefined;
+      if (matches.length > 1) {
+        errors.push({
+          server: name,
+          message: `The provider reports conflicting names: ${matches.map((server) => server.name).join(", ")}.`,
+        });
+      } else if (!observed) {
         if (!errors.some((error) => error.server === name))
           errors.push({ server: name, message: "The session does not report this server." });
       } else if (observed.status === "failed" && !errors.some((error) => error.server === name)) {
@@ -141,6 +157,8 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
   readonly query: ClaudeMcpControl<TConfig>;
   readonly desired: Readonly<Record<string, TConfig>>;
   readonly owned: ReadonlySet<string>;
+  /** Install host policy for the actual payload before the CLI can expose its tools. */
+  readonly beforeSetServers?: (names: ReadonlySet<string>) => void;
 }): Promise<{
   readonly result: McpReloadResult;
   readonly owned: ReadonlySet<string>;
@@ -159,7 +177,7 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
   const payload: Record<string, TConfig> = {};
   for (const [name, config] of Object.entries(input.desired)) {
     const existing = before.find((server) => server.name === name);
-    if (existing && !input.owned.has(name)) {
+    if (existing && classifyMcpOwnership(existing, input.owned) !== "managed") {
       const origin = existing.source ?? existing.scope ?? "settings or plugin";
       notices.push({
         server: name,
@@ -170,6 +188,8 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
     payload[name] = config;
   }
 
+  const attemptedOwned = new Set([...input.owned, ...Object.keys(payload)]);
+  input.beforeSetServers?.(attemptedOwned);
   let setResult: Awaited<ReturnType<NonNullable<ClaudeMcpControl<TConfig>["setMcpServers"]>>>;
   try {
     setResult = await query.setMcpServers(payload);
@@ -179,7 +199,9 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
       result: restartRequiredMcpReload(
         `Claude could not change MCP servers in place${detail ? ` (${detail})` : ""}.`,
       ),
-      owned: input.owned,
+      // A rejected request may have partially installed its payload. Keep those
+      // names covered by host policy until a later read confirms removal.
+      owned: attemptedOwned,
     };
   }
 
@@ -201,7 +223,11 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
     (name) =>
       !(name in payload) &&
       !removed.has(name) &&
-      (after === undefined || after.some((server) => server.name === name)),
+      (after === undefined ||
+        after.some(
+          (server) =>
+            server.name === name && classifyMcpOwnership(server, input.owned) === "managed",
+        )),
   );
   for (const name of lingering) owned.add(name);
   const summarized = summarizeMcpReload({
@@ -209,6 +235,7 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
     observed: after?.map((server) => ({
       name: server.name,
       status: claudeObservedMcpStatus(server.status),
+      ownership: classifyMcpOwnership(server, owned),
       ...(server.error ? { error: server.error } : {}),
     })),
     errors: Object.entries(setResult.errors ?? {}).map(([server, message]) => ({

@@ -1,0 +1,65 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-12T21:18:12.919Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "helperSha256": "27eff7abd0c3019bf76a5331f182bb722eb4a9bfaee3d033a39302c75c3f9a17",
+  "scope": "unsigned-native-helper-synthetic-capture-privacy",
+  "repositoryCommit": "03695fecc2720b957e6712f615e14501bf5ed321",
+  "workingTreeDirty": false,
+  "rehearsalSourceSha256": "d1a32835e3e3acdebc3096849c92d48ed1130220096c1de70dbc8e0fad8f4964",
+  "captureVerifierSha256": "e676395fe5d235491416660de50ec89a1db6ff1e4b57fed61b474cfe68822a93",
+  "privacyOnly": true,
+  "signed": false,
+  "certified": false,
+  "checks": [
+    {
+      "name": "A second helper with a different HOME cannot acquire the OS user's device lock",
+      "state": "passed",
+      "elapsedMs": 18
+    },
+    {
+      "name": "Granted fixture app activation",
+      "state": "passed",
+      "elapsedMs": 385
+    },
+    {
+      "name": "Real accessibility inspection and secure-value omission",
+      "state": "passed",
+      "elapsedMs": 118
+    },
+    {
+      "name": "Capture control includes both synthetic markers when both fixtures are granted",
+      "state": "passed",
+      "elapsedMs": 615
+    },
+    {
+      "name": "Capture includes granted pixels, excludes revoked fixture pixels and masks secure fields",
+      "state": "passed",
+      "elapsedMs": 292
+    },
+    {
+      "name": "Zoom masks secure fields and provides additional Retina detail",
+      "state": "passed",
+      "elapsedMs": 146
+    },
+    {
+      "name": "Permit expiry blocks the next real action",
+      "state": "passed",
+      "elapsedMs": 1252
+    }
+  ],
+  "physicalInterruption": false,
+  "remaining": [
+    "Capture-only mode excludes semantic, keyboard and coordinate input checks",
+    "Provider-mediated app consent and real provider turns",
+    "Capture isolation and secure masking across real apps, popups and moving windows",
+    "Coordinate/drag/typing focus changes",
+    "Physical kill-chord latency and user-input interruption",
+    "Renderer/backend-stall stop path",
+    "Multiple profiles, overlays and mixed-DPI/fullscreen displays",
+    "Windows desktop runtime",
+    "Signed packaging and TCC attribution"
+  ]
+}

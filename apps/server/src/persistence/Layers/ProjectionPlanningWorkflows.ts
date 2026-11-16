@@ -1,3 +1,4 @@
+import { summarizePlanningWorkflow } from "@t3tools/shared/workflowSummary";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { Effect, Layer, Option, Schema } from "effect";
@@ -29,6 +30,7 @@ const makeProjectionPlanningWorkflowRepository = Effect.gen(function* () {
           workflow_id,
           project_id,
           workflow_json,
+          summary_json,
           updated_at,
           deleted_at
         )
@@ -36,6 +38,7 @@ const makeProjectionPlanningWorkflowRepository = Effect.gen(function* () {
           ${row.id},
           ${row.projectId},
           ${JSON.stringify(row)},
+          ${JSON.stringify(summarizePlanningWorkflow(row))},
           ${row.updatedAt},
           ${row.deletedAt}
         )
@@ -43,6 +46,7 @@ const makeProjectionPlanningWorkflowRepository = Effect.gen(function* () {
         DO UPDATE SET
           project_id = excluded.project_id,
           workflow_json = excluded.workflow_json,
+          summary_json = excluded.summary_json,
           updated_at = excluded.updated_at,
           deleted_at = excluded.deleted_at
       `,
@@ -98,6 +102,7 @@ const makeProjectionPlanningWorkflowRepository = Effect.gen(function* () {
         UPDATE projection_planning_workflows
         SET
           deleted_at = ${deletedAt},
+          summary_json = json_set(summary_json, '$.deletedAt', ${deletedAt}, '$.updatedAt', ${deletedAt}),
           workflow_json = json_set(
             json_set(workflow_json, '$.deletedAt', ${deletedAt}),
             '$.updatedAt',

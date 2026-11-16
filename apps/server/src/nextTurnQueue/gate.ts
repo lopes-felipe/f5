@@ -14,9 +14,27 @@ import type { WorktreeSetupGateState } from "../project/Services/WorktreeSetupGa
 export const WORKTREE_SETUP_INTERRUPTED_DETAIL =
   "Worktree setup was interrupted before the agent started. Retry, work locally, or discard.";
 
+export function hasActiveThreadTurn(
+  runningTurn: unknown | null,
+  session: { readonly activeTurnId?: string | null; readonly status: string } | null,
+): boolean {
+  return (
+    runningTurn !== null ||
+    (session !== null &&
+      (session.activeTurnId != null ||
+        session.status === "starting" ||
+        session.status === "running"))
+  );
+}
+
 export type NextTurnQueueGate =
   | { readonly kind: "ready" }
-  | { readonly kind: "wait"; readonly reasonCode: QueueReasonCode; readonly detail?: string }
+  | {
+      readonly kind: "wait";
+      readonly reasonCode: QueueReasonCode;
+      readonly detail?: string;
+      readonly retryAfterMs?: number;
+    }
   | { readonly kind: "autoPause"; readonly reasonCode: QueueReasonCode; readonly detail?: string }
   | { readonly kind: "drop"; readonly reasonCode: QueueReasonCode };
 
@@ -70,7 +88,10 @@ export function resolveNextTurnQueueGate(input: {
     return {
       kind: "autoPause",
       reasonCode: "worktree_missing",
-      detail: `Worktree '${input.thread.worktreePath}' is missing.`,
+      detail:
+        input.thread.branch === null
+          ? "This thread's worktree is gone. Recreate it or continue in the project checkout."
+          : `Worktree '${input.thread.worktreePath}' is missing.`,
     };
   }
   if (
@@ -123,6 +144,7 @@ export function resolveNextTurnQueueGate(input: {
   ) {
     return {
       kind: "wait",
+      retryAfterMs: Math.max(0, Date.parse(input.item.notBefore) - (input.nowMs ?? Date.now())),
       reasonCode:
         input.item.scheduleReason === "usage_limit_reset" && input.item.attemptCount === 0
           ? "usage_limit_reset"
@@ -139,13 +161,7 @@ export function resolveNextTurnQueueGate(input: {
   if (input.pendingTurnStart !== null) {
     return { kind: "wait", reasonCode: "turn_starting" };
   }
-  if (
-    input.runningTurn !== null ||
-    (input.session !== null &&
-      (input.session.activeTurnId !== null ||
-        input.session.status === "starting" ||
-        input.session.status === "running"))
-  ) {
+  if (hasActiveThreadTurn(input.runningTurn, input.session)) {
     return { kind: "wait", reasonCode: "active_turn" };
   }
   const terminalTurn = input.terminalTurn ?? null;

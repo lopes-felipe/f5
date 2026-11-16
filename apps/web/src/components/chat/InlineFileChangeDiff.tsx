@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { ChevronRightIcon } from "lucide-react";
 import { memo, useCallback, useMemo } from "react";
-import { useAppSettings } from "../../appSettings";
+import { useDiffWordWrap } from "../../appSettings";
 import { openInPreferredEditor } from "../../editorPreferences";
 import { useFileNavigation } from "../../fileNavigationContext";
 import type { TurnDiffSummary } from "../../types";
@@ -19,12 +19,13 @@ import {
   resolveFileDiffPath,
 } from "../../lib/diffPatch";
 import { relativePathForDisplay } from "~/lib/attachedFiles";
-import { resolveDiffThemeName } from "~/lib/diffRendering";
+import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "~/lib/diffRendering";
 import { normalizeFilePathForDiffLookup } from "~/lib/normalizeFilePathForDiff";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
 import { resolvePathLinkTarget } from "../../terminal-links";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
+import { compareFilePaths } from "../../lib/filePathCollator";
 import { buildInlineFileChangeCheckpointDiffQueryInput } from "./InlineFileChangeDiff.logic";
 
 export interface InlineFileChangeDiffProps {
@@ -58,7 +59,7 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
     onOpenTurnDiff,
   } = props;
   const handleFileNavigation = useFileNavigation();
-  const { settings } = useAppSettings();
+  const diffWordWrap = useDiffWordWrap();
   const diffUnavailable =
     threadId === null || typeof checkpointTurnCount !== "number" || filePaths.length === 0;
 
@@ -125,12 +126,7 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
           },
         ];
       })
-      .toSorted((left, right) =>
-        left.filePath.localeCompare(right.filePath, undefined, {
-          numeric: true,
-          sensitivity: "base",
-        }),
-      );
+      .toSorted((left, right) => compareFilePaths(left.filePath, right.filePath));
   }, [normalizedEntryFiles, renderablePatch, turnDiffFileByPath, workspaceRoot]);
 
   const openFile = useCallback(
@@ -226,8 +222,9 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
                   diffStyle: "unified",
                   lineDiffType: "none",
                   theme: resolveDiffThemeName(resolvedTheme),
+                  preferredHighlighter: PREFERRED_HIGHLIGHTER,
                   themeType: resolvedTheme,
-                  overflow: settings.diffWordWrap ? "wrap" : "scroll",
+                  overflow: diffWordWrap ? "wrap" : "scroll",
                   disableFileHeader: true,
                   unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
                 }}

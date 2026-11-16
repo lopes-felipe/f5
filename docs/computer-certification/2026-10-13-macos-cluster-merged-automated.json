@@ -1,0 +1,556 @@
+{
+  "reportVersion": 1,
+  "scope": "merged-source-automated-readiness",
+  "manifest": {
+    "version": 1,
+    "suiteId": "cf2cd7b7-682e-46fa-a997-2ddd1bc725a8",
+    "preparedAt": "2026-10-13T14:47:51.110Z",
+    "identity": {
+      "platform": "darwin",
+      "arch": "arm64",
+      "commit": "42472bb48506f072d6d5092b0f8088a9f512139b",
+      "dirty": false,
+      "target": "development",
+      "files": {
+        "desktop-main": "7a1359f8db0506294d45a81de0cf18d8928fc1c294efbfba8745335f0e2bad07",
+        "desktop-preload": "d15b77fb21c0db14eaa40b19fe3f7bf50f525a8c6b0ce25da8ba4244dd41b8d1",
+        "electron-runner": "47e235577fd3dc050c461f74aa937d2e0984ad22e948145f5dd1ca436d86c4b9",
+        "electron-runtime": "d34df06a24556e0e3b379f1b02e344c03518e3dd62f001595985f94fc67cdcf3",
+        "helper": "42e5f28a123a74b947ce93d0962494c497ab5f889fb68f6576c3ceb3793e48c5",
+        "native-fixtures": "9ca991784fc02bd3c13cf209db33f3fe28fa6cb4c3c24c25f62dcb4fccc72cf1",
+        "prepared-fixtures": "0bb3e887c9de473e6672672f2c3b3b894caea98a4955b14309dc434838a02e95",
+        "served-client": "71bc63c8bf93c9d02e45c68645510b2f886ddfe002c5dd34d78f9a183a12360f",
+        "server-bundle": "6a12cb1a6661c0ec774e5508403e26627f3e871fdfafde9c32cc2f6856b2f293",
+        "suite-source": "8cfbfc4994c8fa27b6f1ef34e61194bf3225498909f7bb1ed2acd2040a46afbc",
+        "tracked-code-diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "providers": ["codex", "claude"],
+    "prerequisites": {
+      "platform": true,
+      "helper-permissions": true,
+      "app-signature": false,
+      "helper-signature": false,
+      "codex-ready": false,
+      "claude-ready": false,
+      "fixtures-ready": true
+    },
+    "observations": {
+      "osVersion": "27.0.0",
+      "providerVersions": {},
+      "displays": [
+        {
+          "displayId": "3",
+          "geometryGeneration": "3:0.0:0.0:3337.0:1397.0:6674:2794:0.0",
+          "primary": true,
+          "nativeBounds": {
+            "x": 0,
+            "y": 0,
+            "width": 3337,
+            "height": 1397
+          },
+          "pixelSize": {
+            "width": 6674,
+            "height": 2794
+          },
+          "rotation": 0,
+          "modelSize": {
+            "width": 1456,
+            "height": 609
+          }
+        },
+        {
+          "displayId": "1",
+          "geometryGeneration": "1:902.0:1397.0:1728.0:1117.0:3456:2234:0.0",
+          "primary": false,
+          "nativeBounds": {
+            "x": 902,
+            "y": 1397,
+            "width": 1728,
+            "height": 1117
+          },
+          "pixelSize": {
+            "width": 3456,
+            "height": 2234
+          },
+          "rotation": 0,
+          "modelSize": {
+            "width": 1333,
+            "height": 862
+          }
+        }
+      ]
+    }
+  },
+  "results": [
+    {
+      "version": 1,
+      "suiteId": "cf2cd7b7-682e-46fa-a997-2ddd1bc725a8",
+      "scenario": "browser-smoke",
+      "attempt": 1,
+      "identityHash": "70b4a1ed294bb2a85128a9bfda0344885a12efccebc75d8025be46d906b6ce5d",
+      "state": "passed",
+      "evidenceKind": "automated",
+      "startedAt": "2026-10-13T14:56:28.592Z",
+      "finishedAt": "2026-10-13T14:58:15.989Z",
+      "checks": {
+        "browser-tests": true,
+        "desktop-smoke": true,
+        "profile-lifecycle": true
+      },
+      "measurements": {},
+      "cleanup": "not-needed",
+      "evidenceSha256": "90098fd102bd63813594b941ba70cb51e5a665e0dda6a5091ce4b24bd0503038"
+    },
+    {
+      "version": 1,
+      "suiteId": "cf2cd7b7-682e-46fa-a997-2ddd1bc725a8",
+      "scenario": "native-tests",
+      "attempt": 1,
+      "identityHash": "70b4a1ed294bb2a85128a9bfda0344885a12efccebc75d8025be46d906b6ce5d",
+      "state": "passed",
+      "evidenceKind": "automated",
+      "startedAt": "2026-10-13T14:58:16.441Z",
+      "finishedAt": "2026-10-13T14:58:30.321Z",
+      "checks": {
+        "tier-drift": true,
+        "native-tests": true,
+        "helper-protocol": true
+      },
+      "measurements": {},
+      "cleanup": "not-needed",
+      "evidenceSha256": "c76ba451caf81a46f865d7c9ca0e222f8e228849de786e9a6891a3b1594fda9b"
+    },
+    {
+      "version": 1,
+      "suiteId": "cf2cd7b7-682e-46fa-a997-2ddd1bc725a8",
+      "scenario": "package",
+      "attempt": 1,
+      "identityHash": "70b4a1ed294bb2a85128a9bfda0344885a12efccebc75d8025be46d906b6ce5d",
+      "state": "blocked",
+      "evidenceKind": "automated",
+      "startedAt": "2026-10-13T14:58:30.720Z",
+      "finishedAt": "2026-10-13T14:58:30.720Z",
+      "checks": {},
+      "measurements": {},
+      "cleanup": "not-needed",
+      "reason": "signing-deferred"
+    },
+    {
+      "version": 1,
+      "suiteId": "cf2cd7b7-682e-46fa-a997-2ddd1bc725a8",
+      "scenario": "quality",
+      "attempt": 1,
+      "identityHash": "70b4a1ed294bb2a85128a9bfda0344885a12efccebc75d8025be46d906b6ce5d",
+      "state": "passed",
+      "evidenceKind": "automated",
+      "startedAt": "2026-10-13T14:52:13.319Z",
+      "finishedAt": "2026-10-13T14:56:28.081Z",
+      "checks": {
+        "format": true,
+        "lint": true,
+        "typecheck": true,
+        "full-tests": true
+      },
+      "measurements": {},
+      "cleanup": "not-needed",
+      "evidenceSha256": "cc9b2148a13852fbfcf2188de7a68954ec618300fd518133d2ae39b916f3cdf8"
+    }
+  ],
+  "coverage": {
+    "version": 1,
+    "suiteId": "cf2cd7b7-682e-46fa-a997-2ddd1bc725a8",
+    "platform": "darwin",
+    "identityHash": "70b4a1ed294bb2a85128a9bfda0344885a12efccebc75d8025be46d906b6ce5d",
+    "developmentOnly": true,
+    "rows": [
+      {
+        "scenario": "quality",
+        "group": "automated",
+        "title": "Formatting, lint, typecheck and exhaustive tests",
+        "requirements": ["repository"],
+        "state": "passed",
+        "evidenceKind": "automated",
+        "attempts": 1
+      },
+      {
+        "scenario": "browser-smoke",
+        "group": "automated",
+        "title": "Browser, desktop and profile lifecycle regressions",
+        "requirements": ["repository"],
+        "state": "passed",
+        "evidenceKind": "automated",
+        "attempts": 1
+      },
+      {
+        "scenario": "native-tests",
+        "group": "automated",
+        "title": "Native policy, tier drift and helper protocol",
+        "requirements": ["native-tests"],
+        "state": "passed",
+        "evidenceKind": "automated",
+        "attempts": 1
+      },
+      {
+        "scenario": "package",
+        "group": "automated",
+        "title": "Installed signatures, resource confinement and attribution",
+        "requirements": ["packaging"],
+        "state": "blocked",
+        "evidenceKind": "automated",
+        "reason": "signing-deferred",
+        "attempts": 1
+      },
+      {
+        "scenario": "discovery.codex",
+        "group": "workflows",
+        "title": "Provider tool discovery and native metadata",
+        "requirements": ["provider-workflows"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "discovery.claude",
+        "group": "workflows",
+        "title": "Provider tool discovery and native metadata",
+        "requirements": ["provider-workflows"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "fixture-workflow.codex",
+        "group": "workflows",
+        "title": "Human consent, semantic/coordinate actions, Unicode and UI controls",
+        "requirements": ["provider-workflows", "consent", "activity", "pause-resume"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "fixture-workflow.claude",
+        "group": "workflows",
+        "title": "Human consent, semantic/coordinate actions, Unicode and UI controls",
+        "requirements": ["provider-workflows", "consent", "activity", "pause-resume"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "real-apps.codex",
+        "group": "workflows",
+        "title": "Synthetic document and Calculator across turns",
+        "requirements": ["provider-workflows"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "real-apps.claude",
+        "group": "workflows",
+        "title": "Synthetic document and Calculator across turns",
+        "requirements": ["provider-workflows"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "grant-lifecycle.codex",
+        "group": "workflows",
+        "title": "Session-actions, deny/expiry, remember/revoke/forget and restart",
+        "requirements": ["consent"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "grant-lifecycle.claude",
+        "group": "workflows",
+        "title": "Session-actions, deny/expiry, remember/revoke/forget and restart",
+        "requirements": ["consent"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "profile-isolation",
+        "group": "workflows",
+        "title": "Two profiles, lease ownership and private activity",
+        "requirements": ["profiles"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "persistence.codex",
+        "group": "workflows",
+        "title": "Actual persisted sentinels, replay and plan-mode restrictions",
+        "requirements": ["persistence"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "persistence.claude",
+        "group": "workflows",
+        "title": "Actual persisted sentinels, replay and plan-mode restrictions",
+        "requirements": ["persistence"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "windows-closed.codex",
+        "group": "workflows",
+        "title": "Control with all F5 windows closed",
+        "requirements": ["windowless"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "windows-closed.claude",
+        "group": "workflows",
+        "title": "Control with all F5 windows closed",
+        "requirements": ["windowless"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "protected-apps",
+        "group": "protection",
+        "title": "Command-app restrictions and Chromium password masking",
+        "requirements": ["protected-input", "capture"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "capture",
+        "group": "protection",
+        "title": "Granted/ungranted markers, masking, zoom and permit expiry",
+        "requirements": ["capture"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "recipient-changes",
+        "group": "protection",
+        "title": "Focus/dialog changes, protected drag and stale semantic elements",
+        "requirements": ["protected-input"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "capture-surfaces",
+        "group": "protection",
+        "title": "Moving/overlapping windows, notifications, menus and system UI",
+        "requirements": ["capture"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "displays",
+        "group": "protection",
+        "title": "Each display, mixed scale, rotation, reconfiguration and fullscreen",
+        "requirements": ["displays"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "main-stop.codex",
+        "group": "recovery",
+        "title": "Physical stop with main frozen",
+        "requirements": ["stop"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "main-stop.claude",
+        "group": "recovery",
+        "title": "Physical stop with main frozen",
+        "requirements": ["stop"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "renderer-stop.codex",
+        "group": "recovery",
+        "title": "Physical stop with renderer frozen",
+        "requirements": ["stop"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "renderer-stop.claude",
+        "group": "recovery",
+        "title": "Physical stop with renderer frozen",
+        "requirements": ["stop"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "backend-stop",
+        "group": "recovery",
+        "title": "Physical stop with broker backend frozen",
+        "requirements": ["stop"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "recovery",
+        "group": "recovery",
+        "title": "Crash/restart, permit and independent monitors, held-input release",
+        "requirements": ["recovery"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "permissions",
+        "group": "recovery",
+        "title": "Permission revocation, decline, no silent retry and restoration",
+        "requirements": ["permissions"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "builtin.codex",
+        "group": "builtin",
+        "title": "Supported launch, consent, veto, stop and isolated fallback",
+        "requirements": ["builtin"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "builtin.claude",
+        "group": "builtin",
+        "title": "Supported launch, consent, veto, stop and isolated fallback",
+        "requirements": ["builtin"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "chrome.codex",
+        "group": "chrome",
+        "title": "Native-host consent, drift, contention and exact restore",
+        "requirements": ["chrome"],
+        "state": "not-run",
+        "attempts": 0
+      },
+      {
+        "scenario": "chrome.claude",
+        "group": "chrome",
+        "title": "Native-host consent, drift, contention and exact restore",
+        "requirements": ["chrome"],
+        "state": "not-run",
+        "attempts": 0
+      }
+    ],
+    "requirements": [
+      {
+        "requirement": "repository",
+        "state": "passed",
+        "scenarios": ["quality", "browser-smoke"]
+      },
+      {
+        "requirement": "native-tests",
+        "state": "passed",
+        "scenarios": ["native-tests"]
+      },
+      {
+        "requirement": "packaging",
+        "state": "pending",
+        "scenarios": ["package"]
+      },
+      {
+        "requirement": "provider-workflows",
+        "state": "pending",
+        "scenarios": [
+          "discovery.codex",
+          "discovery.claude",
+          "fixture-workflow.codex",
+          "fixture-workflow.claude",
+          "real-apps.codex",
+          "real-apps.claude"
+        ]
+      },
+      {
+        "requirement": "consent",
+        "state": "pending",
+        "scenarios": [
+          "fixture-workflow.codex",
+          "fixture-workflow.claude",
+          "grant-lifecycle.codex",
+          "grant-lifecycle.claude"
+        ]
+      },
+      {
+        "requirement": "activity",
+        "state": "pending",
+        "scenarios": ["fixture-workflow.codex", "fixture-workflow.claude"]
+      },
+      {
+        "requirement": "pause-resume",
+        "state": "pending",
+        "scenarios": ["fixture-workflow.codex", "fixture-workflow.claude"]
+      },
+      {
+        "requirement": "profiles",
+        "state": "pending",
+        "scenarios": ["profile-isolation"]
+      },
+      {
+        "requirement": "persistence",
+        "state": "pending",
+        "scenarios": ["persistence.codex", "persistence.claude"]
+      },
+      {
+        "requirement": "protected-input",
+        "state": "pending",
+        "scenarios": ["protected-apps", "recipient-changes"]
+      },
+      {
+        "requirement": "capture",
+        "state": "pending",
+        "scenarios": ["protected-apps", "capture", "capture-surfaces"]
+      },
+      {
+        "requirement": "displays",
+        "state": "pending",
+        "scenarios": ["displays"]
+      },
+      {
+        "requirement": "stop",
+        "state": "pending",
+        "scenarios": [
+          "main-stop.codex",
+          "main-stop.claude",
+          "renderer-stop.codex",
+          "renderer-stop.claude",
+          "backend-stop"
+        ]
+      },
+      {
+        "requirement": "recovery",
+        "state": "pending",
+        "scenarios": ["recovery"]
+      },
+      {
+        "requirement": "permissions",
+        "state": "pending",
+        "scenarios": ["permissions"]
+      },
+      {
+        "requirement": "windowless",
+        "state": "pending",
+        "scenarios": ["windows-closed.codex", "windows-closed.claude"]
+      },
+      {
+        "requirement": "builtin",
+        "state": "pending",
+        "scenarios": ["builtin.codex", "builtin.claude"]
+      },
+      {
+        "requirement": "chrome",
+        "state": "pending",
+        "scenarios": ["chrome.codex", "chrome.claude"]
+      }
+    ],
+    "nativeReleaseReady": false,
+    "gatesChanged": false
+  },
+  "limitations": [
+    "Software-only suite; provider launch homes were intentionally not configured and no authentication or machine-input phase ran",
+    "Hosted/local automated checks do not certify genuine consent, signed installed-build attribution, Windows desktop behavior or the complete machine scenario matrix",
+    "Packaging remains blocked by deferred signing; all release gates remain closed"
+  ],
+  "gatesChanged": false
+}

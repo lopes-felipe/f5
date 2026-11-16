@@ -23,7 +23,13 @@ export type PrPendingAction =
   | "comment"
   | "requestChanges"
   | "merge"
+  | "autoMerge"
+  | "close"
+  | "reopen"
   | "markReady"
+  | "convertToDraft"
+  | "updateBranch"
+  | "rerunChecks"
   | "reRequestReview"
   | "snooze"
   | null;
@@ -39,18 +45,30 @@ export interface PrActionFlags {
   isIgnoring: boolean;
 }
 
-/** Callbacks wired to {@link PrDetailActions} (and any other action surface). */
+/** Callbacks wired to the action bar of the page, the peek and the queue rows. */
 export interface PrActionHandlers {
   onAcknowledge: () => void;
   onApprove: () => void;
   onComment: () => void;
   onRequestChanges: () => void;
   onMerge: () => void;
+  /** Queues the merge for when the forge's requirements are met (auto-merge). */
+  onMergeWhenReady: () => void;
   onMarkReady: () => void;
+  onConvertToDraft: () => void;
+  onUpdateBranch: () => void;
+  /** Re-runs the failed jobs of the head commit's failed workflow runs. */
+  onRerunChecks: () => void;
+  /** Starts an agent on the failing checks, whatever else the pull request waits for. */
+  onFixCi: () => void;
+  onClose: () => void;
+  onReopen: () => void;
   onReRequest: () => void;
   onSnooze: () => void;
   onUnsnooze: () => void;
   onIgnore: () => void;
+  /** Puts an ignored pull request back in the queue. */
+  onRestore: () => void;
   onOpenInF5: () => void;
   onRunInF5: () => void;
   onOpenGitHub: () => void;
@@ -68,8 +86,11 @@ export interface PrActionDialogProps {
   pendingAction: PrPendingAction;
   setPendingAction: (action: PrPendingAction) => void;
   dialogTitle: string;
-  reviewers: string;
-  setReviewers: (value: string) => void;
+  /** Reviewers as the forge identifies them: logins on GitHub, the forge's ids elsewhere. */
+  reviewers: readonly string[];
+  setReviewers: (value: readonly string[]) => void;
+  deleteBranch?: boolean;
+  setDeleteBranch?: ((value: boolean) => void) | undefined;
   mergeMethod: PrMergeMethod | null;
   allowedMergeMethods: readonly PrMergeMethod[];
   mergeComparison: PrHubComparisonIdentity | null;
@@ -121,7 +142,9 @@ export function usePrActions(
     projectMergeMethod?.key === pr.key ? projectMergeMethod.method : globalMergeMethod;
   const busy = useRef(false);
   const [pendingAction, setPendingAction] = useState<PrPendingAction>(null);
-  const [reviewers, setReviewers] = useState("");
+  const [reviewers, setReviewers] = useState<readonly string[]>([]);
+  const [deleteBranch, setDeleteBranch] = useState(false);
+  useEffect(() => setDeleteBranch(false), [pr.key, pendingAction]);
   const [mergeChoice, setMergeChoice] = useState<{ key: string; method: PrMergeMethod } | null>(
     null,
   );
@@ -184,8 +207,20 @@ export function usePrActions(
         return "Request changes";
       case "merge":
         return "Merge pull request";
+      case "autoMerge":
+        return "Merge when ready";
+      case "close":
+        return "Close pull request";
+      case "reopen":
+        return "Reopen pull request";
       case "markReady":
         return "Mark ready for review";
+      case "convertToDraft":
+        return "Convert to draft";
+      case "updateBranch":
+        return "Update branch";
+      case "rerunChecks":
+        return "Re-run failed jobs";
       case "reRequestReview":
         return "Re-request review";
       case "snooze":
@@ -200,6 +235,7 @@ export function usePrActions(
     setIsRunning(true);
     try {
       const api = ensureNativeApi().prHub;
+      let actionWarning: string | undefined;
       if (
         pendingAction === "approve" ||
         pendingAction === "comment" ||
@@ -210,11 +246,13 @@ export function usePrActions(
         if (!mergeComparison) throw new Error("Load the merge comparison before confirming.");
         if (!mergeMethod || !allowedMergeMethods.includes(mergeMethod))
           throw new Error("Refresh the PR hub to load the repository's allowed merge methods.");
-        await api.merge({
+        const result = await api.merge({
           url: pr.url,
           method: mergeMethod,
           expectedComparison: mergeComparison,
+          ...(deleteBranch ? { deleteBranch: true } : {}),
         });
+        actionWarning = result.actionWarning;
         const recent = Object.entries(settings.prHubLastMergeMethods)
           .filter(([key]) => key !== repositoryKey)
           .slice(-99);
@@ -224,19 +262,21 @@ export function usePrActions(
       } else if (pendingAction === "markReady") {
         await api.markReady({ url: pr.url });
       } else if (pendingAction === "reRequestReview") {
-        await api.reRequestReview({
-          url: pr.url,
-          reviewers: reviewers
-            .split(",")
-            .map((reviewer) => reviewer.trim())
-            .filter(Boolean),
-        });
+        await api.reRequestReview({ url: pr.url, reviewers: [...reviewers] });
       } else if (pendingAction === "snooze") {
         await api.snooze({ key: pr.key, until: new Date(snoozeUntil).toISOString() });
       }
-      toastManager.add({ type: "success", title: "Pull request updated" });
+      toastManager.add(
+        actionWarning
+          ? {
+              type: "info",
+              title: "PR updated; branch cleanup needs attention",
+              description: actionWarning,
+            }
+          : { type: "success", title: "Pull request updated" },
+      );
       setPendingAction(null);
-      setReviewers("");
+      setReviewers([]);
     } catch (error) {
       toastManager.add({
         type: "error",
@@ -336,8 +376,33 @@ export function usePrActions(
   const handleIgnore = async () => {
     setIsIgnoring(true);
     try {
-      await ensureNativeApi().prHub.ignore({ key: pr.key });
-      toastManager.add({ type: "success", title: "Pull request ignored" });
+      const key = pr.key;
+      // Undo belongs to the account that ignored. If the account changes while the toast is
+      // up, the request is refused instead of restoring the row for the new account.
+      const accountGeneration = getPrHubAccountGeneration();
+      await ensureNativeApi().prHub.ignore({ key, accountGeneration });
+      const toastId = toastManager.add({
+        type: "success",
+        title: "Pull request ignored",
+        description: `${pr.repository.nameWithOwner}#${pr.number}`,
+        timeout: 8000,
+        actionProps: {
+          children: "Undo",
+          onClick: (event) => {
+            event.preventDefault();
+            toastManager.close(toastId);
+            void ensureNativeApi()
+              .prHub.unignore({ key, accountGeneration })
+              .catch((error: unknown) =>
+                toastManager.add({
+                  type: "error",
+                  title: "Could not restore pull request",
+                  description: error instanceof Error ? error.message : String(error),
+                }),
+              );
+          },
+        },
+      });
     } catch (error) {
       toastManager.add({
         type: "error",
@@ -347,6 +412,25 @@ export function usePrActions(
     } finally {
       setIsIgnoring(false);
     }
+  };
+
+  const handleRestore = () => {
+    void ensureNativeApi()
+      .prHub.unignore({ key: pr.key })
+      .then(
+        () =>
+          toastManager.add({
+            type: "success",
+            title: "Pull request restored",
+            description: `${pr.repository.nameWithOwner}#${pr.number}`,
+          }),
+        (error: unknown) =>
+          toastManager.add({
+            type: "error",
+            title: "Could not restore pull request",
+            description: error instanceof Error ? error.message : String(error),
+          }),
+      );
   };
 
   const accountGeneration = getPrHubAccountGeneration();
@@ -418,14 +502,22 @@ export function usePrActions(
           }
         })();
       },
+      onMergeWhenReady: () => setPendingAction("autoMerge"),
       onMarkReady: () => setPendingAction("markReady"),
+      onConvertToDraft: () => setPendingAction("convertToDraft"),
+      onUpdateBranch: () => setPendingAction("updateBranch"),
+      onRerunChecks: () => setPendingAction("rerunChecks"),
+      onFixCi: () => void handleOpenInF5("investigation"),
+      onClose: () => setPendingAction("close"),
+      onReopen: () => setPendingAction("reopen"),
       onReRequest: () => {
-        setReviewers(pr.reviewRequestReviewers.join(", "));
+        setReviewers(pr.reviewRequestReviewers);
         setPendingAction("reRequestReview");
       },
       onSnooze: () => setPendingAction("snooze"),
       onUnsnooze: handleUnsnooze,
       onIgnore: () => void handleIgnore(),
+      onRestore: handleRestore,
       onOpenInF5: () => void handleOpenInF5("open"),
       onRunInF5: () => {
         if (runKind) void handleOpenInF5(runKind);
@@ -440,6 +532,8 @@ export function usePrActions(
       reviewers,
       setReviewers,
       mergeMethod,
+      deleteBranch,
+      setDeleteBranch,
       allowedMergeMethods,
       mergeComparison,
       mergeComparisonError,

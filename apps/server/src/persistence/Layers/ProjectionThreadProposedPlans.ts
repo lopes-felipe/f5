@@ -1,10 +1,16 @@
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
+  THREAD_CONTEXT_ITEM_MAX_CHARS,
+  THREAD_CONTEXT_PREVIEW_MAX_CHARS,
+} from "../Services/ProjectionThreadMessages.ts";
+import {
   DeleteProjectionThreadProposedPlansInput,
+  GetProjectionThreadProposedPlanContextItemInput,
+  ProjectionThreadProposedPlanContext,
   ListProjectionThreadProposedPlansInput,
   ProjectionThreadProposedPlan,
   ProjectionThreadProposedPlanRepository,
@@ -68,6 +74,40 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
     `,
   });
 
+  const getLatestContextRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: Schema.String }),
+    Result: ProjectionThreadProposedPlanContext,
+    execute: ({ threadId }) => sql`
+      SELECT
+        plan_id AS "planId",
+        substr(plan_markdown, 1, ${THREAD_CONTEXT_PREVIEW_MAX_CHARS}) AS text,
+        length(plan_markdown) AS "totalLength",
+        implemented_at AS "implementedAt",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM projection_thread_proposed_plans
+      WHERE thread_id = ${threadId}
+      ORDER BY created_at DESC, plan_id DESC
+      LIMIT 1
+    `,
+  });
+
+  const getContextItemRow = SqlSchema.findOneOption({
+    Request: GetProjectionThreadProposedPlanContextItemInput,
+    Result: ProjectionThreadProposedPlanContext,
+    execute: ({ threadId, planId, offset }) => sql`
+      SELECT
+        plan_id AS "planId",
+        substr(plan_markdown, ${offset + 1}, ${THREAD_CONTEXT_ITEM_MAX_CHARS}) AS text,
+        length(plan_markdown) AS "totalLength",
+        implemented_at AS "implementedAt",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM projection_thread_proposed_plans
+      WHERE plan_id = ${planId} AND thread_id = ${threadId}
+    `,
+  });
+
   const deleteProjectionThreadProposedPlanRows = SqlSchema.void({
     Request: DeleteProjectionThreadProposedPlansInput,
     execute: ({ threadId }) => sql`
@@ -88,6 +128,22 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
       ),
     );
 
+  const getLatestContext: ProjectionThreadProposedPlanRepositoryShape["getLatestContext"] = (
+    threadId,
+  ) =>
+    getLatestContextRow({ threadId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadProposedPlanRepository.getLatestContext:query"),
+      ),
+    );
+
+  const getContextItem: ProjectionThreadProposedPlanRepositoryShape["getContextItem"] = (input) =>
+    getContextItemRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadProposedPlanRepository.getContextItem:query"),
+      ),
+    );
+
   const deleteByThreadId: ProjectionThreadProposedPlanRepositoryShape["deleteByThreadId"] = (
     input,
   ) =>
@@ -100,6 +156,8 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
   return {
     upsert,
     listByThreadId,
+    getLatestContext,
+    getContextItem,
     deleteByThreadId,
   } satisfies ProjectionThreadProposedPlanRepositoryShape;
 });

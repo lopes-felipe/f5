@@ -1,7 +1,11 @@
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { PullRequestKey, type ForgePrepareOperationInput } from "@t3tools/contracts";
+import {
+  PullRequestKey,
+  type ForgePrepareOperationInput,
+  type TrackedPullRequest,
+} from "@t3tools/contracts";
 import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
 import { SqlClient } from "effect/unstable/sql";
 import Migration102 from "../persistence/Migrations/102_ForgeAccounts.ts";
@@ -53,6 +57,14 @@ interface State {
   writes: string[];
   reviews: { body: string; verdict: string }[];
   delay: boolean;
+  canEdit?: boolean;
+  canResolve?: boolean;
+  itemWrites: string[];
+  actionCalls: string[];
+  branchCalls: boolean[];
+  lifecycle: "opened" | "closed" | "merged";
+  branchDeleted: boolean;
+  branchMode: Mode;
 }
 const transportFailure = (mode: Exclude<Mode, "success">) =>
   new SourceControlProviderError({
@@ -78,6 +90,12 @@ const fixture = Effect.gen(function* () {
     writes: [],
     reviews: [],
     delay: false,
+    itemWrites: [],
+    actionCalls: [],
+    branchCalls: [],
+    lifecycle: "opened",
+    branchDeleted: false,
+    branchMode: "success",
   };
   const native = makeForgeSourceControlProvider({
     kind: "gitlab",
@@ -96,15 +114,61 @@ const fixture = Effect.gen(function* () {
         title: "A native MR",
         source_branch: "topic",
         target_branch: "main",
-        state: "opened",
+        state: state.lifecycle,
         sha: state.head,
         diff_refs: { head_sha: state.head, base_sha: "merge-base", start_sha: state.base },
         web_url: "https://gitlab.example/team/repo/-/merge_requests/7",
+        author: { username: "alice" },
+        created_at: "2026-10-19T12:00:00.000Z",
       })) as unknown as typeof fetch,
   });
   const provider = {
     ...native,
+    forgeCapabilities: {
+      ...native.forgeCapabilities,
+      actions: [...native.forgeCapabilities.actions, "delete-branch" as const],
+    },
+    performAction: (input: Parameters<typeof native.performAction>[0]) =>
+      Effect.sync(() => {
+        state.actionCalls.push(input.action);
+        if (input.action === "merge") state.lifecycle = "merged";
+        if (input.action === "close") state.lifecycle = "closed";
+        return {};
+      }),
+    deletePullRequestBranch: (input: { inspectOnly?: boolean }) =>
+      Effect.gen(function* () {
+        state.branchCalls.push(input.inspectOnly === true);
+        if (!input.inspectOnly) {
+          if (state.branchMode !== "unsent") state.branchDeleted = true;
+          if (state.branchMode !== "success") return yield* transportFailure(state.branchMode);
+        }
+        return {
+          host: account.host,
+          repository: "fork/repo",
+          branch: "topic",
+          headOid: "head-1",
+          absent: state.branchDeleted,
+        };
+      }),
     getComments: () => Effect.succeed(state.comments),
+    getReviewThreads: () =>
+      Effect.succeed([
+        {
+          id: "thread-1",
+          canResolve: state.canResolve,
+          comments: [{ id: "comment-1", path: "a.ts", body: "Inline" }],
+        },
+      ]),
+    editComment: () =>
+      Effect.sync(() => {
+        state.itemWrites.push("edit");
+        return {};
+      }),
+    resolveThread: () =>
+      Effect.sync(() => {
+        state.itemWrites.push("resolve");
+        return {};
+      }),
     getFiles: () =>
       Effect.sync(() => {
         if (state.moveBase) state.base = "base-2";
@@ -148,14 +212,17 @@ const fixture = Effect.gen(function* () {
         number: 7,
       }),
   };
-  const create = () =>
+  const create = (getSnapshot = hub.getSnapshot) =>
     makePrHubExtensions.pipe(
-      Effect.provideService(PrHubFederation, federation),
+      Effect.provideService(PrHubFederation, {
+        ...federation,
+        resolve: () => Effect.succeed({ account, provider, hub: { ...hub, getSnapshot } }),
+      }),
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.provideService(ServerConfig, config),
     );
   const engine = yield* create();
-  return { state, engine, create, sql };
+  return { state, engine, create, sql, hub };
 });
 function run<A, E>(test: (value: Effect.Success<typeof fixture>) => Effect.Effect<A, E>) {
   return Effect.scoped(fixture.pipe(Effect.flatMap(test))).pipe(
@@ -169,6 +236,78 @@ function run<A, E>(test: (value: Effect.Success<typeof fixture>) => Effect.Effec
     ),
   );
 }
+
+it.effect("enriches and caches untracked previews without adding tracked status", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      const input = { url: "https://gitlab.example/team/repo/-/merge_requests/7" };
+      const value = yield* engine.peek(input);
+      assert.strictEqual(value?.author, "alice");
+      assert.strictEqual(value?.additions, null);
+      assert.strictEqual(value?.status, undefined);
+      state.lifecycle = "closed";
+      assert.deepStrictEqual(yield* engine.peek(input), value);
+    }),
+  ),
+);
+
+it.effect("uses tracked draft and status facts, including recently resolved PRs", () =>
+  run(({ create, hub }) =>
+    Effect.gen(function* () {
+      const snapshot = yield* hub.getSnapshot;
+      const tracked = {
+        key,
+        isDraft: true,
+        checkRollup: "success",
+        reviewDecision: "approved",
+        mergeable: "mergeable",
+        unresolvedThreadCount: 2,
+      } as TrackedPullRequest;
+      for (const bucket of ["pullRequests", "recentlyResolved"] as const) {
+        let current = { ...snapshot, [bucket]: [tracked] };
+        const engine = yield* create(Effect.sync(() => current));
+        const value = yield* engine.peek({
+          url: "https://gitlab.example/team/repo/-/merge_requests/7",
+        });
+        assert.strictEqual(value?.isDraft, true);
+        assert.deepStrictEqual(value?.status, {
+          checkRollup: "success",
+          reviewDecision: "approved",
+          mergeable: "mergeable",
+          unresolvedThreadCount: 2,
+        });
+        current = {
+          ...snapshot,
+          [bucket]: [{ ...tracked, isDraft: false, checkRollup: "failure" as const }],
+        };
+        const refreshed = yield* engine.peek({
+          url: "https://gitlab.example/team/repo/-/merge_requests/7",
+        });
+        assert.strictEqual(refreshed?.isDraft, false);
+        assert.strictEqual(refreshed?.status?.checkRollup, "failure");
+        current = snapshot;
+        assert.strictEqual(
+          (yield* engine.peek({ url: "https://gitlab.example/team/repo/-/merge_requests/7" }))
+            ?.status,
+          undefined,
+        );
+      }
+    }),
+  ),
+);
+
+it.effect("still previews when the tracked snapshot cannot be read", () =>
+  run(({ create }) =>
+    Effect.gen(function* () {
+      const engine = yield* create(Effect.die(new Error("Snapshot unavailable")));
+      const value = yield* engine.peek({
+        url: "https://gitlab.example/team/repo/-/merge_requests/7",
+      });
+      assert.strictEqual(value?.author, "alice");
+      assert.strictEqual(value?.status, undefined);
+    }),
+  ),
+);
 
 it.effect("prepares without HTTP writes, submits once and survives a service restart", () =>
   run(({ engine, state, create }) =>
@@ -489,6 +628,173 @@ it.effect("fences inline comments when the base changes during file loading", ()
       state.moveBase = true;
       assert.equal((yield* engine.submitOperation(identify(input))).status, "failed");
       assert.equal(state.writes.length, 0);
+    }),
+  ),
+);
+
+it.effect("host item permissions override authorship and are rechecked before a saved edit", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      state.comments = [{ id: "comment-1", author: { id: "42" }, canEdit: false }];
+      const input = prepared("edit-denied", {
+        kind: "edit-comment",
+        commentId: "comment-1",
+        body: "Changed",
+      });
+      assert.equal((yield* engine.prepareOperation(input).pipe(Effect.result))._tag, "Failure");
+      // An explicit grant can permit editing another author's remark.
+      state.comments = [{ id: "comment-1", author: { id: "other" }, canEdit: true }];
+      yield* engine.prepareOperation(input);
+      state.comments = [{ id: "comment-1", author: { id: "other" }, canEdit: false }];
+      assert.equal(
+        (yield* engine.submitOperation(identify(input)).pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.deepEqual(state.itemWrites, []);
+      state.comments = [{ id: "comment-1", author: { id: "other" }, canEdit: true }];
+      assert.equal((yield* engine.submitOperation(identify(input))).status, "succeeded");
+      assert.deepEqual(state.itemWrites, ["edit"]);
+    }),
+  ),
+);
+it.effect("per-thread resolution restrictions are rechecked before dispatch", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      const input = prepared("resolve-denied", {
+        kind: "thread-state",
+        threadId: "thread-1",
+        resolved: true,
+      });
+      state.canResolve = false;
+      assert.equal((yield* engine.prepareOperation(input).pipe(Effect.result))._tag, "Failure");
+      state.canResolve = true;
+      yield* engine.prepareOperation(input);
+      state.canResolve = false;
+      assert.equal(
+        (yield* engine.submitOperation(identify(input)).pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.deepEqual(state.itemWrites, []);
+      state.canResolve = true;
+      assert.equal((yield* engine.submitOperation(identify(input))).status, "succeeded");
+      assert.deepEqual(state.itemWrites, ["resolve"]);
+    }),
+  ),
+);
+
+it.effect(
+  "records merge-then-delete intent, dispatches each once and reports skipped local cleanup",
+  () =>
+    run(({ engine, state }) =>
+      Effect.gen(function* () {
+        const input = prepared("merge-delete-once", {
+          kind: "action",
+          action: "merge",
+          method: "squash",
+          deleteBranch: true,
+        });
+        yield* engine.prepareOperation(input);
+        const first = yield* engine.submitOperation(identify(input));
+        assert.equal(first.status, "succeeded");
+        assert.ok(first.warning?.includes("local branch cleanup is unavailable"));
+        yield* engine.submitOperation(identify(input));
+        assert.deepEqual(state.actionCalls, ["merge"]);
+        assert.deepEqual(state.branchCalls, [false]);
+      }),
+    ),
+);
+it.effect(
+  "recovers branch absence after a lost response without replaying merge, delete or local cleanup",
+  () =>
+    run(({ engine, state, create }) =>
+      Effect.gen(function* () {
+        state.branchMode = "ambiguous";
+        const input = prepared("merge-delete-unknown", {
+          kind: "action",
+          action: "merge",
+          deleteBranch: true,
+        });
+        yield* engine.prepareOperation(input);
+        assert.equal((yield* engine.submitOperation(identify(input))).status, "outcome_unknown");
+        const restarted = yield* create();
+        assert.equal((yield* restarted.submitOperation(identify(input))).status, "outcome_unknown");
+        const recovered = yield* restarted.recoverOperation(identify(input));
+        assert.equal(recovered.status, "succeeded");
+        assert.ok(recovered.warning?.includes("not replayed"));
+        assert.deepEqual(state.actionCalls, ["merge"]);
+        assert.deepEqual(state.branchCalls, [false, true]);
+      }),
+    ),
+);
+it.effect("reports a completed close separately when branch deletion was definitely not sent", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      state.branchMode = "unsent";
+      const input = prepared("close-delete-unsent", {
+        kind: "action",
+        action: "close",
+        deleteBranch: true,
+      });
+      yield* engine.prepareOperation(input);
+      const result = yield* engine.submitOperation(identify(input));
+      assert.equal(result.status, "failed");
+      assert.ok(result.error?.includes("PR action completed"));
+      yield* engine.submitOperation(identify(input));
+      assert.deepEqual(state.actionCalls, ["close"]);
+      assert.deepEqual(state.branchCalls, [false]);
+    }),
+  ),
+);
+it.effect("does not start branch deletion while recovering an unrecorded primary response", () =>
+  run(({ engine, state, sql }) =>
+    Effect.gen(function* () {
+      const input = prepared("merge-delete-not-started", {
+        kind: "action",
+        action: "merge",
+        deleteBranch: true,
+      });
+      yield* engine.prepareOperation(input);
+      state.lifecycle = "merged";
+      yield* sql`UPDATE forge_operations SET status='outcome_unknown' WHERE operation_id=${input.operationId}`;
+      const result = yield* engine.recoverOperation(identify(input));
+      assert.equal(result.status, "failed");
+      assert.ok(result.error?.includes("not sent"));
+      assert.deepEqual(state.actionCalls, []);
+      assert.deepEqual(state.branchCalls, []);
+    }),
+  ),
+);
+it.effect("reads the linked threads of a page of pull requests in one pass", () =>
+  run(({ engine, sql }) =>
+    Effect.gen(function* () {
+      yield* sql`CREATE TABLE projection_threads (thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT)`;
+      yield* sql`CREATE TABLE projection_thread_pull_requests (link_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, provider TEXT NOT NULL, host TEXT NOT NULL, repository TEXT NOT NULL, number INTEGER NOT NULL)`;
+      const thread = (id: string, createdAt: string, deletedAt: string | null = null) =>
+        sql`INSERT INTO projection_threads VALUES (${id}, ${`Thread ${id}`}, ${createdAt}, ${deletedAt})`;
+      const link = (id: string, number: number) =>
+        sql`INSERT INTO projection_thread_pull_requests VALUES (${`${id}-${number}`}, ${id}, 'gitlab', 'gitlab.example', 'team/repo', ${number})`;
+      yield* thread("old", "2026-01-01");
+      yield* thread("new", "2026-02-01");
+      yield* thread("deleted", "2026-03-01", "2026-03-02");
+      yield* thread("other", "2026-01-15");
+      yield* link("old", 7);
+      yield* link("new", 7);
+      yield* link("deleted", 7);
+      yield* link("other", 8);
+      const links = yield* engine.getThreadsForPrs([
+        key,
+        "gitlab:gitlab.example/team/repo#8",
+        "gitlab:gitlab.example/team/repo#9",
+        "not a key",
+      ]);
+      assert.deepEqual<unknown>(links, {
+        [key]: [
+          { threadId: "new", title: "Thread new" },
+          { threadId: "old", title: "Thread old" },
+        ],
+        "gitlab:gitlab.example/team/repo#8": [{ threadId: "other", title: "Thread other" }],
+      });
+      assert.deepEqual(yield* engine.getThreadsForPrs([]), {});
     }),
   ),
 );

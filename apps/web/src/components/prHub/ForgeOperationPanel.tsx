@@ -1,3 +1,4 @@
+import { toastManager } from "../ui/toast";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Schema from "effect/Schema";
@@ -12,17 +13,31 @@ export function ForgeOperationPanel({
   payload,
   label,
   onSucceeded,
+  onPendingChange,
+  initialOperationId,
+  recoveryOnly = false,
+  onResolved,
 }: {
   pr: TrackedPullRequest;
   payload: ForgeMutationPayload;
   label: string;
   onSucceeded?: (() => void) | undefined;
+  onPendingChange?: ((pending: boolean) => void) | undefined;
+  initialOperationId?: string | undefined;
+  recoveryOnly?: boolean;
+  onResolved?: ((operation: ForgeOperation | null) => void) | undefined;
 }) {
   const client = useQueryClient();
   const generation = getPrHubAccountGeneration();
   const [operationId, setOperationId] = useLocalStorage(
-    JSON.stringify(["forgeOperation", getPrHubDraftIdentity(), pr.key, label]),
-    "",
+    JSON.stringify([
+      "forgeOperation",
+      getPrHubDraftIdentity(),
+      pr.key,
+      label,
+      ...(initialOperationId !== undefined ? [initialOperationId] : []),
+    ]),
+    initialOperationId ?? "",
     Schema.String,
   );
   const [operation, setOperation] = useState<ForgeOperation | null>(null);
@@ -43,17 +58,27 @@ export function ForgeOperationPanel({
     if (query.data) {
       setOperation(query.data);
       setOperationId(query.data.operationId);
+      if (recoveryOnly && !["prepared", "running", "outcome_unknown"].includes(query.data.status))
+        onResolved?.(query.data);
     }
-  }, [query.data, setOperationId]);
+  }, [query.data, setOperationId, recoveryOnly, onResolved]);
   const active = operation && ["prepared", "running", "outcome_unknown"].includes(operation.status);
+  useEffect(() => {
+    onPendingChange?.(!!active || busy);
+  }, [active, busy, onPendingChange]);
+  useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
   async function run(action: () => Promise<ForgeOperation>, id = operationId) {
     setBusy(true);
     setError(null);
     try {
       const value = await action();
       setOperation(value);
+      if (recoveryOnly && !["prepared", "running", "outcome_unknown"].includes(value.status))
+        onResolved?.(value);
       client.setQueryData(["prHub", "forgeOperation", generation, pr.key, label, id], value);
       if (value.status === "succeeded") {
+        if (value.warning)
+          toastManager.add({ type: "info", title: "Branch cleanup", description: value.warning });
         onSucceeded?.();
         await client.invalidateQueries({ queryKey: ["prHub"] });
       }
@@ -67,6 +92,13 @@ export function ForgeOperationPanel({
   return (
     <div className="space-y-2">
       {error || query.error ? <p role="alert">{error ?? query.error?.message}</p> : null}
+      {recoveryOnly && query.isError ? (
+        <Button disabled={query.isFetching} onClick={() => void query.refetch()}>
+          Retry operation lookup
+        </Button>
+      ) : null}
+      {operation?.warning ? <p role="status">{operation.warning}</p> : null}
+      {!active && operation?.error ? <p role="alert">{operation.error}</p> : null}
       {active ? (
         <>
           <p role="status">Saved operation: {operation.status.replaceAll("_", " ")}</p>
@@ -152,6 +184,13 @@ export function ForgeOperationPanel({
             </Button>
           )}
         </>
+      ) : recoveryOnly ? (
+        <Button
+          disabled={busy || query.isPending || query.isFetching || query.isError}
+          onClick={() => onResolved?.(operation)}
+        >
+          Retry description editing
+        </Button>
       ) : (
         <>
           {operation ? (

@@ -1,3 +1,5 @@
+import { ProviderDriverKind } from "@t3tools/contracts";
+import { getWorkflowModelCapabilities } from "../../providerModels";
 import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../ui/select";
 import {
   DOCUMENT_WORKFLOW_TEMPLATE_ID,
@@ -19,6 +21,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import type {
   ModelSlug,
   ProjectId,
@@ -28,15 +31,9 @@ import type {
 } from "@t3tools/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import {
-  getDefaultModel,
-  getReasoningEffortOptions,
-  normalizeModelSlug,
-  resolveCodexReasoningEffortForModel,
-  resolveReasoningEffortForProvider,
-  supportsClaudeFastMode,
-  supportsClaudeThinkingToggle,
-} from "@t3tools/shared/model";
+import { normalizeModelSlug } from "@t3tools/shared/model";
+import { detectCodeReviewPullRequestTarget } from "@t3tools/shared/codeReviewPullRequest";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
 
 import { resolveThreadTitleModel, useAppSettings } from "../../appSettings";
 import { isElectron } from "../../env";
@@ -59,8 +56,10 @@ import {
 } from "../../composer-editor-mentions";
 import { collapseExpandedComposerCursor } from "../../composer-logic";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "../ComposerPromptEditor";
+import { ProjectPicker } from "../ProjectPicker";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
+import { fieldSurfaceClassName } from "../ui/input";
 import {
   WORKFLOW_TYPE_DESCRIPTION,
   WORKFLOW_TYPE_DIALOG_LABEL,
@@ -69,15 +68,14 @@ import {
   WORKFLOW_TYPE_TOGGLE_CLASS,
   type WorkflowTypeValue,
 } from "../../lib/workflowType";
-import {
-  getModelPreferences,
-  recordModelSelection,
-  type WorkflowCreatePreferenceSlot,
-  useModelPreferencesStore,
-} from "../../modelPreferencesStore";
+import { recordModelSelection, useModelPreferencesStore } from "../../modelPreferencesStore";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
-import { resolveProviderOptionsForDispatch } from "../../providerOptionsForDispatch";
+import {
+  getWorkflowSlotDefaults,
+  normalizeWorkflowSlotModelOptions,
+  makeWorkflowSlotBuilder,
+} from "./workflowSlots";
 import { basenameOfPath } from "../../vscode-icons";
 import {
   createCachedAbsolutePathComparisonNormalizer,
@@ -125,99 +123,13 @@ const WORKFLOW_TYPE_CARD_PRESSED_BORDER_CLASS: Record<WorkflowTypeValue, string>
   document: "data-pressed:border-attention/50",
 };
 
-export function normalizeWorkflowSlotModelOptions(
-  provider: ProviderKind,
-  model: string,
-  modelOptions: ProviderModelOptions | undefined,
-): ProviderModelOptions | undefined {
-  if (provider === "codex") {
-    const effort = modelOptions?.codex?.reasoningEffort
-      ? resolveCodexReasoningEffortForModel(model, modelOptions.codex.reasoningEffort)
-      : undefined;
-    const codex = {
-      ...(effort ? { reasoningEffort: effort } : {}),
-      ...(modelOptions?.codex?.fastMode === true ? { fastMode: true } : {}),
-    };
-    return Object.keys(codex).length > 0 ? { codex } : undefined;
-  }
-  if (provider !== "claudeAgent") {
-    return getSingleProviderModelOptions(provider, modelOptions);
-  }
-  const reasoningOptions = getReasoningEffortOptions("claudeAgent", model);
-  const effort = resolveReasoningEffortForProvider(
-    "claudeAgent",
-    modelOptions?.claudeAgent?.effort,
-  );
-  const claudeAgent = {
-    ...(supportsClaudeThinkingToggle(model) && modelOptions?.claudeAgent?.thinking === false
-      ? { thinking: false }
-      : {}),
-    ...(effort && effort !== "ultrathink" && reasoningOptions.includes(effort) ? { effort } : {}),
-    ...(supportsClaudeFastMode(model) && modelOptions?.claudeAgent?.fastMode === true
-      ? { fastMode: true }
-      : {}),
-  };
-  if (Object.keys(claudeAgent).length === 0) {
-    return undefined;
-  }
-  return claudeAgent ? { claudeAgent } : undefined;
-}
-
-function getSingleProviderModelOptions(
-  provider: ProviderKind,
-  modelOptions: ProviderModelOptions | null | undefined,
-): ProviderModelOptions | undefined {
-  switch (provider) {
-    case "codex":
-      return modelOptions?.codex ? { codex: modelOptions.codex } : undefined;
-    case "claudeAgent":
-      return modelOptions?.claudeAgent ? { claudeAgent: modelOptions.claudeAgent } : undefined;
-    case "cursor":
-      return modelOptions?.cursor ? { cursor: modelOptions.cursor } : undefined;
-    case "opencode":
-      return modelOptions?.opencode ? { opencode: modelOptions.opencode } : undefined;
-    case "grok":
-      return undefined;
-  }
-}
-
-function getWorkflowSlotDefaults(
-  slot: WorkflowCreatePreferenceSlot,
-  fallbackProvider: ProviderKind,
-  modelOptionsByProvider: Record<
-    ProviderKind,
-    ReadonlyArray<{ readonly slug: string; readonly name: string }>
-  >,
-  providers: Parameters<typeof resolveComposerPickerModel>[0]["providers"],
-): {
-  provider: ProviderKind;
-  model: string;
-  modelOptions: ProviderModelOptions | undefined;
-} {
-  const preferences = getModelPreferences();
-  const provider = preferences.lastWorkflowProviderBySlot[slot] ?? fallbackProvider;
-  const preferredModel = preferences.lastModelByProvider[provider] ?? getDefaultModel(provider);
-  const model = resolveComposerPickerModel({
-    provider,
-    rawModel: preferredModel,
-    pickerOptions: modelOptionsByProvider[provider],
-    providers: providers ?? null,
-  });
-  return {
-    provider,
-    model,
-    modelOptions:
-      normalizeModelSlug(preferredModel, provider) === model
-        ? getSingleProviderModelOptions(provider, preferences.lastModelOptions)
-        : undefined,
-  };
-}
-
 interface WorkflowCreateDialogProps {
   open: boolean;
   projectId: ProjectId;
   onOpenChange: (open: boolean) => void;
   onWorkflowCreated?: (workflowId: string) => void;
+  /** Retargets the open dialog; the typed brief and settings are kept. */
+  onProjectChange?: (projectId: ProjectId) => void;
 }
 
 export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
@@ -228,6 +140,12 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const keybindings = useServerKeybindings();
   const project = useStore(
     (store) => store.projects.find((entry) => entry.id === props.projectId) ?? null,
+  );
+  const allProjects = useStore((store) => store.projects);
+  // Workflows need a real workspace, so the scratch project is not offered.
+  const pickerProjects = useMemo(
+    () => allProjects.filter((entry) => !isScratchProject(entry)),
+    [allProjects],
   );
   const modelOptionsByProvider = useMemo(
     () =>
@@ -281,6 +199,10 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const documentProfile = WORKFLOW_DOCUMENT_PROFILES[documentType];
 
   const [attachedFilePaths, setAttachedFilePaths] = useState<string[]>([]);
+  /** What a project change dropped; cleared once new references are added. */
+  const [projectChangeNote, setProjectChangeNote] = useState<string | null>(null);
+  /** Bumped on every project change so late file-tree authorizations can tell they are stale. */
+  const projectGenerationRef = useRef(0);
   const [reviewBranch, setReviewBranch] = useState("");
   const [plansDirectory, setPlansDirectory] = useState("plans");
   const [branchAProvider, setBranchAProvider] = useState<ProviderKind>(
@@ -304,6 +226,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   );
   const [selfReviewEnabled, setSelfReviewEnabled] = useState(true);
   const [investigationSelfReviewEnabled, setInvestigationSelfReviewEnabled] = useState(false);
+  const [autoPostReview, setAutoPostReview] = useState(false);
   const [maxCostUsd, setMaxCostUsd] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -384,6 +307,27 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     workflowType === "investigation" &&
     branchAProvider === branchBProvider &&
     branchASelection === branchBSelection;
+  const reviewPullRequestTarget = useMemo(
+    () =>
+      workflowType === "codeReview" ? detectCodeReviewPullRequestTarget(requirementPrompt) : null,
+    [requirementPrompt, workflowType],
+  );
+  const canAutoPostReview =
+    reviewPullRequestTarget !== null &&
+    (reviewPullRequestTarget.kind === "number" ||
+      reviewPullRequestTarget.ref.provider === "github");
+  const autoPostReviewEffective = autoPostReview && canAutoPostReview;
+  const autoPostReviewTarget =
+    reviewPullRequestTarget === null
+      ? "Add a GitHub PR link or PR #number to the review instructions."
+      : reviewPullRequestTarget.kind === "number"
+        ? `PR #${reviewPullRequestTarget.number} in this project's GitHub repo.`
+        : reviewPullRequestTarget.ref.provider === "github"
+          ? `Will post to ${reviewPullRequestTarget.ref.repository}#${reviewPullRequestTarget.ref.number}.`
+          : "Posting supports GitHub pull requests only.";
+  const autoPostReviewDescription = canAutoPostReview
+    ? `${autoPostReviewTarget} It posts from your GitHub account without a review step, and the review can quote text from the PR.`
+    : autoPostReviewTarget;
   const parsedMaxCostUsd = maxCostUsd.trim().length > 0 ? Number(maxCostUsd) : null;
   const validMaxCostUsd =
     parsedMaxCostUsd === null || (Number.isFinite(parsedMaxCostUsd) && parsedMaxCostUsd > 0);
@@ -471,6 +415,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setReaderSlot(null);
     setRequirementDraft({ text: "", mentions: [], cursor: 0 });
     setAttachedFilePaths([]);
+    setProjectChangeNote(null);
     setReviewBranch("");
     setPlansDirectory("plans");
     setBranchAProvider(branchADefaults.provider);
@@ -484,12 +429,38 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setMergeModelOptions(mergeDefaults.modelOptions);
     setSelfReviewEnabled(true);
     setInvestigationSelfReviewEnabled(false);
+    setAutoPostReview(false);
     setMaxCostUsd("");
     setError(null);
     setIsDragOverPrompt(false);
     dragDepthRef.current = 0;
     submittingRef.current = false;
     setSubmitting(false);
+  };
+
+  const changeProject = (projectId: ProjectId) => {
+    if (projectId === props.projectId || submittingRef.current) return;
+    // A file-tree drop still authorizing against the old project must not land afterwards.
+    projectGenerationRef.current += 1;
+    // File chips, @-mentions and the review branch belong to the old project's repository.
+    const dropsFiles = attachedFilePaths.length > 0 || requirementDraft.mentions.length > 0;
+    const dropsBranch = reviewBranch.trim().length > 0;
+    if (requirementDraft.mentions.length > 0) {
+      setRequirementDraft((current) => ({ ...current, mentions: [] }));
+    }
+    setAttachedFilePaths([]);
+    setReviewBranch("");
+    setProjectChangeNote(
+      dropsFiles && dropsBranch
+        ? "File references and the review branch were cleared for the new project."
+        : dropsFiles
+          ? "File references were cleared for the new project."
+          : dropsBranch
+            ? "The review branch was cleared for the new project."
+            : null,
+    );
+    setError(null);
+    props.onProjectChange?.(projectId);
   };
 
   const addAttachedFiles = (files: File[]) => {
@@ -510,6 +481,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
 
     if (filePaths.length > 0) {
       setAttachedFilePaths((current) => normalizeAttachedFilePaths([...current, ...filePaths]));
+      setProjectChangeNote(null);
       setError(null);
     }
 
@@ -610,6 +582,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       toastManager.add({ type: "error", title: "Unable to add the dragged file." });
       return;
     }
+    const projectGeneration = projectGenerationRef.current;
     void authorizeFileTreeMention({
       api,
       payload,
@@ -618,21 +591,29 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       workspaceRoot: project.cwd,
     })
       .then((relativePath) => {
+        // The project changed while authorizing: the path belongs to the old workspace.
+        if (projectGeneration !== projectGenerationRef.current) return;
+        setProjectChangeNote(null);
         const mention = composerFileMention(relativePath);
         if (mention === null) throw new Error("The file path is invalid.");
-        setRequirementDraft((current) => {
-          const prefix =
-            current.text + (current.text.length > 0 && !/\s$/.test(current.text) ? " " : "");
-          const text = prefix + mention + " ";
-          const mentions = [
-            ...current.mentions,
-            createComposerMention(relativePath, prefix.length),
-          ];
-          return {
-            text,
-            mentions,
-            cursor: collapseExpandedComposerCursor(text, text.length, mentions),
-          };
+        // Focusing publishes the editor's snapshot back to this controlled
+        // draft. Commit the mention first so an early frame cannot overwrite
+        // the new draft with the snapshot from before the drop.
+        flushSync(() => {
+          setRequirementDraft((current) => {
+            const prefix =
+              current.text + (current.text.length > 0 && !/\s$/.test(current.text) ? " " : "");
+            const text = prefix + mention + " ";
+            const mentions = [
+              ...current.mentions,
+              createComposerMention(relativePath, prefix.length),
+            ];
+            return {
+              text,
+              mentions,
+              cursor: collapseExpandedComposerCursor(text, text.length, mentions),
+            };
+          });
         });
         window.requestAnimationFrame(focusPromptEditor);
       })
@@ -715,30 +696,12 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         requirementPrompt,
         attachedFilePathsSnapshot,
       );
-      const providerOptionsCache = new Map<ProviderKind, WorkflowModelSlot["providerOptions"]>();
-      const buildSlot = (
-        provider: ProviderKind,
-        model: ModelSlug,
-        rawModelOptions: ProviderModelOptions | undefined,
-      ): WorkflowModelSlot => {
-        const modelOptions = normalizeWorkflowSlotModelOptions(provider, model, rawModelOptions);
-        let providerOptions = providerOptionsCache.get(provider);
-        if (!providerOptionsCache.has(provider)) {
-          providerOptions = resolveProviderOptionsForDispatch({
-            settings,
-            provider,
-            projectId: props.projectId,
-            availableModels: dispatchModelsByProvider[provider],
-          });
-          providerOptionsCache.set(provider, providerOptions);
-        }
-        return {
-          provider,
-          model,
-          ...(modelOptions ? { modelOptions } : {}),
-          ...(providerOptions ? { providerOptions } : {}),
-        };
-      };
+      const buildSlot = makeWorkflowSlotBuilder({
+        providers: serverConfigQuery.data?.providers ?? [],
+        settings,
+        projectId: props.projectId,
+        dispatchModelsByProvider,
+      });
       const branchASlot = buildSlot(branchAProvider, branchASelection, branchAModelOptions);
       const branchBSlot = buildSlot(branchBProvider, branchBSelection, branchBModelOptions);
       const mergeSlot = buildSlot(mergeProvider, mergeSelection, mergeModelOptions);
@@ -797,6 +760,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             reviewPrompt: promptForSubmission,
             titleGenerationModel,
             ...(reviewBranch.trim() ? { branch: reviewBranch.trim() } : {}),
+            ...(autoPostReviewEffective ? { autoPost: true } : {}),
             reviewerA: branchASlot,
             reviewerB: branchBSlot,
             consolidation: mergeSlot,
@@ -863,6 +827,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       : null,
     workflowType === "investigation" && investigationSelfReviewEnabled ? "Own-model review" : null,
     workflowType === "planning" ? `${plansDirectory.trim() || "plans"}/` : null,
+    workflowType === "codeReview" && autoPostReviewEffective ? "Auto-post" : null,
     (workflowType === "codeReview" || workflowType === "investigation") && reviewBranch.trim()
       ? `vs ${reviewBranch.trim()}`
       : null,
@@ -875,7 +840,22 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogPopup className="max-w-4xl" onKeyDownCapture={onDialogKeyDown}>
         <DialogHeader>
-          <DialogTitle>New Workflow</DialogTitle>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <DialogTitle>New Workflow</DialogTitle>
+            {props.onProjectChange ? (
+              <ProjectPicker
+                projects={pickerProjects}
+                selection={{ kind: "project", projectId: props.projectId }}
+                onSelect={(selection) => {
+                  if (selection.kind === "project") changeProject(selection.projectId);
+                }}
+                allowNone={false}
+                trigger="crumb"
+                disabled={submitting}
+                className="max-w-64"
+              />
+            ) : null}
+          </div>
           <DialogDescription>
             Create a feature workflow, code review, root-cause investigation, or document. The title
             will be generated from your prompt.
@@ -998,6 +978,11 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                     }
                   />
                 </div>
+                {projectChangeNote ? (
+                  <p className="text-2xs text-muted-foreground" role="status">
+                    {projectChangeNote}
+                  </p>
+                ) : null}
               </div>
               {workflowType === "document" ? (
                 <div className="space-y-2">
@@ -1042,6 +1027,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               <section aria-label="Models" className="flex flex-col gap-2">
                 <SectionLabel as="h3">Models</SectionLabel>
                 <SlotRow
+                  providers={serverConfigQuery.data?.providers}
                   label={
                     workflowType === "planning" || workflowType === "document"
                       ? "Author A"
@@ -1071,11 +1057,17 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                         branchAProvider,
                         branchASelection,
                         modelOptions,
+                        getWorkflowModelCapabilities(
+                          serverConfigQuery.data?.providers ?? [],
+                          ProviderDriverKind.make(branchAProvider),
+                          branchASelection,
+                        ),
                       ),
                     );
                   }}
                 />
                 <SlotRow
+                  providers={serverConfigQuery.data?.providers}
                   label={
                     workflowType === "planning" || workflowType === "document"
                       ? "Author B"
@@ -1105,11 +1097,17 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                         branchBProvider,
                         branchBSelection,
                         modelOptions,
+                        getWorkflowModelCapabilities(
+                          serverConfigQuery.data?.providers ?? [],
+                          ProviderDriverKind.make(branchBProvider),
+                          branchBSelection,
+                        ),
                       ),
                     );
                   }}
                 />
                 <SlotRow
+                  providers={serverConfigQuery.data?.providers}
                   label={
                     workflowType === "document"
                       ? "Merge model"
@@ -1139,6 +1137,11 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                         mergeProvider,
                         mergeSelection,
                         modelOptions,
+                        getWorkflowModelCapabilities(
+                          serverConfigQuery.data?.providers ?? [],
+                          ProviderDriverKind.make(mergeProvider),
+                          mergeSelection,
+                        ),
                       ),
                     );
                   }}
@@ -1162,13 +1165,17 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                           value={readerPersona}
                           onChange={(event) => setReaderPersona(event.target.value)}
                           placeholder={documentProfile.readerPersona}
-                          className="mt-1.5 min-h-20 w-full rounded-lg border border-input bg-background p-2 text-sm font-normal outline-none transition-colors focus-visible:border-ring/60"
+                          className={cn(
+                            fieldSurfaceClassName,
+                            "mt-1.5 min-h-20 w-full p-2 text-sm font-normal",
+                          )}
                         />
                       </label>
                       <p className="text-2xs text-muted-foreground tabular-nums">
                         {readerPersona.length} / 500
                       </p>
                       <SlotRow
+                        providers={serverConfigQuery.data?.providers}
                         label="Reader model"
                         provider={effectiveReaderSlot.provider}
                         model={readerSelection}
@@ -1193,6 +1200,17 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                       ) : null}
                     </>
                   ) : null}
+                </div>
+              ) : null}
+              {workflowType === "codeReview" ? (
+                <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+                  <WorkflowOptionCheckbox
+                    disabled={!canAutoPostReview}
+                    checked={autoPostReviewEffective}
+                    onCheckedChange={setAutoPostReview}
+                    label="Post merged review to the PR when it finishes"
+                    description={autoPostReviewDescription}
+                  />
                 </div>
               ) : null}
               <WorkflowOptions summary={optionsSummary}>

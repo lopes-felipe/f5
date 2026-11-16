@@ -110,6 +110,7 @@ function PersistentPreviewInstance({
 
   return (
     <div
+      data-find-scope="preview"
       aria-hidden={!projected}
       inert={!projected}
       className="fixed flex min-h-0 flex-col overflow-hidden bg-background"
@@ -217,9 +218,14 @@ export function PreviewBrowserHost(props: { readonly children: ReactNode }) {
   return (
     <PreviewBrowserHostContext.Provider value={context}>
       {props.children}
-      {[...entries.values()].map((entry) => (
-        <PersistentPreviewInstance key={entry.threadId} entry={entry} onUnpin={unpin} />
-      ))}
+      {/* LRU order changes on projection; moving an ancestor also destroys Electron guests. */}
+      {[...entries.values()]
+        .toSorted((left, right) =>
+          left.threadId < right.threadId ? -1 : left.threadId > right.threadId ? 1 : 0,
+        )
+        .map((entry) => (
+          <PersistentPreviewInstance key={entry.threadId} entry={entry} onUnpin={unpin} />
+        ))}
     </PreviewBrowserHostContext.Provider>
   );
 }

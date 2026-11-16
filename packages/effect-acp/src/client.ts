@@ -22,10 +22,12 @@ import {
   decodeExtNotificationRegistration,
   decodeExtRequestRegistration,
   runHandler,
+  isolateNotificationHandler,
 } from "./_internal/shared";
 import { makeChildStdio, makeTerminationError } from "./_internal/stdio";
 
 export interface AcpClientOptions {
+  readonly onTermination?: (error: AcpError.AcpError) => Effect.Effect<void, never>;
   readonly transformStdoutLine?: (line: string) => string;
   readonly onStderr?: (chunk: string) => void;
   readonly sanitizeStderr?: (text: string) => string;
@@ -343,7 +345,7 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
   ) =>
     Effect.forEach(
       registration.handlers,
-      (handler) => handler(notification).pipe(Effect.catch(() => Effect.void)),
+      (handler) => isolateNotificationHandler(() => handler(notification)),
       { discard: true },
     );
 
@@ -410,6 +412,7 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.onTermination ? { onTermination: options.onTermination } : {}),
     onNotification: dispatchNotification,
     onExtRequest: dispatchExtRequest,
   });
@@ -467,13 +470,13 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
     }),
   );
 
-  yield* RpcServer.make(AcpRpcs.ClientRpcs).pipe(
+  yield* RpcServer.make(AcpRpcs.ClientRpcs, { disableFatalDefects: true }).pipe(
     Effect.provideService(RpcServer.Protocol, transport.serverProtocol),
     Effect.provide(clientHandlerLayer),
     Effect.forkScoped,
   );
 
-  let nextRpcRequestId = 1n << 32n;
+  let nextRpcRequestId = AcpProtocol.RPC_REQUEST_ID_START;
   const rpc = yield* RpcClient.make(AcpRpcs.AgentRpcs, {
     generateRequestId: () => nextRpcRequestId++ as never,
   }).pipe(Effect.provideService(RpcClient.Protocol, transport.clientProtocol));

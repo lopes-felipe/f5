@@ -1,15 +1,16 @@
 # Architecture
 
-F5 is a Bun/Turbo monorepo that ships a desktop app, a web app, and a Node.js WebSocket backend that wraps one or more coding-agent providers (Codex and Claude Code today).
+F5 is a Bun/Turbo monorepo that ships a desktop app, a web app, and a Node.js WebSocket backend that wraps one or more coding-agent providers (Codex, Claude Code, Cursor, OpenCode, Grok, Antigravity and Muse Code).
 
 ```
 ├── apps/
 │   ├── desktop     # Electron desktop app (primary distribution)
-│   ├── server      # Node.js WebSocket server (published as the `t3` CLI)
+│   ├── server      # Node.js server; npm package "t3", binaries f5 and t3
 │   ├── web         # React/Vite frontend
 │   └── marketing   # Astro marketing site
 ├── packages/
 │   ├── contracts   # Shared schemas and TypeScript contracts
+│   ├── effect-acp  # Agent Client Protocol client (Effect)
 │   └── shared      # Shared runtime utilities
 └── scripts/        # Dev runner, build helpers, release tooling
 ```
@@ -24,8 +25,8 @@ F5 is a Bun/Turbo monorepo that ships a desktop app, a web app, and a Node.js We
 For the runtime event flow, startup readiness model, and orchestration layers, see **[docs/architecture.md](./docs/architecture.md)**. Related docs:
 
 - [docs/provider-architecture.md](./docs/provider-architecture.md) — WebSocket protocol, provider adapter contract.
-- [docs/provider-prerequisites.md](./docs/provider-prerequisites.md) — Codex + Claude Code install/auth.
-- [docs/runtime-modes.md](./docs/runtime-modes.md) — Full-access vs supervised modes.
+- [docs/provider-prerequisites.md](./docs/provider-prerequisites.md): provider install and sign-in.
+- [docs/runtime-modes.md](./docs/runtime-modes.md): the four permission modes.
 - [docs/encyclopedia.md](./docs/encyclopedia.md) — Glossary of domain terms.
 - [docs/workspace-layout.md](./docs/workspace-layout.md) — One-line-per-package overview.
 

@@ -1,0 +1,178 @@
+name: Release candidate
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+# Every main SHA is durable. Stable builds are never cancelled by later pushes.
+concurrency:
+  group: candidate-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      channel: ${{ steps.plan.outputs.channel }}
+      profile: ${{ steps.plan.outputs.profile }}
+      mac_matrix: ${{ steps.plan.outputs.mac_matrix }}
+      windows_upgrade_matrix: ${{ steps.plan.outputs.windows_upgrade_matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - id: plan
+        run: node scripts/plan-release-candidate.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-plan-attempt-${{ github.run_attempt }}
+          path: release-plan.json
+          retention-days: 30
+  windows-desktop:
+    needs: preflight
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      channel: ${{ needs.preflight.outputs.channel }}
+      os: windows-latest
+      platform: win
+      arch: x64
+      target: nsis
+  mac-desktop:
+    needs: preflight
+    if: needs.preflight.outputs.profile == 'all'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.mac_matrix) }}
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      channel: ${{ needs.preflight.outputs.channel }}
+      os: ${{ matrix.os }}
+      platform: mac
+      arch: ${{ matrix.arch }}
+      target: dmg
+  linux-desktop:
+    needs: preflight
+    if: needs.preflight.outputs.profile == 'all'
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      channel: ${{ needs.preflight.outputs.channel }}
+      os: ubuntu-latest
+      platform: linux
+      arch: x64
+      target: AppImage
+  cli:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: darwin-arm64 }
+          - { os: ubuntu-latest, target: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: windows-latest, target: win32-x64 }
+          - { os: windows-11-arm, target: win32-arm64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - id: runtime
+        run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.runtime.outputs.version }}
+      - run: |
+          node scripts/update-release-package-versions.ts "$VERSION"
+          node scripts/build-cli-archive.ts --target "$TARGET" --output release-cli
+          node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
+      - run: node scripts/record-release-component.ts release-cli "cli-$TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}-attempt-${{ github.run_attempt }}
+          path: release-cli/*
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: receipt-cli-${{ matrix.target }}-attempt-${{ github.run_attempt }}
+          path: component-receipt/receipt.json
+          retention-days: 30
+      - if: failure() || cancelled()
+        uses: ./.github/actions/release-diagnostics
+        with:
+          component: cli-${{ matrix.target }}
+  windows-fixtures:
+    needs: [preflight, windows-desktop]
+    uses: ./.github/workflows/windows-release-checks.yml
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      channel: ${{ needs.preflight.outputs.channel }}
+      bundle: windows-bundles-attempt-${{ github.run_attempt }}
+  windows-published-upgrade:
+    needs: [preflight, windows-desktop]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.windows_upgrade_matrix) }}
+    uses: ./.github/workflows/release-published-upgrade.yml
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      channel: ${{ needs.preflight.outputs.channel }}
+      baseline: ${{ matrix.baseline }}
+      baseline_channel: ${{ matrix.baselineChannel }}
+      client_channel: ${{ matrix.clientChannel }}
+      source_sha: ${{ github.sha }}
+      artifact: desktop-win-x64-attempt-${{ github.run_attempt }}
+      run_id: ${{ fromJSON(github.run_id) }}
+  candidate:
+    needs:
+      [
+        preflight,
+        windows-desktop,
+        mac-desktop,
+        linux-desktop,
+        cli,
+        windows-fixtures,
+        windows-published-upgrade,
+      ]
+    if: >-
+      always() && !cancelled() &&
+      needs.preflight.result == 'success' && needs.windows-desktop.result == 'success' &&
+      (needs.mac-desktop.result == 'success' || needs.mac-desktop.result == 'skipped') &&
+      (needs.linux-desktop.result == 'success' || needs.linux-desktop.result == 'skipped') &&
+      needs.cli.result == 'success' && needs.windows-fixtures.result == 'success' &&
+      needs.windows-published-upgrade.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: node scripts/record-release-candidate.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-attempt-${{ github.run_attempt }}
+          path: candidate.json
+          retention-days: 30

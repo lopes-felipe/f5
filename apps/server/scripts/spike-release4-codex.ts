@@ -52,7 +52,11 @@ const rememberRequest = (method: string, outcome: string) => {
 };
 async function request(method: string, params: Record<string, unknown>) {
   try {
-    const result = await native.sendRequest(native.requireSession(id), method, params);
+    const withOrigin =
+      method === "thread/goal/set" || method === "thread/goal/clear"
+        ? { origin: "user", ...params }
+        : params;
+    const result = await native.sendRequest(native.requireSession(id), method, withOrigin);
     rememberRequest(method, "accepted");
     return record(result);
   } catch (error) {
@@ -139,6 +143,7 @@ try {
     payload: { label: "spike" },
   });
   await request("thread/attachment/list", { threadId });
+  await request("account/usage/read", { threadId });
   await request("thread/goal/set", {
     threadId,
     objective: "Reply READY without using tools.",

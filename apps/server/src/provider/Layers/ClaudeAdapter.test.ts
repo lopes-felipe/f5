@@ -1,14 +1,14 @@
 import { afterAll, beforeAll, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { makeThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type McpServerStatus,
   query,
   type Options as ClaudeQueryOptions,
-  type PermissionMode,
   type PermissionResult,
   type SDKMessage,
   type SDKUserMessage,
@@ -22,13 +22,20 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection, createReportedClaudeModelCapabilities } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
-import { Cause, Effect, Fiber, Layer, Random, Schema, Stream } from "effect";
+import { Cause, Effect, Fiber, Layer, Option, Random, Schema, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as computerBackendPolicy from "../../computer/computerBackendPolicy";
+import { ComputerControlError } from "@t3tools/shared/computerControl";
+import * as claudeAgentBrowser from "./claudeAgentBrowser";
 import { beginClaudeTranscriptMaintenance } from "../claudeTranscript.ts";
 import { CLAUDE_AUTO_UNAVAILABLE_WARNING } from "../claudeAutoMode.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { runtimeEventToActivities } from "../../orchestration/Layers/ProviderRuntimeIngestion.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { MCP_APP_MIME_TYPE } from "@t3tools/shared/mcpApp";
 import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
 import { clearAnthropicModelContextWindowCatalogCacheForTest } from "../modelContextWindowMetadata.ts";
 import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
@@ -37,225 +44,53 @@ import {
   buildInstructionProfile,
 } from "../sharedAssistantContract.ts";
 import {
+  CLAUDE_SESSION_WRITES_LOST_WARNING,
   buildClaudeQueryEnv,
+  accumulateClaudeThinkingTokens,
+  claudeShowThinkingSummaries,
   isClaudeMissingConversationError,
   makeClaudeAdapterLive,
   probeClaudeSessionAvailability,
-  resolveClaudeConfigDir,
   type ClaudeAdapterLiveOptions,
   type ClaudeSessionProbeInput,
   type ClaudeSessionStoreFs,
 } from "./ClaudeAdapter.ts";
+import { resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
 import type { AgentBrowserPolicy } from "../../mcp/browserAccess.ts";
+import {
+  ComputerAutomationBrokerRuntime,
+  type ChromeReleaser,
+} from "../../computer/ComputerAutomationBroker";
+import { CLAUDE_CHROME_RELEASED } from "../claudeChromeActivity";
+import { DesktopComputerHost } from "../../computer/DesktopComputerHost";
+import { ChromeSessionRuntime } from "../chromeSessionRuntime";
+import { ChromeArtifactCache } from "../chromeArtifactCache";
+import {
+  claudeChromeDescriptor,
+  parseNativeHostManifest,
+  sha256,
+  type ChromeNativeHostDescriptor,
+} from "../chromeNativeHost";
+import type { ChromeNativeHostTransaction } from "../chromeNativeHostJournal";
+import {
+  PROVIDER_INTEGRATION_RECORDS,
+  type ClaudeChromeRecord,
+} from "@t3tools/shared/providerIntegrationCertification";
 import { makePreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 
 type ClaudeQueryOptionsForTest = Omit<ClaudeQueryOptions, "effort"> & {
   readonly effort?: string;
 };
 
-class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
-  private readonly queue: Array<SDKMessage> = [];
-  private readonly waiters: Array<{
-    readonly resolve: (value: IteratorResult<SDKMessage>) => void;
-    readonly reject: (reason: unknown) => void;
-  }> = [];
-  private done = false;
-  private failure: unknown | undefined;
-
-  public readonly interruptCalls: Array<void> = [];
-  public readonly setModelCalls: Array<string | undefined> = [];
-  public readonly setPermissionModeCalls: Array<string> = [];
-  public readonly applyFlagSettingsCalls: Array<Record<string, unknown>> = [];
-  public readonly stopTaskCalls: string[] = [];
-  public readonly getTaskOutputCalls: string[] = [];
-  public readonly renameSessionCalls: Array<{ title: string; sessionId?: string }> = [];
-  readonly renameSession = async (title: string, sessionId?: string) => {
-    this.renameSessionCalls.push({ title, ...(sessionId ? { sessionId } : {}) });
-  };
-  readonly getTaskOutput = async (taskId: string) => {
-    this.getTaskOutputCalls.push(taskId);
-    return { output: "isolated shell output", total_bytes: 30, truncated: true };
-  };
-  public readonly rewindFilesCalls: Array<{ uuid: string; dryRun: boolean }> = [];
-  public rewindFilesResult = {
-    canRewind: true,
-    filesChanged: ["sample.txt"],
-    insertions: 1,
-    deletions: 2,
-  };
-  readonly stopTask = async (taskId: string) => {
-    this.stopTaskCalls.push(taskId);
-  };
-  readonly rewindFiles = async (uuid: string, options?: { dryRun?: boolean }) => {
-    this.rewindFilesCalls.push({ uuid, dryRun: options?.dryRun === true });
-    return this.rewindFilesResult;
-  };
-  public closeCalls = 0;
-  public onClose: (() => void) | undefined;
-  public readonly deliveredAfterClose: SDKMessage[] = [];
-
-  /** Simulate buffered transport frames that remain readable after close. */
-  forceEmit(message: SDKMessage): void {
-    this.queue.push(message);
-  }
-  public initializationResultValue: unknown = {
-    commands: [],
-    agents: [],
-    output_style: "default",
-    available_output_styles: ["default"],
-    models: [],
-    account: {},
-  };
-  public supportedModelsValue: ReadonlyArray<unknown> = [];
-  private supportedModelsPromise: Promise<ReadonlyArray<unknown>> | undefined;
-  public supportedCommands?: () => Promise<
-    ReadonlyArray<{
-      readonly name: string;
-      readonly description: string;
-      readonly argumentHint?: string;
-    }>
-  >;
-
-  setSupportedCommandsResult(
-    result: ReadonlyArray<{
-      readonly name: string;
-      readonly description: string;
-      readonly argumentHint?: string;
-    }>,
-  ): void {
-    this.supportedCommands = async () => result;
-  }
-
-  setInitializationResult(result: unknown): void {
-    this.initializationResultValue = result;
-  }
-
-  setSupportedModelsResult(result: ReadonlyArray<unknown>): void {
-    this.supportedModelsValue = result;
-    this.supportedModelsPromise = undefined;
-  }
-
-  setSupportedModelsPromise(result: Promise<ReadonlyArray<unknown>>): void {
-    this.supportedModelsPromise = result;
-  }
-
-  emit(message: SDKMessage): void {
-    if (this.done) {
-      return;
-    }
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter.resolve({ done: false, value: message });
-      return;
-    }
-    this.queue.push(message);
-  }
-
-  fail(cause: unknown): void {
-    if (this.done) {
-      return;
-    }
-    this.done = true;
-    this.failure = cause;
-    for (const waiter of this.waiters.splice(0)) {
-      waiter.reject(cause);
-    }
-  }
-
-  finish(): void {
-    if (this.done) {
-      return;
-    }
-    this.done = true;
-    this.failure = undefined;
-    for (const waiter of this.waiters.splice(0)) {
-      waiter.resolve({ done: true, value: undefined });
-    }
-  }
-
-  readonly interrupt = async (): Promise<void> => {
-    this.interruptCalls.push(undefined);
-  };
-
-  public setModelWait: Promise<void> | undefined;
-  readonly setModel = async (model?: string): Promise<void> => {
-    this.setModelCalls.push(model);
-    await this.setModelWait;
-  };
-
-  readonly setPermissionMode = async (mode: PermissionMode): Promise<void> => {
-    this.setPermissionModeCalls.push(mode);
-  };
-
-  readonly applyFlagSettings = async (settings: Record<string, unknown>): Promise<void> => {
-    this.applyFlagSettingsCalls.push(settings);
-  };
-
-  readonly initializationResult = async (): Promise<unknown> => this.initializationResultValue;
-
-  public mcpServerStatusValue: Array<McpServerStatus> = [];
-  public mcpServerStatusCalls = 0;
-  // A prototype method that needs `this`, like the SDK's Query: callers must keep the receiver.
-  async mcpServerStatus(): Promise<ReadonlyArray<McpServerStatus>> {
-    this.mcpServerStatusCalls += 1;
-    return this.mcpServerStatusValue;
-  }
-
-  public readonly toggleMcpServerCalls: Array<{ name: string; enabled: boolean }> = [];
-  public toggleMcpServerFailure: unknown;
-  readonly toggleMcpServer = async (name: string, enabled: boolean): Promise<void> => {
-    this.toggleMcpServerCalls.push({ name, enabled });
-    if (this.toggleMcpServerFailure !== undefined) throw this.toggleMcpServerFailure;
-    const entry = this.mcpServerStatusValue.find((candidate) => candidate.name === name);
-    if (entry) entry.status = enabled ? "connected" : "disabled";
-  };
-
-  readonly supportedModels = async (): Promise<ReadonlyArray<unknown>> =>
-    this.supportedModelsPromise ?? this.supportedModelsValue;
-
-  readonly close = (): void => {
-    this.closeCalls += 1;
-    this.finish();
-    this.onClose?.();
-  };
-
-  [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {
-    return {
-      next: () => {
-        if (this.queue.length > 0) {
-          const value = this.queue.shift();
-          if (value) {
-            if (this.closeCalls > 0) this.deliveredAfterClose.push(value);
-            return Promise.resolve({
-              done: false,
-              value,
-            });
-          }
-        }
-        if (this.failure !== undefined) {
-          const failure = this.failure;
-          this.failure = undefined;
-          return Promise.reject(failure);
-        }
-        if (this.done) {
-          return Promise.resolve({
-            done: true,
-            value: undefined,
-          });
-        }
-        return new Promise((resolve, reject) => {
-          this.waiters.push({
-            resolve,
-            reject,
-          });
-        });
-      },
-    };
-  }
-}
+import { FakeClaudeQuery } from "../testUtils/FakeClaudeQuery.ts";
+import {
+  BROWSER_OPEN_TOKEN_ENV,
+  browserOpenTokenFor,
+} from "../../browser/BrowserOpenThreadToken.ts";
 
 function makeHarness(config?: {
+  readonly createQueryError?: Error;
   readonly oneOffProviderOptions?: ClaudeAdapterLiveOptions["oneOffProviderOptions"];
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly nativeEventLogPath?: string;
@@ -263,11 +98,18 @@ function makeHarness(config?: {
   readonly cwd?: string;
   readonly stateDir?: string;
   readonly readResumeTranscript?: ClaudeAdapterLiveOptions["readResumeTranscript"];
+  /** Read the transcript from CLAUDE_CONFIG_DIR as production does. */
+  readonly readResumeTranscriptFromDisk?: boolean;
   readonly probeResumableClaudeSession?: ClaudeAdapterLiveOptions["probeResumableClaudeSession"];
   readonly resumeConfirmationTimeoutMs?: number;
+  readonly interruptGraceMs?: number;
   /** Runs the adapter in desktop mode with F5's preview broker. */
   readonly previewAutomationBroker?: ClaudeAdapterLiveOptions["previewAutomationBroker"];
+  readonly computerAutomationBroker?: ClaudeAdapterLiveOptions["computerAutomationBroker"];
+  readonly chromeRuntime?: ClaudeAdapterLiveOptions["chromeRuntime"];
   readonly reportedModelCapabilities?: ClaudeAdapterLiveOptions["reportedModelCapabilities"];
+  readonly resolveBypassAvailability?: ClaudeAdapterLiveOptions["resolveBypassAvailability"];
+  readonly threadMcpBroker?: ClaudeAdapterLiveOptions["threadMcpBroker"];
 }) {
   const query = new FakeClaudeQuery();
   const queries = [query];
@@ -283,6 +125,13 @@ function makeHarness(config?: {
     | undefined;
 
   const adapterOptions: ClaudeAdapterLiveOptions = {
+    resolveBypassAvailability:
+      config?.resolveBypassAvailability ??
+      (async () => ({ bypassDisabled: false, autoDisabled: false })),
+    ...(config?.computerAutomationBroker
+      ? { computerAutomationBroker: config.computerAutomationBroker }
+      : {}),
+    ...(config?.chromeRuntime ? { chromeRuntime: config.chromeRuntime } : {}),
     ...(config?.oneOffProviderOptions
       ? { oneOffProviderOptions: config.oneOffProviderOptions }
       : {}),
@@ -290,24 +139,31 @@ function makeHarness(config?: {
     createQuery: (input) => {
       createInput = input;
       createInputs.push(input);
+      if (config?.createQueryError) throw config.createQueryError;
       const nextQuery = queries[createInputs.length - 1] ?? new FakeClaudeQuery();
       if (!queries.includes(nextQuery)) queries.push(nextQuery);
       return nextQuery;
     },
-    readResumeTranscript:
-      config?.readResumeTranscript ??
-      (async () =>
-        new Map([
-          [
-            "123e4567-e89b-42d3-a456-426614174001",
-            { uuid: "123e4567-e89b-42d3-a456-426614174001", parentUuid: null },
-          ],
-        ])),
+    ...(config?.readResumeTranscriptFromDisk
+      ? {}
+      : {
+          readResumeTranscript:
+            config?.readResumeTranscript ??
+            (async () =>
+              new Map([
+                [
+                  "123e4567-e89b-42d3-a456-426614174001",
+                  { uuid: "123e4567-e89b-42d3-a456-426614174001", parentUuid: null },
+                ],
+              ])),
+        }),
     probeResumableClaudeSession:
       config?.probeResumableClaudeSession ?? (() => Effect.succeed("unknown" as const)),
     // The fake CLI only emits messages when a test pushes them, so most tests
     // cannot confirm a resume while sendTurn waits. Tests of that wait opt in.
     resumeConfirmationTimeoutMs: config?.resumeConfirmationTimeoutMs ?? 0,
+    // Likewise the fake never aborts a turn on interrupt() unless a test says so.
+    interruptGraceMs: config?.interruptGraceMs ?? 0,
     ...(config?.reportedModelCapabilities
       ? { reportedModelCapabilities: config.reportedModelCapabilities }
       : {}),
@@ -324,6 +180,7 @@ function makeHarness(config?: {
     ...(config?.previewAutomationBroker
       ? { previewAutomationBroker: config.previewAutomationBroker }
       : {}),
+    ...(config?.threadMcpBroker ? { threadMcpBroker: config.threadMcpBroker } : {}),
   };
 
   return {
@@ -417,6 +274,13 @@ function makeRealSdkHarness(config?: {
     },
     getLastCreateQueryInput: () => createInput,
   };
+}
+
+/** Flag settings minus `permissions`, whose read exemptions depend on the host paths. */
+function withoutFlagPermissions(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object") return settings;
+  const { permissions: _permissions, ...rest } = settings as Record<string, unknown>;
+  return rest;
 }
 
 function makeDeterministicRandomService(seed = 0x1234_5678): {
@@ -517,6 +381,7 @@ function emitClaudeTaskStarted(
     readonly description?: string;
     readonly sessionId?: string;
     readonly uuid?: string;
+    readonly backgrounded?: boolean;
   },
 ): void {
   query.emit({
@@ -525,6 +390,7 @@ function emitClaudeTaskStarted(
     task_id: input.taskId,
     tool_use_id: input.toolUseId,
     task_type: "bash",
+    ...(input.backgrounded !== undefined ? { is_backgrounded: input.backgrounded } : {}),
     description: input.description ?? "Run background command",
     session_id: input.sessionId ?? BACKGROUND_SESSION_ID,
     uuid: input.uuid ?? `task-started-${input.taskId}`,
@@ -597,6 +463,130 @@ function emitClaudeSuccessResult(
   } as unknown as SDKMessage);
 }
 
+describe("Claude native goals", () => {
+  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
+  const assistant = (text: string, synthetic = true, parent: string | null = null) =>
+    ({
+      type: "assistant",
+      session_id: sessionId,
+      uuid: crypto.randomUUID(),
+      parent_tool_use_id: parent,
+      message: {
+        id: crypto.randomUUID(),
+        model: synthetic ? "<synthetic>" : "claude-opus-4-6",
+        content: [{ type: "text", text }],
+      },
+    }) as unknown as SDKMessage;
+
+  it.effect(
+    "mirrors native goal checks and completion without trusting child or ordinary text",
+    () => {
+      const h = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        const events = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "/goal All tests pass",
+          attachments: [],
+        });
+        h.query.emit(assistant("Goal set: All tests pass"));
+        h.query.emit(assistant("Goal set: Spoofed child", true, "child-tool"));
+        h.query.emit(assistant("Goal cleared: This is ordinary model text", false));
+        h.query.emit({
+          type: "user",
+          uuid: crypto.randomUUID(),
+          session_id: sessionId,
+          parent_tool_use_id: null,
+          isSynthetic: true,
+          message: {
+            role: "user",
+            content: "Stop hook feedback:\n[All tests pass]: One test still fails.",
+          },
+        } as unknown as SDKMessage);
+        h.query.emit(assistant("All tests pass now.", false));
+        emitClaudeSuccessResult(h.query, { sessionId });
+        const received = yield* Fiber.join(events);
+        const goals = received.flatMap((event) =>
+          event.type === "thread.metadata.updated" &&
+          event.payload.metadata &&
+          "nativeGoal" in event.payload.metadata
+            ? [event.payload.metadata.nativeGoal]
+            : [],
+        );
+
+        assert.deepEqual(goals, [
+          { objective: "All tests pass", status: "active", checks: 0 },
+          {
+            objective: "All tests pass",
+            status: "active",
+            checks: 1,
+            lastCheck: "One test still fails.",
+          },
+          { objective: "All tests pass", status: "complete", checks: 1 },
+        ]);
+        const cursor = (yield* adapter.listSessions())[0]?.resumeCursor as Record<string, unknown>;
+        assert.deepEqual(cursor.nativeGoal, goals.at(-1));
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
+
+  for (const terminalReason of ["completed", "stop_hook", "interrupted"] as const) {
+    it.effect(
+      `preserves a resumed active goal on native /goal output (terminal=${terminalReason})`,
+      () => {
+        const h = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const session = yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            resumeCursor: {
+              resume: sessionId,
+              nativeGoal: { objective: "Resume me", status: "active", checks: 2 },
+            },
+          });
+          yield* adapter.sendTurn({ threadId: session.threadId, input: "/goal", attachments: [] });
+          const completed = yield* adapter.streamEvents.pipe(
+            Stream.filter((event) => event.type === "turn.completed"),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          h.query.emit(assistant("Goal active: Resume me (2 turns)"));
+          if (terminalReason !== "completed") h.query.emit(assistant("Not finished.", false));
+          h.query.emit({
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            errors: [],
+            uuid: crypto.randomUUID(),
+            session_id: sessionId,
+            terminal_reason: terminalReason,
+          } as unknown as SDKMessage);
+          yield* Fiber.join(completed);
+          const resumed = (yield* adapter.listSessions())[0];
+          assert.ok(resumed);
+          assert.deepEqual((resumed.resumeCursor as Record<string, unknown>).nativeGoal, {
+            objective: "Resume me",
+            status: "active",
+            checks: 2,
+          });
+        }).pipe(Effect.provide(h.layer));
+      },
+    );
+  }
+});
+
 describe("ClaudeAdapter agent browser", () => {
   const PREVIEW_SDK_STATUS: McpServerStatus = {
     name: "f5_preview",
@@ -604,12 +594,16 @@ describe("ClaudeAdapter agent browser", () => {
     source: "sdk",
   };
 
-  function makeBrowserHarness(initial?: Partial<AgentBrowserPolicy>) {
+  function makeBrowserHarness(
+    initial?: Partial<AgentBrowserPolicy>,
+    overrides?: Parameters<typeof makeHarness>[0],
+  ) {
     const policy: { current: AgentBrowserPolicy } = {
       current: {
         previewAutomation: true,
         externalHosts: [],
         claudeInChrome: false,
+        codexChrome: false,
         computerUse: false,
         ...initial,
       },
@@ -617,7 +611,7 @@ describe("ClaudeAdapter agent browser", () => {
     const broker = makePreviewAutomationBroker({
       resolvePolicy: () => Effect.sync(() => policy.current),
     });
-    const harness = makeHarness({ previewAutomationBroker: broker });
+    const harness = makeHarness({ ...overrides, previewAutomationBroker: broker });
     return { harness, policy, broker };
   }
 
@@ -638,6 +632,592 @@ describe("ClaudeAdapter agent browser", () => {
     tool_use_id: `hook-${toolName}`,
     ...(mcpServer ? { mcp_server: mcpServer } : {}),
   });
+
+  for (const runtimeMode of ["full-access", "approval-required"] as const) {
+    it.effect(
+      `enforces MCP filters in ${runtimeMode} and updates the hook after a live reload`,
+      () => {
+        const harness = makeHarness();
+        const setMcpServers = vi.fn(async () => ({ added: [], removed: [], errors: {} }));
+        Object.assign(harness.query, { setMcpServers });
+        harness.query.mcpServerStatusValue = [
+          { name: "team__docs", status: "connected", source: "dynamic" },
+        ];
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            runtimeMode,
+            providerOptions: {
+              claudeAgent: { subagentsEnabled: false },
+              mcpServers: {
+                team__docs: {
+                  type: "stdio",
+                  command: "node",
+                  enabledTools: ["a__b"],
+                  disabledTools: ["write"],
+                  toolTimeoutSec: 15,
+                },
+              },
+            },
+          });
+          const options = harness.getLastCreateQueryInput()!.options;
+          assert.equal(
+            options.permissionMode,
+            runtimeMode === "full-access" ? "bypassPermissions" : "default",
+          );
+          assert.deepEqual(options.disallowedTools, ["Agent", "Task", "mcp__team__docs__write"]);
+          assert.equal((options.mcpServers!.team__docs as { timeout?: number }).timeout, 15_000);
+          const hook = options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
+          const call = (tool: string, source = "dynamic") =>
+            Effect.promise(() =>
+              hook(
+                preToolUse(`mcp__team__docs__${tool}`, { name: "team__docs", source }),
+                undefined,
+                {
+                  signal: new AbortController().signal,
+                },
+              ),
+            );
+          assert.notEqual(hookDecision(yield* call("a__b")), "deny");
+          assert.equal(hookDecision(yield* call("write")), "deny");
+          assert.equal(hookDecision(yield* call("unlisted")), "deny");
+          assert.notEqual(hookDecision(yield* call("write", "sdk")), "deny");
+          const reloaded = yield* adapter.reloadMcpConfig!({
+            threadId: THREAD_ID,
+            mcpServers: {
+              team__docs: {
+                type: "stdio",
+                command: "node",
+                enabledTools: [],
+                disabledTools: ["a__b"],
+              },
+            },
+          });
+          assert.equal(reloaded.converged, false);
+          assert.equal(reloaded.restartRequired, true);
+          assert.ok(reloaded.errors.some((error) => error.message.includes("tool deny list")));
+          assert.equal(setMcpServers.mock.calls.length, 1);
+          assert.equal(hookDecision(yield* call("a__b")), "deny");
+          assert.notEqual(hookDecision(yield* call("write")), "deny");
+          assert.notEqual(hookDecision(yield* call("unlisted")), "deny");
+          // Recovery uses the new list, but the current SDK query still needs a restart.
+          assert.deepEqual(options.disallowedTools, ["Agent", "Task", "mcp__team__docs__a__b"]);
+          const repeated = yield* adapter.reloadMcpConfig!({
+            threadId: THREAD_ID,
+            mcpServers: { team__docs: { type: "stdio", command: "node", disabledTools: ["a__b"] } },
+          });
+          assert.equal(repeated.restartRequired, true);
+          assert.equal(repeated.converged, false);
+        }).pipe(Effect.provide(harness.layer));
+      },
+    );
+  }
+
+  for (const change of ["removed", "disabled"] as const) {
+    for (const activeTurn of [false, true]) {
+      it.effect(`denies lingering ${change} MCP servers (active turn: ${activeTurn})`, () => {
+        const harness = makeHarness();
+        Object.assign(harness.query, {
+          setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
+        });
+        harness.query.mcpServerStatusValue = [
+          { name: "docs", status: "connected", source: "dynamic" },
+        ];
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            runtimeMode: "full-access",
+            providerOptions: {
+              mcpServers: { docs: { type: "stdio", command: "node", enabledTools: ["read"] } },
+            },
+          });
+          if (activeTurn) yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Read the docs" });
+          const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!
+            .hooks[0]!;
+          const call = (tool: string, source?: string) =>
+            Effect.promise(() =>
+              hook(
+                preToolUse(`mcp__docs__${tool}`, source ? { name: "docs", source } : undefined),
+                undefined,
+                { signal: new AbortController().signal },
+              ),
+            );
+          assert.notEqual(hookDecision(yield* call("read", "dynamic")), "deny");
+          assert.equal(hookDecision(yield* call("write", "dynamic")), "deny");
+          const result = yield* adapter.reloadMcpConfig!({
+            threadId: THREAD_ID,
+            mcpServers:
+              change === "removed"
+                ? {}
+                : {
+                    docs: {
+                      type: "stdio",
+                      command: "node",
+                      enabled: false,
+                      enabledTools: ["read"],
+                    },
+                  },
+          });
+          assert.equal(result.restartRequired, true);
+          for (const tool of ["read", "write"]) {
+            assert.equal(hookDecision(yield* call(tool, "dynamic")), "deny");
+            assert.equal(hookDecision(yield* call(tool)), "deny");
+          }
+          assert.notEqual(hookDecision(yield* call("write", "sdk")), "deny");
+        }).pipe(Effect.provide(harness.layer));
+      });
+    }
+  }
+
+  for (const rejectSet of [false, true]) {
+    it.effect(
+      `enforces narrowed and new MCP filters throughout provider I/O (reject set: ${rejectSet})`,
+      () => {
+        const harness = makeHarness();
+        const listEntered = Promise.withResolvers<void>();
+        const releaseList = Promise.withResolvers<void>();
+        const setEntered = Promise.withResolvers<void>();
+        const releaseSet = Promise.withResolvers<void>();
+        const external = { name: "external", status: "connected" as const, source: "plugin" };
+        harness.query.mcpServerStatusValue = [
+          { name: "docs", status: "connected", source: "dynamic" },
+          external,
+        ];
+        let reads = 0;
+        let watcherReads = 0;
+        let blockReads = false;
+        Object.assign(harness.query, {
+          mcpServerStatus: async () => {
+            watcherReads++;
+            if (blockReads && reads++ === 0) {
+              listEntered.resolve();
+              await releaseList.promise;
+            }
+            return harness.query.mcpServerStatusValue;
+          },
+          setMcpServers: async (servers: Record<string, unknown>) => {
+            assert.deepEqual(Object.keys(servers).sort(), ["docs", "new"]);
+            harness.query.mcpServerStatusValue = [
+              external,
+              ...Object.keys(servers).map((name) => ({
+                name,
+                status: "connected" as const,
+                source: "dynamic",
+              })),
+            ];
+            setEntered.resolve();
+            await releaseSet.promise;
+            if (rejectSet) throw new Error("reply failed after partial installation");
+            return { added: ["new"], removed: [], errors: {} };
+          },
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            runtimeMode: "full-access",
+            providerOptions: { mcpServers: { docs: { type: "stdio", command: "node" } } },
+          });
+          yield* Effect.promise(() => vi.waitFor(() => assert.ok(watcherReads > 0)));
+          blockReads = true;
+          const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!
+            .hooks[0]!;
+          const call = (name: string, tool: string, source?: string) =>
+            Effect.promise(() =>
+              hook(
+                preToolUse(`mcp__${name}__${tool}`, source ? { name, source } : undefined),
+                undefined,
+                { signal: new AbortController().signal },
+              ),
+            );
+          const reload = yield* adapter.reloadMcpConfig!({
+            threadId: THREAD_ID,
+            mcpServers: {
+              docs: { type: "stdio", command: "node", enabledTools: ["read"] },
+              new: { type: "stdio", command: "node", enabledTools: ["read"] },
+              external: { type: "stdio", command: "node", enabledTools: ["read"] },
+            },
+          }).pipe(Effect.forkChild);
+          yield* Effect.promise(() => listEntered.promise);
+          assert.equal(hookDecision(yield* call("docs", "write", "dynamic")), "deny");
+          releaseList.resolve();
+          yield* Effect.promise(() => setEntered.promise);
+          for (const name of ["docs", "new"]) {
+            assert.equal(hookDecision(yield* call(name, "write", "dynamic")), "deny");
+            assert.equal(hookDecision(yield* call(name, "write")), "deny");
+            assert.notEqual(hookDecision(yield* call(name, "read", "dynamic")), "deny");
+          }
+          assert.notEqual(hookDecision(yield* call("external", "write", "plugin")), "deny");
+          assert.notEqual(hookDecision(yield* call("external", "write")), "deny");
+          releaseSet.resolve();
+          const result = yield* Fiber.join(reload);
+          assert.equal(result.restartRequired, rejectSet);
+          assert.equal(result.converged, !rejectSet);
+          assert.equal(hookDecision(yield* call("new", "write", "dynamic")), "deny");
+        }).pipe(
+          Effect.provide(harness.layer),
+          Effect.ensuring(
+            Effect.sync(() => {
+              releaseList.resolve();
+              releaseSet.resolve();
+            }),
+          ),
+        );
+      },
+    );
+  }
+
+  it.effect("rechecks MCP filters if they change while a native approval is open", () => {
+    const harness = makeHarness();
+    Object.assign(harness.query, {
+      setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
+    });
+    harness.query.mcpServerStatusValue = [{ name: "docs", status: "connected", source: "dynamic" }];
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: { docs: { type: "stdio", command: "node" } } },
+      });
+      const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+      const pending = canUseTool(
+        "mcp__docs__read",
+        {},
+        permissionOptions("pending-read", { name: "docs", source: "dynamic" }),
+      );
+      const approval = yield* Stream.runHead(
+        adapter.streamEvents.pipe(Stream.filter((event) => event.type === "request.opened")),
+      );
+      assert.equal(approval._tag, "Some");
+      if (approval._tag !== "Some") return;
+      yield* adapter.reloadMcpConfig!({
+        threadId: THREAD_ID,
+        mcpServers: { docs: { type: "stdio", command: "node", disabledTools: ["read"] } },
+      });
+      yield* adapter.respondToRequest(
+        THREAD_ID,
+        ApprovalRequestId.makeUnsafe(approval.value.requestId!),
+        "accept",
+      );
+      const result = yield* Effect.promise(() => pending);
+      assert.equal(result?.behavior, "deny");
+      if (result?.behavior === "deny") assert.include(result.message, "F5 MCP settings");
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  for (const removeAll of [false, true]) {
+    it.effect(
+      `preserves preview and computer servers through reload and recovery (remove all: ${removeAll})`,
+      () => {
+        const host = new DesktopComputerHost("profile", "incarnation", undefined, false);
+        const computer = new ComputerAutomationBrokerRuntime(host, {
+          platform: "darwin",
+          storage: { load: async () => [], save: async () => {} },
+          resolve: async () => {
+            throw new Error("unused");
+          },
+        });
+        const selection = vi
+          .spyOn(computerBackendPolicy, "resolveComputerBackendSelection")
+          .mockReturnValue(
+            Effect.succeed({
+              status: { available: true },
+              selection: { kind: "native" },
+              fingerprint: "test-native",
+            }),
+          );
+        const checkpoint = "123e4567-e89b-42d3-a456-426614174001";
+        const previous = "123e4567-e89b-42d3-a456-426614174000";
+        const { harness } = makeBrowserHarness(
+          { computerUse: true },
+          {
+            computerAutomationBroker: computer,
+            readResumeTranscript: async () =>
+              new Map([
+                [previous, { uuid: previous, parentUuid: null }],
+                [checkpoint, { uuid: checkpoint, parentUuid: previous }],
+              ]),
+          },
+        );
+        Object.assign(harness.query, {
+          setMcpServers: async (servers: Record<string, unknown>) => {
+            harness.query.mcpServerStatusValue = [
+              ...harness.query.mcpServerStatusValue.filter((server) => server.source === "sdk"),
+              ...Object.keys(servers).map((name) => ({
+                name,
+                status: "connected" as const,
+                source: "dynamic",
+              })),
+            ];
+            return {
+              added: Object.keys(servers),
+              removed: "old" in servers ? [] : ["old"],
+              errors: {},
+            };
+          },
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const events: ProviderRuntimeEvent[] = [];
+          yield* adapter.streamEvents.pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => {
+                events.push(event);
+              }),
+            ),
+            Effect.forkChild,
+          );
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            runtimeMode: "full-access",
+            resumeCursor: {
+              resume: "550e8400-e29b-41d4-a716-446655440000",
+              resumeSessionAt: checkpoint,
+              turnBoundaries: [
+                { turnId: "previous", assistantUuid: previous },
+                { turnId: "old", assistantUuid: checkpoint },
+              ],
+            },
+            providerOptions: {
+              claudeAgent: { subagentsEnabled: false },
+              mcpServers: { old: { type: "stdio", command: "node", disabledTools: ["write"] } },
+            },
+          });
+          const internal = Object.fromEntries(
+            Object.entries(harness.getLastCreateQueryInput()!.options.mcpServers!).filter(
+              ([, config]) => config.type === "sdk",
+            ),
+          );
+          assert.deepEqual(Object.keys(internal).sort(), ["f5_computer", "f5_preview"]);
+          harness.query.mcpServerStatusValue = Object.keys(internal).map((name) => ({
+            name,
+            status: "connected",
+            source: "sdk",
+          }));
+          const servers = removeAll
+            ? {}
+            : {
+                old: {
+                  type: "stdio" as const,
+                  command: "updated-command",
+                  disabledTools: ["delete"],
+                },
+              };
+          const reload = yield* adapter.reloadMcpConfig!({
+            threadId: THREAD_ID,
+            mcpServers: servers,
+          });
+          assert.equal(reload.restartRequired, true);
+          assert.equal(reload.converged, false);
+          harness.query.emit({
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            errors: [`No message found with message.uuid of: ${checkpoint}`],
+            session_id: "550e8400-e29b-41d4-a716-446655440000",
+            uuid: "mcp-recovery-error",
+          } as unknown as SDKMessage);
+          while (
+            !events.some(
+              (event) =>
+                event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+            )
+          )
+            yield* Effect.yieldNow;
+          yield* TestClock.adjust("500 millis");
+          while (harness.getCreateQueryInputs().length < 2) yield* Effect.yieldNow;
+          const recovered = harness.getLastCreateQueryInput()!.options.mcpServers!;
+          assert.deepEqual(
+            Object.keys(recovered).sort(),
+            [...Object.keys(internal), ...Object.keys(servers)].sort(),
+          );
+          for (const [name, config] of Object.entries(internal))
+            assert.strictEqual(recovered[name], config);
+          assert.deepEqual(harness.getLastCreateQueryInput()!.options.disallowedTools, [
+            "Agent",
+            "Task",
+            ...(removeAll ? [] : ["mcp__old__delete"]),
+          ]);
+          // Once recovery actually installs the new deny list, the same reload converges.
+          const query = harness.queries[1]!;
+          query.mcpServerStatusValue = [
+            ...Object.keys(internal).map((name) => ({
+              name,
+              status: "connected" as const,
+              source: "sdk",
+            })),
+            ...Object.keys(servers).map((name) => ({
+              name,
+              status: "connected" as const,
+              source: "dynamic",
+            })),
+          ];
+          Object.assign(query, {
+            setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
+          });
+          const repeated = yield* adapter.reloadMcpConfig!({
+            threadId: THREAD_ID,
+            mcpServers: servers,
+          });
+          assert.equal(repeated.restartRequired, false);
+          assert.equal(repeated.converged, true);
+        }).pipe(
+          Effect.provide(harness.layer),
+          Effect.ensuring(
+            Effect.sync(() => {
+              selection.mockRestore();
+              computer.close();
+            }),
+          ),
+        );
+      },
+    );
+  }
+
+  it.effect("disposes the computer server and binding if SDK query construction fails", () => {
+    const host = new DesktopComputerHost("profile", "incarnation", undefined, false);
+    const computer = new ComputerAutomationBrokerRuntime(host, {
+      platform: "darwin",
+      storage: { load: async () => [], save: async () => {} },
+      resolve: async () => {
+        throw new Error("not used");
+      },
+    });
+    const selection = vi
+      .spyOn(computerBackendPolicy, "resolveComputerBackendSelection")
+      .mockReturnValue(
+        Effect.succeed({
+          status: { available: true },
+          selection: { kind: "native" },
+          fingerprint: "test-native",
+        }),
+      );
+    const factory = vi.spyOn(claudeAgentBrowser, "makeClaudeComputerMcpServer");
+    const unsubscribe = vi.fn();
+    const subscription = vi.spyOn(computer, "subscribe").mockReturnValue(unsubscribe);
+    const { harness } = makeBrowserHarness(
+      { computerUse: true },
+      { computerAutomationBroker: computer, createQueryError: new Error("SDK constructor failed") },
+    );
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const exit = yield* adapter
+        .startSession({ threadId: THREAD_ID, provider: "claudeAgent", runtimeMode: "full-access" })
+        .pipe(Effect.exit);
+      assert.equal(exit._tag, "Failure");
+      assert.equal(factory.mock.calls.length, 1);
+      assert.equal(computer.generation(THREAD_ID), undefined);
+    }).pipe(
+      Effect.provide(harness.layer),
+      Effect.ensuring(
+        Effect.sync(() => {
+          selection.mockRestore();
+          factory.mockRestore();
+          computer.close();
+        }),
+      ),
+    );
+  });
+  it.effect(
+    "redacts queued tool events and interrupted completion before disposing computer provenance",
+    () => {
+      const host = new DesktopComputerHost("profile", "incarnation", undefined, false);
+      const computer = new ComputerAutomationBrokerRuntime(host, {
+        platform: "darwin",
+        storage: { load: async () => [], save: async () => {} },
+        resolve: async () => {
+          throw new Error("not used");
+        },
+      });
+      const selection = vi
+        .spyOn(computerBackendPolicy, "resolveComputerBackendSelection")
+        .mockReturnValue(
+          Effect.succeed({
+            status: { available: true },
+            selection: { kind: "native" },
+            fingerprint: "test-native",
+          }),
+        );
+      const logs: unknown[] = [];
+      const { harness } = makeBrowserHarness(
+        { computerUse: true },
+        {
+          computerAutomationBroker: computer,
+          nativeEventLogger: {
+            filePath: "/tmp/not-written",
+            write: (event) =>
+              Effect.sync(() => {
+                logs.push(event);
+              }),
+            close: () => Effect.void,
+          },
+        },
+      );
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Edit notes" });
+        harness.query.emit({
+          type: "stream_event",
+          session_id: BACKGROUND_SESSION_ID,
+          uuid: "computer-start",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: "sensitive-call",
+              name: "mcp__f5_computer__computer_type",
+              input: { text: "REDACTION_SENTINEL" },
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "assistant",
+          session_id: BACKGROUND_SESSION_ID,
+          uuid: "computer-typed-text",
+          parent_tool_use_id: null,
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "sensitive-call",
+                name: "mcp__f5_computer__computer_type",
+                input: { text: "REDACTION_SENTINEL" },
+              },
+            ],
+          },
+        } as unknown as SDKMessage);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+        yield* adapter.stopSession(THREAD_ID);
+        const events = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "session.exited"),
+          Stream.runCollect,
+        );
+        assert.ok(events.some((event) => event.type === "item.completed"));
+        assert.equal(JSON.stringify(events).includes("REDACTION_SENTINEL"), false);
+        assert.equal(JSON.stringify(logs).includes("REDACTION_SENTINEL"), false);
+        assert.equal(computer.generation(THREAD_ID), undefined);
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.ensuring(
+          Effect.sync(() => {
+            selection.mockRestore();
+            computer.close();
+          }),
+        ),
+      );
+    },
+  );
 
   it.effect("installs an in-process preview server without any F5 credential", () => {
     const { harness } = makeBrowserHarness();
@@ -692,6 +1272,51 @@ describe("ClaudeAdapter agent browser", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "installs private MCP configuration over the control channel before returning a ready session",
+    () => {
+      const harness = makeHarness();
+      const setMcpServers = vi.fn(async () => ({
+        added: ["privateHttp", "privateStdio"],
+        removed: [],
+        errors: {},
+      }));
+      Object.assign(harness.query, { setMcpServers });
+      const mcpServers = {
+        privateHttp: {
+          type: "http" as const,
+          url: "https://example.invalid/mcp",
+          headers: { Authorization: "Bearer private-header-fixture" },
+        },
+        privateStdio: {
+          type: "stdio" as const,
+          command: "node",
+          env: { ACCESS_KEY: "private-env-fixture" },
+        },
+      };
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          providerOptions: { mcpServers },
+        });
+        assert.equal(setMcpServers.mock.calls.length, 1);
+        const startup = JSON.stringify(harness.getLastCreateQueryInput()!.options);
+        assert.equal(startup.includes("private-header-fixture"), false);
+        assert.equal(startup.includes("private-env-fixture"), false);
+        assert.equal(
+          JSON.stringify(setMcpServers.mock.calls).includes("private-header-fixture"),
+          true,
+        );
+        assert.equal(
+          JSON.stringify(setMcpServers.mock.calls).includes("private-env-fixture"),
+          true,
+        );
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
 
   it.effect(
     "auto-allows observation and grants mutation once per session after verification",
@@ -895,6 +1520,457 @@ describe("ClaudeAdapter agent browser", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  /** A certified Claude in Chrome launch with an in-memory lease, registration and broker. */
+  function certifiedChromeFixture(options: { validate?: () => Promise<void> } = {}) {
+    const artifacts = new Map<string, string>();
+    const saved = new Map<string, ChromeNativeHostTransaction>();
+    const release = vi.fn();
+    const acquire = vi.fn(async () => {});
+    const record: ClaudeChromeRecord = {
+      ...PROVIDER_INTEGRATION_RECORDS["claude-chrome"][0]!,
+      evidenceId: "fixture-evidence",
+      toolNames: ["navigate"],
+      evidenceCommit: "a".repeat(40),
+    };
+    const descriptor: ChromeNativeHostDescriptor = {
+      ...claudeChromeDescriptor(record),
+      expectedTarget: () => "/test/host",
+      verifyWrapper: async (bytes) => bytes === "wrapper",
+      verifyServer: async (status) => status?.source === "dynamic",
+    };
+    const host = new DesktopComputerHost("profile", "incarnation", undefined, false);
+    const computerBroker = new ComputerAutomationBrokerRuntime(host, {
+      platform: "darwin",
+      storage: { load: async () => [], save: async () => {} },
+      resolve: async () => {
+        throw new Error("not used in Chrome-only fixture");
+      },
+    });
+    const releasers: ChromeReleaser[] = [];
+    const unregistered = vi.fn();
+    const register = computerBroker.registerChromeReleaser.bind(computerBroker);
+    vi.spyOn(computerBroker, "registerChromeReleaser").mockImplementation(
+      (threadId, generation, releaser) => {
+        releasers.push(releaser);
+        const off = register(threadId, generation, releaser);
+        return () => {
+          unregistered();
+          off();
+        };
+      },
+    );
+    const policyRef: { current?: { current: AgentBrowserPolicy } } = {};
+    const runtime = new ChromeSessionRuntime({
+      profileId: "profile",
+      descriptor,
+      record,
+      userHome: "/Users/me",
+      executableRealpath: "/bundle/claude",
+      acquire,
+      release,
+      validate: options.validate ?? (async () => {}),
+      consent: async () => true,
+      paused: () => computerBroker.pause.has(THREAD_ID),
+      policyEnabled: async () => policyRef.current?.current.claudeInChrome ?? false,
+      currentGeneration: (threadId) => computerBroker.generation(threadId),
+      cache: new ChromeArtifactCache({
+        fingerprint: async (path) => artifacts.get(path) ?? null,
+        read: async (path) => artifacts.get(path) ?? null,
+        hash: sha256,
+      }),
+      storage: {
+        inspect: async () => [
+          parseNativeHostManifest("chrome", "user", artifacts.get("user") ?? null),
+        ],
+        readArtifact: async (location) => ({ bytes: artifacts.get(location) ?? null }),
+        writeArtifact: async (location, bytes) => {
+          if (bytes === null) artifacts.delete(location);
+          else artifacts.set(location, bytes);
+        },
+        saveTransaction: async (entry) => {
+          saved.set(entry.id, entry);
+        },
+        listTransactions: async () => [...saved.values()],
+        loadTransaction: async (_, id) => saved.get(id),
+      },
+    });
+    const { harness, policy } = makeBrowserHarness(
+      { claudeInChrome: true },
+      { computerAutomationBroker: computerBroker, chromeRuntime: runtime },
+    );
+    policyRef.current = policy;
+    return {
+      harness,
+      policy,
+      computerBroker,
+      acquire,
+      release,
+      releasers,
+      unregistered,
+      artifacts,
+      record,
+    };
+  }
+
+  it.effect(
+    "stops an idle Chrome session to free Chrome, and refuses while a turn or background task runs",
+    () => {
+      const { harness, computerBroker, release, releasers, unregistered } =
+        certifiedChromeFixture();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        assert.equal(releasers.length, 1);
+        const releaser = releasers[0]!;
+        // Between turns with nothing running: idle.
+        assert.equal(releaser.idle(), true);
+        // A background task outlives its turn and would die with the CLI.
+        emitClaudeTaskStarted(harness.query, { taskId: "shell-task", toolUseId: "bg-tool" });
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(releaser.idle(), false)));
+        assert.equal(yield* Effect.promise(async () => releaser.release()), false);
+        emitClaudeTaskUpdated(harness.query, {
+          taskId: "shell-task",
+          patch: { status: "completed" },
+        });
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(releaser.idle(), true)));
+        // A turn in progress refuses too.
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        assert.equal(releaser.idle(), false);
+        assert.equal(yield* Effect.promise(async () => releaser.release()), false);
+        emitClaudeSuccessResult(harness.query, { uuid: "result-turn" });
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(releaser.idle(), true)));
+        // Idle again: the release stops the session with its reason and frees the lease.
+        assert.equal(yield* Effect.promise(async () => releaser.release()), true);
+        yield* Effect.promise(() =>
+          vi.waitFor(() => {
+            const exited = events.find((event) => event.type === "session.exited");
+            assert.equal(
+              (exited?.payload as { reason?: string } | undefined)?.reason,
+              CLAUDE_CHROME_RELEASED,
+            );
+          }),
+        );
+        assert.equal(release.mock.calls.length, 1);
+        assert.equal(unregistered.mock.calls.length, 1);
+        assert.equal(computerBroker.generation(THREAD_ID), undefined);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => computerBroker.close())),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "reports a Chrome call running before main validates it, and ends it on a denial or the turn's end",
+    () => {
+      const order: string[] = [];
+      let refuse = false;
+      const { harness, computerBroker, artifacts, record } = certifiedChromeFixture({
+        validate: async () => {
+          order.push("validate");
+          if (refuse)
+            throw new ComputerControlError({
+              _tag: "Execution",
+              message:
+                "This thread is controlling the computer; Chrome calls wait until that ends.",
+            });
+        },
+      });
+      harness.query.mcpServerStatusValue = [
+        { name: "claude-in-chrome", status: "connected", source: "dynamic" },
+      ];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.forkChild);
+        const report = computerBroker.reportChromeCalls.bind(computerBroker);
+        vi.spyOn(computerBroker, "reportChromeCalls").mockImplementation(
+          (threadId, generation, running) => {
+            order.push(`calls:${running}`);
+            report(threadId, generation, running);
+          },
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        artifacts.set(
+          "user",
+          JSON.stringify({
+            name: record.identity.hostName,
+            type: "stdio",
+            path: "/test/host",
+            allowed_origins: record.identity.allowedOrigins,
+          }),
+        );
+        artifacts.set("/test/host", "wrapper");
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) =>
+                  event.type === "session.configured" &&
+                  JSON.stringify(event.payload.config.agentBrowser).includes(
+                    '"chrome":{"state":"connected"',
+                  ),
+              ),
+            ),
+          ),
+        );
+        const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!
+          .hooks[0]!;
+        const call = () =>
+          hook(preToolUse("mcp__claude-in-chrome__navigate"), undefined, {
+            signal: new AbortController().signal,
+          });
+        // Main refuses: the call never runs, so its report ends with the denial.
+        refuse = true;
+        order.length = 0;
+        assert.equal(hookDecision(yield* Effect.promise(call)), "deny");
+        // Validation runs once per admission; later steps re-check only local state.
+        assert.deepEqual(order.slice(0, 2), ["calls:true", "validate"]);
+        assert.equal(order.at(-1), "calls:false");
+        // Admitted inside a turn: running until the turn ends.
+        refuse = false;
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        order.length = 0;
+        assert.notEqual(hookDecision(yield* Effect.promise(call)), "deny");
+        assert.deepEqual(order, ["calls:true", "validate"]);
+        emitClaudeSuccessResult(harness.query, { uuid: "result-turn" });
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(order.at(-1), "calls:false")));
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => computerBroker.close())),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "stops counting a Chrome call as running while it waits for approval, and admits it again after",
+    () => {
+      const order: string[] = [];
+      const { harness, computerBroker, artifacts, record } = certifiedChromeFixture({
+        validate: async () => {
+          order.push("validate");
+        },
+      });
+      harness.query.mcpServerStatusValue = [
+        { name: "claude-in-chrome", status: "connected", source: "dynamic" },
+      ];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.forkChild);
+        const report = computerBroker.reportChromeCalls.bind(computerBroker);
+        vi.spyOn(computerBroker, "reportChromeCalls").mockImplementation(
+          (threadId, generation, running) => {
+            order.push(`calls:${running}`);
+            report(threadId, generation, running);
+          },
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "approval-required",
+        });
+        artifacts.set(
+          "user",
+          JSON.stringify({
+            name: record.identity.hostName,
+            type: "stdio",
+            path: "/test/host",
+            allowed_origins: record.identity.allowedOrigins,
+          }),
+        );
+        artifacts.set("/test/host", "wrapper");
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) =>
+                  event.type === "session.configured" &&
+                  JSON.stringify(event.payload.config.agentBrowser).includes(
+                    '"chrome":{"state":"connected"',
+                  ),
+              ),
+            ),
+          ),
+        );
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+        order.length = 0;
+        const navigate = canUseTool(
+          "mcp__claude-in-chrome__navigate",
+          { url: "https://example.com" },
+          permissionOptions("chrome-call"),
+        );
+        yield* Effect.promise(() =>
+          vi.waitFor(() => assert.ok(events.some((event) => event.type === "request.opened"))),
+        );
+        // Admitted, then ended for the prompt: nobody waits on the user's decision.
+        assert.deepEqual(order, ["calls:true", "validate", "calls:false"]);
+        const opened = events.find((event) => event.type === "request.opened")!;
+        yield* adapter.respondToRequest(
+          THREAD_ID,
+          ApprovalRequestId.makeUnsafe(opened.requestId!),
+          "accept",
+        );
+        assert.equal((yield* Effect.promise(() => navigate))?.behavior, "allow");
+        // Approval admits it again, and it runs from there.
+        assert.deepEqual(order.slice(3), ["calls:true", "validate"]);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => computerBroker.close())),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "routes a certified Chrome launch through its lease, status verifier and live veto",
+    () => {
+      const artifacts = new Map<string, string>();
+      const saved = new Map<string, ChromeNativeHostTransaction>();
+      const release = vi.fn();
+      const acquire = vi.fn(async () => {});
+      const record: ClaudeChromeRecord = {
+        ...PROVIDER_INTEGRATION_RECORDS["claude-chrome"][0]!,
+        evidenceId: "fixture-evidence",
+        toolNames: ["navigate"],
+        evidenceCommit: "a".repeat(40),
+      };
+      const descriptor: ChromeNativeHostDescriptor = {
+        ...claudeChromeDescriptor(record),
+        expectedTarget: () => "/test/host",
+        verifyWrapper: async (bytes) => bytes === "wrapper",
+        verifyServer: async (status) => status?.source === "dynamic",
+      };
+      let browserPolicy: { current: AgentBrowserPolicy } | undefined;
+      const host = new DesktopComputerHost("profile", "incarnation", undefined, false);
+      const computerBroker = new ComputerAutomationBrokerRuntime(host, {
+        platform: "darwin",
+        storage: { load: async () => [], save: async () => {} },
+        resolve: async () => {
+          throw new Error("not used in Chrome-only fixture");
+        },
+      });
+      const runtime = new ChromeSessionRuntime({
+        profileId: "profile",
+        descriptor,
+        record,
+        userHome: "/Users/me",
+        executableRealpath: "/bundle/claude",
+        acquire,
+        release,
+        validate: async () => {},
+        consent: async () => true,
+        paused: () => computerBroker.pause.has(THREAD_ID),
+        policyEnabled: async () => browserPolicy?.current.claudeInChrome ?? false,
+        currentGeneration: (threadId) => computerBroker.generation(threadId),
+        cache: new ChromeArtifactCache({
+          fingerprint: async (path) => artifacts.get(path) ?? null,
+          read: async (path) => artifacts.get(path) ?? null,
+          hash: sha256,
+        }),
+        storage: {
+          inspect: async () => [
+            parseNativeHostManifest("chrome", "user", artifacts.get("user") ?? null),
+          ],
+          readArtifact: async (location) => ({ bytes: artifacts.get(location) ?? null }),
+          writeArtifact: async (location, bytes) => {
+            if (bytes === null) artifacts.delete(location);
+            else artifacts.set(location, bytes);
+          },
+          saveTransaction: async (entry) => {
+            saved.set(entry.id, entry);
+          },
+          listTransactions: async () => [...saved.values()],
+          loadTransaction: async (_, id) => saved.get(id),
+        },
+      });
+      const { harness, policy } = makeBrowserHarness(
+        { claudeInChrome: true },
+        { computerAutomationBroker: computerBroker, chromeRuntime: runtime },
+      );
+      browserPolicy = policy;
+      harness.query.mcpServerStatusValue = [
+        { name: "claude-in-chrome", status: "connected", source: "dynamic" },
+      ];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        assert.deepEqual(harness.getLastCreateQueryInput()!.options.extraArgs, { chrome: null });
+        assert.equal(acquire.mock.calls.length, 1);
+        // The CLI writes its registration and wrapper after it connects.
+        artifacts.set(
+          "user",
+          JSON.stringify({
+            name: record.identity.hostName,
+            type: "stdio",
+            path: "/test/host",
+            allowed_origins: record.identity.allowedOrigins,
+          }),
+        );
+        artifacts.set("/test/host", "wrapper");
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) =>
+                  event.type === "session.configured" &&
+                  JSON.stringify(event.payload.config.agentBrowser).includes(
+                    '"chrome":{"state":"connected"',
+                  ),
+              ),
+            ),
+          ),
+        );
+        const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!
+          .hooks[0]!;
+        const call = () =>
+          hook(preToolUse("mcp__claude-in-chrome__navigate"), undefined, {
+            signal: new AbortController().signal,
+          });
+        assert.notEqual(hookDecision(yield* Effect.promise(call)), "deny");
+        computerBroker.pause.set(THREAD_ID, true);
+        assert.equal(hookDecision(yield* Effect.promise(call)), "deny");
+        computerBroker.pause.set(THREAD_ID, false);
+        policy.current = { ...policy.current, claudeInChrome: false };
+        assert.equal(hookDecision(yield* Effect.promise(call)), "deny");
+        yield* adapter.stopSession(THREAD_ID);
+        assert.equal(release.mock.calls.length, 1);
+        assert.equal(computerBroker.generation(THREAD_ID), undefined);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => computerBroker.close())),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("keeps uncertified Claude in Chrome off at launch and denies its tools", () => {
     const { harness } = makeBrowserHarness({ claudeInChrome: true });
@@ -1578,6 +2654,246 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "launches with attachment read exemptions, opt-in write confinement, and a fail-closed hook",
+    () => {
+      const harness = makeHarness({
+        oneOffProviderOptions: { confineWritesToWorkspace: true, nativeCompaction: false },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        const options = harness.getLastCreateQueryInput()?.options;
+        const settings = options?.settings as Record<string, unknown> | undefined;
+        const permissions = settings?.permissions as Record<string, unknown> | undefined;
+        // The harness's state dir is `/tmp`; Windows resolves it under a drive letter.
+        assert.ok(
+          (permissions?.blockReadsExemptPaths as string[] | undefined)?.includes(
+            path.resolve("/tmp/attachments"),
+          ),
+        );
+        assert.equal(permissions?.blockWritesOutsideWorkingDirectories, true);
+        assert.equal(settings?.idleCompaction, false);
+        // The bundled runtime honors onFailure, so F5's mandatory matcher blocks on hook errors.
+        assert.equal(options?.hooks?.PreToolUse?.at(-1)?.onFailure, "block");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "captures a Claude MCP App on completion and falls back to a plain row on failure",
+    () => {
+      const stateDir = mkdtempSync(path.join(os.tmpdir(), "f5-claude-mcp-app-"));
+      const harness = makeHarness({ stateDir });
+      const reads: Array<[string, string]> = [];
+      Object.assign(harness.query, {
+        readMcpResource: async (server: string, uri: string) => {
+          reads.push([server, uri]);
+          if (uri === "ui://charts/broken") throw new Error("resources/read failed");
+          return { contents: [{ uri, mimeType: MCP_APP_MIME_TYPE, text: "<p>Chart</p>" }] };
+        },
+      });
+      harness.query.mcpServerStatusValue = [
+        {
+          name: "charts",
+          status: "connected",
+          tools: [
+            { name: "show", _meta: { ui: { resourceUri: "ui://charts/view" } } },
+            { name: "broken", _meta: { ui: { resourceUri: "ui://charts/broken" } } },
+          ],
+        },
+      ] as unknown as typeof harness.query.mcpServerStatusValue;
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        // App attachments belong to a projected thread.
+        const sql = yield* SqlClient.SqlClient;
+        const at = "2026-11-03T10:00:00.000Z";
+        yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,default_model,scripts_json,created_at,updated_at,deleted_at) VALUES('mcp-app-project','P','/tmp',NULL,'[]',${at},${at},NULL)`;
+        yield* sql`INSERT INTO projection_threads(thread_id,project_id,title,model,branch,worktree_path,latest_turn_id,archived_at,created_at,last_interaction_at,updated_at,deleted_at) VALUES(${THREAD_ID},'mcp-app-project','T','claude-opus-5-5',NULL,NULL,NULL,NULL,${at},${at},${at},NULL)`;
+        const completedFiber = yield* Stream.filter(
+          adapter.streamEvents,
+          (event) => event.type === "item.completed",
+        ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "chart", attachments: [] });
+        harness.query.emit({
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-mcp-app",
+          uuid: "mcp-app-init",
+          model: "claude-opus-5-5",
+          capabilities: ["mcp_read_resource_v1", "mcp_tool_ui_meta_v1"],
+        } as unknown as SDKMessage);
+        ["show", "broken"].forEach((tool, index) => {
+          const id = `tool-mcp-app-${tool}`;
+          harness.query.emit({
+            type: "stream_event",
+            session_id: "sdk-session-mcp-app",
+            uuid: `stream-${id}`,
+            parent_tool_use_id: null,
+            event: {
+              type: "content_block_start",
+              index,
+              content_block: {
+                type: "mcp_tool_use",
+                id,
+                name: `mcp__charts__${tool}`,
+                input: { range: "week" },
+              },
+            },
+          } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "user",
+            session_id: "sdk-session-mcp-app",
+            uuid: `user-${id}`,
+            parent_tool_use_id: null,
+            message: {
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: id, content: "Rendered" }],
+            },
+          } as unknown as SDKMessage);
+        });
+        const [captured, fallback] = Array.from(yield* Fiber.join(completedFiber));
+        const data = (captured?.payload as { data?: Record<string, unknown> } | undefined)?.data;
+        assert.equal(
+          (data?.mcpApp as { resourceUri?: string } | undefined)?.resourceUri,
+          "ui://charts/view",
+        );
+        assert.deepEqual(data?.mcpAppTool, { server: "charts", tool: "show" });
+        const app = runtimeEventToActivities(captured!).find(
+          (activity) => activity.kind === "mcpApp",
+        );
+        assert.equal(app?.summary, "show");
+        assert.equal((data?.mcpApp as { provider?: string } | undefined)?.provider, "claudeAgent");
+        assert.deepEqual(data?.mcpAppBootstrap, {
+          arguments: { range: "week" },
+          result: { content: [{ type: "text", text: "Rendered" }] },
+        });
+        const plain = (fallback?.payload as { data?: Record<string, unknown> } | undefined)?.data;
+        assert.equal(plain?.mcpApp, undefined);
+        assert.deepEqual(reads, [
+          ["charts", "ui://charts/view"],
+          ["charts", "ui://charts/broken"],
+        ]);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => rmSync(stateDir, { recursive: true, force: true }))),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(
+          harness.layer.pipe(
+            Layer.provideMerge(SqlitePersistenceMemory.pipe(Layer.provide(NodeServices.layer))),
+          ),
+        ),
+      );
+    },
+  );
+
+  it.effect("delivers MCP App model context after the user's text", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const appState =
+        '\n\n<untrusted_mcp_app_state>\n{"server":"charts"}\n</untrusted_mcp_app_state>';
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Summarize the chart",
+        attachments: [],
+        mcpAppContext: appState,
+      });
+      const promptText = yield* Effect.promise(() =>
+        readFirstPromptText(harness.getLastCreateQueryInput()),
+      );
+      assert.ok(promptText?.endsWith(`Summarize the chart${appState}`));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("never lets a thread's start options loosen write confinement", () => {
+    const harness = makeHarness({ oneOffProviderOptions: { confineWritesToWorkspace: true } });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        providerOptions: { claudeAgent: { confineWritesToWorkspace: false } },
+      });
+      const settings = harness.getLastCreateQueryInput()?.options.settings as
+        | { permissions?: Record<string, unknown> }
+        | undefined;
+      assert.equal(settings?.permissions?.blockWritesOutsideWorkingDirectories, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("warns on lost transcript writes and marks the resume cursor incomplete", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const sessionId = "6e81554e-5cff-4b37-8a39-f3a9051ac235";
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const warningFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "runtime.warning",
+      ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+      // A loss limited to another session's transcript leaves this cursor alone.
+      harness.query.emit({
+        type: "system",
+        subtype: "session_writes_lost",
+        error_code: "ENOSPC",
+        lost: ["transcript"],
+        transcript_session_ids: ["9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"],
+        session_id: sessionId,
+        uuid: "writes-lost-other",
+      } as unknown as SDKMessage);
+      const before = (yield* adapter.listSessions())[0]?.resumeCursor as Record<string, unknown>;
+      assert.notEqual(before?.transcriptIncomplete, true);
+      harness.query.emit({
+        type: "system",
+        subtype: "session_writes_lost",
+        error_code: "ENOSPC",
+        lost: ["transcript"],
+        session_id: sessionId,
+        uuid: "writes-lost",
+      } as unknown as SDKMessage);
+      const warnings = Array.from(yield* Fiber.join(warningFiber));
+      assert.equal(warnings.length, 2);
+      const warning = warnings[1];
+      if (warning?.type === "runtime.warning") {
+        assert.equal(warning.payload.message, CLAUDE_SESSION_WRITES_LOST_WARNING);
+        assert.deepEqual(warning.payload.detail, { error_code: "ENOSPC", lost: ["transcript"] });
+      }
+      const cursor = (yield* adapter.listSessions())[0]?.resumeCursor as Record<string, unknown>;
+      assert.equal(cursor?.transcriptIncomplete, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("returns validation error for non-claude provider on startSession", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1611,6 +2927,7 @@ describe("ClaudeAdapterLive", () => {
       USERPROFILE: "/isolated-account",
       ANTHROPIC_API_KEY: "instance-key",
       ANTHROPIC_BASE_URL: "https://instance.example",
+      CLAUDE_CODE_ENTRYPOINT: "instance-entrypoint",
     };
     const harness = makeHarness({ processEnvironment: environment });
     return Effect.gen(function* () {
@@ -1625,6 +2942,7 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(env?.USERPROFILE, environment.USERPROFILE);
       assert.equal(env?.ANTHROPIC_API_KEY, environment.ANTHROPIC_API_KEY);
       assert.equal(env?.ANTHROPIC_BASE_URL, environment.ANTHROPIC_BASE_URL);
+      assert.equal(env?.CLAUDE_CODE_ENTRYPOINT, environment.CLAUDE_CODE_ENTRYPOINT);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1858,6 +3176,46 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect.skipIf(process.platform !== "darwin")(
+    "gives the Claude session its thread's browser-open token in place of an inherited one",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const previous = {
+          host: process.env.F5_DESKTOP_COMPUTER_HOST,
+          token: process.env[BROWSER_OPEN_TOKEN_ENV],
+        };
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            for (const [key, value] of [
+              ["F5_DESKTOP_COMPUTER_HOST", previous.host],
+              [BROWSER_OPEN_TOKEN_ENV, previous.token],
+            ] as const)
+              if (value === undefined) delete process.env[key];
+              else process.env[key] = value;
+          }),
+        );
+        process.env.F5_DESKTOP_COMPUTER_HOST = "ipc";
+        process.env[BROWSER_OPEN_TOKEN_ENV] = "inherited";
+
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+
+        assert.equal(
+          harness.getLastCreateQueryInput()?.options.env?.[BROWSER_OPEN_TOKEN_ENV],
+          browserOpenTokenFor(THREAD_ID),
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("canonicalizes a concrete subagent model override in the Claude query env", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -2064,6 +3422,11 @@ describe("ClaudeAdapterLive", () => {
         true,
       );
 
+      const request = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "request.opened"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
       const grepPermission = yield* Effect.promise(() =>
         canUseTool(
           "Grep",
@@ -2077,8 +3440,16 @@ describe("ClaudeAdapterLive", () => {
             requestId: "request-disabled-agent-grep-1",
           },
         ),
-      );
-      assert.equal((grepPermission as PermissionResult).behavior, "allow");
+      ).pipe(Effect.forkChild);
+      const opened = yield* Fiber.join(request);
+      assert.ok(Option.isSome(opened));
+      if (Option.isSome(opened) && opened.value.requestId)
+        yield* adapter.respondToRequest(
+          THREAD_ID,
+          ApprovalRequestId.makeUnsafe(opened.value.requestId),
+          "accept",
+        );
+      assert.equal((yield* Fiber.join(grepPermission))?.behavior, "allow");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -2115,7 +3486,7 @@ describe("ClaudeAdapterLive", () => {
           { type: "text", text: "Ultrathink:\nSummarize" },
         ]);
         assert.equal(request.options.effort, undefined);
-        assert.deepEqual(request.options.settings, {
+        assert.deepEqual(withoutFlagPermissions(request.options.settings), {
           cleanupPeriodDays: 3650,
           ...(fastMode ? { fastMode: true } : {}),
         });
@@ -2271,6 +3642,7 @@ describe("ClaudeAdapterLive", () => {
               launchArgs: {
                 "--verbose": null,
                 resume: "skip-me",
+                "--append-system-prompt": "chat sessions only",
               },
             },
           },
@@ -2336,6 +3708,25 @@ describe("ClaudeAdapterLive", () => {
       );
     },
   );
+
+  it.effect("forwards explicit effort for an uncatalogued Claude model", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "custom-model",
+        runtimeMode: "full-access",
+        modelOptions: { claudeAgent: { effort: "max" } },
+      });
+      assert.equal(harness.getLastCreateQueryInput()?.options.model, "custom-model");
+      assert.equal(harness.getLastCreateQueryInput()?.options.effort, "max");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("forwards claude effort levels into query options", () => {
     const harness = makeHarness();
@@ -2432,12 +3823,86 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(session.model, "claude-opus-5");
       assert.equal(createInput?.options.model, "claude-opus-5");
       assert.equal(createInput?.options.effort, "high");
-      assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650, fastMode: true });
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
+        cleanupPeriodDays: 3650,
+        fastMode: true,
+        showThinkingSummaries: true,
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "reports a fast mode refusal that settles after init for a modelSelection request",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: Array<ProviderRuntimeEvent> = [];
+        const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.forkChild);
+        const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+        // Fast mode arrives only through modelSelection, never through modelOptions.
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-opus-5-5",
+            [{ id: "fastMode", value: true }],
+          ),
+          runtimeMode: "full-access",
+        });
+        // A turn without model options keeps the fast mode the session applied.
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "go", attachments: [] });
+        harness.query.emit({
+          type: "system",
+          subtype: "init",
+          session_id: sessionId,
+          uuid: "fast-mode-init",
+          model: "claude-opus-5-5",
+          fast_mode_state: "off",
+          fast_mode_disabled_reason: "pending",
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: sessionId,
+          uuid: "fast-mode-result",
+          result: "done",
+          total_cost_usd: 0,
+          modelUsage: {},
+          stop_reason: "end_turn",
+          fast_mode_state: "off",
+          fast_mode_disabled_reason: "extra_usage_disabled",
+        } as unknown as SDKMessage);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        yield* Fiber.interrupt(eventFiber);
+
+        const configs = events.flatMap((event) =>
+          event.type === "session.configured" ? [event.payload.config] : [],
+        );
+        assert.equal(
+          configs.some((config) => config.fast_mode_disabled_reason === "pending"),
+          true,
+        );
+        const latest = configs.at(-1);
+        assert.equal(latest?.fast_mode_disabled_reason, "extra_usage_disabled");
+        assert.deepEqual(latest?.runtimeInfo, {
+          requested: { fastMode: "on" },
+          effective: { model: "claude-opus-5-5", fastMode: "off" },
+          fallback: "fastMode: on → off (usage credits not enabled)",
+        });
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("maps legacy maxThinkingTokens to adaptive thinking on adaptive models", () => {
     const harness = makeHarness();
@@ -2824,6 +4289,12 @@ describe("ClaudeAdapterLive", () => {
           agent_id: "agent-1",
         },
         { type: "system", subtype: "informational", level: "notice", content: "Notice" },
+        {
+          type: "system",
+          subtype: "informational",
+          level: "suggestion",
+          content: "Prompt dropped by a hook: Deploys are frozen.",
+        },
         { type: "system", subtype: "model_refusal_no_fallback", content: "Refused" },
         { type: "system", subtype: "informational", level: "info", content: "Quiet" },
         { type: "system", subtype: "future_notice" },
@@ -2842,7 +4313,12 @@ describe("ClaudeAdapterLive", () => {
         events
           .filter((event) => event.type === "runtime.warning")
           .map((event) => event.payload.message),
-        ["Write was denied: Policy restriction", "Notice", "Refused"],
+        [
+          "Write was denied: Policy restriction",
+          "Notice",
+          "Prompt dropped by a hook: Deploys are frozen.",
+          "Refused",
+        ],
       );
       const cursor = (yield* adapter.listSessions())[0]!.resumeCursor as {
         resume: string;
@@ -3092,6 +4568,78 @@ describe("ClaudeAdapterLive", () => {
         options.planModeInstructions?.includes("Workflow Read-Only Host Contract"),
         false,
       );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("folds append system prompt launch arguments into the SDK append", () => {
+    const harness = makeHarness();
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "claude-append-"));
+    writeFileSync(path.join(cwd, "append.md"), "From the file.\n");
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        cwd,
+        providerOptions: {
+          claudeAgent: {
+            launchArgs: {
+              "append-system-prompt": "Inline text.",
+              "append-system-prompt-file": "append.md",
+              verbose: null,
+            },
+          },
+        },
+      });
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      const append = (options?.systemPrompt as { readonly append?: string } | undefined)?.append;
+      assert.ok(append?.includes("F5 switches between Default and Plan mode"));
+      assert.ok(append?.endsWith("\n\nFrom the file.\n\nInline text."));
+      assert.deepEqual(options?.extraArgs, { verbose: null, "no-chrome": null });
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => rmSync(cwd, { recursive: true, force: true }))),
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect.each([
+    [
+      "an unreadable append file",
+      { "append-system-prompt-file": "missing-append.md" },
+      /could not read the --append-system-prompt-file launch argument at .*missing-append\.md/,
+    ],
+    [
+      "a missing append value",
+      { "--append-system-prompt": null },
+      /The --append-system-prompt launch argument has no text/,
+    ],
+    [
+      "an empty append file path",
+      { "append-system-prompt-file": "" },
+      /The --append-system-prompt-file launch argument has no file path/,
+    ],
+  ] as const)("refuses to start with %s", ([, launchArgs, message]) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const error = yield* adapter
+        .startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          cwd: os.tmpdir(),
+          providerOptions: { claudeAgent: { launchArgs } },
+        })
+        .pipe(Effect.flip);
+      assert.ok(Schema.is(ProviderAdapterValidationError)(error));
+      assert.match(error.issue, message);
+      assert.equal(harness.getLastCreateQueryInput(), undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -3536,7 +5084,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, {
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
         cleanupPeriodDays: 3650,
         alwaysThinkingEnabled: false,
       });
@@ -3563,14 +5111,17 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650 });
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
+        cleanupPeriodDays: 3650,
+        showThinkingSummaries: true,
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
   });
 
-  it.effect("forwards Claude Opus 4.8 Fast Mode into SDK settings", () => {
+  it.effect("no longer forwards the deprecated built-in Opus 4.8 Fast Mode", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -3587,9 +5138,9 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, {
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
         cleanupPeriodDays: 3650,
-        fastMode: true,
+        showThinkingSummaries: true,
       });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -3614,7 +5165,10 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650 });
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
+        cleanupPeriodDays: 3650,
+        showThinkingSummaries: true,
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -3638,7 +5192,10 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650 });
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
+        cleanupPeriodDays: 3650,
+        showThinkingSummaries: true,
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -3662,7 +5219,10 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650 });
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
+        cleanupPeriodDays: 3650,
+        showThinkingSummaries: true,
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -3838,6 +5398,50 @@ describe("ClaudeAdapterLive", () => {
         readFirstPromptText(harness.getLastCreateQueryInput()),
       );
       assert.equal(promptText, "/compact");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("supplies authorized PDF files as native document blocks", () => {
+    const stateDir = mkdtempSync(path.join(os.tmpdir(), "claude-pdf-"));
+    const harness = makeHarness({ cwd: "/tmp/project-claude-pdf", stateDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => rmSync(stateDir, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const bytes = Buffer.from(
+        "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Count 1 /Kids [3 0 R] >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R >> endobj\n%%EOF",
+      );
+      const file = path.join(stateDir, "scan.pdf");
+      writeFileSync(file, bytes);
+      const attachment = {
+        type: "file" as const,
+        id: "scan-12345678-1234-1234-1234-123456789abc",
+        name: "scan.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: bytes.length,
+        localPath: file,
+      };
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Read the scan",
+        attachments: [],
+        resolvedAttachments: [attachment],
+      });
+      const message = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.isDefined(message);
+      assert.isTrue(JSON.stringify(message?.message.content).includes('"type":"document"'));
+      assert.isTrue(JSON.stringify(message?.message.content).includes(bytes.toString("base64")));
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -4281,6 +5885,350 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("emits reasoning lifecycle events for Claude thinking blocks", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "think",
+        attachments: [],
+      });
+      const emit = (message: Record<string, unknown>) =>
+        harness.query.emit({
+          uuid: crypto.randomUUID(),
+          session_id: "sdk-session-thinking",
+          ...message,
+        } as unknown as SDKMessage);
+      const stream = (event: Record<string, unknown>) =>
+        emit({ type: "stream_event", parent_tool_use_id: null, event });
+
+      // Session signals make the first result a segment boundary, not the end.
+      emit({ type: "system", subtype: "session_state_changed", state: "running" });
+      stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      stream({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "Plan" },
+      });
+      stream({ type: "content_block_stop", index: 0 });
+      stream({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "redacted_thinking", data: "redacted-secret-blob" },
+      });
+      stream({ type: "content_block_stop", index: 1 });
+      // A new message reuses index 0 and is still open at the segment boundary.
+      stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      emit({ type: "result", subtype: "success", is_error: false, errors: [] });
+      // Still open when the turn completes.
+      stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      emit({ type: "system", subtype: "session_state_changed", state: "idle" });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const id = (count: number) => `${turn.turnId}:thinking:${count}`;
+      assert.deepEqual(
+        events.flatMap((event) =>
+          (event.type === "item.started" || event.type === "item.completed") &&
+          event.payload.itemType === "reasoning"
+            ? [`${event.type} ${event.itemId}`]
+            : [],
+        ),
+        [
+          `item.started ${id(1)}`,
+          `item.completed ${id(1)}`,
+          `item.started ${id(2)}`,
+          `item.completed ${id(2)}`,
+          `item.started ${id(3)}`,
+          `item.completed ${id(3)}`,
+          `item.started ${id(4)}`,
+          `item.completed ${id(4)}`,
+        ],
+      );
+      const thinkingDelta = events.find(
+        (event) => event.type === "content.delta" && event.payload.streamKind === "reasoning_text",
+      );
+      assert.equal(thinkingDelta?.itemId, id(1));
+      // Redacted thinking never becomes readable payload text.
+      assert.equal(
+        events.some((event) =>
+          JSON.stringify(event.payload ?? {}).includes("redacted-secret-blob"),
+        ),
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("reports estimated thinking tokens when each thinking block closes", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "think",
+        attachments: [],
+      });
+      const emit = (message: Record<string, unknown>) =>
+        harness.query.emit({
+          uuid: crypto.randomUUID(),
+          session_id: "sdk-session-thinking-tokens",
+          ...message,
+        } as unknown as SDKMessage);
+      const stream = (event: Record<string, unknown>) =>
+        emit({ type: "stream_event", parent_tool_use_id: null, event });
+      const estimate = (tokens: number) =>
+        emit({ type: "system", subtype: "thinking_tokens", estimated_tokens: tokens });
+
+      stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      estimate(300);
+      estimate(700);
+      stream({ type: "content_block_stop", index: 0 });
+      stream({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      // The estimate restarts for a new block, even when its first frame
+      // is above the previous block's final estimate.
+      estimate(900);
+      estimate(1_000);
+      stream({ type: "content_block_stop", index: 1 });
+      // A late frame for the closed block is reported when the turn ends.
+      estimate(1_150);
+      emit({ type: "result", subtype: "success", is_error: false, errors: [] });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const reports = events.flatMap((event) =>
+        event.type === "turn.reasoning-tokens.reported"
+          ? [{ itemId: event.itemId, turnId: String(event.turnId), ...event.payload }]
+          : [],
+      );
+      const turnId = String(turn.turnId);
+      assert.deepEqual(reports, [
+        { itemId: `${turnId}:thinking:1`, turnId, tokens: 700, estimated: true },
+        { itemId: `${turnId}:thinking:2`, turnId, tokens: 1_000, estimated: true },
+        { itemId: undefined, turnId, tokens: 150, estimated: true },
+      ]);
+      const completedIndex = events.findIndex((event) => event.type === "turn.completed");
+      const lastReportIndex = events.findLastIndex(
+        (event) => event.type === "turn.reasoning-tokens.reported",
+      );
+      assert.isTrue(lastReportIndex < completedIndex);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("closes a stale thinking block and ignores thinking after an interrupt", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const lifecycle = (events: Iterable<ProviderRuntimeEvent>) =>
+        Array.from(events).flatMap((event) =>
+          event.type === "item.started" || event.type === "item.completed"
+            ? [`${event.type} ${event.payload.itemType}`]
+            : [],
+        );
+      const firstPhase = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil(
+          (event) =>
+            event.type === "item.completed" && event.payload.itemType === "assistant_message",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "think",
+        attachments: [],
+      });
+      const stream = (event: Record<string, unknown>) =>
+        harness.query.emit({
+          uuid: crypto.randomUUID(),
+          session_id: "sdk-session-thinking-stale",
+          type: "stream_event",
+          parent_tool_use_id: null,
+          event,
+        } as unknown as SDKMessage);
+
+      // The thinking block's stop never arrives before a text block reuses index 0.
+      stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      stream({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+      stream({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "\nAnswer \t" },
+      });
+      stream({ type: "content_block_stop", index: 0 });
+      // The text block's own stop still completes the text block.
+      const firstEvents = Array.from(yield* Fiber.join(firstPhase));
+      const completed = firstEvents.find(
+        (event) =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message",
+      );
+      assert.deepEqual(completed?.type === "item.completed" ? completed.payload.data : undefined, {
+        text: "\nAnswer \t",
+      });
+      assert.deepEqual(lifecycle(firstEvents), [
+        "item.started reasoning",
+        "item.completed reasoning",
+        "item.completed assistant_message",
+      ]);
+
+      // After an interrupt request, new thinking blocks are not announced.
+      const secondPhase = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.interruptTurn(session.threadId, turn.turnId);
+      stream({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-thinking-stale",
+        uuid: "result-thinking-stale",
+      } as unknown as SDKMessage);
+      assert.deepEqual(lifecycle(yield* Fiber.join(secondPhase)), []);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("requests thinking summaries unless a typed display omits them", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const summaries = () =>
+        (
+          harness.getLastCreateQueryInput()?.options.settings as
+            | { showThinkingSummaries?: boolean }
+            | undefined
+        )?.showThinkingSummaries;
+
+      // No requested model: the install default still gets overridden.
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      assert.equal(summaries(), true);
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "switch",
+        model: "claude-opus-4-6",
+        attachments: [],
+      });
+      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6"]);
+      assert.equal(
+        harness.query.applyFlagSettingsCalls.some((settings) =>
+          Object.hasOwn(settings, "showThinkingSummaries"),
+        ),
+        false,
+      );
+      assert.equal(summaries(), true);
+      yield* adapter.stopSession(session.threadId);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        providerOptions: { claudeAgent: { thinking: { type: "adaptive", display: "omitted" } } },
+        runtimeMode: "full-access",
+      });
+      assert.equal(summaries(), false);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it("accumulates Claude thinking estimates from deltas, falling back to the running total", () => {
+    // The SDK's per-frame delta wins, even across blocks whose totals are equal.
+    let account = accumulateClaudeThinkingTokens(undefined, 200, 200);
+    account = accumulateClaudeThinkingTokens({ ...account, lastEstimate: 0 }, 200, 200);
+    assert.equal(account.pending, 400);
+    // Without a delta the running total is diffed; a block reset makes an
+    // equal or higher first estimate count in full.
+    let fallback = accumulateClaudeThinkingTokens(undefined, 300);
+    fallback = accumulateClaudeThinkingTokens({ ...fallback, lastEstimate: 0 }, 300);
+    assert.equal(fallback.pending, 600);
+    // A drop without a reset is still read as a new block.
+    assert.equal(accumulateClaudeThinkingTokens(fallback, 50).pending, 650);
+  });
+
+  it("derives showThinkingSummaries from the typed thinking display", () => {
+    assert.equal(claudeShowThinkingSummaries(undefined), true);
+    assert.equal(claudeShowThinkingSummaries({ type: "adaptive" }), true);
+    assert.equal(claudeShowThinkingSummaries({ type: "disabled" }), undefined);
+    assert.equal(claudeShowThinkingSummaries({ type: "adaptive", display: "summarized" }), true);
+    assert.equal(claudeShowThinkingSummaries({ type: "enabled", display: "omitted" }), false);
+    // The user's own Claude setting applies untouched...
+    assert.equal(claudeShowThinkingSummaries(undefined, false), undefined);
+    assert.equal(claudeShowThinkingSummaries({ type: "adaptive" }, true), undefined);
+    // ...but a typed display in F5 still wins.
+    assert.equal(
+      claudeShowThinkingSummaries({ type: "adaptive", display: "summarized" }, false),
+      true,
+    );
+  });
+
   it.effect("classifies Claude Task tool invocations as collaboration agent work", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -4595,7 +6543,7 @@ describe("ClaudeAdapterLive", () => {
           tool_use_result: structured,
         } as unknown as SDKMessage);
 
-      // A child agent's own task list must not drive the parent thread's panel.
+      // Child stream events never start parent tool items.
       harness.query.emit({
         type: "stream_event",
         session_id: "sdk-session-tasks",
@@ -4611,17 +6559,6 @@ describe("ClaudeAdapterLive", () => {
             input: { subject: "Child work" },
           },
         },
-      } as unknown as SDKMessage);
-      harness.query.emit({
-        type: "user",
-        session_id: "sdk-session-tasks",
-        uuid: "user-child-task",
-        parent_tool_use_id: "agent-tool",
-        message: {
-          role: "user",
-          content: [{ type: "tool_result", tool_use_id: "child-task-create", content: "ok" }],
-        },
-        tool_use_result: { task: { id: "1", subject: "Child work" } },
       } as unknown as SDKMessage);
       toolUse(0, "tool-task-create-1", "TaskCreate", {
         subject: "Run tests",
@@ -4671,6 +6608,223 @@ describe("ClaudeAdapterLive", () => {
           assert.equal("completion" in event.payload, false);
         }
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("feeds subagent TaskCreate and TaskUpdate results to the parent task list", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "item.started" || event.type === "item.completed",
+      ).pipe(
+        Stream.takeUntil(
+          (event) => event.type === "item.completed" && event.itemId === "child-update-error",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "delegate", attachments: [] });
+
+      const childToolUse = (id: string, name: string, input: unknown) =>
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-tasks",
+          uuid: `assistant-${id}`,
+          parent_tool_use_id: "agent-tool",
+          message: {
+            id: `message-${id}`,
+            role: "assistant",
+            content: [{ type: "tool_use", id, name, input }],
+          },
+        } as unknown as SDKMessage);
+      // Subagent results are text only; they carry no structured tool_use_result.
+      const childToolResult = (id: string, text: string, isError = false) =>
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-tasks",
+          uuid: `user-${id}`,
+          parent_tool_use_id: "agent-tool",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: id, content: text, is_error: isError }],
+          },
+        } as unknown as SDKMessage);
+
+      childToolUse("child-list", "TaskList", {});
+      childToolResult("child-list", "#1 [pending] Child work");
+      childToolUse("child-create", "TaskCreate", { subject: "Child work" });
+      childToolResult("child-create", "Task #1 created successfully: Child work");
+      childToolUse("child-update", "TaskUpdate", { taskId: "1", status: "completed" });
+      childToolResult("child-update", "Updated task #1 status");
+      childToolUse("child-update-missing", "TaskUpdate", { taskId: "9", status: "completed" });
+      childToolResult("child-update-missing", "Task #9 not found");
+      // A cancelled call never ran, even when its text reads like a success.
+      childToolUse("child-update-cancelled", "TaskUpdate", { taskId: "1", status: "pending" });
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-tasks",
+        uuid: "user-child-update-cancelled",
+        parent_tool_use_id: "agent-tool",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "child-update-cancelled",
+              content: "Updated task #1 status",
+            },
+          ],
+        },
+        tool_result_meta: [{ id: "child-update-cancelled", non_execution_kind: "cancelled" }],
+      } as unknown as SDKMessage);
+      childToolUse("child-update-error", "TaskUpdate", { taskId: "1", status: "pending" });
+      childToolResult("child-update-error", "<tool_use_error>Denied</tool_use_error>", true);
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      // Child reads stay with the child.
+      assert.equal(
+        events.some((event) => event.itemId === "child-list"),
+        false,
+      );
+      const started = events.filter((event) => event.type === "item.started");
+      assert.deepEqual(
+        started.map((event) => String(event.itemId)),
+        [
+          "child-create",
+          "child-update",
+          "child-update-missing",
+          "child-update-cancelled",
+          "child-update-error",
+        ],
+      );
+      const completion = (itemId: string) => {
+        const event = events.find(
+          (candidate): candidate is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+            candidate.type === "item.completed" && candidate.itemId === itemId,
+        );
+        return event?.payload.completion;
+      };
+      assert.deepEqual(completion("child-create"), {
+        version: 1,
+        nativeCallId: "child-create",
+        nativeSessionId: "sdk-session-tasks",
+        toolName: "TaskCreate",
+        input: { subject: "Child work" },
+        structuredOutput: { task: { id: "1", subject: "Child work" } },
+        transportError: false,
+        semanticSuccess: true,
+      });
+      assert.equal(completion("child-update")?.semanticSuccess, true);
+      assert.deepEqual(completion("child-update")?.input, { taskId: "1", status: "completed" });
+      // Failed calls changed nothing.
+      assert.equal(completion("child-update-missing")?.semanticSuccess, false);
+      assert.equal(completion("child-update-missing")?.semanticError, "Task #9 not found");
+      assert.equal(completion("child-update-cancelled")?.semanticSuccess, false);
+      assert.equal(completion("child-update-cancelled")?.transportError, false);
+      assert.match(completion("child-update-cancelled")?.semanticError ?? "", /cancelled/);
+      assert.equal(completion("child-update-error")?.semanticSuccess, false);
+      assert.equal(completion("child-update-error")?.transportError, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("closes foreground subagent Task calls at turn end and keeps background ones", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "item.started" || event.type === "item.completed",
+      ).pipe(
+        Stream.takeUntil(
+          (event) => event.type === "item.completed" && event.itemId === "bg-late-create",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate",
+        attachments: [],
+      });
+
+      const childToolUse = (parent: string, id: string) =>
+        harness.query.emit({
+          type: "assistant",
+          session_id: BACKGROUND_SESSION_ID,
+          uuid: `assistant-${id}`,
+          parent_tool_use_id: parent,
+          message: {
+            id: `message-${id}`,
+            role: "assistant",
+            content: [{ type: "tool_use", id, name: "TaskCreate", input: { subject: id } }],
+          },
+        } as unknown as SDKMessage);
+      const childToolResult = (parent: string, id: string) =>
+        harness.query.emit({
+          type: "user",
+          session_id: BACKGROUND_SESSION_ID,
+          uuid: `user-${id}`,
+          parent_tool_use_id: parent,
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: id,
+                content: `Task #7 created successfully: ${id}`,
+              },
+            ],
+          },
+        } as unknown as SDKMessage);
+
+      emitClaudeTaskStarted(harness.query, { taskId: "bg-task", toolUseId: "bg-agent" });
+      emitClaudeTaskUpdated(harness.query, {
+        taskId: "bg-task",
+        patch: { is_backgrounded: true },
+      });
+      childToolUse("fg-agent", "fg-create");
+      childToolUse("bg-agent", "bg-create");
+      emitClaudeSuccessResult(harness.query);
+      // After the turn ended, the background subagent keeps working.
+      childToolResult("bg-agent", "bg-create");
+      childToolUse("bg-agent", "bg-late-create");
+      childToolResult("bg-agent", "bg-late-create");
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const completed = (itemId: string) =>
+        events.find(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+            event.type === "item.completed" && event.itemId === itemId,
+        );
+      // The foreground subagent's call is closed without a result.
+      assert.equal(completed("fg-create")?.payload.status, "failed");
+      assert.equal(completed("fg-create")?.payload.completion, undefined);
+      // The background subagent's calls still complete, attributed to the launch turn.
+      assert.equal(completed("bg-create")?.payload.completion?.semanticSuccess, true);
+      assert.equal(completed("bg-create")?.turnId, turn.turnId);
+      const lateStarted = events.find(
+        (event) => event.type === "item.started" && event.itemId === "bg-late-create",
+      );
+      assert.equal(lateStarted?.turnId, turn.turnId);
+      assert.equal(completed("bg-late-create")?.turnId, turn.turnId);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -5454,6 +7608,77 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  for (const windowStatus of ["allowed", "rejected", "absent", "assistant", "http"] as const) {
+    it.effect(
+      "classifies Claude blocking_limit with " + windowStatus + " rate-limit evidence",
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Continue.", attachments: [] });
+          if (windowStatus === "allowed" || windowStatus === "rejected")
+            harness.query.emit({
+              type: "rate_limit_event",
+              rate_limit_info: {
+                status: windowStatus,
+                rateLimitType: "five_hour",
+                resetsAt: 1790607600,
+              },
+              uuid: "context-window-limit",
+              session_id: "context-window",
+            } as unknown as SDKMessage);
+          if (windowStatus === "assistant")
+            harness.query.emit({
+              type: "assistant",
+              error: "rate_limit",
+              uuid: "context-rate-error",
+              session_id: "context-window",
+              parent_tool_use_id: null,
+              message: { id: "context-rate-error", role: "assistant", content: [], usage: {} },
+            } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "result",
+            subtype: "success",
+            is_error: windowStatus !== "absent",
+            terminal_reason: "blocking_limit",
+            ...(windowStatus === "http" ? { api_error_status: 429 } : {}),
+            result: "Prompt is too long",
+            session_id: "context-window",
+            uuid: "context-window-result",
+            usage: {},
+            modelUsage: {},
+          } as unknown as SDKMessage);
+          const completed = yield* adapter.streamEvents.pipe(
+            Stream.filter((event) => event.type === "turn.completed"),
+            Stream.runHead,
+          );
+          assert.equal(completed._tag, "Some");
+          if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+          assert.equal(completed.value.payload.state, "failed");
+          if (
+            windowStatus === "rejected" ||
+            windowStatus === "assistant" ||
+            windowStatus === "http"
+          ) {
+            assert.equal(completed.value.payload.usageLimit?.evidence, "typed");
+            assert.match(completed.value.payload.errorMessage ?? "", /usage limit reached/);
+          } else {
+            assert.equal(completed.value.payload.usageLimit, undefined);
+            assert.match(
+              completed.value.payload.errorMessage ?? "",
+              /context window.*\/compact.*new thread/,
+            );
+          }
+        }).pipe(Effect.provide(harness.layer));
+      },
+    );
+  }
+
   for (const scenario of [
     "blocked",
     "recovered",
@@ -5600,6 +7825,400 @@ describe("ClaudeAdapterLive", () => {
     });
   }
 
+  it.effect("shows Claude's own text for a 403 instead of asking to log in again", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+      harness.query.emit({
+        type: "assistant",
+        error: "authentication_failed",
+        uuid: "forbidden-error",
+        session_id: "forbidden-session",
+        parent_tool_use_id: null,
+        message: { id: "forbidden-error", role: "assistant", content: [], usage: {} },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        api_error_status: 403,
+        result: "API Error: 403 Your organization does not allow this model.",
+        session_id: "forbidden-session",
+        uuid: "forbidden-result",
+        usage: {},
+        modelUsage: {},
+      } as unknown as SDKMessage);
+      const events = Array.from(
+        yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+        ),
+      );
+      const completed = events.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type === "turn.completed" && completed.payload.state, "failed");
+      const errorMessage =
+        completed?.type === "turn.completed" ? (completed.payload.errorMessage ?? "") : "";
+      assert.match(errorMessage, /organization does not allow this model/);
+      assert.notMatch(errorMessage, /\/login/);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  for (const scenario of ["direct", "structured", "permission", "authentication"] as const) {
+    it.effect("handles direct gateway cooldown with " + scenario + " evidence", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        if (scenario === "structured")
+          harness.query.emit({
+            type: "rate_limit_event",
+            rate_limit_info: {
+              status: "rejected",
+              rateLimitType: "five_hour",
+              resetsAt: 1790607600,
+            },
+            uuid: "structured-gateway-limit",
+            session_id: "gateway",
+          } as unknown as SDKMessage);
+        if (scenario === "authentication")
+          harness.query.emit({
+            type: "assistant",
+            error: "authentication_failed",
+            uuid: "gateway-auth",
+            session_id: "gateway",
+            parent_tool_use_id: null,
+            message: { id: "gateway-auth", role: "assistant", content: [], usage: {} },
+          } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          terminal_reason: "api_error",
+          api_error_status: scenario === "permission" ? 403 : 429,
+          result: "API Error: Request rejected (429) (reset after 4m 6s)",
+          session_id: "gateway",
+          uuid: "direct-gateway-result",
+          usage: {},
+          modelUsage: {},
+        } as unknown as SDKMessage);
+        const events = Array.from(
+          yield* adapter.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+          ),
+        );
+        const completed = events.find((event) => event.type === "turn.completed");
+        const limit =
+          completed?.type === "turn.completed" ? completed.payload.usageLimit : undefined;
+        if (scenario === "structured") {
+          assert.equal(limit?.resetSource, "provider");
+          assert.equal(limit?.resetsAt, new Date(1790607600 * 1000).toISOString());
+          assert.equal(limit?.windows[0]?.id, "five_hour");
+        } else if (scenario === "direct") {
+          assert.equal(limit?.resetSource, "message");
+          assert.closeTo(
+            Date.parse(limit?.resetsAt ?? "") - Date.parse(completed?.createdAt ?? ""),
+            246000,
+            1000,
+          );
+        } else assert.isUndefined(limit);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
+
+  for (const assistantRateLimit of [false, true]) {
+    it.effect(
+      "schedules a resume from a gateway's wrapped cooldown (assistant rate limit: " +
+        assistantRateLimit +
+        ")",
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+          if (assistantRateLimit)
+            harness.query.emit({
+              type: "assistant",
+              error: "rate_limit",
+              uuid: "gateway-assistant",
+              session_id: "gateway-session",
+              parent_tool_use_id: null,
+              message: { id: "gateway-assistant", role: "assistant", content: [], usage: {} },
+            } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "result",
+            subtype: "success",
+            is_error: true,
+            terminal_reason: "api_error",
+            api_error_status: 503,
+            result:
+              'API Error: 503 [claude/claude-opus-5-5] [429]: {"type":"error","error":{"type":"rate_limit_error","message":"Please try again later."}} (reset after 4m 6s).',
+            session_id: "gateway-session",
+            uuid: "gateway-result",
+            usage: {},
+            modelUsage: {},
+          } as unknown as SDKMessage);
+          const events = Array.from(
+            yield* adapter.streamEvents.pipe(
+              Stream.takeUntil((event) => event.type === "turn.completed"),
+              Stream.runCollect,
+            ),
+          );
+          const completed = events.find((event) => event.type === "turn.completed");
+          assert.equal(completed?.type === "turn.completed" && completed.payload.state, "failed");
+          const usageLimit =
+            completed?.type === "turn.completed" ? completed.payload.usageLimit : undefined;
+          assert.equal(usageLimit?.resetSource, "message");
+          assert.notMatch(
+            completed?.type === "turn.completed" ? (completed.payload.errorMessage ?? "") : "",
+            /Claude usage limit reached/,
+          );
+          assert.closeTo(
+            Date.parse(usageLimit?.resetsAt ?? "") - Date.parse(completed?.createdAt ?? ""),
+            246_000,
+            1_000,
+          );
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+  }
+
+  for (const overage of [false, true]) {
+    it.effect(
+      `reads the reset time from a blocked assistant when Claude suppresses rate_limit_event (overage: ${overage})`,
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+          harness.query.emit({
+            type: "assistant",
+            error: "rate_limit",
+            uuid: "quick-retry-assistant",
+            session_id: "quick-retry-session",
+            parent_tool_use_id: null,
+            api_error_params: {
+              rate_limit_info: {
+                status: "rejected",
+                rateLimitType: "five_hour",
+                resetsAt: 1790607600,
+                ...(overage ? { overageStatus: "allowed" } : {}),
+              },
+            },
+            message: { id: "quick-retry-assistant", role: "assistant", content: [], usage: {} },
+          } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "result",
+            subtype: "success",
+            is_error: true,
+            api_error_status: 429,
+            result: "Claude AI usage limit reached",
+            session_id: "quick-retry-session",
+            uuid: "quick-retry-result",
+            usage: {},
+            modelUsage: {},
+          } as unknown as SDKMessage);
+          const completed = yield* adapter.streamEvents.pipe(
+            Stream.filter((event) => event.type === "turn.completed"),
+            Stream.runHead,
+          );
+          assert.equal(completed._tag, "Some");
+          if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+          assert.equal(completed.value.payload.state, "failed");
+          const usageLimit = completed.value.payload.usageLimit;
+          assert.equal(usageLimit?.evidence, "typed");
+          if (overage) {
+            assert.deepEqual(usageLimit?.windows, []);
+            assert.equal(usageLimit?.resetsAt, null);
+          } else {
+            assert.deepEqual(
+              usageLimit?.windows.map((window) => window.id),
+              ["five_hour"],
+            );
+            assert.equal(usageLimit?.resetsAt, new Date(1790607600 * 1000).toISOString());
+          }
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+  }
+
+  it.effect("shows the final result's API error text when Claude gives up on API errors", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "api_error",
+        api_error_status: 500,
+        result: `  API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}} Bearer sk-ant-abcdefghijklmnopqrstuvwxyz ${"x".repeat(600)}`,
+        session_id: "api-error-session",
+        uuid: "api-error-result",
+        usage: {},
+        modelUsage: {},
+      } as unknown as SDKMessage);
+      const completed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.completed"),
+        Stream.runHead,
+      );
+      assert.equal(completed._tag, "Some");
+      if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+      assert.equal(completed.value.payload.state, "failed");
+      const errorMessage = completed.value.payload.errorMessage ?? "";
+      assert.match(errorMessage, /^API Error: 500 .*Internal server error/);
+      assert.include(errorMessage, "Bearer [REDACTED]");
+      assert.notInclude(errorMessage, "sk-ant-");
+      assert.equal(errorMessage.length, 500);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  for (const scenario of [
+    { name: "an unflagged result with surrounding whitespace", isError: false, prefixed: true },
+    { name: "a result without API error text", isError: true, prefixed: false },
+  ] as const) {
+    it.effect(`fails an api_error turn from ${scenario.name}`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: scenario.isError,
+          terminal_reason: "api_error",
+          api_error_status: 400,
+          result: scenario.prefixed ? "\n  API Error: 400 invalid_request_error  \n" : "",
+          session_id: "api-error-session",
+          uuid: "api-error-result",
+          usage: {},
+          modelUsage: {},
+        } as unknown as SDKMessage);
+        const completed = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.completed"),
+          Stream.runHead,
+        );
+        assert.equal(completed._tag, "Some");
+        if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+        assert.equal(completed.value.payload.state, "failed");
+        assert.equal(
+          completed.value.payload.errorMessage,
+          scenario.prefixed
+            ? "API Error: 400 invalid_request_error"
+            : "Claude gave up after repeated API errors.",
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
+
+  it.effect("drops a blocked response's reset time once a later root response recovers", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+      harness.query.emit({
+        type: "assistant",
+        error: "rate_limit",
+        uuid: "blocked-assistant",
+        session_id: "recovered-session",
+        parent_tool_use_id: null,
+        api_error_params: {
+          rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt: 1790607600 },
+        },
+        message: { id: "blocked-assistant", role: "assistant", content: [], usage: {} },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        uuid: "recovered-assistant",
+        session_id: "recovered-session",
+        parent_tool_use_id: null,
+        message: {
+          id: "recovered-assistant",
+          role: "assistant",
+          content: [{ type: "text", text: "Working on it." }],
+          usage: {},
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["Internal server error"],
+        session_id: "recovered-session",
+        uuid: "recovered-result",
+        usage: {},
+        modelUsage: {},
+      } as unknown as SDKMessage);
+      const completed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.completed"),
+        Stream.runHead,
+      );
+      assert.equal(completed._tag, "Some");
+      if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+      assert.equal(completed.value.payload.state, "failed");
+      assert.equal(completed.value.payload.usageLimit, undefined);
+      assert.equal(completed.value.payload.errorMessage, "Internal server error");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   for (const originalError of [undefined, "usage limit reached"] as const) {
     it.effect(
       `requires positive usage evidence outside a turn (${originalError ?? "no error text"})`,
@@ -5662,7 +8281,7 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access",
         providerOptions: { claudeAgent: { subagentModel: "inherit" } },
       });
-      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-1");
+      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-2");
       assert.equal(
         harness.getLastCreateQueryInput()?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL,
         undefined,
@@ -5672,7 +8291,7 @@ describe("ClaudeAdapterLive", () => {
         type: "result",
         subtype: "error_during_execution",
         is_error: true,
-        errors: ["Model claude-fable-5-1 is not supported by this executable"],
+        errors: ["Model claude-fable-5-2 is not supported by this executable"],
         session_id: "sdk-fable-rejected",
         uuid: "fable-rejection",
       } as unknown as SDKMessage);
@@ -5682,7 +8301,7 @@ describe("ClaudeAdapterLive", () => {
       );
       const completed = failureEvents.find((event) => event.type === "turn.completed");
       assert.equal(completed?.payload.state, "failed");
-      assert.match(completed?.payload.errorMessage ?? "", /claude-fable-5-1/);
+      assert.match(completed?.payload.errorMessage ?? "", /claude-fable-5-2/);
       yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: "claudeAgent",
@@ -6177,6 +8796,107 @@ describe("ClaudeAdapterLive", () => {
       );
     },
   );
+
+  it.effect("reports a subagent's effective effort with its own model", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const collected = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil(
+          (event) => event.type === "task.started" && event.payload.taskId === "nested-effort",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        model: "claude-opus-5-5",
+        modelOptions: { claudeAgent: { effort: "high" } },
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "Review with a subagent",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "assistant",
+        parent_tool_use_id: null,
+        session_id: BACKGROUND_SESSION_ID,
+        uuid: "agent-launch",
+        message: {
+          model: "claude-opus-5-5",
+          content: [
+            {
+              type: "tool_use",
+              id: "agent-effort-tool",
+              name: "Agent",
+              input: {
+                description: "Review",
+                prompt: "Review the patch",
+                model: "claude-opus-5-5",
+                effort: "low",
+              },
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        parent_tool_use_id: "agent-effort-tool",
+        session_id: BACKGROUND_SESSION_ID,
+        uuid: "agent-snapshot",
+        message: {
+          model: "claude-sonnet-4-6",
+          content: [
+            { type: "text", text: "Private child output" },
+            {
+              type: "tool_use",
+              id: "nested-effort-tool",
+              name: "Agent",
+              input: { description: "Nested", prompt: "Check the result", model: "inherit" },
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      emitClaudeTaskStarted(harness.query, {
+        taskId: "agent-effort",
+        toolUseId: "agent-effort-tool",
+        description: "Review",
+      });
+      emitClaudeTaskStarted(harness.query, {
+        taskId: "nested-effort",
+        toolUseId: "nested-effort-tool",
+        description: "Nested",
+      });
+      const events = Array.from(yield* Fiber.join(collected));
+      const started = events.find((event) => event.type === "task.started");
+      assert.equal(started?.type, "task.started");
+      if (started?.type === "task.started") {
+        assert.equal(started.payload.model, "claude-sonnet-4-6");
+        assert.equal(started.payload.effort, "low");
+      }
+      const nested = events.find(
+        (event) => event.type === "task.started" && event.payload.taskId === "nested-effort",
+      );
+      assert.equal(nested?.type, "task.started");
+      if (nested?.type === "task.started") {
+        assert.equal(nested.payload.model, "claude-sonnet-4-6");
+        assert.equal(nested.payload.effort, "low");
+      }
+      assert.ok(
+        !events.some(
+          (event) =>
+            event.type === "content.delta" && event.payload.delta.includes("Private child output"),
+        ),
+      );
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("forwards Claude task progress summaries for subagent updates", () => {
     const harness = makeHarness();
@@ -7253,6 +9973,178 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "merges root stream usage and ignores zero placeholders, child usage and stale compacted deltas",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const collector = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "thread.token-usage.updated"),
+          Stream.take(5),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        let serial = 0;
+        const emit = (
+          type: "message_start" | "message_delta",
+          usage: unknown,
+          parent: string | null = null,
+        ) => {
+          serial += 1;
+          harness.query.emit({
+            type: "stream_event",
+            session_id: "sdk-stream-usage",
+            uuid: "usage-" + serial,
+            parent_tool_use_id: parent,
+            event:
+              type === "message_start"
+                ? { type, message: { id: "msg-" + serial, usage } }
+                : { type, delta: { stop_reason: null, stop_sequence: null }, usage },
+          } as unknown as SDKMessage);
+        };
+        emit("message_start", {
+          input_tokens: 100,
+          output_tokens: 1,
+          cache_creation_input_tokens: 200,
+          cache_read_input_tokens: 300,
+        });
+        emit("message_delta", {
+          input_tokens: 25,
+          output_tokens: 10,
+          cache_creation_input_tokens: null,
+        });
+        emit("message_start", {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        });
+        emit("message_delta", { input_tokens: null, output_tokens: 12 });
+        emit("message_delta", { input_tokens: 200, output_tokens: 20 });
+        emit("message_delta", { input_tokens: 999999, output_tokens: 100 }, "child-tool");
+        emit("message_delta", { input_tokens: null, output_tokens: 30 });
+        harness.query.emit({
+          type: "system",
+          subtype: "compact_boundary",
+          uuid: "compact-usage",
+          session_id: "sdk-stream-usage",
+          compact_metadata: { trigger: "auto", pre_tokens: 230 },
+        } as unknown as SDKMessage);
+        emit("message_delta", { input_tokens: 999, output_tokens: 50 });
+        emit("message_start", { input_tokens: 50, output_tokens: 1 });
+        const events = Array.from(yield* Fiber.join(collector));
+        const usages = events.flatMap((event) =>
+          event.type === "thread.token-usage.updated"
+            ? [event.payload.usage as Record<string, number>]
+            : [],
+        );
+        assert.deepEqual(
+          usages.map(
+            (usage) =>
+              (usage.input_tokens ?? 0) +
+              (usage.output_tokens ?? 0) +
+              (usage.cache_creation_input_tokens ?? 0) +
+              (usage.cache_read_input_tokens ?? 0),
+          ),
+          [601, 535, 220, 230, 51],
+        );
+        assert.equal(usages[1]?.cache_creation_input_tokens, 200);
+        assert.equal(usages[1]?.cache_read_input_tokens, 300);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "uses the character estimate for compaction when a proxy reports no input usage",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const recommendation = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "compaction.recommended"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          model: "claude-haiku-4-5",
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "x".repeat(900_000),
+          attachments: [],
+        });
+        // Conversation estimates count the CLI's transcript echo, not queued prompts.
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-proxy-compaction",
+          uuid: "proxy-prompt",
+          parent_tool_use_id: null,
+          message: { role: "user", content: "x".repeat(900_000) },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-proxy-compaction",
+          uuid: "proxy-start",
+          parent_tool_use_id: null,
+          event: {
+            type: "message_start",
+            message: {
+              id: "proxy-message",
+              usage: {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+              },
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-proxy-compaction",
+          uuid: "proxy-delta",
+          parent_tool_use_id: null,
+          event: {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: { output_tokens: 10 },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-proxy-compaction",
+          uuid: "proxy-result",
+        } as unknown as SDKMessage);
+        const event = yield* Fiber.join(recommendation);
+        assert.equal(event._tag, "Some");
+        if (event._tag === "Some" && event.value.type === "compaction.recommended")
+          assert.isAtLeast(
+            event.value.payload.estimatedTokens,
+            event.value.payload.thresholdTokens,
+          );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("emits a thinking-tokens update for Claude thinking_tokens system messages", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -8076,6 +10968,523 @@ describe("ClaudeAdapterLive", () => {
           assert.include(failure.payload.message, "repair started during resume recovery");
       }).pipe(Effect.provide(harness.layer));
     });
+    // `missing` is saved but sits on a branch that forks off the chain the CLI
+    // loads, because a stray entry under `saved` is the newest leaf.
+    const stray = "123e4567-e89b-42d3-a456-426614174003";
+    const linearEntries = () =>
+      new Map<string, Record<string, unknown>>([
+        [saved, { uuid: saved, parentUuid: null, type: "assistant" }],
+        [missing, { uuid: missing, parentUuid: saved, type: "assistant" }],
+      ]);
+    const forkedEntries = () =>
+      linearEntries().set(stray, { uuid: stray, parentUuid: saved, type: "assistant" });
+    // Only dequeued task notifications have forked a transcript.
+    const notify = (harness: ReturnType<typeof makeHarness>) =>
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-fork-check",
+        status: "completed",
+        session_id: sessionId,
+        uuid: "task-fork-check-notification",
+      } as unknown as SDKMessage);
+    it.effect("lets the CLI decide when the resume point looks forked at startup", () => {
+      const harness = makeHarness({ readResumeTranscript: async () => forkedEntries() });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        // The loader model can disagree with the CLI, so it never blocks the start.
+        assert.equal(harness.getCreateQueryInputs().length, 1);
+        assert.equal(harness.getLastCreateQueryInput()?.options.resumeSessionAt, missing);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("stops resume recovery at a fork and reports the send as not sent", () => {
+      let reads = 0;
+      const harness = makeHarness({
+        resumeConfirmationTimeoutMs: 5_000,
+        // The fork appears after startup validation, as when Claude writes it
+        // while the thread is idle.
+        readResumeTranscript: async () => (reads++ === 0 ? linearEntries() : forkedEntries()),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        const send = yield* adapter
+          .sendTurn({ threadId: THREAD_ID, input: "continue", attachments: [] })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        harness.query.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`No message found with message.uuid of: ${missing}`],
+          session_id: sessionId,
+          uuid: "forked-resume-error",
+        } as unknown as SDKMessage);
+        const exit = yield* Fiber.join(send);
+        assert.equal(exit._tag, "Failure");
+        if (exit._tag !== "Failure") return;
+        const error = Cause.squash(exit.cause);
+        assert.isTrue(Schema.is(ProviderAdapterRequestError)(error));
+        if (!Schema.is(ProviderAdapterRequestError)(error)) return;
+        assert.include(error.detail, "transcript forked");
+        assert.equal(error.deliveryCertainty, "not_sent");
+        assert.equal(error.deliveryRetryable, false);
+        while (!observed.some((event) => event.type === "session.exited")) yield* Effect.yieldNow;
+        yield* TestClock.adjust("1 second");
+        assert.equal(harness.getCreateQueryInputs().length, 1);
+        assert.isFalse(
+          observed.some(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+          ),
+        );
+        const failure = observed.find((event) => event.type === "runtime.error");
+        if (failure?.type === "runtime.error")
+          assert.include(failure.payload.message, "transcript forked");
+        else assert.fail("Expected a runtime error naming the fork");
+        const exited = observed.findLast((event) => event.type === "session.exited");
+        const exitedCursor = exited?.resumeCursor as Record<string, unknown> | undefined;
+        assert.deepEqual(exitedCursor?.transcriptFork, { target: missing, activeLeaf: stray });
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("warns once when Claude forks the transcript while the thread is idle", () => {
+      let reads = 0;
+      const harness = makeHarness({
+        readResumeTranscript: async () => (reads++ === 0 ? linearEntries() : forkedEntries()),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        const forkWarnings = () =>
+          observed.filter(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message.includes("Claude forked this transcript"),
+          );
+        const idle = (uuid: string) =>
+          harness.query.emit({
+            type: "system",
+            subtype: "session_state_changed",
+            state: "idle",
+            session_id: sessionId,
+            uuid,
+          } as unknown as SDKMessage);
+        notify(harness);
+        idle("idle-1");
+        while (forkWarnings().length === 0)
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+        const [warning] = forkWarnings();
+        if (warning?.type === "runtime.warning")
+          assert.deepEqual(warning.payload.detail, { target: missing, activeLeaf: stray });
+        notify(harness);
+        idle("idle-2");
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+        assert.equal(forkWarnings().length, 1);
+        const liveCursor = (yield* adapter.listSessions())[0]?.resumeCursor as
+          | Record<string, unknown>
+          | undefined;
+        assert.deepEqual(liveCursor?.transcriptFork, { target: missing, activeLeaf: stray });
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("does not read the transcript when idle without task notifications", () => {
+      let reads = 0;
+      const harness = makeHarness({
+        readResumeTranscript: async () => (reads++, forkedEntries()),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        harness.query.emit({
+          type: "system",
+          subtype: "session_state_changed",
+          state: "idle",
+          session_id: sessionId,
+          uuid: "idle-without-notification",
+        } as unknown as SDKMessage);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+        assert.equal(reads, 1);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    // History before a compaction is a separate root, not a fork.
+    const compactedEntries = () =>
+      new Map<string, Record<string, unknown>>([
+        [stray, { uuid: stray, parentUuid: null, type: "assistant" }],
+        [
+          "compact",
+          { uuid: "compact", parentUuid: null, type: "system", subtype: "compact_boundary" },
+        ],
+        [saved, { uuid: saved, parentUuid: "compact", type: "assistant" }],
+        [missing, { uuid: missing, parentUuid: saved, type: "assistant" }],
+      ]);
+    for (const [name, entries] of [
+      ["a transcript without branches", linearEntries],
+      ["history detached before a compaction", compactedEntries],
+    ] as const)
+      it.effect(`does not warn about a fork for ${name}`, () => {
+        let reads = 0;
+        const harness = makeHarness({ readResumeTranscript: async () => (reads++, entries()) });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const observed: ProviderRuntimeEvent[] = [];
+          yield* Stream.runForEach(adapter.streamEvents, (event) =>
+            Effect.sync(() => {
+              observed.push(event);
+            }),
+          ).pipe(Effect.forkChild);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            resumeCursor: cursor,
+          });
+          notify(harness);
+          harness.query.emit({
+            type: "system",
+            subtype: "session_state_changed",
+            state: "idle",
+            session_id: sessionId,
+            uuid: `idle-${name}`,
+          } as unknown as SDKMessage);
+          while (reads < 2)
+            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+          assert.isFalse(
+            observed.some(
+              (event) =>
+                event.type === "runtime.warning" &&
+                event.payload.message.includes("Claude forked this transcript"),
+            ),
+          );
+        }).pipe(Effect.provide(harness.layer));
+      });
+    const controlRequests = [
+      {
+        method: "setModel",
+        turn: { model: "claude-opus-4-6" },
+        hold: (query: FakeClaudeQuery, wait: Promise<void>) => {
+          query.setModelWait = wait;
+        },
+      },
+      {
+        method: "applyFlagSettings",
+        turn: { model: "claude-opus-4-6" },
+        hold: (query: FakeClaudeQuery, wait: Promise<void>) => {
+          query.applyFlagSettingsWait = wait;
+        },
+      },
+      {
+        method: "setPermissionMode",
+        turn: { interactionMode: "plan" as const },
+        hold: (query: FakeClaudeQuery, wait: Promise<void>) => {
+          query.setPermissionModeWait = wait;
+        },
+      },
+    ];
+    for (const control of controlRequests)
+      it.effect(`reports a send as not sent when Claude exits during ${control.method}`, () => {
+        const harness = makeHarness({
+          resumeConfirmationTimeoutMs: 5_000,
+          readResumeTranscript: async () => linearEntries(),
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            resumeCursor: { resume: sessionId },
+          });
+          let closeQuery!: (cause: unknown) => void;
+          control.hold(
+            harness.query,
+            new Promise((_, reject) => {
+              closeQuery = reject;
+            }),
+          );
+          const send = yield* adapter
+            .sendTurn({
+              threadId: THREAD_ID,
+              input: "continue",
+              ...control.turn,
+              attachments: [],
+            })
+            .pipe(Effect.exit, Effect.forkChild);
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+          // The SDK rejects pending control requests when the CLI exits, which can
+          // happen before the stream delivers the resume error.
+          closeQuery(new Error("Query closed before response received"));
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+          harness.query.emit({
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            errors: [`No message found with message.uuid of: ${missing}`],
+            session_id: sessionId,
+            uuid: "control-request-resume-error",
+          } as unknown as SDKMessage);
+          const exit = yield* Fiber.join(send);
+          assert.equal(exit._tag, "Failure");
+          if (exit._tag !== "Failure") return;
+          const error = Cause.squash(exit.cause);
+          assert.isTrue(Schema.is(ProviderAdapterRequestError)(error));
+          if (!Schema.is(ProviderAdapterRequestError)(error)) return;
+          assert.equal(error.method, "turn/start");
+          assert.equal(error.deliveryCertainty, "not_sent");
+          assert.equal(error.deliveryRetryable, false);
+          assert.include(error.detail, "could not load the saved conversation");
+        }).pipe(Effect.provide(harness.layer));
+      });
+    it.effect("keeps a control request failure while Claude is still running", () => {
+      const harness = makeHarness({ readResumeTranscript: async () => linearEntries() });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: { resume: sessionId },
+        });
+        const failure = Promise.reject(new Error("model claude-x not found"));
+        failure.catch(() => {});
+        harness.query.setModelWait = failure;
+        const exit = yield* Effect.exit(
+          adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "continue",
+            model: "claude-opus-4-6",
+            attachments: [],
+          }),
+        );
+        assert.equal(exit._tag, "Failure");
+        if (exit._tag !== "Failure") return;
+        // A deterministic failure must not become a retryable "not sent".
+        const error = Cause.squash(exit.cause);
+        assert.isFalse(
+          Schema.is(ProviderAdapterRequestError)(error) && error.deliveryCertainty === "not_sent",
+        );
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("does not block Stop while a send waits for the resume outcome", () => {
+      const harness = makeHarness({
+        resumeConfirmationTimeoutMs: 5_000,
+        readResumeTranscript: async () => linearEntries(),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: { resume: sessionId },
+        });
+        let closeQuery!: (cause: unknown) => void;
+        harness.query.setModelWait = new Promise((_, reject) => {
+          closeQuery = reject;
+        });
+        const send = yield* adapter
+          .sendTurn({
+            threadId: THREAD_ID,
+            input: "continue",
+            model: "claude-opus-4-6",
+            attachments: [],
+          })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        closeQuery(new Error("Query closed before response received"));
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        // The send now waits up to 3 seconds of test time for the resume
+        // outcome. Stop must not queue behind that wait.
+        const stopped = yield* Effect.raceFirst(
+          adapter.stopSession(THREAD_ID).pipe(Effect.as("stopped")),
+          Effect.promise(
+            () => new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 1_000)),
+          ),
+        );
+        assert.equal(stopped, "stopped");
+        yield* TestClock.adjust("5 seconds");
+        const exit = yield* Fiber.join(send);
+        assert.equal(exit._tag, "Failure");
+      }).pipe(Effect.provide(harness.layer));
+    });
+    describe("when another tool moved the transcript's beginning", () => {
+      const row = (uuid: string, parentUuid: string | null, type: "user" | "assistant") =>
+        JSON.stringify({
+          uuid,
+          parentUuid,
+          type,
+          sessionId,
+          isSidechain: false,
+          message: { role: type, content: [{ type: "text", text: uuid }] },
+        });
+      const head = `${row("root-row", null, "user")}\n${row(saved, "root-row", "assistant")}\n`;
+      const tail = `${row("user-row", saved, "user")}\n${row(missing, "user-row", "assistant")}\n`;
+      const withMovedHead = <A, E, R>(
+        moved: boolean,
+        use: (file: string, configDir: string) => Effect.Effect<A, E, R>,
+      ) =>
+        Effect.suspend(() => {
+          const configDir = mkdtempSync(path.join(os.tmpdir(), "f5-claude-rejoin-"));
+          const dir = path.join(configDir, "projects", "-project");
+          mkdirSync(dir, { recursive: true });
+          const file = path.join(dir, `${sessionId}.jsonl`);
+          if (moved) writeFileSync(`${file}.bak`, head);
+          writeFileSync(file, tail);
+          return use(file, configDir).pipe(
+            Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+          );
+        });
+
+      it.effect("rejoins the moved copy and resumes at the saved turn", () =>
+        withMovedHead(true, (file, configDir) => {
+          const harness = makeHarness({
+            readResumeTranscriptFromDisk: true,
+            processEnvironment: { HOME: configDir, CLAUDE_CONFIG_DIR: configDir },
+          });
+          return Effect.gen(function* () {
+            const adapter = yield* ClaudeAdapter;
+            const observed: ProviderRuntimeEvent[] = [];
+            yield* Stream.runForEach(adapter.streamEvents, (event) =>
+              Effect.sync(() => {
+                observed.push(event);
+              }),
+            ).pipe(Effect.forkChild);
+            const session = yield* adapter.startSession({
+              threadId: THREAD_ID,
+              provider: "claudeAgent",
+              runtimeMode: "full-access",
+              resumeCursor: cursor,
+            });
+            assert.equal(readFileSync(file, "utf8"), head + tail);
+            assert.equal(readFileSync(`${file}.bak`, "utf8"), head);
+            assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
+            assert.equal(harness.getLastCreateQueryInput()?.options.resumeSessionAt, missing);
+            assert.isString(
+              (session.resumeCursor as Record<string, unknown>).transcriptRepairBackupId,
+            );
+            while (
+              !observed.some(
+                (event) =>
+                  event.type === "runtime.warning" &&
+                  event.payload.message.includes("Rejoined Claude transcript"),
+              )
+            )
+              yield* Effect.yieldNow;
+            yield* adapter.stopSession(THREAD_ID);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      );
+
+      it.effect("still fails without starting the CLI when no moved copy exists", () =>
+        withMovedHead(false, (file, configDir) => {
+          const harness = makeHarness({
+            readResumeTranscriptFromDisk: true,
+            processEnvironment: { HOME: configDir, CLAUDE_CONFIG_DIR: configDir },
+          });
+          return Effect.gen(function* () {
+            const adapter = yield* ClaudeAdapter;
+            const exit = yield* Effect.exit(
+              adapter.startSession({
+                threadId: THREAD_ID,
+                provider: "claudeAgent",
+                runtimeMode: "full-access",
+                resumeCursor: cursor,
+              }),
+            );
+            assert.equal(exit._tag, "Failure");
+            assert.include(String(exit), "complete parent chain");
+            assert.equal(readFileSync(file, "utf8"), tail);
+            assert.equal(harness.getCreateQueryInputs().length, 0);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      );
+
+      it.effect("leaves the transcript alone while a live session may still write it", () =>
+        withMovedHead(true, (file, configDir) => {
+          const harness = makeHarness({
+            readResumeTranscriptFromDisk: true,
+            processEnvironment: { HOME: configDir, CLAUDE_CONFIG_DIR: configDir },
+          });
+          return Effect.gen(function* () {
+            const adapter = yield* ClaudeAdapter;
+            yield* adapter.startSession({
+              threadId: THREAD_ID,
+              provider: "claudeAgent",
+              runtimeMode: "full-access",
+            });
+            const exit = yield* Effect.exit(
+              adapter.startSession({
+                threadId: THREAD_ID,
+                provider: "claudeAgent",
+                runtimeMode: "full-access",
+                resumeCursor: cursor,
+              }),
+            );
+            assert.equal(exit._tag, "Failure");
+            assert.equal(readFileSync(file, "utf8"), tail);
+            yield* adapter.stopSession(THREAD_ID).pipe(Effect.ignore);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      );
+
+      it.effect("does not rejoin or start the CLI while another repair holds the lock", () =>
+        withMovedHead(true, (file, configDir) => {
+          const harness = makeHarness({
+            readResumeTranscriptFromDisk: true,
+            processEnvironment: { HOME: configDir, CLAUDE_CONFIG_DIR: configDir },
+          });
+          return Effect.gen(function* () {
+            const adapter = yield* ClaudeAdapter;
+            const release = beginClaudeTranscriptMaintenance(sessionId);
+            const exit = yield* Effect.exit(
+              adapter.startSession({
+                threadId: THREAD_ID,
+                provider: "claudeAgent",
+                runtimeMode: "full-access",
+                resumeCursor: cursor,
+              }),
+            ).pipe(Effect.ensuring(Effect.sync(release)));
+            assert.equal(exit._tag, "Failure");
+            assert.include(String(exit), "Claude transcript repair is in progress");
+            assert.equal(readFileSync(file, "utf8"), tail);
+            assert.equal(harness.getCreateQueryInputs().length, 0);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      );
+    });
+
     it.effect("caps repeated failed preflights and permits retry after transcript repair", () => {
       const harness = makeHarness({ readResumeTranscript: async () => new Map() });
       return Effect.gen(function* () {
@@ -8134,7 +11543,7 @@ describe("ClaudeAdapterLive", () => {
       configDir: string,
       projectDir: string,
       sessionId: string,
-      contents = '{"type":"system"}\n',
+      contents = '{"type":"user","message":{"role":"user","content":"hello"}}\n',
     ) => {
       const dir = path.join(configDir, "projects", projectDir);
       mkdirSync(dir, { recursive: true });
@@ -8153,6 +11562,21 @@ describe("ClaudeAdapterLive", () => {
         Effect.gen(function* () {
           writeTranscript(configDir, "-unrelated-project", "some-other-session");
           writeTranscript(configDir, "-a-different-cwd", probeSessionId);
+
+          assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "present");
+        }),
+      ),
+    );
+
+    it.effect("reports present for a conversation record containing U+2028", () =>
+      withClaudeConfigDir((configDir) =>
+        Effect.gen(function* () {
+          writeTranscript(
+            configDir,
+            "-Users-me-project",
+            probeSessionId,
+            `${JSON.stringify({ type: "assistant", text: `a${String.fromCharCode(0x2028)}b` })}\n`,
+          );
 
           assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "present");
         }),
@@ -8187,6 +11611,10 @@ describe("ClaudeAdapterLive", () => {
             "-Users-me-project",
             probeSessionId,
             [
+              '{"type":"last-prompt","lastPrompt":"hello"}',
+              '{"type":"atis-latch","atis":""}',
+              '{"type":"cost-state","totalCostUSD":0}',
+              '{"type":"system","subtype":"init"}',
               '{"type":"queue-operation","operation":"enqueue"}',
               '{"type":"summary","summary":"x"}',
               '{"type":"file-history-snapshot","snapshot":{}}',
@@ -8354,7 +11782,7 @@ describe("ClaudeAdapterLive", () => {
         path.join(childCwd, ".claude-profile"),
       );
       assert.equal(
-        resolveClaudeConfigDir({ HOME: "relative-home" }, childCwd),
+        resolveClaudeConfigDir({ HOME: "relative-home", USERPROFILE: "relative-home" }, childCwd),
         path.join(childCwd, "relative-home", ".claude"),
       );
       assert.equal(
@@ -8387,7 +11815,10 @@ describe("ClaudeAdapterLive", () => {
 
         assert.equal(probeCalls.length, 1);
         assert.equal(probeCalls[0]?.sessionId, probeSessionId);
-        assert.equal(probeCalls[0]?.claudeConfigDir, "/profiles/abc/provider-homes/claude/.claude");
+        assert.equal(
+          probeCalls[0]?.claudeConfigDir,
+          path.resolve("/profiles/abc/provider-homes/claude/.claude"),
+        );
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),
@@ -9592,10 +13023,13 @@ describe("ClaudeAdapterLive", () => {
         adapter.streamEvents,
         (event) => event.type === "session.configured",
       ).pipe(Stream.take(1), Stream.runCollect);
-      assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
-        cleanupPeriodDays: 3650,
-        alwaysThinkingEnabled: false,
-      });
+      assert.deepEqual(
+        withoutFlagPermissions(harness.getLastCreateQueryInput()?.options.settings),
+        {
+          cleanupPeriodDays: 3650,
+          alwaysThinkingEnabled: false,
+        },
+      );
       assert.equal(
         initial.find((event) => event.type === "session.configured")?.payload.config
           .modelContextWindowTokens,
@@ -9655,7 +13089,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("switches Fable 5 at 200k to native 1M Fable 5.1, resumes, and switches back", () => {
+  it.effect("switches Fable 5 at 200k to native 1M Fable 5.2, resumes, and switches back", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -9685,7 +13119,7 @@ describe("ClaudeAdapterLive", () => {
         modelSelection: selection,
         attachments: [],
       });
-      assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5-1"]);
+      assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5-2"]);
       assert.deepEqual(harness.query.applyFlagSettingsCalls, [
         { effortLevel: "high", fastMode: false, alwaysThinkingEnabled: null },
       ]);
@@ -9695,7 +13129,7 @@ describe("ClaudeAdapterLive", () => {
       ).pipe(Stream.runHead);
       assert.equal(configured._tag, "Some");
       if (configured._tag === "Some") {
-        assert.equal(configured.value.payload.config.model, "claude-fable-5-1");
+        assert.equal(configured.value.payload.config.model, "claude-fable-5-2");
         assert.equal(configured.value.payload.config.context_window, undefined);
         assert.equal(configured.value.payload.config.modelContextWindowTokens, 1_000_000);
       }
@@ -9711,8 +13145,8 @@ describe("ClaudeAdapterLive", () => {
           turnCount: 1,
         },
       });
-      assert.equal(resumed.model, "claude-fable-5-1");
-      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-1");
+      assert.equal(resumed.model, "claude-fable-5-2");
+      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-2");
       const resumedConfig = yield* Stream.filter(
         adapter.streamEvents,
         (event) => event.type === "session.configured",
@@ -9785,6 +13219,45 @@ describe("ClaudeAdapterLive", () => {
           alwaysThinkingEnabled: null,
         },
       ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("restores the model after a partially applied live selection fails", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        runtimeMode: "full-access",
+      });
+      const failure = vi
+        .spyOn(harness.query, "applyFlagSettings")
+        .mockRejectedValueOnce(new Error("control request failed"));
+      try {
+        const result = yield* adapter
+          .sendTurn({
+            threadId: THREAD_ID,
+            model: "claude-haiku-4-5",
+            input: "switch",
+            attachments: [],
+          })
+          .pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          model: "claude-opus-5",
+          input: "restore",
+          attachments: [],
+        });
+        assert.deepEqual(harness.query.setModelCalls, ["claude-haiku-4-5", "claude-opus-5"]);
+      } finally {
+        failure.mockRestore();
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -10084,7 +13557,7 @@ describe("ClaudeAdapterLive", () => {
   });
 
   describe("Claude auto permission mode", () => {
-    const AUTO_MODEL = "claude-auto-supported";
+    const AUTO_MODEL = "claude-haiku-4-5";
     const NO_AUTO_MODEL = "claude-auto-unsupported";
     const makeAutoHarness = () =>
       makeHarness({
@@ -10268,6 +13741,158 @@ describe("ClaudeAdapterLive", () => {
         Effect.provide(harness.layer),
       );
     });
+
+    it.effect.each([AUTO_MODEL, AUTO_MODEL + "-20251001", AUTO_MODEL + "[1m]"])(
+      "keeps the CLI fallback with init model %s and retries after a model change",
+      (reportedModel) => {
+        const harness = makeAutoHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const events = yield* collectEvents(adapter);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            model: AUTO_MODEL,
+            runtimeMode: "auto",
+          });
+          harness.query.emit({
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-auto",
+            uuid: "init-auto-fallback",
+            model: reportedModel,
+            permissionMode: "default",
+          } as unknown as SDKMessage);
+          for (let attempt = 0; attempt < 100 && warningsIn(events).length === 0; attempt += 1)
+            yield* settle;
+          assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+          harness.query.setPermissionModeCalls.length = 0;
+
+          for (const interactionMode of ["default", undefined] as const) {
+            yield* adapter.sendTurn({
+              threadId: THREAD_ID,
+              input: "continue",
+              model: AUTO_MODEL,
+              ...(interactionMode ? { interactionMode } : {}),
+              attachments: [],
+            });
+            yield* completeTurn(harness, events);
+          }
+          assert.deepEqual(harness.query.setPermissionModeCalls, ["default"]);
+          assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+
+          yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "switch model",
+            model: NO_AUTO_MODEL,
+            attachments: [],
+          });
+          yield* completeTurn(harness, events);
+          yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "retry auto on a supported model",
+            model: AUTO_MODEL,
+            attachments: [],
+          });
+          assert.deepEqual(harness.query.setPermissionModeCalls, ["default", "auto"]);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+
+    it.effect.each(["init", "status"] as const)(
+      "retains the %s Auto rejection if a model switch fails",
+      (subtype) => {
+        const harness = makeAutoHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const events = yield* collectEvents(adapter);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            model: AUTO_MODEL,
+            runtimeMode: "auto",
+          });
+          harness.query.emit({
+            type: "system",
+            subtype,
+            session_id: "sdk-session-auto",
+            uuid: "rejected-mode-" + subtype,
+            model: AUTO_MODEL,
+            permissionMode: "default",
+          } as unknown as SDKMessage);
+          for (let attempt = 0; attempt < 100 && warningsIn(events).length === 0; attempt += 1)
+            yield* settle;
+          assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+          const rejectSwitch = vi
+            .spyOn(harness.query, "setModel")
+            .mockRejectedValueOnce(new Error("model switch rejected"));
+          try {
+            const result = yield* adapter
+              .sendTurn({
+                threadId: THREAD_ID,
+                model: NO_AUTO_MODEL,
+                input: "switch",
+                attachments: [],
+              })
+              .pipe(Effect.result);
+            assert.equal(result._tag, "Failure");
+            harness.query.setPermissionModeCalls.length = 0;
+            yield* adapter.sendTurn({
+              threadId: THREAD_ID,
+              model: AUTO_MODEL,
+              input: "continue",
+              attachments: [],
+            });
+            assert.deepEqual(harness.query.setPermissionModeCalls, []);
+            assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+          } finally {
+            rejectSwitch.mockRestore();
+          }
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+
+    it.effect(
+      "upgrades on the same model when capabilities arrive after launch without a rejection",
+      () => {
+        let supported = false;
+        const harness = makeHarness({
+          reportedModelCapabilities: (model) =>
+            Effect.succeed(
+              supported
+                ? createReportedClaudeModelCapabilities({ value: model, supportsAutoMode: true })
+                : undefined,
+            ),
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            model: "custom-late-capabilities",
+            runtimeMode: "auto",
+          });
+          assert.equal(harness.getLastCreateQueryInput()?.options.permissionMode, "default");
+          supported = true;
+          yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            model: "custom-late-capabilities",
+            input: "continue",
+            attachments: [],
+          });
+          assert.deepEqual(harness.query.setPermissionModeCalls, ["auto"]);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
 
     it.effect("fails closed when the CLI reports a mode other than auto", () => {
       const harness = makeAutoHarness();
@@ -10555,10 +14180,7 @@ describe("ClaudeAdapterLive", () => {
           {
             question: "Which framework?",
             header: "Framework",
-            options: [
-              { label: "React", description: "React.js" },
-              { label: "Vue", description: "Vue.js" },
-            ],
+            options: [{ label: "React", description: " \t " }, { label: "Vue" }],
             multiSelect: false,
           },
         ],
@@ -10587,6 +14209,10 @@ describe("ClaudeAdapterLive", () => {
       // Regression for #2388: the UI's draft-answer key must match the
       // question text that Claude uses when rendering AskUserQuestion output.
       assert.equal(requestedEvent.value.payload.questions[0]?.id, "Which framework?");
+      assert.deepEqual(requestedEvent.value.payload.questions[0]?.options, [
+        { label: "React", description: "React" },
+        { label: "Vue", description: "Vue" },
+      ]);
       assert.deepEqual(requestedEvent.value.providerRefs, {
         providerItemId: ProviderItemId.makeUnsafe("tool-ask-1"),
       });
@@ -10649,6 +14275,416 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+
+  it.effect.each([
+    ["full-access", "Bash", { command: "bun run test" }, "allow"],
+    ["full-access", "mcp__preview__navigate", { url: "http://localhost:3000" }, "allow"],
+    [
+      "full-access",
+      "Write",
+      { file_path: "/isolated/.claude/plans/x.md", content: "plan" },
+      "allow",
+    ],
+    ["full-access", "Write", { file_path: "/repo/a.ts", content: "work" }, "deny"],
+    ["full-access", "Edit", { file_path: "/repo/a.ts", old_string: "a", new_string: "b" }, "deny"],
+    [
+      "full-access",
+      "MultiEdit",
+      { file_path: "/repo/a.ts", edits: [{ old_string: "a", new_string: "b" }] },
+      "deny",
+    ],
+    [
+      "full-access",
+      "MultiEdit",
+      { file_path: "/isolated/.claude/plans/x.md", edits: [{ old_string: "a", new_string: "b" }] },
+      "allow",
+    ],
+    ["full-access", "NotebookEdit", { notebook_path: "/repo/a.ipynb", new_source: "x" }, "deny"],
+    ["full-access/never", "Bash", { command: "bun run test" }, "allow"],
+    ["full-access/never", "Write", { file_path: "/repo/a.ts", content: "work" }, "deny"],
+  ] as const)(
+    "decides a plan-mode callback in %s mode for %s without asking",
+    ([mode, toolName, toolInput, behavior]) => {
+      const harness = makeHarness({
+        processEnvironment: { CLAUDE_CONFIG_DIR: "/isolated/.claude" },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const observer = yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          cwd: "/repo",
+          ...(mode === "full-access/never" ? { approvalPolicy: "never" as const } : {}),
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "plan",
+          attachments: [],
+          interactionMode: "plan",
+        });
+        const result = yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.options.canUseTool!(toolName, toolInput, {
+            signal: new AbortController().signal,
+            toolUseID: "plan-call",
+            requestId: "plan-call",
+          }),
+        );
+        assert.equal(result?.behavior, behavior);
+        if (result?.behavior === "deny") assert.include(result.message, "Plan mode is read-only");
+        assert.isFalse(events.some((event) => event.type === "request.opened"));
+        yield* Fiber.interrupt(observer);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("lets a read-only workflow stage call only F5's own thread_read", () => {
+    const harness = makeHarness({ threadMcpBroker: Effect.runSync(makeThreadMcpBroker) });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const options = harness.getLastCreateQueryInput()!.options;
+      assert.ok(options.mcpServers?.["f5_thread"]);
+      const decide = (mcpServer: { source: "sdk" | "stdio"; name: string }) =>
+        Effect.promise(() =>
+          options.canUseTool!("mcp__f5_thread__thread_read", { threadId: "source-thread" }, {
+            signal: new AbortController().signal,
+            toolUseID: `thread-read-${mcpServer.source}`,
+            requestId: `thread-read-${mcpServer.source}`,
+            mcpServer,
+          } as Parameters<NonNullable<typeof options.canUseTool>>[2]),
+        );
+      assert.equal((yield* decide({ source: "sdk", name: "f5_thread" }))?.behavior, "allow");
+      assert.notEqual((yield* decide({ source: "stdio", name: "f5_thread" }))?.behavior, "allow");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("retains CLI-forwarded approvals after leaving full-access plan mode", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        cwd: "/repo",
+      });
+      const decide = () =>
+        Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.options.canUseTool!(
+            "Write",
+            { file_path: "/repo/a.ts", content: "work" },
+            {
+              signal: new AbortController().signal,
+              toolUseID: "plan-exit",
+              requestId: "plan-exit",
+            },
+          ),
+        );
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "plan",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal((yield* decide())?.behavior, "deny");
+      const turnCompletedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-plan-exit",
+        uuid: "result-plan-exit",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(turnCompletedFiber);
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "implement",
+        attachments: [],
+        interactionMode: "default",
+      });
+      const request = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "request.opened"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const permission = yield* decide().pipe(Effect.forkChild);
+      const opened = yield* Fiber.join(request);
+      assert.ok(Option.isSome(opened));
+      if (Option.isSome(opened) && opened.value.requestId)
+        yield* adapter.respondToRequest(
+          THREAD_ID,
+          ApprovalRequestId.makeUnsafe(opened.value.requestId),
+          "accept",
+        );
+      assert.equal((yield* Fiber.join(permission))?.behavior, "allow");
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("retries a failed bypass resolution on a later turn and caches only success", () => {
+    const resolve = vi
+      .fn()
+      .mockResolvedValueOnce({
+        bypassDisabled: true,
+        autoDisabled: false,
+        failureReason: "temporary read failure",
+      })
+      .mockResolvedValue({ bypassDisabled: false, autoDisabled: false });
+    const harness = makeHarness({ resolveBypassAvailability: resolve });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      assert.equal(harness.getLastCreateQueryInput()?.options.permissionMode, "default");
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "retry", attachments: [] });
+      assert.equal(resolve.mock.calls.length, 2);
+      assert.deepEqual(harness.query.setPermissionModeCalls, ["bypassPermissions"]);
+      const completed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-bypass-retry",
+        uuid: "bypass-retry-result",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(completed);
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "cached", attachments: [] });
+      assert.equal(resolve.mock.calls.length, 2);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("does not resolve bypass policy for a workflow plan session", () => {
+    const resolve = vi.fn(async () => ({ bypassDisabled: true, autoDisabled: true }));
+    const harness = makeHarness({ resolveBypassAvailability: resolve });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      assert.equal(harness.getLastCreateQueryInput()?.options.permissionMode, "plan");
+      assert.equal(resolve.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("installs approval handling when resolved policy disables bypass and Auto", () => {
+    const harness = makeHarness({
+      resolveBypassAvailability: async () => ({ bypassDisabled: true, autoDisabled: true }),
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      const options = harness.getLastCreateQueryInput()!.options;
+      assert.equal(options.permissionMode, "default");
+      const request = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "request.opened"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const permission = yield* Effect.promise(() =>
+        options.canUseTool!(
+          "Bash",
+          { command: "pwd" },
+          {
+            signal: new AbortController().signal,
+            toolUseID: "restricted-bypass",
+            requestId: "restricted-bypass",
+          },
+        ),
+      ).pipe(Effect.forkChild);
+      const opened = yield* Fiber.join(request);
+      assert.ok(Option.isSome(opened));
+      if (Option.isSome(opened) && opened.value.requestId)
+        yield* adapter.respondToRequest(
+          THREAD_ID,
+          ApprovalRequestId.makeUnsafe(opened.value.requestId),
+          "decline",
+        );
+      assert.equal((yield* Fiber.join(permission))?.behavior, "deny");
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("preserves an effective CLI bypass downgrade on the next turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      const status = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "session.state.changed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "system",
+        subtype: "status",
+        permissionMode: "default",
+        session_id: "sdk-bypass-downgrade",
+        uuid: "bypass-downgrade",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(status);
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "continue",
+        attachments: [],
+        interactionMode: "default",
+      });
+      assert.deepEqual(harness.query.setPermissionModeCalls, ["default"]);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("falls back to default when restoring bypass is refused", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      const restore = vi
+        .spyOn(harness.query, "setPermissionMode")
+        .mockRejectedValueOnce(new Error("bypass disabled"));
+      try {
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "continue",
+          attachments: [],
+          interactionMode: "default",
+        });
+        assert.deepEqual(
+          restore.mock.calls.map(([mode]) => mode),
+          ["bypassPermissions", "default"],
+        );
+        assert.equal(harness.getLastCreateQueryInput()?.options.canUseTool !== undefined, true);
+      } finally {
+        restore.mockRestore();
+      }
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect.each([
+    ["auto", "Write"],
+    ["auto-accept-edits", "Write"],
+    ["approval-required", "Write"],
+    ["approval-required", "Bash"],
+  ] as const)("asks before a plan-mode callback in %s mode for %s", ([runtimeMode, toolName]) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const observer = yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "plan",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+      const result = canUseTool(
+        toolName,
+        toolName === "Bash"
+          ? { command: "bun run test" }
+          : toolName.startsWith("mcp__")
+            ? { url: "http://localhost:3000" }
+            : { file_path: "/repo/a.ts", content: "work" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "plan-write",
+          requestId: "plan-write",
+        },
+      );
+      while (!events.some((event) => event.type === "request.opened")) yield* Effect.yieldNow;
+      const opened = events.find((event) => event.type === "request.opened")!;
+      if (opened.type !== "request.opened") return;
+      yield* adapter.respondToRequest(
+        THREAD_ID,
+        ApprovalRequestId.makeUnsafe(opened.requestId!),
+        "decline",
+      );
+      assert.equal((yield* Effect.promise(() => result))?.behavior, "deny");
+      yield* Fiber.interrupt(observer);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect.each(["Write", "Bash", "mcp__preview__navigate"])(
+    "denies plan-mode %s immediately when approvals are disabled",
+    (toolName) => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "approval-required",
+          approvalPolicy: "never",
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "plan",
+          attachments: [],
+          interactionMode: "plan",
+        });
+        const result = yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.options.canUseTool!(
+            toolName,
+            toolName === "Bash"
+              ? { command: "bun run test" }
+              : toolName.startsWith("mcp__")
+                ? { url: "http://localhost:3000" }
+                : { file_path: "/repo/a.ts" },
+            {
+              signal: new AbortController().signal,
+              toolUseID: "plan-write",
+              requestId: "plan-write",
+            },
+          ),
+        );
+        assert.equal(result?.behavior, "deny");
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("passes auto tool search as flag settings rather than only process env", () => {
+    const harness = makeHarness({ processEnvironment: { ENABLE_TOOL_SEARCH: "auto" } });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      assert.deepEqual(
+        (harness.getLastCreateQueryInput()!.options.settings as { env: unknown }).env,
+        {
+          ENABLE_TOOL_SEARCH: "true",
+        },
+      );
+    }).pipe(Effect.provide(harness.layer));
   });
 
   it.effect("routes AskUserQuestion through user-input flow even in full-access mode", () => {
@@ -11374,6 +15410,75 @@ describe("ClaudeAdapterLive", () => {
       );
     });
 
+    it.effect("lets Claude abort the turn before closing the session", () => {
+      const harness = makeHarness({ interruptGraceMs: 3_000 });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const turnCompleted = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.completed"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
+        let closeCallsAtInterrupt: number | undefined;
+        harness.query.onInterrupt = async () => {
+          closeCallsAtInterrupt = harness.query.closeCalls;
+          harness.query.emit({
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: false,
+            errors: ["Error: Request was aborted."],
+            session_id: "sdk-session-abort",
+            uuid: "result-abort",
+          } as unknown as SDKMessage);
+        };
+
+        yield* adapter.interruptTurn(session.threadId);
+
+        assert.equal(closeCallsAtInterrupt, 0);
+        assert.equal(harness.query.closeCalls, 1);
+        const [completed] = Array.from(yield* Fiber.join(turnCompleted));
+        assert.equal(
+          completed?.type === "turn.completed" && completed.payload.state,
+          "interrupted",
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("closes the session when Claude never aborts the turn", () => {
+      const harness = makeHarness({ interruptGraceMs: 3_000 });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
+        harness.query.onInterrupt = () => new Promise(() => {});
+
+        const interrupting = yield* adapter.interruptTurn(session.threadId).pipe(Effect.forkChild);
+        yield* TestClock.adjust("3 seconds");
+        yield* Fiber.join(interrupting);
+
+        assert.equal(harness.query.interruptCalls.length, 1);
+        assert.equal(harness.query.closeCalls, 1);
+        assert.equal(yield* adapter.hasSession(session.threadId), false);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
     it.effect("closes an interrupted session and permits a follow-up in a new runtime", () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
@@ -11659,6 +15764,41 @@ describe("Claude Release 4 launch and file checkpoint controls", () => {
       yield* adapter.stopSession(THREAD_ID);
     }).pipe(Effect.provide(h.layer));
   });
+});
+
+it.effect("inspects an owned native task when transcript lookup is ambiguous", () => {
+  const configDir = mkdtempSync(path.join(os.tmpdir(), "claude-inspect-ambiguous-"));
+  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
+  for (const project of ["first", "second"]) {
+    const directory = path.join(configDir, "projects", project);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, sessionId + ".jsonl"), "");
+  }
+  const h = makeHarness({ processEnvironment: { CLAUDE_CONFIG_DIR: configDir } });
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      resumeCursor: { resume: sessionId, nativeTaskIds: ["agent-task"] },
+    });
+    const output = yield* adapter.inspectNativeOperation!({
+      threadId: THREAD_ID,
+      generation: 1,
+      kind: "task",
+      nativeId: "agent-task",
+    });
+    assert.deepEqual(output, {
+      entries: [{ output: "isolated shell output", totalBytes: 30, omitted: true }],
+      nextCursor: null,
+    });
+    assert.deepEqual(h.query.getTaskOutputCalls, ["agent-task"]);
+    yield* adapter.stopSession(THREAD_ID);
+  }).pipe(
+    Effect.provide(h.layer),
+    Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+  );
 });
 
 it.effect("reads a persisted native shell task and refuses an older run", () => {
@@ -12000,5 +16140,816 @@ it.effect("cleans up the temporary fork query and fork flag when receipt persist
     assert.equal(h.getLastCreateQueryInput()?.options.forkSession, undefined);
     yield* adapter.stopSession(target);
     yield* adapter.stopSession(THREAD_ID);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("rejects excessive MCP start and reload inputs before creating a query", () => {
+  const harness = makeHarness();
+  const mcpServers = Object.fromEntries(
+    Array.from({ length: 33 }, (_, i) => [`s${i}`, { type: "stdio" as const, command: "node" }]),
+  );
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    const threadId = ThreadId.makeUnsafe("mcp-overflow");
+    const started = yield* adapter
+      .startSession({ threadId, runtimeMode: "approval-required", providerOptions: { mcpServers } })
+      .pipe(Effect.result);
+    assert.equal(started._tag, "Failure");
+    assert.equal(harness.getCreateQueryInputs().length, 0);
+    const reloaded = yield* adapter.reloadMcpConfig!({ threadId, mcpServers }).pipe(Effect.result);
+    assert.equal(reloaded._tag, "Failure");
+    assert.equal(harness.getCreateQueryInputs().length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("launches legacy case-variant MCP servers for Claude", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: ThreadId.makeUnsafe("legacy-aliases"),
+      runtimeMode: "approval-required",
+      providerOptions: {
+        mcpServers: {
+          GitHub: { type: "stdio", command: "node" },
+          github: { type: "stdio", command: "node" },
+        },
+      },
+    });
+    assert.deepEqual(Object.keys(harness.getLastCreateQueryInput()?.options.mcpServers ?? {}), [
+      "GitHub",
+      "github",
+    ]);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("emits owned Claude MCP status and tool-count changes from one singleton watcher", () => {
+  const harness = makeHarness();
+  harness.query.mcpServerStatusValue = [
+    { name: "docs", status: "pending", source: "dynamic", tools: [{ name: "one" }] },
+    { name: "external", status: "pending", source: "plugin" },
+  ];
+  Object.assign(harness.query, {
+    setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
+  });
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    const events: ProviderRuntimeEvent[] = [];
+    yield* Stream.runForEach(adapter.streamEvents, (event) =>
+      Effect.sync(() => {
+        if (event.type === "mcp.status.updated") events.push(event);
+      }),
+    ).pipe(Effect.forkChild);
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      mcpEventIdentity: {
+        providerInstanceId: ProviderInstanceId.make("claude-review"),
+        sessionGeneration: 7,
+      },
+      runtimeMode: "full-access",
+      providerOptions: { mcpServers: { docs: { type: "stdio", command: "node" } } },
+    });
+    yield* Effect.promise(() => vi.waitFor(() => assert.equal(events.length, 1)));
+    assert.ok(
+      events.every(
+        (event) =>
+          event.type === "mcp.status.updated" &&
+          event.payload.status.providerInstanceId === "claude-review" &&
+          event.payload.status.sessionGeneration === 7,
+      ),
+    );
+    harness.query.mcpServerStatusValue[0]!.tools = [{ name: "one" }, { name: "two" }];
+    yield* TestClock.adjust("1 second");
+    yield* Effect.promise(() => vi.waitFor(() => assert.equal(events.length, 2)));
+    assert.deepEqual(
+      events.map((event) => event.type === "mcp.status.updated" && event.payload.status.toolCount),
+      [1, 2],
+    );
+    yield* adapter.reloadMcpConfig!({
+      threadId: THREAD_ID,
+      mcpServers: { docs: { type: "stdio", command: "node" } },
+    });
+    yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+    const before = harness.query.mcpServerStatusCalls;
+    yield* TestClock.adjust("1 second");
+    yield* Effect.promise(() =>
+      vi.waitFor(() => assert.equal(harness.query.mcpServerStatusCalls, before + 1)),
+    );
+    assert.equal(events.length, 2);
+    yield* adapter.stopSession(THREAD_ID);
+    const stopped = harness.query.mcpServerStatusCalls;
+    yield* TestClock.adjust("2 seconds");
+    assert.equal(harness.query.mcpServerStatusCalls, stopped);
+  }).pipe(Effect.provide(harness.layer));
+});
+it.effect(
+  "reads Claude tool metadata without exposing config and skips reconnect for non-owned servers",
+  () => {
+    const harness = makeHarness();
+    const reconnect = vi.fn(async () => {});
+    Object.assign(harness.query, { reconnectMcpServer: reconnect });
+    harness.query.mcpServerStatusValue = [
+      {
+        name: "docs",
+        status: "needs-auth",
+        source: "dynamic",
+        tools: [{ name: "read", description: "Read docs", annotations: { readOnly: true } }],
+      },
+      { name: "external", status: "connected", source: "plugin" },
+    ];
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        providerOptions: { mcpServers: { docs: { type: "stdio", command: "node" } } },
+      });
+      const observed = yield* adapter.getMcpServerStatuses!(THREAD_ID);
+      assert.deepEqual(observed.capabilities, {
+        tools: true,
+        inputSchemas: false,
+        resources: false,
+      });
+      assert.equal(observed.servers[0]?.status, "needs-auth");
+      assert.equal(observed.servers[1]?.ownership, "external");
+      assert.equal(
+        yield* adapter.reconnectMcpServer!({ threadId: THREAD_ID, serverName: "external" }),
+        false,
+      );
+      assert.equal(reconnect.mock.calls.length, 0);
+      assert.equal(
+        yield* adapter.reconnectMcpServer!({ threadId: THREAD_ID, serverName: "docs" }),
+        true,
+      );
+      assert.deepEqual(reconnect.mock.calls, [["docs"]]);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+it.effect("reconnects external servers only when explicitly allowed", () => {
+  const harness = makeHarness();
+  const reconnect = vi.fn(async () => {});
+  Object.assign(harness.query, { reconnectMcpServer: reconnect });
+  harness.query.mcpServerStatusValue = [
+    { name: "external", status: "needs-auth", source: "claudeai" },
+  ];
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+    assert.equal(
+      yield* adapter.reconnectMcpServer!({ threadId: THREAD_ID, serverName: "external" }),
+      false,
+    );
+    assert.equal(
+      yield* adapter.reconnectMcpServer!({
+        threadId: THREAD_ID,
+        serverName: "external",
+        allowExternal: true,
+      }),
+      true,
+    );
+    assert.equal(
+      yield* adapter.reconnectMcpServer!({
+        threadId: THREAD_ID,
+        serverName: "missing",
+        allowExternal: true,
+      }),
+      false,
+    );
+    assert.deepEqual(reconnect.mock.calls, [["external"]]);
+  }).pipe(Effect.provide(harness.layer));
+});
+it.effect("starts MCP sign-in for managed and external servers through the CLI", () => {
+  const harness = makeHarness();
+  const authenticate = vi.fn(async (serverName: string) =>
+    serverName === "connector"
+      ? { authUrl: "https://claude.ai/connect", requiresUserAction: true, callbackExpected: false }
+      : serverName === "ready"
+        ? { requiresUserAction: false, callbackExpected: false }
+        : {
+            authUrl: "https://auth.example.com/authorize?state=s",
+            requiresUserAction: true,
+            callbackExpected: true,
+            callbackPort: 4567,
+          },
+  );
+  Object.assign(harness.query, { mcpAuthenticate: authenticate });
+  harness.query.mcpServerStatusValue = [
+    { name: "docs", status: "needs-auth", source: "dynamic" },
+    { name: "connector", status: "needs-auth", source: "claudeai" },
+    { name: "ready", status: "needs-auth", source: "user" },
+  ];
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      runtimeMode: "full-access",
+      providerOptions: { mcpServers: { docs: { type: "stdio", command: "node" } } },
+    });
+    assert.deepEqual(
+      yield* adapter.authenticateMcpServer!({ threadId: THREAD_ID, serverName: "docs" }),
+      {
+        authUrl: "https://auth.example.com/authorize?state=s",
+        callbackExpected: true,
+        ownership: "managed",
+      },
+    );
+    assert.deepEqual(
+      yield* adapter.authenticateMcpServer!({ threadId: THREAD_ID, serverName: "connector" }),
+      { authUrl: "https://claude.ai/connect", callbackExpected: false, ownership: "external" },
+    );
+    assert.deepEqual(
+      yield* adapter.authenticateMcpServer!({ threadId: THREAD_ID, serverName: "ready" }),
+      { callbackExpected: false, ownership: "external" },
+    );
+    const missing = yield* adapter.authenticateMcpServer!({
+      threadId: THREAD_ID,
+      serverName: "missing",
+    }).pipe(Effect.flip);
+    assert.include(missing.message, "not available in this conversation");
+    // No redirect URI: the CLI keeps its own localhost callback.
+    assert.deepEqual(authenticate.mock.calls, [["docs"], ["connector"], ["ready"]]);
+  }).pipe(Effect.provide(harness.layer));
+});
+it.effect("fails MCP sign-in cleanly when the Claude runtime lacks mcpAuthenticate", () => {
+  const harness = makeHarness();
+  harness.query.mcpServerStatusValue = [{ name: "docs", status: "needs-auth", source: "user" }];
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+    const error = yield* adapter.authenticateMcpServer!({
+      threadId: THREAD_ID,
+      serverName: "docs",
+    }).pipe(Effect.flip);
+    assert.include(error.message, "does not support MCP sign-in");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+for (const terminalFirst of [false, true]) {
+  it.effect(
+    `keeps background launch result correlation across turns (terminalFirst=${terminalFirst})`,
+    () => {
+      const h = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+        const turn = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Run" });
+        emitBashToolStart(h.query, { toolUseId: "late-shell" });
+        emitClaudeTaskStarted(h.query, {
+          taskId: "late-task",
+          toolUseId: "late-shell",
+          backgrounded: true,
+        });
+        emitBackgroundToolResult(h.query, { taskId: "late-task", toolUseId: "late-shell" });
+        emitClaudeSuccessResult(h.query);
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+              ),
+            ),
+          ),
+        );
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Next" });
+        const notify = () =>
+          emitClaudeTaskUpdated(h.query, {
+            taskId: "late-task",
+            patch: { status: "completed" },
+            uuid: crypto.randomUUID(),
+          });
+        const result = () =>
+          h.query.emit({
+            type: "user",
+            session_id: BACKGROUND_SESSION_ID,
+            parent_tool_use_id: null,
+            uuid: crypto.randomUUID(),
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "late-shell",
+                  content: "actual output\n",
+                },
+              ],
+            },
+          } as unknown as SDKMessage);
+        if (terminalFirst) notify();
+        result();
+        if (!terminalFirst) notify();
+        notify();
+        result();
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) =>
+                  event.type === "content.delta" && event.payload.delta === "actual output\n",
+              ),
+            ),
+          ),
+        );
+        yield* adapter.stopSession(THREAD_ID);
+        yield* Fiber.interrupt(listener);
+        const output = events.filter(
+          (event) => event.type === "content.delta" && event.payload.delta === "actual output\n",
+        );
+        assert.equal(output.length, 1);
+        assert.equal(output[0]?.turnId, turn.turnId);
+        const completed = events.filter(
+          (event) => event.type === "item.completed" && event.itemId === "late-shell",
+        );
+        assert.equal(completed.length, 1);
+        assert.equal(completed[0]?.turnId, turn.turnId);
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
+}
+
+for (const terminal of ["task_notification", "task_updated"] as const) {
+  for (const backgrounded of [false, true]) {
+    for (const resultFirst of [false, true]) {
+      for (const failed of [false, true]) {
+        it.effect(
+          `preserves ${failed ? "failed" : "successful"} Bash output (${terminal}, background=${backgrounded}, resultFirst=${resultFirst})`,
+          () => {
+            const h = makeHarness();
+            return Effect.gen(function* () {
+              const adapter = yield* ClaudeAdapter;
+              const events: ProviderRuntimeEvent[] = [];
+              const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+                Effect.sync(() => {
+                  events.push(event);
+                }),
+              ).pipe(Effect.forkChild);
+              yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+              const turn = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Run command" });
+              emitBashToolStart(h.query, { toolUseId: "output-call" });
+              emitClaudeTaskStarted(h.query, {
+                taskId: "output-task",
+                toolUseId: "output-call",
+                backgrounded,
+              });
+              const output = "stdout line\nstderr line\n";
+              const result = () =>
+                h.query.emit({
+                  type: "user",
+                  session_id: BACKGROUND_SESSION_ID,
+                  uuid: crypto.randomUUID(),
+                  parent_tool_use_id: null,
+                  message: {
+                    role: "user",
+                    content: [
+                      {
+                        type: "tool_result",
+                        tool_use_id: "output-call",
+                        content: output,
+                        is_error: failed,
+                      },
+                    ],
+                  },
+                } as unknown as SDKMessage);
+              const notify = () => {
+                if (terminal === "task_updated")
+                  emitClaudeTaskUpdated(h.query, {
+                    taskId: "output-task",
+                    patch: { status: failed ? "failed" : "completed" },
+                    uuid: crypto.randomUUID(),
+                  });
+                else
+                  h.query.emit({
+                    type: "system",
+                    subtype: "task_notification",
+                    task_id: "output-task",
+                    status: failed ? "failed" : "completed",
+                    output_file: "",
+                    summary: "Finished",
+                    session_id: BACKGROUND_SESSION_ID,
+                    uuid: crypto.randomUUID(),
+                  } as unknown as SDKMessage);
+              };
+              if (resultFirst) result();
+              notify();
+              notify();
+              if (!backgrounded) {
+                // Exercise both terminal forms, including the updated-first ordering.
+                if (terminal === "task_updated")
+                  h.query.emit({
+                    type: "system",
+                    subtype: "task_notification",
+                    task_id: "output-task",
+                    status: failed ? "failed" : "completed",
+                    output_file: "",
+                    summary: "Finished",
+                    session_id: BACKGROUND_SESSION_ID,
+                    uuid: crypto.randomUUID(),
+                  } as unknown as SDKMessage);
+                else
+                  emitClaudeTaskUpdated(h.query, {
+                    taskId: "output-task",
+                    patch: { status: failed ? "failed" : "completed" },
+                    uuid: crypto.randomUUID(),
+                  });
+              }
+              if (backgrounded && !resultFirst) {
+                // The output may arrive after the launching turn has ended.
+                emitClaudeSuccessResult(h.query);
+                yield* Effect.promise(() =>
+                  vi.waitFor(() =>
+                    assert.ok(
+                      events.some(
+                        (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+                      ),
+                    ),
+                  ),
+                );
+              }
+              if (!resultFirst) result();
+              yield* Effect.promise(() =>
+                vi.waitFor(() =>
+                  assert.ok(
+                    events.some(
+                      (event) => event.type === "content.delta" && event.payload.delta === output,
+                    ),
+                    JSON.stringify(
+                      events.map((event) => ({
+                        type: event.type,
+                        itemId: event.itemId,
+                        payload: event.payload,
+                      })),
+                    ),
+                  ),
+                ),
+              );
+              result(); // Replayed results must not append twice.
+              yield* adapter.stopSession(THREAD_ID);
+              yield* Fiber.interrupt(listener);
+              const completions = events.filter(
+                (event) => event.type === "item.completed" && event.itemId === "output-call",
+              );
+              assert.equal(completions.length, 1);
+              if (!backgrounded)
+                assert.equal(
+                  events.filter(
+                    (event) =>
+                      event.type === "task.completed" && event.payload.taskId === "output-task",
+                  ).length,
+                  1,
+                );
+              assert.equal(completions[0]?.turnId, turn.turnId);
+              if (completions[0]?.type === "item.completed") {
+                assert.equal(completions[0].payload.status, failed ? "failed" : "completed");
+                if (!backgrounded)
+                  assert.notInclude(
+                    JSON.stringify(completions[0].payload.data),
+                    "backgroundTaskId",
+                  );
+              }
+              const outputs = events.filter(
+                (event) => event.type === "content.delta" && event.payload.delta === output,
+              );
+              assert.equal(outputs.length, 1);
+              assert.equal(outputs[0]?.turnId, turn.turnId);
+            }).pipe(Effect.provide(h.layer));
+          },
+        );
+      }
+    }
+  }
+}
+
+for (const terminal of ["task_notification", "task_updated"] as const) {
+  for (const toolName of ["AskUserQuestion", "Bash"] as const) {
+    it.effect(`clears only the finished native agent's pending ${toolName} on ${terminal}`, () => {
+      const h = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "approval-required",
+        });
+        const canUseTool = h.getLastCreateQueryInput()!.options.canUseTool!;
+        const input =
+          toolName === "AskUserQuestion"
+            ? {
+                questions: [
+                  { question: "Continue?", header: "Next", options: [], multiSelect: false },
+                ],
+              }
+            : { command: "pwd" };
+        let childResult: PermissionResult | null | undefined;
+        const child = Promise.resolve(
+          canUseTool(toolName, input, {
+            signal: new AbortController().signal,
+            toolUseID: "child-question",
+            requestId: "child-question",
+            agentID: "native-child",
+          }),
+        ).then((result) => {
+          childResult = result;
+          return result;
+        });
+        let parentResult: PermissionResult | null | undefined;
+        const parent = Promise.resolve(
+          canUseTool(toolName, input, {
+            signal: new AbortController().signal,
+            toolUseID: "parent-question",
+            requestId: "parent-question",
+          }),
+        ).then((result) => {
+          parentResult = result;
+          return result;
+        });
+        const requestedType =
+          toolName === "AskUserQuestion" ? "user-input.requested" : "request.opened";
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.equal(events.filter((event) => event.type === requestedType).length, 2),
+          ),
+        );
+        if (terminal === "task_updated")
+          emitClaudeTaskUpdated(h.query, {
+            taskId: "native-child",
+            patch: { status: "completed" },
+          });
+        else
+          h.query.emit({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "native-child",
+            status: "completed",
+            output_file: "native-output",
+            summary: "Finished",
+            uuid: "123e4567-e89b-42d3-a456-426614174011",
+            session_id: "123e4567-e89b-42d3-a456-426614174000",
+          } as SDKMessage);
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(childResult?.behavior, "deny")));
+        assert.equal(parentResult, undefined);
+        const resolvedType =
+          toolName === "AskUserQuestion" ? "user-input.resolved" : "request.resolved";
+        assert.equal(events.filter((event) => event.type === resolvedType).length, 1);
+        yield* adapter.stopSession(THREAD_ID);
+        yield* Effect.promise(() => Promise.all([child, parent]));
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.equal(events.filter((event) => event.type === resolvedType).length, 2),
+          ),
+        );
+        assert.equal(parentResult?.behavior, "deny");
+        yield* Fiber.interrupt(listener);
+      }).pipe(Effect.provide(h.layer));
+    });
+  }
+}
+
+for (const streamed of [false, true]) {
+  it.effect(
+    `shows the skill name from ${streamed ? "streamed" : "complete"} Claude tool input`,
+    () => {
+      const h = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Review", attachments: [] });
+        const emit = (event: Extract<SDKMessage, { type: "stream_event" }>["event"]) =>
+          h.query.emit({
+            type: "stream_event",
+            session_id: "sdk-session-skill",
+            uuid: crypto.randomUUID(),
+            parent_tool_use_id: null,
+            event,
+          });
+        emit({
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "skill-call",
+            name: "Skill",
+            input: streamed ? {} : { skill: "team:review" },
+          },
+        });
+        if (streamed) {
+          emit({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "input_json_delta", partial_json: '{"skill":"team:' },
+          });
+          emit({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "input_json_delta", partial_json: 'review"}' },
+          });
+        }
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) =>
+                  (event.type === "item.started" || event.type === "item.updated") &&
+                  event.payload.title === "Skill: team:review",
+              ),
+            ),
+          ),
+        );
+        yield* adapter.stopSession(THREAD_ID);
+        yield* Fiber.interrupt(listener);
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
+}
+
+it.effect("keeps older background task ownership through parent model changes and steering", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    const events: ProviderRuntimeEvent[] = [];
+    const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+      Effect.sync(() => {
+        events.push(event);
+      }),
+    ).pipe(Effect.forkChild);
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      runtimeMode: "full-access",
+      model: "claude-opus-5-5",
+    });
+    const first = yield* adapter.sendTurn({
+      threadId: THREAD_ID,
+      input: "Explore",
+      attachments: [],
+    });
+    h.query.emit({
+      type: "assistant",
+      parent_tool_use_id: null,
+      uuid: crypto.randomUUID(),
+      session_id: BACKGROUND_SESSION_ID,
+      message: {
+        role: "assistant",
+        model: "claude-opus-5-5",
+        content: [
+          {
+            type: "tool_use",
+            id: "older-agent-call",
+            name: "Agent",
+            input: { model: "claude-sonnet-4-6", effort: "low" },
+          },
+        ],
+      },
+    } as SDKMessage);
+    h.query.emit({
+      type: "system",
+      subtype: "task_started",
+      task_id: "older-agent",
+      run_id: "run-original",
+      tool_use_id: "older-agent-call",
+      task_type: "local_agent",
+      description: "Explore in background",
+      uuid: crypto.randomUUID(),
+      session_id: BACKGROUND_SESSION_ID,
+    } as SDKMessage);
+    h.query.emit({
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: [{ task_id: "older-agent", task_type: "local_agent", ambient: true }],
+      uuid: crypto.randomUUID(),
+      session_id: BACKGROUND_SESSION_ID,
+    } as unknown as SDKMessage);
+    emitClaudeSuccessResult(h.query);
+    yield* Effect.promise(() =>
+      vi.waitFor(() =>
+        assert.ok(
+          events.some((event) => event.type === "turn.completed" && event.turnId === first.turnId),
+        ),
+      ),
+    );
+    const second = yield* adapter.sendTurn({
+      threadId: THREAD_ID,
+      input: "Next",
+      attachments: [],
+      modelSelection: createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-opus-4-6",
+        [{ id: "effort", value: "high" }],
+      ),
+    });
+    yield* adapter.steerTurn!({
+      threadId: THREAD_ID,
+      input: "Keep exploring",
+      attachments: [],
+      expectedTurnId: second.turnId,
+    });
+    h.query.emit({
+      type: "system",
+      subtype: "task_progress",
+      task_id: "older-agent",
+      description: "Still exploring",
+      uuid: crypto.randomUUID(),
+      session_id: BACKGROUND_SESSION_ID,
+    } as SDKMessage);
+    yield* Effect.promise(() =>
+      vi.waitFor(() =>
+        assert.ok(
+          events.some(
+            (event) =>
+              event.type === "task.progress" && event.payload.description === "Still exploring",
+          ),
+        ),
+      ),
+    );
+    const progress = events.find(
+      (event) => event.type === "task.progress" && event.payload.description === "Still exploring",
+    )!;
+    assert.equal(progress.turnId, first.turnId);
+    assert.equal(progress.type, "task.progress");
+    if (progress.type === "task.progress") {
+      assert.equal(progress.payload.model, "claude-sonnet-4-6");
+      assert.equal(progress.payload.effort, "low");
+      assert.equal(progress.payload.runId, "run-original");
+    }
+    const cursor = (yield* adapter.listSessions())[0]!.resumeCursor as {
+      backgroundTasks: { taskId: string; turnId?: string }[];
+    };
+    assert.equal(
+      cursor.backgroundTasks.find((task) => task.taskId === "older-agent")?.turnId,
+      first.turnId,
+    );
+    assert.equal(h.getCreateQueryInputs().length, 1);
+    assert.deepEqual(h.query.setModelCalls, ["claude-opus-4-6"]);
+    assert.deepEqual(h.query.interruptCalls, []);
+    assert.deepEqual(h.query.stopTaskCalls, []);
+    assert.equal(
+      events.some((event) => event.type === "task.completed"),
+      false,
+    );
+    h.query.emit({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "older-agent",
+      status: "completed",
+      output_file: "native-output",
+      summary: "Explored",
+      uuid: crypto.randomUUID(),
+      session_id: BACKGROUND_SESSION_ID,
+    } as SDKMessage);
+    yield* Effect.promise(() =>
+      vi.waitFor(() => assert.ok(events.some((event) => event.type === "task.completed"))),
+    );
+    assert.equal(events.find((event) => event.type === "task.completed")?.turnId, first.turnId);
+    const completed = events.find((event) => event.type === "task.completed");
+    if (completed?.type === "task.completed") assert.equal(completed.payload.runId, "run-original");
+    yield* adapter.stopSession(THREAD_ID);
+    yield* Fiber.interrupt(listener);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("settles the exact persisted native task run when its session stops", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    const events: ProviderRuntimeEvent[] = [];
+    const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+      Effect.sync(() => {
+        events.push(event);
+      }),
+    ).pipe(Effect.forkChild);
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      runtimeMode: "full-access",
+      resumeCursor: {
+        nativeTaskIds: ["native-agent"],
+        nativeTaskRuns: [["native-agent", "run-2"]],
+        backgroundTasks: [
+          { taskId: "native-agent", turnId: "original-turn", taskType: "local_agent" },
+        ],
+      },
+    });
+    yield* adapter.stopSession(THREAD_ID);
+    yield* Effect.promise(() =>
+      vi.waitFor(() => assert.ok(events.some((event) => event.type === "task.completed"))),
+    );
+    const completed = events.find((event) => event.type === "task.completed")!;
+    assert.equal(completed.turnId, "original-turn");
+    if (completed.type === "task.completed") assert.equal(completed.payload.runId, "run-2");
+    yield* Fiber.interrupt(listener);
   }).pipe(Effect.provide(h.layer));
 });

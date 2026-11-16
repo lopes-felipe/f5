@@ -5,6 +5,8 @@ import path from "node:path";
 import { ThreadId } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { vi } from "vitest";
+import { providerLogWriterInventory } from "../logWriterRegistry.ts";
 
 import { makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
@@ -28,6 +30,217 @@ function parseLogLine(line: string) {
 }
 
 describe("EventNdjsonLogger", () => {
+  it.effect(
+    "serializes native and canonical streams through one writer and flushes admitted deltas on close",
+    () =>
+      Effect.gen(function* () {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-shared-log-"));
+        try {
+          const native = (yield* makeEventNdjsonLogger(path.join(directory, "native.ndjson"), {
+            stream: "native",
+            batchWindowMs: 60_000,
+          }))!;
+          const canonical = (yield* makeEventNdjsonLogger(
+            path.join(directory, "canonical.ndjson"),
+            { stream: "canonical", batchWindowMs: 60_000 },
+          ))!;
+          const thread = ThreadId.makeUnsafe("same-thread");
+          for (let i = 0; i < 30; i++) {
+            yield* native.write({ type: "content.delta", index: i }, thread);
+            yield* canonical.write({ type: "content.delta", index: i }, thread);
+          }
+          assert.equal(providerLogWriterInventory().writers, 1);
+          yield* native.close();
+          yield* canonical.close();
+          const lines = fs
+            .readFileSync(path.join(directory, "same-thread.log"), "utf8")
+            .trim()
+            .split("\n")
+            .map(parseLogLine);
+          assert.equal(lines.length, 60);
+          for (let i = 0; i < 30; i++) {
+            assert.equal(lines[i * 2]!.stream, "NTIVE");
+            assert.equal(lines[i * 2 + 1]!.stream, "CANON");
+            assert.equal(JSON.parse(lines[i * 2]!.payload).index, i);
+          }
+          assert.equal(providerLogWriterInventory().entries, 0);
+          assert.equal(providerLogWriterInventory().writers, 0);
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect("batches ACP content chunks but awaits append for plan and tool boundaries", () =>
+    Effect.gen(function* () {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-acp-log-"));
+      const opened = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const open = fs.promises.open.bind(fs.promises);
+      const spy = vi.spyOn(fs.promises, "open").mockImplementation(async (...args) => {
+        opened.resolve();
+        await release.promise;
+        return open(...args);
+      });
+      try {
+        const logger = (yield* makeEventNdjsonLogger(path.join(directory, "native.ndjson"), {
+          stream: "native",
+          batchWindowMs: 60_000,
+        }))!;
+        const threadId = ThreadId.makeUnsafe("thread");
+        const event = (sessionUpdate: string) => ({
+          event: {
+            method: "session/update",
+            payload: { update: { sessionUpdate, content: { type: "text", text: "token" } } },
+          },
+        });
+        for (const kind of ["agent_message_chunk", "agent_thought_chunk", "user_message_chunk"])
+          yield* logger.write(event(kind), threadId);
+        assert.equal(spy.mock.calls.length, 0);
+        let acknowledged = false;
+        const boundary = Effect.runPromise(logger.write(event("tool_call"), threadId)).then(() => {
+          acknowledged = true;
+        });
+        yield* Effect.promise(() => opened.promise);
+        assert.isFalse(acknowledged);
+        release.resolve();
+        yield* Effect.promise(() => boundary);
+        yield* logger.write(event("plan"), threadId);
+        yield* logger.close();
+        const records = fs
+          .readFileSync(path.join(directory, "thread.log"), "utf8")
+          .trim()
+          .split("\n")
+          .map(parseLogLine);
+        assert.equal(records.length, 5);
+        assert.equal(
+          JSON.parse(records[3]!.payload).event.payload.update.sessionUpdate,
+          "tool_call",
+        );
+      } finally {
+        release.resolve();
+        spy.mockRestore();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("close waits for a record admitted before serialization yields", () =>
+    Effect.gen(function* () {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-log-admission-"));
+      try {
+        const logger = (yield* makeEventNdjsonLogger(path.join(directory, "native.ndjson"), {
+          stream: "native",
+        }))!;
+        let closing: Promise<void> | undefined;
+        yield* logger.write(
+          {
+            toJSON() {
+              closing = Effect.runPromise(logger.close());
+              return { type: "turn.completed" };
+            },
+          },
+          ThreadId.makeUnsafe("thread"),
+        );
+        yield* Effect.promise(() => closing!);
+        assert.equal(
+          JSON.parse(
+            parseLogLine(fs.readFileSync(path.join(directory, "thread.log"), "utf8").trim())
+              .payload,
+          ).type,
+          "turn.completed",
+        );
+        assert.equal(providerLogWriterInventory().writers, 0);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("recovers a transient open failure and removes a crashed partial final record", () =>
+    Effect.gen(function* () {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-retry-log-"));
+      const filePath = path.join(directory, "thread.log");
+      fs.writeFileSync(
+        filePath,
+        '[2026-10-19T00:00:00.000Z] NTIVE: {"type":"assistant"}\n[partial completion',
+      );
+      const open = fs.promises.open.bind(fs.promises);
+      const spy = vi
+        .spyOn(fs.promises, "open")
+        .mockRejectedValueOnce(new Error("temporary disk failure"))
+        .mockImplementation(open);
+      try {
+        const logger = (yield* makeEventNdjsonLogger(path.join(directory, "native.ndjson"), {
+          stream: "native",
+        }))!;
+        yield* logger.write({ type: "turn.completed" }, ThreadId.makeUnsafe("thread"));
+        yield* logger.close();
+        const lines = fs.readFileSync(filePath, "utf8").trim().split("\n").map(parseLogLine);
+        assert.equal(lines.length, 2);
+        assert.equal(JSON.parse(lines[1]!.payload).type, "turn.completed");
+        assert.equal(spy.mock.calls.length, 2);
+      } finally {
+        spy.mockRestore();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("rolls back a short partial append before retrying a complete record", () =>
+    Effect.gen(function* () {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-partial-log-"));
+      const filePath = path.join(directory, "thread.log");
+      const prefix = '[2026-10-19T00:00:00.000Z] NTIVE: {"type":"assistant"}\n';
+      fs.writeFileSync(filePath, prefix);
+      const open = fs.promises.open.bind(fs.promises);
+      let writes = 0;
+      const spy = vi.spyOn(fs.promises, "open").mockImplementation(async (...args) => {
+        const handle = await open(...args);
+        return new Proxy(handle, {
+          get(target, property) {
+            if (property === "write")
+              return async (
+                buffer: Uint8Array,
+                offset: number,
+                length: number,
+                position: number,
+              ) => {
+                writes++;
+                if (writes === 1)
+                  return target.write(buffer, offset, Math.min(length, 3), position);
+                if (writes === 2) throw new Error("transient write failure");
+                return target.write(buffer, offset, length, position);
+              };
+            const member = Reflect.get(target, property, target);
+            return typeof member === "function" ? member.bind(target) : member;
+          },
+        });
+      });
+      try {
+        const logger = (yield* makeEventNdjsonLogger(path.join(directory, "native.ndjson"), {
+          stream: "native",
+        }))!;
+        yield* logger.write(
+          { type: "turn.completed", text: "final🙂" },
+          ThreadId.makeUnsafe("thread"),
+        );
+        yield* logger.close();
+        const text = fs.readFileSync(filePath, "utf8");
+        assert.isTrue(text.startsWith(prefix));
+        const lines = text.trim().split("\n");
+        assert.equal(lines.length, 2);
+        assert.deepStrictEqual(JSON.parse(parseLogLine(lines[1]!).payload), {
+          type: "turn.completed",
+          text: "final🙂",
+        });
+      } finally {
+        spy.mockRestore();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("writes effect-style lines to thread-scoped files", () =>
     Effect.gen(function* () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));

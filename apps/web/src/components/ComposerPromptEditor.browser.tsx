@@ -68,6 +68,27 @@ it("changes Markdown styling without rewriting prompt bytes or file mentions", a
     .toHaveTextContent("**Bold** and `code` with @src/main.ts");
 });
 
+it("continues and exits numbered lists with Shift+Enter and preserves undo", async () => {
+  const screen = await render(<Harness initial="1. First" />);
+  try {
+    await screen.getByRole("button", { name: "Focus end" }).click();
+    await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+    await screen.getByRole("button", { name: "Read prompt" }).click();
+    expect(screen.getByLabelText("Serialized prompt").element().textContent).toBe("1. First\n2. ");
+    await screen.getByRole("button", { name: "Focus end" }).click();
+    await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+    await screen.getByRole("button", { name: "Read prompt" }).click();
+    expect(screen.getByLabelText("Serialized prompt").element().textContent).toBe("1. First\n");
+    await screen.getByRole("button", { name: "Focus end" }).click();
+    const modifier = navigator.platform.toUpperCase().includes("MAC") ? "Meta" : "Control";
+    await userEvent.keyboard("{" + modifier + ">}z{/" + modifier + "}");
+    await screen.getByRole("button", { name: "Read prompt" }).click();
+    expect(screen.getByLabelText("Serialized prompt").element().textContent).toBe("1. First\n2. ");
+  } finally {
+    await screen.unmount();
+  }
+});
+
 it("keeps pasted and typed handles literal, including quoted paths", async () => {
   const screen = await render(<Harness initial="" />);
   const editor = screen.getByTestId("composer-editor");
@@ -141,7 +162,13 @@ it("returns focus from a composer option menu on Escape", async () => {
     </PopupFocusContext>,
   );
   await screen.getByRole("button", { name: "Options" }).click();
-  await expect.element(screen.getByRole("menuitem", { name: "Option", exact: true })).toBeVisible();
+  const option = screen.getByRole("menuitem", { name: "Option", exact: true });
+  await expect.element(option).toBeVisible();
+  // Popup visibility precedes its asynchronous initial focus. Send Escape only
+  // after opening has finished, so that close and open focus effects cannot race.
+  await expect
+    .poll(() => screen.getByRole("menu").element().contains(document.activeElement))
+    .toBe(true);
   await userEvent.keyboard("{Escape}");
   await expect.element(screen.getByRole("textbox", { name: "Draft" })).toHaveFocus();
 });
@@ -158,3 +185,28 @@ it.each(["**a****b**", "# Title **bold**", "**a**__b__", "`a``b`"])(
     await expect.element(screen.getByLabelText("Serialized prompt")).toHaveTextContent(prompt);
   },
 );
+
+it("keeps a PR reference chip and its complete URL through styling, deletion and undo", async () => {
+  const raw = "[PR #7](https://github.com/org/repo/pull/7)";
+  const screen = await render(<Harness initial={raw} />);
+  const editor = screen.getByTestId("composer-editor");
+  await expect
+    .poll(() => editor.element().querySelector("[data-composer-pr-reference]")?.textContent)
+    .toBe("org/repo#7");
+  await screen.getByRole("button", { name: "Toggle styling" }).click();
+  await screen.getByRole("button", { name: "Read prompt" }).click();
+  await expect.element(screen.getByLabelText("Serialized prompt")).toHaveTextContent(raw);
+  await expect.element(screen.getByLabelText("Mentions")).toHaveTextContent("[]");
+  await screen.getByRole("button", { name: "Focus end" }).click();
+  await userEvent.keyboard("{Backspace}");
+  await expect
+    .poll(() => editor.element().querySelector("[data-composer-pr-reference]"))
+    .toBeNull();
+  const modifier = navigator.platform.toUpperCase().includes("MAC") ? "Meta" : "Control";
+  await userEvent.keyboard("{" + modifier + ">}z{/" + modifier + "}");
+  await expect
+    .poll(() => editor.element().querySelector("[data-composer-pr-reference]")?.textContent)
+    .toBe("org/repo#7");
+  await screen.getByRole("button", { name: "Read prompt" }).click();
+  await expect.element(screen.getByLabelText("Serialized prompt")).toHaveTextContent(raw);
+});

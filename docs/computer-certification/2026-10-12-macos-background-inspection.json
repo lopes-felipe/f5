@@ -1,0 +1,45 @@
+{
+  "reportVersion": 1,
+  "recordedAt": "2026-10-12T19:07:37.842Z",
+  "repositoryCommit": "856ae445230858ca775dfdfde26723925fa47b02",
+  "workingTreeDirty": true,
+  "sourceSha256": "50e75ed67fe9ec77ad499faa66020061e3a0c653c1747ef3eca52fe2e0dfa72f",
+  "fixtureSourceSha256": "e97f80924e3bdfeefdda90940653cc368fc323bb535991ac4f1fbcb61889bf15",
+  "helperSha256": "27eff7abd0c3019bf76a5331f182bb722eb4a9bfaee3d033a39302c75c3f9a17",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "scope": "unsigned-background-synthetic-app-inspection-only",
+  "signed": false,
+  "certified": false,
+  "state": "passed",
+  "helperStayedSuspended": true,
+  "heartbeats": 11,
+  "checks": [
+    {
+      "maxNodes": 20,
+      "elapsedMs": 30,
+      "accessible": true,
+      "nodes": 12,
+      "outcome": "ok"
+    },
+    {
+      "maxNodes": 100,
+      "elapsedMs": 10,
+      "accessible": true,
+      "nodes": 12,
+      "outcome": "ok"
+    },
+    {
+      "maxNodes": 400,
+      "elapsedMs": 9,
+      "accessible": true,
+      "nodes": 12,
+      "outcome": "ok"
+    }
+  ],
+  "limitations": [
+    "Scripted grant only for the synthetic fixture, without any execution permit; no F5 consent or provider transport proof",
+    "No input, capture, focus/activation, installed-build TCC attribution or release certification"
+  ]
+}

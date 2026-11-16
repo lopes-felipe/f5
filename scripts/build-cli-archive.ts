@@ -7,10 +7,21 @@ import * as path from "node:path";
 import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import serverPackage from "../apps/server/package.json" with { type: "json" };
-import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
-import { cliTarget, sha256File, versionToken, type CliRelease } from "@t3tools/shared/cliRelease";
+import {
+  pinnedCliDependency,
+  selectCliRuntimeExternalDependencies,
+} from "./lib/cli-external-packages.ts";
+import {
+  cliTarget,
+  sha256File,
+  tarExecutable,
+  versionToken,
+  type CliRelease,
+} from "@t3tools/shared/cliRelease";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const CLI_NODE_VERSION = "26.10.0";
+export { pinnedCliDependency };
+
 export async function buildCliArchive(options: {
   target: string;
   output: string;
@@ -36,10 +47,11 @@ export async function buildCliArchive(options: {
   ) as { version: string; target: string };
   if (runtime.version !== CLI_NODE_VERSION || runtime.target !== target)
     throw new Error(`Build requires Node ${CLI_NODE_VERSION} for ${target}.`);
-  const run = (command: string, args: string[], cwd = repo) => {
+  const run = (command: string, args: string[], cwd = repo, timeout?: number) => {
     const result = spawnSync(command, args, {
       cwd,
       stdio: "inherit",
+      timeout,
       env: {
         ...process.env,
         PATH: `${path.dirname(node)}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -111,12 +123,10 @@ export async function buildCliArchive(options: {
       node,
       [
         path.join(repo, "apps/server/node_modules/tsdown/dist/run.mjs"),
-        "src/distribution/launcherEntry.ts",
-        "--format",
-        "cjs",
+        "--config",
+        "tsdown.launcher.config.ts",
         "--out-dir",
         path.join(temporary, "launcher"),
-        "--no-config",
       ],
       path.join(repo, "apps/server"),
     );
@@ -128,12 +138,7 @@ export async function buildCliArchive(options: {
       "bun.lock",
       await fs.readFile(path.join(repo, "bun.lock"), "utf8"),
     ).config as { packages: Record<string, [string, ...unknown[]]> };
-    const pinned = (name: string): string => {
-      const entry = sourceLock.packages[name]?.[0];
-      if (!entry?.startsWith(`${name}@`))
-        throw new Error(`Missing pinned native dependency: ${name}`);
-      return entry.slice(name.length + 1);
-    };
+    const pinned = (name: string): string => pinnedCliDependency(sourceLock.packages, name);
     const dependencies = Object.fromEntries(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackage.dependencies)).map((name) => [
         name,
@@ -153,6 +158,9 @@ export async function buildCliArchive(options: {
     // fff's optional platform binary is explicit, so installer settings cannot silently omit it.
     const fffPlatform = target.startsWith("linux-") ? `${target}-gnu` : target;
     dependencies[`@ff-labs/fff-bin-${fffPlatform}`] = pinned("@ff-labs/fff-node");
+    // Codex's native alias must survive --omit=optional too.
+    const codexPlatformPackage = "@openai/codex-" + target;
+    dependencies[codexPlatformPackage] = pinned(codexPlatformPackage);
     await fs.writeFile(
       path.join(stage, "package.json"),
       JSON.stringify({
@@ -176,7 +184,11 @@ export async function buildCliArchive(options: {
     );
     // Resolve without executing package scripts, then verify every version and integrity
     // against the repository lock before installing the immutable dependency closure.
-    run("bun", ["install", "--lockfile-only", "--ignore-scripts"], stage);
+    run(
+      process.execPath,
+      [path.join(repo, "scripts/retry-install.ts"), "--lockfile-only", "--ignore-scripts"],
+      stage,
+    );
     const runtimeLock = ts.parseConfigFileTextToJson(
       "bun.lock",
       await fs.readFile(path.join(stage, "bun.lock"), "utf8"),
@@ -187,7 +199,17 @@ export async function buildCliArchive(options: {
     for (const entry of Object.values(runtimeLock.packages))
       if (!approved.has(JSON.stringify([entry[0], entry.at(-1)])))
         throw new Error(`Native dependency is absent from the repository lock: ${entry[0]}`);
-    run("bun", ["install", "--production", "--frozen-lockfile", "--linker", "hoisted"], stage);
+    run(
+      process.execPath,
+      [
+        path.join(repo, "scripts/retry-install.ts"),
+        "--production",
+        "--frozen-lockfile",
+        "--linker",
+        "hoisted",
+      ],
+      stage,
+    );
     if (process.platform !== "win32") {
       for (const helper of [
         "build/Release/spawn-helper",
@@ -202,11 +224,12 @@ export async function buildCliArchive(options: {
         }
       }
     }
-    run(executable, ["runtime-preflight"], stage);
+    // Fail fast on a hang instead of at the job timeout; installs allow it 30 seconds.
+    run(executable, ["runtime-preflight"], stage, 60_000);
     await fs.rm(path.join(stage, "node_modules/.bin"), { recursive: true, force: true });
     const archive = path.join(output, `${stem}.tar.gz`);
     // Dereference build-store links. Runtime extraction permits regular files/directories only.
-    run("tar", ["-czhf", archive, "-C", temporary, stem]);
+    run(tarExecutable(), ["-czhf", archive, "-C", temporary, stem]);
     const size = (await fs.stat(archive)).size;
     const manifest: CliRelease = {
       schemaVersion: 1,

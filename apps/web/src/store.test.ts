@@ -1,3 +1,11 @@
+import { applyDomainEvent } from "./applyDomainEvent";
+import { QueryClient } from "@tanstack/react-query";
+import * as nativeApi from "./nativeApi";
+import {
+  fetchAndSyncThreadDetail,
+  clearInFlightOrchestrationRpcRequests,
+} from "./lib/orchestrationReactQuery";
+import { createOrchestrationEventRouter } from "./orchestration/eventRouter";
 import {
   CommandId,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -21,6 +29,7 @@ import {
   invalidateThreadDetails,
   markThreadUnread,
   markThreadVisited,
+  markThreadsVisited,
   persistState,
   prependOlderThreadActivitiesPage,
   pruneChangedFilesExpandedForThreads,
@@ -31,9 +40,11 @@ import {
   syncStartupSnapshot,
   syncThreadDetails,
   syncThreadTailDetails,
+  prependOlderThreadHistoryPage,
   useStore,
   type AppState,
 } from "./store";
+import { hasUnseenCompletion, resolveThreadStatusForThread } from "./threadStatus";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
 import { createEmptyThreadHistoryState, ensureThreadHistoryState } from "./lib/threadHistory";
 
@@ -272,6 +283,7 @@ function makeThreadDetails(
     checkpoints: [],
     activities: [],
     commandExecutions: [],
+    proposedPlans: [],
     tasks: [],
     tasksTurnId: null,
     tasksUpdatedAt: null,
@@ -289,6 +301,68 @@ function makeThreadDetails(
     ...overrides,
   };
 }
+
+describe("unlisted thread detail hydration", () => {
+  const threadId = ThreadId.makeUnsafe("thread-1");
+  const emptyState = () => ({ ...makeState(makeThread()), threads: [] });
+
+  it("opens a thread from detail before it appears in the shell", () => {
+    const details = makeThreadDetails({
+      thread: makeReadModelThread({ title: "Just created" }),
+      messages: [
+        {
+          id: MessageId.makeUnsafe("detail-message"),
+          role: "user",
+          text: "Hello",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-01-02T00:00:00Z",
+          updatedAt: "2026-01-02T00:00:00Z",
+        },
+      ],
+    });
+    const state = syncThreadTailDetails(emptyState(), threadId, details);
+    expect(state.threads).toHaveLength(1);
+    expect(state.threads[0]).toMatchObject({
+      id: threadId,
+      title: "Just created",
+      detailsLoaded: true,
+    });
+    expect(state.threads[0]?.messages.map((message) => message.id)).toEqual(["detail-message"]);
+  });
+
+  it.each([
+    undefined,
+    null,
+    makeReadModelThread({ deletedAt: "2026-01-02T00:00:00Z" }),
+    makeReadModelThread({ archivedAt: "2026-01-02T00:00:00Z" }),
+    makeReadModelThread({ id: ThreadId.makeUnsafe("another-thread") }),
+  ])("does not seed missing, removed, or mismatched threads: %j", (thread) => {
+    const state = emptyState();
+    expect(syncThreadTailDetails(state, threadId, makeThreadDetails({ thread }))).toBe(state);
+  });
+
+  it("does not resurrect a thread from a tail older than the shell", () => {
+    const state = { ...emptyState(), lastAppliedSequence: 3 };
+    expect(
+      syncThreadTailDetails(
+        state,
+        threadId,
+        makeThreadDetails({ thread: makeReadModelThread({}) }),
+      ),
+    ).toBe(state);
+  });
+
+  it("preserves newer shell metadata when an earlier detail request finishes", () => {
+    const state = makeState(makeThread({ title: "Newer shell title" }));
+    const next = syncThreadTailDetails(
+      state,
+      threadId,
+      makeThreadDetails({ thread: makeReadModelThread({ title: "Earlier title" }) }),
+    );
+    expect(next.threads[0]?.title).toBe("Newer shell title");
+  });
+});
 
 function makeEvent<TType extends OrchestrationEvent["type"]>(
   type: TType,
@@ -667,7 +741,7 @@ describe("store read model sync", () => {
     expect(next.investigationWorkflows).toEqual([activeInvestigationWorkflow]);
   });
 
-  it("falls back to the codex default for unsupported provider models without an active session", () => {
+  it("preserves server-owned model slugs without an active session", () => {
     const initialState = makeState(makeThread());
     const readModel = makeReadModel(
       makeReadModelThread({
@@ -677,7 +751,7 @@ describe("store read model sync", () => {
 
     const next = syncServerReadModel(initialState, readModel);
 
-    expect(next.threads[0]?.model).toBe(DEFAULT_MODEL_BY_PROVIDER.codex);
+    expect(next.threads[0]?.model).toBe("unsupported-provider-model");
   });
 
   it("seeds lastVisitedAt from lastInteractionAt for newly hydrated threads", () => {
@@ -905,6 +979,27 @@ describe("store read model sync", () => {
     const next = syncServerReadModel(initialState, readModel);
 
     expect(next.threads[0]?.messages[0]?.skillCall).toEqual({ name: "review" });
+  });
+
+  it("updates authorship from refreshed read models even when the message text is unchanged", () => {
+    const message = {
+      id: MessageId.makeUnsafe("automated-message"),
+      role: "user" as const,
+      text: "scheduled prompt",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-03-10T09:00:00.000Z",
+      updatedAt: "2026-03-10T09:00:01.000Z",
+    };
+    const initial = syncServerReadModel(
+      makeState(makeThread()),
+      makeReadModel(makeReadModelThread({ messages: [message] })),
+    );
+    const next = syncServerReadModel(
+      initial,
+      makeReadModel(makeReadModelThread({ messages: [{ ...message, authorship: "automation" }] })),
+    );
+    expect(next.threads[0]?.messages[0]?.authorship).toBe("automation");
   });
 
   it("maps persisted thread tasks from the read model", () => {
@@ -1431,7 +1526,7 @@ describe("store read model sync", () => {
     expect(next.detailEventBufferByThreadId.size).toBe(0);
   });
 
-  it("syncThreadDetails merges thread detail fields and advances the detail watermark", () => {
+  it("syncThreadDetails merges thread detail fields without advancing the stream cursor", () => {
     const turnId = TurnId.makeUnsafe("turn-1");
     const initialState = makeState(
       makeThread({
@@ -1512,7 +1607,7 @@ describe("store read model sync", () => {
     expect(next.threads[0]?.tasksTurnId).toBe(turnId);
     expect(next.threads[0]?.sessionNotes).toEqual(details.sessionNotes);
     expect(next.threads[0]?.threadReferences).toEqual(details.threadReferences);
-    expect(next.lastAppliedSequence).toBe(9);
+    expect(next.lastAppliedSequence).toBe(initialState.lastAppliedSequence);
   });
 
   it("syncThreadTailDetails can preserve the global sequence cursor for partial warms", () => {
@@ -1558,7 +1653,6 @@ describe("store read model sync", () => {
         ],
         detailSequence: 20,
       }),
-      { advanceLastAppliedSequence: false },
     );
 
     expect(next.lastAppliedSequence).toBe(10);
@@ -1651,6 +1745,12 @@ describe("store read model sync", () => {
         }),
       ),
       lastAppliedSequence: 10,
+      detailCoverageByThreadId: new Map([
+        [
+          ThreadId.makeUnsafe("thread-1"),
+          { tailSequence: 0, latestMutation: 10, entities: new Map() },
+        ],
+      ]),
     } satisfies AppState;
 
     const next = syncThreadDetails(
@@ -1688,6 +1788,12 @@ describe("store read model sync", () => {
         }),
       ),
       lastAppliedSequence: 10,
+      detailCoverageByThreadId: new Map([
+        [
+          ThreadId.makeUnsafe("thread-1"),
+          { tailSequence: 0, latestMutation: 10, entities: new Map() },
+        ],
+      ]),
     } satisfies AppState;
 
     const next = syncThreadDetails(
@@ -1838,7 +1944,7 @@ describe("store read model sync", () => {
       oldestLoadedCommandExecutionCursor: null,
       generation: 2,
     });
-    expect(next.lastAppliedSequence).toBe(12);
+    expect(next.lastAppliedSequence).toBe(10);
   });
 
   it("prepends older activities and preserves them across a fresh tail sync", () => {
@@ -1942,6 +2048,57 @@ describe("store read model sync", () => {
     });
   });
 
+  it("preserves loaded resolved approvals and deduplicates pending cards on tail refresh", () => {
+    const row = (id: string, sequence: number, kind: string, requestId?: string) => ({
+      id: EventId.makeUnsafe(id),
+      sequence,
+      kind,
+      tone: "info" as const,
+      summary: id,
+      payload: requestId ? { requestId } : {},
+      turnId: null,
+      createdAt: "2026-04-01T09:00:00.000Z",
+    });
+    const requested = row("requested", 1, "approval.requested", "done");
+    const resolved = row("resolved", 2, "approval.resolved", "done");
+    const pending = row("pending", 0, "approval.requested", "open");
+    const tail = row("tail", 4, "runtime.note");
+    const thread = makeThread({
+      detailsLoaded: true,
+      activities: [pending, requested, resolved, tail],
+    });
+    const details = makeThreadDetails({
+      activities: [pending, tail],
+      detailSequence: 10,
+      hasOlderActivities: true,
+      oldestLoadedActivityCursor: {
+        sequenceIsNull: false,
+        sequence: 4,
+        createdAt: tail.createdAt,
+        activityId: tail.id,
+      },
+    });
+    const refreshed = syncThreadTailDetails(makeState(thread), thread.id, details);
+    expect(refreshed.threads[0]!.activities.map((activity) => activity.id)).toEqual([
+      pending.id,
+      requested.id,
+      resolved.id,
+      tail.id,
+    ]);
+    const answer = row("answer", 5, "approval.resolved", "open");
+    const closed = syncThreadTailDetails(refreshed, thread.id, {
+      ...details,
+      activities: [tail, answer],
+      detailSequence: 11,
+    });
+    expect(closed.threads[0]!.activities.map((activity) => activity.id)).toEqual([
+      pending.id,
+      requested.id,
+      resolved.id,
+      tail.id,
+      answer.id,
+    ]);
+  });
   it("beginThreadDetailLoad retains an existing buffer until all owners release it", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const initialState = {
@@ -2299,5 +2456,601 @@ describe("useStore.applyDomainEventBatch", () => {
     useStore.getState().applyDomainEventBatch([]);
     const after = useStore.getState();
     expect(after).toBe(before);
+  });
+});
+
+describe("persistent thread read acknowledgements", () => {
+  const completion = {
+    turnId: TurnId.makeUnsafe("completed-turn"),
+    state: "completed" as const,
+    requestedAt: "2026-03-01T09:00:00.000Z",
+    startedAt: "2026-03-01T09:00:01.000Z",
+    completedAt: "2026-03-01T09:01:00.000Z",
+    assistantMessageId: null,
+  };
+  async function reload(localStorage: Storage) {
+    vi.stubGlobal("window", { localStorage, addEventListener: () => {} });
+    vi.resetModules();
+    const reloaded = await import("./store");
+    // StoreProvider writes before the initial server snapshot has arrived.
+    reloaded.persistState(reloaded.useStore.getState());
+    return reloaded;
+  }
+  it("keeps an unflushed acknowledgement through a backend-incarnation reset", () => {
+    const id = ThreadId.makeUnsafe("incarnation-read-receipt");
+    const localStorage = createLocalStorageStub();
+    vi.stubGlobal("window", { localStorage });
+    useStore.setState(
+      makeState(
+        makeThread({ id, latestTurn: completion, lastVisitedAt: "2026-03-01T09:00:00.000Z" }),
+      ),
+    );
+    useStore.getState().markThreadsVisited([id], "2026-03-01T09:02:00.000Z");
+    useStore.getState().resetBackendState("replacement-read-receipt");
+    expect(useStore.getState().threads).toHaveLength(0);
+    useStore.getState().syncServerReadModel(
+      makeReadModel(
+        makeReadModelThread({
+          id,
+          latestTurn: completion,
+          lastInteractionAt: "2026-03-01T09:00:00.000Z",
+        }),
+      ),
+    );
+    expect(useStore.getState().threads[0]?.lastVisitedAt).toBe("2026-03-01T09:02:00.000Z");
+    expect(hasUnseenCompletion(useStore.getState().threads[0]!)).toBe(false);
+  });
+  it("keeps a failure this client never saw unseen while history stays read", async () => {
+    const reloaded = await reload(createLocalStorageStub());
+    const failedId = ThreadId.makeUnsafe("never-opened-failure");
+    const snapshot = makeReadModel(
+      makeReadModelThread({
+        latestTurn: completion,
+        lastInteractionAt: "2026-03-01T09:01:30.000Z",
+      }),
+    );
+    const hydrated = reloaded.syncServerReadModel(reloaded.useStore.getState(), {
+      ...snapshot,
+      threads: [
+        ...snapshot.threads,
+        makeReadModelThread({
+          id: failedId,
+          latestTurn: { ...completion, state: "error" },
+          lastInteractionAt: "2026-03-01T09:01:30.000Z",
+        }),
+      ],
+    });
+    const [completed, failed] = hydrated.threads;
+    expect(resolveThreadStatusForThread(completed!)).toBe("none");
+    expect(resolveThreadStatusForThread(failed!)).toBe("failed");
+    const visited = reloaded.markThreadVisited(hydrated, failedId, "2026-03-01T09:02:00.000Z");
+    expect(resolveThreadStatusForThread(visited.threads[1]!)).toBe("none");
+  });
+  it("restores read state after a fresh renderer load and still notices later completions", async () => {
+    const localStorage = createLocalStorageStub();
+    vi.stubGlobal("window", { localStorage });
+    const state = makeState(
+      makeThread({ latestTurn: completion, lastVisitedAt: "2026-03-01T09:00:00.000Z" }),
+    );
+    persistState(markThreadVisited(state, state.threads[0]!.id, "2026-03-01T09:02:00.000Z"));
+    const reloaded = await reload(localStorage);
+    const snapshot = makeReadModel(
+      makeReadModelThread({
+        latestTurn: completion,
+        lastInteractionAt: "2026-03-01T09:00:00.000Z",
+      }),
+    );
+    const hydrated = reloaded.syncServerReadModel(reloaded.useStore.getState(), snapshot);
+    expect(hydrated.threads[0]!.lastVisitedAt).toBe("2026-03-01T09:02:00.000Z");
+    expect(hasUnseenCompletion(hydrated.threads[0]!)).toBe(false);
+    const later = reloaded.syncServerReadModel(
+      hydrated,
+      makeReadModel(
+        makeReadModelThread({
+          latestTurn: {
+            ...completion,
+            turnId: TurnId.makeUnsafe("later-turn"),
+            completedAt: "2026-03-01T10:00:00.000Z",
+          },
+        }),
+      ),
+    );
+    expect(hasUnseenCompletion(later.threads[0]!)).toBe(true);
+  });
+  it("preserves an explicit mark-unread across reload", async () => {
+    const localStorage = createLocalStorageStub();
+    vi.stubGlobal("window", { localStorage });
+    const state = makeState(
+      makeThread({ latestTurn: completion, lastVisitedAt: "2026-03-01T09:02:00.000Z" }),
+    );
+    persistState(markThreadUnread(state, state.threads[0]!.id));
+    const reloaded = await reload(localStorage);
+    const hydrated = reloaded.syncServerReadModel(
+      reloaded.useStore.getState(),
+      makeReadModel(
+        makeReadModelThread({
+          latestTurn: completion,
+          lastInteractionAt: "2026-03-01T10:00:00.000Z",
+        }),
+      ),
+    );
+    expect(hasUnseenCompletion(hydrated.threads[0]!)).toBe(true);
+  });
+  it("acknowledges a batch in one state update without touching other threads", () => {
+    const first = makeThread({ latestTurn: completion, lastVisitedAt: "2026-03-01T09:00:00.000Z" });
+    const second = makeThread({ id: ThreadId.makeUnsafe("second"), latestTurn: completion });
+    const untouched = makeThread({
+      id: ThreadId.makeUnsafe("other-project"),
+      latestTurn: completion,
+    });
+    const state = { ...makeState(first), threads: [first, second, untouched] };
+    const updated = markThreadsVisited(state, [first.id, second.id], "2026-03-01T09:02:00.000Z");
+    expect(updated.threads.slice(0, 2).every((thread) => !hasUnseenCompletion(thread))).toBe(true);
+    expect(updated.threads[2]).toBe(untouched);
+    expect(hasUnseenCompletion(updated.threads[2]!)).toBe(true);
+    expect(markThreadsVisited(updated, [], "2026-03-01T09:02:00.000Z")).toBe(updated);
+  });
+});
+
+describe("stream and detail coverage separation", () => {
+  const a = ThreadId.makeUnsafe("thread-1"),
+    b = ThreadId.makeUnsafe("thread-2");
+  const at = "2026-10-19T12:00:00.000Z";
+  const messageId = MessageId.makeUnsafe("active");
+  const delta = (sequence: number, threadId = a, text = "!") => ({
+    ...makeEvent("thread.message-sent", {
+      threadId,
+      messageId,
+      text,
+      role: "assistant",
+      turnId: null,
+      streaming: true,
+      createdAt: at,
+      updatedAt: at,
+    }),
+    sequence,
+  });
+  const details = (sequence: number, text = "hello!") =>
+    makeThreadDetails({
+      detailSequence: sequence,
+      messages: [
+        {
+          id: messageId,
+          text,
+          role: "assistant",
+          turnId: null,
+          streaming: true,
+          createdAt: at,
+          updatedAt: at,
+        },
+      ],
+    });
+  afterEach(() =>
+    useStore.setState({
+      detailCoverageByThreadId: new Map(),
+      backendGeneration: undefined,
+      backendIncarnation: undefined,
+    }),
+  );
+  it("bounds pending hydration events and rejects a truncated tail until a fresh read covers overflow", () => {
+    useStore.setState({
+      ...makeState(makeThread({ id: a, detailsLoaded: false })),
+      detailCoverageByThreadId: new Map(),
+      lastAppliedSequence: 0,
+    });
+    useStore.getState().beginThreadDetailLoad(a);
+    for (let sequence = 1; sequence <= 2_002; sequence++)
+      useStore.getState().applyDomainEvent(delta(sequence));
+    const buffer = useStore.getState().detailEventBufferByThreadId.get(a)!;
+    expect(buffer.events).toHaveLength(0);
+    expect(buffer.bytes).toBe(0);
+    expect(buffer.overflowSequence).toBe(2_002);
+    useStore.getState().beginThreadDetailLoad(a);
+    expect(useStore.getState().detailEventBufferByThreadId.get(a)?.overflowSequence).toBe(2_002);
+    expect(useStore.getState().detailEventBufferByThreadId.get(a)?.retainers).toBe(2);
+    const before = useStore.getState();
+    useStore.getState().syncThreadTailDetails(a, details(2_001, "stale"));
+    expect(useStore.getState()).toBe(before);
+    useStore.getState().syncThreadTailDetails(a, details(2_002, "complete fresh tail"));
+    expect(useStore.getState().threads[0]?.messages[0]?.text).toBe("complete fresh tail");
+    expect(useStore.getState().lastAppliedSequence).toBe(2_002);
+    useStore.getState().clearThreadDetailBuffer(a);
+    useStore.getState().clearThreadDetailBuffer(a);
+    expect(useStore.getState().detailEventBufferByThreadId.has(a)).toBe(false);
+  });
+  it("applies the hydration byte ceiling without retaining a partial buffer", () => {
+    const initial = makeState(makeThread({ id: a, detailsLoaded: false }));
+    initial.detailEventBufferByThreadId = new Map([
+      [a, { events: [], retainers: 1, bytes: 32 * 1024 * 1024 - 1 }],
+    ]);
+    const next = applyDomainEvent(initial, delta(1));
+    expect(next.detailEventBufferByThreadId.get(a)).toMatchObject({
+      events: [],
+      bytes: 0,
+      overflowSequence: 1,
+      retainers: 1,
+    });
+    expect(syncThreadTailDetails(next, a, details(0, "stale"))).toBe(next);
+    expect(syncThreadTailDetails(next, a, details(1, "fresh")).threads[0]?.messages[0]?.text).toBe(
+      "fresh",
+    );
+  });
+  it("A's tail at 120 cannot swallow B's event at 119, while duplicate A deltas are suppressed", async () => {
+    useStore.setState({
+      ...makeState(makeThread({ id: a })),
+      threads: [makeThread({ id: a }), makeThread({ id: b })],
+      lastAppliedSequence: 118,
+      detailCoverageByThreadId: new Map(),
+    });
+    const router = createOrchestrationEventRouter({
+      api: {
+        readSnapshot: async () => ({
+          sequence: 118,
+          provisional: false,
+          merge: () => {},
+          finish: async () => {},
+        }),
+      },
+      actions: {
+        applyBatch: (events) => useStore.getState().applyDomainEventBatch(events),
+        applyEvent: (event) => useStore.getState().applyDomainEvent(event),
+        onGap: vi.fn(),
+        onResynchronizing: vi.fn(),
+        onSynchronized: vi.fn(),
+        onRecoveryError: vi.fn(),
+        repairThreads: vi.fn(),
+        logPoison: vi.fn(),
+      },
+      scheduler: {
+        raf: () => 1,
+        cancelRaf: vi.fn(),
+        setTimeout: () => 2,
+        clearTimeout: vi.fn(),
+        queueMicrotask,
+      },
+      now: () => 0,
+    });
+    await router.syncSnapshot();
+    useStore.getState().syncThreadTailDetails(a, details(120));
+    expect(useStore.getState().lastAppliedSequence).toBe(118);
+    router.receive(delta(119, b));
+    router.receive(delta(120));
+    router.flushPending();
+    expect(useStore.getState().threads.find((thread) => thread.id === b)?.messages[0]?.text).toBe(
+      "!",
+    );
+    expect(useStore.getState().threads[0]?.messages[0]?.text).toBe("hello!");
+    expect(useStore.getState().lastAppliedSequence).toBe(120);
+    expect(router.committedSequence).toBe(120);
+    router.dispose();
+  });
+  it("tail coverage does not suppress summary or session events", () => {
+    useStore.setState({ ...makeState(makeThread()), detailCoverageByThreadId: new Map() });
+    useStore.getState().syncThreadTailDetails(a, details(120));
+    useStore.getState().applyDomainEventBatch([
+      {
+        ...makeEvent("thread.meta-updated", { threadId: a, title: "new title", updatedAt: at }),
+        sequence: 119,
+      },
+    ]);
+    expect(useStore.getState().threads[0]?.title).toBe("new title");
+  });
+  it("history coverage only covers inserted rows, including overlapping pages", () => {
+    const state = syncThreadTailDetails(makeState(makeThread()), a, details(118, "hello"));
+    const older = {
+      ...details(120),
+      messages: [{ ...details(120).messages[0]!, id: MessageId.makeUnsafe("old"), text: "old" }],
+    };
+    let next = prependOlderThreadHistoryPage(
+      state,
+      a,
+      older,
+      state.threads[0]!.history!.generation,
+    );
+    next = prependOlderThreadHistoryPage(next, a, older, next.threads[0]!.history!.generation);
+    useStore.setState(next);
+    useStore.getState().applyDomainEventBatch([delta(119)]);
+    expect(useStore.getState().threads[0]?.messages.find((row) => row.id === messageId)?.text).toBe(
+      "hello!",
+    );
+    expect(useStore.getState().threads[0]?.messages.filter((row) => row.id === "old")).toHaveLength(
+      1,
+    );
+    expect(useStore.getState().lastAppliedSequence).toBe(119);
+  });
+  it("a tail preserves newer coverage of backfilled rows it did not replace", () => {
+    const state = syncThreadTailDetails(makeState(makeThread()), a, details(118, "hello"));
+    const oldId = MessageId.makeUnsafe("older-row");
+    const older = {
+      ...details(120),
+      messages: [
+        {
+          ...details(120).messages[0]!,
+          id: oldId,
+          text: "old",
+          createdAt: "2026-10-19T11:00:00.000Z",
+        },
+      ],
+    };
+    const paged = prependOlderThreadHistoryPage(
+      state,
+      a,
+      older,
+      state.threads[0]!.history!.generation,
+    );
+    const tailed = syncThreadTailDetails(paged, a, {
+      ...details(119, "hello!"),
+      oldestLoadedMessageCursor: { createdAt: at, messageId },
+    });
+    useStore.setState(tailed);
+    const oldDelta = delta(120);
+    if (oldDelta.type !== "thread.message-sent") throw new Error("Expected a message delta.");
+    useStore
+      .getState()
+      .applyDomainEventBatch([{ ...oldDelta, payload: { ...oldDelta.payload, messageId: oldId } }]);
+    expect(useStore.getState().threads[0]?.messages.find((row) => row.id === oldId)?.text).toBe(
+      "old",
+    );
+    const staleOverlap = syncThreadTailDetails(paged, a, {
+      ...details(119),
+      messages: older.messages,
+    });
+    expect(staleOverlap).toBe(paged);
+  });
+  it("eviction and backend replacement release coverage and permit a lower-head snapshot", () => {
+    useStore.setState(syncThreadTailDetails(makeState(makeThread()), a, details(120)));
+    useStore.getState().evictThreadDetails([a]);
+    expect(useStore.getState().detailCoverageByThreadId?.size).toBe(0);
+    useStore.getState().syncThreadTailDetails(a, details(1, "reopened"));
+    expect(useStore.getState().threads[0]?.messages[0]?.text).toBe("reopened");
+    useStore.getState().resetBackendState("replacement");
+    expect(useStore.getState().lastAppliedSequence).toBe(0);
+    expect(useStore.getState().threads).toEqual([]);
+    expect(useStore.getState().detailCoverageByThreadId?.size ?? 0).toBe(0);
+  });
+  it("backend replacement keeps in-session sidebar preferences through a lower-head snapshot", () => {
+    const state = makeState(makeThread());
+    const first = { ...state.projects[0]!, expanded: false };
+    const second = {
+      ...first,
+      id: ProjectId.makeUnsafe("second"),
+      cwd: "/tmp/second",
+      expanded: true,
+    };
+    useStore.setState({
+      ...state,
+      projects: [second, first],
+      changedFilesExpandedByThreadId: { [a]: false },
+    });
+    useStore.getState().resetBackendState("new-backend");
+    expect(useStore.getState().threads).toEqual([]);
+    const snapshot = {
+      ...makeReadModel(makeReadModelThread({})),
+      snapshotSequence: 1,
+      projects: [
+        makeReadModelProject({ id: first.id, workspaceRoot: first.cwd, title: "New title" }),
+        makeReadModelProject({ id: second.id, workspaceRoot: second.cwd }),
+      ],
+    };
+    useStore.getState().syncServerReadModel(snapshot);
+    expect(useStore.getState().projects.map((project) => [project.cwd, project.expanded])).toEqual([
+      [second.cwd, true],
+      [first.cwd, false],
+    ]);
+    expect(useStore.getState().projects[1]?.name).toBe("New title");
+    expect(useStore.getState().changedFilesExpandedByThreadId[a]).toBe(false);
+  });
+  it("ignores an old backend's late tail reply and keeps new hydration owners", async () => {
+    clearInFlightOrchestrationRpcRequests();
+    useStore.setState({
+      ...makeState(makeThread({ detailsLoaded: false })),
+      detailCoverageByThreadId: new Map(),
+    });
+    let resolve!: (value: OrchestrationThreadTailDetails) => void;
+    const api = {
+      orchestration: {
+        getThreadTailDetails: vi.fn(
+          () =>
+            new Promise<OrchestrationThreadTailDetails>((done) => {
+              resolve = done;
+            }),
+        ),
+      },
+    };
+    const spy = vi
+      .spyOn(nativeApi, "ensureNativeApi")
+      .mockReturnValue(api as unknown as ReturnType<typeof nativeApi.ensureNativeApi>);
+    const queryClient = new QueryClient();
+    try {
+      const pending = fetchAndSyncThreadDetail(queryClient, a, {
+        signal: new AbortController().signal,
+      });
+      useStore.getState().resetBackendState("replacement");
+      useStore.setState({ threads: [makeThread({ detailsLoaded: false })] });
+      useStore.getState().beginThreadDetailLoad(a);
+      resolve(details(120));
+      expect(await pending).toBeNull();
+      expect(useStore.getState().threads[0]?.messages).toEqual([]);
+      expect(useStore.getState().detailEventBufferByThreadId.get(a)?.retainers).toBe(1);
+      expect(queryClient.getQueryCache().getAll()).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      queryClient.clear();
+      clearInFlightOrchestrationRpcRequests();
+    }
+  });
+  it("clearing a poisoned buffer preserves its owners and visible messages", () => {
+    const state = syncThreadTailDetails(makeState(makeThread()), a, details(120));
+    useStore.setState({
+      ...state,
+      detailEventBufferByThreadId: new Map([[a, { retainers: 2, events: [delta(121)] }]]),
+    });
+    const messages = useStore.getState().threads[0]!.messages;
+    useStore.getState().resetThreadDetailBuffer(a);
+    expect(useStore.getState().detailEventBufferByThreadId.get(a)).toEqual({
+      retainers: 2,
+      events: [],
+    });
+    expect(useStore.getState().threads[0]!.messages).toBe(messages);
+  });
+});
+
+describe("archived plans omitted from the startup snapshot", () => {
+  const threadId = ThreadId.makeUnsafe("thread-1");
+  const plan = (
+    id: string,
+    markdown: string,
+    updatedAt = "2026-04-01T09:00:00.000Z",
+  ): Thread["proposedPlans"][number] => ({
+    id,
+    turnId: null,
+    planMarkdown: markdown,
+    implementedAt: null,
+    implementationThreadId: null,
+    createdAt: `2026-04-01T09:00:0${id.slice(-1)}.000Z`,
+    updatedAt,
+  });
+  const archived = "2026-04-02T00:00:00.000Z";
+  const upsert = (proposedPlan: ReturnType<typeof plan>, sequence: number) =>
+    makeEvent("thread.proposed-plan-upserted", { threadId, proposedPlan }, { sequence });
+
+  it("flags an unknown archived thread and keeps plans this client already loaded", () => {
+    const omitted = makeReadModel(
+      makeReadModelThread({ archivedAt: archived, proposedPlans: [], proposedPlansOmitted: true }),
+    );
+    const fresh = syncStartupSnapshot({ ...makeState(makeThread()), threads: [] }, omitted);
+    expect(fresh.threads[0]?.proposedPlansOmitted).toBe(true);
+
+    const loaded = makeState(
+      makeThread({ archivedAt: archived, proposedPlans: [plan("p1", "# One")] }),
+    );
+    const kept = syncStartupSnapshot(loaded, omitted).threads[0]!;
+    expect(kept.proposedPlans.map((entry) => entry.id)).toEqual(["p1"]);
+    // Kept plans may be stale after a reconnect, so they stay flagged for refresh.
+    expect(kept.proposedPlansOmitted).toBe(true);
+  });
+
+  it("refreshes cached plans that another window changed while this one was disconnected", () => {
+    const loaded = syncThreadTailDetails(
+      makeState(makeThread({ archivedAt: archived, detailsLoaded: false })),
+      threadId,
+      makeThreadDetails({ proposedPlans: [plan("p1", "# Before")], detailSequence: 4 }),
+    );
+    expect(loaded.threads[0]?.proposedPlansOmitted).toBeUndefined();
+    const reconnected = syncStartupSnapshot(
+      loaded,
+      makeReadModel(
+        makeReadModelThread({
+          archivedAt: archived,
+          proposedPlans: [],
+          proposedPlansOmitted: true,
+        }),
+      ),
+    );
+    expect(reconnected.threads[0]?.proposedPlans[0]?.planMarkdown).toBe("# Before");
+    expect(reconnected.threads[0]?.proposedPlansOmitted).toBe(true);
+    const refreshed = syncThreadTailDetails(
+      reconnected,
+      threadId,
+      makeThreadDetails({
+        proposedPlans: [plan("p1", "# After", "2026-04-03T00:00:00.000Z")],
+        detailSequence: 12,
+      }),
+    );
+    expect(refreshed.threads[0]?.proposedPlans[0]?.planMarkdown).toBe("# After");
+    expect(refreshed.threads[0]?.proposedPlansOmitted).toBeUndefined();
+  });
+
+  it("keeps every plan a tail carries, beyond the live retention cap", () => {
+    const plans = Array.from({ length: 201 }, (_, index) => ({
+      ...plan(`p${index}`, `# ${index}`),
+      createdAt: new Date(Date.UTC(2026, 3, 1, 9, 0, index)).toISOString(),
+    }));
+    const next = syncThreadTailDetails(
+      makeState(makeThread({ proposedPlans: plans, detailsLoaded: false })),
+      threadId,
+      makeThreadDetails({ proposedPlans: plans.toReversed() }),
+    );
+    expect(next.threads[0]?.proposedPlans).toHaveLength(201);
+    expect(next.threads[0]?.proposedPlans[0]?.id).toBe("p0");
+  });
+
+  it("fills plans from tail details, sorted, and clears the flag", () => {
+    const state = makeState(
+      makeThread({ archivedAt: archived, detailsLoaded: false, proposedPlansOmitted: true }),
+    );
+    const next = syncThreadTailDetails(
+      state,
+      threadId,
+      makeThreadDetails({ proposedPlans: [plan("p2", "# Two"), plan("p1", "# One")] }),
+    );
+    expect(next.threads[0]?.proposedPlans.map((entry) => entry.id)).toEqual(["p1", "p2"]);
+    expect(next.threads[0]?.proposedPlansOmitted).toBeUndefined();
+  });
+
+  it("keeps an upsert that arrives while the tail hydrates", () => {
+    const state: AppState = {
+      ...makeState(
+        makeThread({ archivedAt: archived, detailsLoaded: false, proposedPlansOmitted: true }),
+      ),
+      detailEventBufferByThreadId: new Map([[threadId, { retainers: 1, events: [] }]]),
+    };
+    // Implementing the plan lands after the tail's read.
+    const implemented = { ...plan("p1", "# One"), implementedAt: "2026-04-03T00:00:00.000Z" };
+    const buffered = applyDomainEvent(state, upsert(implemented, 9));
+    const next = syncThreadTailDetails(
+      buffered,
+      threadId,
+      makeThreadDetails({ proposedPlans: [plan("p1", "# One")], detailSequence: 5 }),
+    );
+    expect(next.threads[0]?.proposedPlans[0]?.implementedAt).toBe("2026-04-03T00:00:00.000Z");
+  });
+
+  it("keeps an upsert that arrived during a hydration that then failed", () => {
+    const state: AppState = {
+      ...makeState(makeThread({ detailsLoaded: false, proposedPlans: [plan("p1", "# One")] })),
+      detailEventBufferByThreadId: new Map([[threadId, { retainers: 1, events: [] }]]),
+    };
+    const implemented = { ...plan("p1", "# One"), implementedAt: "2026-04-03T00:00:00.000Z" };
+    const buffered = applyDomainEvent(state, upsert(implemented, 9));
+    expect(buffered.detailEventBufferByThreadId.get(threadId)?.events).toHaveLength(1);
+    const failed = clearThreadDetailBuffer(buffered, threadId);
+    expect(failed.threads[0]?.proposedPlans[0]?.implementedAt).toBe("2026-04-03T00:00:00.000Z");
+  });
+
+  it("ignores an upsert already covered by a newer tail", () => {
+    const loaded = syncThreadTailDetails(
+      makeState(makeThread({ detailsLoaded: false })),
+      threadId,
+      makeThreadDetails({ proposedPlans: [plan("p1", "# New")], detailSequence: 8 }),
+    );
+    const next = applyDomainEvent(loaded, upsert(plan("p1", "# Old"), 6));
+    expect(next.threads[0]?.proposedPlans[0]?.planMarkdown).toBe("# New");
+  });
+
+  it("still applies upserts to a live thread whose details are not loaded", () => {
+    const state = makeState(makeThread({ detailsLoaded: false }));
+    const next = applyDomainEvent(state, upsert(plan("p1", "# Live"), 3));
+    expect(next.threads[0]?.proposedPlans.map((entry) => entry.planMarkdown)).toEqual(["# Live"]);
+  });
+
+  it("does not report plan-ready from omitted plans", () => {
+    const turnId = TurnId.makeUnsafe("turn-1");
+    const thread = makeThread({
+      interactionMode: "plan",
+      latestTurn: {
+        turnId,
+        state: "completed",
+        requestedAt: "2026-04-01T09:00:00.000Z",
+        startedAt: "2026-04-01T09:00:00.000Z",
+        completedAt: "2026-04-01T09:00:05.000Z",
+        assistantMessageId: null,
+      },
+      proposedPlans: [{ ...plan("p1", "# Plan"), turnId }],
+    });
+    expect(resolveThreadStatusForThread(thread)).toBe("plan-ready");
+    expect(
+      resolveThreadStatusForThread({ ...thread, archivedAt: archived, proposedPlansOmitted: true }),
+    ).not.toBe("plan-ready");
   });
 });

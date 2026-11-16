@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 
 import {
@@ -82,11 +83,12 @@ export type WorktreeSetupPhase = typeof WorktreeSetupPhase.Type;
 
 /** What the first send asked for; enough to retry after a restart. */
 export const WorktreeSetupRequest = Schema.Struct({
-  projectCwd: TrimmedNonEmptyString,
+  projectCwd: FilesystemPath,
   baseBranch: TrimmedNonEmptyString,
   branch: TrimmedNonEmptyString,
   runSetupScript: Schema.Boolean,
   requireWorktree: Schema.Boolean,
+  namingIntent: Schema.optional(Schema.Literals(["explicit", "generated", "temporary"])),
 });
 export type WorktreeSetupRequest = typeof WorktreeSetupRequest.Type;
 
@@ -104,7 +106,11 @@ export const WorktreeSetupSnapshot = Schema.Struct({
   baseRef: Schema.NullOr(TrimmedNonEmptyString),
   /** Commit the new branch was created at; branch deletion requires it to be unchanged. */
   baseSha: Schema.NullOr(TrimmedNonEmptyString),
-  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /** Actual initial checkout commit, including when attaching an existing branch. */
+  checkoutSha: Schema.optional(TrimmedNonEmptyString),
+  /** Repository identity recorded before checkout; absent legacy snapshots cannot prove deletion ownership. */
+  creationCommonDir: Schema.optional(FilesystemPath),
+  worktreePath: Schema.NullOr(FilesystemPath),
   /** True once this setup created the branch, so cancel may delete it. */
   createdBranch: Schema.Boolean,
   /** True once git registered the worktree directory for this setup. */
@@ -122,6 +128,7 @@ export const WorktreeSetupSnapshot = Schema.Struct({
   stages: Schema.Array(WorktreeSetupStage),
   /** Human readable reason when phase is failed or cancelled_kept. */
   error: Schema.NullOr(Schema.String.check(Schema.isMaxLength(WORKTREE_SETUP_ERROR_MAX_LENGTH))),
+  generation: NonNegativeInt.pipe(Schema.withDecodingDefault(() => 0)),
   sequence: NonNegativeInt,
 });
 export type WorktreeSetupSnapshot = typeof WorktreeSetupSnapshot.Type;
@@ -132,17 +139,31 @@ export const worktreeSetupActivityId = (threadId: string) => `worktree-setup:${t
 export const WorktreeSetupThreadInput = Schema.Struct({ threadId: ThreadId });
 export type WorktreeSetupThreadInput = typeof WorktreeSetupThreadInput.Type;
 
+export const WorktreeSetupActionInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedOperationId: TrimmedNonEmptyString,
+});
+export type WorktreeSetupActionInput = typeof WorktreeSetupActionInput.Type;
+
 /** Null means no setup is tracked for that thread. */
-export const WorktreeSetupSubscribeResult = Schema.NullOr(WorktreeSetupSnapshot);
+export const WorktreeSetupSubscribeResult = Schema.Struct({
+  snapshot: Schema.NullOr(WorktreeSetupSnapshot),
+  generation: NonNegativeInt,
+  sequence: NonNegativeInt,
+});
 export type WorktreeSetupSubscribeResult = typeof WorktreeSetupSubscribeResult.Type;
 
 export const WorktreeSetupUpdatedPayload = Schema.Struct({
+  generation: NonNegativeInt,
+  sequence: NonNegativeInt,
   threadId: ThreadId,
   snapshot: Schema.NullOr(WorktreeSetupSnapshot),
 });
 export type WorktreeSetupUpdatedPayload = typeof WorktreeSetupUpdatedPayload.Type;
 
 export const WorktreeSetupActionResult = Schema.Struct({
+  generation: NonNegativeInt,
+  sequence: NonNegativeInt,
   snapshot: Schema.NullOr(WorktreeSetupSnapshot),
 });
 export type WorktreeSetupActionResult = typeof WorktreeSetupActionResult.Type;

@@ -27,11 +27,16 @@ export function supportsCodexNativeOperations(version: string | null | undefined
   return codexVersionAtLeast(version, "0.162.0");
 }
 
+export function supportsCodexRelease5(version: string | null | undefined): boolean {
+  return codexVersionAtLeast(version, "0.166.0");
+}
+
 export function providerRuntimeCapabilities(
   driver: string,
   version?: string | null,
 ): ProviderRuntimeCapabilities {
-  const rollback = driver === "codex" || driver === "claudeAgent" || driver === "opencode";
+  const rollback =
+    driver === "codex" || driver === "claudeAgent" || driver === "opencode" || driver === "pi";
   const codexNative = driver === "codex" && supportsCodexNativeOperations(version);
   return {
     nativeReview: codexNative,
@@ -43,15 +48,27 @@ export function providerRuntimeCapabilities(
     childTaskInspection: driver === "claudeAgent" || codexNative,
     childTaskStop: driver === "claudeAgent",
     fileCheckpointing: driver === "claudeAgent",
-    turnSteering: ["codex", "claudeAgent", "grok", "cursor", "antigravity"].includes(driver),
+    turnSteering: ["codex", "claudeAgent", "grok", "cursor", "antigravity", "muse"].includes(
+      driver,
+    ),
     conversationRollback: rollback,
     rollbackReadback: rollback,
     rollbackAffectsFiles: driver === "opencode",
     asyncQuestions: driver === "codex" && supportsCodexAsyncQuestions(version),
     maxImagesPerTurn: isKnownProviderKind(driver) ? providerMaxImages(driver) : 0,
-    // Claude reports models through SDK initialization; Codex through `model/list`.
-    reportedModels: driver === "claudeAgent" || driver === "codex",
-    sessionCommandCatalog: driver === "claudeAgent" || driver === "codex" || driver === "grok",
+    // Claude reports models through SDK initialization; Codex and Muse through `model/list`.
+    reportedModels:
+      driver === "claudeAgent" ||
+      driver === "codex" ||
+      driver === "muse" ||
+      driver === "acp" ||
+      driver === "pi",
+    sessionCommandCatalog:
+      driver === "claudeAgent" ||
+      driver === "codex" ||
+      driver === "grok" ||
+      driver === "acp" ||
+      driver === "pi",
     instanceInventory: driver === "claudeAgent" || driver === "codex",
     nativeSessionCleanup: driver === "claudeAgent",
   };

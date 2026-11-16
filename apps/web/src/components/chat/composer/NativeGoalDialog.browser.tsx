@@ -76,7 +76,19 @@ describe("NativeGoalDialog", () => {
           <NativeGoalDialog open onOpenChange={() => {}} onSubmit={onSubmit} />
         </form>,
       );
-      await page.getByLabelText("Token budget").fill("0");
+      // The rerender reattaches the portaled popup. Let its opening focus task
+      // and transitions settle before Playwright focuses and fills the number input.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const popup = page.getByRole("dialog").element();
+      await Promise.all(
+        popup.getAnimations({ subtree: true }).map((animation) => animation.finished),
+      );
+      const budget = page.getByLabelText("Token budget");
+      await budget.click();
+      await vi.waitFor(() => expect(document.activeElement).toBe(budget.element()));
+      await budget.fill("0");
+      await expect.element(budget).toHaveValue(0);
+      await expect.element(page.getByLabelText("Objective")).toHaveValue("Ship the tray");
       await expect.element(page.getByRole("button", { name: "Start goal" })).toBeDisabled();
       expect(onSubmit).not.toHaveBeenCalled();
     } finally {

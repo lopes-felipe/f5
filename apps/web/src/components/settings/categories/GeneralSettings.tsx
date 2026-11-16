@@ -1,7 +1,16 @@
-import { useServerCapability } from "../../../protocolState";
-import { useSettings, useUpdateSettings } from "../../../hooks/useSettings";
-import { toastManager } from "../../ui/toast";
-import { buildAppSettingsPatch } from "../../../appSettings";
+import { DiagnosticsSettings } from "../DiagnosticsSettings";
+import { KeepAwakeSettings } from "../KeepAwakeSettings";
+import { ServerHealthSettings } from "../ServerHealthSettings";
+import {
+  SIDEBAR_OLDER_THREAD_DAYS_OPTIONS,
+  type SidebarOlderThreadDays,
+  SIDEBAR_THREAD_PREVIEW_COUNT_MAX,
+  SIDEBAR_THREAD_PREVIEW_COUNT_MIN,
+  WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX,
+  WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN,
+  WORKSPACE_FILE_TREE_ENTRY_LIMIT_OPTIONS,
+  buildAppSettingsPatch,
+} from "../../../appSettings";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { SettingsCard, SettingsRow } from "../SettingsCard";
 import { Button } from "../../ui/button";
@@ -16,87 +25,42 @@ const TIMESTAMP_FORMAT_LABELS = {
   "24-hour": "24-hour",
 } as const;
 
-const MERGE_METHOD_LABELS = {
-  "last-used": "Last used for the repository",
-  squash: "Squash",
-  merge: "Merge commit",
-  rebase: "Rebase",
+const WINDOW_TITLE_DETAIL_LABELS = {
+  project: "Project name",
+  thread: "Thread title",
 } as const;
 
-const FOLLOW_UP_BEHAVIOR_LABELS = {
-  queue: "Queue",
-  steer: "Steer the active turn",
-} as const;
+const SIDEBAR_THREAD_PREVIEW_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15] as const;
 
-const SEND_SHORTCUT_LABELS = {
-  enter: "Enter",
-  "mod-enter": "Command/Ctrl+Enter",
-  "mod-enter-multiline": "Command/Ctrl+Enter for multiline prompts",
-} as const;
+function olderThreadDaysLabel(days: SidebarOlderThreadDays): string {
+  return days === 0 ? "Off" : `${days} days`;
+}
 
-const RUNTIME_MODE_LABELS = {
-  "full-access": "Full access",
-  "approval-required": "Ask for approval",
-  "auto-accept-edits": "Accept edits",
-  auto: "Auto",
-} as const;
-type RuntimeModeOption = keyof typeof RUNTIME_MODE_LABELS;
-const RUNTIME_MODE_OPTIONS = Object.keys(RUNTIME_MODE_LABELS) as RuntimeModeOption[];
-const isRuntimeModeOption = (value: unknown): value is RuntimeModeOption =>
-  typeof value === "string" && value in RUNTIME_MODE_LABELS;
-
-const WORKTREE_SUBMODULES_LABELS = {
-  none: "None",
-  shallow: "Top level",
-  recursive: "Recursive",
-} as const;
-type WorktreeSubmodulesOption = keyof typeof WORKTREE_SUBMODULES_LABELS;
-const WORKTREE_SUBMODULES_OPTIONS = Object.keys(
-  WORKTREE_SUBMODULES_LABELS,
-) as WorktreeSubmodulesOption[];
-const isWorktreeSubmodulesOption = (value: unknown): value is WorktreeSubmodulesOption =>
-  typeof value === "string" && value in WORKTREE_SUBMODULES_LABELS;
-
+const SIDEBAR_AND_PANEL_KEYS = [
+  "sidebarThreadPreviewCount",
+  "sidebarOlderThreadDays",
+  "tasksPanelAutoOpen",
+  "workspaceFileTreeEntryLimit",
+  "openFileLinksInPanel",
+] as const;
+const TIME_AND_TITLE_KEYS = ["timestampFormat", "windowTitleDetail"] as const;
 const SAFETY_KEYS = ["confirmThreadDelete"] as const;
 
 export function GeneralSettings() {
-  const composerRedesign = useServerCapability("composer-redesign");
   const { settings, defaults, updateSettings } = useSettingsRouteContext();
-  const resumeActiveTurnsAfterRestart = useSettings(
-    (settings) => settings.resumeActiveTurnsAfterRestart,
-  );
-  const autoResumeUsageLimitedThreads = useSettings(
-    (settings) => settings.autoResumeUsageLimitedThreads,
-  );
-  const defaultMergeMethod = useSettings((settings) => settings.prHubDefaultMergeMethod);
-  const { updateSettings: updateServerSettings } = useUpdateSettings();
-  const setDefaultMergeMethod = (value: "merge" | "squash" | "rebase" | null) => {
-    void updateServerSettings({ prHubDefaultMergeMethod: value }).catch((error: unknown) =>
-      toastManager.add({
-        type: "error",
-        title: "Could not save merge method",
-        description: error instanceof Error ? error.message : String(error),
-      }),
-    );
-  };
-  const mergeMethodValue = defaultMergeMethod ?? "last-used";
 
   return (
     <>
       <SettingsCard
-        title="New threads"
-        description="Defaults for new threads. Existing threads keep their own."
+        title="Sidebar & panels"
+        description="What the sidebar and side panels show and when they open."
         actions={
-          settings.defaultRuntimeMode !== defaults.defaultRuntimeMode ||
-          settings.worktreeSubmodules !== defaults.worktreeSubmodules ? (
+          SIDEBAR_AND_PANEL_KEYS.some((key) => settings[key] !== defaults[key]) ? (
             <Button
               size="xs"
               variant="outline"
               onClick={() =>
-                updateSettings({
-                  defaultRuntimeMode: defaults.defaultRuntimeMode,
-                  worktreeSubmodules: defaults.worktreeSubmodules,
-                })
+                updateSettings(buildAppSettingsPatch(SIDEBAR_AND_PANEL_KEYS, defaults))
               }
             >
               Restore defaults
@@ -105,22 +69,30 @@ export function GeneralSettings() {
         }
       >
         <SettingsRow
-          title="Default permissions"
-          description="What agents may do without asking first."
+          title="Sidebar thread preview count"
+          description='How many threads to show before "Show more" collapses the rest.'
           control={
             <Select
-              value={settings.defaultRuntimeMode}
+              value={String(settings.sidebarThreadPreviewCount)}
               onValueChange={(value) => {
-                if (isRuntimeModeOption(value)) updateSettings({ defaultRuntimeMode: value });
+                if (value === null) return;
+                const next = Number.parseInt(value, 10);
+                if (
+                  Number.isFinite(next) &&
+                  next >= SIDEBAR_THREAD_PREVIEW_COUNT_MIN &&
+                  next <= SIDEBAR_THREAD_PREVIEW_COUNT_MAX
+                ) {
+                  updateSettings({ sidebarThreadPreviewCount: next });
+                }
               }}
             >
-              <SelectTrigger className="w-56" aria-label="Default permissions">
-                <SelectValue>{RUNTIME_MODE_LABELS[settings.defaultRuntimeMode]}</SelectValue>
+              <SelectTrigger className="w-24" aria-label="Sidebar thread preview count">
+                <SelectValue>{settings.sidebarThreadPreviewCount}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end">
-                {RUNTIME_MODE_OPTIONS.map((mode) => (
-                  <SelectItem key={mode} value={mode}>
-                    {RUNTIME_MODE_LABELS[mode]}
+                {SIDEBAR_THREAD_PREVIEW_COUNT_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={String(option)}>
+                    {option}
                   </SelectItem>
                 ))}
               </SelectPopup>
@@ -128,30 +100,156 @@ export function GeneralSettings() {
           }
         />
         <SettingsRow
-          title="Worktree submodules"
-          description="Which git submodules a new worktree checks out."
+          title="Fold idle sidebar threads"
+          description='Threads idle this long fold into an "older" row in each project. Pinned, running, unread and open threads never fold.'
           control={
             <Select
-              value={settings.worktreeSubmodules}
+              value={String(settings.sidebarOlderThreadDays)}
               onValueChange={(value) => {
-                if (isWorktreeSubmodulesOption(value))
-                  updateSettings({ worktreeSubmodules: value });
+                if (value === null) return;
+                const next = SIDEBAR_OLDER_THREAD_DAYS_OPTIONS.find(
+                  (option) => String(option) === value,
+                );
+                if (next !== undefined) updateSettings({ sidebarOlderThreadDays: next });
               }}
             >
-              <SelectTrigger className="w-56" aria-label="Worktree submodules">
-                <SelectValue>{WORKTREE_SUBMODULES_LABELS[settings.worktreeSubmodules]}</SelectValue>
+              <SelectTrigger className="w-24" aria-label="Fold idle sidebar threads">
+                <SelectValue>{olderThreadDaysLabel(settings.sidebarOlderThreadDays)}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end">
-                {WORKTREE_SUBMODULES_OPTIONS.map((mode) => (
-                  <SelectItem key={mode} value={mode}>
-                    {WORKTREE_SUBMODULES_LABELS[mode]}
+                {SIDEBAR_OLDER_THREAD_DAYS_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={String(option)}>
+                    {olderThreadDaysLabel(option)}
                   </SelectItem>
                 ))}
               </SelectPopup>
             </Select>
           }
         />
+        <SettingsRow
+          title="Open task sidebar automatically"
+          description="Show task and plan sidebars automatically when a thread starts tracking steps."
+          control={
+            <Switch
+              checked={settings.tasksPanelAutoOpen}
+              onCheckedChange={(checked) =>
+                updateSettings({ tasksPanelAutoOpen: Boolean(checked) })
+              }
+              aria-label="Open task sidebar automatically"
+            />
+          }
+        />
+        <SettingsRow
+          title="File tree entry limit"
+          description="Maximum entries loaded for the Files panel tree. Search still uses backend ranking."
+          control={
+            <Select
+              value={String(settings.workspaceFileTreeEntryLimit)}
+              onValueChange={(value) => {
+                if (value === null) return;
+                const next = Number.parseInt(value, 10);
+                if (
+                  Number.isFinite(next) &&
+                  next >= WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN &&
+                  next <= WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX
+                ) {
+                  updateSettings({ workspaceFileTreeEntryLimit: next });
+                }
+              }}
+            >
+              <SelectTrigger className="w-28" aria-label="File tree entry limit">
+                <SelectValue>{settings.workspaceFileTreeEntryLimit.toLocaleString()}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                {WORKSPACE_FILE_TREE_ENTRY_LIMIT_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={String(option)}>
+                    {option.toLocaleString()}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Open file links in code panel"
+          description="Open clicked file links in the side panel instead of the external editor."
+          control={
+            <Switch
+              checked={settings.openFileLinksInPanel}
+              onCheckedChange={(checked) =>
+                updateSettings({ openFileLinksInPanel: Boolean(checked) })
+              }
+              aria-label="Open file links in code panel"
+            />
+          }
+        />
       </SettingsCard>
+
+      <SettingsCard
+        title="Time & titles"
+        description="Choose how times and window titles appear across the app."
+        actions={
+          TIME_AND_TITLE_KEYS.some((key) => settings[key] !== defaults[key]) ? (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => updateSettings(buildAppSettingsPatch(TIME_AND_TITLE_KEYS, defaults))}
+            >
+              Restore defaults
+            </Button>
+          ) : null
+        }
+      >
+        <SettingsRow
+          title="Timestamp format"
+          description={
+            <>
+              System default follows your browser or OS time format. <code>12-hour</code> and{" "}
+              <code>24-hour</code> force the hour cycle.
+            </>
+          }
+          control={
+            <Select
+              value={settings.timestampFormat}
+              onValueChange={(value) => {
+                if (value !== "locale" && value !== "12-hour" && value !== "24-hour") return;
+                updateSettings({ timestampFormat: value });
+              }}
+            >
+              <SelectTrigger className="w-40" aria-label="Timestamp format">
+                <SelectValue>{TIMESTAMP_FORMAT_LABELS[settings.timestampFormat]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                <SelectItem value="locale">{TIMESTAMP_FORMAT_LABELS.locale}</SelectItem>
+                <SelectItem value="12-hour">{TIMESTAMP_FORMAT_LABELS["12-hour"]}</SelectItem>
+                <SelectItem value="24-hour">{TIMESTAMP_FORMAT_LABELS["24-hour"]}</SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Window title"
+          description="What window and tab titles show for threads and workflows. Thread titles can appear in screen shares and window switchers."
+          control={
+            <Select
+              value={settings.windowTitleDetail}
+              onValueChange={(value) => {
+                if (value !== "project" && value !== "thread") return;
+                updateSettings({ windowTitleDetail: value });
+              }}
+            >
+              <SelectTrigger className="w-40" aria-label="Window title">
+                <SelectValue>{WINDOW_TITLE_DETAIL_LABELS[settings.windowTitleDetail]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                <SelectItem value="project">{WINDOW_TITLE_DETAIL_LABELS.project}</SelectItem>
+                <SelectItem value="thread">{WINDOW_TITLE_DETAIL_LABELS.thread}</SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+      </SettingsCard>
+
       {typeof window !== "undefined" && window.desktopBridge && (
         <SettingsCard title="Desktop">
           <SettingsRow
@@ -182,267 +280,24 @@ export function GeneralSettings() {
               </Select>
             }
           />
+          <KeepAwakeSettings />
         </SettingsCard>
       )}
 
       <SettingsCard
-        title="Pull requests"
-        description="Used when the repository allows it. Your choice in a merge dialog takes precedence."
-      >
-        <SettingsRow
-          title="Default merge method"
-          control={
-            <Select
-              value={mergeMethodValue}
-              onValueChange={(value) => {
-                if (value === "last-used") setDefaultMergeMethod(null);
-                else if (value === "merge" || value === "squash" || value === "rebase")
-                  setDefaultMergeMethod(value);
-              }}
-            >
-              <SelectTrigger className="w-56" aria-label="Default PR merge method">
-                <SelectValue>{MERGE_METHOD_LABELS[mergeMethodValue]}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end">
-                <SelectItem value="last-used">{MERGE_METHOD_LABELS["last-used"]}</SelectItem>
-                <SelectItem value="squash">{MERGE_METHOD_LABELS.squash}</SelectItem>
-                <SelectItem value="merge">{MERGE_METHOD_LABELS.merge}</SelectItem>
-                <SelectItem value="rebase">{MERGE_METHOD_LABELS.rebase}</SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-      </SettingsCard>
-
-      <SettingsCard title="Composer" description="How the message composer behaves.">
-        <div className="space-y-3">
-          {composerRedesign && (
-            <SettingsRow
-              title="Collapse composer while scrolling"
-              description="Make room for the conversation when you scroll. Typing or clicking the editor expands it; leaving the editor never collapses it."
-              control={
-                <Switch
-                  aria-label="Collapse composer while scrolling"
-                  checked={settings.composerCollapseOnScroll}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ composerCollapseOnScroll: checked })
-                  }
-                />
-              }
-            />
-          )}
-          <SettingsRow
-            title="Rich text editor"
-            description="Style Markdown while keeping its source editable. Turn off for plain text."
-            control={
-              <Switch
-                aria-label="Rich text editor"
-                checked={settings.composerRichTextEnabled}
-                onCheckedChange={(checked) => updateSettings({ composerRichTextEnabled: checked })}
-              />
-            }
-          />
-          <SettingsRow
-            title="Load remote images in chat"
-            description="Allow HTTPS images from external websites."
-            control={
-              <Switch
-                aria-label="Load remote images in chat"
-                checked={settings.loadRemoteImagesInChat}
-                onCheckedChange={(checked) => updateSettings({ loadRemoteImagesInChat: checked })}
-              />
-            }
-          />
-          <SettingsRow
-            title="Resume active turns after restart"
-            description="Continue turns that were running when the app restarted."
-            control={
-              <Switch
-                aria-label="Resume active turns after restart"
-                checked={resumeActiveTurnsAfterRestart}
-                onCheckedChange={(value) =>
-                  void updateServerSettings({ resumeActiveTurnsAfterRestart: value })
-                }
-              />
-            }
-          />
-          <SettingsRow
-            title="Auto-continue after usage limits"
-            description="When a Codex or Claude usage limit stops a thread, send continue automatically after the limit resets."
-            control={
-              <Switch
-                aria-label="Auto-continue after usage limits"
-                checked={autoResumeUsageLimitedThreads}
-                onCheckedChange={(value) =>
-                  void updateServerSettings({ autoResumeUsageLimitedThreads: value })
-                }
-              />
-            }
-          />
-          <SettingsRow
-            title="Follow-up behavior"
-            description="What sending a message does while a turn is running."
-            control={
-              <Select
-                value={settings.followUpBehavior}
-                onValueChange={(value) => {
-                  if (value === "queue" || value === "steer")
-                    updateSettings({ followUpBehavior: value });
-                }}
-              >
-                <SelectTrigger className="w-48" aria-label="Follow-up behavior">
-                  <SelectValue>{FOLLOW_UP_BEHAVIOR_LABELS[settings.followUpBehavior]}</SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="end">
-                  <SelectItem value="queue">{FOLLOW_UP_BEHAVIOR_LABELS.queue}</SelectItem>
-                  <SelectItem value="steer">{FOLLOW_UP_BEHAVIOR_LABELS.steer}</SelectItem>
-                </SelectPopup>
-              </Select>
-            }
-          />
-          <SettingsRow
-            title="Send shortcut"
-            description="Shift+Enter always inserts a new line."
-            control={
-              <Select
-                value={settings.sendShortcut}
-                onValueChange={(value) => {
-                  if (value === "enter" || value === "mod-enter" || value === "mod-enter-multiline")
-                    updateSettings({ sendShortcut: value });
-                }}
-              >
-                <SelectTrigger className="w-48" aria-label="Send shortcut">
-                  <SelectValue>{SEND_SHORTCUT_LABELS[settings.sendShortcut]}</SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="end">
-                  <SelectItem value="enter">{SEND_SHORTCUT_LABELS.enter}</SelectItem>
-                  <SelectItem value="mod-enter">{SEND_SHORTCUT_LABELS["mod-enter"]}</SelectItem>
-                  <SelectItem value="mod-enter-multiline">
-                    {SEND_SHORTCUT_LABELS["mod-enter-multiline"]}
-                  </SelectItem>
-                </SelectPopup>
-              </Select>
-            }
-          />
-        </div>
-      </SettingsCard>
-
-      <SettingsCard
-        title="Time & locale"
-        description="Choose how dates and times appear across the app."
-      >
-        <div className="space-y-4">
-          <SettingsRow
-            title="Timestamp format"
-            description={
-              <>
-                System default follows your browser or OS time format. <code>12-hour</code> and{" "}
-                <code>24-hour</code> force the hour cycle.
-              </>
-            }
-            control={
-              <Select
-                value={settings.timestampFormat}
-                onValueChange={(value) => {
-                  if (value !== "locale" && value !== "12-hour" && value !== "24-hour") {
-                    return;
-                  }
-                  updateSettings({
-                    timestampFormat: value,
-                  });
-                }}
-              >
-                <SelectTrigger className="w-40" aria-label="Timestamp format">
-                  <SelectValue>{TIMESTAMP_FORMAT_LABELS[settings.timestampFormat]}</SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="end">
-                  <SelectItem value="locale">{TIMESTAMP_FORMAT_LABELS.locale}</SelectItem>
-                  <SelectItem value="12-hour">{TIMESTAMP_FORMAT_LABELS["12-hour"]}</SelectItem>
-                  <SelectItem value="24-hour">{TIMESTAMP_FORMAT_LABELS["24-hour"]}</SelectItem>
-                </SelectPopup>
-              </Select>
-            }
-          />
-
-          {settings.timestampFormat !== defaults.timestampFormat ? (
-            <div className="flex justify-end">
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() =>
-                  updateSettings(
-                    buildAppSettingsPatch(["timestampFormat"], {
-                      timestampFormat: defaults.timestampFormat,
-                    }),
-                  )
-                }
-              >
-                Restore default
-              </Button>
-            </div>
-          ) : null}
-        </div>
-      </SettingsCard>
-
-      <SettingsCard
-        title="Threads"
-        description="Choose the default workspace mode for newly created draft threads."
-      >
-        <div className="space-y-3">
-          <SettingsRow
-            title="Default to New worktree"
-            description="New threads start in New worktree mode instead of Local."
-            control={
-              <Switch
-                checked={settings.defaultThreadEnvMode === "worktree"}
-                onCheckedChange={(checked) =>
-                  updateSettings({
-                    defaultThreadEnvMode: checked ? "worktree" : "local",
-                  })
-                }
-                aria-label="Default new threads to New worktree mode"
-              />
-            }
-          />
-          <SettingsRow
-            title="Open task sidebar automatically"
-            description="Show task and plan sidebars automatically when a thread starts tracking steps."
-            control={
-              <Switch
-                checked={settings.tasksPanelAutoOpen}
-                onCheckedChange={(checked) =>
-                  updateSettings({
-                    tasksPanelAutoOpen: Boolean(checked),
-                  })
-                }
-                aria-label="Open task sidebar automatically"
-              />
-            }
-          />
-        </div>
-
-        {settings.defaultThreadEnvMode !== defaults.defaultThreadEnvMode ||
-        settings.tasksPanelAutoOpen !== defaults.tasksPanelAutoOpen ? (
-          <div className="mt-3 flex justify-end">
+        title="Safety"
+        description="Additional guardrails for destructive local actions."
+        actions={
+          settings.confirmThreadDelete !== defaults.confirmThreadDelete ? (
             <Button
               size="xs"
               variant="outline"
-              onClick={() =>
-                updateSettings({
-                  defaultThreadEnvMode: defaults.defaultThreadEnvMode,
-                  tasksPanelAutoOpen: defaults.tasksPanelAutoOpen,
-                })
-              }
+              onClick={() => updateSettings(buildAppSettingsPatch(SAFETY_KEYS, defaults))}
             >
               Restore default
             </Button>
-          </div>
-        ) : null}
-      </SettingsCard>
-
-      <SettingsCard
-        title="Safety"
-        description="Additional guardrails for destructive local actions."
+          ) : null
+        }
       >
         <SettingsRow
           title="Confirm thread deletion"
@@ -451,27 +306,15 @@ export function GeneralSettings() {
             <Switch
               checked={settings.confirmThreadDelete}
               onCheckedChange={(checked) =>
-                updateSettings({
-                  confirmThreadDelete: Boolean(checked),
-                })
+                updateSettings({ confirmThreadDelete: Boolean(checked) })
               }
               aria-label="Confirm thread deletion"
             />
           }
         />
-
-        {settings.confirmThreadDelete !== defaults.confirmThreadDelete ? (
-          <div className="mt-3 flex justify-end">
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => updateSettings(buildAppSettingsPatch(SAFETY_KEYS, defaults))}
-            >
-              Restore default
-            </Button>
-          </div>
-        ) : null}
       </SettingsCard>
+      <DiagnosticsSettings />
+      <ServerHealthSettings />
     </>
   );
 }

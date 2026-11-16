@@ -109,6 +109,8 @@ export function respondToInitializeRequest(
         account: {
           subscriptionType: "max",
         },
+        // As the bundled 2.1.317 answers: F5's mandatory hook sets onFailure: "block".
+        hook_on_failure_supported: true,
         ...responseOverrides,
       },
     },

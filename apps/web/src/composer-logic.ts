@@ -1,4 +1,8 @@
-import { splitPromptIntoComposerSegments, type ComposerMention } from "./composer-editor-mentions";
+import {
+  splitPromptIntoComposerSegments,
+  type ComposerMention,
+  type ComposerPromptSegment,
+} from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 export type ComposerTriggerKind = "path" | "slash-command" | "skill";
@@ -9,11 +13,30 @@ export interface ComposerTrigger {
   query: string;
   rangeStart: number;
   rangeEnd: number;
+  /** A slash token after other text on its line: it searches skills, not commands. */
+  inline?: true;
 }
 
-const isInlineTokenSegment = (
-  segment: { type: "text"; text: string } | { type: "mention" } | { type: "terminal-context" },
-): boolean => segment.type !== "text";
+export interface ComposerPathSearchTarget {
+  readonly cwd: string | null;
+  readonly query: string;
+}
+
+/** Match the exact query sent to search, preserving whitespace in quoted paths. */
+export function isPathSuggestionCurrent(
+  searchedTarget: ComposerPathSearchTarget,
+  trigger: ComposerTrigger | null,
+  cwd: string | null,
+): boolean {
+  return (
+    cwd !== null &&
+    trigger?.kind === "path" &&
+    searchedTarget.cwd === cwd &&
+    searchedTarget.query === trigger.query
+  );
+}
+
+const isInlineTokenSegment = (segment: ComposerPromptSegment): boolean => segment.type !== "text";
 
 function clampCursor(text: string, cursor: number): number {
   if (!Number.isFinite(cursor)) return text.length;
@@ -36,6 +59,13 @@ function tokenStartForCursor(text: string, cursor: number): number {
     index -= 1;
   }
   return index + 1;
+}
+
+/** Check the whole slash word, including text after the caret, for a second slash. */
+function isPathWord(text: string, start: number, cursor: number): boolean {
+  let end = cursor;
+  while (end < text.length && !isWhitespace(text[end] ?? "")) end += 1;
+  return text.slice(start + 1, end).includes("/");
 }
 
 function unescapeQuotedMentionQuery(query: string): string {
@@ -101,7 +131,11 @@ export function expandCollapsedComposerCursor(
   let expandedCursor = 0;
 
   for (const segment of segments) {
-    if (segment.type === "mention") {
+    if (
+      segment.type === "mention" ||
+      segment.type === "pull-request" ||
+      segment.type === "thread-reference"
+    ) {
       const expandedLength = segment.raw.length;
       if (remaining <= 1) {
         return expandedCursor + (remaining === 0 ? 0 : expandedLength);
@@ -130,9 +164,7 @@ export function expandCollapsedComposerCursor(
   return expandedCursor;
 }
 
-function collapsedSegmentLength(
-  segment: { type: "text"; text: string } | { type: "mention" } | { type: "terminal-context" },
-): number {
+function collapsedSegmentLength(segment: ComposerPromptSegment): number {
   if (segment.type === "text") {
     return segment.text.length;
   }
@@ -140,9 +172,7 @@ function collapsedSegmentLength(
 }
 
 function clampCollapsedComposerCursorForSegments(
-  segments: ReadonlyArray<
-    { type: "text"; text: string } | { type: "mention" } | { type: "terminal-context" }
-  >,
+  segments: ReadonlyArray<ComposerPromptSegment>,
   cursorInput: number,
 ): number {
   const collapsedLength = segments.reduce(
@@ -181,7 +211,11 @@ export function collapseExpandedComposerCursor(
   let collapsedCursor = 0;
 
   for (const segment of segments) {
-    if (segment.type === "mention") {
+    if (
+      segment.type === "mention" ||
+      segment.type === "pull-request" ||
+      segment.type === "thread-reference"
+    ) {
       const expandedLength = segment.raw.length;
       if (remaining === 0) {
         return collapsedCursor;
@@ -252,6 +286,7 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
   if (linePrefix.startsWith("/")) {
     const commandMatch = /^\/(\S*)$/.exec(linePrefix);
     if (commandMatch) {
+      if (isPathWord(text, lineStart, cursor)) return null;
       const commandQuery = commandMatch[1] ?? "";
       return {
         kind: "slash-command",
@@ -272,6 +307,17 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
   const skillMatch = /^\p{Sc}([a-zA-Z0-9-]*)$/u.exec(token);
   if (skillMatch && !/^[0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?$/.test(skillMatch[1] ?? "")) {
     return { kind: "skill", query: skillMatch[1] ?? "", rangeStart: tokenStart, rangeEnd: cursor };
+  }
+  if (token.startsWith("/")) {
+    if (isPathWord(text, tokenStart, cursor)) return null;
+    const inline = text.slice(lineStart, tokenStart).trim() !== "";
+    return {
+      kind: "slash-command",
+      query: token.slice(1),
+      rangeStart: tokenStart,
+      rangeEnd: cursor,
+      ...(inline ? { inline: true as const } : {}),
+    };
   }
   if (!token.startsWith("@")) {
     return null;

@@ -15,6 +15,12 @@ const attachment = {
 };
 
 describe("provider attachment runtime context", () => {
+  it("retains attachment paths even beyond the user text budget", () => {
+    const input = "x".repeat(120_000);
+    const result = appendProviderAttachmentRuntimeContext(input, [attachment])!;
+    expect(result.startsWith(input)).toBe(true);
+    expect(result).toContain(attachment.localPath);
+  });
   it("describes the local path as best-effort sandbox access", () => {
     const context = buildProviderAttachmentRuntimeContext([attachment]);
 

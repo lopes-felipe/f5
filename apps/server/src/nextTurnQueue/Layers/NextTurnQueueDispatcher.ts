@@ -1,3 +1,14 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { isBoundScheduledSubmission, scheduledSendGate } from "../../scheduledTasks/sendGate.ts";
+import { registerShutdown } from "../../shutdown.ts";
+import { makeQueueRetryScheduler } from "../retryScheduler.ts";
+import {
+  WorkspaceTransitions,
+  workspaceTransitionSnapshot,
+} from "../../persistence/Services/WorkspaceTransitions.ts";
+import { WorktreePreparation } from "../../project/Services/WorktreePreparation.ts";
+import { assertWorktreeReady, WorktreeInspectionError } from "../../project/worktreeReadiness.ts";
+import { readProjectSettings } from "../../project/projectSettings.ts";
 import { hasNativeOperationReservation } from "../../provider/nativeOperations.ts";
 import { ServerSecretStore } from "../../auth/Services/ServerSecretStore.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -21,11 +32,16 @@ import {
   EventId as importEventIdFactory,
 } from "@t3tools/contracts";
 import { GitCore } from "../../git/Services/GitCore.ts";
-import { withWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import {
+  withWorktreeLifecycleLock,
+  RepositoryBusyError,
+} from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { WorktreeSetupGate } from "../../project/Services/WorktreeSetupGate.ts";
 import {
   CommandId,
   MAX_QUEUED_TURNS_PER_THREAD,
+  isAdmittedDeliveryQueueItem,
   ThreadId,
   type NextTurnQueueBlockedKind,
   type NextTurnQueueItem,
@@ -36,12 +52,17 @@ import {
   type ServerSettings,
   type TurnSubmissionResult,
 } from "@t3tools/contracts";
-import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
+import {
+  makeBackgroundWorker,
+  type BackgroundWorker as DrainableWorker,
+} from "../../backgroundWorker.ts";
 import {
   Cause,
   Deferred,
   Duration,
   Effect,
+  Exit,
+  Scope,
   FileSystem,
   Layer,
   Option,
@@ -76,14 +97,10 @@ import { NextTurnQueueStore } from "../Services/NextTurnQueueStore.ts";
 import { DISPATCH_LEASE_TTL_MS, QUEUE_WORKER_SHARDS } from "../constants.ts";
 import {
   classifyNextTurnDispatchFailure,
+  nextTurnDispatchBackoffMs,
   type NextTurnDispatchOutcome,
 } from "../dispatchOutcome.ts";
 import { resolveNextTurnQueueGate } from "../gate.ts";
-
-interface ThreadWorkState {
-  readonly running: boolean;
-  readonly dirty: boolean;
-}
 
 function shardFor(threadId: ThreadId): number {
   let hash = 2166136261;
@@ -110,9 +127,7 @@ function isDeliveryFailureCode(code: string | null | undefined): boolean {
   return code === "delivery_rejected" || code === "delivery_ambiguous";
 }
 
-function isFailedDeliveryItem(item: NextTurnQueueItem): boolean {
-  return item.status === "failed" && isDeliveryFailureCode(item.lastErrorCode);
-}
+const isFailedDeliveryItem = isAdmittedDeliveryQueueItem;
 
 function storageError(cause: unknown): NextTurnQueueStorageError {
   return new NextTurnQueueStorageError({
@@ -123,7 +138,15 @@ function storageError(cause: unknown): NextTurnQueueStorageError {
 
 export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
   const store = yield* NextTurnQueueStore;
-  const scope = yield* Effect.scope;
+  const worktreeSettings = yield* Effect.serviceOption(ServerSettingsService);
+  const sourceScope = yield* Scope.make("sequential");
+  let stopping = false;
+  const stopSources = Effect.gen(function* () {
+    stopping = true;
+    yield* Scope.close(sourceScope, Exit.void);
+  });
+  yield* Effect.addFinalizer(() => stopSources);
+  yield* registerShutdown("queue-sources", "admission", () => stopSources);
   const secretsOption = yield* Effect.serviceOption(ServerSecretStore);
   const protectedFingerprint = (config: import("@t3tools/contracts").ProviderInstanceConfig) => {
     const fingerprint = executionProviderFingerprintFor(config);
@@ -133,6 +156,10 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         : fingerprint
     ).pipe(Effect.mapError(storageError));
   };
+  const inspectionRetries = new Map<
+    ThreadId,
+    { commandId: CommandId; count: number; revision: number }
+  >();
   const readinessRetries = new Map<ThreadId, { commandId: CommandId; count: number }>();
   const usageOption = yield* Effect.serviceOption(UsageService);
   const registryOption = yield* Effect.serviceOption(ProviderInstanceRegistry);
@@ -147,6 +174,25 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
   const deliveries = yield* ProviderTurnDeliveryRepository;
   const fileSystem = yield* FileSystem.FileSystem;
   const git = yield* GitCore;
+  const transitions = yield* Effect.serviceOption(WorkspaceTransitions);
+  const transitionGate = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const active = Option.isSome(transitions)
+        ? yield* transitions.value.forThread(threadId, true).pipe(Effect.mapError(storageError))
+        : null;
+      return active
+        ? {
+            kind: "wait" as const,
+            reasonCode:
+              active.phase === "needs_recovery"
+                ? ("workspace_switch_failed" as const)
+                : ("workspace_switch" as const),
+            detail: active.error ?? "Switching workspace.",
+            retryAfterMs: undefined,
+          }
+        : null;
+    });
+  const preparation = yield* Effect.serviceOption(WorktreePreparation);
   const worktreeSetupGate = yield* Effect.serviceOption(WorktreeSetupGate);
   const readWorktreeSetupGate = (threadId: ThreadId, token: string | null) =>
     Option.isSome(worktreeSetupGate)
@@ -155,8 +201,13 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
 
   const changesPubSub = yield* PubSub.unbounded<ThreadId>();
   const summaryChangesPubSub = yield* PubSub.unbounded<void>();
-  const delayedRetries = yield* PubSub.unbounded<readonly [ThreadId, number]>();
-  const threadWork = yield* Ref.make(new Map<ThreadId, ThreadWorkState>());
+  const retries = makeQueueRetryScheduler((threadId) => {
+    void Effect.runPromise(notify(threadId)).catch((cause) =>
+      Effect.runPromise(Effect.logError("queue retry wakeup failed", { cause })),
+    );
+  });
+  yield* Effect.addFinalizer(() => Effect.sync(() => retries.dispose()));
+  yield* registerShutdown("queue-retries", "admission", () => Effect.sync(() => retries.dispose()));
   const activeDispatches = yield* Ref.make(new Set<CommandId>());
   const automaticCompacting = yield* Ref.make(new Map<ThreadId, number>());
   const waiters = yield* Ref.make(
@@ -183,8 +234,10 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       ),
     );
 
-  const readGate = (item: NextTurnQueueItem, recreate = false) =>
+  const readGate = (item: NextTurnQueueItem, recreate = false, requireExisting = false) =>
     Effect.gen(function* () {
+      const switching = yield* transitionGate(item.threadId);
+      if (switching) return switching;
       if (hasNativeOperationReservation(item.threadId))
         return {
           kind: "wait" as const,
@@ -242,10 +295,19 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         item.scheduleReason === "usage_limit_reset"
           ? yield* store.getUsageResumeContext(item.itemId)
           : null;
-      const settings =
-        resumeContext && Option.isSome(restartSettingsOption)
+      // Unbound scheduled items keep the delivery worker's gate; only usage-limit resumes
+      // and bound items, which apply settings to the user's conversation, are gated here.
+      const boundScheduled =
+        !resumeContext && Option.isSome(sqlOption) && Option.isSome(restartSettingsOption)
+          ? yield* isBoundScheduledSubmission(sqlOption.value, item.command.commandId).pipe(
+              Effect.mapError(storageError),
+            )
+          : false;
+      const currentSettings =
+        Option.isSome(restartSettingsOption) && (resumeContext || boundScheduled)
           ? yield* restartSettingsOption.value.getSettings.pipe(Effect.mapError(storageError))
           : null;
+      const settings = resumeContext ? currentSettings : null;
       const config = resumeContext
         ? settings?.providerInstances[
             importProviderInstanceId.makeUnsafe(resumeContext.providerInstanceId)
@@ -255,6 +317,19 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         !!resumeContext?.fingerprint &&
         !!settings &&
         (!config || (yield* protectedFingerprint(config)) !== resumeContext.fingerprint);
+      // A bound item must be canceled before its turn start can apply stale settings
+      // to the user's conversation.
+      if (Option.isSome(sqlOption) && currentSettings) {
+        const scheduled = yield* scheduledSendGate(
+          sqlOption.value,
+          currentSettings,
+          item.command.commandId,
+        ).pipe(Effect.mapError(storageError));
+        if (scheduled === "cancel")
+          return { kind: "drop" as const, reasonCode: "scheduled_task_canceled" as const };
+        if (scheduled === "wait")
+          return { kind: "wait" as const, reasonCode: "scheduled_task_wait" as const };
+      }
       const gate = resolveNextTurnQueueGate({
         scheduleLimitKey: resumeContext?.limitKey,
         scheduleState: resumeContext?.state,
@@ -278,34 +353,105 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         worktreeExists: thread?.branch ? null : worktreeExists,
         worktreeSetup: yield* readWorktreeSetupGate(item.threadId, queue.state.worktreeBlockToken),
       });
-      if (gate.kind !== "ready" || worktreeExists !== false || !thread?.worktreePath) return gate;
+      if (gate.kind !== "ready" || !thread?.worktreePath) return gate;
       const model = yield* engine.getReadModel();
       const project = model.projects.find((entry) => entry.id === thread.projectId);
-      if (!project || !thread.branch)
-        return { kind: "autoPause" as const, reasonCode: "worktree_missing" as const };
+      if (!project) return { kind: "autoPause" as const, reasonCode: "worktree_missing" as const };
+      const steeringActiveTurn =
+        expectedTurnId !== undefined &&
+        Option.getOrNull(sessionOption)?.activeTurnId === expectedTurnId;
       return yield* Effect.gen(function* () {
-        if (!(yield* git.branchExists(project.workspaceRoot, thread.branch!))) {
+        const readiness = yield* assertWorktreeReady(
+          git,
+          {
+            projectCwd: project.workspaceRoot,
+            worktreePath: thread.worktreePath,
+            branch: thread.branch,
+          },
+          !requireExisting,
+          { allowBranchDrift: steeringActiveTurn },
+        );
+        // The live turn keeps running in the drifted checkout; the recorded
+        // branch is neither needed nor recreatable for this steer.
+        if (readiness?.branchDrift) {
+          if (recreate || requireExisting) inspectionRetries.delete(item.threadId);
+          return gate;
+        }
+        if (thread.branch && !(yield* git.branchExists(project.workspaceRoot, thread.branch))) {
           return {
             kind: "autoPause" as const,
             reasonCode: "worktree_missing" as const,
             detail: `Worktree branch ${thread.branch} is missing.`,
           };
         }
-        if (recreate)
-          yield* git.ensureWorktree({
+        if (recreate && thread.branch) {
+          const ensured = yield* git.ensureWorktree({
+            owner: `thread:${thread.threadId}`,
+            submodules: Option.isSome(worktreeSettings)
+              ? (yield* readProjectSettings(yield* worktreeSettings.value.getSettings, project))
+                  .settings.worktreeSubmodules
+              : "none",
             cwd: project.workspaceRoot,
             path: thread.worktreePath!,
             branch: thread.branch!,
           });
+          if (
+            Option.isSome(preparation) &&
+            (ensured.recreated ||
+              ((yield* preparation.value.needsPreparation(thread.worktreePath!)) &&
+                (yield* git.readWorktreePreparation(thread.worktreePath!))?.phase !==
+                  "setup_failed"))
+          ) {
+            yield* preparation.value.startBackground(
+              {
+                threadId: thread.threadId,
+                projectId: project.id,
+                worktreePath: thread.worktreePath!,
+                branch: thread.branch,
+              },
+              () => notify(thread.threadId),
+            );
+            return {
+              kind: "wait" as const,
+              reasonCode: "worktree_setup" as const,
+              detail: "Preparing the worktree.",
+              retryAfterMs: undefined,
+            };
+          }
+        }
+        if (recreate || requireExisting) inspectionRetries.delete(item.threadId);
         return gate;
       }).pipe(
-        Effect.catch((error) =>
-          Effect.succeed({
-            kind: "autoPause" as const,
-            reasonCode: "worktree_missing" as const,
-            detail: error.message,
-          }),
-        ),
+        Effect.catch((error) => {
+          const retryable =
+            error instanceof WorktreeInspectionError || error.cause instanceof RepositoryBusyError;
+          const previous = inspectionRetries.get(item.threadId);
+          const count =
+            (previous?.commandId === item.command.commandId &&
+            previous.revision === queue.state.revision
+              ? previous.count
+              : 0) + (recreate || requireExisting ? 1 : 0);
+          if (retryable && (recreate || requireExisting))
+            inspectionRetries.set(item.threadId, {
+              commandId: item.command.commandId,
+              count,
+              revision: queue.state.revision,
+            });
+          return Effect.succeed(
+            retryable && count < 5
+              ? {
+                  kind: "wait" as const,
+                  reasonCode: "worktree_missing" as const,
+                  detail: error.message,
+                  retryAfterMs: nextTurnDispatchBackoffMs(Math.max(1, count)),
+                }
+              : {
+                  kind: "autoPause" as const,
+                  reasonCode: "worktree_missing" as const,
+                  detail: error.message,
+                },
+          );
+        }),
       );
     });
 
@@ -419,11 +565,23 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         blockedKind = "error";
       }
 
+      const switching = yield* transitionGate(threadId);
+      if (switching) {
+        reasonCode = switching.reasonCode;
+        reasonDetail = switching.detail;
+        blockedKind = switching.reasonCode === "workspace_switch_failed" ? "error" : "waiting";
+      }
       const session = ((yield* engine.getReadModel()).threads ?? []).find(
         (entry) => entry.id === threadId,
       )?.session;
       const blockingDelivery = yield* readBlockingDelivery(data, threadId);
+      const workspaceTransition = Option.isSome(transitions)
+        ? yield* transitions.value.forThread(threadId).pipe(Effect.mapError(storageError))
+        : null;
       return {
+        workspaceTransition: workspaceTransition
+          ? workspaceTransitionSnapshot(workspaceTransition)
+          : null,
         threadId,
         items: [...data.items],
         revision: data.state.revision,
@@ -468,7 +626,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
     });
 
   const scheduleRetry = (threadId: ThreadId, delayMs: number) =>
-    PubSub.publish(delayedRetries, [threadId, delayMs] as const).pipe(Effect.asVoid);
+    Effect.sync(() => retries.schedule(threadId, delayMs));
 
   const applyDispatchFailure = (
     item: NextTurnQueueItem,
@@ -498,6 +656,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
 
   const processThread = (threadId: ThreadId): Effect.Effect<void, NextTurnQueueError> =>
     Effect.gen(function* () {
+      if (stopping) return;
       let queue = yield* store.listByThread(threadId);
       if (
         (queue.state.paused && isDeliveryFailureCode(queue.state.pauseReasonCode)) ||
@@ -557,14 +716,33 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       const thread = Option.getOrNull(
         yield* threads.getById({ threadId }).pipe(Effect.mapError(storageError)),
       );
-      const lockPath =
-        thread?.worktreePath ??
-        (thread
-          ? ((yield* engine.getReadModel()).projects.find(
+      const lockPath = thread
+        ? (threadWorkspaceCwd(
+            thread,
+            (yield* engine.getReadModel()).projects.find(
               (project) => project.id === thread.projectId,
-            )?.workspaceRoot ?? null)
-          : null);
-      const start = startFromGate(item);
+            ),
+          ) ?? null)
+        : null;
+      // Recreation may initialize submodules from the network; finish before taking the acceptance lock.
+      const preparedRevision = (yield* store.listByThread(threadId)).state.revision;
+      const preparedGate = yield* readGate(item, true);
+      const start = Effect.gen(function* () {
+        const model = yield* engine.getReadModel();
+        const current = Option.getOrNull(
+          yield* threads.getById({ threadId }).pipe(Effect.mapError(storageError)),
+        );
+        const effective =
+          threadWorkspaceCwd(
+            current,
+            model.projects.find((entry) => entry.id === current?.projectId),
+          ) ?? null;
+        if (effective !== lockPath) {
+          yield* notify(threadId);
+          return;
+        }
+        yield* startFromGate(item, preparedGate, preparedRevision);
+      });
       yield* lockPath
         ? withWorktreeLifecycleLock(lockPath, start).pipe(
             Effect.catchTag("RepositoryLifecycleError", (error) =>
@@ -574,13 +752,21 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         : start;
     });
 
-  const startFromGate = (item: NextTurnQueueItem): Effect.Effect<void, NextTurnQueueError> =>
+  const startFromGate = (
+    item: NextTurnQueueItem,
+    preparedGate: Awaited<Effect.Success<ReturnType<typeof readGate>>>,
+    expectedRevision: number,
+  ): Effect.Effect<void, NextTurnQueueError> =>
     Effect.gen(function* () {
       const threadId = item.threadId;
-      const expectedRevision = (yield* store.listByThread(threadId)).state.revision;
-      const gate = yield* readGate(item, true);
+      const gate =
+        preparedGate.kind === "ready" ? yield* readGate(item, false, true) : preparedGate;
       if (gate.kind === "drop") {
-        if (item.scheduleReason === "usage_limit_reset" && gate.reasonCode !== "thread_deleted") {
+        // A canceled scheduled item leaves the rest of the user's queue intact.
+        if (
+          gate.reasonCode === "scheduled_task_canceled" ||
+          (item.scheduleReason === "usage_limit_reset" && gate.reasonCode !== "thread_deleted")
+        ) {
           yield* store.softDelete({ itemId: item.itemId });
           yield* notify(threadId);
         } else yield* store.deleteForThread(threadId);
@@ -612,6 +798,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         return;
       }
       if (gate.kind === "wait") {
+        if (gate.retryAfterMs !== undefined) yield* scheduleRetry(threadId, gate.retryAfterMs);
         yield* publishSnapshotIfChanged(threadId);
         yield* settleWaiter(item.itemId, {
           disposition: "queued",
@@ -711,6 +898,12 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         return;
       }
 
+      // A bound scheduled turn is rejected, not allowed to restore its admitted settings.
+      const bound =
+        Option.isSome(sqlOption) &&
+        (yield* isBoundScheduledSubmission(sqlOption.value, claimed.item.command.commandId).pipe(
+          Effect.mapError(storageError),
+        ));
       const command = {
         ...claimed.item.command,
         ...(claimed.item.command.expectedTurnId
@@ -719,6 +912,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
               expectedTurnId: claimed.item.command.expectedTurnId,
             }
           : {}),
+        ...(bound ? { requireCurrentSettings: true as const } : {}),
         dispatchSource: "next-turn-queue" as const,
         createdAt: claimed.item.dispatchStartedAt ?? claimed.item.command.createdAt,
       };
@@ -752,6 +946,31 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       }
 
       const error = Cause.squash(exit.cause);
+      if (
+        error &&
+        typeof error === "object" &&
+        "_tag" in error &&
+        error._tag === "ThreadSettingsChangedError"
+      ) {
+        yield* store.releaseLease({
+          itemId: item.itemId,
+          leaseOwner,
+          notBefore: new Date().toISOString(),
+          errorCode: "scheduled_task_canceled",
+          errorDetail: "The conversation's settings changed before the scheduled message was sent.",
+          clearDispatchStartedAt: true,
+          consumeAttempt: false,
+        });
+        yield* store.softDelete({ itemId: item.itemId });
+        yield* notify(threadId);
+        yield* publishSnapshotIfChanged(threadId);
+        yield* settleWaiter(item.itemId, {
+          disposition: "rejected",
+          submissionId: item.submissionId,
+          reasonCode: "scheduled_task_canceled",
+        });
+        return;
+      }
       if (
         claimed.item.command.expectedTurnId &&
         error &&
@@ -820,56 +1039,44 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
 
   let workers: ReadonlyArray<DrainableWorker<ThreadId>> = [];
 
-  const enqueueDirect = (threadId: ThreadId) => workers[shardFor(threadId)]!.enqueue(threadId);
-
-  const finishThread = (threadId: ThreadId) =>
-    Ref.modify(threadWork, (current) => {
-      const state = current.get(threadId);
-      if (state?.dirty) {
-        const next = new Map(current);
-        next.set(threadId, { running: true, dirty: false });
-        return [true, next] as const;
-      }
-      const next = new Map(current);
-      next.delete(threadId);
-      return [false, next] as const;
-    }).pipe(Effect.flatMap((again) => (again ? enqueueDirect(threadId) : Effect.void)));
+  const enqueueDirect = (threadId: ThreadId) =>
+    Effect.suspend(() => (stopping ? Effect.void : workers[shardFor(threadId)]!.enqueue(threadId)));
 
   workers = yield* Effect.forEach(
     Array.from({ length: QUEUE_WORKER_SHARDS }),
-    () =>
-      makeDrainableWorker((threadId: ThreadId) =>
-        processThread(threadId).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.failCause(cause)
-              : Effect.logError("next-turn queue worker failed", {
-                  threadId,
-                  cause: Cause.pretty(cause),
-                }),
+    (_, index) =>
+      makeBackgroundWorker(
+        (threadId: ThreadId) =>
+          processThread(threadId).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Effect.logError("next-turn queue worker failed", {
+                    threadId,
+                    cause: Cause.pretty(cause),
+                  }),
+            ),
           ),
-          Effect.ensuring(finishThread(threadId)),
-        ),
+        { name: `NextTurnQueueDispatcher.${index}`, key: (item) => String(item) },
       ),
     { concurrency: 1 },
   );
 
-  const notify = (threadId: ThreadId) =>
-    Ref.modify(threadWork, (current) => {
-      const state = current.get(threadId);
-      if (state) {
-        const next = new Map(current);
-        next.set(threadId, { running: true, dirty: true });
-        return [false, next] as const;
-      }
-      const next = new Map(current);
-      next.set(threadId, { running: true, dirty: false });
-      return [true, next] as const;
-    }).pipe(Effect.flatMap((enqueue) => (enqueue ? enqueueDirect(threadId) : Effect.void)));
+  yield* registerShutdown("queue-work", "drain", () =>
+    Effect.forEach(workers, (worker) => worker.drain, { concurrency: "unbounded", discard: true }),
+  );
 
-  const pauseForEvent = (threadId: ThreadId, reasonCode: QueueReasonCode, detail: string) =>
+  const notify = (threadId: ThreadId) =>
+    Effect.sync(() => retries.cancel(threadId)).pipe(Effect.andThen(enqueueDirect(threadId)));
+
+  const pauseForEvent = (
+    threadId: ThreadId,
+    reasonCode: QueueReasonCode,
+    detail: string,
+    interruptRequestedSequence?: number,
+  ) =>
     store
-      .setPaused({ threadId, paused: true, reasonCode, detail })
+      .setPaused({ threadId, paused: true, reasonCode, detail, interruptRequestedSequence })
       .pipe(Effect.andThen(notify(threadId)));
 
   const cancelUnsentResume = (threadId: ThreadId) =>
@@ -894,11 +1101,20 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       const threadId = event.aggregateKind === "thread" ? (event.aggregateId as ThreadId) : null;
       if (threadId === null) return;
       switch (event.type) {
+        case "thread.activity-appended":
+          if (event.payload.activity.kind === "conversation.rewind.failed") yield* notify(threadId);
+          return;
         case "thread.session-stop-requested":
           yield* cancelUnsentResume(threadId);
           yield* notify(threadId);
           return;
         case "thread.deleted":
+          retries.cancel(threadId);
+          yield* Ref.update(lastPublishedSnapshots, (snapshots) => {
+            const next = new Map(snapshots);
+            next.delete(threadId);
+            return next;
+          });
           yield* store.deleteForThread(threadId);
           yield* publishChanged(threadId);
           return;
@@ -963,6 +1179,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
               threadId,
               "turn_interrupted",
               "Queue paused because the active turn was interrupted.",
+              event.sequence,
             );
           }
           return;
@@ -1058,7 +1275,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       yield* engine
         .dispatch({
           type: "thread.session.set",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId,
           session: { ...latest, usageLimit: { ...session.usageLimit, ...limit } },
           createdAt: new Date().toISOString(),
@@ -1094,6 +1311,8 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           );
           for (const id of previousPolicy.keys())
             if (!liveThreads.has(id)) previousPolicy.delete(id);
+          for (const id of inspectionRetries.keys())
+            if (!liveThreads.has(id)) inspectionRetries.delete(id);
           for (const id of readinessRetries.keys())
             if (!liveThreads.has(id)) readinessRetries.delete(id);
           for (const [id, attempt] of refreshAttempts) {
@@ -1192,7 +1411,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
                     }
                   }),
                 ),
-                Effect.forkIn(scope),
+                Effect.forkIn(sourceScope),
               );
             }
           }
@@ -1222,6 +1441,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
 
   let safetySweepCount = 0;
   const safetySweep = Effect.gen(function* () {
+    if (stopping) return;
     const maintenanceDue = safetySweepCount++ % SCAN_EVERY_SWEEPS === 0;
     yield* Ref.update(automaticCompacting, (current) => {
       const next = new Map(current);
@@ -1388,10 +1608,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         }
         let data = yield* store.listByThread(item.threadId);
         if (item.status === "failed") {
-          if (
-            item.lastErrorCode === "delivery_rejected" ||
-            item.lastErrorCode === "delivery_ambiguous"
-          ) {
+          if (isAdmittedDeliveryQueueItem(item)) {
             return yield* new NextTurnQueueStorageError({
               message:
                 "Resolve this provider delivery with Recheck, Retry, or Discard before running it.",
@@ -1419,7 +1636,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
             : {}),
         });
         const interruptCommandId = input.interruptActive
-          ? CommandId.makeUnsafe(crypto.randomUUID())
+          ? CommandId.makeUnsafe(timeOrderedUuid())
           : null;
         if (interruptCommandId !== null) {
           yield* store.setInterruptSuppression({
@@ -1463,7 +1680,43 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       ),
     handleDeliveryOutcome: (outcome) =>
       Effect.gen(function* () {
+        // The worker already retired the fenced scheduled item; the rest of the queue proceeds.
+        if (outcome.state === "abandoned") {
+          yield* reconcileDeliveryPause(outcome.threadId);
+          yield* publishChanged(outcome.threadId);
+          yield* notify(outcome.threadId);
+          return;
+        }
         const item = yield* store.getByCommandId(outcome.commandId);
+        if (
+          outcome.state === "rejected" &&
+          item?.command.continuationRequestId &&
+          Option.isSome(sqlOption)
+        ) {
+          // Buffered native output cannot be replayed as a prompt. Retire only a
+          // proven rejection, under the same writer reservation as the state check.
+          const abandoned = yield* sqlOption.value.withTransaction(
+            Effect.gen(function* () {
+              const current = yield* deliveries.getByCommandId(outcome.commandId);
+              if (current?.deliveryId !== outcome.deliveryId || current.state !== "rejected")
+                return false;
+              if (!(yield* deliveries.markAbandoned(outcome.deliveryId))) return false;
+              yield* store.markDeliveryFailed({
+                commandId: outcome.commandId,
+                errorCode: "delivery_rejected",
+                errorDetail: outcome.detail ?? "The buffered native continuation was not adopted.",
+              });
+              yield* store.discardDelivery({ commandId: outcome.commandId });
+              return true;
+            }),
+          );
+          if (abandoned) {
+            yield* reconcileDeliveryPause(outcome.threadId);
+            yield* publishChanged(outcome.threadId);
+            yield* notify(outcome.threadId);
+          }
+          return;
+        }
         if (outcome.state === "rejected" && item?.command.expectedTurnId) {
           yield* store.fallbackSteer(outcome.commandId);
           yield* engine
@@ -1535,6 +1788,8 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
     changes: Stream.fromPubSub(changesPubSub),
     summaryChanges: Stream.fromPubSub(summaryChangesPubSub),
     start: Effect.gen(function* () {
+      if (stopping) return;
+      yield* Effect.addFinalizer(() => stopSources);
       if (Option.isSome(restartSettingsOption))
         yield* Stream.runForEach(yield* restartSettingsOption.value.subscribeChanges, (settings) =>
           scanUsageLimitResumes(true, undefined, settings).pipe(
@@ -1544,7 +1799,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
               }),
             ),
           ),
-        ).pipe(Effect.forkScoped);
+        ).pipe(Effect.forkIn(sourceScope));
       yield* Effect.gen(function* () {
         const live = yield* Ref.get(activeDispatches);
         yield* store.reclaimStaleLeases(live);
@@ -1552,8 +1807,9 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         yield* store.drainOrphanedAttachments;
         yield* recoverRestartTurns;
         yield* scanUsageLimitResumes();
-        const actionable = yield* store.listActionableThreadIds;
-        yield* Effect.forEach(actionable, notify, { concurrency: 4, discard: true });
+        yield* store.scanActionableThreads((page) =>
+          Effect.forEach(page, notify, { concurrency: 4, discard: true }),
+        );
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logError("next-turn queue startup reconciliation failed", {
@@ -1562,20 +1818,13 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         ),
       );
       yield* Stream.runForEach(engine.streamDomainEvents, reactToDomainEvent).pipe(
-        Effect.forkScoped,
+        Effect.forkIn(sourceScope, { startImmediately: true }),
       );
       yield* Stream.runForEach(receiptBus.stream, (receipt) => notify(receipt.threadId)).pipe(
-        Effect.forkScoped,
+        Effect.forkIn(sourceScope),
       );
-      yield* Stream.runForEach(Stream.fromPubSub(delayedRetries), ([threadId, delayMs]) =>
-        Effect.sleep(Duration.millis(delayMs)).pipe(
-          Effect.andThen(notify(threadId)),
-          Effect.forkScoped,
-          Effect.asVoid,
-        ),
-      ).pipe(Effect.forkScoped);
       yield* Effect.forever(safetySweep.pipe(Effect.andThen(Effect.sleep("5 seconds")))).pipe(
-        Effect.forkScoped,
+        Effect.forkIn(sourceScope),
       );
     }),
   };

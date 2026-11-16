@@ -1,4 +1,4 @@
-import type { CodeReviewWorkflow, ThreadId } from "@t3tools/contracts";
+import type { CodeReviewWorkflowSummary as CodeReviewWorkflow, ThreadId } from "@t3tools/contracts";
 import {
   threadLabelsFromPhases,
   type WorkflowTimelinePhase as TimelinePhase,

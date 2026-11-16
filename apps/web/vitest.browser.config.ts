@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+import { ciTestReports } from "../../scripts/lib/ci-test-reports";
 import { assetSecurityFixture } from "./test/assetSecurityFixture";
 import { fileURLToPath } from "node:url";
 import { playwright } from "@vitest/browser-playwright";
@@ -7,7 +9,7 @@ import viteConfig from "./vite.config";
 
 const srcPath = fileURLToPath(new URL("./src", import.meta.url));
 
-export default mergeConfig(
+const browserConfig = mergeConfig(
   viteConfig,
   defineConfig({
     plugins: [assetSecurityFixture()],
@@ -16,84 +18,22 @@ export default mergeConfig(
         "~": srcPath,
       },
     },
+    server: {
+      // Transforming the first "use memo" module loads Babel and the React
+      // Compiler (about half a second); do it at startup instead of inside
+      // whichever test first renders an annotated component.
+      warmup: { clientFiles: ["./src/components/Sidebar.tsx"] },
+    },
     test: {
-      include: [
-        "src/protocolState.browser.tsx",
-        "src/components/WorkspaceMediaView.browser.tsx",
-        "src/components/AssetImageGallery.browser.tsx",
-        "src/hooks/useMigrateClientSettings.browser.ts",
-        "src/components/FileViewPanel.browser.tsx",
-        "src/hooks/inputSafety.browser.tsx",
-        "src/components/ProfileSwitcher.browser.tsx",
-        "src/components/ChatView.browser.tsx",
-        "src/components/BranchToolbarBranchSelector.browser.tsx",
-        "src/components/chat/WorktreeSetupCard.browser.tsx",
-        "src/components/ComposerPromptEditor.browser.tsx",
-        "src/components/ProjectCloneController.browser.tsx",
-        "src/components/AgentsPanel.browser.tsx",
-        "src/components/ThreadSidebar.browser.tsx",
-        "src/components/AppTitlebar.browser.tsx",
-        "src/components/ThreadRecencyController.browser.tsx",
-        "src/components/ThreadStatusNotificationController.browser.tsx",
-        "src/components/KeybindingsToast.browser.tsx",
-        "src/components/DiffPanel.browser.tsx",
-        "src/components/FileBrowserPanel.browser.tsx",
-        "src/components/WebSocketConnectionSurface.browser.tsx",
-        "src/components/settings/DisplayProfileSelector.browser.tsx",
-        "src/components/settings/GithubAccountPanel.browser.tsx",
-        "src/components/settings/BrowserSettings.browser.tsx",
-        "src/components/settings/SessionNotesSettings.browser.tsx",
-        "src/components/settings/KeybindingEditor.browser.tsx",
-        "src/components/settings/McpServersSettings.browser.tsx",
-        "src/components/settings/ProviderInstanceCard.browser.tsx",
-        "src/components/settings/SettingsRouteState.browser.tsx",
-        "src/components/settings/categories/StorageSettings.browser.tsx",
-        "src/components/profiles/ProfileCard.browser.tsx",
-        "src/components/profiles/ProfilesSettingsPage.browser.tsx",
-        "src/components/onboarding/HarnessValidationPanel.browser.tsx",
-        "src/components/home/HomeMissionControl.browser.tsx",
-        "src/components/prHub/PrDetailsTabs.browser.tsx",
-        "src/components/prHub/PrNativeActions.browser.tsx",
-        "src/components/prHub/PrAccounts.browser.tsx",
-        "src/components/prHub/ForgeControls.browser.tsx",
-        "src/components/prHub/PrEnhancements.browser.tsx",
-        "src/components/prHub/PrLocalCheckout.browser.tsx",
-        "src/components/prHub/PrQuickReview.browser.tsx",
-        "src/components/prHub/PrInboxView.browser.tsx",
-        "src/components/prHub/PrFocusView.browser.tsx",
-        "src/components/usage/UsageDashboard.browser.tsx",
-        "src/routes/-_chat.settings.browser.tsx",
-        "src/routes/-_chat.index.browser.tsx",
-        "src/components/chat/AssistantMessageActions.browser.tsx",
-        "src/components/chat/AssistantQuoteToolbar.browser.tsx",
-        "src/components/chat/ComposerPendingApprovalActions.browser.tsx",
-        "src/components/chat/ClaudeTraitsPicker.browser.tsx",
-        "src/components/chat/CodexTraitsPicker.browser.tsx",
-        "src/components/chat/TraitsPicker.browser.tsx",
-        "src/components/chat/ChatHeader.browser.tsx",
-        "src/components/chat/NativeRuntimePanel.browser.tsx",
-        "src/components/chat/NativeRuntimeTray.browser.tsx",
-        "src/components/chat/composer/NativeGoalDialog.browser.tsx",
-        "src/components/chat/composer/ContextMeter.browser.tsx",
-        "src/components/chat/composer/ComposerDock.browser.tsx",
-        "src/components/chat/CommandTranscriptCard.browser.tsx",
-        "src/components/chat/ExpandedImagePreview.browser.tsx",
-        "src/components/chat/MessagesTimeline.browser.tsx",
-        "src/components/chat/NextTurnQueuePanel.browser.tsx",
-        "src/components/chat/UsageLimitNotice.browser.tsx",
-        "src/components/chat/NextTurnQueueRow.browser.tsx",
-        "src/components/chat/AsyncUserInputPanel.browser.tsx",
-        "src/components/chat/ProviderInstanceModelPicker.browser.tsx",
-        "src/components/chat/ProviderModelPicker.browser.tsx",
-        "src/components/ui/toast.browser.tsx",
-        "src/components/ui/sidebar.browser.tsx",
-        "src/components/workflow/WorkflowCreateDialog.browser.tsx",
-        "src/components/workflow/CodeReviewWorkflowView.browser.tsx",
-        "src/components/workflow/WorkflowImplementDialog.browser.tsx",
-        "src/components/workflow/WorkflowView.browser.tsx",
-      ],
+      include: ["src/**/*.browser.{ts,tsx}"],
       browser: {
+        // Separate worktrees and concurrent test runs must not contend for a fixed port.
+        api: { strictPort: false },
         enabled: true,
+        screenshotDirectory: resolve(
+          process.env.F5_CI_ARTIFACT_DIR || "./.playwright",
+          "screenshots",
+        ),
         // Composer tests assert CSS transitions; don't inherit a host reduce setting.
         provider: playwright({ contextOptions: { reducedMotion: "no-preference" } }),
         instances: [{ browser: "chromium" }],
@@ -104,3 +44,6 @@ export default mergeConfig(
     },
   }),
 );
+
+// Vite merges reporter arrays; replace them here to avoid writing each report twice.
+export default { ...browserConfig, test: { ...browserConfig.test, ...ciTestReports() } };

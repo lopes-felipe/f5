@@ -1,25 +1,33 @@
+import { readFileSync } from "node:fs";
 import { delimiter } from "node:path";
 import { writeCliScript } from "../../testUtils/cli.ts";
-import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
+import { awaitProcessExit, awaitStalledCli, stalledCliSource } from "../../testUtils/stalledCli.ts";
+import { ClaudeSettings, ProviderInstanceId, UpstreamTriageBatchResult } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Path, Schema } from "effect";
+import { Effect, Fiber, FileSystem, Layer, Path, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import { createModelSelection } from "@t3tools/shared/model";
 import { expect } from "vitest";
 
 import { ServerConfig } from "../../config.ts";
 import { type TextGenerationShape } from "../Services/TextGeneration.ts";
 import { sanitizeThreadTitle } from "../Utils.ts";
-import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
+import { claudeErrorResult, makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 
 const ClaudeTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-claude-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
-function makeFakeClaudeBinary(dir: string) {
+function makeFakeClaudeBinary(dir: string, stalled: boolean, rejectsNoSessionPersistence = false) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const binDir = path.join(dir, "bin");
+    const pidPath = path.join(dir, "claude.pid");
+    if (stalled) {
+      const claudePath = writeCliScript(path.join(binDir, "claude"), stalledCliSource(pidPath));
+      return { binDir, claudePath, pidPath };
+    }
     const claudePath = writeCliScript(
       path.join(binDir, "claude"),
       `
@@ -27,8 +35,16 @@ const fs = require("node:fs");
 const env = process.env;
 const argv = process.argv.slice(2);
 const args = argv.join(" ");
+if (${rejectsNoSessionPersistence}) {
+  if (argv.includes("--no-session-persistence")) {
+    console.error("error: unknown option '--no-session-persistence'");
+    process.exit(1);
+  }
+} else if (!argv.includes("--no-session-persistence")) {
+  throw new Error("metadata session persistence enabled");
+}
 const value = (flag) => argv[argv.indexOf(flag) + 1];
-if (!argv.includes("--tools") || value("--tools") !== "" || !argv.includes("--disable-slash-commands") || !argv.includes("--strict-mcp-config") || argv.includes("--dangerously-skip-permissions")) throw new Error("unsafe metadata capabilities");
+if (!argv.includes("--tools") || value("--tools") !== "" || !argv.includes("--disable-slash-commands") || !argv.includes("--strict-mcp-config") || value("--permission-mode") !== "dontAsk" || argv.includes("--dangerously-skip-permissions")) throw new Error("unsafe metadata capabilities");
 if (JSON.parse(value("--settings")).disableAllHooks !== true) throw new Error("hooks enabled");
 if (!require("node:path").basename(process.cwd()).startsWith("f5-claude-metadata-")) throw new Error("metadata cwd not isolated");
 const input = fs.readFileSync(0, "utf8");
@@ -39,18 +55,20 @@ if (env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN && !args.includes(env.T3_FAKE_CLAUDE_AR
 if (env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN && JSON.parse(env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN).some(value => args.includes(value))) fail("args contained forbidden content", 3);
 if (env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN && !input.includes(env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN)) fail("stdin missing expected content", 4);
 if (env.T3_FAKE_CLAUDE_HOME_MUST_BE && env.HOME !== env.T3_FAKE_CLAUDE_HOME_MUST_BE) fail("HOME was " + env.HOME, 5);
+if (env.CLAUDE_CODE_ENTRYPOINT !== "instance-entrypoint") fail("entrypoint was " + env.CLAUDE_CODE_ENTRYPOINT, 7);
 if (env.T3_FAKE_CLAUDE_STDERR) console.error(env.T3_FAKE_CLAUDE_STDERR);
 process.stdout.write(env.T3_FAKE_CLAUDE_OUTPUT ?? "");
 process.exitCode = Number(env.T3_FAKE_CLAUDE_EXIT_CODE ?? 0);
 `,
     );
-    return { binDir, claudePath };
+    return { binDir, claudePath, pidPath };
   });
 }
 
 function withFakeClaudeEnv<A, E, R>(
   input: {
     output: string;
+    rejectsNoSessionPersistence?: boolean;
     exitCode?: number;
     stderr?: string;
     argsMustContain?: string;
@@ -59,13 +77,23 @@ function withFakeClaudeEnv<A, E, R>(
     homeMustBe?: string;
     claudeConfig?: Partial<ClaudeSettings>;
     relativeBinary?: boolean;
+    stalled?: boolean;
+    resolveCapabilities?: Parameters<typeof makeClaudeTextGeneration>[2];
   },
-  effectFn: (textGeneration: TextGenerationShape, cwdRecord: string) => Effect.Effect<A, E, R>,
+  effectFn: (
+    textGeneration: TextGenerationShape,
+    cwdRecord: string,
+    pidPath: string,
+  ) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-text-" });
-    const { binDir, claudePath } = yield* makeFakeClaudeBinary(tempDir);
+    const { binDir, claudePath, pidPath } = yield* makeFakeClaudeBinary(
+      tempDir,
+      input.stalled === true,
+      input.rejectsNoSessionPersistence,
+    );
     const previousPath = process.env.PATH;
     const previousOutput = process.env.T3_FAKE_CLAUDE_OUTPUT;
     const previousExitCode = process.env.T3_FAKE_CLAUDE_EXIT_CODE;
@@ -173,22 +201,49 @@ function withFakeClaudeEnv<A, E, R>(
       binaryPath: input.relativeBinary ? path.relative(process.cwd(), claudePath) : claudePath,
       ...input.claudeConfig,
     });
-    const textGeneration = yield* makeClaudeTextGeneration(config, {
-      ...process.env,
-      F5_PROFILE_ISOLATED: "0",
-    });
-    return yield* effectFn(textGeneration, path.join(binDir, "last-cwd"));
+    const textGeneration = yield* makeClaudeTextGeneration(
+      config,
+      {
+        ...process.env,
+        F5_PROFILE_ISOLATED: "0",
+        CLAUDE_CODE_ENTRYPOINT: "instance-entrypoint",
+      },
+      input.resolveCapabilities,
+    );
+    return yield* effectFn(textGeneration, path.join(binDir, "last-cwd"), pidPath);
   }).pipe(Effect.scoped);
 }
 
 it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
+  it.effect("kills a CLI that ignores SIGTERM when the request times out", () =>
+    withFakeClaudeEnv({ output: "", stalled: true }, (textGeneration, _cwdRecord, pidPath) =>
+      Effect.gen(function* () {
+        const fiber = yield* textGeneration
+          .generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Name this thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-sonnet-4-6",
+            },
+          })
+          .pipe(Effect.flip, Effect.forkScoped);
+        const pid = yield* awaitStalledCli(pidPath);
+
+        yield* TestClock.adjust("180 seconds");
+        yield* awaitProcessExit(pid, TestClock.adjust("100 millis"));
+        expect((yield* Fiber.join(fiber)).detail).toBe("Claude CLI request timed out.");
+      }),
+    ),
+  );
+
   for (const effort of ["high", "xhigh", "ultrathink"] as const) {
     for (const prefixed of [false, true]) {
-      it.effect(`forwards Fable 5.1 ${effort} with prefixed=${prefixed}`, () =>
+      it.effect(`forwards Fable 5.2 ${effort} with prefixed=${prefixed}`, () =>
         withFakeClaudeEnv(
           {
             output: JSON.stringify({ structured_output: { ok: true } }),
-            argsMustContain: `--model claude-fable-5-1${effort === "ultrathink" ? "" : ` --effort ${effort}`}`,
+            argsMustContain: `--model claude-fable-5-2${effort === "ultrathink" ? "" : ` --effort ${effort}`}`,
             argsMustNotContain: effort === "ultrathink" ? "--effort" : [],
             stdinMustContain: `${effort === "ultrathink" || prefixed ? "Ultrathink:\n" : ""}Return JSON`,
           },
@@ -216,6 +271,56 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
       );
     }
   }
+  it.effect("forwards explicit SDK effort for an uncatalogued model", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { ok: true } }),
+        argsMustContain: "--model custom-model --effort max",
+      },
+      (generation) =>
+        generation.generateStructuredJson({
+          cwd: process.cwd(),
+          operation: "custom-effort",
+          prompt: "Return JSON",
+          outputSchema: Schema.Struct({ ok: Schema.Boolean }),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "custom-model",
+            [{ id: "effort", value: "max" }],
+          ),
+        }),
+    ),
+  );
+
+  for (const model of ["custom-model", "claude-opus-4-6", "claude-haiku-4-5"]) {
+    it.effect(
+      "resolves explicit effort with descriptor-free reported capabilities for " + model,
+      () =>
+        withFakeClaudeEnv(
+          {
+            output: JSON.stringify({ structured_output: { ok: true } }),
+            argsMustContain:
+              model === "claude-haiku-4-5"
+                ? "--model " + model
+                : "--model " + model + " --effort max",
+            argsMustNotContain: model === "claude-haiku-4-5" ? "--effort" : [],
+            resolveCapabilities: () =>
+              Effect.succeed({ source: "reported", optionDescriptors: [] }),
+          },
+          (generation) =>
+            generation.generateStructuredJson({
+              cwd: process.cwd(),
+              operation: "reported-effort",
+              prompt: "Return JSON",
+              outputSchema: Schema.Struct({ ok: Schema.Boolean }),
+              modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), model, [
+                { id: "effort", value: "max" },
+              ]),
+            }),
+        ),
+    );
+  }
+
   it.effect("ignores unsupported Haiku ultrathink and preserves prompt whitespace", () =>
     withFakeClaudeEnv(
       {
@@ -235,6 +340,32 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
             "claude-haiku-4-5",
             [{ id: "effort", value: "ultrathink" }],
           ),
+        }),
+    ),
+  );
+  it.effect("runs no-workspace triage with no tools, no MCP and a scoped temp cwd", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { groups: [] } }),
+        // The fake CLI also rejects any call without empty tools, strict MCP and dontAsk.
+        argsMustContain:
+          "--tools  --disable-slash-commands --no-session-persistence --permission-mode dontAsk",
+      },
+      (generation, lastCwdPath) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateStructuredJson({
+            cwd: process.cwd(),
+            operation: "upstreamTriage",
+            prompt: "Classify",
+            outputSchema: UpstreamTriageBatchResult,
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              "claude-haiku-4-5",
+            ),
+            isolation: "no-workspace",
+          });
+          expect(result).toEqual({ groups: [] });
+          expect(readFileSync(lastCwdPath, "utf8")).not.toBe(process.cwd());
         }),
     ),
   );
@@ -291,7 +422,8 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
             diffSummary: "1 file changed",
             diffPatch: "diff --git a/README.md b/README.md",
             modelSelection: {
-              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-4-8", [
+              // Opus 4.8's built-in Fast Mode is deprecated; Opus 5 keeps it.
+              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5", [
                 { id: "effort", value: "max" },
                 { id: "fastMode", value: true },
               ]),
@@ -433,6 +565,45 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
     );
   }
 
+  it.effect("retries without session persistence flag for older Claude versions", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { title: "Reconnect failures" } }),
+        rejectsNoSessionPersistence: true,
+      },
+      (generation) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Investigate reconnect failures",
+          });
+          expect(result.title).toBe("Reconnect failures");
+        }),
+    ),
+  );
+
+  it.effect("does not retry a model error that names the session persistence flag", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          is_error: true,
+          result: "error: unknown option '--no-session-persistence'",
+        }),
+        exitCode: 1,
+      },
+      (generation) =>
+        Effect.gen(function* () {
+          const error = yield* generation
+            .generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Investigate reconnect failures",
+            })
+            .pipe(Effect.flip);
+          expect(error.detail).toContain("error: unknown option '--no-session-persistence'");
+        }),
+    ),
+  );
+
   it.effect("generates thread titles through the Claude provider", () =>
     withFakeClaudeEnv(
       {
@@ -519,4 +690,17 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
         }),
     ),
   );
+});
+
+it("reports the CLI's own error result instead of wrapper output", () => {
+  expect(
+    claudeErrorResult(
+      JSON.stringify([
+        { type: "system", subtype: "init" },
+        { type: "result", is_error: true, result: "API Error: 529 Overloaded" },
+      ]),
+    ),
+  ).toBe("API Error: 529 Overloaded");
+  expect(claudeErrorResult(JSON.stringify({ is_error: true, result: "  " }))).toBeUndefined();
+  expect(claudeErrorResult("mise WARN not trusted")).toBeUndefined();
 });

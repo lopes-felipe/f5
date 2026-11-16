@@ -4,11 +4,32 @@ import {
   createReportedClaudeModelCapabilities,
   createReportedCodexModelCapabilities,
   normalizeCodexModelOptions,
+  normalizeClaudeModelOptions,
+  resolveClaudeModelEffort,
+  resolveCodexDispatchModelOptions,
+  resolveCodexEffectiveReasoningEffort,
   resolveModelCapabilities,
   resolveSupportedEffort,
 } from "./model";
 
 describe("resolveModelCapabilities", () => {
+  it("preserves only explicit SDK effort for uncatalogued Claude models", () => {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      expect(resolveClaudeModelEffort("custom-model", ` ${effort} `)).toBe(effort);
+      expect(normalizeClaudeModelOptions("custom-model", { effort })).toEqual({ effort });
+    }
+    for (const effort of [undefined, null, "", "HIGH", "extreme", "ultrathink"]) {
+      expect(resolveClaudeModelEffort("custom-model", effort)).toBeNull();
+    }
+    expect(normalizeClaudeModelOptions("custom-model", {})).toBeUndefined();
+    const unsupported = createReportedClaudeModelCapabilities({
+      value: "custom-model",
+      supportsEffort: false,
+    });
+    expect(resolveClaudeModelEffort("custom-model", "max", unsupported)).toBeNull();
+    expect(resolveClaudeModelEffort("claude-haiku-4-5", "max")).toBeNull();
+  });
+
   it("falls back to built-ins without reported capabilities", () => {
     const resolved = resolveModelCapabilities("codex", "gpt-5.4");
     expect(resolved.source).toBe("built-in");
@@ -114,7 +135,62 @@ describe("normalizeCodexModelOptions with reported capabilities", () => {
     ).toBeUndefined();
   });
 
+  it("walks an unsupported effort down instead of dropping it", () => {
+    // [low, high] reported: Max is unsupported, and turn/start would run High.
+    expect(normalizeCodexModelOptions("gpt-6.1-sol", { reasoningEffort: "max" }, reported)).toEqual(
+      { reasoningEffort: "high" },
+    );
+  });
+
   it("drops fast mode the model does not offer", () => {
     expect(normalizeCodexModelOptions("gpt-6.1-sol", { fastMode: true }, reported)).toBeUndefined();
+  });
+});
+
+describe("Codex effective and dispatched effort", () => {
+  const reported = createReportedCodexModelCapabilities({
+    model: "gpt-6.1-sol",
+    supportedReasoningEfforts: [
+      { reasoningEffort: "max" },
+      { reasoningEffort: "high" },
+      { reasoningEffort: "low" },
+    ],
+    defaultReasoningEffort: "low",
+    serviceTiers: [],
+  });
+
+  it("resolves an absent effort to the reported default, not the built-in one", () => {
+    expect(resolveCodexEffectiveReasoningEffort("gpt-6.1-sol", undefined, reported)).toBe("low");
+    expect(resolveCodexEffectiveReasoningEffort("gpt-6.1-sol", undefined)).toBe("high");
+  });
+
+  it("walks an unsupported effort down to a reported one, as turn/start does", () => {
+    expect(resolveCodexEffectiveReasoningEffort("gpt-6.1-sol", "ultra", reported)).toBe("max");
+    expect(resolveCodexEffectiveReasoningEffort("gpt-6.1-sol", "xhigh", reported)).toBe("high");
+    expect(resolveCodexEffectiveReasoningEffort("gpt-6.1-sol", "bogus", reported)).toBe("low");
+  });
+
+  it("is undefined for a reported model that takes no effort", () => {
+    const noEfforts = createReportedCodexModelCapabilities({
+      model: "gpt-no-effort",
+      supportedReasoningEfforts: [],
+    });
+    expect(resolveCodexEffectiveReasoningEffort("gpt-no-effort", "high", noEfforts)).toBe(
+      undefined,
+    );
+    expect(resolveCodexDispatchModelOptions("gpt-no-effort", undefined, noEfforts)).toBe(undefined);
+  });
+
+  it("dispatches the default effort explicitly", () => {
+    // Built-in only: "high" is the built-in default, still sent.
+    expect(resolveCodexDispatchModelOptions("gpt-6.1-sol", { reasoningEffort: "high" })).toEqual({
+      reasoningEffort: "high",
+    });
+    expect(resolveCodexDispatchModelOptions("gpt-6.1-sol", undefined, reported)).toEqual({
+      reasoningEffort: "low",
+    });
+    expect(
+      resolveCodexDispatchModelOptions("gpt-6.1-sol", { reasoningEffort: "ultra" }, reported),
+    ).toEqual({ reasoningEffort: "max" });
   });
 });

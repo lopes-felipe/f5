@@ -8,12 +8,12 @@ import {
   useCreateProjectBackedDraftThread,
 } from "./useCreateProjectBackedDraftThread";
 import { useStore } from "../store";
+import { useThreadSummary } from "../threadSelectors";
 
 export { seedDraftThreadFromModelPreferences };
 
 export function useHandleNewThread() {
   const projects = useStore((store) => store.projects);
-  const threads = useStore((store) => store.threads);
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
   const routeThreadId = useParams({
     strict: false,
@@ -23,9 +23,7 @@ export function useHandleNewThread() {
     routeThreadId ? (store.draftThreadsByThreadId[routeThreadId] ?? null) : null,
   );
 
-  const activeThread = routeThreadId
-    ? threads.find((thread) => thread.id === routeThreadId)
-    : undefined;
+  const activeThread = useThreadSummary(routeThreadId);
 
   const handleNewThread = useCallback(
     (projectId: ProjectId, options?: Parameters<typeof createProjectBackedDraftThread>[1]) =>

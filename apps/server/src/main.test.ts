@@ -10,6 +10,7 @@ import type { OrchestrationReadModel } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { Logger, Tracer } from "effect";
 import * as Command from "effect/unstable/cli/Command";
 import { FetchHttpClient } from "effect/unstable/http";
 import { beforeEach, afterEach } from "vitest";
@@ -18,15 +19,20 @@ afterEach(() => {
 });
 import { NetService } from "@t3tools/shared/Net";
 import { legacyT3BaseDir, legacyT3UserdataStateDir } from "@t3tools/shared/appStatePaths";
+import { startDesktopAppControl } from "@t3tools/shared/desktopAppControl";
 
 import { CliConfig, recordStartupHeartbeat, t3Cli, type CliConfigShape } from "./main";
 import { ServerConfig, type ServerConfigShape } from "./config";
 import { LEGACY_STATE_MIGRATION_FAILURE_SENTINEL } from "./legacyStateMigration";
 import { withHomeSandbox } from "./testing/homeSandbox.ts";
-import { Open, type OpenShape } from "./open";
+import { Open, OpenError, type OpenShape } from "./open";
+import { spanToTraceRecord, type EffectTraceRecord } from "./observability/TraceRecord.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { Server, type ServerShape } from "./wsServer";
+
+// These tests apply real Windows ACLs, including cold PowerShell startup.
+if (process.platform === "win32") vi.setConfig({ testTimeout: 60_000 });
 
 const start = vi.fn(() => undefined);
 const stop = vi.fn(() => undefined);
@@ -100,6 +106,26 @@ beforeEach(() => {
 });
 
 it.layer(testLayer)("server CLI command", (it) => {
+  it.effect("opens a project through app without starting the server", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-cli-app-"));
+      const opened: string[] = [];
+      const close = yield* Effect.promise(() =>
+        startDesktopAppControl(root, async (request) => {
+          opened.push(request.path);
+        }),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          await close();
+          FS.rmSync(root, { recursive: true, force: true });
+        }),
+      );
+      yield* runCli(["--state-dir", root, "app", root]);
+      assert.deepEqual(opened, [FS.realpathSync.native(root)]);
+      assert.equal(start.mock.calls.length, 0);
+    }),
+  );
   it.effect("parses all CLI flags and wires scoped start/stop", () =>
     Effect.gen(function* () {
       yield* runCli([
@@ -134,6 +160,71 @@ it.layer(testLayer)("server CLI command", (it) => {
     }),
   );
 
+  for (const scenario of [
+    {
+      name: "launch token",
+      args: ["--auth-token", "startup-token-private-fixture"],
+      secrets: ["startup-token-private-fixture"],
+    },
+    {
+      name: "development URL credentials",
+      args: [
+        "--dev-url",
+        "https://private-user:private-password@localhost:5173/?key=private-query#private-fragment",
+      ],
+      secrets: ["private-user", "private-password", "private-query", "private-fragment"],
+    },
+  ]) {
+    it.effect(`keeps ${scenario.name} out of startup logs and failed-launch traces`, () => {
+      const messages: unknown[] = [];
+      const records: EffectTraceRecord[] = [];
+      let opened = "";
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (time, exit) => {
+            end(time, exit);
+            records.push(spanToTraceRecord(span));
+          };
+          return span;
+        },
+      });
+      return Effect.gen(function* () {
+        yield* runCli(scenario.args, {}).pipe(
+          Effect.provideService(Open, {
+            openBrowser: (target) =>
+              Effect.gen(function* () {
+                opened = target;
+                yield* Effect.annotateCurrentSpan({ "browser.target": target });
+                return yield* new OpenError({
+                  message: `launcher rejected ${target}`,
+                  cause: new Error(`spawn opener ${target}`),
+                });
+              }).pipe(Effect.withSpan("private-browser-attempt")),
+            openInEditor: () => Effect.void,
+            revealInFileManager: () => Effect.void,
+          }),
+          Effect.provideService(Tracer.Tracer, tracer),
+          Effect.provide(
+            Logger.layer(
+              [Logger.make(({ message }) => messages.push(message)), Logger.tracerLogger],
+              { mergeWithExisting: false },
+            ),
+          ),
+        );
+        assert.ok(messages.length > 0);
+        assert.ok(records.some((record) => record.name === "server.startup"));
+        assert.isFalse(records.some((record) => record.name === "private-browser-attempt"));
+        const exported = JSON.stringify({ messages, records });
+        for (const secret of scenario.secrets) {
+          assert.include(opened, secret, "the private browser target must retain its credentials");
+          assert.notInclude(exported, secret);
+        }
+      });
+    });
+  }
+
   it.effect("supports --token as an alias for --auth-token", () =>
     Effect.gen(function* () {
       yield* runCli(["--token", "token-secret"]);
@@ -167,6 +258,22 @@ it.layer(testLayer)("server CLI command", (it) => {
       assert.equal(resolvedConfig?.logWebSocketEvents, true);
       assert.equal(resolvedConfig?.observabilityEnabled, false);
       assert.equal(findAvailablePort.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("removes the auth token from its own environment once the config holds it", () =>
+    Effect.gen(function* () {
+      const previous = process.env.T3CODE_AUTH_TOKEN;
+      process.env.T3CODE_AUTH_TOKEN = "inherited-by-every-child";
+      try {
+        yield* runCli(["--auth-token", "token-secret"]);
+
+        assert.equal(resolvedConfig?.authToken, "token-secret");
+        assert.isUndefined(process.env.T3CODE_AUTH_TOKEN);
+      } finally {
+        if (previous === undefined) delete process.env.T3CODE_AUTH_TOKEN;
+        else process.env.T3CODE_AUTH_TOKEN = previous;
+      }
     }),
   );
 
@@ -458,6 +565,28 @@ it.layer(testLayer)("server CLI command", (it) => {
     }),
   );
 
+  it.effect("reads trusted proxies from the flag or the environment and rejects bad ones", () =>
+    Effect.gen(function* () {
+      yield* runCli(["--trusted-proxy", "10.0.0.5, 172.16.0.0/12"], {
+        T3CODE_NO_BROWSER: "true",
+        F5_TRUSTED_PROXIES: "192.0.2.1",
+      });
+      assert.deepStrictEqual(resolvedConfig?.trustedProxies, ["10.0.0.5", "172.16.0.0/12"]);
+
+      yield* runCli([], { T3CODE_NO_BROWSER: "true", F5_TRUSTED_PROXIES: "192.0.2.1" });
+      assert.deepStrictEqual(resolvedConfig?.trustedProxies, ["192.0.2.1"]);
+
+      yield* runCli([], { T3CODE_NO_BROWSER: "true" });
+      assert.deepStrictEqual(resolvedConfig?.trustedProxies, []);
+      assert.equal(start.mock.calls.length, 3);
+
+      yield* runCli(["--trusted-proxy", "proxy.example"], { T3CODE_NO_BROWSER: "true" }).pipe(
+        Effect.catch(() => Effect.void),
+      );
+      assert.equal(start.mock.calls.length, 3);
+    }),
+  );
+
   it.effect("supports CLI and env for bootstrap/log websocket toggles", () =>
     Effect.gen(function* () {
       yield* runCli(["--auto-bootstrap-project-from-cwd"], {
@@ -495,6 +624,7 @@ it.layer(testLayer)("server CLI command", (it) => {
 
       yield* recordStartupHeartbeat.pipe(
         Effect.provideService(ProjectionSnapshotQuery, {
+          searchThread: () => Effect.die("unused thread search"),
           getSnapshot,
           getBootstrapSnapshot: getSnapshot,
           getStartupSnapshot: () =>
@@ -512,6 +642,7 @@ it.layer(testLayer)("server CLI command", (it) => {
               checkpoints: [],
               activities: [],
               commandExecutions: [],
+              proposedPlans: [],
               tasks: [],
               tasksTurnId: null,
               tasksUpdatedAt: null,

@@ -1,11 +1,16 @@
 # Architecture
 
-F5 runs as a **Node.js WebSocket server** that wraps one or more coding-agent providers and serves a React web app. Today F5 supports two providers:
+> Contributors: how the server, providers, orchestration and persistence fit together.
 
-- **Codex** — via `codex app-server` (JSON-RPC over stdio).
-- **Claude Code** — via the `@anthropic-ai/claude-agent-sdk`.
+F5 runs as a **Node.js WebSocket server** that wraps one or more coding-agent providers and serves a React web app. F5 supports seven providers:
 
-Both providers are fronted by a shared `ProviderAdapter` interface so the UI, orchestration, and checkpoint layers stay provider-agnostic.
+- **Codex** via `codex app-server` (JSON-RPC over stdio).
+- **Claude Code** via the `@anthropic-ai/claude-agent-sdk`.
+- **Cursor**, **Grok** and **Antigravity** via the Agent Client Protocol (ACP).
+- **OpenCode** via its SDK against a local or external OpenCode server.
+- **Muse Code** via the Muse Session Protocol (MSP) and `@muse-code/sdk`.
+
+All providers are fronted by a shared `ProviderAdapter` interface so the UI, orchestration, and checkpoint layers stay provider-agnostic.
 
 ```
 ┌─────────────────────────────────┐
@@ -28,8 +33,8 @@ Both providers are fronted by a shared `ProviderAdapter` interface so the UI, or
 └──────────┬──────────────────────┘
            │ provider-specific transport
 ┌──────────▼──────────────────────┐
-│  codex app-server  |  Claude    │
-│  (JSON-RPC/stdio)  |  Agent SDK │
+│  provider runtime               │
+│  (JSON-RPC, SDK, ACP or MSP)    │
 └─────────────────────────────────┘
 ```
 
@@ -39,7 +44,7 @@ Both providers are fronted by a shared `ProviderAdapter` interface so the UI, or
 
 - **Server**: `apps/server` is the main coordinator. It serves the web app, accepts WebSocket requests, waits for startup readiness before welcoming clients, and sends all outbound pushes through a single ordered push path.
 
-- **Provider runtime**: Each provider process does the actual session work. For Codex that is `codex app-server` over JSON-RPC on stdio; for Claude Code it is a session launched through the Claude Agent SDK. The server translates their native events into the app's shared orchestration model.
+- **Provider runtime**: Each provider process does the actual session work, for example `codex app-server` over JSON-RPC on stdio, a Claude Agent SDK session, an ACP agent process, an OpenCode server or `muse serve`. The server translates their native events into the app's shared orchestration model.
 
 - **Background workers**: Long-running async flows such as runtime ingestion, command reaction, and checkpoint processing run as queue-backed workers. This keeps work ordered, reduces timing races, and gives tests a deterministic way to wait for the system to go idle.
 
@@ -85,7 +90,7 @@ sequenceDiagram
     participant Engine as OrchestrationEngine
     participant Delivery as ProviderTurnDeliveryWorker
     participant Provider as ProviderService
-    participant ProviderProc as codex app-server / Claude Agent SDK
+    participant ProviderProc as provider runtime
     participant Ingest as ProviderRuntimeIngestion
     participant Engine as OrchestrationEngine
     participant Push as ServerPushBus
@@ -97,7 +102,7 @@ sequenceDiagram
     Queue->>Engine: Dispatch admitted queue head
     Engine->>Engine: Commit message, pending barrier, receipt, delivery outbox
     Delivery->>Provider: Replay pending provider delivery
-    Provider->>ProviderProc: JSON-RPC / SDK call
+    Provider->>ProviderProc: Provider-native call
     ProviderProc-->>Ingest: Provider runtime events
     Ingest->>Engine: Normalize provider events
     Engine-->>Server: Domain events
@@ -167,3 +172,30 @@ sequenceDiagram
 [18]: ../apps/server/src/orchestration/Layers/ProviderTurnDeliveryWorker.ts
 
 Profiles isolate environments at the process boundary, with sibling registry/lock storage and separate state directories. See [Profiles](profiles.md).
+
+## Retained orchestration message-content consumers
+
+The read model remains complete. This inventory is the first phase of the proposed
+memory redesign; it does not authorize replacing text or truncating decider state.
+The realistic fixture must exceed 300 MB after deleted-thread handling before the
+second phase starts. The warning above 200,000 retained messages is observability
+only, and reports counts/characters without changing retained arrays.
+
+| Consumer                            | Content needed from the engine's retained messages                                                                                                               | Required boundary before slimming                                                                                                                            |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ProviderCommandReactor`            | Text/reasoning/attachment-name character estimates; initial user prompt and title-regeneration context; queued first-send text                                   | Repository-backed context/title reads and incremental character totals, fenced by thread/history revision. Role/turn/id checks can use message metadata.     |
+| `ProviderRuntimeIngestion`          | Existing assistant text for duplicate-prefix/suffix recovery and finalization                                                                                    | A repository read tied to the same message/turn/generation before deciding whether a completion adds a suffix.                                               |
+| `WorkflowService`                   | Strict proposed-plan wrapper validation from the final assistant message; latest user text/attachments when retrying implementation                              | Read the exact pinned completed message or original request through a repository, preserving operation/turn identity.                                        |
+| `SessionNotesService`               | Recent user/assistant text summarized into provider context                                                                                                      | Bounded repository history at an explicit source watermark.                                                                                                  |
+| `codexSnapshotReconciliation`       | Existing assistant text to compare native history and avoid duplicate deltas                                                                                     | Repository reads tied to the reconciliation's captured generation/history coverage.                                                                          |
+| `rewind`                            | Target user-message text/attachments copied into a recoverable draft                                                                                             | Read the immutable target message inside the fenced rewind operation; preserve draft persistence and attachment ownership.                                   |
+| `WorkspaceTransition`               | First user prompt and attachments for branch naming                                                                                                              | Repository-backed first-message lookup before preparation, retaining workspace/root checks.                                                                  |
+| `StuckTurnRepair`                   | Nonempty finalized assistant text as one piece of repair evidence                                                                                                | Read the exact final assistant message for the originating turn; a log's partial final line remains insufficient evidence.                                   |
+| `wsServer` legacy full-snapshot RPC | Entire message text/reasoning is returned by the legacy read-model response                                                                                      | Serve that response from a consistent repository snapshot before changing the engine representation. Tail/history RPCs already use snapshot readers.         |
+| Engine projector and decider        | The projector appends/replaces content and estimates context. Decider message checks include role/id/turn/streaming status, pivot existence and history ordering | Preserve decision equivalence for all message/history commands. Repository fallbacks and retained metadata must exist before replacing content with lengths. |
+
+`CheckpointReactor` needs message IDs/roles/turns for checkpoint association;
+`WorktreeSetup` uses message presence. Their current checks do not require full text.
+The remaining project/worktree/queue/workflow lifecycle reads use aggregate metadata,
+workflow records, sessions, IDs or counts. Re-run the inventory when adding a new
+`getReadModel()` consumer: follow helper calls as well as direct `.messages` accesses.

@@ -1,5 +1,9 @@
 import type { ModelCapabilities, ServerProviderSkill } from "@t3tools/contracts";
-import { createReportedCodexModelCapabilities, normalizeModelSlug } from "@t3tools/shared/model";
+import {
+  createReportedCodexModelCapabilities,
+  formatModelDisplayName,
+  normalizeModelSlug,
+} from "@t3tools/shared/model";
 
 import {
   CodexControlClient,
@@ -22,18 +26,22 @@ function nonEmpty(value: unknown): string | undefined {
  * Normalize `model/list` entries into reported models. Hidden models are
  * dropped (they are not meant for pickers) and duplicates keep the first row.
  */
-export function parseCodexModelList(
-  entries: ReadonlyArray<unknown>,
-): ReadonlyArray<ReportedProviderModel> {
+export function parseCodexModelList(entries: ReadonlyArray<unknown>): {
+  models: ReadonlyArray<ReportedProviderModel>;
+  presentSlugs: ReadonlyArray<string>;
+} {
   const bySlug = new Map<string, ReportedProviderModel>();
+  const presentSlugs = new Set<string>();
   for (const entry of entries) {
-    if (!isRecord(entry) || entry.hidden === true) continue;
+    if (!isRecord(entry)) continue;
     const raw = nonEmpty(entry.model) ?? nonEmpty(entry.id);
     const slug = raw ? (normalizeModelSlug(raw, "codex") ?? raw) : undefined;
-    if (!slug || bySlug.has(slug)) continue;
+    if (!slug) continue;
+    presentSlugs.add(slug);
+    if (entry.hidden === true || bySlug.has(slug)) continue;
     bySlug.set(slug, {
       slug,
-      name: nonEmpty(entry.displayName) ?? slug,
+      name: formatModelDisplayName("codex", slug) ?? nonEmpty(entry.displayName) ?? slug,
       capabilities: createReportedCodexModelCapabilities({
         model: slug,
         ...(Array.isArray(entry.supportedReasoningEfforts)
@@ -48,7 +56,41 @@ export function parseCodexModelList(
       }),
     });
   }
-  return [...bySlug.values()];
+  return { models: [...bySlug.values()], presentSlugs: [...presentSlugs] };
+}
+
+export function applyConfiguredCodexServiceTier(
+  models: ReadonlyArray<ReportedProviderModel>,
+  serviceTier: unknown,
+): ReadonlyArray<ReportedProviderModel> {
+  if (typeof serviceTier !== "string") return models;
+  return models.map((model) => {
+    const tier = model.capabilities.serviceTiers?.find(
+      (tier) => tier.id === serviceTier || (serviceTier === "fast" && tier.id === "priority"),
+    );
+    return tier
+      ? { ...model, capabilities: { ...model.capabilities, defaultServiceTier: tier.id } }
+      : model;
+  });
+}
+
+async function readConfiguredServiceTier(client: CodexControlClient): Promise<unknown> {
+  let cancelTimeout: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      // No cwd: the shared catalog must not inherit launch-project configuration.
+      Promise.resolve()
+        .then(() => client.readConfig(false))
+        .then((result) => result.config.service_tier)
+        .catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        const timer = setTimeout(() => resolve(undefined), 3_000);
+        cancelTimeout = () => clearTimeout(timer);
+      }),
+    ]);
+  } finally {
+    cancelTimeout?.();
+  }
 }
 
 /** Session-scoped lookup built from the session's own `model/list` response. */
@@ -56,7 +98,11 @@ export function readCodexReportedModelCapabilities(
   response: unknown,
 ): ReadonlyMap<string, ModelCapabilities> {
   const data = isRecord(response) && Array.isArray(response.data) ? response.data : [];
-  return new Map(parseCodexModelList(data).map((model) => [model.slug, model.capabilities]));
+  return new Map(
+    parseCodexModelList(
+      data.map((row) => (isRecord(row) ? { ...row, hidden: false } : row)),
+    ).models.map((model) => [model.slug, model.capabilities]),
+  );
 }
 
 /**
@@ -94,7 +140,11 @@ export function parseCodexInstanceSkills(
 
 export interface CodexInstanceCatalog {
   readonly models: ReadonlyArray<ReportedProviderModel>;
-  readonly skills: ReadonlyArray<ServerProviderSkill>;
+  readonly skills?: ReadonlyArray<ServerProviderSkill>;
+  readonly presentSlugs: ReadonlyArray<string>;
+  readonly complete: boolean;
+  readonly fetchedAt: string;
+  readonly anomaly?: string;
 }
 
 /**
@@ -106,19 +156,33 @@ export interface CodexInstanceCatalog {
 export async function probeCodexInstanceCatalog(
   environment: CodexControlEnvironmentConfig,
   timeoutMs = CODEX_MODEL_PROBE_TIMEOUT_MS,
+  parentSignal?: AbortSignal,
 ): Promise<CodexInstanceCatalog> {
-  const signal = AbortSignal.timeout(timeoutMs);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = parentSignal ? AbortSignal.any([parentSignal, timeout]) : timeout;
   let client: CodexControlClient | undefined;
   try {
-    client = await CodexControlClient.create(environment, signal);
+    client = await CodexControlClient.create(environment, signal, { probeConfigRead: false });
     const opened = client;
     const listed = (async () => {
-      const models = parseCodexModelList(await opened.listModels());
+      const [pages, serviceTier] = await Promise.all([
+        opened.listModelPages(),
+        readConfiguredServiceTier(opened),
+      ]);
+      const { models, presentSlugs } = parseCodexModelList(pages.entries);
+      if (models.length === 0) throw new Error("Empty Codex model catalog");
       const skills = await opened
         .listSkills([environment.cwd])
         .then(parseCodexInstanceSkills)
-        .catch(() => []);
-      return { models, skills };
+        .catch(() => undefined);
+      return {
+        models: applyConfiguredCodexServiceTier(models, serviceTier),
+        ...(skills ? { skills } : {}),
+        presentSlugs,
+        complete: pages.complete,
+        ...(pages.anomaly ? { anomaly: pages.anomaly } : {}),
+        fetchedAt: new Date().toISOString(),
+      };
     })();
     const aborted = new Promise<never>((_, reject) => {
       if (signal.aborted) reject(new Error("Codex model probe timed out."));

@@ -1,0 +1,32 @@
+{
+  "reportVersion": 1,
+  "scope": "isolated-linux-browser-reproduction",
+  "state": "passed",
+  "recordedAt": "2026-10-13T20:09:56.336Z",
+  "baselineCommit": "a5dadb91dd",
+  "ciRunUrl": "https://github.com/lopes-felipe/f5/actions/runs/38453263002",
+  "sourceSha256": "0d54f9a00e994b50428edd263ec17b6c92542a312a8b0b183ee1c656b9e1a34b",
+  "results": {
+    "originalTargeted": "passed",
+    "originalWith250msDelay": "failed-expected-36-less-than-36",
+    "fixedTargeted": "passed",
+    "fixedWith250msDelay": "passed",
+    "fixedCompleteChatViewFile": {
+      "passed": 109,
+      "failed": 0
+    }
+  },
+  "fix": "Hold the isolated browser animation clock before triggering expansion; retain clipping and final-layout assertions and restore the clock in finally",
+  "macosCi": {
+    "conclusion": "cancelled",
+    "recordedSteps": 0,
+    "logAvailable": false
+  },
+  "nativeReleaseReady": false,
+  "gatesChanged": false,
+  "limitations": [
+    "This validates the browser test timing fix, not computer input/capture or human consent",
+    "The complete hosted CI matrix must pass on the final head",
+    "No cause is assigned to the cancelled macOS job without logs"
+  ]
+}

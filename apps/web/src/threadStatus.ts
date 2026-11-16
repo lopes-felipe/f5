@@ -6,6 +6,7 @@ import {
   LoaderIcon,
   MessageCircleIcon,
   PlayIcon,
+  XCircleIcon,
 } from "lucide-react";
 
 import type { Thread } from "./types";
@@ -22,6 +23,7 @@ export type ThreadStatus =
   | "awaiting-input"
   | "working"
   | "connecting"
+  | "failed"
   | "plan-ready"
   | "completed"
   | "none";
@@ -41,6 +43,7 @@ type ThreadStatusLabel =
   | "Working"
   | "Connecting"
   | "Completed"
+  | "Failed"
   | "Pending Approval"
   | "Awaiting Input"
   | "Plan Ready"
@@ -49,7 +52,8 @@ type ThreadStatusLabel =
 export type ThreadStatusInput = Pick<
   Thread,
   "interactionMode" | "latestTurn" | "lastVisitedAt" | "proposedPlans" | "session"
->;
+> &
+  Partial<Pick<Thread, "proposedPlansOmitted">>;
 
 export interface ResolveThreadStatusInput {
   thread: ThreadStatusInput;
@@ -94,6 +98,14 @@ const THREAD_STATUS_PILL_BY_STATUS: Record<Exclude<ThreadStatus, "none">, Thread
     icon: LoaderIcon,
     pulse: true,
   },
+  failed: {
+    label: "Failed",
+    colorClass: "text-destructive-foreground",
+    dotClass: "bg-destructive",
+    chipClass: "bg-destructive/10 text-destructive-foreground ring-1 ring-destructive/20",
+    icon: XCircleIcon,
+    pulse: false,
+  },
   "plan-ready": {
     label: "Plan Ready",
     colorClass: "text-warning-foreground",
@@ -123,6 +135,20 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   return completedAt > lastVisitedAt;
 }
 
+/**
+ * A failed latest turn the person hasn't looked at since it ended. Unlike a
+ * completion, a missing end time still counts: the failure needs someone. It
+ * is then measured from the request, so a visit still clears it.
+ */
+function hasUnseenFailure(thread: ThreadStatusInput): boolean {
+  if (thread.latestTurn?.state !== "error") return false;
+  if (!thread.lastVisitedAt) return true;
+  const endedAt = Date.parse(thread.latestTurn.completedAt ?? thread.latestTurn.requestedAt);
+  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  if (Number.isNaN(endedAt) || Number.isNaN(lastVisitedAt)) return true;
+  return endedAt > lastVisitedAt;
+}
+
 export function resolveThreadStatus(input: ResolveThreadStatusInput): ThreadStatus {
   const { hasPendingApprovals, hasPendingUserInput, thread } = input;
 
@@ -142,8 +168,14 @@ export function resolveThreadStatus(input: ResolveThreadStatusInput): ThreadStat
     return "connecting";
   }
 
+  if (hasUnseenFailure(thread)) {
+    return "failed";
+  }
+
+  // Archived threads whose plans the startup snapshot omitted cannot be judged.
   const hasPlanReadyPrompt =
     !hasPendingUserInput &&
+    thread.proposedPlansOmitted !== true &&
     thread.interactionMode === "plan" &&
     isLatestTurnSettled(thread.latestTurn, thread.session) &&
     hasActionableProposedPlan(

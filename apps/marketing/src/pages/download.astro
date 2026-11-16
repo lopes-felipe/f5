@@ -1,8 +1,30 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import {
+  DOWNLOAD_AVAILABILITY,
+  RELEASES_URL,
+  REPOSITORY_URL,
+  resolveDownload,
+  type DownloadTarget,
+} from "../lib/releases";
+
+// Rendered without the release fetch so the preview link and platform statuses
+// work without JavaScript; the client script then links the latest Windows installer.
+const initial = Object.fromEntries(
+  (Object.keys(DOWNLOAD_AVAILABILITY) as DownloadTarget[]).map((target) => [
+    target,
+    resolveDownload(target, null),
+  ]),
+) as Record<DownloadTarget, ReturnType<typeof resolveDownload>>;
+const card = (target: DownloadTarget) => ({
+  "data-target": target,
+  href: initial[target].href ?? undefined,
+  "aria-disabled": initial[target].href ? undefined : ("true" as const),
+  class: initial[target].href ? "download-card" : "download-card download-card--unavailable",
+});
 ---
 
-<Layout title="Download — F5" description="Download F5 for macOS, Windows, or Linux.">
+<Layout title="Download — F5" description="Download F5 for Windows, with a macOS preview.">
   <h1 class="heading">Download F5</h1>
   <p class="subheading">
     <span id="version-label">Loading latest release&hellip;</span>
@@ -17,13 +39,15 @@ import Layout from "../layouts/Layout.astro";
         <h2 class="platform-name">macOS</h2>
       </div>
       <div class="download-cards">
-        <a class="download-card" data-asset="arm64.dmg" href="#">
+        <a {...card("mac-arm64")}>
           <span class="card-arch">Apple Silicon (arm64)</span>
           <span class="card-format">.dmg</span>
+          <span class="card-status">{initial["mac-arm64"].note}</span>
         </a>
-        <a class="download-card" data-asset="x64.dmg" href="#">
+        <a {...card("mac-x64")}>
           <span class="card-arch">Intel (x64)</span>
           <span class="card-format">.dmg</span>
+          <span class="card-status">{initial["mac-x64"].note}</span>
         </a>
       </div>
     </section>
@@ -35,9 +59,10 @@ import Layout from "../layouts/Layout.astro";
         <h2 class="platform-name">Windows</h2>
       </div>
       <div class="download-cards">
-        <a class="download-card" data-asset="x64.exe" href="#">
-          <span class="card-arch">Windows 10, 11</span>
-          <span class="card-format">.exe</span>
+        <a {...card("win-x64")}>
+          <span class="card-arch">Windows 10, 11 (x64)</span>
+          <span class="card-format">.exe · unsigned</span>
+          <span class="card-status">{initial["win-x64"].note}</span>
         </a>
       </div>
     </section>
@@ -49,28 +74,65 @@ import Layout from "../layouts/Layout.astro";
         <h2 class="platform-name">Linux</h2>
       </div>
       <div class="download-cards">
-        <a class="download-card" data-asset="x86_64.AppImage" href="#">
+        <a {...card("linux-x64")}>
           <span class="card-arch">x86_64</span>
           <span class="card-format">AppImage</span>
+          <span class="card-status">{initial["linux-x64"].note}</span>
+        </a>
+        <a {...card("linux-deb-x64")}>
+          <span class="card-arch">Debian, Ubuntu x86_64</span>
+          <span class="card-format">.deb</span>
+          <span class="card-status">{initial["linux-deb-x64"].note}</span>
         </a>
       </div>
     </section>
   </div>
 
   <p class="releases-link">
+    The Windows installer is not code-signed yet; SmartScreen may warn and Smart App Control blocks it. See the
+    <a href={`${REPOSITORY_URL}/blob/main/docs/install.md#windows`} target="_blank" rel="noopener noreferrer">
+      installation notes<span aria-hidden="true"> &#8599;</span>
+    </a>.
+  </p>
+
+  <p class="releases-link">
     Looking for older versions? Check the
-    <a href="https://github.com/pingdotgg/t3code/releases" target="_blank" rel="noopener noreferrer">
+    <a href={RELEASES_URL} target="_blank" rel="noopener noreferrer">
       GitHub releases page<span aria-hidden="true"> &#8599;</span>
     </a>
   </p>
 </Layout>
 
 <script>
-  import { fetchLatestRelease, RELEASES_URL } from "../lib/releases";
+  import {
+    DOWNLOAD_AVAILABILITY,
+    fetchLatestRelease,
+    resolveDownload,
+    type DownloadTarget,
+    type Release,
+  } from "../lib/releases";
+
+  function renderCards(release: Release | null) {
+    document.querySelectorAll<HTMLAnchorElement>(".download-card").forEach((card) => {
+      const target = card.dataset.target as DownloadTarget | undefined;
+      if (!target || !(target in DOWNLOAD_AVAILABILITY)) return;
+      const { href, note } = resolveDownload(target, release);
+      const status = card.querySelector(".card-status");
+      if (status) status.textContent = note ?? "";
+      if (href) {
+        card.href = href;
+        card.removeAttribute("aria-disabled");
+        card.classList.remove("download-card--unavailable");
+      } else {
+        card.removeAttribute("href");
+        card.setAttribute("aria-disabled", "true");
+        card.classList.add("download-card--unavailable");
+      }
+    });
+  }
 
   async function init() {
     const versionLabel = document.getElementById("version-label");
-    const cards = document.querySelectorAll<HTMLAnchorElement>(".download-card");
 
     try {
       const release = await fetchLatestRelease();
@@ -85,24 +147,11 @@ import Layout from "../layouts/Layout.astro";
         changelogLink.style.display = "";
       }
 
-      cards.forEach((card) => {
-        const suffix = card.dataset.asset;
-        if (!suffix) return;
-
-        const match = (release.assets ?? []).find((a) => a.name.endsWith(`-${suffix}`));
-        if (match) {
-          card.href = match.browser_download_url;
-        } else {
-          card.href = RELEASES_URL;
-        }
-      });
+      renderCards(release);
     } catch {
       if (versionLabel) {
         versionLabel.textContent = "Could not load release info.";
       }
-      cards.forEach((card) => {
-        card.href = RELEASES_URL;
-      });
     }
   }
 
@@ -228,6 +277,26 @@ import Layout from "../layouts/Layout.astro";
   .card-format {
     font-size: 0.8rem;
     color: var(--fg-dim);
+  }
+
+  .card-status {
+    font-size: 0.75rem;
+    color: var(--fg-muted);
+  }
+
+  .card-status:empty {
+    display: none;
+  }
+
+  .download-card--unavailable {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .download-card--unavailable:hover {
+    background: rgba(255, 255, 255, 0.02);
+    border-color: var(--border);
+    transform: none;
   }
 
   /* ── Releases link ── */

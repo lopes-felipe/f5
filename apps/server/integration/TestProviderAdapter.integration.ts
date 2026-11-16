@@ -20,12 +20,16 @@ import {
 } from "../src/provider/Errors.ts";
 import type {
   ProviderAdapterShape,
+  ProviderAdapterSessionStartInput,
   ProviderThreadSnapshot,
   ProviderThreadTurnSnapshot,
 } from "../src/provider/Services/ProviderAdapter.ts";
 
 export interface TestTurnResponse {
+  /** Fixtures spanning sessions/restarts can supply globally unique provider turn ids. */
+  readonly turnId?: TurnId;
   readonly events: ReadonlyArray<FixtureProviderRuntimeEvent>;
+  readonly beforeEvent?: (index: number) => Effect.Effect<void>;
   readonly mutateWorkspace?: (input: {
     readonly cwd: string;
     readonly turnCount: number;
@@ -49,6 +53,7 @@ export type FixtureProviderRuntimeEvent = {
 export type LegacyProviderRuntimeEvent = FixtureProviderRuntimeEvent;
 
 interface SessionState {
+  readonly eventIdentity: ProviderAdapterSessionStartInput["mcpEventIdentity"];
   readonly session: ProviderSession;
   snapshot: ProviderThreadSnapshot;
   turnCount: number;
@@ -295,6 +300,7 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
         };
 
         sessions.set(threadId, {
+          eventIdentity: input.mcpEventIdentity,
           session,
           snapshot: {
             threadId,
@@ -317,8 +323,6 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
 
         state.turnCount += 1;
         const turnCount = state.turnCount;
-        const turnId = TurnId.makeUnsafe(`turn-${turnCount}`);
-
         const response = state.queuedResponses.shift();
         if (!response) {
           return yield* new ProviderAdapterValidationError({
@@ -327,12 +331,15 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
             issue: `No queued turn response for thread ${input.threadId}.`,
           });
         }
+        const turnId = response.turnId ?? TurnId.makeUnsafe(`turn-${turnCount}`);
 
         const assistantDeltas: string[] = [];
         const deferredTurnCompletedEvents: ProviderRuntimeEvent[] = [];
-        for (const fixtureEvent of response.events) {
+        for (const [index, fixtureEvent] of response.events.entries()) {
+          if (response.beforeEvent) yield* response.beforeEvent(index);
           const rawEvent: Record<string, unknown> = {
             ...(fixtureEvent as Record<string, unknown>),
+            ...state.eventIdentity,
             eventId: randomUUID(),
             provider,
             sessionId: RuntimeSessionId.makeUnsafe(String(input.threadId)),
@@ -390,6 +397,7 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
 
         if (deferredTurnCompletedEvents.length === 0) {
           yield* emit({
+            ...state.eventIdentity,
             type: "turn.completed",
             eventId: EventId.makeUnsafe(randomUUID()),
             provider,

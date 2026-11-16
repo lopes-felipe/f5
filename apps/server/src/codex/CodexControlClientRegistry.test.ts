@@ -1,11 +1,20 @@
+import { ServerSettingsService } from "../serverSettings.ts";
+import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import { ProjectionProjectRepositoryLive } from "../persistence/Layers/ProjectionProjects.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 import * as OS from "node:os";
 import { fallbackDefaultProfile } from "../profiles/ProfileRegistryStore";
-import { Cause, Effect, Layer } from "effect";
+import { Cause, Effect, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ProjectId } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProjectId,
+  ServerSettings,
+} from "@t3tools/contracts";
 import { ServerConfig, type ServerConfigShape } from "../config.ts";
 import { CodexControlClient } from "./CodexControlClient.ts";
 import {
@@ -135,6 +144,187 @@ describe("CodexControlClientRegistry", () => {
     expect(result.second).toBe(result.first);
     expect(result.differentProject).not.toBe(result.first);
     expect(result.differentVersion).not.toBe(result.first);
+  });
+
+  it("keeps same-home accounts separate, uses the project cwd, and retires stale execution identities", async () => {
+    const work = ProviderInstanceId.make("work"),
+      personal = ProviderInstanceId.make("personal");
+    const projectId = ProjectId.makeUnsafe("identity-project");
+    const clients: CodexControlClient[] = [];
+    const create = vi.spyOn(CodexControlClient, "create").mockImplementation(async () => {
+      const client = makeFakeControlClient(`client-${clients.length}`);
+      clients.push(client);
+      return client;
+    });
+    const settingsLayer = ServerSettingsService.layerTest(
+      Schema.decodeUnknownSync(ServerSettings)({
+        providerInstances: {
+          [work]: {
+            driver: ProviderDriverKind.make("codex"),
+            config: { homePath: "/tmp/same-home", binaryPath: "codex" },
+            environment: [{ name: "ACCOUNT_LABEL", value: "work" }],
+          },
+          [personal]: {
+            driver: ProviderDriverKind.make("codex"),
+            config: { homePath: "/tmp/same-home", binaryPath: "codex" },
+            environment: [{ name: "ACCOUNT_LABEL", value: "personal" }],
+          },
+        },
+      }),
+    );
+    const projectLayer = ProjectionProjectRepositoryLive.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const layer = CodexControlClientRegistryLive.pipe(
+      Layer.provideMerge(settingsLayer),
+      Layer.provideMerge(projectLayer),
+      Layer.provideMerge(Layer.succeed(ServerConfig, makeServerConfigStub())),
+    );
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const registry = yield* CodexControlClientRegistry;
+          const settings = yield* ServerSettingsService;
+          const projects = yield* ProjectionProjectRepository;
+          const project = {
+            projectId,
+            title: "MCP project",
+            workspaceRoot: "/tmp/project-a",
+            defaultModel: null,
+            scripts: [],
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            deletedAt: null,
+          };
+          yield* projects.upsert(project);
+          const input = { projectId, instanceId: work, mcpEffectiveConfigVersion: "v1" };
+          const first = yield* registry.getAdminClient(input);
+          const other = yield* registry.getAdminClient({ ...input, instanceId: personal });
+          expect(first).not.toBe(other);
+          expect(create.mock.calls[0]?.[0]).toMatchObject({
+            cwd: "/tmp/project-a",
+            homePath: "/tmp/same-home",
+            processEnvironment: { ACCOUNT_LABEL: "work" },
+          });
+          expect(create.mock.calls[1]?.[0]).toMatchObject({
+            processEnvironment: { ACCOUNT_LABEL: "personal" },
+          });
+          // Cosmetic edits keep the connection; environment edits replace only this instance.
+          const current = yield* settings.getSettings;
+          yield* settings.updateSettings({
+            providerInstances: {
+              ...current.providerInstances,
+              [work]: { ...current.providerInstances[work]!, displayName: "Work renamed" },
+            },
+          });
+          expect(yield* registry.getAdminClient(input)).toBe(first);
+          const renamed = yield* settings.getSettings;
+          yield* settings.updateSettings({
+            providerInstances: {
+              ...renamed.providerInstances,
+              [work]: {
+                ...renamed.providerInstances[work]!,
+                environment: [{ name: "ACCOUNT_LABEL", value: "work-new" }],
+              },
+            },
+          });
+          const changed = yield* registry.getAdminClient(input);
+          expect(changed).not.toBe(first);
+          expect(first.close).toHaveBeenCalled();
+          expect(other.close).not.toHaveBeenCalled();
+          const lease = yield* registry.acquireOauthClient({ ...input, serverName: "docs" });
+          yield* projects.upsert({ ...project, workspaceRoot: "/tmp/project-b" });
+          const moved = yield* registry.getAdminClient(input);
+          expect(moved).not.toBe(changed);
+          expect(lease.client.closeAndWait).toHaveBeenCalled();
+          expect(changed.close).toHaveBeenCalled();
+          expect(create.mock.calls.at(-1)?.[0]).toMatchObject({ cwd: "/tmp/project-b" });
+          expect(yield* registry.hasOauthLease({ ...input, serverName: "docs" })).toBe(false);
+        }).pipe(Effect.provide(layer)),
+      ),
+    );
+  });
+
+  it("keeps identity monitoring alive after an OAuth cleanup rejects", async () => {
+    const instanceId = ProviderInstanceId.make("monitor-work");
+    const projectId = ProjectId.makeUnsafe("monitor-project");
+    vi.spyOn(CodexControlClient, "create").mockImplementation(async () =>
+      makeFakeControlClient("monitor"),
+    );
+    const layer = CodexControlClientRegistryLive.pipe(
+      Layer.provideMerge(
+        ServerSettingsService.layerTest(
+          Schema.decodeUnknownSync(ServerSettings)({
+            providerInstances: {
+              [instanceId]: { driver: ProviderDriverKind.make("codex"), config: {} },
+            },
+          }),
+        ),
+      ),
+      Layer.provideMerge(
+        ProjectionProjectRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+      ),
+      Layer.provideMerge(Layer.succeed(ServerConfig, makeServerConfigStub())),
+    );
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const registry = yield* CodexControlClientRegistry;
+          const settings = yield* ServerSettingsService;
+          const projects = yield* ProjectionProjectRepository;
+          const project = {
+            projectId,
+            title: "Monitor",
+            workspaceRoot: "/tmp/monitor-a",
+            defaultModel: null,
+            scripts: [],
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            deletedAt: null,
+          };
+          yield* projects.upsert(project);
+          const input = { projectId, instanceId, mcpEffectiveConfigVersion: "v1" };
+          const lease = yield* registry.acquireOauthClient({ ...input, serverName: "docs" });
+          vi.mocked(lease.client.closeAndWait).mockRejectedValueOnce(
+            new Error("simulated cleanup rejection"),
+          );
+          // A settings event causes the cleanup defect; later events must still be handled.
+          const current = yield* settings.getSettings;
+          yield* settings.updateSettings({
+            providerInstances: {
+              ...current.providerInstances,
+              [instanceId]: {
+                ...current.providerInstances[instanceId]!,
+                environment: [{ name: "ACCOUNT_LABEL", value: "changed" }],
+              },
+            },
+          });
+          yield* Effect.promise(() =>
+            vi.waitFor(() => expect(lease.client.closeAndWait).toHaveBeenCalled()),
+          );
+          const afterFailure = yield* registry.getAdminClient(input);
+          const changed = yield* settings.getSettings;
+          yield* settings.updateSettings({
+            providerInstances: {
+              ...changed.providerInstances,
+              [instanceId]: {
+                ...changed.providerInstances[instanceId]!,
+                environment: [{ name: "ACCOUNT_LABEL", value: "changed-again" }],
+              },
+            },
+          });
+          yield* Effect.promise(() =>
+            vi.waitFor(() => expect(afterFailure.close).toHaveBeenCalled()),
+          );
+          const beforeMove = yield* registry.getAdminClient(input);
+          yield* projects.upsert({ ...project, workspaceRoot: "/tmp/monitor-b" });
+          // Project changes have no settings event and exercise the periodic watcher.
+          yield* Effect.promise(() =>
+            vi.waitFor(() => expect(beforeMove.close).toHaveBeenCalled(), { timeout: 3500 }),
+          );
+        }).pipe(Effect.provide(layer)),
+      ),
+    );
   });
 
   it("includes MCP OAuth callback port in the Codex control environment", () => {

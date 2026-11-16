@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
+import { fieldSurfaceClassName } from "../ui/input";
 
 /** Secondary workflow settings, collapsed until needed. */
 export function WorkflowOptions(props: {
@@ -39,6 +40,7 @@ export function WorkflowOptions(props: {
 
 /** A labelled checkbox with a one-line explanation. */
 export function WorkflowOptionCheckbox(props: {
+  readonly disabled?: boolean;
   readonly checked: boolean;
   readonly onCheckedChange: (checked: boolean) => void;
   readonly label: string;
@@ -47,6 +49,7 @@ export function WorkflowOptionCheckbox(props: {
   return (
     <label className="flex items-start gap-2.5">
       <Checkbox
+        disabled={props.disabled}
         checked={props.checked}
         onCheckedChange={(checked) => props.onCheckedChange(checked === true)}
         className="mt-0.5"
@@ -74,5 +77,4 @@ export function WorkflowOptionField(props: {
   );
 }
 
-export const WORKFLOW_OPTION_INPUT_CLASS_NAME =
-  "h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-colors focus-visible:border-ring/60 focus-visible:ring-2 focus-visible:ring-ring/20";
+export const WORKFLOW_OPTION_INPUT_CLASS_NAME = `${fieldSurfaceClassName} h-9 w-full px-3 text-sm`;

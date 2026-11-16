@@ -455,9 +455,15 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       return;
     }
 
+    // Dev commands inherit arbitrary flags unless the caller chooses an environment mode.
+    const envModeArgs = input.turboArgs.some(
+      (arg) => arg === "--env-mode" || arg.startsWith("--env-mode="),
+    )
+      ? []
+      : ["--env-mode=loose"];
     const child = yield* ChildProcess.make(
       "turbo",
-      [...MODE_ARGS[input.mode], ...input.turboArgs],
+      [...MODE_ARGS[input.mode], ...envModeArgs, ...input.turboArgs],
       {
         stdin: "inherit",
         stdout: "inherit",

@@ -3,12 +3,16 @@ import os from "node:os";
 import path from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Metric } from "effect";
+import { Effect, Fiber, Metric, Tracer } from "effect";
 
 import {
+  eventLoopDelay,
+  recordEventLoopStall,
+  recentEventLoopStalls,
   increment,
   makeMetricSnapshotWriter,
   previewRecordingFramesDroppedTotal,
+  sampleEventLoopDelay,
   serializeMetricSnapshot,
   withMetrics,
 } from "./Metrics.ts";
@@ -164,6 +168,26 @@ describe("metric snapshot writer", () => {
   );
 });
 
+describe("event loop delay sampler", () => {
+  it.live("records how long a blocked event loop delays the sampling timer", () =>
+    Effect.gen(function* () {
+      const before = yield* Metric.value(eventLoopDelay);
+      const sampler = yield* Effect.forkChild(sampleEventLoopDelay);
+      yield* Effect.sleep("20 millis");
+      // Block synchronously so the sampler's timer fires late.
+      const blockedUntil = performance.now() + 400;
+      while (performance.now() < blockedUntil) {}
+      yield* Effect.sleep("300 millis");
+      yield* Fiber.interrupt(sampler);
+
+      // The timer is process-global, so compare against this test's starting state.
+      const after = yield* Metric.value(eventLoopDelay);
+      assert.isAbove(after.count, before.count);
+      assert.isAtLeast(after.sum - before.sum, 100);
+    }),
+  );
+});
+
 describe("preview metrics", () => {
   it.effect("records dropped preview recording frames in the server metrics stream", () =>
     Effect.gen(function* () {
@@ -177,3 +201,30 @@ describe("preview metrics", () => {
     }),
   );
 });
+
+it.effect(
+  "records actual stall duration on independent spans and bounds its retained history",
+  () =>
+    Effect.gen(function* () {
+      const spans: Array<Parameters<Tracer.Tracer["span"]>[0]> = [];
+      const tracer = Tracer.make({
+        span(options) {
+          spans.push(options);
+          return new Tracer.NativeSpan(options);
+        },
+      });
+      yield* recordEventLoopStall(49).pipe(Effect.provideService(Tracer.Tracer, tracer));
+      assert.equal(spans.length, 0);
+      yield* Effect.forEach(
+        Array.from({ length: 150 }, (_, index) => index + 50),
+        (duration) =>
+          recordEventLoopStall(duration).pipe(Effect.provideService(Tracer.Tracer, tracer)),
+        { discard: true },
+      );
+      assert.equal(spans.length, 150);
+      assert.equal(spans[0]?.name, "event-loop.stall");
+      assert.isUndefined(spans[0]?.parent);
+      assert.equal(recentEventLoopStalls().length, 128);
+      assert.equal(recentEventLoopStalls().at(-1)?.durationMs, 199);
+    }),
+);

@@ -53,6 +53,36 @@ function harness() {
 }
 
 describe("Codex rewind fork fallback", () => {
+  it.each(["unarchive", "fork"] as const)(
+    "only locks the session when a %s transport failure may have created an orphan",
+    async (failure) => {
+      const { manager, context, send } = harness();
+      context.revertUnsupported = context.rollbackUnsupported = true;
+      send
+        .mockResolvedValueOnce(page("keep", "drop"))
+        .mockRejectedValueOnce(
+          new CodexJsonRpcError("thread/fork", -32600, "session old is archived"),
+        );
+      if (failure === "fork") send.mockResolvedValueOnce({});
+      send.mockRejectedValueOnce(new Error("transport lost"));
+      await expect(manager.rollbackThread(id, 1, "drop")).rejects.toThrow("transport lost");
+      expect(context.unsettledFork).toBe(failure === "fork");
+      expect(send.mock.calls.filter((call) => call[1] === "thread/fork")).toHaveLength(
+        failure === "fork" ? 2 : 1,
+      );
+      if (failure === "unarchive") {
+        send
+          .mockResolvedValueOnce(page("keep", "drop"))
+          .mockResolvedValueOnce({ thread: { id: "forked" } })
+          .mockResolvedValueOnce(page("keep"))
+          .mockResolvedValueOnce({})
+          .mockResolvedValueOnce(page("keep"));
+        await expect(manager.rollbackThread(id, 1, "drop")).resolves.toMatchObject({
+          threadId: "forked",
+        });
+      }
+    },
+  );
   it("selects strategy per thread and matches only the pinned legacy rejection", () => {
     const flags = { legacyHistoryThreadIds: new Set(["legacy"]) };
     expect(selectCodexRewindStrategy(flags, "legacy")).toBe("rollback");
@@ -95,6 +125,7 @@ describe("Codex rewind fork fallback", () => {
       expect(send.mock.calls.at(-1)?.[1]).toBe("thread/turns/list");
     });
     expect(await manager.rollbackThread(id, 1, "drop", persist)).toEqual({
+      historyCoverage: "complete",
       threadId: "forked",
       turns: [{ id: "keep", items: [] }],
     });
@@ -146,6 +177,7 @@ describe("Codex rewind fork fallback", () => {
       });
       if (scenario === "valid") {
         expect(await manager.rollbackThread(id, 1, "drop", persist)).toEqual({
+          historyCoverage: "complete",
           threadId: "reloaded",
           turns: [{ id: "keep", items: [] }],
         });

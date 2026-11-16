@@ -1,12 +1,111 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  chatMarkdownUrlTransform,
+  collectMarkdownLinkHrefs,
+  isMarkdownFileLinkLabel,
+  resolveMarkdownFileEditorTarget,
   resolveMarkdownFileLinkMeta,
   resolveMarkdownFileLinkTarget,
   rewriteMarkdownFileUriHref,
 } from "./markdown-links";
 
+describe("collectMarkdownLinkHrefs", () => {
+  // The regex the scanner replaced; it is quadratic on unterminated brackets.
+  const reference = (text: string) =>
+    [...text.matchAll(/\[(?:\\.|[^\]\\])*\]\(\s*(<[^>]+>|[^()\s]+)[^)]*\)/g)].flatMap((match) => {
+      const raw = match[1];
+      if (!raw) return [];
+      return [raw.startsWith("<") && raw.endsWith(">") ? raw.slice(1, -1) : raw];
+    });
+
+  it.each([
+    "See [app.ts](./app.ts) and [b](src/b.ts 'title').",
+    "[a](<foo)bar> invalid [b](ok)",
+    "[a](foo \"mixed title') [b](< >)",
+    "[a](<one [b](two)> invalid [c](ok)",
+    "[[[nested](src/main.ts) [unfinished",
+    "[outer [inner] invalid [valid](src/main.ts)",
+    "[bad](missing title [valid](src/main.ts)",
+    "```text\n[link](src/main.ts)\n```",
+    "[empty]() [valid](src/main.ts 'title')",
+    '[angle](<src/My File.ts> "title")',
+    "[esc \\] still label](a.ts) \\\\[x](b.ts) [y\\](c.ts)",
+    "[a](x [b](y) [c]( \n <d e>\n tail) [f](g(h)i)",
+    "[a](<multi\nline>) [b](<>) [c](<) [d]( ) []()",
+  ])("matches the previous regex on %j", (text) => {
+    expect(collectMarkdownLinkHrefs(text)).toEqual(reference(text));
+  });
+
+  it("matches the previous regex on generated bracket soup", () => {
+    const alphabet = ["[", "]", "(", ")", "<", ">", "\\", " ", "\n", "a", "'", '"'];
+    let seed = 7;
+    const next = () => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31);
+    for (let round = 0; round < 2_000; round += 1) {
+      const text = Array.from({ length: 1 + (next() % 24) }, () => alphabet[next() % 12]).join("");
+      expect(collectMarkdownLinkHrefs(text), JSON.stringify(text)).toEqual(reference(text));
+    }
+  });
+
+  it("stays linear on unterminated brackets and destinations", () => {
+    const started = performance.now();
+    for (const text of [
+      "[".repeat(32_000),
+      "[](a".repeat(16_000),
+      "[](<a".repeat(16_000),
+      "[x](https://e.com/".repeat(8_000),
+      "[unfinished item\n".repeat(8_000),
+    ])
+      expect(collectMarkdownLinkHrefs(text)).toEqual([]);
+    // The regex took about 12 seconds for these inputs.
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});
+
 describe("resolveMarkdownFileLinkTarget", () => {
+  it.each([
+    ["app/routes/posts.$postId.tsx", "app/routes/posts.$postId.tsx"],
+    ["(group)/[id]/+page.svelte:12", "(group)/[id]/+page.svelte:12"],
+    ["pages/posts/%5Bid%5D.tsx", "pages/posts/[id].tsx"],
+    ["@scope/pkg", "@scope/pkg"],
+    ["@scope/", "@scope/"],
+    ["+page.svelte", "+page.svelte"],
+    ["[id].tsx", "[id].tsx"],
+    ["$postId.tsx", "$postId.tsx"],
+    ["docs/My(draft).md", "docs/My(draft).md"],
+  ])("resolves routing punctuation in %s", (href, path) => {
+    expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBe("/repo/" + path);
+  });
+
+  it.each(["foo/", "foo /", "docs/My Folder /"])(
+    "preserves existing folder matching for %s",
+    (href) => {
+      expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBe("/repo/" + href);
+    },
+  );
+
+  it.each(["線性代數/考試.pdf", "a b.md", "a/b c.ts", "README (copy).md"])(
+    "leaves other relative filename expansions out of scope: %s",
+    (href) => {
+      expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBeNull();
+    },
+  );
+
+  it.each(["me@example.com", "foo(bar)", "$HOME", "patches", "TODO:12"])(
+    "does not treat %s as a file",
+    (href) => {
+      expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBeNull();
+    },
+  );
+
+  it.each([
+    "//attacker/share/a.png",
+    String.raw`\\attacker\share\a.png`,
+    String.raw`/\attacker/share/a.png`,
+    "file://attacker/share/a.png",
+  ])("does not turn a foreign share into a file chip: %s", (href) => {
+    expect(resolveMarkdownFileLinkTarget(href, "C:\\repo")).toBeNull();
+  });
   it("resolves absolute posix file paths", () => {
     expect(resolveMarkdownFileLinkTarget("/Users/julius/project/AGENTS.md")).toBe(
       "/Users/julius/project/AGENTS.md",
@@ -56,6 +155,31 @@ describe("resolveMarkdownFileLinkTarget", () => {
 
   it("does not treat app routes as file links", () => {
     expect(resolveMarkdownFileLinkTarget("/chat/settings")).toBeNull();
+  });
+});
+
+describe("isMarkdownFileLinkLabel", () => {
+  it.each([
+    ["validates the input", "/repo/src/example.ts:12", false],
+    ["read src/example.ts", "/repo/src/example.ts:12", false],
+    ["example.ts?why this matters", "/repo/src/example.ts", false],
+    ["example.ts", "/repo/src/example.ts:12", true],
+    ["example.ts:12", "/repo/src/example.ts:12", true],
+    ["example.ts:99", "/repo/src/example.ts:12", false],
+    ["example.ts:12:2", "/repo/src/example.ts:12:2", true],
+    ["example.ts:12:3", "/repo/src/example.ts:12:2", false],
+    ["example.ts:12", "/repo/src/example.ts", false],
+    ["src/example.ts:12", "/repo/src/example.ts:12", true],
+    ["./src/example.ts", "/repo/src/example.ts", true],
+    ["/repo/src/example.ts", "/repo/src/example.ts", true],
+    ["src/", "/home/me/project/src/", true],
+    ["EXAMPLE.TS", "C:/repo/src/example.ts:12", true],
+    ["file name.ts", "file:///repo/file%20name.ts", true],
+    ["", "/repo/src/example.ts", true],
+  ])("classifies %s for %s", (label, href, expected) => {
+    const meta = resolveMarkdownFileLinkMeta(href);
+    expect(meta).not.toBeNull();
+    expect(isMarkdownFileLinkLabel(label, meta!)).toBe(expected);
   });
 });
 
@@ -144,5 +268,59 @@ describe("rewriteMarkdownFileUriHref", () => {
     expect(rewriteMarkdownFileUriHref("file:///C:/Users/julius/project/main.ts")).toBe(
       "C:/Users/julius/project/main.ts",
     );
+  });
+});
+
+describe("resolveMarkdownFileEditorTarget", () => {
+  const cwd = "/repo/project";
+  const metaFor = (href: string) => resolveMarkdownFileLinkMeta(href, cwd)!;
+
+  it("opens the workspace file a bare file name chip names, keeping line and column", async () => {
+    const lookups: string[] = [];
+    const target = await resolveMarkdownFileEditorTarget(metaFor("main.ts:12:4"), cwd, (name) => {
+      lookups.push(name);
+      return Promise.resolve("src/app/main.ts");
+    });
+
+    expect(lookups).toEqual(["main.ts"]);
+    expect(target).toBe("/repo/project/src/app/main.ts:12:4");
+  });
+
+  it("keeps the chip target when the root file exists or the name is ambiguous", async () => {
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("main.ts:3"), cwd, () => Promise.resolve("main.ts")),
+    ).resolves.toBe("/repo/project/main.ts:3");
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("main.ts"), cwd, () => Promise.resolve(null)),
+    ).resolves.toBe("/repo/project/main.ts");
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("main.ts"), cwd, () =>
+        Promise.reject(new Error("index unavailable")),
+      ),
+    ).resolves.toBe("/repo/project/main.ts");
+  });
+
+  it("does not look up chips that already name a folder or sit outside the workspace", async () => {
+    const lookup = () => Promise.reject(new Error("unexpected lookup"));
+
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("src/main.ts:2"), cwd, lookup),
+    ).resolves.toBe("/repo/project/src/main.ts:2");
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("/Users/me/notes.md"), cwd, lookup),
+    ).resolves.toBe("/Users/me/notes.md");
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("main.ts"), undefined, lookup),
+    ).resolves.toBe("/repo/project/main.ts");
+  });
+});
+
+describe("chatMarkdownUrlTransform", () => {
+  it("keeps bare thread references and strips other app links", () => {
+    expect(chatMarkdownUrlTransform("f5://thread/thread-1")).toBe("f5://thread/thread-1");
+    expect(chatMarkdownUrlTransform("f5-dev://thread/thread-1")).toBe("f5-dev://thread/thread-1");
+    expect(chatMarkdownUrlTransform("f5://thread/thread-1?prompt=hi")).toBe("");
+    expect(chatMarkdownUrlTransform("f5://thread/settings")).toBe("");
+    expect(chatMarkdownUrlTransform("f5://new?prompt=hi")).toBe("");
   });
 });
