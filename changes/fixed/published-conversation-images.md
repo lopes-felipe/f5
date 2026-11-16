@@ -1,0 +1,1 @@
+- Publish local screenshots as durable conversation attachments with the image_publish tool, and distinguish inaccessible image paths and failed loads from loading.

@@ -68,6 +68,7 @@ export function ChatAssetImage({
   const anchor = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(false);
   const [gallery, setGallery] = useState<AssetGalleryState | null>(null);
+  const [failedUrl, setFailedUrl] = useState<string>();
   useEffect(() => {
     if (!anchor.current) return;
     const observer = new IntersectionObserver((entries) => {
@@ -106,9 +107,15 @@ export function ChatAssetImage({
     refetchInterval: visible ? 25 * 60 * 1000 : false,
   });
   const url = remote ? (loadRemoteImagesInChat ? src : undefined) : grant.data?.url;
+  const error =
+    visible && !remote && !target
+      ? "Image outside available directories"
+      : grant.isError || (url && failedUrl === url)
+        ? "Image unavailable"
+        : undefined;
   return (
     <span ref={anchor} className="inline-block min-h-12 min-w-24 max-w-full">
-      {visible && url ? (
+      {visible && url && !error ? (
         <button
           type="button"
           aria-label={`Preview ${alt || "image"}`}
@@ -145,18 +152,19 @@ export function ChatAssetImage({
                 : undefined
             }
             loading="lazy"
+            onError={() => setFailedUrl(url)}
             referrerPolicy="no-referrer"
             className="max-h-96 max-w-full rounded object-contain"
           />
         </button>
       ) : (
-        <span className="text-muted-foreground">
+        <span className="text-muted-foreground" role={error ? "alert" : "status"}>
           {alt || "Image"}
           {remote && !loadRemoteImagesInChat
             ? " (remote images disabled)"
-            : grant.isError
-              ? " (unavailable)"
-              : ""}
+            : error
+              ? " (" + error + ")"
+              : " (loading…)"}
         </span>
       )}
       {gallery && (
