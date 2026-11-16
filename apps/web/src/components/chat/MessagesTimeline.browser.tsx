@@ -1241,7 +1241,7 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
-  it("keeps follow disabled by default even after reaching the bottom", async () => {
+  it("automatically follows new content after reaching the bottom", async () => {
     const initialEntries = makeOverflowEntries(16);
     let api: TimelineHarnessApi | null = null;
     const host = document.createElement("div");
@@ -1260,14 +1260,16 @@ describe("MessagesTimeline (LegendList)", () => {
     try {
       const node = await waitForScrollContainer(host);
       await waitForTimelineLayout(() => node);
-      const before = node.scrollTop;
+      const before = node.scrollHeight;
       api!.setEntries([
         ...initialEntries,
         makeAssistantEntry("default-off-tail", "New reply\n\n".repeat(30), 120),
       ]);
       await waitForTimelineLayout(() => node);
-      expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
-      expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeGreaterThan(40);
+      await vi.waitFor(() => {
+        expect(node.scrollHeight).toBeGreaterThan(before);
+        expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeLessThan(40);
+      });
     } finally {
       await screen.unmount();
       host.remove();
@@ -1556,8 +1558,7 @@ describe("MessagesTimeline (LegendList)", () => {
       node.dispatchEvent(new Event("scroll"));
       await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(true));
       const beforeContinuedStream = node.scrollHeight;
-      // Reaching the bottom does not enable following; the reader opts in.
-      api!.setAutoFollow(true);
+      // Reaching the bottom resumes following without an explicit opt-in.
       api!.setEntries([
         ...initialEntries.slice(0, -1),
         makeAssistantEntry(

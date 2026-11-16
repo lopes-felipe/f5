@@ -583,6 +583,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     Readonly<Record<string, ChangedFilesPresentation>>
   >({});
   const isAtEndRef = useRef(restoredAnchor?.atEnd ?? true);
+  const lastTimelineScrollTopRef = useRef<number | null>(null);
   // Physical position drives the rail; following intent can stay enabled during layout changes.
   const [railIsAtEnd, setRailIsAtEnd] = useState(false);
   const liveFollowEnabled = autoFollow;
@@ -927,17 +928,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       // LegendList's public `isAtEnd` flag can lag behind passive layout
       // changes, but its exposed scroll metrics stay current.
       const node = listRef.current?.getScrollableNode?.();
+      if (node instanceof HTMLElement && lastTimelineScrollTopRef.current === null) {
+        lastTimelineScrollTopRef.current = node.scrollTop;
+      }
       const isAtEnd =
         node instanceof HTMLElement && node.clientHeight > 0
           ? node.scrollHeight - node.scrollTop - node.clientHeight < TIMELINE_AT_END_PX
           : state.contentLength < state.scrollLength || timelineIsAtEnd(state);
       setRailIsAtEnd(isAtEnd);
+      // Resume when the reader reaches the bottom; scrolling up suspends following.
+      if (isAtEnd && !liveFollowEnabledRef.current) {
+        liveFollowEnabledRef.current = true;
+        onAutoFollowChange?.(true);
+      }
       // Content growth can briefly outrun LegendList's layout correction.
-      // Reaching the bottom never enables following: only the explicit switch does.
       isAtEndRef.current = isAtEnd || liveFollowEnabledRef.current;
       onIsAtEndChange(isAtEndRef.current);
     }
-  }, [listRef, onIsAtEndChange]);
+  }, [listRef, onAutoFollowChange, onIsAtEndChange]);
 
   const measureTurnRailGutter = useCallback(() => {
     const node = listRef.current?.getScrollableNode?.();
@@ -992,8 +1000,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
   }, [onAutoFollowChange, onLeaveEnd]);
 
-  // Following is an explicit intent, independent of LegendList's transient
-  // at-end measurement while a tool result or diff changes height.
+  // Once following resumes, keep that intent through transient at-end
+  // measurements while a tool result or diff changes height.
   const pinTimelineToEnd = useCallback(() => {
     if (!liveFollowEnabledRef.current && !disclosurePinsEndRef.current) return;
     const node = listRef.current?.getScrollableNode?.();
@@ -1153,9 +1161,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [threadId, hasMessages, listRef]);
 
   const handleScroll = useCallback(() => {
+    const node = listRef.current?.getScrollableNode?.();
+    if (node instanceof HTMLElement) {
+      const previousTop = lastTimelineScrollTopRef.current;
+      const aboveEnd = node.scrollHeight - node.scrollTop - node.clientHeight >= TIMELINE_AT_END_PX;
+      // Scrollbars and programmatic history navigation need the same pause as
+      // wheel/touch gestures. Content growth alone keeps the same scrollTop.
+      if (aboveEnd && previousTop !== null && node.scrollTop < previousTop - 1) leaveEnd();
+      lastTimelineScrollTopRef.current = node.scrollTop;
+    }
     syncIsAtEndFromListState();
     if (!isAtEndRef.current && pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
-  }, [requestOlderHistory, syncIsAtEndFromListState]);
+  }, [leaveEnd, listRef, requestOlderHistory, syncIsAtEndFromListState]);
 
   // Follow measured geometry, including updates within an existing work group.
   // Settle two frames after the last resize because tool output can render late.

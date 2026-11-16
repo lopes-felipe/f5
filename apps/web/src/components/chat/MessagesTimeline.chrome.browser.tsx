@@ -319,12 +319,11 @@ describe("JumpToLatestButton", () => {
   });
   const dot = () => document.querySelector('[data-slot="jump-to-latest-new-content"]');
 
-  it("places the new-content indicator to the right of the follow toggle", async () => {
+  it("places the new-content indicator to the right of the jump button", async () => {
     const props = {
       shortcutLabel: null,
       onJump: () => {},
       following: false,
-      onFollowingChange: () => {},
       isAtEnd: false,
     };
     const screen = await render(<JumpToLatestButton {...props} tail={tail()} />);
@@ -333,10 +332,12 @@ describe("JumpToLatestButton", () => {
         <JumpToLatestButton {...props} tail={tail({ rowId: "new-message" })} />,
       );
       await vi.waitFor(() => expect(dot()).not.toBeNull());
-      const toggle = document.querySelector('[role="switch"]');
-      expect(toggle).not.toBeNull();
-      expect(dot()!.getBoundingClientRect().left).toBeGreaterThan(
-        toggle!.getBoundingClientRect().right,
+      expect(document.querySelector('[role="switch"]')).toBeNull();
+      const button = document.querySelector("button");
+      expect(button).not.toBeNull();
+      const indicator = dot()!.getBoundingClientRect();
+      expect(indicator.left + indicator.width / 2).toBeGreaterThanOrEqual(
+        button!.getBoundingClientRect().right,
       );
     } finally {
       await screen.unmount();

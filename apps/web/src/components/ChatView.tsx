@@ -1222,14 +1222,6 @@ export default memo(function ChatView({
     scrollToEnd,
     threadId,
   ]);
-  const handleFollowingChange = useCallback(
-    (enabled: boolean) => {
-      setAutoFollow(enabled);
-      if (enabled) jumpToLatest();
-      else cancelEndScroll();
-    },
-    [cancelEndScroll, jumpToLatest],
-  );
   const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(null);
 
   const terminalState = useTerminalStateStore((state) =>
@@ -8335,7 +8327,6 @@ export default memo(function ChatView({
                     shortcutLabel={scrollToBottomShortcutLabel ?? null}
                     onJump={jumpToLatest}
                     following={autoFollow}
-                    onFollowingChange={handleFollowingChange}
                     isAtEnd={!showScrollToBottom}
                     jumping={isJumpingToLatest}
                   />

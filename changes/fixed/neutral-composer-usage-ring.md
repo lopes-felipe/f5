@@ -1,0 +1,1 @@
+- Match the weekly usage indicator's normal color to the context ring beside Send.

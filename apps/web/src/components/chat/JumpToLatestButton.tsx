@@ -4,8 +4,6 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { ChatMessage } from "../../types";
 import { messageTextRevision } from "../../lib/streamingTextRevision";
 import { Kbd } from "../ui/kbd";
-import { Switch } from "../ui/switch";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { classifyTimelineTailChange, type TimelineTailSnapshot } from "./MessagesTimeline.logic";
 import { CHAT_CONTENT_COLUMN_CLASS_NAME } from "./chatLayout";
 
@@ -34,7 +32,6 @@ export function JumpToLatestButton(props: {
   shortcutLabel: string | null;
   onJump: () => void;
   following?: boolean;
-  onFollowingChange?: (following: boolean) => void;
   isAtEnd?: boolean;
   jumping?: boolean;
 }) {
@@ -108,25 +105,6 @@ export function JumpToLatestButton(props: {
             <Kbd className="h-4 min-w-4 px-1 text-2xs">{props.shortcutLabel}</Kbd>
           ) : null}
         </button>
-        {props.onFollowingChange ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <span className="inline-flex shrink-0 items-center border-l border-border px-1.5" />
-              }
-            >
-              <Switch
-                aria-label="Follow new messages"
-                checked={props.following ?? false}
-                onCheckedChange={props.onFollowingChange}
-                className="[--thumb-size:--spacing(3)] sm:[--thumb-size:--spacing(3)]"
-              />
-            </TooltipTrigger>
-            <TooltipPopup side="top">
-              Follow new messages. Scrolling up turns this off.
-            </TooltipPopup>
-          </Tooltip>
-        ) : null}
         {hasNewContent ? (
           <span
             aria-hidden="true"

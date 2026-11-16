@@ -1,0 +1,1 @@
+- Center the usage speedometer within its composer button without inheriting negative SVG margins.

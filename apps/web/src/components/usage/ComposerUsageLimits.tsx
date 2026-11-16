@@ -1,11 +1,10 @@
 import type { ThreadId } from "@t3tools/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "@tanstack/react-router";
-import { ChevronUpIcon, ExternalLinkIcon, PinIcon, PinOffIcon, RefreshCwIcon } from "lucide-react";
+import { ExternalLinkIcon, RefreshCwIcon } from "lucide-react";
 import { useEffect, useState, type ComponentType } from "react";
 
 import { useActiveComposerSelection } from "../../activeComposerSelection";
-import { updateAppSettings, useAppSettingsSelector } from "../../appSettings";
 import {
   forceRefreshUsageAccounts,
   usageCachedAccountsQueryOptions,
@@ -17,7 +16,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { providerLabel } from "./format";
 import { UsageBar } from "./kit";
 import { sidebarUsageWindows, sidebarWeeklyUsageWindow } from "./sidebarUsageWindows";
-import { UsageRing } from "./UsageRing";
+import { UsageGauge } from "./UsageGauge";
 
 function LimitAction(props: {
   label: string;
@@ -25,7 +24,6 @@ function LimitAction(props: {
   onClick: () => void;
   disabled?: boolean;
   busy?: boolean;
-  pressed?: boolean;
 }) {
   const Icon = props.icon;
   return (
@@ -37,7 +35,6 @@ function LimitAction(props: {
             variant="ghost"
             size="icon-xs"
             aria-label={props.label}
-            aria-pressed={props.pressed}
             disabled={props.disabled}
             onClick={props.onClick}
           />
@@ -51,17 +48,15 @@ function LimitAction(props: {
 }
 
 /** Reads cached snapshots for the weekly meter, without starting provider probes. */
-export function SidebarUsageLimits({ threadId }: { threadId: ThreadId | null }) {
+export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
   const selection = useActiveComposerSelection(
     (state) =>
       [...state.registrations.values()].findLast((entry) => entry.threadId === threadId) ?? null,
   );
-  const pinned = useAppSettingsSelector((settings) => settings.sidebarUsagePinned);
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
   const client = useQueryClient();
   const isUsage = useLocation({ select: (location) => location.pathname === "/usage" });
-  const visible = pinned || open;
   const accountsQuery = useQuery(usageCachedAccountsQueryOptions(selection?.instanceId != null));
   const account = selection?.instanceId
     ? accountsQuery.data?.find((candidate) => candidate.providerInstanceId === selection.instanceId)
@@ -85,27 +80,18 @@ export function SidebarUsageLimits({ threadId }: { threadId: ThreadId | null }) 
   }, [selection?.instanceId, resetRefresh]);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!open) return;
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
-  }, [visible]);
+  }, [open]);
 
   const panel = (
     <section aria-label="Conversation usage limits" className="min-w-0 w-full space-y-3">
       <div className="flex min-w-0 items-center gap-1">
-        <UsageRing percent={weekly?.usedPercent ?? null} />
+        <UsageGauge percent={weekly?.usedPercent ?? null} />
         <span className="min-w-0 flex-1 truncate text-xs font-medium" title={account?.displayName}>
           {label} limits
         </span>
-        <LimitAction
-          label={pinned ? "Unpin usage limits" : "Pin usage limits"}
-          icon={pinned ? PinOffIcon : PinIcon}
-          pressed={pinned}
-          onClick={() => {
-            updateAppSettings({ sidebarUsagePinned: !pinned });
-            setOpen(false);
-          }}
-        />
         <LimitAction
           label="Refresh account limits"
           icon={RefreshCwIcon}
@@ -211,10 +197,6 @@ export function SidebarUsageLimits({ threadId }: { threadId: ThreadId | null }) 
     </section>
   );
 
-  if (pinned)
-    return (
-      <div className="min-w-0 max-w-full rounded-lg border border-sidebar-border p-2">{panel}</div>
-    );
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
@@ -222,23 +204,20 @@ export function SidebarUsageLimits({ threadId }: { threadId: ThreadId | null }) 
           <Button
             type="button"
             variant="ghost"
-            size="sm"
-            aria-label="Usage limits"
-            className="w-full justify-start text-muted-foreground"
+            size="icon-sm"
+            aria-label={label + " usage limits"}
+            title={label + " usage limits"}
+            className="shrink-0 text-muted-foreground"
           />
         }
       >
-        <UsageRing percent={weekly?.usedPercent ?? null} />
-        <span className="min-w-0 flex-1 truncate text-left">
-          Usage{selection ? ` · ${label}` : ""}
-        </span>
-        <ChevronUpIcon aria-hidden="true" className="size-3.5" />
+        <UsageGauge percent={weekly?.usedPercent ?? null} />
       </PopoverTrigger>
       <PopoverPopup
         side="top"
         align="start"
         aria-label="Usage limits"
-        className="w-(--anchor-width) max-w-(--available-width)"
+        className="w-80 max-w-(--available-width)"
       >
         {panel}
       </PopoverPopup>
