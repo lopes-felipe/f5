@@ -136,7 +136,7 @@ import {
   makeAgentBridgeService,
 } from "./agentBridge/AgentBridgeService.ts";
 import { makeAgentBridgeStore } from "./agentBridge/AgentBridgeStore.ts";
-import { makeBotTaskStore, type BotTaskError } from "./agentBridge/BotTaskStore.ts";
+import { makeBotTaskStore } from "./agentBridge/BotTaskStore.ts";
 import { version as serverPackageVersion } from "../package.json" with { type: "json" };
 import { usageResumeTargetAfterCredit } from "./usage/usageResumeAfterCredit.ts";
 import { usageLimitKey } from "./nextTurnQueue/usageLimitResume.ts";
@@ -200,7 +200,6 @@ import {
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
   AGENT_BRIDGE_WS_CHANNELS,
-  AGENT_BRIDGE_WS_METHODS,
   UPSTREAM_PORTS_WS_CHANNELS,
   UpstreamTriageBatchResult,
   USAGE_WS_METHODS,
@@ -376,15 +375,17 @@ import {
   webSocketRuntimeName,
 } from "./wsServer/webSocketTransport.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
+import { agentBridgeRoutes } from "./wsServer/routes/agentBridgeRoutes.ts";
 import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
 import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
 import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
 import { scheduledTaskRoutes } from "./wsServer/routes/scheduledTaskRoutes.ts";
+import { terminalRoutes } from "./wsServer/routes/terminalRoutes.ts";
 import { upstreamPortRoutes } from "./wsServer/routes/upstreamPortRoutes.ts";
 import {
   answerFromTable,
-  mergeRouteTables,
   routePromise,
+  routeTables,
   tableAnswers,
 } from "./wsServer/routes/routeTable.ts";
 import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCleanup.ts";
@@ -765,8 +766,6 @@ function readFilePrefix(
     catch: (cause) => new RouteRequestError({ message: `Failed to read file: ${String(cause)}` }),
   });
 }
-
-const toTaskRouteError = (error: BotTaskError) => new RouteRequestError({ message: error.message });
 
 type RequestBodyWithoutTag<T> = T extends { _tag: string } ? Omit<T, "_tag"> : never;
 
@@ -4158,33 +4157,35 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   // Routes that live in their own modules. `routeRequest` answers from here
   // before its switch; see `wsServer/routes/routeTable.ts`.
-  const routeTable = mergeRouteTables(
-    mergeRouteTables(
-      mergeRouteTables(
-        mergeRouteTables(
-          githubAccountRoutes({
-            login: githubLogin,
-            account: githubAccount,
-            cliImport: githubCliImport,
-          }),
-          providerAccountRoutes(accountService),
-        ),
-        profileRoutes({
-          store: profilesStore,
-          list: readProfiles,
-          defaultStateDir: defaultProfileStateDir,
-          activeProfileId: activeProfile.id,
-        }),
-      ),
+  const routeTable = routeTables(
+    githubAccountRoutes({
+      login: githubLogin,
+      account: githubAccount,
+      cliImport: githubCliImport,
+    }),
+  )
+    .and(providerAccountRoutes(accountService))
+    .and(
+      profileRoutes({
+        store: profilesStore,
+        list: readProfiles,
+        defaultStateDir: defaultProfileStateDir,
+        activeProfileId: activeProfile.id,
+      }),
+    )
+    .and(
       scheduledTaskRoutes({
         schedules: scheduledTasks,
         desktopShowsNotifications: () =>
           Option.isSome(computerAutomationBroker) &&
           computerAutomationBroker.value.host.notificationsCapable(),
       }),
-    ),
-    upstreamPortRoutes(upstreamPorts),
-  );
+    )
+    .and(upstreamPortRoutes(upstreamPorts))
+    .and(agentBridgeRoutes(agentBridge))
+    .and(
+      terminalRoutes({ terminals: terminalManager, startingShellFor: withTerminalThreadAccess }),
+    ).table;
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     const requestCwd = (request.body as { readonly cwd?: unknown }).cwd;
@@ -4200,45 +4201,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return yield* answerFromTable(routeTable, request.body, ws);
     }
     switch (request.body._tag) {
-      case AGENT_BRIDGE_WS_METHODS.setSchedulingGrant:
-        return yield* agentBridge
-          .setSchedulingGrant(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case AGENT_BRIDGE_WS_METHODS.getState:
-        return yield* agentBridge.getState;
-      case AGENT_BRIDGE_WS_METHODS.getTasks:
-        return yield* agentBridge.tasks
-          .getTasks(stripRequestTag(request.body))
-          .pipe(Effect.mapError(toTaskRouteError));
-      case AGENT_BRIDGE_WS_METHODS.getTask:
-        return yield* agentBridge.tasks
-          .getTask(request.body.taskId)
-          .pipe(Effect.mapError(toTaskRouteError));
-      case AGENT_BRIDGE_WS_METHODS.getTaskActivities:
-        return yield* agentBridge.tasks
-          .getTaskActivities(stripRequestTag(request.body))
-          .pipe(Effect.mapError(toTaskRouteError));
-      case AGENT_BRIDGE_WS_METHODS.createTask:
-        return yield* agentBridge.tasks
-          .createTask(stripRequestTag(request.body))
-          .pipe(Effect.mapError(toTaskRouteError));
-      case AGENT_BRIDGE_WS_METHODS.replyToTask:
-        return yield* agentBridge.tasks
-          .replyToTask(stripRequestTag(request.body))
-          .pipe(Effect.mapError(toTaskRouteError));
-      case AGENT_BRIDGE_WS_METHODS.pauseTask:
-        return yield* agentBridge.tasks
-          .controlTask("pause", stripRequestTag(request.body))
-          .pipe(Effect.mapError(toTaskRouteError));
-      case AGENT_BRIDGE_WS_METHODS.resumeTask:
-        return yield* agentBridge.tasks
-          .controlTask("resume", stripRequestTag(request.body))
-          .pipe(Effect.mapError(toTaskRouteError));
-      case AGENT_BRIDGE_WS_METHODS.cancelTask:
-        return yield* agentBridge.tasks
-          .controlTask("cancel", stripRequestTag(request.body))
-          .pipe(Effect.mapError(toTaskRouteError));
-
       case AGENTS_WS_METHODS.getSnapshot: {
         const { threadBackgroundWork } = yield* awaitOrchestrationRuntimeForRoute;
         const { threadId } = stripRequestTag(request.body);
@@ -6273,39 +6235,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           accountGeneration:
             "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
         });
-
-      case WS_METHODS.terminalSnapshot:
-        return yield* terminalManager.snapshot(stripRequestTag(request.body));
-
-      case WS_METHODS.terminalOpen: {
-        const body = stripRequestTag(request.body);
-        return yield* withTerminalThreadAccess(body.threadId, terminalManager.open(body));
-      }
-
-      case WS_METHODS.terminalWrite: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.write(body);
-      }
-
-      case WS_METHODS.terminalResize: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.resize(body);
-      }
-
-      case WS_METHODS.terminalClear: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.clear(body);
-      }
-
-      case WS_METHODS.terminalRestart: {
-        const body = stripRequestTag(request.body);
-        return yield* withTerminalThreadAccess(body.threadId, terminalManager.restart(body));
-      }
-
-      case WS_METHODS.terminalClose: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.close(body);
-      }
 
       case WS_METHODS.previewOpen: {
         const body = stripRequestTag(request.body);
