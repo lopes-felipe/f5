@@ -14,6 +14,16 @@ export class GitHubRequestPriority extends ServiceMap.Service<
   GitHubPriority
 >()("t3/git/githubRequestScheduler/GitHubRequestPriority") {}
 export type GitHubResource = "rest" | "search" | "graphql" | "write";
+
+const DEFERRED_OPERATION = "schedule";
+
+/**
+ * The scheduler held this request back (a retry window, a budget, or a full queue) and sent
+ * nothing. The caller's work resumes on a later poll, so this is pacing and not a failed request.
+ */
+export const isDeferredGitHubRequest = (error: GitHubCliError) =>
+  error.operation === DEFERRED_OPERATION;
+
 interface Budget {
   windowStart: number;
   minuteStart: number;
@@ -55,7 +65,7 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
     Math.max(budget.rateLimitedUntil, budget.networkBlockedUntil);
   const deferred = (until: number, detail: string) =>
     new GitHubCliError({
-      operation: "schedule",
+      operation: DEFERRED_OPERATION,
       kind: "rate_limited",
       detail,
       rateLimit: {

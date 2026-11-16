@@ -3374,9 +3374,12 @@ export function makeUpstreamPortsService(
         });
         const outcomes = yield* readOutcomes(context, model, ids, snapshot);
         const summaries = yield* linkSummaries(context, ids, model, outcomes);
-        // Reported once per pass and distinct cause: while GitHub requests wait for a retry
-        // window every thread fails the same way, and a warning each floods the log.
+        // Reported once per pass and distinct cause: when GitHub is unreachable every thread
+        // fails the same way, and a warning each floods the log.
         const evidenceFailures = new Map<string, { failures: number; threadId: string }>();
+        // Reads the request scheduler held back. Nothing failed: the request that opened the
+        // retry window was reported where it happened, and these reads run on a later pass.
+        let evidenceDeferrals = 0;
         for (const threadId of ids) {
           const thread = model.threads.find(
             (thread) => thread.id === threadId && thread.deletedAt === null,
@@ -3464,6 +3467,10 @@ export function makeUpstreamPortsService(
                         .pipe(
                           Effect.tapError((error) =>
                             Effect.sync(() => {
+                              if (error.deferred) {
+                                evidenceDeferrals++;
+                                return;
+                              }
                               const detail = describe(error);
                               const seen = evidenceFailures.get(detail);
                               evidenceFailures.set(detail, {
@@ -3671,6 +3678,10 @@ export function makeUpstreamPortsService(
             failures: failure.failures,
             // The first thread affected, as a starting point for the logs of that thread.
             threadId: failure.threadId,
+          });
+        if (evidenceDeferrals > 0)
+          yield* Effect.logDebug("upstreamPorts.outcome.prEvidence.deferred", {
+            reads: evidenceDeferrals,
           });
       });
 
