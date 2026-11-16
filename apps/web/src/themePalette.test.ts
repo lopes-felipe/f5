@@ -8,7 +8,6 @@ import {
   DERIVED_THEME_TOKEN_NAMES,
   MIN_BODY_TEXT_CONTRAST,
   MIN_DECORATIVE_CONTRAST,
-  applyPickedThemeColor,
   applyThemePalette,
   bodyTextContrast,
   createCustomThemeDefinition,
@@ -18,8 +17,9 @@ import {
   getThemeContrastWarnings,
   parseCustomThemeLibrary,
   parseThemeDefinitionV1,
+  pickerHsvToThemeColor,
   resolveThemePalette,
-  themeColorToPickerHex,
+  themeColorToPickerHsv,
 } from "./themePalette";
 
 const toOklch = converter("oklch");
@@ -249,24 +249,31 @@ describe("theme palette registry", () => {
   });
 });
 
-describe("native color picker conversion", () => {
-  it("converts theme colors to opaque hex for native color inputs", () => {
-    expect(themeColorToPickerHex("#3366CC")).toBe("#3366cc");
-    expect(themeColorToPickerHex(" oklch(0.5 0.185 264) ")).toMatch(/^#[0-9a-f]{6}$/);
-    expect(themeColorToPickerHex("#3366cc80")).toBe("#3366cc");
-    expect(themeColorToPickerHex("not a color")).toBeNull();
+describe("visual color picker conversion", () => {
+  it("reads theme colors as HSV", () => {
+    expect(themeColorToPickerHsv("#FF0000")).toEqual({ h: 0, s: 1, v: 1 });
+    expect(themeColorToPickerHsv(" #0000ff ")).toEqual({ h: 240, s: 1, v: 1 });
+    expect(themeColorToPickerHsv("#808080")).toMatchObject({ h: 0, s: 0 });
+    expect(themeColorToPickerHsv("not a color")).toBeNull();
   });
 
-  it("returns picked colors in the safe theme color format", () => {
-    expect(applyPickedThemeColor("#AABBCC", "oklch(0.5 0.185 264)")).toBe("#aabbcc");
+  it("clamps out-of-gamut colors into the picker range", () => {
+    const hsv = themeColorToPickerHsv("oklch(0.7 0.4 150)");
+    expect(hsv).not.toBeNull();
+    for (const channel of [hsv!.s, hsv!.v]) {
+      expect(channel).toBeGreaterThanOrEqual(0);
+      expect(channel).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("round-trips picks in the safe theme color format", () => {
+    const hsv = themeColorToPickerHsv("#3366cc")!;
+    expect(pickerHsvToThemeColor(hsv, "oklch(0.5 0.185 264)")).toBe("#3366cc");
+    expect(pickerHsvToThemeColor({ h: 120, s: 1, v: 1 }, "#000")).toBe("#00ff00");
   });
 
   it("keeps the previous color's alpha", () => {
-    expect(applyPickedThemeColor("#aabbcc", "#11223380")).toBe("#aabbcc80");
-    expect(applyPickedThemeColor("#aabbcc", "#112233")).toBe("#aabbcc");
-  });
-
-  it("rejects invalid picks", () => {
-    expect(() => applyPickedThemeColor("bogus", "#112233")).toThrow("Invalid theme color");
+    expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "#11223380")).toBe("#ff000080");
+    expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "#112233")).toBe("#ff0000");
   });
 });

@@ -324,27 +324,39 @@ export function parseSafeThemeColor(value: unknown): string {
   return parsed.alpha !== undefined && parsed.alpha < 1 ? formatHex8(parsed) : formatHex(parsed);
 }
 
+/** Hue (0-360), saturation (0-1) and value (0-1) as edited by the visual color picker. */
+export interface ThemePickerHsv {
+  readonly h: number;
+  readonly s: number;
+  readonly v: number;
+}
+
+const toHsv = converter("hsv");
+
 /**
- * Converts a theme color to the opaque `#rrggbb` form that native color inputs require.
- * Alpha is dropped and out-of-gamut colors are clamped to sRGB.
+ * Reads a theme color as sRGB HSV for the visual picker. Achromatic colors report hue 0
+ * and out-of-gamut colors are clamped.
  */
-export function themeColorToPickerHex(value: string): string | null {
+export function themeColorToPickerHsv(value: string): ThemePickerHsv | null {
   const parsed = parse(value.trim());
-  return parsed ? formatHex(parsed) : null;
+  if (!parsed) return null;
+  const hsv = toHsv(parsed);
+  return {
+    h: clamp(hsv.h ?? 0, 0, 360),
+    s: clamp(hsv.s, 0, 1),
+    v: clamp(hsv.v, 0, 1),
+  };
 }
 
 /**
- * Turns a native color input pick into a safe theme color, keeping the previous color's
- * alpha because native color inputs cannot express transparency.
+ * Turns a visual picker selection into a safe theme color, keeping the previous color's
+ * alpha because the picker only edits hue, saturation and value.
  */
-export function applyPickedThemeColor(picked: string, previous: string): string {
-  const next = parse(picked.trim());
-  if (!next) return parseSafeThemeColor(picked);
-  const previousAlpha = parse(previous.trim())?.alpha;
+export function pickerHsvToThemeColor(hsv: ThemePickerHsv, previous: string): string {
+  const alpha = parse(previous.trim())?.alpha;
+  const color = { mode: "hsv" as const, h: hsv.h, s: hsv.s, v: hsv.v };
   return parseSafeThemeColor(
-    previousAlpha !== undefined && previousAlpha < 1
-      ? formatHex8({ ...next, alpha: previousAlpha })
-      : picked,
+    alpha !== undefined && alpha < 1 ? formatHex8({ ...color, alpha }) : formatHex(color),
   );
 }
 
