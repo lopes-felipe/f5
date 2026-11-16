@@ -1296,6 +1296,127 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it.each(["another row arrives", "the new row grows"] as const)(
+    "keeps following when %s during its own animated follow scroll",
+    async (update) => {
+      const initialEntries = makeOverflowEntries(16);
+      const isAtEndCalls: boolean[] = [];
+      let api: TimelineHarnessApi | null = null;
+      const host = document.createElement("div");
+      document.body.append(host);
+      const screen = await render(
+        <TimelineHarness
+          initialEntries={initialEntries}
+          initialHeight={240}
+          onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+          setApi={(nextApi) => {
+            api = nextApi;
+          }}
+        />,
+        { container: host },
+      );
+      const nextFrame = () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      try {
+        const node = await waitForScrollContainer(host);
+        await waitForTimelineLayout(() => node);
+        await vi.waitFor(() =>
+          expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
+        );
+        isAtEndCalls.length = 0;
+        const first = makeAssistantEntry("follow-mid-scroll-a", "Reply\n\n".repeat(20), 120);
+        api!.setEntries([...initialEntries, first]);
+        // The follow scroll is animated; update again while it is under way.
+        await nextFrame();
+        await nextFrame();
+        const lastId = update === "another row arrives" ? "follow-mid-scroll-b" : first.id;
+        api!.setEntries(
+          update === "another row arrives"
+            ? [
+                ...initialEntries,
+                first,
+                makeAssistantEntry(lastId, "Second reply\n\n".repeat(20), 121),
+              ]
+            : [...initialEntries, makeAssistantEntry(lastId, "Longer reply\n\n".repeat(60), 120)],
+        );
+        await vi.waitFor(
+          () => {
+            const row = host.querySelector<HTMLElement>(`[data-message-id="${lastId}"]`);
+            expect(row).not.toBeNull();
+            expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8);
+          },
+          { timeout: 3_000, interval: 16 },
+        );
+        expect(isAtEndCalls).not.toContain(false);
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
+
+  it("resumes following after Jump to latest even when the list never left the end", async () => {
+    const initialEntries = makeOverflowEntries(16);
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={240}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await waitForTimelineLayout(() => node);
+      await vi.waitFor(() =>
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
+      );
+      // Pressing the scrollbar stops following without moving the list.
+      node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      const before = node.scrollTop;
+      const paused = [
+        ...initialEntries,
+        makeAssistantEntry("jump-resume-paused", "Paused reply\n\n".repeat(20), 120),
+      ];
+      api!.setEntries(paused);
+      await waitForTimelineLayout(() => node);
+      expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
+      expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeGreaterThan(40);
+
+      api!.jumpToLatest();
+      await vi.waitFor(() =>
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
+      );
+      await waitForTimelineLayout(() => node);
+
+      // Paused again at the end, Jump to latest has nothing to scroll, so no
+      // scroll event can resume following. The jump itself must.
+      node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      api!.jumpToLatest();
+      await waitForTimelineLayout(() => node);
+      api!.setEntries([
+        ...paused,
+        makeAssistantEntry("jump-resume-followed", "Followed reply\n\n".repeat(20), 121),
+      ]);
+      await vi.waitFor(
+        () => {
+          expect(host.querySelector('[data-message-id="jump-resume-followed"]')).not.toBeNull();
+          expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8);
+        },
+        { timeout: 3_000, interval: 16 },
+      );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("auto-follows when a final assistant row replaces the trailing working row", async () => {
     const initialEntries = makeOverflowEntries(16);
     const isAtEndCalls: boolean[] = [];

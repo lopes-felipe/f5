@@ -317,9 +317,9 @@ interface MessagesTimelineProps {
   entryRowIndexMapRef?: MutableRefObject<ReadonlyMap<string, number> | null>;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   /**
-   * Bumped when a send starts a new turn: the next tail advance is followed
-   * even if the user had scrolled up. Steers, queued and rejected sends never
-   * bump it.
+   * Bumped when a send starts a new turn or Jump to latest finishes: following
+   * resumes and the next tail advance is followed even if the user had
+   * scrolled up. Steers, queued and rejected sends never bump it.
    */
   followNextTailNonce?: number;
   hasOlderHistory?: boolean;
@@ -581,7 +581,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // Physical position drives the rail; following intent can stay enabled during layout changes.
   const [railIsAtEnd, setRailIsAtEnd] = useState(false);
   // Following is the reader's intent: on while they sit at the end, off once
-  // they scroll away, and back on when they return to the end.
+  // their own input moves away (`leaveEnd`), and back on when they return to
+  // the end, send, or jump to latest.
   const [liveFollowEnabled, setLiveFollowEnabled] = useState(restoredAnchor?.atEnd ?? true);
   const liveFollowEnabledRef = useRef(restoredAnchor?.atEnd ?? true);
   const [atEndThreshold, setAtEndThreshold] = useState(0);
@@ -919,24 +920,46 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     setLiveFollowEnabled(true);
   }, [followNextTailNonce]);
 
+  const lastScrollTopRef = useRef<number | null>(null);
   const syncIsAtEndFromListState = useCallback(
-    (allowRearm = false) => {
+    (fromScroll = false) => {
       const state = listRef.current?.getState?.();
       if (state) {
         // LegendList's public `isAtEnd` flag can lag behind passive layout
         // changes, but its exposed scroll metrics stay current.
         const node = listRef.current?.getScrollableNode?.();
-        const isAtEnd =
-          node instanceof HTMLElement && node.clientHeight > 0
-            ? node.scrollHeight - node.scrollTop - node.clientHeight < TIMELINE_AT_END_PX
-            : state.contentLength < state.scrollLength || timelineIsAtEnd(state);
+        const hasNode = node instanceof HTMLElement && node.clientHeight > 0;
+        const isAtEnd = hasNode
+          ? node.scrollHeight - node.scrollTop - node.clientHeight < TIMELINE_AT_END_PX
+          : state.contentLength < state.scrollLength || timelineIsAtEnd(state);
+        // Compared across scroll events only: a layout sync can land between a
+        // jump and its scroll event. Before the first scroll event, a list
+        // that is following was at the end.
+        const previousScrollTop =
+          lastScrollTopRef.current ?? (hasNode ? node.scrollHeight - node.clientHeight : null);
+        if (fromScroll) lastScrollTopRef.current = hasNode ? node.scrollTop : null;
         setRailIsAtEnd(isAtEnd);
-        if (allowRearm || state.contentLength <= state.scrollLength) {
-          liveFollowEnabledRef.current = isAtEnd;
-          setLiveFollowEnabled(isAtEnd);
+        if (isAtEnd && (fromScroll || state.contentLength <= state.scrollLength)) {
+          // Reaching the end by scrolling, or content that fits without
+          // scrolling, resumes following.
+          liveFollowEnabledRef.current = true;
+          setLiveFollowEnabled(true);
+        } else if (
+          fromScroll &&
+          !isAtEnd &&
+          hasNode &&
+          previousScrollTop !== null &&
+          node.scrollTop < previousScrollTop - 1
+        ) {
+          // Only a scroll that moves up and away from the end stops following
+          // (find in page, a selection drag, the scrollbar). The list's own
+          // follow scroll only moves down, and streamed growth leaves the
+          // position alone, so neither pauses it while short of the end.
+          liveFollowEnabledRef.current = false;
+          setLiveFollowEnabled(false);
         }
-        // Content growth can briefly outrun LegendList's layout correction.
-        // Only scrolling changes the reader's intent to follow.
+        // While following, a position short of the end is a scroll or layout
+        // correction still catching up, so report the end.
         isAtEndRef.current = isAtEnd || liveFollowEnabledRef.current;
         onIsAtEndChange(isAtEndRef.current);
       }

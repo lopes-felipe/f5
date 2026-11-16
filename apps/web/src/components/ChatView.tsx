@@ -913,6 +913,12 @@ export default memo(function ChatView({
   }, []);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [isJumpingToLatest, setIsJumpingToLatest] = useState(false);
+  // The tail when the reader left the end. The pill mounts after a debounce,
+  // so it compares against this rather than the tail at mount.
+  const latestTimelineTailRef = useRef<ReturnType<typeof timelineTailSnapshot> | null>(null);
+  const [leftEndTail, setLeftEndTail] = useState<ReturnType<typeof timelineTailSnapshot> | null>(
+    null,
+  );
 
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const {
@@ -1128,6 +1134,7 @@ export default memo(function ChatView({
       showScrollDebouncer.current?.cancel();
       setShowScrollToBottom(false);
     } else {
+      setLeftEndTail(latestTimelineTailRef.current);
       showScrollDebouncer.current?.maybeExecute();
     }
   }, []);
@@ -1195,6 +1202,11 @@ export default memo(function ChatView({
         )
           return;
         await scrollToEnd(false);
+        // Resume following explicitly: a list already at the end emits no
+        // scroll event that would resume it.
+        if (!controller.signal.aborted && isMountedRef.current) {
+          setFollowNextTailNonce((nonce) => nonce + 1);
+        }
       } catch (error) {
         if (!controller.signal.aborted && isMountedRef.current) {
           toastManager.add({
@@ -2503,6 +2515,13 @@ export default memo(function ChatView({
       workLogEntries,
     ],
   );
+  const timelineTail = useMemo(
+    () => timelineTailSnapshot(timelineEntries.at(-1)),
+    [timelineEntries],
+  );
+  useLayoutEffect(() => {
+    latestTimelineTailRef.current = timelineTail;
+  }, [timelineTail]);
   // A route focus request (deep link, search result) is one navigation, issued
   // once the thread details are loaded and the timeline had a frame to mount.
   const routeFocusRequestedRef = useRef<string | null>(null);
@@ -8318,7 +8337,8 @@ export default memo(function ChatView({
                 {/* Shown while the reader is away from the end, and while a jump runs. */}
                 {(showScrollToBottom || isJumpingToLatest) && (
                   <JumpToLatestButton
-                    tail={timelineTailSnapshot(timelineEntries.at(-1))}
+                    tail={timelineTail}
+                    leftEndTail={leftEndTail}
                     shortcutLabel={scrollToBottomShortcutLabel ?? null}
                     onJump={jumpToLatest}
                     isAtEnd={!showScrollToBottom}

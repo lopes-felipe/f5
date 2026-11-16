@@ -22,18 +22,21 @@ export function timelineTailSnapshot(
 
 /**
  * Floating "Jump to latest" pill shown while the reader is scrolled away from
- * the end, and while a jump is still loading. A dot marks content that arrived after the reader scrolled away:
- * new rows, or more text in the response they left streaming. The baseline is
- * taken on mount and refreshed when the reader returns to the end.
+ * the end, and while a jump is still loading. A dot marks content that arrived
+ * after the reader scrolled away: new rows, or more text in the response they
+ * left streaming. The baseline is `leftEndTail` (the tail when the reader left
+ * the end, since the pill mounts after a debounce) or else the tail at mount,
+ * and is refreshed when the reader returns to the end.
  */
 export function JumpToLatestButton(props: {
   tail: TimelineTailSnapshot;
+  leftEndTail?: TimelineTailSnapshot | null;
   shortcutLabel: string | null;
   onJump: () => void;
   isAtEnd?: boolean;
   jumping?: boolean;
 }) {
-  const [baseline, setBaseline] = useState(props.tail);
+  const [baseline, setBaseline] = useState(props.leftEndTail ?? props.tail);
   const [latched, setLatched] = useState<"new-messages" | "response-updated" | null>(null);
   const change = classifyTimelineTailChange(baseline, props.tail);
   if (props.isAtEnd && (change || latched)) {

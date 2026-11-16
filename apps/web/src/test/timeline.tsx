@@ -317,6 +317,7 @@ export function TimelineHarness(
         navigation.cancel();
         setFind(null);
         void listRef.current?.scrollToEnd?.({ animated: false });
+        setFollowNextTailNonce((nonce) => nonce + 1);
       },
     });
   }
