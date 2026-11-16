@@ -251,11 +251,12 @@ describe("selectQueueView", () => {
 });
 
 describe("dedupeBlockers", () => {
-  it("lists a batched blocking thread once with all its topics", () => {
+  it("lists a batched blocking thread once with all its topics and its most pressing reason", () => {
     const blockers = dedupeBlockers(
       [
-        { topicId: "pr-1", threadId: "t-1", needsAttention: false },
-        { topicId: "pr-2", threadId: "t-1", needsAttention: true },
+        { topicId: "pr-1", threadId: "t-1", attention: "no-pr" as const },
+        { topicId: "pr-2", threadId: "t-1", attention: "archived" as const },
+        { topicId: "pr-4", threadId: "t-1", attention: null },
         { topicId: "pr-3", threadId: null },
       ],
       (id) => `Title ${id}`,
@@ -264,10 +265,10 @@ describe("dedupeBlockers", () => {
       {
         topicId: "pr-1",
         threadId: "t-1",
-        needsAttention: true,
-        topicTitles: ["Title pr-1", "Title pr-2"],
+        attention: "archived",
+        topicTitles: ["Title pr-1", "Title pr-2", "Title pr-4"],
       },
-      { topicId: "pr-3", threadId: null, needsAttention: false, topicTitles: ["Title pr-3"] },
+      { topicId: "pr-3", threadId: null, attention: null, topicTitles: ["Title pr-3"] },
     ]);
   });
 });

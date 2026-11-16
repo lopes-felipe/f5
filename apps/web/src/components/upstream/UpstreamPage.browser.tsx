@@ -521,6 +521,7 @@ it("acts on queued jobs and opens their topics in the detail pane", async () => 
             prUrl: "https://github.com/o/f5/pull/655",
             prNumber: 655,
             needsAttention: true,
+            attention: "archived",
             threadTitle: "Port git fixes",
             topicTitles: ["Git fix 1", "Git fix 2"],
           },
@@ -540,10 +541,15 @@ it("acts on queued jobs and opens their topics in the detail pane", async () => 
   const waiting = page.getByRole("listitem", { name: /^Waiting on files: Topic A/ });
   await expect.element(waiting.getByRole("button", { name: "Port git fixes" })).toBeVisible();
   await expect.element(waiting.getByText("#655")).toBeVisible();
-  await expect.element(waiting.getByText("Blocker needs attention")).toBeVisible();
+  await expect.element(waiting.getByText("Thread archived")).toBeVisible();
   await waiting.getByRole("button", { name: "Start anyway" }).click();
   await vi.waitFor(() =>
     expect(api.controlPortQueue).toHaveBeenCalledWith({ projectId, action: "ignore-conflicts", entryId: "waiting" }),
+  );
+  // One click for every waiting job, without a confirmation, like the per-job button.
+  await page.getByRole("button", { name: "Start all anyway (1)" }).click();
+  await vi.waitFor(() =>
+    expect(api.controlPortQueue).toHaveBeenCalledWith({ projectId, action: "ignore-conflicts" }),
   );
   const queued = page.getByRole("listitem", { name: /^Queued #2: Topic C/ });
   await queued.getByRole("button", { name: "Job actions" }).click();

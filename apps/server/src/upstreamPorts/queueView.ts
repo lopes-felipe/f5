@@ -1,4 +1,5 @@
 import type {
+  UpstreamBlockerAttention,
   UpstreamGetPortQueueResult,
   UpstreamPortQueueBucket,
   UpstreamPortQueueView,
@@ -257,29 +258,44 @@ export function selectQueueView<
   return picked.sort((left, right) => byRecency(left.record, right.record));
 }
 
+const ATTENTION_PRIORITY: ReadonlyArray<UpstreamBlockerAttention> = [
+  "archived",
+  "outcome-error",
+  "failed",
+  "no-pr",
+];
+
 /**
  * One blocker per thread: a batched port blocks with every topic it carries,
- * but the user acts on the thread or its PR.
+ * but the user acts on the thread or its PR. The most pressing attention
+ * reason across its topics wins.
  */
 export function dedupeBlockers<
   T extends {
     readonly topicId: string;
     readonly threadId: string | null;
-    readonly needsAttention?: boolean;
+    readonly attention?: UpstreamBlockerAttention | null;
   },
 >(blockers: ReadonlyArray<T>, titleOf: (topicId: string) => string) {
-  const byKey = new Map<string, T & { needsAttention: boolean; topicTitles: string[] }>();
+  const byKey = new Map<
+    string,
+    T & { attention: UpstreamBlockerAttention | null; topicTitles: string[] }
+  >();
+  const pick = (
+    left: UpstreamBlockerAttention | null,
+    right: UpstreamBlockerAttention | null | undefined,
+  ) => ATTENTION_PRIORITY.find((reason) => reason === left || reason === right) ?? null;
   for (const blocker of blockers) {
     const key = blocker.threadId ? `thread:${blocker.threadId}` : `topic:${blocker.topicId}`;
     const current = byKey.get(key);
     if (current) {
-      current.needsAttention ||= blocker.needsAttention === true;
+      current.attention = pick(current.attention, blocker.attention);
       const title = titleOf(blocker.topicId);
       if (!current.topicTitles.includes(title)) current.topicTitles.push(title);
     } else
       byKey.set(key, {
         ...blocker,
-        needsAttention: blocker.needsAttention === true,
+        attention: blocker.attention ?? null,
         topicTitles: [titleOf(blocker.topicId)],
       });
   }

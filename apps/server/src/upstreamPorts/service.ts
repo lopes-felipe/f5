@@ -41,6 +41,7 @@ import {
   type UpstreamListTopicsInput,
   type UpstreamListTopicsResult,
   type UpstreamOverview,
+  type UpstreamBlockerAttention,
   type UpstreamPortLinkSummary,
   type UpstreamPortsChanged,
   type UpstreamPortsListProjectsResult,
@@ -3116,16 +3117,18 @@ export function makeUpstreamPortsService(
             if (input.action === "clear")
               yield* queue.clearQueued(input.projectId, now().toISOString());
             else if (input.action === "ignore-conflicts") {
-              if (!input.entryId) return yield* fail("invalid", "Choose a queued entry.");
-              const entry = (yield* queue.listQueue(input.projectId)).find(
-                (entry) => entry.entryId === input.entryId,
+              const queued = (yield* queue.listQueue(input.projectId, ["queued"])).filter(
+                (entry) => entry.status === "queued" && !entry.ignoreConflicts,
               );
-              if (entry?.status === "queued" && !entry.ignoreConflicts)
-                yield* queue.setQueueEntry({
-                  ...entry,
-                  ignoreConflicts: true,
-                  updatedAt: now().toISOString(),
-                });
+              // Without an entry, flag every queued entry that is waiting on files right now.
+              let targets = queued.filter((entry) => entry.entryId === input.entryId);
+              if (input.entryId === undefined && queued.length > 0) {
+                const conflicts = yield* openConflicts(context, yield* currentView(context));
+                targets = queued.filter((entry) => waitingOn(entry, conflicts).length > 0);
+              }
+              const at = now().toISOString();
+              for (const entry of targets)
+                yield* queue.setQueueEntry({ ...entry, ignoreConflicts: true, updatedAt: at });
             } else {
               const state = yield* queue.getQueueState(input.projectId);
               yield* queue.setQueueState(input.projectId, {
@@ -3166,7 +3169,7 @@ export function makeUpstreamPortsService(
 
     /** Ledger decisions outlive the turn that recorded them. An idle resolved topic
      * must not regain its reservation when a later turn reports a different result. */
-    const conflictLinks = (context: ProjectContext, snapshot: CurrentView) =>
+    const activeConflictLinks = (context: ProjectContext, snapshot: CurrentView) =>
       Effect.gen(function* () {
         const open = snapshot.links.filter((link) => {
           const row = snapshot.rows.find((row) => row.topic.id === link.topicId);
@@ -3251,6 +3254,32 @@ export function makeUpstreamPortsService(
         );
       });
 
+    /**
+     * Links whose files other queued ports must wait for. An archived thread without a PR
+     * will not land anything, so it releases its files; one with a PR holds them until the
+     * PR merges and its trailers release the topic. The queue view and the reservation
+     * recheck both read this, so a released blocker cannot fail a start later.
+     */
+    const conflictLinks = (context: ProjectContext, snapshot: CurrentView) =>
+      Effect.gen(function* () {
+        const open = yield* activeConflictLinks(context, snapshot);
+        if (open.length === 0) return open;
+        const model = yield* host.readModel;
+        const archived = new Set(
+          model.threads
+            .filter(
+              (thread) =>
+                thread.archivedAt != null && open.some((link) => link.threadId === thread.id),
+            )
+            .map((thread) => thread.id as string),
+        );
+        if (archived.size === 0) return open;
+        const summaries = yield* linkSummaries(context, [...archived], model);
+        return open.filter(
+          (link) => !archived.has(link.threadId) || Boolean(summaries.get(link.threadId)?.prUrl),
+        );
+      });
+
     const openConflicts = (context: ProjectContext, snapshot: CurrentView) =>
       Effect.gen(function* () {
         const open = yield* conflictLinks(context, snapshot);
@@ -3280,7 +3309,7 @@ export function makeUpstreamPortsService(
           epoch: link.epoch,
           threadId: link.threadId,
           prUrl: summaries.get(link.threadId)?.prUrl ?? null,
-          needsAttention: (() => {
+          attention: ((): UpstreamBlockerAttention | null => {
             const thread = model.threads.find((thread) => thread.id === link.threadId);
             const turn = thread?.latestTurn;
             const parsed = outcomes.get(link.threadId);
@@ -3291,17 +3320,18 @@ export function makeUpstreamPortsService(
                   open.filter((other) => other.threadId === link.threadId).length,
                 )
               : null;
-            return (
-              thread?.archivedAt != null ||
-              parsed?.errors.has(link.topicId) ||
-              parsed?.errors.has("thread") ||
-              (turn != null &&
-                turn.processingQuiescedAt != null &&
-                (["error", "interrupted"].includes(turn.state) ||
-                  (turn.state === "completed" &&
-                    !summaries.get(link.threadId)?.prUrl &&
-                    !["equivalent", "not-applicable"].includes(outcome?.kind ?? ""))))
-            );
+            if (thread?.archivedAt != null) return "archived";
+            if (parsed?.errors.has(link.topicId) || parsed?.errors.has("thread"))
+              return "outcome-error";
+            if (turn == null || turn.processingQuiescedAt == null) return null;
+            if (["error", "interrupted"].includes(turn.state)) return "failed";
+            if (
+              turn.state === "completed" &&
+              !summaries.get(link.threadId)?.prUrl &&
+              !["equivalent", "not-applicable"].includes(outcome?.kind ?? "")
+            )
+              return "no-pr";
+            return null;
           })(),
           keys: keys.get(link.topicId) ?? [],
         }));
@@ -3314,11 +3344,11 @@ export function makeUpstreamPortsService(
         ? []
         : conflicts
             .filter((other) => filesOverlap(entry.fileKeys, other.keys))
-            .map(({ topicId, threadId, prUrl, needsAttention }) => ({
+            .map(({ topicId, threadId, prUrl, attention }) => ({
               topicId,
               threadId: threadId as UpstreamPortLinkSummary["threadId"],
               prUrl,
-              needsAttention,
+              attention,
             }));
 
     /**
@@ -3933,12 +3963,14 @@ export function makeUpstreamPortsService(
             pr: prUrl ? { number: summary?.prNumber ?? null, url: prUrl } : null,
             fileCount: entry.fileKeys.length,
             waitingOn: dedupeBlockers(blockersOf.get(entry.entryId) ?? [], titleOf).map(
-              ({ topicTitles, ...blocker }) => {
+              ({ topicTitles, attention, ...blocker }) => {
                 const blockerSummary = blocker.threadId
                   ? summaries.get(blocker.threadId)
                   : undefined;
                 return {
                   ...blocker,
+                  needsAttention: attention !== null,
+                  ...(attention ? { attention } : {}),
                   threadTitle: blockerSummary?.threadTitle ?? null,
                   prNumber: blockerSummary?.prNumber ?? null,
                   topicTitles,

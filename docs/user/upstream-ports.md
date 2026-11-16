@@ -200,8 +200,11 @@ does not stop existing work. Each queued thread keeps the model and runtime chos
 As a thread finishes, the queue refills its execution slot while earlier PRs await review or
 merge. Approval prompts, user input, post-processing and queued continuations keep the slot.
 A queue entry waits when its files overlap an active port or an unmerged port PR; later
-non-conflicting entries can proceed. **Start without waiting** overrides that entry's file
-wait, while still respecting concurrency and pauses.
+non-conflicting entries can proceed. An archived port thread without a PR no longer holds its
+files, since it will not land anything; one with a PR holds them until the PR merges.
+**Start anyway** overrides one entry's file wait, and **Start all anyway (N)** beside **Clear
+queued** overrides it for every entry waiting on files right now. Both start without a
+confirmation and still respect concurrency and pauses.
 
 Click the queue chip for counts and paginated entries, thread and PR links, file waits, and
 reasons needing attention. **Pause** is separate from automatic holds for usage limits,
@@ -219,10 +222,12 @@ running. **Remove from queue** removes selected topics without stopping started 
 
 The queue chip distinguishes topic counts from queued jobs. A job can contain several
 topics, and all of its topics remain in Ready until it starts. The queue panel identifies
-the earlier threads and PRs blocking a file wait, including ports that need attention.
+the earlier threads and PRs blocking a file wait. A blocker that needs you says why: **Thread
+archived**, **Turn failed**, **Finished without a PR** or **Outcome not readable**.
 Recorded equivalent and not-applicable outcomes survive follow-up turns and restarts.
 Resolved topics release their file reservations once their threads and continuations are
-idle; unresolved ports keep their reservations even if their threads are archived.
+idle; unresolved ports keep their reservations while their threads are archived only when they
+have a PR.
 Newer outcomes can replace earlier decisions. Invalid corrections need attention and keep
 files reserved. For a batch's later PR, F5 checks topic trailers in the PR body and commits:
 included topics keep their reservations, while verified exclusions retain their earlier outcomes.

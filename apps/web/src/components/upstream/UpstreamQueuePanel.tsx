@@ -1,4 +1,5 @@
 import type {
+  UpstreamBlockerAttention,
   ProjectId,
   UpstreamControlPortQueueInput,
   UpstreamOverview,
@@ -53,6 +54,13 @@ export const QUEUE_BUCKET_LABELS: Record<UpstreamPortQueueBucket, string> = {
   superseded: "Superseded",
   omitted: "Left out",
   cancelled: "Cancelled",
+};
+
+const BLOCKER_ATTENTION_LABELS: Record<UpstreamBlockerAttention, string> = {
+  archived: "Thread archived",
+  failed: "Turn failed",
+  "no-pr": "Finished without a PR",
+  "outcome-error": "Outcome not readable",
 };
 
 const BUCKET_STYLE: Record<UpstreamPortQueueBucket, { readonly icon: LucideIcon; readonly variant: BadgeVariant }> = {
@@ -213,6 +221,17 @@ export function UpstreamQueuePanel(props: {
               {queue.paused ? <PlayIcon /> : <PauseIcon />}
               {queue.paused ? "Resume" : "Pause"}
             </Button>
+            {queue.waitingOnFiles > 0 && (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={disabled}
+                title="Start every job waiting on files without waiting for the blocking ports"
+                onClick={() => void control({ projectId, action: "ignore-conflicts" })}
+              >
+                Start all anyway ({queue.waitingOnFiles.toLocaleString()})
+              </Button>
+            )}
             <Button
               size="xs"
               variant="outline"
@@ -526,9 +545,9 @@ function QueueJob(props: {
                       {plural(blocker.topicTitles.length, "topic")}
                     </span>
                   )}
-                  {blocker.needsAttention && (
+                  {(blocker.attention || blocker.needsAttention) && (
                     <Badge size="sm" variant="warning">
-                      Blocker needs attention
+                      {blocker.attention ? BLOCKER_ATTENTION_LABELS[blocker.attention] : "Blocker needs attention"}
                     </Badge>
                   )}
                 </li>

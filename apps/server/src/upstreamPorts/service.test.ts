@@ -24,7 +24,12 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { TextGenerationError } from "../git/Errors.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { UpstreamGitHubError } from "./github.ts";
-import { makeUpstreamPortsService, UpstreamPortsError, type UpstreamPortsDeps } from "./service.ts";
+import {
+  makeUpstreamPortsService,
+  UpstreamPortsError,
+  type UpstreamPortsDeps,
+  type UpstreamPortsService,
+} from "./service.ts";
 import { makeQueueStore } from "./queueStore.ts";
 import { makeUpstreamStore } from "./store.ts";
 import { REVIEW_SLOTS, reviewThread } from "./testing/reviewFixtures.ts";
@@ -2069,6 +2074,101 @@ layer("upstream port queue", (it) => {
           true,
         );
       }),
+  );
+
+  const blockedBehindSharedFile = Effect.gen(function* () {
+    const prepared = yield* prepareQueue(2, 2, () => ["shared.ts"]);
+    const { service, ids } = prepared;
+    yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+    yield* service.enqueuePort({
+      ...queueInput(ids, "shared-file-request"),
+      grouping: "separately",
+    });
+    yield* service.testing.awaitIdle;
+    yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+    yield* service.testing.awaitIdle;
+    const queue = yield* service.getPortQueue({ projectId: PROJECT_ID });
+    const waiting = queue.entries.find((entry) => entry.status === "queued")!;
+    const blocker = queue.entries.find((entry) => entry.status === "started")!;
+    assert.equal(waiting.waitingOn[0]?.threadId, blocker.threadId);
+    return { ...prepared, waiting, blocker, sql: yield* SqlClient.SqlClient };
+  });
+  const waitingEntry = (service: Pick<UpstreamPortsService, "getPortQueue">, entryId: string) =>
+    service
+      .getPortQueue({ projectId: PROJECT_ID })
+      .pipe(Effect.map((queue) => queue.entries.find((entry) => entry.entryId === entryId)!));
+
+  it.effect("an archived blocker without a PR releases its waiters, and the start succeeds", () =>
+    Effect.gen(function* () {
+      const { fixture, service, waiting, blocker } = yield* blockedBehindSharedFile;
+      fixture.host.threads = [completedThread(blocker.threadId!, "turn-no-pr", "message-no-pr")];
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const finished = yield* waitingEntry(service, waiting.entryId);
+      assert.equal(finished.status, "queued");
+      assert.equal(finished.waitingOn[0]?.attention, "no-pr");
+      assert.isTrue(finished.waitingOn[0]?.needsAttention);
+      fixture.host.threads = [
+        {
+          ...completedThread(blocker.threadId!, "turn-no-pr", "message-no-pr"),
+          archivedAt: "2026-10-22T12:02:00.000Z",
+        } as OrchestrationThread,
+      ];
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      yield* service.testing.awaitIdle;
+      assert.equal(fixture.host.submissions.length, 2);
+      const started = yield* waitingEntry(service, waiting.entryId);
+      assert.equal(started.status, "started");
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.waitingOnFiles, 0);
+    }),
+  );
+
+  it.effect("an archived blocker with a PR keeps holding its files until the PR merges", () =>
+    Effect.gen(function* () {
+      const { fixture, service, waiting, blocker, sql } = yield* blockedBehindSharedFile;
+      fixture.host.threads = [
+        {
+          ...completedThread(blocker.threadId!, "turn-pr", "message-pr"),
+          archivedAt: "2026-10-22T12:02:00.000Z",
+        } as OrchestrationThread,
+      ];
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('message-pr',${blocker.threadId},'assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'now','now','turn-pr')`;
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(fixture.host.submissions.length, 1);
+      const held = yield* waitingEntry(service, waiting.entryId);
+      assert.equal(held.status, "queued");
+      assert.equal(held.waitingOn[0]?.attention, "archived");
+    }),
+  );
+
+  it.effect("Start all anyway flags only the entries waiting on files", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(3, 1, (index) => [
+        index < 2 ? "shared.ts" : "other.ts",
+      ]);
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+      yield* service.enqueuePort({
+        ...queueInput(ids, "start-all-request"),
+        grouping: "separately",
+      });
+      yield* service.testing.awaitIdle;
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+      yield* service.testing.awaitIdle;
+      let queue = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      const queued = queue.entries.filter((entry) => entry.status === "queued");
+      const waiting = queued.filter((entry) => entry.waitingOn.length > 0);
+      const slotBound = queued.filter((entry) => entry.waitingOn.length === 0);
+      assert.lengthOf(waiting, 1);
+      assert.lengthOf(slotBound, 1);
+      // Pause so flagging cannot start anything and the flags stay observable.
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "ignore-conflicts" });
+      queue = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      const flags = new Map(queue.entries.map((entry) => [entry.entryId, entry.ignoreConflicts]));
+      assert.isTrue(flags.get(waiting[0]!.entryId));
+      assert.isFalse(flags.get(slotBound[0]!.entryId));
+      assert.equal(fixture.host.submissions.length, 1);
+    }),
   );
 
   it.effect(

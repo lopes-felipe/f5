@@ -981,6 +981,15 @@ export const UpstreamGetPortQueueInput = Schema.Struct({
   limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
 });
 export type UpstreamGetPortQueueInput = typeof UpstreamGetPortQueueInput.Type;
+/** Why a blocking port needs the user instead of finishing on its own. */
+export const UpstreamBlockerAttention = Schema.Literals([
+  "archived",
+  "failed",
+  "no-pr",
+  "outcome-error",
+]);
+export type UpstreamBlockerAttention = typeof UpstreamBlockerAttention.Type;
+
 export const UpstreamPortQueueEntry = Schema.Struct({
   entryId: Schema.String,
   position: NonNegativeInt,
@@ -1015,7 +1024,10 @@ export const UpstreamPortQueueEntry = Schema.Struct({
       topicId: UpstreamTopicId,
       threadId: Schema.NullOr(ThreadId),
       prUrl: Schema.NullOr(Schema.String),
+      /** @deprecated Use `attention`; kept for older clients. */
       needsAttention: Schema.optionalKey(Schema.Boolean),
+      /** Why the blocker needs the user; absent while it is working normally. */
+      attention: Schema.optionalKey(UpstreamBlockerAttention),
       threadTitle: Schema.NullOr(Schema.String),
       prNumber: Schema.NullOr(PositiveInt),
       /** Every blocking topic in that thread; blockers are listed once per thread. */
@@ -1065,7 +1077,8 @@ export const UpstreamControlPortQueueActionInput = Schema.Struct({
 export const UpstreamIgnorePortConflictsInput = Schema.Struct({
   projectId: ProjectId,
   action: Schema.Literal("ignore-conflicts"),
-  entryId: Schema.String.check(Schema.isNonEmpty()),
+  /** Omitted: every queued entry that is waiting on files now. */
+  entryId: Schema.optionalKey(Schema.String.check(Schema.isNonEmpty())),
 });
 export const UpstreamControlPortQueueInput = Schema.Union([
   UpstreamControlPortQueueActionInput,
