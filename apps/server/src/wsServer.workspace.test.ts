@@ -291,10 +291,8 @@ describe("WebSocket Server", () => {
       threadId: "thread-1",
       data: "ls\n",
     });
-    // A terminal failure is not a route error, so the client reads the
-    // printed cause: the error's name and message, then where it was raised.
-    expect(Object.keys(response.error ?? {})).toEqual(["message"]);
-    expect(response.error?.message).toMatch(/^Error: Unknown terminal thread: thread-1(\n|$)/);
+    // The message alone: no error name in front, no stack trace after.
+    expect(response.error).toEqual({ message: "Unknown terminal thread: thread-1" });
   });
 
   it("returns validation errors for invalid terminal open params", async () => {

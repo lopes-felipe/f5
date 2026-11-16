@@ -19,7 +19,7 @@ export type RouteBodyOf<Method extends RouteMethod> = Extract<RouteBody, { reado
  * Answers one method. The value is sent as the response. A `RouteRequestError`
  * is sent as its message and code; any other failure `E` is sent the way
  * `formatRouteFailure` in `wsServer.ts` renders it, which for most errors is
- * the pretty-printed cause. A table names such errors so that moving a route
+ * the error's message alone. A table names such errors so that moving a route
  * here does not change what its clients read.
  */
 export type RouteHandler<Method extends RouteMethod, R = never, E = RouteRequestError> = (
