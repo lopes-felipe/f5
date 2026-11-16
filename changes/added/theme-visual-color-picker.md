@@ -1,0 +1,1 @@
+- The custom theme editor's color swatches open a color picker, so Background, Text, Primary and Accent can be chosen visually with a saturation and brightness area and a hue bar, by pointer or arrow keys. Typing an exact color still works.
