@@ -6,6 +6,7 @@ import type { WebSocket } from "ws";
 import {
   answerFromTable,
   mergeRouteTables,
+  routeTables,
   tableAnswers,
   type RouteMethod,
   type RouteTable,
@@ -29,6 +30,29 @@ it("merges tables that own different methods", async () => {
   expect(tableAnswers(merged, body)).toBe(true);
   await expect(Effect.runPromise(answerFromTable(merged, body, ws))).resolves.toBe(
     "status of github.com",
+  );
+});
+
+it("chains any number of tables and checks each against all before it", async () => {
+  const loginRoutes: RouteTable<typeof WS_METHODS.githubLoginStatus> = {
+    [WS_METHODS.githubLoginStatus]: () => Effect.succeed("login"),
+  };
+  const { table } = routeTables(statusRoutes).and(profileRoutes).and(loginRoutes);
+  expect(Object.keys(table).toSorted()).toEqual(
+    [
+      WS_METHODS.githubAccountStatus,
+      WS_METHODS.githubLoginStatus,
+      WS_METHODS.profilesList,
+    ].toSorted(),
+  );
+  await expect(
+    Effect.runPromise(answerFromTable(table, { _tag: WS_METHODS.profilesList }, ws)),
+  ).resolves.toBe("profiles");
+  // The third table repeats the first one's method, not its neighbour's.
+  const chained = routeTables(statusRoutes).and(profileRoutes);
+  // @ts-expect-error a method an earlier table owns does not compile either
+  expect(() => chained.and(statusRoutes)).toThrow(
+    `Route tables both answer: ${WS_METHODS.githubAccountStatus}`,
   );
 });
 
