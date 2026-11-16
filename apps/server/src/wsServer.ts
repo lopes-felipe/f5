@@ -47,7 +47,6 @@ import {
 } from "./orchestration/Errors.ts";
 import {
   WorkspaceRequiresNewWorktreeError,
-  GitWorkspaceSwitch,
   type GitWorkspaceSwitchHandler,
 } from "./git/workspaceSwitch.ts";
 import { inspectAttachableWorkspace } from "./project/workspaceAttachment.ts";
@@ -84,7 +83,6 @@ import {
   WorkspaceTransition,
   type WorkspaceTransitionShape,
 } from "./project/Services/WorkspaceTransition.ts";
-import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { WorktreePreparations } from "./persistence/Services/WorktreePreparations.ts";
 import { WorktreePreparationsLive } from "./persistence/Layers/WorktreePreparations.ts";
 import {
@@ -380,6 +378,7 @@ import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
 import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
 import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
 import { scheduledTaskRoutes } from "./wsServer/routes/scheduledTaskRoutes.ts";
+import { gitRoutes } from "./wsServer/routes/gitRoutes.ts";
 import { terminalRoutes } from "./wsServer/routes/terminalRoutes.ts";
 import { upstreamPortRoutes } from "./wsServer/routes/upstreamPortRoutes.ts";
 import {
@@ -4183,8 +4182,26 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     )
     .and(upstreamPortRoutes(upstreamPorts))
     .and(agentBridgeRoutes(agentBridge))
+    .and(terminalRoutes({ terminals: terminalManager, startingShellFor: withTerminalThreadAccess }))
     .and(
-      terminalRoutes({ terminals: terminalManager, startingShellFor: withTerminalThreadAccess }),
+      gitRoutes({
+        git,
+        gitManager,
+        switchWorkspace: switchGitWorkspace,
+        publishActionProgress: (ws, event) =>
+          pushBus.publishClient(ws, WS_CHANNELS.gitActionProgress, event).pipe(Effect.asVoid),
+        createWorktree: createConfiguredWorktree,
+        prepareWorktree,
+        runtime: Effect.map(
+          awaitOrchestrationRuntimeForRoute,
+          ({ orchestrationEngine, worktreeManager }) => ({
+            liveProjects: Effect.map(orchestrationEngine.getReadModel(), (model) =>
+              model.projects.filter((project) => project.deletedAt === null),
+            ),
+            worktrees: worktreeManager,
+          }),
+        ),
+      }),
     ).table;
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
@@ -5698,182 +5715,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           });
         }
         return yield* revealInFileManager(target.absolutePath);
-      }
-
-      case WS_METHODS.gitStatus: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager.status(body);
-      }
-
-      case WS_METHODS.gitPull: {
-        const body = stripRequestTag(request.body);
-        return yield* git.pullCurrentBranch(body.cwd);
-      }
-
-      case WS_METHODS.gitRunStackedAction: {
-        const body = stripRequestTag(request.body);
-        const actionId = body.actionId ?? randomUUID();
-        yield* pushBus
-          .publishClient(ws, WS_CHANNELS.gitActionProgress, {
-            actionId,
-            cwd: body.cwd,
-            action: body.action,
-            kind: "action_started",
-            phases: ["branch", "commit", "push", "pr"],
-          })
-          .pipe(Effect.asVoid);
-        const result = yield* gitManager
-          .runStackedAction(body, {
-            actionId,
-            progressReporter: {
-              publish: (event) =>
-                pushBus.publishClient(ws, WS_CHANNELS.gitActionProgress, event).pipe(Effect.asVoid),
-            },
-          })
-          .pipe(
-            Effect.provideService(
-              GitWorkspaceSwitch,
-              switchGitWorkspace(body.threadId, `git-action:${actionId}`),
-            ),
-            Effect.tap((result) =>
-              pushBus
-                .publishClient(ws, WS_CHANNELS.gitActionProgress, {
-                  actionId,
-                  cwd: body.cwd,
-                  action: body.action,
-                  kind: "action_finished",
-                  result,
-                })
-                .pipe(Effect.asVoid),
-            ),
-            Effect.tapError((cause) =>
-              pushBus
-                .publishClient(ws, WS_CHANNELS.gitActionProgress, {
-                  actionId,
-                  cwd: body.cwd,
-                  action: body.action,
-                  kind: "action_failed",
-                  phase: null,
-                  message: cause instanceof Error ? cause.message : String(cause),
-                })
-                .pipe(Effect.asVoid),
-            ),
-          );
-        return result;
-      }
-
-      case WS_METHODS.gitResolvePullRequest: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager.resolvePullRequest(body);
-      }
-
-      case WS_METHODS.gitPreparePullRequestThread: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager
-          .preparePullRequestThread(body)
-          .pipe(Effect.provideService(GitWorkspaceSwitch, switchGitWorkspace(body.threadId)));
-      }
-
-      case WS_METHODS.gitListBranches: {
-        const body = stripRequestTag(request.body);
-        return yield* git.listBranches(body);
-      }
-
-      case WS_METHODS.gitCreateWorktree: {
-        const body = stripRequestTag(request.body);
-        const targetBranch = body.newBranch ?? body.branch;
-        return yield* createConfiguredWorktree({
-          ...body,
-          path:
-            body.path ?? (yield* git.allocateWorktreePath({ cwd: body.cwd, branch: targetBranch })),
-        });
-      }
-
-      case WS_METHODS.gitPrepareWorktree: {
-        const body = stripRequestTag(request.body);
-        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        const canonicalProject = yield* Effect.promise(() =>
-          canonicalWorktreePath(body.projectCwd),
-        );
-        const projects = (yield* orchestrationEngine.getReadModel()).projects.filter(
-          (project) => project.deletedAt === null,
-        );
-        let script: ReturnType<typeof setupProjectScript> = null;
-        for (const project of projects) {
-          if (
-            (yield* Effect.promise(() => canonicalWorktreePath(project.workspaceRoot))) ===
-            canonicalProject
-          ) {
-            script = setupProjectScript(project.scripts);
-            break;
-          }
-        }
-        return yield* prepareWorktree({
-          ...body,
-          runSetupScript: body.runSetupScript ?? script !== null,
-          setupIdentity: script?.command ?? null,
-        });
-      }
-
-      case WS_METHODS.gitRemoveWorktree: {
-        const body = stripRequestTag(request.body);
-        const { worktreeManager, orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(body.cwd)).pipe(
-          Effect.orElseSucceed(() => null),
-        );
-        const projects = (yield* orchestrationEngine.getReadModel()).projects.filter(
-          (project) => project.deletedAt === null,
-        );
-        let projectId: ProjectId | undefined;
-        for (const project of projects) {
-          if (
-            canonical !== null &&
-            (yield* Effect.tryPromise(() => canonicalWorktreePath(project.workspaceRoot)).pipe(
-              Effect.orElseSucceed(() => null),
-            )) === canonical
-          ) {
-            projectId = project.id;
-            break;
-          }
-        }
-        if (!projectId)
-          return yield* Effect.fail(new RouteRequestError({ message: "Unknown project" }));
-        const preview = yield* worktreeManager
-          .inspect({ projectId, path: body.path })
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        const result = yield* worktreeManager
-          .remove({
-            projectId,
-            path: body.path,
-            deleteBranch: false,
-            expectedHead: preview.headSha,
-          })
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        if (!result.removed)
-          return yield* Effect.fail(
-            new RouteRequestError({
-              message: result.blockedReasons.join("; ") || "Worktree was not removed.",
-            }),
-          );
-        return;
-      }
-
-      case WS_METHODS.gitCreateBranch: {
-        const body = stripRequestTag(request.body);
-        return yield* git.createBranch(body);
-      }
-
-      case WS_METHODS.gitCheckout: {
-        const body = stripRequestTag(request.body);
-        return yield* switchGitWorkspace(
-          body.threadId,
-          body.operationId,
-        )({ cwd: body.cwd, branch: body.branch, create: false });
-      }
-
-      case WS_METHODS.gitInit: {
-        const body = stripRequestTag(request.body);
-        return yield* git.initRepo(body);
       }
 
       case WS_METHODS.reviewPreviewDiff: {
