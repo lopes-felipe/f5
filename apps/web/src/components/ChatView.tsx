@@ -755,7 +755,6 @@ function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null 
 // the selection's identity and does not re-render the conversation.
 function selectChatViewSettings(settings: AppSettings) {
   return {
-    autoFollowNewMessages: settings.autoFollowNewMessages,
     alwaysExpandAgentCommandTranscripts: settings.alwaysExpandAgentCommandTranscripts,
     claudeBinaryPath: settings.claudeBinaryPath,
     claudeLaunchArgs: settings.claudeLaunchArgs,
@@ -913,7 +912,6 @@ export default memo(function ChatView({
     return node instanceof HTMLElement ? node : null;
   }, []);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const [autoFollow, setAutoFollow] = useState(settings.autoFollowNewMessages);
   const [isJumpingToLatest, setIsJumpingToLatest] = useState(false);
 
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
@@ -1199,7 +1197,6 @@ export default memo(function ChatView({
         await scrollToEnd(false);
       } catch (error) {
         if (!controller.signal.aborted && isMountedRef.current) {
-          setAutoFollow(false);
           toastManager.add({
             type: "error",
             title: "Could not jump to latest",
@@ -1222,14 +1219,6 @@ export default memo(function ChatView({
     scrollToEnd,
     threadId,
   ]);
-  const handleFollowingChange = useCallback(
-    (enabled: boolean) => {
-      setAutoFollow(enabled);
-      if (enabled) jumpToLatest();
-      else cancelEndScroll();
-    },
-    [cancelEndScroll, jumpToLatest],
-  );
   const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(null);
 
   const terminalState = useTerminalStateStore((state) =>
@@ -8263,8 +8252,6 @@ export default memo(function ChatView({
                         onLeaveEnd={cancelEndScroll}
                         onIsAtEndChange={onIsAtEndChange}
                         followNextTailNonce={followNextTailNonce}
-                        autoFollow={autoFollow}
-                        onAutoFollowChange={setAutoFollow}
                         hasOlderHistory={hasOlderTimelineHistory}
                         isLoadingOlderHistory={activeThreadHistory.stage === "backfilling"}
                         hasHistoryLoadError={activeThreadHistory.stage === "error"}
@@ -8328,14 +8315,12 @@ export default memo(function ChatView({
                   <ThreadDetailsLoadingState testId="chat-thread-details-loading" />
                 )}
 
-                {/* Keep the controls available while following is enabled. */}
-                {(showScrollToBottom || autoFollow || isJumpingToLatest) && (
+                {/* Shown while the reader is away from the end, and while a jump runs. */}
+                {(showScrollToBottom || isJumpingToLatest) && (
                   <JumpToLatestButton
                     tail={timelineTailSnapshot(timelineEntries.at(-1))}
                     shortcutLabel={scrollToBottomShortcutLabel ?? null}
                     onJump={jumpToLatest}
-                    following={autoFollow}
-                    onFollowingChange={handleFollowingChange}
                     isAtEnd={!showScrollToBottom}
                     jumping={isJumpingToLatest}
                   />

@@ -1241,39 +1241,6 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
-  it("keeps follow disabled by default even after reaching the bottom", async () => {
-    const initialEntries = makeOverflowEntries(16);
-    let api: TimelineHarnessApi | null = null;
-    const host = document.createElement("div");
-    document.body.append(host);
-    const screen = await render(
-      <TimelineHarness
-        initialEntries={initialEntries}
-        initialHeight={240}
-        onIsAtEndChangeSpy={() => {}}
-        setApi={(value) => {
-          api = value;
-        }}
-      />,
-      { container: host },
-    );
-    try {
-      const node = await waitForScrollContainer(host);
-      await waitForTimelineLayout(() => node);
-      const before = node.scrollTop;
-      api!.setEntries([
-        ...initialEntries,
-        makeAssistantEntry("default-off-tail", "New reply\n\n".repeat(30), 120),
-      ]);
-      await waitForTimelineLayout(() => node);
-      expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
-      expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeGreaterThan(40);
-    } finally {
-      await screen.unmount();
-      host.remove();
-    }
-  });
-
   it("auto-follows appended rows when the user is already at the end", async () => {
     const initialEntries = makeOverflowEntries(16);
     const isAtEndCalls: boolean[] = [];
@@ -1283,7 +1250,6 @@ describe("MessagesTimeline (LegendList)", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={240}
         onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
@@ -1339,7 +1305,6 @@ describe("MessagesTimeline (LegendList)", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={240}
         initialIsWorking
@@ -1507,8 +1472,7 @@ describe("MessagesTimeline (LegendList)", () => {
       node.dispatchEvent(new Event("scroll"));
       await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(true));
       const beforeContinuedStream = node.scrollHeight;
-      // Reaching the bottom does not enable following; the reader opts in.
-      api!.setAutoFollow(true);
+      // Scrolling back to the bottom resumes following.
       api!.setEntries([
         ...initialEntries.slice(0, -1),
         makeAssistantEntry(
@@ -4252,7 +4216,6 @@ describe("MessagesTimeline HTML renders", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={800}
         initialIsWorking
@@ -4306,7 +4269,6 @@ describe("MessagesTimeline HTML renders", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={800}
         initialIsWorking
@@ -4351,7 +4313,6 @@ describe("MessagesTimeline HTML renders", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialAutoFollow
         initialEntries={[
           ...makeOverflowEntries(16),
           makeHtmlRenderEntry("html-disclosure", '<div style="height:200px">Chart</div>', 120),

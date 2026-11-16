@@ -322,8 +322,6 @@ interface MessagesTimelineProps {
    * bump it.
    */
   followNextTailNonce?: number;
-  autoFollow?: boolean;
-  onAutoFollowChange?: ((enabled: boolean) => void) | undefined;
   hasOlderHistory?: boolean;
   isLoadingOlderHistory?: boolean;
   hasHistoryLoadError?: boolean;
@@ -494,8 +492,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   entryRowIndexMapRef,
   onIsAtEndChange,
   followNextTailNonce = 0,
-  autoFollow = false,
-  onAutoFollowChange,
   hasOlderHistory = false,
   isLoadingOlderHistory = false,
   hasHistoryLoadError = false,
@@ -584,11 +580,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const isAtEndRef = useRef(restoredAnchor?.atEnd ?? true);
   // Physical position drives the rail; following intent can stay enabled during layout changes.
   const [railIsAtEnd, setRailIsAtEnd] = useState(false);
-  const liveFollowEnabled = autoFollow;
-  const liveFollowEnabledRef = useRef(autoFollow);
-  useLayoutEffect(() => {
-    liveFollowEnabledRef.current = autoFollow;
-  }, [autoFollow]);
+  // Following is the reader's intent: on while they sit at the end, off once
+  // they scroll away, and back on when they return to the end.
+  const [liveFollowEnabled, setLiveFollowEnabled] = useState(restoredAnchor?.atEnd ?? true);
+  const liveFollowEnabledRef = useRef(restoredAnchor?.atEnd ?? true);
   const [atEndThreshold, setAtEndThreshold] = useState(0);
   const manualScrollGenerationRef = useRef(0);
   const newestTurnDiffId = useMemo(
@@ -892,6 +887,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         return;
       }
       isAtEndRef.current = true;
+      liveFollowEnabledRef.current = true;
+      setLiveFollowEnabled(true);
       // The first nonempty render mounts LegendList. Its initialScrollAtEnd
       // uses measured heights; scrollToEnd would replace it with an estimate.
       // Explicit sends jump directly to the tail even across a long history.
@@ -918,25 +915,34 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     followNextTailNonceRef.current = followNextTailNonce;
     setSelectedNavigationRowId(null);
     isAtEndRef.current = true;
+    liveFollowEnabledRef.current = true;
+    setLiveFollowEnabled(true);
   }, [followNextTailNonce]);
 
-  const syncIsAtEndFromListState = useCallback(() => {
-    const state = listRef.current?.getState?.();
-    if (state) {
-      // LegendList's public `isAtEnd` flag can lag behind passive layout
-      // changes, but its exposed scroll metrics stay current.
-      const node = listRef.current?.getScrollableNode?.();
-      const isAtEnd =
-        node instanceof HTMLElement && node.clientHeight > 0
-          ? node.scrollHeight - node.scrollTop - node.clientHeight < TIMELINE_AT_END_PX
-          : state.contentLength < state.scrollLength || timelineIsAtEnd(state);
-      setRailIsAtEnd(isAtEnd);
-      // Content growth can briefly outrun LegendList's layout correction.
-      // Reaching the bottom never enables following: only the explicit switch does.
-      isAtEndRef.current = isAtEnd || liveFollowEnabledRef.current;
-      onIsAtEndChange(isAtEndRef.current);
-    }
-  }, [listRef, onIsAtEndChange]);
+  const syncIsAtEndFromListState = useCallback(
+    (allowRearm = false) => {
+      const state = listRef.current?.getState?.();
+      if (state) {
+        // LegendList's public `isAtEnd` flag can lag behind passive layout
+        // changes, but its exposed scroll metrics stay current.
+        const node = listRef.current?.getScrollableNode?.();
+        const isAtEnd =
+          node instanceof HTMLElement && node.clientHeight > 0
+            ? node.scrollHeight - node.scrollTop - node.clientHeight < TIMELINE_AT_END_PX
+            : state.contentLength < state.scrollLength || timelineIsAtEnd(state);
+        setRailIsAtEnd(isAtEnd);
+        if (allowRearm || state.contentLength <= state.scrollLength) {
+          liveFollowEnabledRef.current = isAtEnd;
+          setLiveFollowEnabled(isAtEnd);
+        }
+        // Content growth can briefly outrun LegendList's layout correction.
+        // Only scrolling changes the reader's intent to follow.
+        isAtEndRef.current = isAtEnd || liveFollowEnabledRef.current;
+        onIsAtEndChange(isAtEndRef.current);
+      }
+    },
+    [listRef, onIsAtEndChange],
+  );
 
   const measureTurnRailGutter = useCallback(() => {
     const node = listRef.current?.getScrollableNode?.();
@@ -983,13 +989,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     isAtEndRef.current = false;
     setRailIsAtEnd(false);
     liveFollowEnabledRef.current = false;
-    onAutoFollowChange?.(false);
+    setLiveFollowEnabled(false);
     disclosurePinsEndRef.current = false;
     if (disclosureSettleFrameRef.current !== null) {
       window.cancelAnimationFrame(disclosureSettleFrameRef.current);
       disclosureSettleFrameRef.current = null;
     }
-  }, [onAutoFollowChange, onLeaveEnd]);
+  }, [onLeaveEnd]);
 
   useEffect(() => {
     if (!hasMessages && !isWorking) {
@@ -1142,7 +1148,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [threadId, hasMessages, listRef]);
 
   const handleScroll = useCallback(() => {
-    syncIsAtEndFromListState();
+    syncIsAtEndFromListState(true);
     if (!isAtEndRef.current && pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
   }, [requestOlderHistory, syncIsAtEndFromListState]);
 
