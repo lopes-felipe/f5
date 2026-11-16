@@ -375,6 +375,7 @@ import {
   webSocketRuntimeName,
 } from "./wsServer/webSocketTransport.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
+import { routeFailureMessage } from "./wsServer/routeFailureMessage.ts";
 import { agentBridgeRoutes } from "./wsServer/routes/agentBridgeRoutes.ts";
 import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
 import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
@@ -957,24 +958,6 @@ function toDeliveryRecoveryError(error: Error): RouteRequestError {
   });
 }
 
-function formatRouteFailureMessage(cause: Cause.Cause<unknown>): string {
-  const squashed = Cause.squash(cause);
-  if (Schema.is(AttachmentIngressError)(squashed)) {
-    return squashed.message;
-  }
-  if (
-    squashed &&
-    typeof squashed === "object" &&
-    "_tag" in squashed &&
-    squashed._tag === "RouteRequestError" &&
-    "message" in squashed &&
-    typeof squashed.message === "string"
-  ) {
-    return squashed.message;
-  }
-  return Cause.pretty(cause);
-}
-
 function formatRouteFailure(
   cause: Cause.Cause<unknown>,
   method: string,
@@ -1013,7 +996,7 @@ function formatRouteFailure(
       ...(squashed.code !== undefined ? { code: squashed.code } : {}),
     };
   }
-  return { message: formatRouteFailureMessage(cause) };
+  return { message: routeFailureMessage(cause) };
 }
 
 const MAX_ROUTE_CAUSE_MESSAGE_LENGTH = 1000;
@@ -1032,10 +1015,11 @@ function formatServerLifecycleRouteFailure(error: ServerLifecycleError): string 
     return baseMessage;
   }
 
+  // The message only: the startup failure is logged with its full cause.
   const causeMessage = Cause.isCause(error.cause)
-    ? Cause.pretty(error.cause)
+    ? routeFailureMessage(error.cause)
     : error.cause instanceof Error
-      ? (error.cause.stack ?? error.cause.message)
+      ? error.cause.message
       : String(error.cause);
   const compactedCauseMessage = compactRouteCauseMessage(causeMessage);
   return compactedCauseMessage.length > 0
@@ -7899,6 +7883,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       });
     }
     if (Exit.isFailure(result)) {
+      // The client is told the message only, so a defect's trace is kept here.
+      if (Cause.hasDies(result.cause))
+        yield* Effect.logError("rpc route defect", {
+          method,
+          cause: Cause.pretty(result.cause),
+        });
       return yield* sendWsResponse(
         {
           id: request.success.id,
