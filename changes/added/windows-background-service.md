@@ -1,0 +1,1 @@
+- Windows installations can run F5 as a per-user Task Scheduler service, with background logs, graceful shutdown, restart, and the launcher's existing update handoff. The service runs while its user is signed in.

@@ -5,7 +5,7 @@ import {
 } from "./outboundHttp.ts";
 import * as NodePath from "node:path";
 import { runDistributionCommand } from "./distribution/commands";
-import { watchLauncher } from "./distribution/activation";
+import { watchLauncher, waitForLauncherStop } from "./distribution/activation";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -41,6 +41,7 @@ export function startServer(): void {
     .then((handled) => {
       if (handled) return;
       Command.run(t3Cli, { version }).pipe(
+        Effect.raceFirst(Effect.promise(waitForLauncherStop)),
         Effect.provide(RuntimeLayer),
         NodeRuntime.runMain({
           teardown: (exit, onExit) =>

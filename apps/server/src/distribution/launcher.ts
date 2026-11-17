@@ -66,6 +66,7 @@ interface Lease {
   child: number | null;
   birth?: string;
   childBirth?: string;
+  service?: boolean;
 }
 function parseLease(value: unknown): Lease {
   if (
@@ -88,6 +89,7 @@ function parseLease(value: unknown): Lease {
     pid: value.pid,
     token: value.token,
     child: value.child,
+    ...("service" in value && value.service === true ? { service: true } : {}),
     ...("birth" in value && typeof value.birth === "string" ? { birth: value.birth } : {}),
     ...("childBirth" in value && typeof value.childBirth === "string"
       ? { childBirth: value.childBirth }
@@ -97,7 +99,11 @@ function parseLease(value: unknown): Lease {
 export async function acquireLauncherLease(
   root: string,
   probeBirth: (pid: number) => Promise<string> = processBirth,
-): Promise<{ child(pid: number | null): Promise<void>; release(): Promise<void> }> {
+): Promise<{
+  readonly token: string;
+  child(pid: number | null): Promise<void>;
+  release(): Promise<void>;
+}> {
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
   const file = path.join(root, "launcher.json");
   if (await exists(file)) {
@@ -138,11 +144,13 @@ export async function acquireLauncherLease(
     birth: await probeBirth(process.pid),
     token: randomUUID(),
     child: null,
+    ...(process.env.F5_WINDOWS_SERVICE === "1" ? { service: true } : {}),
   };
   await exclusiveJson(file, lease).catch(() => {
     throw new Error("An F5 launcher is already starting.");
   });
   return {
+    token: lease.token,
     async child(pid) {
       lease.child = pid;
       if (pid) lease.childBirth = await probeBirth(pid);
@@ -161,7 +169,6 @@ export async function runLauncher(
   args: readonly string[] = [],
 ): Promise<void> {
   // A launcher owns one explicit profile database. Services never auto-resolve a different profile.
-  const lease = await acquireLauncherLease(root);
   let child: ReturnType<typeof managedChild> | undefined;
   let stopping = false;
   let signalStop: () => void = () => {};
@@ -174,7 +181,16 @@ export async function runLauncher(
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
+  const onMessage = (message: unknown) => {
+    if (message && typeof message === "object" && "type" in message && message.type === "stop")
+      stop();
+  };
+  process.on("message", onMessage);
+  if (process.env.F5_LAUNCHER_SUPERVISOR === "1") process.once("disconnect", stop);
+  if (process.env.F5_LAUNCHER_SUPERVISOR === "1" && !process.connected) stop();
+  const lease = await acquireLauncherLease(root);
   try {
+    if (stopping) return;
     const recovered = await recoverHandoff(root, path.join(stateDir, "state.sqlite"));
     const start = async (version: string, outcome?: UpdateOutcome) => {
       child = managedChild(root, version, stateDir, args, outcome);
@@ -185,6 +201,19 @@ export async function runLauncher(
     const outcome = recovered ?? (await readUpdateOutcome(root));
     await start(version, outcome?.version === version ? outcome : undefined);
     while (!stopping) {
+      const stopPath = path.join(root, "service-stop.json");
+      if (await exists(stopPath)) {
+        const request = await readJson(stopPath).catch(() => null);
+        if (
+          request &&
+          typeof request === "object" &&
+          "token" in request &&
+          request.token === lease.token
+        ) {
+          stop();
+          break;
+        }
+      }
       if (await exists(path.join(root, "pending.json"))) {
         let request;
         try {
@@ -257,6 +286,8 @@ export async function runLauncher(
   } finally {
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
+    process.off("message", onMessage);
+    process.off("disconnect", stop);
     await child?.stop();
     await lease.child(null);
     await lease.release();

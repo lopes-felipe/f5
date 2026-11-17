@@ -417,7 +417,8 @@ export function managedChild(
           child.off("exit", exited);
         };
         child.once("exit", exited);
-        child.kill("SIGTERM");
+        if (process.platform === "win32" && child.connected) child.send({ type: "stop" }, () => {});
+        else child.kill("SIGTERM");
       });
     },
   };
