@@ -151,6 +151,7 @@ describe("drafts", () => {
       branch: "main",
       worktreePath: null,
       sharedFilesystemConfirmed: false,
+      worktreeBranchName: null,
     });
     expect(api.git.checkout).not.toHaveBeenCalled();
     expect(api.git.prepareWorktree).not.toHaveBeenCalled();
@@ -160,12 +161,19 @@ describe("drafts", () => {
   it("joins an open worktree, its thread count standing in for the sharing confirmation", async () => {
     await open();
     await option(/fix\/route.*1 thread there/).click();
-    expect(onDraftChange).toHaveBeenCalledWith({
-      envMode: "worktree",
-      branch: "fix/route",
-      worktreePath: "/wt/route",
-      sharedFilesystemConfirmed: true,
-    });
+    await expect
+      .poll(() => onDraftChange.mock.calls)
+      .toEqual([
+        [
+          {
+            envMode: "worktree",
+            branch: "fix/route",
+            worktreePath: "/wt/route",
+            sharedFilesystemConfirmed: true,
+            worktreeBranchName: null,
+          },
+        ],
+      ]);
     expect(api.dialogs.confirm).not.toHaveBeenCalled();
   });
 
@@ -197,6 +205,7 @@ describe("drafts", () => {
       branch: "fix/sidebar",
       worktreePath: null,
       sharedFilesystemConfirmed: false,
+      worktreeBranchName: null,
     });
   });
 
@@ -211,9 +220,10 @@ describe("drafts", () => {
     const name = page.getByRole("textbox", { name: "Branch name" });
     await name.fill("bad name");
     await expect.element(page.getByRole("alert")).toHaveTextContent("cannot contain spaces");
-    expect(
-      useComposerDraftStore.getState().getDraftThread(threadId)?.worktreeBranchName,
-    ).toBeFalsy();
+    // Kept as typed, so send is rejected by the server instead of creating "bad".
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)?.worktreeBranchName).toBe(
+      "bad name",
+    );
     await name.fill("feature/named");
     expect(useComposerDraftStore.getState().getDraftThread(threadId)?.worktreeBranchName).toBe(
       "feature/named",
@@ -287,6 +297,7 @@ describe("switching the branch in place", () => {
       branch: "main",
       worktreePath: null,
       sharedFilesystemConfirmed: false,
+      worktreeBranchName: null,
     });
     expect(api.git.prepareWorktree).not.toHaveBeenCalled();
   });
@@ -431,5 +442,171 @@ describe("keyboard", () => {
     await expect.element(option(/^main\s*default/)).toBeVisible();
     await userEvent.keyboard("{Enter}");
     await expect.poll(() => onDraftChange.mock.calls.at(-1)?.[0]?.branch).toBe("main");
+  });
+});
+
+describe("review follow-ups", () => {
+  const settle = () =>
+    new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())));
+
+  it("switches to the typed branch on Enter instead of going Back", async () => {
+    await open();
+    await option("Switch branch here…").click();
+    await expect.poll(() => api.worktrees.switchAvailability.mock.calls.length).toBe(1);
+    await page.getByPlaceholder("Search branches…").fill("main");
+    await expect.element(option("Back")).not.toBeInTheDocument();
+    await expect.element(option(/^main$/)).toBeEnabled();
+    await userEvent.keyboard("{Enter}");
+    await expect
+      .poll(() => api.git.checkout.mock.calls)
+      .toEqual([[{ cwd: "/repo", branch: "main" }]]);
+  });
+
+  it("reads thread counts before applying a pick made while they are still loading", async () => {
+    let resolveList!: (value: unknown) => void;
+    const inventory = await api.worktrees.list();
+    api.worktrees.list.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolveList = done;
+        }),
+    );
+    await open();
+    await option(/^fix\/route/).click();
+    await settle();
+    expect(onDraftChange).not.toHaveBeenCalled();
+    resolveList(inventory);
+    await expect
+      .poll(() => onDraftChange.mock.calls.at(-1)?.[0])
+      .toMatchObject({ worktreePath: "/wt/route", sharedFilesystemConfirmed: true });
+  });
+
+  it("offers a separate worktree when the checkout became busy after the check", async () => {
+    api.git.checkout.mockRejectedValue(
+      new WsRequestError(
+        "In use by Review (running turn). Start a new worktree instead.",
+        "WorkspaceRequiresNewWorktree",
+      ),
+    );
+    await open();
+    await option("Switch branch here…").click();
+    await option(/^main$/).click();
+    await expect
+      .element(page.getByRole("heading", { name: "Open branch in a separate worktree" }))
+      .toBeVisible();
+    expect(mocks.toast).not.toHaveBeenCalled();
+  });
+
+  it("creates a draft's branch through the atomic switch and reports a failure as such", async () => {
+    api.git.checkout.mockRejectedValue(new Error("fatal: invalid ref"));
+    await open();
+    await option("Switch branch here…").click();
+    await page.getByPlaceholder("Search branches…").fill("topic");
+    await option(/Create branch "topic" here/).click();
+    await expect
+      .poll(() => api.git.checkout.mock.calls)
+      .toEqual([[{ cwd: "/repo", branch: "topic", create: true }]]);
+    expect(api.git.createBranch).not.toHaveBeenCalled();
+    await expect
+      .poll(() => mocks.toast.mock.calls.at(-1)?.[0])
+      .toMatchObject({ type: "error", title: "Failed to create branch." });
+  });
+
+  it("closes an open popup when the send lock turns on", async () => {
+    await open();
+    await expect.element(page.getByPlaceholder("Search branches and worktrees…")).toBeVisible();
+    await screen!.rerender(picker({ disabled: true }));
+    await expect
+      .element(page.getByPlaceholder("Search branches and worktrees…"))
+      .not.toBeInTheDocument();
+  });
+
+  it("checks the live store before applying a switch that resolves late", async () => {
+    let current = true;
+    let finish!: () => void;
+    api.git.checkout.mockImplementation(
+      () =>
+        new Promise<void>((done) => {
+          finish = done;
+        }),
+    );
+    await open({ canApplyWorkspace: () => current });
+    await option("Switch branch here…").click();
+    await option(/^main$/).click();
+    await expect.poll(() => api.git.checkout.mock.calls.length).toBe(1);
+    current = false;
+    finish();
+    await settle();
+    expect(onSetThreadBranch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the remote ref as the base of the new worktree a conflict offers", async () => {
+    api.git.listBranches.mockResolvedValue({
+      isRepo: true,
+      hasOriginRemote: true,
+      branches: [
+        { name: "fix/sidebar", current: true, isDefault: false, worktreePath: "/repo" },
+        {
+          name: "origin/feature",
+          current: false,
+          isDefault: false,
+          isRemote: true,
+          remoteName: "origin",
+          worktreePath: null,
+        },
+      ],
+    });
+    api.git.checkout.mockRejectedValue(
+      new WsRequestError("Blocked", "GitCheckoutConflict", {
+        cwd: "/repo",
+        branch: "origin/feature",
+        files: ["index.css"],
+      }),
+    );
+    await open();
+    await option("Switch branch here…").click();
+    await expect.poll(() => api.worktrees.switchAvailability.mock.calls.length).toBe(1);
+    await page.getByPlaceholder("Search branches…").fill("origin/feature");
+    await expect
+      .element(page.getByRole("option").filter({ hasText: "origin/feature" }))
+      .toBeEnabled();
+    await userEvent.keyboard("{Enter}");
+    await expect
+      .poll(() => api.git.checkout.mock.calls)
+      .toEqual([[{ cwd: "/repo", branch: "origin/feature" }]]);
+    await page.getByRole("button", { name: "Start in a new worktree" }).click();
+    expect(onDraftChange).toHaveBeenCalledWith(
+      expect.objectContaining({ envMode: "worktree", branch: "origin/feature" }),
+    );
+  });
+
+  it("returns focus to the trigger after Escape", async () => {
+    const trigger = await open();
+    await expect.element(page.getByPlaceholder("Search branches and worktrees…")).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect.element(trigger, { timeout: 1000 }).toHaveFocus();
+  });
+
+  it("shows the change request of the branch the thread works on, not the folder's", async () => {
+    api.git.status.mockResolvedValue({
+      branch: "fix/sidebar",
+      changeRequest: {
+        provider: { kind: "github", host: "github.com" },
+        id: "1",
+        displayNumber: "#77",
+        title: "Sidebar",
+        url: "https://github.com/o/f5/pull/77",
+        baseRefName: "main",
+        headRefName: "fix/sidebar",
+        state: "open",
+        updatedAt: null,
+        isCrossRepository: false,
+      },
+    });
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    screen = await render(picker());
+    await expect.element(page.getByLabelText("Open change request #77")).toBeVisible();
+    await screen.rerender(picker({ effectiveEnvMode: "worktree", activeThreadBranch: "main" }));
+    await expect.element(page.getByLabelText("Open change request #77")).not.toBeInTheDocument();
   });
 });

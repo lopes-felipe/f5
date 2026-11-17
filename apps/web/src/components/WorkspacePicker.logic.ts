@@ -112,6 +112,8 @@ export interface WorkspaceRowsInput {
   readonly hasCompletedMove: boolean;
   /** Why an in-place switch is refused right now; null while unknown or allowed. */
   readonly switchBlockedReason: string | null;
+  /** The switch availability check has not answered yet. */
+  readonly switchChecking?: boolean;
 }
 
 const matches = (normalizedQuery: string, ...values: ReadonlyArray<string | null>) =>
@@ -283,7 +285,11 @@ function buildSwitchRows(input: WorkspaceRowsInput): ReadonlyArray<WorkspaceRow>
   const normalized = query.toLowerCase();
   const checkout = switchCheckoutPath(input.state, input.projectCwd);
   const blocked = input.switchBlockedReason !== null;
-  const rows: WorkspaceRow[] = [{ kind: "back", key: "back", label: "Back" }];
+  // Until availability is known, nothing can be switched to.
+  const disabled = blocked || input.switchChecking === true;
+  // Back stays out of the way of Enter while a query names a target.
+  const rows: WorkspaceRow[] =
+    query.length === 0 ? [{ kind: "back", key: "back", label: "Back" }] : [];
   if (blocked)
     rows.push({
       kind: "notice",
@@ -291,25 +297,36 @@ function buildSwitchRows(input: WorkspaceRowsInput): ReadonlyArray<WorkspaceRow>
       text: input.switchBlockedReason!,
       tone: "warning",
     });
+  else if (input.switchChecking === true)
+    rows.push({
+      kind: "notice",
+      key: "notice:checking",
+      text: "Checking who uses this checkout…",
+      tone: "muted",
+    });
+  // Live Git state names the checked-out branch; the recorded branch is only a
+  // fallback, so an outside checkout change cannot leave two branches "current".
+  const liveBranch = input.branches.find((branch) => branch.worktreePath === checkout)?.name;
   const currentBranch =
-    input.state.kind === "local"
+    liveBranch ??
+    (input.state.kind === "local"
       ? input.projectBranch
       : input.state.kind === "worktree"
         ? input.state.branch
-        : null;
+        : null);
   // A branch checked out in another checkout cannot be checked out here too.
   const targets = input.branches
     .filter((branch) => branch.worktreePath === null || branch.worktreePath === checkout)
     .filter((branch) => matches(normalized, branch.name))
     .map((branch) => {
-      const current = branch.name === currentBranch || branch.worktreePath === checkout;
+      const current = branch.name === currentBranch;
       return {
         kind: "switchTarget" as const,
         key: `switch:${branch.name}`,
         branch: branch.name,
         current,
         isRemote: branch.isRemote === true,
-        disabled: blocked || current,
+        disabled: disabled || current,
       };
     });
   rows.push({
@@ -327,7 +344,7 @@ function buildSwitchRows(input: WorkspaceRowsInput): ReadonlyArray<WorkspaceRow>
         (branch.isRemote === true && deriveLocalBranchNameFromRemoteRef(branch.name) === name),
     )
   )
-    rows.push({ kind: "createBranchHere", key: `create:${name}`, name, disabled: blocked });
+    rows.push({ kind: "createBranchHere", key: `create:${name}`, name, disabled });
   return rows;
 }
 

@@ -61,6 +61,7 @@ import { MiddleTruncate } from "./MiddleTruncate";
 import {
   buildWorkspaceRows,
   isSelectableRow,
+  linkedThreadCount,
   linkedThreadsByPath,
   switchCheckoutPath,
   type SelectableWorkspaceRow,
@@ -210,7 +211,9 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
       refetchIntervalMs: refreshSeconds * 1000,
     }),
   );
-  const worktreesQuery = useQuery({ ...worktreesListQueryOptions(projectId), enabled: open });
+  // Fetched on mount, not on open: thread counts are the sharing disclosure, so
+  // they must be known before the first pick.
+  const worktreesQuery = useQuery(worktreesListQueryOptions(projectId));
   const branches = useMemo(
     () => dedupeRemoteBranchesWithLocalMatches(branchesQuery.data?.branches ?? []),
     [branchesQuery.data?.branches],
@@ -236,6 +239,7 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
     enabled: open && mode === "switch" && switchPath !== null,
     staleTime: 0,
   });
+  const switchChecking = mode === "switch" && switchPath !== null && availabilityQuery.isPending;
   const blockers = availabilityQuery.data?.blockers ?? [];
   const switchBlockedReason = availabilityQuery.error
     ? `Could not check who uses this checkout: ${errorMessage(availabilityQuery.error)}`
@@ -297,6 +301,7 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
         moveDisabled: props.moveDisabled,
         hasCompletedMove: completedMove !== null,
         switchBlockedReason,
+        switchChecking,
       }),
     // `state` is derived from the listed props each render.
     [
@@ -320,6 +325,7 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
       props.moveDisabled,
       completedMove,
       switchBlockedReason,
+      switchChecking,
     ],
   );
   const selectable = useMemo(() => rows.filter(isSelectableRow), [rows]);
@@ -348,7 +354,10 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
       await invalidateGitQueries(queryClient, { cwd }).catch(() => undefined);
       await queryClient.invalidateQueries({ queryKey: ["worktrees"] }).catch(() => undefined);
     });
-  const handleCheckoutError = (error: unknown) => {
+  const handleCheckoutError = (
+    error: unknown,
+    target: { cwd: string; branch: string; creating: boolean },
+  ) => {
     if (
       error instanceof WsRequestError &&
       error.code === "GitCheckoutConflict" &&
@@ -357,9 +366,18 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
       setCheckoutConflict({ conflict: error.checkoutConflict, context });
       return;
     }
+    // Something started using the checkout after the availability check: offer
+    // the same way out as a file conflict.
+    if (error instanceof WsRequestError && error.code === "WorkspaceRequiresNewWorktree") {
+      setCheckoutConflict({
+        conflict: { cwd: target.cwd, branch: target.branch, files: [] },
+        context,
+      });
+      return;
+    }
     toastManager.add({
       type: "error",
-      title: "Could not switch branch",
+      title: target.creating ? "Failed to create branch." : "Could not switch branch",
       description: errorMessage(error),
     });
   };
@@ -375,7 +393,7 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
         if (isDraft) await api.git.checkout({ cwd, branch });
         else await switchConversationWorkspace(threadId, { intent: "checkout_branch", branch });
       } catch (error) {
-        handleCheckoutError(error);
+        handleCheckoutError(error, { cwd, branch, creating: false });
         return;
       }
       if (!isDraft) return;
@@ -393,33 +411,56 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
     close();
     runBranchAction(cwd, async () => {
       try {
-        if (isDraft) {
-          await api.git.createBranch({ cwd, branch: name });
-          await api.git.checkout({ cwd, branch: name });
-        } else
+        // The server creates the branch only once the switch is allowed, so a
+        // refused switch leaves no stray branch behind.
+        if (isDraft) await api.git.checkout({ cwd, branch: name, create: true });
+        else
           await switchConversationWorkspace(threadId, {
             intent: "create_branch_and_checkout",
             branch: name,
           });
       } catch (error) {
-        handleCheckoutError(error);
+        handleCheckoutError(error, { cwd, branch: name, creating: true });
         return;
       }
       if (isDraft && canApplyWorkspace()) onSetThreadBranch(name, worktreePath);
     });
   };
 
+  /**
+   * Other conversations on `path`. The row's count is the sharing disclosure;
+   * when the inventory has not loaded yet, read it before acting on the pick.
+   */
+  const sharedCount = async (path: string, rowCount: number) => {
+    if (worktreesQuery.data) return rowCount;
+    const data = await queryClient
+      .fetchQuery(worktreesListQueryOptions(projectId))
+      .catch(() => null);
+    return linkedThreadCount(
+      linkedThreadsByPath(data?.projects.find((entry) => entry.projectId === projectId)?.entries),
+      path,
+      threadId,
+    );
+  };
+
   const pick = (row: SelectableWorkspaceRow) => {
+    // The send lock may turn on while the popup is open.
+    if (props.disabled === true) return close();
     switch (row.kind) {
       case "local":
+        // A typed worktree branch name belongs to the worktree it was typed for.
         if (isDraft)
           onDraftChange({
             envMode: "local",
             branch: row.branch,
             worktreePath: null,
             sharedFilesystemConfirmed: false,
+            worktreeBranchName: null,
           });
-        else if (state.kind !== "local") onSetThreadBranch(null, null, row.threadCount > 0);
+        else if (state.kind !== "local")
+          void sharedCount(projectCwd, row.threadCount).then(
+            (count) => canApplyWorkspace() && onSetThreadBranch(null, null, count > 0),
+          );
         return close();
       case "newWorktree":
         onDraftChange({
@@ -427,18 +468,25 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
           branch: row.branch,
           worktreePath: null,
           sharedFilesystemConfirmed: false,
+          ...(state.kind === "newWorktree" && state.base === row.branch
+            ? {}
+            : { worktreeBranchName: null }),
         });
         return close();
       case "openWorktree":
-        // The row's thread count is the sharing disclosure.
-        if (isDraft)
-          onDraftChange({
-            envMode: "worktree",
-            branch: row.branch,
-            worktreePath: row.path,
-            sharedFilesystemConfirmed: row.threadCount > 0,
-          });
-        else if (!row.selected) onSetThreadBranch(row.branch, row.path, row.threadCount > 0);
+        if (row.selected) return close();
+        void sharedCount(row.path, row.threadCount).then((count) => {
+          if (!canApplyWorkspace()) return;
+          if (isDraft)
+            onDraftChange({
+              envMode: "worktree",
+              branch: row.branch,
+              worktreePath: row.path,
+              sharedFilesystemConfirmed: count > 0,
+              worktreeBranchName: null,
+            });
+          else onSetThreadBranch(row.branch, row.path, count > 0);
+        });
         return close();
       case "newBranchWorktree":
         onDraftChange({
@@ -532,6 +580,14 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
     if (open) listRef.current?.scrollToOffset?.({ offset: 0, animated: false });
   }, [deferredQuery, mode, open]);
 
+  // The send lock closes a popup that is already open.
+  useEffect(() => {
+    if (props.disabled !== true || !open) return;
+    setOpen(false);
+    setQuery("");
+    setMode("pick");
+  }, [open, props.disabled]);
+
   const label = workspaceTriggerLabel({
     state,
     creatingWorktree,
@@ -541,8 +597,16 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
   });
   const displayPath = state.kind === "worktree" ? state.path : projectCwd;
   const TriggerIcon = state.kind === "local" && !creatingWorktree ? FolderIcon : GitForkIcon;
+  // The badge belongs to the branch the thread works on, not the folder's
+  // current branch: a new worktree from main must not show a feature branch's PR.
+  const targetBranch =
+    state.kind === "newWorktree"
+      ? state.base
+      : state.kind === "worktree"
+        ? state.branch
+        : projectBranch;
   const changeRequest =
-    statusQuery.data?.branch && statusQuery.data.branch === currentGitBranch
+    statusQuery.data?.branch && statusQuery.data.branch === targetBranch
       ? (statusQuery.data.changeRequest ?? null)
       : null;
   const changeRequestUrl = changeRequest ? resolveChangeRequestWebUrl(changeRequest) : null;
@@ -747,6 +811,7 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
                     branch: checkoutConflict.conflict.branch,
                     worktreePath: null,
                     sharedFilesystemConfirmed: false,
+                    worktreeBranchName: null,
                   }),
               }
             : {})}
@@ -963,9 +1028,10 @@ function NewWorktreeFooter(props: {
           onChange={(event) => {
             const next = event.target.value;
             setName(next);
-            const trimmed = next.trim();
-            if (/\s/.test(trimmed)) return;
-            update(props.threadId, { worktreeBranchName: trimmed || null });
+            // Store exactly what was typed, invalid or not: the server rejects an
+            // invalid name before creating anything and keeps the draft, rather
+            // than send silently creating the last valid prefix.
+            update(props.threadId, { worktreeBranchName: next.trim() || null });
           }}
         />
       </label>
