@@ -296,8 +296,8 @@ jobs:
         env:
           F5_CI_SUITE_ID: "web-browser"
         run: |
-          # Leave headroom for the growing suite on shared runners; individual
-          # tests still have Vitest's 30-second timeout.
+          # The full suite exceeds ten minutes on shared runners. Leave headroom
+          # within the 15-minute job; individual tests retain their 30-second timeout.
           # Keep setup on the runner (the browser image does not include Bun's
           # bootstrap tools). Only tests run in Docker, with the pinned Node
           # executable and host UID so reports remain readable by upload steps.
@@ -313,7 +313,7 @@ jobs:
             --env F5_CI_ARTIFACT_DIR \
             --env CI=true \
             "$PLAYWRIGHT_IMAGE" \
-            timeout --signal=TERM --kill-after=20s 10m \
+            timeout --signal=TERM --kill-after=20s 12m \
             node node_modules/vitest/vitest.mjs run --config vitest.browser.config.ts
       - name: Summarize test reports
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
