@@ -312,9 +312,13 @@ export function extractComputerStep(
   });
 }
 
-/** `ComputerTargetAvailability` as one word: free, or why the wait ended without a turn. */
+/**
+ * `ComputerTargetAvailability` as one word. A timeout always carries the last blocking reason,
+ * so the timeout is checked first and keeps that reason as a suffix.
+ */
 function waitTargetOutcome(structured: Record<string, unknown> | undefined): unknown {
   if (structured?.available === true) return "available";
-  if (typeof structured?.reason === "string") return structured.reason;
-  return structured?.timedOut === true ? "timed-out" : undefined;
+  const reason = typeof structured?.reason === "string" ? structured.reason : undefined;
+  if (structured?.timedOut === true) return reason ? `timed-out-${reason}` : "timed-out";
+  return reason;
 }

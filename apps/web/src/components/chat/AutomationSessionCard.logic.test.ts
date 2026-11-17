@@ -190,7 +190,7 @@ describe("buildAutomationRun", () => {
   it("keeps a target wait inside the computer run", () => {
     const entries = [
       computer("screenshot"),
-      computer("wait_for_target", { computerStep: { outcome: "user-active" } }),
+      computer("wait_for_target", { computerStep: { outcome: "timed-out-user-active" } }),
       computer("screenshot"),
     ];
     expect(automationRunEnd(entries, 0, (entry) => entry)).toBe(3);
@@ -201,7 +201,7 @@ describe("buildAutomationRun", () => {
       ["waitTarget", "Waited for a turn", false],
       ["screenshot", "Took a screenshot", false],
     ]);
-    expect(automationStepDetail(entries[1]!)).toBe("user-active");
+    expect(automationStepDetail(entries[1]!)).toBe("timed-out-user-active");
   });
 
   it("marks a run whose last action failed", () => {

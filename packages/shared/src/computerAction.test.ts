@@ -171,8 +171,9 @@ describe("extractComputerStep", () => {
     [{ available: true, timedOut: false }, "available"],
     [
       { available: false, timedOut: true, reason: "user-active", detail: "keyboard" },
-      "user-active",
+      "timed-out-user-active",
     ],
+    [{ available: false, timedOut: true, reason: "agent-busy" }, "timed-out-agent-busy"],
     [{ available: false, timedOut: true }, "timed-out"],
   ])("summarizes a target wait %j as %s", (availability, outcome) => {
     const result = { ...availability, requiresFreshObservation: true };
