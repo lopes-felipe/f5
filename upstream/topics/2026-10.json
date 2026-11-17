@@ -7299,9 +7299,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-11-17T11:49:00.943Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14678",
-      "status": "inbox",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -52118,9 +52122,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-11-17T11:49:00.943Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24718",
-      "status": "inbox",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -52880,9 +52888,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-11-17T11:49:00.943Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24847",
-      "status": "inbox",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -57225,9 +57237,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-17T11:49:00.943Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25251",
-      "status": "inbox",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -57763,9 +57779,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-17T11:49:00.943Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25324",
-      "status": "inbox",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -62573,9 +62593,13 @@
     },
     {
       "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-11-17T11:49:00.943Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26164",
-      "status": "inbox",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
@@ -74386,12 +74410,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-11-17T11:49:00.943Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-7147",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-17086"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",

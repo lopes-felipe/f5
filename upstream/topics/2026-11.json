@@ -43400,9 +43400,13 @@
     },
     {
       "createdAt": "2026-11-10T11:08:25.209Z",
+      "decidedAt": "2026-11-17T11:49:00.943Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33092",
-      "status": "inbox",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -57513,9 +57517,13 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T11:49:00.943Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-35305",
-      "status": "inbox",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "terminal",
