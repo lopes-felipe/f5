@@ -1,0 +1,348 @@
+{
+  "baseSha": "59ec1bac9fc2624171854cfdb9c4140b0166a115",
+  "commits": [
+    {
+      "pr": 19585,
+      "sha": "beaeeff40ef108e2cdb37112bfd0dd31b4660eae",
+      "subject": "fix(acp): bound unread raw notification retention (#19585)",
+      "topic": "pr-19585"
+    },
+    {
+      "pr": 32389,
+      "sha": "5cb2a7d08802f3f046dcd10b0e802c1e63e570c8",
+      "subject": "fix(pi): preserve explicit thinking when switching models (#32389)",
+      "topic": "pr-32389"
+    },
+    {
+      "pr": 32391,
+      "sha": "2d0a9dfd5137b3c0e90bec7329ee018b27643b46",
+      "subject": "fix(provider-acp): preserve UTF-8 across interleaved terminal streams (#32391)",
+      "topic": "pr-32391"
+    },
+    {
+      "pr": 22160,
+      "sha": "c864b1c1e110294607303c19a8595a24a209b4b4",
+      "subject": "feat(web): delete archived threads from the archive page (#22160)",
+      "topic": "pr-22160"
+    },
+    {
+      "pr": 32395,
+      "sha": "95e7dbfdaf6d3c452eaeebd34c2d9712e2245358",
+      "subject": "fix(github): keep review-required until required reviewers approve (#32395)",
+      "topic": "pr-32395"
+    },
+    {
+      "pr": 32408,
+      "sha": "a9752171080f264c7df6a979425d4dc2448a85b8",
+      "subject": "fix(grok): long command titles no longer end in a broken character (#32408)",
+      "topic": "pr-32408"
+    },
+    {
+      "pr": 32405,
+      "sha": "ce9b80671bbdf274d64109465963dc967cbe076a",
+      "subject": "fix(server): theme files saved with a UTF-8 BOM are published instead of rejected (#32405)",
+      "topic": "pr-32405"
+    },
+    {
+      "pr": 32403,
+      "sha": "48bb784e3d239be6ed2a581cbd9d052d0b07c4d7",
+      "subject": "fix(shared): inline code like `allocator.cc:217` becomes a file chip (#32403)",
+      "topic": "pr-32403"
+    },
+    {
+      "pr": 32409,
+      "sha": "7f7bf263a8367418fd1eafc4e55b58f20ddb8f6d",
+      "subject": "fix(web): recover ACP settings when projects change (#32409)",
+      "topic": "pr-32409"
+    },
+    {
+      "pr": 32411,
+      "sha": "fd1adc888a676d5f658da48f687247bb09a374c3",
+      "subject": "fix(acp): retain streamed child tool output (#32411)",
+      "topic": "pr-32411"
+    },
+    {
+      "pr": 29280,
+      "sha": "1b952135a150f180a49f442d3ed66639266d1bf0",
+      "subject": "fix(providers): remove incomplete ChatGPT connections (#29280)",
+      "topic": "pr-29280"
+    },
+    {
+      "pr": 30011,
+      "sha": "bc46c0ff682395baa5c1ef1093571bc21d28d51d",
+      "subject": "perf(server): avoid lsof polling when Linux proc is usable (#30011)",
+      "topic": "pr-30011"
+    },
+    {
+      "pr": 29586,
+      "sha": "fad24fc863ae4a4ae55649bd4868c1b103c3faf9",
+      "subject": "fix(azure-devops): default-branch lookup no longer fails for missing --repository (#29586)",
+      "topic": "pr-29586"
+    },
+    {
+      "pr": 32398,
+      "sha": "83a3674ffd84ffb33de768210c806cb1ac53fd80",
+      "subject": "fix(web): isolate scrollbar styles from iframe owners (#32398)",
+      "topic": "pr-32398"
+    },
+    {
+      "pr": 30322,
+      "sha": "0f4a13071090e89c6d7eccdb0eb98b3cde1823ee",
+      "subject": "fix(codex): explain speed limits on managed connections (#30322)",
+      "topic": "pr-30322"
+    },
+    {
+      "pr": 24202,
+      "sha": "f8c7c7593f32c5fd17c9647cb89761ce8285cc7e",
+      "subject": "fix(web): the main sidebar stays collapsed after relaunch (#24202)",
+      "topic": "pr-24202"
+    },
+    {
+      "pr": 32231,
+      "sha": "257e4073c1c51dcae291ecc7ca482dc66900f961",
+      "subject": "fix(pi): the T3 MCP extension file is written atomically (#32231)",
+      "topic": "pr-32231"
+    },
+    {
+      "pr": 32179,
+      "sha": "984fe2d45e06ff20a1a184ae48a856c74f9c05a4",
+      "subject": "perf(shared): scan usage-limit support once per provider catalog (#32179)",
+      "topic": "pr-32179"
+    },
+    {
+      "pr": 32194,
+      "sha": "f4c88542c6919eaf30785809365fb4c9c16af557",
+      "subject": "fix(marketing): balance fork and download heading text (#32194)",
+      "topic": "pr-32194"
+    },
+    {
+      "pr": 32252,
+      "sha": "f901c37e7fe20816caa52e5f5e8eca7729e5b42c",
+      "subject": "fix(server): git failures are read in English when macOS git follows the system language (#32252)",
+      "topic": "pr-32252"
+    },
+    {
+      "pr": 32263,
+      "sha": "d5c2c12c48642a039d88568505e83719dae88b37",
+      "subject": "test(server): three more tests stop assuming a POSIX host (#32263)",
+      "topic": "pr-32263"
+    },
+    {
+      "pr": 32269,
+      "sha": "faeed8c5f33faf31ef1de70866c8c69ba617ea1c",
+      "subject": "docs(updates): say when Update all leaves a provider out (#32269)",
+      "topic": "pr-32269"
+    },
+    {
+      "pr": 32325,
+      "sha": "d4247a5a19ccc76cdedf637f397117d7e4646ad0",
+      "subject": "feat: auto-settle inactive threads after 7 days by default (#32325)",
+      "topic": "pr-32325"
+    },
+    {
+      "pr": 32035,
+      "sha": "15b72755956c3338dd98440a7ed35beffe46b0b7",
+      "subject": "fix(web): first-run voice setup offers a model for the user's language (#32035)",
+      "topic": "pr-30625"
+    },
+    {
+      "pr": 32197,
+      "sha": "4bd82b2177e682f10c138a8aa11dc96133679121",
+      "subject": "fix(web): make first-run dictation setup discoverable (#32197)",
+      "topic": "pr-30625"
+    },
+    {
+      "pr": 31769,
+      "sha": "fe901ac7ba95e142ddf77599bb5b5187e6c5e3d8",
+      "subject": "feat(voice): opt into cloud dictation with OpenAI, Grok, or OpenRouter (#31769)",
+      "topic": "pr-30625"
+    },
+    {
+      "pr": 23878,
+      "sha": "33f85846be8bc4bc592f0e621d6f0313e5abd4a4",
+      "subject": "fix(server): t3 service install no longer moves a --base-dir service onto an empty ~/.t3 (#23878)",
+      "topic": "pr-23878"
+    },
+    {
+      "pr": 28530,
+      "sha": "006d7e38f0485431c314a1afcc39fa823f379092",
+      "subject": "fix(mobile): stop the work-row shimmer from updating every frame (#28530)",
+      "topic": "pr-28530"
+    },
+    {
+      "pr": 29355,
+      "sha": "9f2bb98a8508ec9f6e695bf5d127aeadd06467f5",
+      "subject": "fix(mobile): preserve line breaks in Markdown table cells (#29355)",
+      "topic": "pr-29355"
+    },
+    {
+      "pr": 31635,
+      "sha": "4cb6945dc60ed03f567dc5daafd083e52308e82b",
+      "subject": "fix(mobile): keep settled status pills readable (#31635)",
+      "topic": "pr-31635"
+    },
+    {
+      "pr": 31825,
+      "sha": "08a3909406bf010f2126fe9c75cadd93fa42ee7c",
+      "subject": "fix: show latest reply age in active thread rows (#31825)",
+      "topic": "pr-31825"
+    },
+    {
+      "pr": 30420,
+      "sha": "b19c9f038a27b1bad79dfc2f8941e904605f34ea",
+      "subject": "fix(web): add installable icons for Firefox on Android (#30420)",
+      "topic": "pr-30420"
+    },
+    {
+      "pr": 31794,
+      "sha": "07508ffd2fa71b00583c5fecda11780b0f60aa02",
+      "subject": "fix(web): popovers over the desktop header respond to the pointer (#31794)",
+      "topic": "pr-31794"
+    },
+    {
+      "pr": 31489,
+      "sha": "d944e2a396ba9df697094150211a6930ce2c1a0a",
+      "subject": "fix(desktop): open Teams web in the preview browser (#31489)",
+      "topic": "pr-31489"
+    },
+    {
+      "pr": 30230,
+      "sha": "23bdb9ef1cc39ddb21a3e077f97f580d50b8fc22",
+      "subject": "fix(mobile): Android composer renders DM Sans (#30230)",
+      "topic": "pr-30230"
+    },
+    {
+      "pr": 31168,
+      "sha": "0bba3684b83ed359b465cd39c53ff2fb797841ad",
+      "subject": "fix(mobile): iOS filter menus close back into their pill without clipping or garbling (#31168)",
+      "topic": "pr-31168"
+    },
+    {
+      "pr": 27960,
+      "sha": "e0ec11bc1e33f3dc996864510050380642e6e121",
+      "subject": "fix(mobile): review diff no longer goes blank after switching sections (#27960)",
+      "topic": "pr-27960"
+    },
+    {
+      "pr": 31292,
+      "sha": "240446e2d9625600b0c841faf6bddf367bd26967",
+      "subject": "fix(server): a usage-limit auto-resume survives a server restart (#31292)",
+      "topic": "pr-29838"
+    },
+    {
+      "pr": 31778,
+      "sha": "d5fc29fe5cb62db68bfbf824cfabe0ae94ac6ac4",
+      "subject": "fix(web): relay-connected microphone destinations authorize speech requests (#31778)",
+      "topic": "pr-31778"
+    },
+    {
+      "pr": 31955,
+      "sha": "b90e554e0a942605c4de2d4ff5d4654caf998e27",
+      "subject": "ci(release): macOS arm64 stops compressing a pnpm store it cannot save (#31955)",
+      "topic": "pr-31955"
+    },
+    {
+      "pr": 31936,
+      "sha": "cb8e0ded774d3b6f2a5ef607160cf9786313b5a7",
+      "subject": "ci(release): npm publish no longer checks out and installs the workspace (#31936)",
+      "topic": "pr-31949"
+    },
+    {
+      "pr": 31945,
+      "sha": "423254e27dc58e6bb14c994fc0e69fd2f40c8312",
+      "subject": "perf(release): macOS CLI notarization no longer blocks the desktop build (#31945)",
+      "topic": "pr-31949"
+    },
+    {
+      "pr": 31949,
+      "sha": "05b72267769fdcf4ddfdef476375916ea165c8f2",
+      "subject": "perf(release): fetch the nightly Android APK in a background step (#31949)",
+      "topic": "pr-31949"
+    },
+    {
+      "pr": 25988,
+      "sha": "32a0531748c44b25072d7495ce0b9bd7e9450a87",
+      "subject": "fix(web): PR bodies keep before/after video tables intact (#25988)",
+      "topic": "pr-25988"
+    },
+    {
+      "pr": 32142,
+      "sha": "40dc2910ea87a4959325e9210c84dacef37e9c3c",
+      "subject": "fix(clients): dictating a citation comment or preview annotation uses the full width (#32142)",
+      "topic": "pr-30625"
+    },
+    {
+      "pr": 32141,
+      "sha": "8bf1b64cae37abbff80a5cf98d2ae0f41dba5264",
+      "subject": "fix(web): the citation comment box opens at the quote instead of sliding in from the corner (#32141)",
+      "topic": "pr-30625"
+    },
+    {
+      "pr": 32162,
+      "sha": "bdb8d5dfc067134f460ea7757e62355fe5f9b2a7",
+      "subject": "perf(server): background PR discovery no longer delays git status after a restart (#32162)",
+      "topic": "pr-32162"
+    },
+    {
+      "pr": 31928,
+      "sha": "6fe0fdf088019052e5b4430882c7d968d23976d7",
+      "subject": "fix(azure-devops): existing pull requests are found for branches containing # (#31928)",
+      "topic": "pr-31928"
+    },
+    {
+      "pr": 32045,
+      "sha": "c09060b62bfe3e065e2ef4c273dfe55b0f10d0b3",
+      "subject": "feat(web): sort and filter transcription models (#32045)",
+      "topic": "pr-30625"
+    },
+    {
+      "pr": 32154,
+      "sha": "9db5d56366441ac5795587b0ea3cdbca327c3143",
+      "subject": "fix(muse): recover from unavailable session views (#32154)",
+      "topic": "pr-32154"
+    },
+    {
+      "pr": 31017,
+      "sha": "c76f94e16a5a6ba22d9f60680efe9b78fd6c64b7",
+      "subject": "perf(cursor): stop tracing the per-event account usage hash (#31017)",
+      "topic": "pr-31584"
+    },
+    {
+      "pr": 31586,
+      "sha": "8ee2f35eeb2d2a4b9603b5a1e0b7328289c97ac8",
+      "subject": "perf(server): stop tracing each transcript file in usage scans (#31586)",
+      "topic": "pr-31584"
+    },
+    {
+      "pr": 31584,
+      "sha": "50f0dacbd7695309a58d69318fab2fff502a91ea",
+      "subject": "perf(server): stop tracing the per-event background-work probe (#31584)",
+      "topic": "pr-31584"
+    },
+    {
+      "pr": 31012,
+      "sha": "8a942c2121c7a2d5b8a164c1ffc247334c62137b",
+      "subject": "perf(server): provider-thread reads start from owned rows, not every node of the thread (#31012)",
+      "topic": "pr-31012"
+    },
+    {
+      "pr": 29817,
+      "sha": "df13391fb1b321b810cfab0e721ca858c65b931f",
+      "subject": "fix(azure-devops): a fork's same-named branch no longer hides the branch's own pull request (#29817)",
+      "topic": "pr-29817"
+    },
+    {
+      "pr": 29284,
+      "sha": "6577c6b6185167c0e502fa01f9e8e8f2dee6ff25",
+      "subject": "perf(server): background service launcher uses 75% less memory (#29284)",
+      "topic": "pr-29284"
+    }
+  ],
+  "count": 56,
+  "createdAt": "2026-11-07T11:05:23.639Z",
+  "digest": "af93483303726fd14c5f4b2abbbf41b80df1db8c501ed378cc80b9470f00320f",
+  "interval": 19,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "beaeeff40ef108e2cdb37112bfd0dd31b4660eae"
+}

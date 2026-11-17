@@ -301,6 +301,7 @@ function resolveWsRpc(body: {
     return { entries: [], truncated: false };
   }
   if (tag === WS_METHODS.worktreesGetTransition) return null;
+  if (tag === WS_METHODS.worktreesList) return { projects: [] };
   return {};
 }
 

@@ -157,7 +157,7 @@ export function WorkspaceTransitionBanner({ threadId }: { threadId: ThreadId }) 
               disabled={busy || !preview.projectCheckout || preview.transition.phase === "failed"}
               onClick={() => void resolve("use_project_checkout")}
             >
-              Continue in project checkout
+              Continue in Local
             </Button>
             <Button
               size="sm"

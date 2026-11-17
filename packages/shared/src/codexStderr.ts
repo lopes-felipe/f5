@@ -3,6 +3,11 @@ const BENIGN_CODEX_PROCESS_STDERR_SNIPPETS = [
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
 ] as const;
 
+/** Stderr is otherwise diagnostic; structured lifecycle events remain authoritative. */
+export function isFatalCodexProcessStderrMessage(message: string): boolean {
+  return message.toLowerCase().includes("failed to connect to websocket");
+}
+
 const BENIGN_CODEX_TELEMETRY_EXPORT_ERROR_SNIPPETS = [
   'name="BatchSpanProcessor.Flush.ExportError"',
   'name="BatchSpanProcessor.ExportError"',

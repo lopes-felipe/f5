@@ -1,0 +1,96 @@
+{
+  "baseSha": "06274896eeb9a8c1646afffd4e45e77ce17596e9",
+  "commits": [
+    {
+      "pr": 35170,
+      "sha": "26e769d6c4fd955429595828ac572efeca006168",
+      "subject": "docs: the README now shows the app and gets you installed fast (#35170)",
+      "topic": "pr-35170"
+    },
+    {
+      "pr": 35031,
+      "sha": "3a815e9749484ec52418a363fced5776e5b2c691",
+      "subject": "fix(client-runtime): relative Markdown images in a remote thread no longer show the desktop's file (#35031)",
+      "topic": "pr-35031"
+    },
+    {
+      "pr": 35137,
+      "sha": "1c9d32fe3ca3ef236d2f517a68b2b82f565a5bf7",
+      "subject": "fix(shared): composer # suggestions sort by update instant, not timestamp text (#35137)",
+      "topic": "pr-35137"
+    },
+    {
+      "pr": 35059,
+      "sha": "51b1858b0ec7f4b04d04279cd03c33d33bc57e41",
+      "subject": "fix(server): a slow file read in the search watcher no longer freezes the server (#35059)",
+      "topic": "pr-35059"
+    },
+    {
+      "pr": 35109,
+      "sha": "1de3c3c68c4b886c52ddee49cdb32c4e3150d39b",
+      "subject": "fix(server): a pass that changes several watched pull requests wakes their thread once (#35109)",
+      "topic": "pr-21239"
+    },
+    {
+      "pr": 35132,
+      "sha": "8ef649f8b56abded899e8a29b2ff4dac2a03e2e2",
+      "subject": "fix(server): Commit refuses while a merge still has conflict markers (#35132)",
+      "topic": "pr-35132"
+    },
+    {
+      "pr": 35143,
+      "sha": "e6119fdf68199532442ce94b611b880c2fa87c02",
+      "subject": "fix(web): browser settings changed in project scope no longer overwrite the global default (#35143)",
+      "topic": "pr-35143"
+    },
+    {
+      "pr": 35043,
+      "sha": "5574cca053c2b8b854ce6e44c0c0104e169db62c",
+      "subject": "fix(web): panel resize handle no longer covers the chat scrollbar (#35043)",
+      "topic": "pr-35043"
+    },
+    {
+      "pr": 35045,
+      "sha": "d2b8f291d6f309d8d47d72d4edef06ceba93a875",
+      "subject": "fix(web): icon-only chat header controls show their name on hover (#35045)",
+      "topic": "pr-35045"
+    },
+    {
+      "pr": 34547,
+      "sha": "7d3635e572d95556e82518058a172fc6b5d208f5",
+      "subject": "perf(server): oversized transcript exports fail fast and thread opens skip unused handoff bodies (#34547)",
+      "topic": "pr-34547"
+    },
+    {
+      "pr": 35072,
+      "sha": "8b2763f638241b1be5ddf334d4f3aac8de8114b3",
+      "subject": "perf(mobile): each environment sends about 85% less data at launch (#35072)",
+      "topic": "pr-35072"
+    },
+    {
+      "pr": 35054,
+      "sha": "86ae1747ad62e301307bcf7a7ce7a6f1fcae3d16",
+      "subject": "fix(server): Claude threads resume the session /clear started (#35054)",
+      "topic": "pr-35054"
+    },
+    {
+      "pr": 35128,
+      "sha": "a33d50a5396fd2b34da02b0f3a8f27ff9b25dd02",
+      "subject": "fix(server): committing a large selection of files no longer fails with spawn E2BIG (#35128)",
+      "topic": "pr-35128"
+    },
+    {
+      "pr": 35074,
+      "sha": "83ee96f48589298745dbee9d2a25d5575f315489",
+      "subject": "fix(web): chat text selection stays continuous while scrolling (#35074)",
+      "topic": "pr-35074"
+    }
+  ],
+  "count": 14,
+  "createdAt": "2026-11-12T11:14:46.966Z",
+  "digest": "c6c0e4c81044d49b13b2ab3d8ddcd9754ae50224869961b1c9e0b7489b35a2b0",
+  "interval": 28,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "26e769d6c4fd955429595828ac572efeca006168"
+}

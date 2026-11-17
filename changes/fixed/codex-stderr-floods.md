@@ -1,0 +1,2 @@
+- Verbose Codex diagnostics, including large patch failure messages, no longer interrupt turns or block conversations with an incomplete-history error. Excess diagnostic text is summarized without consuming capacity reserved for session events.
+- Codex diagnostic excerpts are capped in both the timeline and native event log; omitted lines are counted, and the existing bounded stderr tail remains available for process-exit errors.
