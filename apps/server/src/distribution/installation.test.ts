@@ -29,13 +29,13 @@ describe("runtime installation boundaries", () => {
     for (const type of ["l", "h", "b", "c"])
       expect(() => validateArchiveListing("f5/file\n", type + "rw file\n", "f5")).toThrow();
   });
-  it("quotes service arguments and explicitly rejects Windows services", () => {
+  it("quotes service arguments and rejects incomplete Windows service definitions", () => {
     expect(
       serviceDefinition("linux", ["/a space/node", "/f5/launcher.cjs", "%home/$value"]).contents,
     ).toContain('"/a space/node"');
     expect(serviceDefinition("linux", ["%home/$value"]).contents).toContain("%%home/$$value");
     expect(serviceDefinition("darwin", ["/a&b/node"]).contents).toContain("/a&amp;b/node");
     expect(() => serviceDefinition("linux", ["bad\npath"])).toThrow();
-    expect(() => serviceDefinition("win32", ["f5"])).toThrow("foreground");
+    expect(() => serviceDefinition("win32", ["f5"])).toThrow("Windows services require");
   });
 });

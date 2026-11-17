@@ -118,7 +118,7 @@ import {
   type ProviderKind,
   type ProviderInstanceId,
   type ProviderModelOptions,
-  type ThreadId,
+  ThreadId,
   type TurnId,
   OrchestrationThreadActivity,
   RuntimeMode,
@@ -390,6 +390,10 @@ import { NewerMessageHistoryControl } from "./chat/NewerMessageHistoryControl";
 
 import { ChatHeader } from "./chat/ChatHeader";
 import { ChatStatusAnnouncer, deriveChatStatusOutcome } from "./chat/ChatStatusAnnouncer";
+import { TurnDetailAnnouncer } from "./chat/TurnDetailAnnouncer";
+import { stripMarkdownToPlainText } from "./sidebar/sidebarPeek";
+import { serializeAssistantResponseContext } from "@t3tools/shared/assistantResponseContext";
+import { AssistantResponseCard } from "./chat/AssistantResponseCard";
 import { useComposerFocusRequestStore } from "../composerFocusRequestStore";
 import { JumpToLatestButton, timelineTailSnapshot } from "./chat/JumpToLatestButton";
 import { TimelineNavigationStatusBanner } from "./chat/TimelineNavigationStatus";
@@ -773,6 +777,7 @@ function selectChatViewSettings(settings: AppSettings) {
     proactivePanelsEnabled: settings.proactivePanelsEnabled,
     providerModelPreferences: settings.providerModelPreferences,
     runtimeWarningVisibility: settings.runtimeWarningVisibility,
+    screenReaderAnnouncements: settings.screenReaderAnnouncements,
     sendShortcut: settings.sendShortcut,
     showAgentCommandTranscripts: settings.showAgentCommandTranscripts,
     showFileChangeDiffsInline: settings.showFileChangeDiffsInline,
@@ -881,6 +886,9 @@ export default memo(function ChatView({
     setProjectDraftThreadId,
     draftThread,
   } = useComposerDraft(threadId);
+  const replyToResponse = useComposerDraftStore(
+    (state) => state.draftsByThreadId[threadId]?.replyTo ?? null,
+  );
   const {
     isDragOverComposer,
     setIsDragOverComposer,
@@ -1990,6 +1998,22 @@ export default memo(function ChatView({
       workLogMode,
     ],
   );
+  const announcementWorkLogEntries = useMemo(
+    () =>
+      settings.screenReaderAnnouncements === "status"
+        ? []
+        : deriveWorkLogEntries(workLogActivities, activeLatestTurn?.turnId ?? undefined, {
+            mode: "diagnostics",
+            filter: "all",
+            pendingUserInputRequestIds,
+          }),
+    [
+      settings.screenReaderAnnouncements,
+      workLogActivities,
+      activeLatestTurn?.turnId,
+      pendingUserInputRequestIds,
+    ],
+  );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -2515,6 +2539,27 @@ export default memo(function ChatView({
       workLogEntries,
     ],
   );
+  const [announcementTimelineCache] = useState(createTimelineEntryCache);
+  const announcementTimelineEntries = useMemo(
+    () =>
+      settings.screenReaderAnnouncements === "status"
+        ? timelineEntries
+        : deriveTimelineEntries(
+            timelineMessages,
+            [],
+            announcementWorkLogEntries,
+            commandExecutions,
+            announcementTimelineCache,
+          ),
+    [
+      settings.screenReaderAnnouncements,
+      timelineEntries,
+      timelineMessages,
+      announcementWorkLogEntries,
+      commandExecutions,
+      announcementTimelineCache,
+    ],
+  );
   const timelineTail = useMemo(
     () => timelineTailSnapshot(timelineEntries.at(-1)),
     [timelineEntries],
@@ -2540,10 +2585,21 @@ export default memo(function ChatView({
         anchorKind: focusTimelineEntryKind,
         position: 0.3,
         animated: true,
+        focus: true,
       });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [focusTimelineEntryKind, navigateTimeline, routeFocusReady, routeFocusTimelineEntryId]);
+  useEffect(() => {
+    const onSource = (event: Event) => {
+      const record = (event as CustomEvent<import("@t3tools/contracts").AssistantResponseContext>)
+        .detail;
+      if (record?.threadId === threadId)
+        navigateTimeline(record.messageId, { anchorKind: "message", position: 0.3, focus: true });
+    };
+    window.addEventListener("f5:response-source", onSource);
+    return () => window.removeEventListener("f5:response-source", onSource);
+  }, [threadId, navigateTimeline]);
   const shouldRenderTimeline = shouldRenderTimelineContent({
     detailsLoaded: activeThread?.detailsLoaded ?? false,
     hasRenderableMessage: timelineMessages.length > 0,
@@ -3847,8 +3903,9 @@ export default memo(function ChatView({
       promptRef.current.length === 0 &&
       composerImagesRef.current.length === 0 &&
       composerFilePathsRef.current.length === 0 &&
-      composerTerminalContextsRef.current.length === 0,
-    [],
+      composerTerminalContextsRef.current.length === 0 &&
+      !useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo,
+    [threadId],
   );
 
   const restoreComposerRollback = useCallback(
@@ -3863,6 +3920,7 @@ export default memo(function ChatView({
       setComposerDraftFilePaths(threadId, rollback.filePaths);
       addComposerImagesToDraft(restoredImages);
       setComposerDraftTerminalContexts(threadId, rollback.terminalContexts);
+      useComposerDraftStore.getState().setReplyTo(threadId, rollback.replyTo ?? null);
       setComposerDraftInteractionMode(threadId, rollback.interactionMode);
       if (draftThread) {
         setDraftThreadContext(threadId, {
@@ -5409,6 +5467,8 @@ export default memo(function ChatView({
       return;
     }
     const promptForSend = promptRef.current;
+    const replyToForSend =
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null;
     const composerImagesSnapshot = [...composerImages];
     const composerFilePathsSnapshotBeforePreflight = [...composerFilePaths];
     const composerTerminalContextsSnapshotBeforePreflight = [...composerTerminalContexts];
@@ -5456,7 +5516,7 @@ export default memo(function ChatView({
       setComposerTrigger(null);
       return;
     }
-    if (!hasSendableContent) {
+    if (!hasSendableContent && !replyToForSend) {
       if (expiredTerminalContextCount > 0) {
         const toastCopy = buildExpiredTerminalContextToastCopy(
           expiredTerminalContextCount,
@@ -5577,6 +5637,7 @@ export default memo(function ChatView({
       (context) => sendableTerminalContextIds.has(context.id),
     );
     const rollback: PendingTurnDispatchRollback = {
+      replyTo: replyToForSend,
       prompt: promptForSend,
       mentions: mentionsForSend,
       images: composerImagesSnapshot.map(cloneComposerImageForRetry),
@@ -5607,7 +5668,10 @@ export default memo(function ChatView({
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
-    const outgoingMessageText = messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT;
+    const outgoingMessageText =
+      [replyToForSend ? serializeAssistantResponseContext(replyToForSend) : "", messageTextForSend]
+        .filter(Boolean)
+        .join("\n\n") || IMAGE_ONLY_BOOTSTRAP_PROMPT;
     const inputLengthIssue =
       getMessageTextLengthIssue(outgoingMessageText, sendLimits.maxInputChars) ??
       getThreadReferenceLimitIssue(outgoingMessageText);
@@ -5658,6 +5722,8 @@ export default memo(function ChatView({
     const currentFilePaths = composerFilePathsRef.current;
     const currentTerminalContexts = composerTerminalContextsRef.current;
     const composerStillMatchesCapturedDraft =
+      (useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null) ===
+        replyToForSend &&
       promptRef.current === promptForSend &&
       composerMentionsEqual(composerMentionsRef.current, mentionsForSend) &&
       currentImages.length === composerImagesSnapshot.length &&
@@ -5786,7 +5852,7 @@ export default memo(function ChatView({
           {
             id: messageIdForSend,
             role: "user",
-            text: messageTextForSend,
+            text: outgoingMessageText,
             ...(skillCall !== undefined ? { skillCall } : {}),
             ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
             createdAt: messageCreatedAt,
@@ -6086,6 +6152,7 @@ export default memo(function ChatView({
       }
 
       const threadIdForSend = activeThread.id;
+      const replyTo = useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null;
       if (activeThread.branch && gitCwd) {
         const proceed = await guardBranchDrift({
           cwd: gitCwd,
@@ -6100,15 +6167,19 @@ export default memo(function ChatView({
       }
       const messageIdForSend = newMessageId();
       const messageCreatedAt = new Date().toISOString();
-      const { text: outgoingMessageText, skillCall } = rewriteComposerRuntimeSkillInvocationForSend(
-        {
-          text: trimmed,
-          provider: selectedProvider,
-          runtimeSlashCommands: composerNativeSlashCommands.commands,
-          projectSkills: activeProject?.skills,
-          providerSkills: selectedProviderSnapshot?.skills,
-        },
-      );
+      const { text: rewrittenText, skillCall } = rewriteComposerRuntimeSkillInvocationForSend({
+        text: trimmed,
+        provider: selectedProvider,
+        runtimeSlashCommands: composerNativeSlashCommands.commands,
+        projectSkills: activeProject?.skills,
+        providerSkills: selectedProviderSnapshot?.skills,
+      });
+      const outgoingMessageText = [
+        replyTo ? serializeAssistantResponseContext(replyTo) : "",
+        rewrittenText,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
       const inputLengthIssue =
         getMessageTextLengthIssue(outgoingMessageText, getServerSendLimits().maxInputChars) ??
         getThreadReferenceLimitIssue(outgoingMessageText);
@@ -6117,6 +6188,7 @@ export default memo(function ChatView({
         return;
       }
       const rollback: PendingTurnDispatchRollback = {
+        replyTo,
         prompt: promptRef.current,
         mentions: [...composerMentionsRef.current],
         images: composerImagesRef.current.map(cloneComposerImageForRetry),
@@ -7635,6 +7707,22 @@ export default memo(function ChatView({
     quote: AssistantQuote,
     send: boolean,
   ): Promise<{ inserted: boolean; error?: string; limitError?: boolean }> => {
+    const source = activeThread?.messages.find((message) => message.id === quote.messageId);
+    const plainSource = source ? stripMarkdownToPlainText(source.text) : "";
+    const selectedAt = plainSource.indexOf(quote.text);
+    quote = {
+      ...quote,
+      threadId: activeThread?.id,
+      ...(selectedAt >= 0
+        ? {
+            prefix: plainSource.slice(Math.max(0, selectedAt - 100), selectedAt),
+            suffix: plainSource.slice(
+              selectedAt + quote.text.length,
+              selectedAt + quote.text.length + 100,
+            ),
+          }
+        : {}),
+    };
     if (activePendingProgress)
       return {
         inserted: false,
@@ -7652,6 +7740,37 @@ export default memo(function ChatView({
       };
     const editor = composerEditorRef.current;
     if (!editor) return { inserted: false };
+    if (quote.reply && activeThread && source) {
+      const subagents = deriveWorkLogEntries(workLogActivities, source.turnId ?? undefined, {
+        mode: "diagnostics",
+        filter: "all",
+        pendingUserInputRequestIds,
+      })
+        .filter((entry) => entry.turnId === source.turnId && entry.subagentThreadId)
+        .filter(
+          (entry, index, entries) =>
+            entries.findIndex((other) => other.subagentThreadId === entry.subagentThreadId) ===
+            index,
+        )
+        .slice(0, 20)
+        .map((entry) => ({
+          threadId: ThreadId.make(entry.subagentThreadId!),
+          title:
+            (entry.subagentDescription ?? entry.label).replace(/\s+/g, " ").trim().slice(0, 120) ||
+            "Subagent",
+        }));
+      useComposerDraftStore.getState().setReplyTo(activeThread.id, {
+        version: 1,
+        kind: "response",
+        threadId: activeThread.id,
+        messageId: source.id,
+        ...(source.turnId ? { turnId: source.turnId } : {}),
+        text: source.text.slice(0, 300),
+        subagents,
+      });
+      editor.focus();
+      return { inserted: true };
+    }
     const limitError = assistantQuoteLimitError(
       editor.readSnapshot().value.length,
       quote,
@@ -7678,23 +7797,27 @@ export default memo(function ChatView({
   useLayoutEffect(() => {
     insertAssistantQuoteRef.current = insertAssistantQuote;
   });
-  const onQuoteAssistantMessage = useCallback((messageId: MessageId, text: string) => {
-    const quote: AssistantQuote = { messageId, text, comment: "" };
-    void insertAssistantQuoteRef.current(quote, false).then(
-      (result) => {
-        if (result.inserted && !result.error) {
-          composerEditorRef.current?.focusAtEnd();
-          return;
-        }
-        toastManager.add({
-          type: "error",
-          title: result.limitError && result.error ? result.error : "Could not quote this message",
-          ...(!result.limitError && result.error ? { description: result.error } : {}),
-        });
-      },
-      () => toastManager.add({ type: "error", title: "Could not quote this message" }),
-    );
-  }, []);
+  const onQuoteAssistantMessage = useCallback(
+    (messageId: MessageId, text: string, reply?: boolean) => {
+      const quote: AssistantQuote = { messageId, text, comment: "", reply };
+      void insertAssistantQuoteRef.current(quote, false).then(
+        (result) => {
+          if (result.inserted && !result.error) {
+            composerEditorRef.current?.focusAtEnd();
+            return;
+          }
+          toastManager.add({
+            type: "error",
+            title:
+              result.limitError && result.error ? result.error : "Could not quote this message",
+            ...(!result.limitError && result.error ? { description: result.error } : {}),
+          });
+        },
+        () => toastManager.add({ type: "error", title: "Could not quote this message" }),
+      );
+    },
+    [],
+  );
 
   // Empty state: no active thread
   if (!activeThread) {
@@ -7805,7 +7928,7 @@ export default memo(function ChatView({
             void onSendRef.current?.();
           }}
         >
-          Send in project checkout
+          Send in Local
         </Button>
       ),
     });
@@ -8241,6 +8364,18 @@ export default memo(function ChatView({
                 className="relative flex min-h-0 flex-1 flex-col"
                 data-composer-dock-host
               >
+                <TurnDetailAnnouncer
+                  threadId={activeThread.id}
+                  turnId={activeLatestTurn?.turnId ?? null}
+                  level={settings.screenReaderAnnouncements}
+                  working={chatStatusOutcome === "working"}
+                  active={
+                    chatStatusOutcome === "working" ||
+                    chatStatusOutcome === "awaiting-approval" ||
+                    chatStatusOutcome === "awaiting-input"
+                  }
+                  entries={announcementTimelineEntries}
+                />
                 <ChatStatusAnnouncer
                   threadId={activeThread.id}
                   turnId={activeLatestTurn?.turnId ?? null}
@@ -8511,6 +8646,23 @@ export default memo(function ChatView({
                         />
                       </ComposerTray>
                     </ComposerStatusStripHostProvider>
+                    {replyToResponse ? (
+                      <div className="flex items-center gap-2 px-3" aria-label="Replying to">
+                        <div className="min-w-0 flex-1">
+                          <AssistantResponseCard record={replyToResponse} />
+                        </div>
+                        <button
+                          type="button"
+                          aria-label="Cancel reply"
+                          className="text-xs text-muted-foreground"
+                          onClick={() =>
+                            useComposerDraftStore.getState().setReplyTo(threadId, null)
+                          }
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : null}
                     <ChatComposer
                       onEditorFocus={typingGuard.onFocus}
                       onEditorBlur={typingGuard.onBlur}

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { manageWindowsService, windowsServiceTask } from "./windowsService";
 const exec = promisify(execFile);
 const xml = (text: string) =>
   text
@@ -41,15 +42,19 @@ export function serviceDefinition(
       name: "com.f5.server.plist",
       contents: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.f5.server</string><key>ProgramArguments</key><array>${command.map((item) => `<string>${xml(item)}</string>`).join("")}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>5</integer>${logsDirectory ? `<key>StandardOutPath</key><string>${xml(path.join(logsDirectory, "server.log"))}</string><key>StandardErrorPath</key><string>${xml(path.join(logsDirectory, "server-error.log"))}</string>` : ""}</dict></plist>\n`,
     };
-  throw new Error(
-    "Windows supports f5 serve in the foreground and the F5 desktop app. Service installation is available on Linux and macOS.",
-  );
+  if (platform === "win32")
+    return windowsServiceTask(command, {
+      userId: [process.env.USERDOMAIN, process.env.USERNAME].filter(Boolean).join("\\"),
+      systemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "",
+    });
+  throw new Error("Service installation supports Linux, macOS and Windows.");
 }
 export async function manageService(action: string, root: string, stateDir: string): Promise<void> {
+  if (process.platform === "win32") return manageWindowsService(action, root, stateDir);
   const definition = serviceDefinition(
     process.platform,
     [
-      path.join(root, "launcher-v1", process.platform === "win32" ? "node.exe" : "node"),
+      path.join(root, "launcher-v1", "node"),
       path.join(root, "launcher-v1", "launcher.cjs"),
       root,
       stateDir,

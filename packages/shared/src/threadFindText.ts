@@ -2,8 +2,10 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfmFromMarkdown } from "mdast-util-gfm";
 import { gfm } from "micromark-extension-gfm";
 import { splitGfmAlert } from "./markdownAlerts";
+import { parseAssistantResponseContextHref } from "./assistantResponseContext";
 
 interface TextNode {
+  readonly url?: string;
   readonly type: string;
   readonly value?: string;
   readonly alt?: string | null | undefined;
@@ -39,6 +41,10 @@ export function searchableThreadSegments(
     text = "";
   };
   const visit = (node: TextNode, pre = false, topLevel = false) => {
+    if (node.type === "link" && node.url && parseAssistantResponseContextHref(node.url)) {
+      flush();
+      return;
+    }
     if (["definition", "html", "yaml"].includes(node.type)) return;
     const block = blocks.has(node.type);
     if (block) flush();

@@ -1,4 +1,12 @@
 import { writePullRequestReferenceDrag } from "../lib/pullRequestReference";
+import { assistantResponseContextMatches } from "@t3tools/shared/assistantResponseContext";
+
+function quotedAssistantText(prompt: string) {
+  return assistantResponseContextMatches(prompt)
+    .filter((match) => match.record.kind === "quote")
+    .map((match) => match.record.text)
+    .join("\n");
+}
 import { F5_THREAD_REFERENCE_MIME, writeThreadReferenceDrag } from "../lib/threadReferenceDrag";
 import { promptLinkScheme } from "./promptLinks/copyPromptLink";
 import { waitForTimelineLayout } from "../test/timeline";
@@ -3886,35 +3894,223 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it("shows missing worktree recovery status instead of offering Git initialization", async () => {
-    const mounted = await mountChatView({
+  const missingWorktreeState = {
+    recovery: "none",
+    worktreePath: "/wt/gone",
+    branch: "fix/gone",
+    directoryExists: false,
+    registration: "none",
+    branchExists: true,
+    defaultBranch: "main",
+  } as const;
+
+  const mountMissingWorktree = (
+    archived: boolean,
+    options: {
+      threadState?: () => MaybePromise<WsRequestResolution>;
+      recover?: () => MaybePromise<WsRequestResolution>;
+      sessionStatus?: OrchestrationSessionStatus;
+    } = {},
+  ) => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-missing-worktree" as MessageId,
+      targetText: "Missing worktree",
+      ...(options.sessionStatus ? { sessionStatus: options.sessionStatus } : {}),
+    });
+    const snapshot = Object.assign({}, base, {
+      threads: base.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? Object.assign({}, thread, {
+              worktreePath: "/wt/gone",
+              branch: "fix/gone",
+              archivedAt: archived ? NOW_ISO : null,
+            })
+          : thread,
+      ),
+    });
+    return mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-missing-worktree" as MessageId,
-        targetText: "Missing worktree",
-      }),
+      snapshot,
       configureFixture: (nextFixture) => {
-        nextFixture.resolveWsRequest = (body) =>
-          body._tag === WS_METHODS.gitListBranches
-            ? {
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === WS_METHODS.gitListBranches)
+            return {
+              type: "result",
+              result: {
+                isRepo: false,
+                worktreeMissing: true,
+                hasOriginRemote: false,
+                branches: [],
+              },
+            };
+          if (body._tag === WS_METHODS.worktreesThreadState)
+            return options.threadState?.() ?? { type: "result", result: missingWorktreeState };
+          if (body._tag === WS_METHODS.worktreesRecover)
+            return (
+              options.recover?.() ?? {
                 type: "result",
                 result: {
-                  isRepo: false,
-                  worktreeMissing: true,
-                  hasOriginRemote: false,
-                  branches: [],
+                  ...missingWorktreeState,
+                  directoryExists: true,
+                  registration: "matching",
                 },
               }
-            : null;
+            );
+          return null;
+        };
       },
     });
+  };
+
+  it("offers to recreate a missing worktree from the header instead of Git initialization", async () => {
+    const mounted = await mountMissingWorktree(false);
     try {
-      await expect
-        .element(page.getByRole("button", { name: "Worktree missing", exact: true }))
-        .toBeDisabled();
+      const recreate = page.getByRole("button", { name: "Recreate worktree", exact: true });
+      await expect.element(recreate).toBeEnabled();
       await expect
         .element(page.getByRole("button", { name: "Initialize Git" }))
         .not.toBeInTheDocument();
+      await recreate.click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.find((request) => request._tag === WS_METHODS.worktreesRecover),
+        ).toMatchObject({ threadId: THREAD_ID, action: "recreate" }),
+      );
+
+      await page.getByRole("button", { name: "More recovery options" }).click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Recreate from main" }))
+        .toBeVisible();
+      await page.getByRole("menuitem", { name: "Continue in Local" }).click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.filter((request) => request._tag === WS_METHODS.worktreesRecover).at(-1),
+        ).toMatchObject({ action: "useProjectCheckout" }),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("labels an archived thread's missing worktree as removed", async () => {
+    const mounted = await mountMissingWorktree(true);
+    try {
+      await expect
+        .element(page.getByText("Worktree removed", { exact: true }))
+        .toHaveAttribute("title", "Unarchive to recreate it");
+      expect(
+        page.getByRole("button", { name: "Recreate worktree", exact: true }).elements(),
+      ).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  const headerRecovery = () => page.getByRole("group", { name: "Worktree recovery" });
+
+  it("names the default branch on the header button when the thread's branch is gone", async () => {
+    const mounted = await mountMissingWorktree(false, {
+      threadState: () => ({
+        type: "result",
+        result: { ...missingWorktreeState, branchExists: false },
+      }),
+    });
+    try {
+      const recreate = headerRecovery().getByRole("button", { name: "Recreate from main" });
+      await expect.element(recreate).toBeEnabled();
+      await expect
+        .element(recreate)
+        .toHaveAttribute("title", "Branch fix/gone is gone. Recreate from main.");
+      await recreate.click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.find((request) => request._tag === WS_METHODS.worktreesRecover),
+        ).toMatchObject({ action: "recreateFromBase" }),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not recreate from the default branch while another branch holds the path", async () => {
+    const mounted = await mountMissingWorktree(false, {
+      threadState: () => ({
+        type: "result",
+        result: { ...missingWorktreeState, directoryExists: true, registration: "otherBranch" },
+      }),
+    });
+    try {
+      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
+      await expect.element(recreate).toBeDisabled();
+      await expect
+        .element(recreate)
+        .toHaveAttribute(
+          "title",
+          "This checkout no longer matches the recorded worktree. Choose another workspace to continue.",
+        );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("waits for the worktree state before offering to recreate it", async () => {
+    const pending = createDeferred<WsRequestResolution>();
+    const mounted = await mountMissingWorktree(false, { threadState: () => pending.promise });
+    try {
+      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
+      await expect.element(recreate).toBeDisabled();
+      await expect
+        .element(headerRecovery().getByRole("button", { name: "More recovery options" }))
+        .toBeDisabled();
+      pending.resolve({ type: "result", result: missingWorktreeState });
+      await expect.element(recreate).toBeEnabled();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers only Continue in Local when the worktree state cannot be read", async () => {
+    const mounted = await mountMissingWorktree(false, {
+      threadState: () => ({ type: "error", message: "state unavailable" }),
+    });
+    try {
+      const local = page.getByRole("button", { name: "Continue in Local", exact: true }).first();
+      await expect.element(local).toBeEnabled();
+      expect(
+        page.getByRole("button", { name: "Recreate worktree", exact: true }).elements(),
+      ).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps header recovery disabled while the session is running", async () => {
+    const mounted = await mountMissingWorktree(false, { sessionStatus: "running" });
+    try {
+      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
+      await expect.element(recreate).toBeDisabled();
+      await expect
+        .element(recreate)
+        .toHaveAttribute("title", "Available after the current turn finishes.");
+      await expect
+        .element(headerRecovery().getByRole("button", { name: "More recovery options" }))
+        .toBeDisabled();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("reports a failed header recovery in a toast", async () => {
+    const mounted = await mountMissingWorktree(false, {
+      recover: () => ({ type: "error", message: "Branch fix/gone is locked." }),
+    });
+    try {
+      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
+      await expect.element(recreate).toBeEnabled();
+      await recreate.click();
+      await expect.element(page.getByText("Could not recover the worktree")).toBeVisible();
+      await expect.element(page.getByText("Branch fix/gone is locked.")).toBeVisible();
+      await expect.element(recreate).toBeEnabled();
     } finally {
       await mounted.cleanup();
     }
@@ -8017,6 +8213,7 @@ describe("ChatView timeline (full app)", () => {
         () => document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]'),
         "Messages scroll container should render before testing dialog scroll shortcuts.",
       );
+      await waitForTimelineScrollToSettle();
       scrollContainer.scrollTo({ top: 0, behavior: "auto" });
       scrollContainer.scrollTop = 0;
       scrollContainer.dispatchEvent(new Event("scroll"));
@@ -10246,7 +10443,7 @@ describe("ChatView timeline (full app)", () => {
       await page.getByRole("button", { name: "Add quote to composer", exact: true }).click();
       await vi.waitFor(() => {
         const prompt = useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "";
-        expect(prompt).toContain("> Selected response.\n> \n> Second paragraph.");
+        expect(quotedAssistantText(prompt)).toBe("Selected response.\n\nSecond paragraph.");
         expect(prompt).not.toContain("Next response.");
         expect(prompt).not.toContain("echo ok");
         expect(prompt).not.toContain("> Assistant");
@@ -10405,22 +10602,24 @@ describe("ChatView timeline (full app)", () => {
           await vi.waitFor(() => {
             const prompt =
               useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "";
-            expect(prompt).toContain("> " + text);
+            expect(quotedAssistantText(prompt)).toBe(text);
             expect(prompt).toContain("Please explain.");
           });
           const send = await waitForSendButton();
           await vi.waitFor(() => expect(send.disabled).toBe(false));
           send.click();
         }
-        await vi.waitFor(() =>
-          expect(getDispatchCommandRequests("thread.turn.start")).toContainEqual(
-            expect.objectContaining({
-              command: expect.objectContaining({
-                message: expect.objectContaining({ text: expect.stringContaining("> " + text) }),
-              }),
-            }),
-          ),
-        );
+        await vi.waitFor(() => {
+          const sent = getDispatchCommandRequests("thread.turn.start").map(
+            (request) => (request.command as { message?: { text?: string } }).message?.text ?? "",
+          );
+          expect(
+            sent.some(
+              (prompt) =>
+                quotedAssistantText(prompt) === text && prompt.includes("Please explain."),
+            ),
+          ).toBe(true);
+        });
         await expect
           .element(page.getByRole("textbox", { name: "Quote comment" }))
           .not.toBeInTheDocument();
@@ -10759,8 +10958,10 @@ describe("ChatView timeline (full app)", () => {
         await openQuoteMenu();
         await vi.waitFor(() =>
           expect(
-            useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "",
-          ).toContain("> ## 9. UX Patterns Worth Porting (MEDIUM VALUE)"),
+            quotedAssistantText(
+              useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "",
+            ),
+          ).toContain("## 9. UX Patterns Worth Porting (MEDIUM VALUE)"),
         );
         expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
       } finally {

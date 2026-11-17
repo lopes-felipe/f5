@@ -1,5 +1,7 @@
 import { isReservedThreadRoute } from "@t3tools/shared/promptLinks";
 import { threadReferencePattern } from "@t3tools/shared/threadReferences";
+import { parseAssistantResponseContextHref } from "@t3tools/shared/assistantResponseContext";
+import type { AssistantResponseContext } from "@t3tools/contracts";
 
 import { isFenceClosingLine, matchFence } from "./streamingMarkdown";
 
@@ -12,6 +14,13 @@ import { isFenceClosingLine, matchFence } from "./streamingMarkdown";
  * segment reproduces the source exactly.
  */
 export type UserMessageSegment =
+  | {
+      readonly kind: "response-context";
+      readonly start: number;
+      readonly end: number;
+      readonly raw: string;
+      readonly record: AssistantResponseContext;
+    }
   | { readonly kind: "text"; readonly start: number; readonly end: number; readonly raw: string }
   | {
       readonly kind: "code" | "bold";
@@ -200,6 +209,24 @@ function parseInline(text: string, offset: number, segments: UserMessageSegment[
     }
     // A reference is atomic, so backticks and `**` inside its title stay part of the chip.
     if (char === "[") {
+      const context = /^\[[^[\]\n]{0,200}\]\((f5-context:\/\/response\/v1\/[^)\s]+)\)/.exec(
+        text.slice(index),
+      );
+      const record = context?.[1] ? parseAssistantResponseContextHref(context[1]) : null;
+      if (context && record) {
+        flushText(index);
+        const end = index + context[0].length;
+        segments.push({
+          kind: "response-context",
+          start: offset + index,
+          end: offset + end,
+          raw: context[0],
+          record,
+        });
+        index = end;
+        textStart = index;
+        continue;
+      }
       threadReference.lastIndex = index;
       const match = threadReference.exec(text);
       if (match?.[1] && match[3] && !isReservedThreadRoute(match[3])) {
@@ -353,7 +380,9 @@ export function clipUserMessageSegments(
     }
     if (segment.start >= length) break;
     const raw = segment.raw.slice(0, length - segment.start);
-    if (segment.kind === "codeblock") {
+    if (segment.kind === "response-context") {
+      clipped.push(segment);
+    } else if (segment.kind === "codeblock") {
       clipped.push({
         ...segment,
         end: length,

@@ -1,4 +1,5 @@
 import { makeResetCreditCoordinator } from "../resetCredits.ts";
+import { accountUsageSnapshotIdentity } from "../accountUsage";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   type UsageAccount,
@@ -123,7 +124,10 @@ const make = Effect.gen(function* () {
       if (capability.refreshAccount) {
         const result = yield* capability.refreshAccount(permits);
         // Observe but return live state, so resume logic never sees hydrated data.
-        yield* recorder.observe(result.snapshot, capability.identity);
+        yield* recorder.observe(
+          result.snapshot,
+          accountUsageSnapshotIdentity(capability, result.snapshot),
+        );
         return result;
       }
       return { snapshot: yield* capability.getSnapshot, fresh: false };
@@ -198,13 +202,15 @@ const make = Effect.gen(function* () {
       );
       const snapshots = yield* Effect.forEach(capabilities, (capability) =>
         capability.getSnapshot.pipe(
-          Effect.tap((snapshot) => recorder.observe(snapshot, capability.identity)),
+          Effect.tap((snapshot) =>
+            recorder.observe(snapshot, accountUsageSnapshotIdentity(capability, snapshot)),
+          ),
         ),
       );
       const shadows = shadowAccounts(yield* registry.listUnavailable);
       return [
         ...snapshots.map((snapshot, index) =>
-          recorder.hydrate(snapshot, capabilities[index]!.identity),
+          recorder.hydrate(snapshot, accountUsageSnapshotIdentity(capabilities[index]!, snapshot)),
         ),
         ...shadows.map((shadow) => recorder.hydrate(shadow, null)),
       ];

@@ -426,6 +426,8 @@ const PROVIDER_NOTES: Partial<Record<UsageAccount["provider"], string>> = {
 /** Plan label for an account header: Claude subscription or Codex plan type. */
 export function accountPlanLabel(account: UsageAccount): string | null {
   for (const section of account.sections) {
+    if (section.kind === "provider-limits" && section.snapshot?.data.plan)
+      return section.snapshot.data.plan;
     if (section.kind === "claude-usage" && section.snapshot?.data.subscriptionLabel)
       return section.snapshot.data.subscriptionLabel;
     if (section.kind === "codex-limits") {

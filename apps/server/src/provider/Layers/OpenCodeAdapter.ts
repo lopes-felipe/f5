@@ -82,6 +82,7 @@ import {
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
+import { openCodeTodoPlan } from "../openCodeTodos.ts";
 import { makeOperationGate } from "../operationGate.ts";
 import {
   isOpenCodeNotFound,
@@ -136,6 +137,9 @@ interface OpenCodeSessionContext {
   // Completed text remains editable; other native payloads need not be retained.
   readonly textPartsByMessageId: Map<string, Map<string, OpenCodeTextPartState>>;
   activeTurnId: TurnId | undefined;
+  todoRevision: number;
+  todoSignature: string | undefined;
+  reconcilingTodoTurnId?: TurnId;
   interruptingTurnId?: TurnId;
   currentTurnStartedAt?: number;
   activeAgent: string | undefined;
@@ -936,6 +940,35 @@ export function makeOpenCodeAdapter(
       for (const id of context.pendingQuestions.keys()) yield* finishQuestion(context, id, {});
     });
 
+    const emitTodos = Effect.fn("emitOpenCodeTodos")(function* (
+      context: OpenCodeSessionContext,
+      value: unknown,
+      turnId = context.activeTurnId,
+    ) {
+      if (
+        !turnId ||
+        (context.activeTurnId !== turnId &&
+          !(context.activeTurnId === undefined && context.reconcilingTodoTurnId === turnId))
+      )
+        return false;
+      const plan = openCodeTodoPlan(value);
+      if (plan === undefined) return false;
+      context.todoRevision += 1;
+      const signature = JSON.stringify(plan);
+      if (context.todoSignature === signature) return true;
+      context.todoSignature = signature;
+      yield* emit({
+        ...(yield* buildEventBase({
+          ...context.eventIdentity,
+          threadId: context.session.threadId,
+          turnId,
+        })),
+        type: "turn.plan.updated",
+        payload: { plan },
+      });
+      return true;
+    });
+
     const handleSubscribedEvent = Effect.fn("handleSubscribedEvent")(function* (
       context: OpenCodeSessionContext,
       event: OpenCodeSubscribedEvent,
@@ -1046,6 +1079,10 @@ export function makeOpenCodeAdapter(
           break;
         }
 
+        case "todo.updated":
+          yield* emitTodos(context, event.properties.todos, turnId);
+          break;
+
         case "message.part.updated": {
           const part = event.properties.part;
           const messageRole = messageRoleForPart(context, part);
@@ -1060,6 +1097,14 @@ export function makeOpenCodeAdapter(
           }
 
           if (part.type === "tool") {
+            if (part.tool.toLowerCase() === "todowrite") {
+              if (part.state.status === "pending" || part.state.status === "running") break;
+              if (
+                part.state.status === "completed" &&
+                (yield* emitTodos(context, part.state.metadata.todos, turnId))
+              )
+                break;
+            }
             const itemType = toToolLifecycleItemType(part.tool);
             const title =
               part.state.status === "running" ? (part.state.title ?? part.tool) : part.tool;
@@ -1227,6 +1272,22 @@ export function makeOpenCodeAdapter(
           if (event.properties.status.type === "idle" && turnId) {
             yield* settlePending(context);
             context.activeTurnId = undefined;
+            context.reconcilingTodoTurnId = turnId;
+            const revision = context.todoRevision;
+            yield* runOpenCodeSdk("session.todo", (signal) =>
+              context.client.session.todo({ sessionID: context.openCodeSessionId }, { signal }),
+            ).pipe(
+              Effect.flatMap((todos) =>
+                context.activeTurnId === undefined &&
+                context.reconcilingTodoTurnId === turnId &&
+                context.todoRevision === revision
+                  ? emitTodos(context, todos.data, turnId)
+                  : Effect.void,
+              ),
+              Effect.timeout("4 seconds"),
+              Effect.ignore,
+              Effect.forkIn(context.sessionScope),
+            );
             updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
             yield* emit({
               ...(yield* buildEventBase({
@@ -1374,6 +1435,20 @@ export function makeOpenCodeAdapter(
         );
         for (const request of questions.data ?? [])
           yield* handleSubscribedEvent(context, { type: "question.asked", properties: request });
+        if (context.activeTurnId !== undefined) {
+          const turnId = context.activeTurnId;
+          const revision = context.todoRevision;
+          const todos = yield* runOpenCodeSdk("session.todo", (signal) =>
+            context.client.session.todo({ sessionID: context.openCodeSessionId }, { signal }),
+          );
+          // An event or a new turn that arrived during the inventory read wins.
+          if (
+            context.activeTurnId === turnId &&
+            context.todoRevision === revision &&
+            !(yield* Ref.get(context.stopped))
+          )
+            yield* emitTodos(context, todos.data);
+        }
       }).pipe(
         Effect.timeout("4 seconds"),
         Effect.ignore({ log: true }),
@@ -1610,6 +1685,8 @@ export function makeOpenCodeAdapter(
           textPartsByMessageId: new Map(),
           messageRoleById: new Map(),
           activeTurnId: undefined,
+          todoRevision: 0,
+          todoSignature: undefined,
           activeAgent: undefined,
           activeVariant: undefined,
           stopped: yield* Ref.make(false),
@@ -1727,6 +1804,9 @@ export function makeOpenCodeAdapter(
 
       context.workflowExecutionProfile = input.workflowExecutionProfile;
       context.activeTurnId = turnId;
+      delete context.reconcilingTodoTurnId;
+      context.todoSignature = undefined;
+      context.todoRevision += 1;
       delete context.interruptingTurnId;
       context.relatedSessionIds.clear();
       context.currentTurnStartedAt = Date.now();

@@ -125,6 +125,67 @@ afterEach(() => {
 });
 
 describe("wsNativeApi", () => {
+  it("rejects asset URLs from other origins at the RPC boundary", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    requestMock.mockResolvedValue([
+      { relativePath: "image.png", url: "https://other.example/image.png", expiresAt: 10_000 },
+    ]);
+    await expect(
+      createWsNativeApi().projects.issueAssetUrl({ identity: { kind: "attachments" }, files: [] }),
+    ).rejects.toThrow();
+  });
+
+  it("opens only HTTP(S) URLs through the browser fallback", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const open = vi.fn();
+    getWindowForTest().open = open;
+    const api = createWsNativeApi();
+    for (const url of [
+      "javascript:alert(1)",
+      "data:text/html,hello",
+      "file:///tmp/login",
+      "//example.com",
+    ]) {
+      await expect(api.shell.openExternal(url)).rejects.toThrow("Unable to open link.");
+    }
+    expect(open).not.toHaveBeenCalled();
+    await api.shell.openExternal("https://example.com/login");
+    expect(open).toHaveBeenCalledWith("https://example.com/login", "_blank", "noopener,noreferrer");
+  });
+
+  it("rejects non-web sign-in URLs in provider RPC responses", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const state = {
+      target: "server",
+      mode: "oauth",
+      provider: "codex",
+      projectId: "project",
+      serverName: "server",
+      status: "pending",
+      authorizationUrl: "https://example.com/login",
+    };
+    const input = {
+      provider: "codex" as const,
+      projectId: ProjectId.makeUnsafe("project"),
+      serverName: "server",
+    };
+    const api = createWsNativeApi();
+    requestMock.mockResolvedValue(state);
+    await expect(api.mcp.startLogin(input)).resolves.toMatchObject(state);
+    await expect(api.mcp.getLoginStatus(input)).resolves.toMatchObject(state);
+    await expect(api.mcp.startOAuthLogin(input)).resolves.toMatchObject({
+      authorizationUrl: state.authorizationUrl,
+    });
+    await expect(api.mcp.getOAuthStatus(input)).resolves.toMatchObject({
+      authorizationUrl: state.authorizationUrl,
+    });
+    requestMock.mockResolvedValue({ ...state, authorizationUrl: "javascript:alert(1)" });
+    await expect(api.mcp.startLogin(input)).rejects.toThrow();
+    await expect(api.mcp.getLoginStatus(input)).rejects.toThrow();
+    await expect(api.mcp.startOAuthLogin(input)).rejects.toThrow();
+    await expect(api.mcp.getOAuthStatus(input)).rejects.toThrow();
+  });
+
   it("allows worktree preparation to outlive the ordinary RPC timeout", async () => {
     const { createWsNativeApi } = await import("./wsNativeApi");
     const input = {
@@ -629,7 +690,14 @@ describe("wsNativeApi", () => {
   });
 
   it("uses the OAuth request timeout for Codex MCP login starts", async () => {
-    requestMock.mockResolvedValue({ status: "pending" });
+    requestMock.mockResolvedValue({
+      target: "server",
+      mode: "oauth",
+      provider: "codex",
+      projectId: "project-1",
+      serverName: "Observability",
+      status: "pending",
+    });
     const { createWsNativeApi } = await import("./wsNativeApi");
 
     const api = createWsNativeApi();

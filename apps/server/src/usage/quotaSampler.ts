@@ -1,5 +1,6 @@
 import type { UsageAccount } from "@t3tools/contracts";
 import { quotaWindowsFromSection } from "@t3tools/shared/usageLimit";
+import { accountUsageSnapshotIdentity } from "./accountUsage";
 import { Cause, Clock, Duration, Effect, Exit } from "effect";
 import type * as Semaphore from "effect/Semaphore";
 
@@ -105,7 +106,10 @@ export function makeQuotaSampler(input: {
         Exit.isSuccess(result) &&
         result.value.snapshot.sections.some((section) => section.outcome === "available");
       if (Exit.isSuccess(result))
-        yield* input.recorder.observe(result.value.snapshot, capability.identity);
+        yield* input.recorder.observe(
+          result.value.snapshot,
+          accountUsageSnapshotIdentity(capability, result.value.snapshot),
+        );
       const failures = succeeded ? 0 : (state?.failures ?? 0) + 1;
       const waitMinutes =
         succeeded && Exit.isSuccess(result)

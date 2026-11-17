@@ -1,4 +1,8 @@
-import { isBranchRulePage, readMergeRequirements } from "./mergeRequirements.ts";
+import {
+  isBranchRulePage,
+  rawReviewGateSatisfied,
+  readMergeRequirements,
+} from "./mergeRequirements.ts";
 
 import { continuePrConnectionPagination } from "./attentionPagination.ts";
 
@@ -112,6 +116,7 @@ export function createPrHubDiscovery(
       string,
       { priority?: number; repository: string | null; number?: number }
     >,
+    viewerLogin?: string,
   ): Effect.Effect<
     {
       readonly nodesById: ReadonlyMap<string, Record<string, unknown>>;
@@ -277,6 +282,11 @@ export function createPrHubDiscovery(
         );
       }
 
+      // Without a review rule GitHub reports no decision; recheck those only for the
+      // viewer's own PRs, since each recheck can hold hydration for up to 30 seconds.
+      const viewerAuthored = (node: Record<string, unknown>) =>
+        viewerLogin !== undefined &&
+        stringValue(asRecord(node.author)?.login)?.toLowerCase() === viewerLogin.toLowerCase();
       const candidates = [...nodesById.values()].flatMap((node) => {
         const id = stringValue(node.id);
         const headRefOid = stringValue(node.headRefOid);
@@ -286,7 +296,8 @@ export function createPrHubDiscovery(
           baseRefOid &&
           node.state === "OPEN" &&
           node.isDraft !== true &&
-          node.reviewDecision === "APPROVED" &&
+          (node.reviewDecision === "APPROVED" ||
+            (rawReviewGateSatisfied(node.reviewDecision) && viewerAuthored(node))) &&
           (node.mergeable === "UNKNOWN" || node.mergeStateStatus === "UNKNOWN")
           ? [{ id, headRefOid, baseRefOid }]
           : [];
@@ -355,7 +366,11 @@ export function createPrHubDiscovery(
           ),
         ]),
       );
-      const details = yield* fetchGraphqlDetails([...aliasesByNodeId.keys()], hydration);
+      const details = yield* fetchGraphqlDetails(
+        [...aliasesByNodeId.keys()],
+        hydration,
+        viewer.login,
+      );
       let attentionIncomplete = false;
       let attentionFailed = false;
       const detailedNodes = new Map(details.nodesById);
@@ -389,7 +404,7 @@ export function createPrHubDiscovery(
       for (const [id, node] of detailedNodes) {
         if (
           node.state !== "OPEN" ||
-          node.reviewDecision !== "APPROVED" ||
+          !rawReviewGateSatisfied(node.reviewDecision) ||
           stringValue(asRecord(node.author)?.login)?.toLowerCase() !== viewer.login.toLowerCase()
         )
           continue;

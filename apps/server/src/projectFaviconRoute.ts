@@ -50,7 +50,7 @@ const ICON_SOURCE_FILES = [
   "src/index.html",
 ] as const;
 
-const ICON_SOURCE_FILE_MAX_BYTES = 256 * 1024;
+const ICON_SOURCE_FILE_MAX_BYTES = 128 * 1024;
 const WORKSPACE_ASSET_ROUTE_PREFIX = "/api/workspace-assets/";
 
 const MAX_ICON_DECLARATION_CHARS = 4_096;
@@ -271,6 +271,7 @@ async function findFaviconWithReader(reader: WorkspaceAssetReader): Promise<stri
       source = await reader.readText({
         relativePath: sourcePath,
         maxBytes: ICON_SOURCE_FILE_MAX_BYTES,
+        truncate: true,
       });
     } catch {
       return null;

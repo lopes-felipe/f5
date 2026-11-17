@@ -3784,6 +3784,8 @@ it.layer(
           assert.include(localBranches(repo.root), "squashed-orphan");
         }),
       ),
+    // This real-Git inspection/cleanup workflow needs the same NTFS budget as discovery below.
+    process.platform === "win32" ? 90_000 : 30_000,
   );
   it.effect(
     "discovers linked worktrees in selected folders without importing a project",
@@ -4308,51 +4310,55 @@ it.layer(
     ),
   );
 
-  it.effect("refuses removal when only staged content changed after review", () =>
-    withHomeSandbox(
-      Effect.gen(function* () {
-        const storage = yield* StorageMaintenance;
-        const config = yield* ServerConfig;
-        const sql = yield* SqlClient.SqlClient;
-        yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
-        const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-index-"));
-        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
-        const external = NodePath.join(repo.dir, "external-index");
-        yield* Effect.promise(async () => {
-          runGit(repo.root, "worktree", "add", "-q", "-b", "external-index", external, "main");
-          await NodeFS.writeFile(NodePath.join(external, "README.md"), "staged\n");
-          runGit(external, "add", "README.md");
-          await NodeFS.writeFile(NodePath.join(external, "README.md"), "working\n");
-        });
-        yield* seedProject({ sql, projectId: "project-index", workspaceRoot: repo.root });
+  it.effect(
+    "refuses removal when only staged content changed after review",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance;
+          const config = yield* ServerConfig;
+          const sql = yield* SqlClient.SqlClient;
+          yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-index-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const external = NodePath.join(repo.dir, "external-index");
+          yield* Effect.promise(async () => {
+            runGit(repo.root, "worktree", "add", "-q", "-b", "external-index", external, "main");
+            await NodeFS.writeFile(NodePath.join(external, "README.md"), "staged\n");
+            runGit(external, "add", "README.md");
+            await NodeFS.writeFile(NodePath.join(external, "README.md"), "working\n");
+          });
+          yield* seedProject({ sql, projectId: "project-index", workspaceRoot: repo.root });
 
-        const report = yield* storage.inspect({ force: true });
-        const target = report.categories
-          .find((entry) => entry.id === "externalWorktrees")
-          ?.targets.find((entry) => entry.path === external);
-        assert.equal(target?.safeToDelete, true, target?.disabledReason);
-        // Stage other content without touching the working file; status stays `MM`.
-        yield* Effect.promise(async () => {
-          const blob = NodePath.join(repo.dir, "blob.txt");
-          await NodeFS.writeFile(blob, "written straight to the index\n");
-          const sha = runGit(external, "hash-object", "-w", blob);
-          runGit(external, "update-index", "--cacheinfo", `100644,${sha},README.md`);
-        });
+          const report = yield* storage.inspect({ force: true });
+          const target = report.categories
+            .find((entry) => entry.id === "externalWorktrees")
+            ?.targets.find((entry) => entry.path === external);
+          assert.equal(target?.safeToDelete, true, target?.disabledReason);
+          // Stage other content without touching the working file; status stays `MM`.
+          yield* Effect.promise(async () => {
+            const blob = NodePath.join(repo.dir, "blob.txt");
+            await NodeFS.writeFile(blob, "written straight to the index\n");
+            const sha = runGit(external, "hash-object", "-w", blob);
+            runGit(external, "update-index", "--cacheinfo", `100644,${sha},README.md`);
+          });
 
-        const result = yield* storage.cleanup({
-          operationId: "operation-real-external-index",
-          scanId: report.scanId,
-          nonce: report.confirmationNonce,
-          categoryIds: ["externalWorktrees"],
-          targetSelections: [{ categoryId: "externalWorktrees", targetIds: [target!.id] }],
-          confirmationText: "DELETE",
-          options: { vacuumAfterDeletes: false },
-        });
+          const result = yield* storage.cleanup({
+            operationId: "operation-real-external-index",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["externalWorktrees"],
+            targetSelections: [{ categoryId: "externalWorktrees", targetIds: [target!.id] }],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
 
-        assert.notEqual(result.results[0]?.status, "Cleaned");
-        assert.equal(yield* Effect.promise(() => pathExists(external)), true);
-      }),
-    ),
+          assert.notEqual(result.results[0]?.status, "Cleaned");
+          assert.equal(yield* Effect.promise(() => pathExists(external)), true);
+        }),
+      ),
+    // Real Git worktree creation, inspection and drift revalidation exceed 30 s on Windows CI.
+    process.platform === "win32" ? 60_000 : 30_000,
   );
 
   it.effect("applies disposable paths only for projects in the worktree's repository", () =>

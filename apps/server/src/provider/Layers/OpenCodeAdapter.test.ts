@@ -15,6 +15,7 @@ import {
   Stream,
 } from "effect";
 import { beforeEach, vi } from "vitest";
+import { TestClock } from "effect/testing";
 
 import {
   ApprovalRequestId,
@@ -102,6 +103,7 @@ const runtimeMock = {
     sessionCreateError: undefined as Error | undefined,
     resumedSessionBusy: false,
     onSessionGet: undefined as (() => Promise<void>) | undefined,
+    todos: [] as unknown[],
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -128,6 +130,7 @@ const runtimeMock = {
     this.state.revertMessageID = undefined;
     this.state.subscribedEvents = [];
     this.state.emitEvent = undefined;
+    this.state.todos = [];
     this.state.afterEvent = undefined;
     this.state.onAbort = undefined;
     this.state.childrenError = false;
@@ -274,6 +277,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           };
         },
         messages: async () => ({ data: runtimeMock.state.messages }),
+        todo: async () => ({ data: runtimeMock.state.todos }),
         revert: async ({ sessionID, messageID }: { sessionID: string; messageID?: string }) => {
           runtimeMock.state.revertCalls.push({
             sessionID,
@@ -1216,6 +1220,130 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         Effect.timeout("1 second"),
       );
       assert.equal(runtimeMock.state.closeCalls.length, 1);
+    }),
+  );
+
+  it.effect("recovers native todo changes missed by the event stream", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("recovered-todos");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Work",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "anthropic/claude-sonnet-4-5",
+        ),
+      });
+      runtimeMock.state.todos = [{ content: "Recovered", status: "pending" }];
+      const collected = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.plan.updated"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* TestClock.adjust("5 seconds");
+      const events = yield* Fiber.join(collected);
+      assert.deepEqual(
+        events.map((event) => (event.type === "turn.plan.updated" ? event.payload.plan : null)),
+        [[{ step: "Recovered", status: "pending" }]],
+      );
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("projects native todo events and preserves failed or unrecognized tool results", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("native-todos");
+      const sessionID = "http://127.0.0.1:9999/session";
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Work",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "anthropic/claude-sonnet-4-5",
+        ),
+      });
+      const collected = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            (event.type === "turn.plan.updated" || event.type === "item.completed"),
+        ),
+        Stream.take(4),
+        Stream.runCollect,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      while (!runtimeMock.state.emitEvent) yield* Effect.yieldNow;
+      for (const [id, state] of [
+        [
+          "saved",
+          {
+            status: "completed",
+            input: {},
+            output: "Saved",
+            title: "Todos",
+            metadata: { todos: [{ content: " Inspect ", status: "in_progress" }] },
+            time: { start: 1, end: 2 },
+          },
+        ],
+        [
+          "unknown",
+          {
+            status: "completed",
+            input: {},
+            output: "Unknown",
+            title: "Todos",
+            metadata: { todos: [{ content: "Unknown", status: "future" }] },
+            time: { start: 1, end: 2 },
+          },
+        ],
+        ["failed", { status: "error", input: {}, error: "Denied", time: { start: 1, end: 2 } }],
+      ] as const) {
+        runtimeMock.state.emitEvent!({
+          type: "message.part.updated",
+          properties: {
+            sessionID,
+            part: {
+              id,
+              callID: id,
+              sessionID,
+              messageID: "todo-message",
+              type: "tool",
+              tool: "todowrite",
+              state,
+            },
+          },
+        });
+      }
+      runtimeMock.state.emitEvent!({ type: "todo.updated", properties: { sessionID, todos: [] } });
+      const events = yield* Fiber.join(collected).pipe(Effect.timeout("2 seconds"));
+      const plans = events.filter((event) => event.type === "turn.plan.updated");
+      assert.deepEqual(
+        plans.map((event) => event.payload.plan),
+        [[{ step: "Inspect", status: "inProgress" }], []],
+      );
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "item.completed")
+          .map((event) => [event.itemId, event.payload.status]),
+        [
+          ["unknown", "completed"],
+          ["failed", "failed"],
+        ],
+      );
+      yield* adapter.stopSession(threadId);
     }),
   );
 

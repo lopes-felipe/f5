@@ -17,6 +17,7 @@ export function resolveEmptyAppRpc(body: { _tag: string; threadId?: string }): u
   if (body._tag === WS_METHODS.storageGetDiskSpace) return emptyDiskSpaceStatus;
   if (body._tag === WS_METHODS.worktreesList) return { projects: [] };
   if (body._tag === WS_METHODS.nextTurnQueueSummary) return { threads: [] };
+  if (body._tag === WS_METHODS.worktreesList) return { projects: [] };
   // Not read-only, so it waits for synchronization and is then sent.
   if (body._tag === WS_METHODS.scheduledTasksList) return { tasks: [], revision: 0 };
   if (body._tag === WS_METHODS.nextTurnQueueList) {

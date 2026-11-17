@@ -269,7 +269,9 @@ jobs:
     env:
       # Match the locked Playwright version; browsers and OS libraries are bundled.
       PLAYWRIGHT_IMAGE: mcr.microsoft.com/playwright:v1.58.2-noble@sha256:6446946a1d9fd62d9ae501312a2d76a43ee688542b21622056a372959b65d63d
-    timeout-minutes: 15
+    # Cold dependency setup and the image pull can take seven minutes. Keep
+    # room for the test watchdog and diagnostic uploads before the job expires.
+    timeout-minutes: 25
     defaults:
       run:
         shell: bash
@@ -296,8 +298,8 @@ jobs:
         env:
           F5_CI_SUITE_ID: "web-browser"
         run: |
-          # The full suite exceeds ten minutes on shared runners. Leave headroom
-          # within the 15-minute job; individual tests retain their 30-second timeout.
+          # Leave headroom for the growing suite on shared runners; individual
+          # tests still have Vitest's 30-second timeout.
           # Keep setup on the runner (the browser image does not include Bun's
           # bootstrap tools). Only tests run in Docker, with the pinned Node
           # executable and host UID so reports remain readable by upload steps.
@@ -313,7 +315,7 @@ jobs:
             --env F5_CI_ARTIFACT_DIR \
             --env CI=true \
             "$PLAYWRIGHT_IMAGE" \
-            timeout --signal=TERM --kill-after=20s 12m \
+            timeout --signal=TERM --kill-after=20s 15m \
             node node_modules/vitest/vitest.mjs run --config vitest.browser.config.ts
       - name: Summarize test reports
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

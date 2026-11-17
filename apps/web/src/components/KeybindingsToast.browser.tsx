@@ -301,6 +301,7 @@ function resolveWsRpc(body: {
     return { entries: [], truncated: false };
   }
   if (tag === WS_METHODS.worktreesGetTransition) return null;
+  if (tag === WS_METHODS.worktreesList) return { projects: [] };
   return {};
 }
 
@@ -417,6 +418,8 @@ async function mountApp(): Promise<{ cleanup: () => Promise<void> }> {
 
   const router = getRouter(createMemoryHistory({ initialEntries: [`/${THREAD_ID}`] }));
 
+  // Load the lazy route before timing UI readiness; cold transforms can exceed that wait.
+  await router.load();
   const screen = await render(<RouterProvider router={router} />, { container: host });
   await waitForComposerEditor();
 

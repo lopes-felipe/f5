@@ -155,5 +155,7 @@ export const makePullRequestWatchStore = Effect.gen(function* () {
     db(
       sql`DELETE FROM thread_pull_request_watches WHERE thread_id=${row.threadId} AND pr_key=${row.key} AND watch_id=${row.watchId} AND version=${row.version} RETURNING watch_id`,
     ).pipe(Effect.map((values) => values.length > 0));
-  return { get, list, due, start, replace, failure, stop, stopExpected, stopGeneration };
+  const all = () =>
+    rows(sql<RawRow>`SELECT * FROM thread_pull_request_watches ORDER BY updated_at ASC LIMIT 1000`);
+  return { get, list, due, all, start, replace, failure, stop, stopExpected, stopGeneration };
 });

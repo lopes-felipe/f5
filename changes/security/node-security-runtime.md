@@ -1,0 +1,1 @@
+- F5 development and server runtime requirements now use Node 26.13.1 with its HTTP/2 and HTTPS security fixes.
