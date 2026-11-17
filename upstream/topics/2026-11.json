@@ -52115,9 +52115,11 @@
     },
     {
       "createdAt": "2026-11-15T11:14:38.505Z",
+      "decidedAt": "2026-11-17T11:44:13.829Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-34576",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "security",
@@ -64101,9 +64103,11 @@
     },
     {
       "createdAt": "2026-11-14T11:13:10.842Z",
+      "decidedAt": "2026-11-17T11:44:11.336Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-36392",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "security",
@@ -72584,9 +72588,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T11:44:16.671Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37822",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "mcp",
@@ -72636,9 +72642,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T11:44:17.362Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37826",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
