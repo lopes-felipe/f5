@@ -814,12 +814,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-11-17T11:46:17.766Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "c-c5ff51ec1fff",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-4026"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
