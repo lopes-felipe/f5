@@ -6163,9 +6163,11 @@
     },
     {
       "createdAt": "2026-11-14T11:13:10.842Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24006",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
@@ -41477,9 +41479,11 @@
     },
     {
       "createdAt": "2026-11-15T11:14:38.505Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-32657",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
@@ -55125,12 +55129,16 @@
     },
     {
       "createdAt": "2026-11-14T11:13:10.842Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-34962",
+      "reason": "Policy: f5 keeps its desktop-hosted html_preview. Upstream's server headless-Chrome preview doesn't apply.",
+      "reasonKey": "declined-by-policy",
       "relatedTopics": [
         "pr-33930"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview-browser"
@@ -60725,9 +60733,13 @@
     },
     {
       "createdAt": "2026-11-15T11:14:38.505Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-35808",
-      "status": "inbox",
+      "reason": "MCP OAuth for outside agents falls under relay-cloud (outside-agent OAuth) in the policy.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp",
@@ -60773,9 +60785,11 @@
     },
     {
       "createdAt": "2026-11-15T11:14:38.505Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-35810",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "mcp",
@@ -64156,9 +64170,13 @@
     },
     {
       "createdAt": "2026-11-14T11:13:10.842Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-36393",
-      "status": "inbox",
+      "reason": "This is in the OAuth/DPoP auth path for T3 Connect and outside agents, which f5 does not have.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "security",
@@ -64209,9 +64227,13 @@
     },
     {
       "createdAt": "2026-11-14T11:13:10.842Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-36407",
-      "status": "inbox",
+      "reason": "Hardening of upstream's PR-preview signing pipeline. Users see no change.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "security",
@@ -72505,9 +72527,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37812",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "security",
@@ -72568,9 +72592,13 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37818",
-      "status": "inbox",
+      "reason": "Lives in upstream client-runtime's multi-environment onboarding, which f5 does not have.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "connections",
@@ -72906,9 +72934,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37869",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "forges",
@@ -72931,9 +72961,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37870",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
@@ -72956,9 +72988,13 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T12:13:01.751Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37871",
-      "status": "inbox",
+      "reason": "Covers the Device Hub proxy and the server headless-browser preview stream, neither of which applies to f5 (it keeps its desktop-hosted html_preview).",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "security"
