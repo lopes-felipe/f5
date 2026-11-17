@@ -46,7 +46,6 @@ const COMPOSER_KEYS = [
   "compactChatLayout",
 ] as const;
 const MESSAGE_KEYS = [
-  "autoFollowNewMessages",
   "enableAssistantStreaming",
   "loadRemoteImagesInChat",
   "diffWordWrap",
@@ -174,7 +173,6 @@ export function ConversationSettings() {
             <RestoreDefaultsButton
               onClick={() =>
                 updateSettings({
-                  autoFollowNewMessages: defaults.autoFollowNewMessages,
                   enableAssistantStreaming: defaults.enableAssistantStreaming,
                   loadRemoteImagesInChat: defaults.loadRemoteImagesInChat,
                   diffWordWrap: defaults.diffWordWrap,
@@ -185,17 +183,6 @@ export function ConversationSettings() {
           ) : null
         }
       >
-        <SettingsRow
-          title="Follow new messages by default"
-          description="Start each conversation with automatic scrolling enabled. Scrolling up pauses following; use the switch beside Jump to latest to resume."
-          control={
-            <Switch
-              aria-label="Follow new messages by default"
-              checked={settings.autoFollowNewMessages}
-              onCheckedChange={(checked) => updateSettings({ autoFollowNewMessages: checked })}
-            />
-          }
-        />
         <SettingsRow
           title="Stream assistant messages"
           description="Show token-by-token output while a response is in progress."
