@@ -131,6 +131,15 @@ describe("usage contracts", () => {
       limitResets: { grants: [grant], nextGrantId: grant.id, cooldownUntil: null },
     };
     expect(Schema.decodeUnknownSync(ClaudeAccountUsage)(current)).toEqual(current);
+    const fable = {
+      ...stored,
+      limitResets: {
+        grants: [{ ...grant, id: "fable", kind: "fable", givesBackWeekly: true }],
+        nextGrantId: "fable",
+        cooldownUntil: null,
+      },
+    };
+    expect(Schema.decodeUnknownSync(ClaudeAccountUsage)(fable)).toEqual(fable);
   });
 
   it("accepts Claude grant ids and the unavailable outcome", () => {

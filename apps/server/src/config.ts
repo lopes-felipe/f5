@@ -55,6 +55,7 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly logWebSocketEvents: boolean;
   readonly observabilityEnabled: boolean;
   readonly acpHardeningEnabled: boolean;
+  readonly githubPrEventsEnabled?: boolean;
 }
 
 export const deriveServerPaths = Effect.fn(function* ({

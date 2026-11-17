@@ -7,6 +7,8 @@ export const ACCOUNT_ATTEMPT_TTL_MS = 5 * 60_000;
 export interface AccountUsageCapability {
   /** sha256-derived account configuration identity; never a raw secret. */
   readonly identity: string;
+  /** Binds dynamic account identity to the exact snapshot, avoiding cross-account read races. */
+  readonly identityForSnapshot?: (snapshot: UsageAccount) => string;
   readonly getSnapshot: Effect.Effect<UsageAccount>;
   readonly refreshAccount?: (
     permits: Semaphore.Semaphore,
@@ -18,6 +20,12 @@ export interface AccountUsageCapability {
   ) => Effect.Effect<void>;
   /** Drops cached reads so the next refresh probes again. */
   readonly invalidate?: Effect.Effect<void>;
+}
+export function accountUsageSnapshotIdentity(
+  capability: AccountUsageCapability,
+  snapshot: UsageAccount,
+): string {
+  return capability.identityForSnapshot?.(snapshot) ?? capability.identity;
 }
 
 /** Hashes configuration inputs into a stable, secret-free account identity. */

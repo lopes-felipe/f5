@@ -71,10 +71,15 @@ export async function installLauncher(root: string, selectedVersion: string): Pr
   const bootstrap = `const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process');
 const args=process.argv.slice(2);
 if(args[0]==='--preflight'){console.log(JSON.stringify({launcherProtocol:1,target:process.platform+'-'+process.arch}));}
-else {const root=args[0],current=JSON.parse(fs.readFileSync(path.join(root,'current.json'),'utf8'));
+else {const root=args[0],service=args[2]==='--service';if(service)args.splice(2,1);
+const output=service?fs.openSync(path.join(args[1],'logs','service.log'),'a',0o600):undefined;
+const current=JSON.parse(fs.readFileSync(path.join(root,'current.json'),'utf8'));
 if(!/^\\d+\\.\\d+\\.\\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/.test(current.version))throw Error('Invalid installation');
-const dir=path.join(root,'versions',current.version),child=cp.spawn(path.join(dir,'runtime',process.platform==='win32'?'node.exe':'node'),[path.join(dir,'launcher.cjs'),...args],{stdio:['inherit','inherit','inherit','ipc'],env:{...process.env,F5_LAUNCHER_SUPERVISOR:'1'}});
-for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>child.kill(signal));child.on('error',()=>{process.exitCode=1});child.on('exit',(code)=>{process.exitCode=code??1});}
+const dir=path.join(root,'versions',current.version),child=cp.spawn(path.join(dir,'runtime',process.platform==='win32'?'node.exe':'node'),[path.join(dir,'launcher.cjs'),...args],{stdio:['inherit',output??'inherit',output??'inherit','ipc'],env:{...process.env,F5_LAUNCHER_SUPERVISOR:'1',...(service&&process.platform==='win32'?{F5_WINDOWS_SERVICE:'1'}:{})}});
+const stop=()=>{if(process.platform==='win32'&&child.connected)child.send({type:'stop'},()=>{});else child.kill('SIGTERM');};
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,stop);
+if(service&&process.platform==='win32'&&process.stdin.isTTY){process.stdin.on('error',()=>{});process.stdin.once('close',stop);process.stdin.resume();}
+child.on('error',()=>{process.exitCode=1});child.on('exit',(code)=>{process.stdin.destroy();if(output!==undefined)fs.closeSync(output);process.exitCode=code??1});}
 `;
   await fs.writeFile(replacement, bootstrap, { mode: 0o600 });
   await fs.rename(replacement, launcher);

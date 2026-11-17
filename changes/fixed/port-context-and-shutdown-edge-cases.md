@@ -1,0 +1,3 @@
+- Reply and quote context preserves indentation, turn and subagent metadata, clipboard content, and the submitted reply target. Screen reader announcements no longer repeat an older step after failure and can announce identical messages again.
+- Windows service shutdown handles starting tasks and update trials safely, with one command lock per installation. PR subscription cleanup includes scheduler wait time, and one unavailable account no longer blocks the rest.
+- Muse account history distinguishes API keys. Antigravity waits for a verified account identity before accepting new quota data, preserving existing history through userinfo outages.

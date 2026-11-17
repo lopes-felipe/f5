@@ -168,6 +168,9 @@ export interface MuseHostHandle {
 }
 
 export interface MuseAdapterOptions {
+  readonly onSubscriptionUsage?: (
+    usage: import("../msp/MuseUsageLimits").MuseSubscriptionUsage,
+  ) => Effect.Effect<void>;
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
   readonly nativeEventLogger?: EventNdjsonLogger;
@@ -898,7 +901,10 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         // Subscription reports are account-wide and carry no session id.
         if (notification.method === "usage/changed") {
           const usage = decodeMuseSubscriptionUsage(params);
-          if (usage) ctx.latestSubscriptionUsage = usage;
+          if (usage) {
+            ctx.latestSubscriptionUsage = usage;
+            if (options?.onSubscriptionUsage) yield* options.onSubscriptionUsage(usage);
+          }
           return;
         }
         if (params.sessionId !== ctx.mspSessionId || ctx.stopped) return;

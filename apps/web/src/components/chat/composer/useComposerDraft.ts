@@ -13,12 +13,19 @@ export function useComposerDraft(threadId: ThreadId) {
   const composerSendState = useMemo(
     () =>
       deriveComposerSendState({
+        replyTo: composerDraft.replyTo,
         prompt,
         imageCount: composerImages.length,
         filePathCount: composerFilePaths.length,
         terminalContexts: composerTerminalContexts,
       }),
-    [composerFilePaths.length, composerImages.length, composerTerminalContexts, prompt],
+    [
+      composerFilePaths.length,
+      composerImages.length,
+      composerTerminalContexts,
+      prompt,
+      composerDraft.replyTo,
+    ],
   );
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);

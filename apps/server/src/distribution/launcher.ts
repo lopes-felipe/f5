@@ -2,11 +2,9 @@
 // @effect-diagnostics globalTimers:off
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { atomicJson, exclusiveJson, exists, readJson } from "./files";
-import { runWindowsPowerShell } from "../windowsPowerShell";
+import { processBirth, sameProcess } from "./processIdentity";
 import { readInstalled, preflightRuntime } from "./installation";
 import {
   managedChild,
@@ -16,49 +14,6 @@ import {
   readUpdateOutcome,
   type UpdateOutcome,
 } from "./handoff";
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-};
-const exec = promisify(execFile);
-async function processBirth(pid: number): Promise<string> {
-  if (process.platform === "linux") {
-    const [stat, boot] = await Promise.all([
-      fs.readFile(`/proc/${pid}/stat`, "utf8"),
-      fs.readFile("/proc/sys/kernel/random/boot_id", "utf8"),
-    ]);
-    return `${boot.trim()}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`;
-  }
-  const result =
-    process.platform === "win32"
-      ? await runWindowsPowerShell(
-          `[Console]::Write([System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().Ticks)`,
-          { timeoutMs: 10_000, maxBuffer: 4096 },
-        )
-      : await exec("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
-          timeout: 5000,
-          maxBuffer: 4096,
-        });
-  if (!result.stdout.trim()) throw new Error("Process identity is unavailable.");
-  return result.stdout.trim();
-}
-async function sameProcess(
-  pid: number,
-  birth: string | undefined,
-  probeBirth: typeof processBirth,
-): Promise<boolean> {
-  if (!alive(pid)) return false;
-  if (!birth) return true; // Old leases fail closed; never guess whether a live PID is the server.
-  try {
-    return (await probeBirth(pid)) === birth;
-  } catch {
-    return alive(pid);
-  }
-}
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 interface Lease {
   pid: number;
@@ -66,6 +21,7 @@ interface Lease {
   child: number | null;
   birth?: string;
   childBirth?: string;
+  service?: boolean;
 }
 function parseLease(value: unknown): Lease {
   if (
@@ -88,6 +44,7 @@ function parseLease(value: unknown): Lease {
     pid: value.pid,
     token: value.token,
     child: value.child,
+    ...("service" in value && value.service === true ? { service: true } : {}),
     ...("birth" in value && typeof value.birth === "string" ? { birth: value.birth } : {}),
     ...("childBirth" in value && typeof value.childBirth === "string"
       ? { childBirth: value.childBirth }
@@ -97,7 +54,11 @@ function parseLease(value: unknown): Lease {
 export async function acquireLauncherLease(
   root: string,
   probeBirth: (pid: number) => Promise<string> = processBirth,
-): Promise<{ child(pid: number | null): Promise<void>; release(): Promise<void> }> {
+): Promise<{
+  readonly token: string;
+  child(pid: number | null): Promise<void>;
+  release(): Promise<void>;
+}> {
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
   const file = path.join(root, "launcher.json");
   if (await exists(file)) {
@@ -138,11 +99,13 @@ export async function acquireLauncherLease(
     birth: await probeBirth(process.pid),
     token: randomUUID(),
     child: null,
+    ...(process.env.F5_WINDOWS_SERVICE === "1" ? { service: true } : {}),
   };
   await exclusiveJson(file, lease).catch(() => {
     throw new Error("An F5 launcher is already starting.");
   });
   return {
+    token: lease.token,
     async child(pid) {
       lease.child = pid;
       if (pid) lease.childBirth = await probeBirth(pid);
@@ -159,22 +122,56 @@ export async function runLauncher(
   root: string,
   stateDir: string,
   args: readonly string[] = [],
+  probeBirth: typeof processBirth = processBirth,
 ): Promise<void> {
   // A launcher owns one explicit profile database. Services never auto-resolve a different profile.
-  const lease = await acquireLauncherLease(root);
   let child: ReturnType<typeof managedChild> | undefined;
   let stopping = false;
+  const handoffStop = new AbortController();
   let signalStop: () => void = () => {};
   const stopped = new Promise<void>((resolve) => {
     signalStop = resolve;
   });
   const stop = () => {
     stopping = true;
+    handoffStop.abort(new Error("Launcher stopping."));
     signalStop();
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
+  const onMessage = (message: unknown) => {
+    if (message && typeof message === "object" && "type" in message && message.type === "stop")
+      stop();
+  };
+  process.on("message", onMessage);
+  if (process.env.F5_LAUNCHER_SUPERVISOR === "1") process.once("disconnect", stop);
+  if (process.env.F5_LAUNCHER_SUPERVISOR === "1" && !process.connected) stop();
+  const lease = await acquireLauncherLease(root, probeBirth);
+  // Startup can wait indefinitely for activation. Observe service stop requests independently.
+  const stopWatcher = (async () => {
+    while (!stopping) {
+      const request = await readJson(path.join(root, "service-stop.json")).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError)
+          return null;
+        throw error;
+      });
+      if (
+        request &&
+        typeof request === "object" &&
+        "token" in request &&
+        request.token === lease.token
+      )
+        stop();
+      if (!stopping) await Promise.race([delay(250), stopped]);
+    }
+  })();
+  let watcherError: unknown;
+  void stopWatcher.catch((error) => {
+    watcherError = error;
+    stop();
+  });
   try {
+    if (stopping) return;
     const recovered = await recoverHandoff(root, path.join(stateDir, "state.sqlite"));
     const start = async (version: string, outcome?: UpdateOutcome) => {
       child = managedChild(root, version, stateDir, args, outcome);
@@ -201,6 +198,7 @@ export async function runLauncher(
         }
         try {
           await performHandoff(root, path.join(stateDir, "state.sqlite"), request, {
+            signal: handoffStop.signal,
             stopOld: async () => {
               await child?.stop();
               await lease.child(null);
@@ -254,9 +252,14 @@ export async function runLauncher(
         throw new Error("F5 server exited; restart the launcher after reviewing server logs.");
       await delay(250);
     }
+    if (watcherError) throw watcherError;
   } finally {
+    stop();
+    await stopWatcher.catch(() => {});
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
+    process.off("message", onMessage);
+    process.off("disconnect", stop);
     await child?.stop();
     await lease.child(null);
     await lease.release();

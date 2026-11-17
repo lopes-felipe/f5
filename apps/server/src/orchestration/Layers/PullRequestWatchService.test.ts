@@ -269,6 +269,16 @@ function run<A, E>(
     ),
   );
 }
+it.effect("reads a newly created watch immediately while the service is running", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      yield* f.service.start;
+      yield* f.service.startWatch(f.input);
+      yield* Deferred.await(f.entered);
+      assert.equal(f.state.calls, 1);
+    }),
+  ),
+);
 it.effect(
   "shares a PR read across threads and persists each wake with trusted automation provenance",
   () =>

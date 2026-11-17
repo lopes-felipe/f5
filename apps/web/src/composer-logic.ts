@@ -134,7 +134,8 @@ export function expandCollapsedComposerCursor(
     if (
       segment.type === "mention" ||
       segment.type === "pull-request" ||
-      segment.type === "thread-reference"
+      segment.type === "thread-reference" ||
+      segment.type === "assistant-quote"
     ) {
       const expandedLength = segment.raw.length;
       if (remaining <= 1) {
@@ -214,7 +215,8 @@ export function collapseExpandedComposerCursor(
     if (
       segment.type === "mention" ||
       segment.type === "pull-request" ||
-      segment.type === "thread-reference"
+      segment.type === "thread-reference" ||
+      segment.type === "assistant-quote"
     ) {
       const expandedLength = segment.raw.length;
       if (remaining === 0) {
