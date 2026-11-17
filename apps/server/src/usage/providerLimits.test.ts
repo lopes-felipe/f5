@@ -315,6 +315,7 @@ it("reads only the configured hub account and never sends its management key to 
       "hub.example",
       "hub.example",
       "hub.example",
+      "hub.example",
     ]);
     const requests = fetchMock.mock.calls.slice(1).map((call) => {
       const sent = JSON.parse(call[1].body);
@@ -323,7 +324,11 @@ it("reads only the configured hub account and never sends its management key to 
       expect(call[1].redirect).toBe("error");
       return new URL(sent.url).hostname;
     });
-    expect(requests).toEqual(["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"]);
+    expect(requests).toEqual([
+      "daily-cloudcode-pa.googleapis.com",
+      "cloudcode-pa.googleapis.com",
+      "www.googleapis.com",
+    ]);
   } finally {
     vi.unstubAllGlobals();
   }

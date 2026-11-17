@@ -35,6 +35,15 @@ async function probe(
       );
     }
     const request = JSON.parse(String(init.body));
+    if (request.url === "https://www.googleapis.com/oauth2/v2/userinfo") {
+      expect(request).toMatchObject({
+        auth_index: "selected",
+        method: "GET",
+        header: { Authorization: "Bearer $TOKEN$" },
+      });
+      expect(request).not.toHaveProperty("data");
+      return hubResponse({ id: "google-account-id" });
+    }
     expect(request).toMatchObject({
       auth_index: "selected",
       method: "POST",
@@ -109,6 +118,7 @@ describe("Antigravity hub quotas", () => {
       "https://hub.example" + prefix + "/v0/management/auth-files",
       "https://hub.example" + prefix + "/v0/management/api-call",
       "https://hub.example" + prefix + "/v0/management/api-call",
+      "https://hub.example" + prefix + "/v0/management/api-call",
     ]);
   });
 
@@ -139,7 +149,8 @@ describe("Antigravity hub quotas", () => {
       });
     });
     expect(called).toEqual([DAILY, STANDARD]);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(section.snapshot?.data.accountFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(section.outcome).toBe("available");
     const windows = new Map(section.snapshot?.data.windows.map((window) => [window.id, window]));
     expect([...windows.keys()].sort()).toEqual([
@@ -169,7 +180,7 @@ describe("Antigravity hub quotas", () => {
       expect(section.errorCode).toBe("temporary-failure");
       expect(fresh).toBe(false);
       expect(section.snapshot?.data.windows).toMatchObject([{ id: "gemini-5h", usedPercent: 25 }]);
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(fetchMock).toHaveBeenCalledTimes(5);
     },
   );
 

@@ -32,6 +32,7 @@ import {
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import { makeMuseUsageHistory } from "./MuseUsageHistory.ts";
+import { makeMuseAccountUsage } from "../msp/MuseAccountUsage";
 
 const DRIVER_KIND = ProviderDriverKind.make("muse");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -70,8 +71,15 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
       });
       const effectiveConfig = { ...config, enabled } satisfies MuseSettings;
       const usageHistory = yield* makeMuseUsageHistory(config, processEnv, enabled);
+      const accountUsage = yield* makeMuseAccountUsage({
+        instanceId,
+        displayName: displayName || "Muse Code",
+        enabled,
+        environment: processEnv,
+      });
 
       const adapter = yield* makeMuseAdapter(effectiveConfig, {
+        onSubscriptionUsage: accountUsage.publish,
         instanceId,
         environment: processEnv,
         clientVersion: serverVersion,
@@ -114,6 +122,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         adapter,
         textGeneration,
         usageHistory,
+        accountUsage: accountUsage.capability,
       } satisfies ProviderInstance;
     }),
 };

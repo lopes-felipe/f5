@@ -1,0 +1,1 @@
+- Muse Code now shows its session and weekly limits with the reported subscription tier. Explicitly configured CLIProxyAPI hubs can read the selected xAI or Antigravity account, and Antigravity history uses a stable Google account fingerprint when userinfo is available.

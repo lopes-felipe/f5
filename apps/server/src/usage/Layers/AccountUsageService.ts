@@ -137,13 +137,19 @@ export const makeAccountUsageCapability = <E>(
                     section.snapshot
                   ) {
                     const previous = prior?.kind === "provider-limits" ? prior.snapshot : null;
+                    const sameIdentity =
+                      previous?.data.accountFingerprint ===
+                      section.snapshot.data.accountFingerprint;
                     return {
                       ...section,
                       snapshot: {
-                        fetchedAt: previous?.fetchedAt ?? section.snapshot.fetchedAt,
+                        fetchedAt: sameIdentity
+                          ? (previous?.fetchedAt ?? section.snapshot.fetchedAt)
+                          : section.snapshot.fetchedAt,
                         data: {
+                          ...section.snapshot.data,
                           windows: mergeProviderUsageWindows([
-                            previous?.data.windows ?? [],
+                            sameIdentity ? (previous?.data.windows ?? []) : [],
                             section.snapshot.data.windows,
                           ]),
                         },
