@@ -346,7 +346,12 @@ export const ProjectIssueAssetUrlResult = Schema.Array(
   Schema.NullOr(
     Schema.Struct({
       relativePath: Schema.String,
-      url: Schema.String,
+      url: Schema.String.check(
+        Schema.isMaxLength(4096),
+        Schema.isPattern(
+          /^\/api\/workspace-assets\/(?!\.{1,2}\/)[\w.-]+\/(?!(?:\.|%2[eE]){1,2}$)[^/\\?#\s]+$/u,
+        ),
+      ),
       expiresAt: Schema.Number,
       width: Schema.optional(Schema.Number),
       height: Schema.optional(Schema.Number),

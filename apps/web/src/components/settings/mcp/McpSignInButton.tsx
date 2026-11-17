@@ -1,6 +1,7 @@
 import type { ProjectId, ProviderInstanceId, ProviderKind, ThreadId } from "@t3tools/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { isWebUrl } from "../../../browser/webUrl";
 import { ensureNativeApi } from "../../../nativeApi";
 import { mcpLoginStatusQueryOptions, mcpQueryKeys } from "../../../lib/mcpReactQuery";
 import { Button } from "../../ui/button";
@@ -32,12 +33,17 @@ export function useMcpSignIn(input: {
     }),
   );
 
-  const openAuthorizationUrl = (url: string) =>
-    ensureNativeApi()
+  const openAuthorizationUrl = (url: string) => {
+    if (!isWebUrl(url)) {
+      setError("This sign-in link is not a web address, so it was not opened.");
+      return;
+    }
+    return ensureNativeApi()
       .shell.openExternal(url)
       .catch(() =>
         setError("Could not open the browser. Sign-in is still pending; use Reopen sign-in."),
       );
+  };
 
   const start = () => {
     if (!input.projectId || starting) return;

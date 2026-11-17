@@ -7,6 +7,7 @@ import {
   ProjectAuthorizeEntryInput,
   ProjectListEntriesInput,
   ProjectIcon,
+  ProjectIssueAssetUrlResult,
   ProjectSearchContentsInput,
   ProjectSearchContentsResult,
 } from "./project";
@@ -16,6 +17,29 @@ const decodeProjectAuthorizeEntryInput = Schema.decodeUnknownSync(ProjectAuthori
 const decodeProjectSearchContentsInput = Schema.decodeUnknownSync(ProjectSearchContentsInput);
 const decodeProjectSearchContentsResult = Schema.decodeUnknownSync(ProjectSearchContentsResult);
 const decodeProjectIcon = Schema.decodeUnknownSync(ProjectIcon);
+
+describe("workspace asset URL responses", () => {
+  const decode = Schema.decodeUnknownSync(ProjectIssueAssetUrlResult);
+  it("accepts only relative URLs on the workspace asset route", () => {
+    const entry = { relativePath: "my file.png", expiresAt: 10_000 };
+    const url = "/api/workspace-assets/token.sig/my%20file.png";
+    expect(decode([null, { ...entry, url }])).toEqual([null, { ...entry, url }]);
+    for (const url of [
+      "data:text/plain,hello",
+      "file:///tmp/document",
+      "https://other.example/document",
+      "//other.example/document",
+      "/api/workspace-assets/token/../../../other",
+      "/api/workspace-assets/../file.png",
+      "/api/workspace-assets/token/%2e%2E",
+      "/api/workspace-assets/token/file.png?redirect=other",
+      "/api/workspace-assets/token/file.png#fragment",
+      "/api/workspace-assets/token/other\\file.png",
+    ]) {
+      expect(() => decode([{ ...entry, url }])).toThrow();
+    }
+  });
+});
 
 describe("ProjectIcon", () => {
   it("accepts a bounded project image path", () => {
