@@ -1,1 +1,0 @@
-- Terminal history migration and deletion now ignore legacy filenames starting with `terminal_` (in any letter case), preventing those names from reading or deleting another thread's scrollback.

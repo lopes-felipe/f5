@@ -1,1 +1,0 @@
-- Watched GitHub PRs can refresh from host events instead of waiting for the two-minute sweep. Enable the preview with F5_GITHUB_PR_EVENTS=1; polling remains the fallback, and subscriptions are cleaned up when watches stop.

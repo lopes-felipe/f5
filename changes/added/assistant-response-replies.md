@@ -1,1 +1,0 @@
-- Reply to an assistant response from its hover actions. A removable “Replying to” bar survives draft reloads and stashing, and sends the response's IDs, opening text, and associated subagents as context.

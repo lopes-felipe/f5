@@ -1,1 +1,0 @@
-- Markdown continuation in the composer, supported High effort defaults, and compact per-turn token footers.
