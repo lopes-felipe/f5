@@ -47366,14 +47366,16 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
-      "decidedAt": "2026-11-13T11:23:44.757Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-17T11:43:55.692Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-33758",
+      "reason": "Native goals require OpenCode 2, which F5 explicitly rejects in favor of its supported 1.x runtime.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-33260"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -49253,11 +49255,13 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
-      "decidedAt": "2026-11-13T11:24:02.662Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-17T11:43:55.693Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-34089",
-      "status": "port",
+      "reason": "Native image and shell jobs use OpenCode 2 APIs unavailable in F5’s supported 1.x runtime.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
