@@ -9466,12 +9466,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-11-17T11:46:41.826Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15467",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-15468"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "remote",
