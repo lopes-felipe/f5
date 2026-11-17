@@ -6163,11 +6163,23 @@
     },
     {
       "createdAt": "2026-11-14T11:13:10.842Z",
-      "decidedAt": "2026-11-17T12:13:01.751Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-17T12:23:04.670Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/markdown-links.ts:89",
+          "apps/web/src/markdown-links.ts:307",
+          "apps/web/src/markdown-links.ts:327",
+          "apps/web/src/terminal-links.ts:212"
+        ],
+        "f5Refs": [
+          "e674b1402c358c7f4879860b65c62507d2cf72ba"
+        ]
+      },
       "id": "pr-24006",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "timeline",
@@ -41479,11 +41491,13 @@
     },
     {
       "createdAt": "2026-11-15T11:14:38.505Z",
-      "decidedAt": "2026-11-17T12:13:01.751Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-17T12:23:04.670Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-32657",
-      "status": "port",
+      "reason": "F5 does not request external-link favicons from Google’s favicon service.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
