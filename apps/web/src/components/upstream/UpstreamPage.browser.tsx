@@ -542,7 +542,7 @@ it("acts on queued jobs and opens their topics in the detail pane", async () => 
   await expect.element(waiting.getByRole("button", { name: "Port git fixes" })).toBeVisible();
   await expect.element(waiting.getByText("#655")).toBeVisible();
   // The PR, not the thread, frees the files, so the badge says so.
-  await expect.element(waiting.getByText("Thread archived, PR still open")).toBeVisible();
+  await expect.element(waiting.getByText("Thread archived, waiting on its PR")).toBeVisible();
   await waiting.getByRole("button", { name: "Start anyway" }).click();
   await vi.waitFor(() =>
     expect(api.controlPortQueue).toHaveBeenCalledWith({ projectId, action: "ignore-conflicts", entryId: "waiting" }),

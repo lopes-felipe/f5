@@ -3281,27 +3281,27 @@ export function makeUpstreamPortsService(
         const running = yield* runningThreads(context.projectId, snapshot);
         const candidates = [...archived].filter((threadId) => !running.has(threadId));
         if (candidates.length === 0) return unchanged;
+        // Every read fails closed: linkSummaries would turn a failed PR lookup into "no PR".
         const evidence = yield* Effect.all({
-          outcomes: readOutcomes(context, model, candidates, snapshot),
+          read: readOutcomes(context, model, candidates, snapshot),
           receipts: topicOutcomes.listForThreads(context.projectId, candidates),
+          linkedPrs: deps.sql<{ readonly thread_id: string }>`
+            SELECT DISTINCT thread_id FROM projection_thread_pull_requests
+            WHERE ${deps.sql.in("thread_id", candidates)}`,
         }).pipe(
-          Effect.flatMap(({ outcomes: read, receipts }) =>
-            linkSummaries(context, candidates, model, read).pipe(
-              Effect.map((summaries) => ({ read, receipts, summaries })),
-            ),
-          ),
           Effect.tapError((error) =>
             Effect.logWarning("Could not read archived port outcomes; keeping files held", error),
           ),
           Effect.option,
         );
         if (Option.isNone(evidence)) return unchanged;
-        const { read, receipts, summaries } = evidence.value;
+        const { read, receipts, linkedPrs } = evidence.value;
         for (const threadId of candidates) outcomesReadFor.add(threadId);
         for (const [threadId, parsed] of read) outcomes.set(threadId, parsed);
         const releasable = new Set(candidates);
+        const withLinkedPr = new Set(linkedPrs.map((row) => row.thread_id));
         const knownPr = (link: (typeof active)[number]) =>
-          Boolean(summaries.get(link.threadId)?.prUrl) ||
+          withLinkedPr.has(link.threadId) ||
           read.get(link.threadId)?.thread?.kind === "pr" ||
           read.get(link.threadId)?.byTopic.get(link.topicId)?.kind === "pr" ||
           receipts.some(
@@ -3354,37 +3354,43 @@ export function makeUpstreamPortsService(
           model,
           outcomes,
         );
-        return open.map((link) => ({
-          topicId: link.topicId,
-          epoch: link.epoch,
-          threadId: link.threadId,
-          prUrl: summaries.get(link.threadId)?.prUrl ?? null,
-          attention: ((): UpstreamBlockerAttention | null => {
-            const thread = model.threads.find((thread) => thread.id === link.threadId);
-            const turn = thread?.latestTurn;
-            const parsed = outcomes.get(link.threadId);
-            const outcome = parsed
-              ? outcomeForTopic(
-                  parsed,
-                  link.topicId,
-                  open.filter((other) => other.threadId === link.threadId).length,
-                )
-              : null;
-            if (thread?.archivedAt != null) return "archived";
-            if (parsed?.errors.has(link.topicId) || parsed?.errors.has("thread"))
-              return "outcome-error";
-            if (turn == null || turn.processingQuiescedAt == null) return null;
-            if (["error", "interrupted"].includes(turn.state)) return "failed";
-            if (
-              turn.state === "completed" &&
-              !summaries.get(link.threadId)?.prUrl &&
-              !["equivalent", "not-applicable"].includes(outcome?.kind ?? "")
-            )
-              return "no-pr";
-            return null;
-          })(),
-          keys: keys.get(link.topicId) ?? [],
-        }));
+        return open.map((link) => {
+          const parsed = outcomes.get(link.threadId);
+          const outcome = parsed
+            ? outcomeForTopic(
+                parsed,
+                link.topicId,
+                open.filter((other) => other.threadId === link.threadId).length,
+              )
+            : null;
+          // A topic-scoped PR outcome counts as this blocker's PR too.
+          const prUrl =
+            summaries.get(link.threadId)?.prUrl ??
+            (outcome?.kind === "pr" ? outcome.detail || null : null);
+          return {
+            topicId: link.topicId,
+            epoch: link.epoch,
+            threadId: link.threadId,
+            prUrl,
+            attention: ((): UpstreamBlockerAttention | null => {
+              const thread = model.threads.find((thread) => thread.id === link.threadId);
+              const turn = thread?.latestTurn;
+              if (thread?.archivedAt != null) return "archived";
+              if (parsed?.errors.has(link.topicId) || parsed?.errors.has("thread"))
+                return "outcome-error";
+              if (turn == null || turn.processingQuiescedAt == null) return null;
+              if (["error", "interrupted"].includes(turn.state)) return "failed";
+              if (
+                turn.state === "completed" &&
+                !prUrl &&
+                !["pr", "equivalent", "not-applicable"].includes(outcome?.kind ?? "")
+              )
+                return "no-pr";
+              return null;
+            })(),
+            keys: keys.get(link.topicId) ?? [],
+          };
+        });
       });
     const waitingOn = (
       entry: QueueRecord,

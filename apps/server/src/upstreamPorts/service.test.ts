@@ -2202,6 +2202,42 @@ layer("upstream port queue", (it) => {
     }),
   );
 
+  it.effect("an archived blocker keeps its files when its linked PRs cannot be read", () =>
+    Effect.gen(function* () {
+      const { fixture, service, waiting, blocker, sql } = yield* blockedBehindSharedFile;
+      fixture.host.threads = [archivedThread(blocker.threadId!, "turn-linked", "message-linked")];
+      // Without the lookup, the thread looks PR-less; the release check must not guess.
+      yield* sql`ALTER TABLE projection_thread_pull_requests RENAME TO projection_thread_pull_requests_real`;
+      const overview = yield* service
+        .getOverview(PROJECT_ID)
+        .pipe(
+          Effect.ensuring(
+            sql`ALTER TABLE projection_thread_pull_requests_real RENAME TO projection_thread_pull_requests`.pipe(
+              Effect.orDie,
+            ),
+          ),
+        );
+      assert.equal(overview.portQueue.waitingOnFiles, 1);
+      assert.equal((yield* waitingEntry(service, waiting.entryId)).status, "queued");
+      assert.equal(fixture.host.submissions.length, 1);
+    }),
+  );
+
+  it.effect("a finished blocker with a topic-scoped PR is not reported as PR-less", () =>
+    Effect.gen(function* () {
+      const { fixture, service, waiting, blocker, sql } = yield* blockedBehindSharedFile;
+      const topicId = blocker.topics[0]!.topicId;
+      fixture.host.threads = [completedThread(blocker.threadId!, "turn-scoped", "message-scoped")];
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('message-scoped',${blocker.threadId},'assistant',${`UPSTREAM-OUTCOME ${topicId}: pr https://github.com/o/f5/pull/46`},0,'now','now','turn-scoped')`;
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const held = yield* waitingEntry(service, waiting.entryId);
+      assert.equal(held.status, "queued");
+      assert.isUndefined(held.waitingOn[0]?.attention);
+      assert.equal(held.waitingOn[0]?.prUrl, "https://github.com/o/f5/pull/46");
+    }),
+  );
+
   it.effect("an archived blocker keeps its files when its outcomes cannot be read", () =>
     Effect.gen(function* () {
       const { fixture, service, waiting, blocker, sql } = yield* blockedBehindSharedFile;

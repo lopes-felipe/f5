@@ -225,13 +225,15 @@ running. **Remove from queue** removes selected topics without stopping started 
 The queue chip distinguishes topic counts from queued jobs. A job can contain several
 topics, and all of its topics remain in Ready until it starts. The queue panel identifies
 the earlier threads and PRs blocking a file wait. A blocker that needs you says why: **Thread
-archived, PR still open** (merge or close the PR to free the files), **Thread archived**,
-**Turn failed**, **Finished without a PR** or **Outcome not readable**.
+archived, waiting on its PR** (the files free up when the PR merges; closing it does not, so
+use **Start anyway** for a PR you abandoned), **Thread archived**, **Turn failed**, **Finished
+without a PR** or **Outcome not readable**.
 Recorded equivalent and not-applicable outcomes survive follow-up turns and restarts.
 Resolved topics release their file reservations once their threads and continuations are
-idle. An unresolved port whose thread is archived keeps its reservation only while it has a PR.
+idle. An unresolved port whose thread is archived keeps its reservation while the thread is
+still running, while its outcomes cannot be read, or while it has a PR.
 Newer outcomes can replace earlier decisions. Invalid corrections need attention and keep
-files reserved, unless their thread is archived without a PR. For a batch's later PR, F5 checks topic trailers in the PR body and commits:
+files reserved, unless their thread is archived, idle and without a PR. For a batch's later PR, F5 checks topic trailers in the PR body and commits:
 included topics keep their reservations, while verified exclusions retain their earlier outcomes.
 If that evidence cannot be verified, F5 keeps the reservation and retries.
 At startup F5 also reconciles eligible historical outcomes before dispatching queued work,
