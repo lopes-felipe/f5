@@ -24,14 +24,21 @@ describe("claudeStartupFailureMessage: config_file_invalid", () => {
         }),
       ),
     ).toBe(
-      "Claude's config file /home/u/.claude.json is not valid JSON. Restore or repair it from /home/u/.claude/backups/.claude.json.backup.1.",
+      "Claude's config file /home/u/.claude.json is not valid JSON, and Claude refuses to start until it is fixed. A backup is at /home/u/.claude/backups/.claude.json.backup.1; check that it is valid JSON before restoring it.",
+    );
+    expect(
+      claudeStartupFailureMessage(
+        invalid({ path: "/home/u/.claude.json", is_global: true, backup_searched: true }),
+      ),
+    ).toBe(
+      "Claude's config file /home/u/.claude.json is not valid JSON, and Claude refuses to start until it is fixed. Claude found no backup, so repair the file by hand.",
     );
     expect(
       claudeStartupFailureMessage(
         invalid({ path: "/repo/.claude/settings.json", is_global: false, backup_searched: false }),
       ),
     ).toBe(
-      "Claude's config file /repo/.claude/settings.json is not valid JSON. Repair it; Claude refuses to start until then.",
+      "Claude's config file /repo/.claude/settings.json is not valid JSON, and Claude refuses to start until it is fixed. Repair it by hand.",
     );
   });
 
@@ -45,16 +52,25 @@ describe("claudeCredentialExpiryWarning", () => {
   const now = Date.parse("2026-11-17T12:00:00Z");
   const format = (date: Date) => date.toISOString().slice(0, 10);
 
-  it("stays silent until seven days remain", () => {
-    expect(claudeCredentialExpiryWarning("2026-11-25T12:00:01Z", now, format)).toBeUndefined();
-    expect(claudeCredentialExpiryWarning("2026-11-24T12:00:00Z", now, format)).toBe(
-      "This Claude login ends around 2026-11-24; sign in again before then.",
+  it("stays silent until seven days remain before the earliest end, 3 days early", () => {
+    expect(claudeCredentialExpiryWarning("2026-11-27T12:00:01Z", now, format)).toBeUndefined();
+    expect(claudeCredentialExpiryWarning("2026-11-27T12:00:00Z", now, format)).toBe(
+      "This Claude login may end as early as 2026-11-24; sign in again before then.",
     );
   });
 
-  it("treats a past date as a probably ended login", () => {
-    expect(claudeCredentialExpiryWarning("2026-11-17T12:00:00Z", now, format)).toBe(
-      "This Claude login has probably ended; sign in again.",
+  it("says the login may end at any time once the earliest end has passed", () => {
+    expect(claudeCredentialExpiryWarning("2026-11-20T12:00:00Z", now, format)).toBe(
+      "This Claude login may end at any time; sign in again.",
+    );
+    expect(claudeCredentialExpiryWarning("2026-11-10T12:00:00Z", now, format)).toBe(
+      "This Claude login may end at any time; sign in again.",
+    );
+  });
+
+  it("formats the default date in UTC", () => {
+    expect(claudeCredentialExpiryWarning("2026-11-27T01:00:00Z", now)).toBe(
+      "This Claude login may end as early as Nov 24, 2026 (UTC); sign in again before then.",
     );
   });
 

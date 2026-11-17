@@ -809,20 +809,27 @@ The Claude in Chrome descriptor check reports 2.1.326 as covered by the certifie
   reported as lingering, and a user server that reuses one is skipped with a notice.
 - **MCP delivery.** The bundled runtime, or a custom executable reporting 2.1.326+
   (`CLAUDE_MCP_INITIALIZE_DELIVERY_MIN_VERSION`), launches with `mcpServersDelivery:
-"initialize"`, so server `env` and `headers` stay off argv and F5's private startup path is
-  skipped. Every other executable, unknown versions included, gets an explicit `"argv"` and
-  keeps the private path (header- and env-bearing servers installed over the control channel
-  before a prompt is admitted). Recovery launches reuse the same options.
+"initialize"`, so server `env` and `headers` stay off argv. Claude removes a launch server by
+  omission only once a `setMcpServers` call has named it, so before admitting the first prompt
+  F5 names the launch servers once. On 2.1.326 that call does not respawn them, and a later
+  reload removes a dropped server in place, as the private path allowed before. A failed claim
+  does not block the session; removal then waits for a restart. Every other executable, unknown
+  versions included, gets an explicit `"argv"` and keeps the private path (header- and
+  env-bearing servers installed over the control channel before a prompt is admitted). Recovery
+  launches reuse the same options.
 - **Session accept only when it saves something.** 2.1.325 offers a rule suggestion only when
   saving it would allow the call again. An ask without `suggestions` is presented with
   `suppressAlwaysAllowRule`, so the card offers one-time approval only. F5's preview mutate tools
   keep the session accept: it sets F5's own preview grant.
 - **`config_file_invalid`.** F5 names the file and the backup from `invalid_config_file`, never
-  from the error text. Not retried. `managed_settings_not_delivered` keeps Claude's message
-  because F5 never sends managed settings in initialize.
-- **`credential_expires_at`.** One actionable provider warning per session per reported value,
-  once 7 days or less remain ("ends around <date>") or when the date has passed ("has probably
-  ended").
+  from the error text. The backup may not parse either, so F5 asks to check it before restoring,
+  and uses `backup_searched` to say when no backup was found. Not retried.
+  `managed_settings_not_delivered` keeps Claude's message because F5 never sends managed
+  settings in initialize.
+- **`credential_expires_at`.** The real end can be up to 3 days earlier than the reported date,
+  so F5 warns once per session per reported value when that earliest end is 7 days away or less
+  ("may end as early as <date> (UTC)"), or has passed ("may end at any time"). The date is
+  formatted in UTC so a remote server's locale and time zone do not show.
 - **Managed policy load failures.** `resolveClaudeBypassAvailability` fails closed when
   `machinePolicy.didNotLoad` lists a source, naming it in the failure reason. Not cached.
 
@@ -858,6 +865,11 @@ carrying `env` and `mcpServersDelivery: "initialize"`: it reported `claude_code_
 2.1.326, `hook_on_failure_supported: true`, `mcp_servers_applied: true`, and the capabilities
 `ui_surface_v1`, `mcp_call_result_not_for_model_v1`, `mcp_call_check_permissions_v1`,
 `voice_call_talk_line_v1`, `ui_pane_widget_v1` and `reload_plugins_refuse_if_busy_v1`.
+With two env-bearing stdio servers launched through `createClaudeQueryWithPrivateMcp` in
+initialize mode, dropping one removed it in place (`removed: ["b"]`) and neither server was
+respawned. A malformed server (no `command`) was silently ignored, and a missing command failed
+with `ENOENT ... posix_spawn 'stdio'`. Neither put the secret `env` value in stderr, the error or
+the server status, so initialize delivery needs no extra scrubbing over the private path.
 `test:claude:live` was not run: this environment has no authenticated Claude account. The
 privacy check's allow and deny decisions in a real Full-access turn, and an MCP reload in a live
 thread followed by an `f5_thread` call, are **unverified here**.

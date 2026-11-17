@@ -1231,25 +1231,30 @@ export function claudeStartupFailureMessage(result: SDKResultMessage): string | 
   return typeof reason === "string" ? CLAUDE_STARTUP_FAILURE_MESSAGES[reason] : undefined;
 }
 
-const CLAUDE_CREDENTIAL_EXPIRY_WARNING_MS = 7 * 24 * 60 * 60_000;
+const DAY_MS = 24 * 60 * 60_000;
+const CLAUDE_CREDENTIAL_EXPIRY_WARNING_MS = 7 * DAY_MS;
+/** The SDK: the login's real end "can be up to 3 days earlier" than the reported date. */
+const CLAUDE_CREDENTIAL_EXPIRY_EARLY_MS = 3 * DAY_MS;
 
 /**
  * Warning for a result's `credential_expires_at` (2.1.326+): the end of the claude.ai login's
- * refresh chain, possibly an estimate up to 3 days late. Silent until 7 days remain; a past
- * date means the login has probably ended, not that it has.
+ * refresh chain, an estimate the login can beat by up to 3 days. Silent until 7 days remain
+ * before the earliest end. The date is formatted in UTC so a remote server's locale and time
+ * zone do not leak into it.
  */
 export function claudeCredentialExpiryWarning(
   expiresAt: unknown,
   nowMs: number,
   formatDate: (date: Date) => string = (date) =>
-    date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }),
+    `${date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" })} (UTC)`,
 ): string | undefined {
   if (typeof expiresAt !== "string") return undefined;
   const expiresMs = Date.parse(expiresAt);
   if (!Number.isFinite(expiresMs)) return undefined;
-  if (expiresMs <= nowMs) return "This Claude login has probably ended; sign in again.";
-  if (expiresMs - nowMs > CLAUDE_CREDENTIAL_EXPIRY_WARNING_MS) return undefined;
-  return `This Claude login ends around ${formatDate(new Date(expiresMs))}; sign in again before then.`;
+  const earliestMs = expiresMs - CLAUDE_CREDENTIAL_EXPIRY_EARLY_MS;
+  if (earliestMs <= nowMs) return "This Claude login may end at any time; sign in again.";
+  if (earliestMs - nowMs > CLAUDE_CREDENTIAL_EXPIRY_WARNING_MS) return undefined;
+  return `This Claude login may end as early as ${formatDate(new Date(earliestMs))}; sign in again before then.`;
 }
 
 /**
@@ -1259,13 +1264,20 @@ export function claudeCredentialExpiryWarning(
 function claudeInvalidConfigFileMessage(result: SDKResultMessage): string | undefined {
   const file = (result as { invalid_config_file?: unknown }).invalid_config_file;
   if (typeof file !== "object" || file === null) return undefined;
-  const { path, backup_path: backupPath } = file as { path?: unknown; backup_path?: unknown };
+  const {
+    path,
+    backup_path: backupPath,
+    backup_searched: backupSearched,
+  } = file as { path?: unknown; backup_path?: unknown; backup_searched?: unknown };
   if (typeof path !== "string" || !path.trim()) return undefined;
+  // The named backup may itself not parse, so it is offered for checking, not copying blindly.
   const repair =
     typeof backupPath === "string" && backupPath.trim()
-      ? `Restore or repair it from ${backupPath}.`
-      : "Repair it; Claude refuses to start until then.";
-  return `Claude's config file ${path} is not valid JSON. ${repair}`;
+      ? `A backup is at ${backupPath}; check that it is valid JSON before restoring it.`
+      : backupSearched === true
+        ? "Claude found no backup, so repair the file by hand."
+        : "Repair it by hand.";
+  return `Claude's config file ${path} is not valid JSON, and Claude refuses to start until it is fixed. ${repair}`;
 }
 
 function resultUserFacingError(result: SDKResultMessage): string | undefined {
@@ -8270,7 +8282,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const requestType = classifyRequestType(toolName);
               const detail = summarizeToolRequest(toolName, toolInput);
               const presentation = claudeApprovalPresentation(callbackOptions, {
-                // A session accept saves the CLI's suggestions, or F5's preview grant.
+                // A session accept saves the CLI's suggestions, or F5's preview grant. Workflow
+                // stages return above without a card, and "mutate" implies an agent browser.
                 sessionGrantAvailable:
                   (callbackOptions.suggestions?.length ?? 0) > 0 || previewToolClass === "mutate",
               });

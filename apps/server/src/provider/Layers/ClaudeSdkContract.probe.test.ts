@@ -136,7 +136,7 @@ describe("Claude SDK host contract transport", () => {
     } satisfies NonNullable<Options["mcpServers"]>;
     let spawn: SpawnOptions | undefined;
     let initialize: Record<string, unknown> | undefined;
-    let setServers = false;
+    let named: unknown;
     const runtime = await createClaudeQueryWithPrivateMcp(
       {
         prompt: emptyPrompt(),
@@ -151,8 +151,17 @@ describe("Claude SDK host contract transport", () => {
                 initialize = message.request as Record<string, unknown>;
                 return;
               }
-              if ((message.request as { subtype?: string })?.subtype === "mcp_set_servers")
-                setServers = true;
+              if ((message.request as { subtype?: string })?.subtype === "mcp_set_servers") {
+                named = (message.request as { servers: unknown }).servers;
+                child.emitJson({
+                  type: "control_response",
+                  response: {
+                    subtype: "success",
+                    request_id: message.request_id,
+                    response: { added: ["remote", "local"], removed: [], errors: {} },
+                  },
+                });
+              }
             });
           },
         },
@@ -163,7 +172,8 @@ describe("Claude SDK host contract transport", () => {
       const result = (await runtime.initializationResult()) as { mcp_servers_applied?: boolean };
       expect(initialize?.mcpServers).toEqual(servers);
       expect(result.mcp_servers_applied).toBe(true);
-      expect(setServers).toBe(false);
+      // Named once over stdin so a later reload can remove them in place.
+      expect(named).toEqual(servers);
       expect(spawn!.args).not.toContain("--mcp-config");
       expect(JSON.stringify(spawn!.args)).not.toContain("header-value-fixture");
       expect(JSON.stringify(spawn!.args)).not.toContain("env-value-fixture");

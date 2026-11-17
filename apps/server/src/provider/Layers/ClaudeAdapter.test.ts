@@ -684,6 +684,9 @@ describe("ClaudeAdapter agent browser", () => {
           assert.equal(hookDecision(yield* call("write")), "deny");
           assert.equal(hookDecision(yield* call("unlisted")), "deny");
           assert.notEqual(hookDecision(yield* call("write", "sdk")), "deny");
+          // Startup names the launch servers once so a reload can remove them in place.
+          assert.equal(setMcpServers.mock.calls.length, 1);
+          setMcpServers.mockClear();
           const reloaded = yield* adapter.reloadMcpConfig!({
             threadId: THREAD_ID,
             mcpServers: {
@@ -1305,27 +1308,58 @@ describe("ClaudeAdapter agent browser", () => {
     },
   };
 
-  it.effect("hands private MCP configuration to the bundled runtime in initialize", () => {
-    const harness = makeHarness();
-    const setMcpServers = vi.fn(async () => ({ added: [], removed: [], errors: {} }));
-    Object.assign(harness.query, { setMcpServers });
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        runtimeMode: "full-access",
-        providerOptions: { mcpServers: privateMcpServers },
+  it.effect(
+    "hands private MCP configuration to the bundled runtime in initialize and removes it in place",
+    () => {
+      const harness = makeHarness();
+      // Like Claude Code 2.1.326: a launch server is removed by omission only once a
+      // `setMcpServers` call has named it (verified against the real binary).
+      const named = new Set<string>();
+      const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => {
+        const removed = harness.query.mcpServerStatusValue
+          .filter((server) => named.has(server.name) && !(server.name in servers))
+          .map((server) => server.name);
+        for (const name of Object.keys(servers)) named.add(name);
+        for (const name of removed) named.delete(name);
+        harness.query.mcpServerStatusValue = harness.query.mcpServerStatusValue.filter(
+          (server) => !removed.includes(server.name),
+        );
+        return { added: [], removed, errors: {} };
       });
-      const options = harness.getLastCreateQueryInput()!.options;
-      // The SDK sends these over stdin in initialize (pinned by the contract probe).
-      assert.equal(options.mcpServersDelivery, "initialize");
-      assert.deepEqual(
-        Object.keys(options.mcpServers ?? {}).sort(),
-        Object.keys(privateMcpServers).sort(),
-      );
-      assert.equal(setMcpServers.mock.calls.length, 0);
-    }).pipe(Effect.provide(harness.layer));
-  });
+      Object.assign(harness.query, { setMcpServers });
+      harness.query.mcpServerStatusValue = Object.keys(privateMcpServers).map((name) => ({
+        name,
+        status: "connected",
+        source: "dynamic",
+      }));
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          providerOptions: { mcpServers: privateMcpServers },
+        });
+        const options = harness.getLastCreateQueryInput()!.options;
+        // The SDK sends these over stdin in initialize (pinned by the contract probe).
+        assert.equal(options.mcpServersDelivery, "initialize");
+        assert.deepEqual(
+          Object.keys(options.mcpServers ?? {}).sort(),
+          Object.keys(privateMcpServers).sort(),
+        );
+        assert.equal(setMcpServers.mock.calls.length, 1);
+        const reload = yield* adapter.reloadMcpConfig!({
+          threadId: THREAD_ID,
+          mcpServers: { privateStdio: privateMcpServers.privateStdio },
+        });
+        assert.equal(reload.restartRequired, false);
+        assert.equal(reload.converged, true);
+        assert.deepEqual(
+          harness.query.mcpServerStatusValue.map((server) => server.name),
+          ["privateStdio"],
+        );
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
 
   it.effect(
     "installs private MCP configuration over the control channel for a pre-2.1.326 executable",
@@ -2911,9 +2945,9 @@ describe("ClaudeAdapterLive", () => {
         adapter.streamEvents,
         (event) => event.type === "runtime.warning",
       ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
-      // The adapter reads the live clock; both dates fall inside the 7-day window.
+      // The adapter reads the live clock; both earliest ends (3 days before) fall within 7 days.
       const inDays = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
-      const soon = inDays(2);
+      const soon = inDays(5);
       const result = (uuid: string, credentialExpiresAt: string) =>
         harness.query.emit({
           type: "result",
@@ -2932,13 +2966,15 @@ describe("ClaudeAdapterLive", () => {
         } as unknown as SDKMessage);
       result("result-1", soon);
       result("result-2", soon);
-      result("result-3", inDays(4));
+      result("result-3", inDays(8));
       // A repeated value is skipped, so the second warning is the new value's.
       const warnings = Array.from(yield* Fiber.join(warningFiber)).map((event) =>
         event.type === "runtime.warning" ? event.payload.message : "",
       );
       assert.equal(warnings.length, 2);
-      assert.ok(warnings.every((message) => message.startsWith("This Claude login ends around")));
+      assert.ok(
+        warnings.every((message) => message.startsWith("This Claude login may end as early as")),
+      );
       assert.notEqual(warnings[0], warnings[1]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
