@@ -18,6 +18,43 @@ async function image(host: HTMLElement) {
 }
 
 describe("Mermaid diagrams", () => {
+  it.each(["light", "dark"] as const)(
+    "keeps a vertical diagram visible and within a narrow container in %s mode",
+    async (theme) => {
+      const host = document.body.appendChild(document.createElement("div"));
+      host.style.width = "640px";
+      const source = [
+        "flowchart TD",
+        'A["Cloudflare: dias úteis às 9h"] --> B["Conferir orçamento e reservar execução"]',
+        'B --> C["Workers Builds: baixar, processar e validar os dados"]',
+        'C --> D["Workers Builds: publicar e conferir produção"]',
+        'D --> E["Workers Builds: publicar e conferir homologação"]',
+        'E --> F["Guardar recibos e resultado no D1"]',
+      ].join("\n");
+      const view = await render(
+        <MermaidDiagram source={source} theme={theme} code={<pre>{source}</pre>} />,
+        { container: host },
+      );
+      try {
+        const img = await image(host);
+        const rect = img.getBoundingClientRect();
+        // A loaded SVG can still collapse to nothing but its 24px padding.
+        expect(rect.width).toBeGreaterThan(200);
+        expect(rect.height).toBeGreaterThan(500);
+        host.style.width = "180px";
+        await vi.waitFor(() => {
+          const narrow = img.getBoundingClientRect();
+          expect(narrow.width).toBeLessThanOrEqual(180);
+          expect(narrow.width).toBeGreaterThan(100);
+          expect(narrow.height).toBeGreaterThan(100);
+        });
+      } finally {
+        await view.unmount();
+        host.remove();
+      }
+    },
+  );
+
   it("renders a real SVG, switches source in place and redraws on a theme change", async () => {
     const host = document.body.appendChild(document.createElement("div"));
     const source = "flowchart LR\n  First --> Second";

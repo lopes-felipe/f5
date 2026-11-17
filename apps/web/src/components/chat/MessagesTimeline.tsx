@@ -99,6 +99,7 @@ import { SectionLabel } from "../ui/section-label";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { FileChip } from "./FileChip";
 import { ComposerDockSpacer } from "./composer/ComposerDock";
+import { CHAT_CONTENT_GUTTERS_CLASS_NAME } from "./chatLayout";
 import { openFileInEditor } from "../../lib/openFileInEditor";
 import { useFileNavigation } from "../../fileNavigationContext";
 import { Button } from "../ui/button";
@@ -313,6 +314,12 @@ interface MessagesTimelineProps {
   hasMessages: boolean;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
+  /**
+   * The running turn; its messages are intermediate work, not completions. `null` means the
+   * latest turn has settled (work still pending belongs to a turn not started yet), and
+   * `undefined` means unknown, which falls back to position after the newest user message.
+   */
+  activeTurnId?: TurnId | null | undefined;
   /** What the running turn is doing now; null shows a plain "Working". */
   liveActivity?: LiveWorkActivity | undefined;
   listRef: React.RefObject<LegendListRef | null>;
@@ -491,6 +498,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hasMessages,
   isWorking,
   activeTurnStartedAt,
+  activeTurnId,
   liveActivity = null,
   listRef,
   entryRowIndexMapRef,
@@ -584,6 +592,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const isAtEndRef = useRef(restoredAnchor?.atEnd ?? true);
   // Physical position drives the rail; following intent can stay enabled during layout changes.
   const [railIsAtEnd, setRailIsAtEnd] = useState(false);
+  // The last measured physical position, which the follow pin keeps rather than jumps to.
+  const physicallyAtEndRef = useRef(restoredAnchor?.atEnd ?? true);
   // Following is the reader's intent: on while they sit at the end, off once
   // their own input moves away (`leaveEnd`), and back on when they return to
   // the end, send, or jump to latest.
@@ -611,11 +621,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         turnDiffSummaryByTurnId,
         isWorking,
         activeTurnStartedAt,
+        activeTurnId,
         liveActivity,
         expandMcpToolCalls: settings.expandMcpToolCalls,
         cache: rowCache,
       }),
     [
+      activeTurnId,
       activeTurnStartedAt,
       completionDividerBeforeEntryId,
       completionSummary,
@@ -942,6 +954,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         // recorded yet, no move counts as upward.
         const previousScrollTop = lastScrollTopRef.current;
         if (hasNode && (fromScroll || isAtEnd)) lastScrollTopRef.current = node.scrollTop;
+        physicallyAtEndRef.current = isAtEnd;
         setRailIsAtEnd(isAtEnd);
         if (isAtEnd && (fromScroll || state.contentLength <= state.scrollLength)) {
           // Reaching the end by scrolling, or content that fits without
@@ -1006,7 +1019,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [listRef]);
 
   const disclosurePinsEndRef = useRef(false);
-  const disclosureSettleFrameRef = useRef<number | null>(null);
+  const endSettleFrameRef = useRef<number | null>(null);
   // A jump or scroll away from the end: stop following the tail now, and drop
   // any follow scroll or disclosure pin already queued for a later frame.
   const leaveEnd = useCallback(() => {
@@ -1014,15 +1027,26 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onLeaveEnd?.();
     manualScrollGenerationRef.current++;
     isAtEndRef.current = false;
+    physicallyAtEndRef.current = false;
     setRailIsAtEnd(false);
     liveFollowEnabledRef.current = false;
     setLiveFollowEnabled(false);
     disclosurePinsEndRef.current = false;
-    if (disclosureSettleFrameRef.current !== null) {
-      window.cancelAnimationFrame(disclosureSettleFrameRef.current);
-      disclosureSettleFrameRef.current = null;
+    if (endSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(endSettleFrameRef.current);
+      endSettleFrameRef.current = null;
     }
   }, [onLeaveEnd]);
+
+  // While following at the end, keep the end in view while a tool result or
+  // diff changes height. Following that resumes away from the end (a send or
+  // Jump to latest) gets there through its own scroll; this pin never jumps.
+  const pinTimelineToEnd = useCallback(() => {
+    const followingAtEnd = liveFollowEnabledRef.current && physicallyAtEndRef.current;
+    if (!followingAtEnd && !disclosurePinsEndRef.current) return;
+    const node = listRef.current?.getScrollableNode?.();
+    if (node instanceof HTMLElement) node.scrollTop = node.scrollHeight;
+  }, [listRef]);
 
   useEffect(() => {
     if (!hasMessages && !isWorking) {
@@ -1048,6 +1072,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       }
       syncFrame = window.requestAnimationFrame(() => {
         syncFrame = 0;
+        pinTimelineToEnd();
         syncIsAtEndFromListState();
         measureTurnRailGutter();
       });
@@ -1148,6 +1173,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     leaveEnd,
     listRef,
     measureTurnRailGutter,
+    pinTimelineToEnd,
     requestOlderHistory,
     syncIsAtEndFromListState,
   ]);
@@ -1179,43 +1205,36 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (!isAtEndRef.current && pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
   }, [requestOlderHistory, syncIsAtEndFromListState]);
 
-  // A disclosure toggled at the end keeps the end in view while rows re-measure.
-  // Anywhere else, maintainVisibleContentPosition holds the toggled row in place.
-  const pinDisclosureToEnd = useCallback(() => {
-    if (!disclosurePinsEndRef.current) return;
-    const node = listRef.current?.getScrollableNode?.();
-    if (node instanceof HTMLElement) node.scrollTop = node.scrollHeight;
-  }, [listRef]);
-  // Settles two frames after the last toggle or row resize, since tool output
-  // can render a few frames late.
-  const scheduleDisclosureSettle = useCallback(() => {
-    if (disclosureSettleFrameRef.current !== null) {
-      window.cancelAnimationFrame(disclosureSettleFrameRef.current);
+  // Follow measured geometry, including updates within an existing work group.
+  // Settle two frames after the last resize because tool output can render late.
+  const scheduleEndSettle = useCallback(() => {
+    if (endSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(endSettleFrameRef.current);
     }
-    disclosureSettleFrameRef.current = window.requestAnimationFrame(() => {
-      pinDisclosureToEnd();
-      disclosureSettleFrameRef.current = window.requestAnimationFrame(() => {
-        pinDisclosureToEnd();
+    endSettleFrameRef.current = window.requestAnimationFrame(() => {
+      pinTimelineToEnd();
+      endSettleFrameRef.current = window.requestAnimationFrame(() => {
+        pinTimelineToEnd();
         disclosurePinsEndRef.current = false;
-        disclosureSettleFrameRef.current = null;
+        endSettleFrameRef.current = null;
         syncIsAtEndFromListState();
       });
     });
-  }, [pinDisclosureToEnd, syncIsAtEndFromListState]);
+  }, [pinTimelineToEnd, syncIsAtEndFromListState]);
   const pinEndThroughDisclosure = useCallback(() => {
     if (!isAtEndRef.current) return;
     disclosurePinsEndRef.current = true;
-    scheduleDisclosureSettle();
-  }, [scheduleDisclosureSettle]);
+    scheduleEndSettle();
+  }, [scheduleEndSettle]);
   const handleItemSizeChanged = useCallback(() => {
-    if (!disclosurePinsEndRef.current) return;
-    queueMicrotask(pinDisclosureToEnd);
-    scheduleDisclosureSettle();
-  }, [pinDisclosureToEnd, scheduleDisclosureSettle]);
+    if (!liveFollowEnabledRef.current && !disclosurePinsEndRef.current) return;
+    queueMicrotask(pinTimelineToEnd);
+    scheduleEndSettle();
+  }, [pinTimelineToEnd, scheduleEndSettle]);
   useEffect(
     () => () => {
-      if (disclosureSettleFrameRef.current !== null) {
-        window.cancelAnimationFrame(disclosureSettleFrameRef.current);
+      if (endSettleFrameRef.current !== null) {
+        window.cancelAnimationFrame(endSettleFrameRef.current);
       }
     },
     [],
@@ -1658,7 +1677,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     // through `listHeaderContent` would silently drop it on empty threads.
     return (
       <div
-        className="flex h-full flex-col overflow-y-auto overscroll-y-contain pl-3 pr-10 pb-(--composer-dock-height) sm:pl-5"
+        className={cn(
+          "flex h-full flex-col overflow-y-auto overscroll-y-contain pb-(--composer-dock-height)",
+          CHAT_CONTENT_GUTTERS_CLASS_NAME,
+        )}
         data-slot="messages-scroll-container"
       >
         {listHeaderContent ? <div className="pt-3 sm:pt-4">{listHeaderContent}</div> : null}
@@ -1726,23 +1748,34 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             // queries — the LegendList's overflow container has inline styles that
             // make class-based selectors fragile.
             data-slot="messages-scroll-container"
-            className="h-full overflow-x-hidden overscroll-y-contain pl-3 pr-10 sm:pl-5"
+            className={cn(
+              "h-full overflow-x-hidden overscroll-y-contain",
+              CHAT_CONTENT_GUTTERS_CLASS_NAME,
+            )}
             ListHeaderComponent={
               <>
                 <div className="h-3 sm:h-4" />
                 {listHeaderContent}
               </>
             }
-            // Reserves room for the floating composer dock so the last row
-            // scrolls fully clear of it.
+            // The follow control overlays the timeline; only the composer needs a spacer.
             ListFooterComponent={
-              <ComposerDockSpacer className="h-[calc(var(--composer-dock-height,0px)+0.75rem)] sm:h-[calc(var(--composer-dock-height,0px)+1rem)]" />
+              <ComposerDockSpacer
+                className={
+                  isWorking
+                    ? "h-(--composer-dock-height)"
+                    : "h-[calc(var(--composer-dock-height,0px)+0.75rem)] sm:h-[calc(var(--composer-dock-height,0px)+1rem)]"
+                }
+              />
             }
           />
           {/* Outside the virtualized list so scrolling and cell recycling never unmount it. */}
           {ribbonOrigin && isWorking ? (
             <LiveWorkingRibbon
               startedAt={activeTurnStartedAt}
+              boundsElement={
+                grabButtonRef.current?.closest<HTMLElement>("[data-working-ribbon-bounds]") ?? null
+              }
               origin={ribbonOrigin}
               onRelease={handleRibbonRelease}
               onOrphanedFocus={restoreRibbonFocus}
@@ -2006,7 +2039,10 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
       ref={element}
       data-thread-find-active={active ? "true" : undefined}
       data-row-entering={entering ? "" : undefined}
-      className={cn(compactBottom ? "pb-1.5" : "pb-4", entering && "motion-safe:animate-rise")}
+      className={cn(
+        compactBottom ? "pb-1.5" : row.kind === "working" ? "pb-0.5 sm:pb-1.5" : "pb-4",
+        entering && "motion-safe:animate-rise",
+      )}
       {...testRenderCountProps}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
@@ -5271,49 +5307,59 @@ function WorkingRowContent(props: {
           <span className="min-w-0 line-clamp-4 wrap-break-word">{row.thought}</span>
         </div>
       ) : null}
-      <div className="flex min-w-0 items-center gap-2 pt-1 text-ui text-muted-foreground">
-        <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
-          <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse" />
-          <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:200ms]" />
-          <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:400ms]" />
-        </span>
-        {reducedMotion ? (
-          <span className="shrink-0 tabular-nums">
-            <LiveWorkingLabel startedAt={row.createdAt} />
-          </span>
-        ) : (
-          // Picks the label up as a steerable ribbon; looks like plain text at rest.
-          <button
-            ref={grabButtonRef}
-            type="button"
-            data-working-ribbon-grab=""
-            // Static: a focused control whose name ticked every second
-            // would be re-announced by screen readers on each tick.
-            aria-label="Working. Press to steer the text"
+      {/* Match the follow button's 1.5rem height plus its two border pixels. */}
+      <div className="flex h-[calc(1.5rem+2px)] min-w-0 items-center gap-2 pr-[var(--timeline-follow-controls-width,0px)] text-xs text-muted-foreground">
+        <div data-working-ribbon-bounds="" className="relative flex h-full min-w-0 flex-1">
+          <div
             className={cn(
-              "m-0 shrink-0 cursor-grab appearance-none rounded-sm border-0 bg-transparent p-0 font-[inherit] leading-[inherit] tracking-[inherit] text-inherit tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "flex min-w-0 flex-1 items-center gap-2",
               externals.ribbonActive && "invisible",
             )}
-            onKeyDown={(event) => {
-              // Focus returns here while the key that grabbed the ribbon
-              // may still be held (it dropped for lack of room); its
-              // autorepeat must not pick the ribbon straight back up.
-              // Chromium already ignores repeats here; other engines may not.
-              if (event.repeat && (event.key === "Enter" || event.key === " ")) {
-                event.preventDefault();
-              }
-            }}
-            onClick={(event) => {
-              const rect = event.currentTarget.getBoundingClientRect();
-              actions.startRibbon({ x: rect.right, y: rect.top + rect.height / 2 });
-            }}
           >
-            <LiveWorkingLabel startedAt={row.createdAt} />
-          </button>
-        )}
-        {row.activity ? (
-          <span className="min-w-0 truncate text-muted-foreground">· {row.activity}</span>
-        ) : null}
+            <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
+              <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse" />
+              <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:200ms]" />
+              <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:400ms]" />
+            </span>
+            {reducedMotion ? (
+              <span className="shrink-0 tabular-nums">
+                <LiveWorkingLabel startedAt={row.createdAt} />
+              </span>
+            ) : (
+              // Picks the label up as a steerable ribbon; looks like plain text at rest.
+              <button
+                ref={grabButtonRef}
+                type="button"
+                data-working-ribbon-grab=""
+                // Static: a focused control whose name ticked every second
+                // would be re-announced by screen readers on each tick.
+                aria-label="Working. Press to steer the text"
+                className={cn(
+                  "m-0 shrink-0 cursor-grab appearance-none rounded-sm border-0 bg-transparent p-0 font-[inherit] leading-[inherit] tracking-[inherit] text-inherit tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  externals.ribbonActive && "invisible",
+                )}
+                onKeyDown={(event) => {
+                  // Focus returns here while the key that grabbed the ribbon
+                  // may still be held (it dropped for lack of room); its
+                  // autorepeat must not pick the ribbon straight back up.
+                  // Chromium already ignores repeats here; other engines may not.
+                  if (event.repeat && (event.key === "Enter" || event.key === " ")) {
+                    event.preventDefault();
+                  }
+                }}
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  actions.startRibbon({ x: rect.right, y: rect.top + rect.height / 2 });
+                }}
+              >
+                <LiveWorkingLabel startedAt={row.createdAt} />
+              </button>
+            )}
+            {row.activity ? (
+              <span className="min-w-0 truncate text-muted-foreground">· {row.activity}</span>
+            ) : null}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -5367,6 +5413,7 @@ export function buildTimelineRows(input: {
   turnDiffSummaryByTurnId?: ReadonlyMap<TurnId, TurnDiffSummary> | undefined;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
+  activeTurnId?: TurnId | null | undefined;
   liveActivity: LiveWorkActivity | null;
   expandMcpToolCalls: boolean;
   cache: TimelineRowCache;
@@ -5379,6 +5426,7 @@ export function buildTimelineRows(input: {
     input.turnDiffSummaryByTurnId,
     input.isWorking,
     input.activeTurnStartedAt,
+    input.activeTurnId,
     input.liveActivity,
     input.expandMcpToolCalls,
   ];
@@ -5588,7 +5636,19 @@ export function buildTimelineRows(input: {
       continue;
     }
 
+    // A finished message or checkpoint can still be intermediate work in a running turn.
+    // Match the running turn by id (null: none is running yet); position after the newest
+    // user message is only a fallback when the running turn is unknown, since automation and
+    // continuation turns have no user message at all.
+    const activeTurnKnown = input.activeTurnId !== undefined;
+    const isActiveTurnMessage =
+      input.isWorking &&
+      (activeTurnKnown && timelineEntry.message.turnId
+        ? timelineEntry.message.turnId === input.activeTurnId
+        : index > lastUserMessageEntryIndex);
     const isLatestCompletion =
+      !isActiveTurnMessage &&
+      !timelineEntry.message.streaming &&
       timelineEntry.message.role === "assistant" &&
       input.completionDividerBeforeEntryId === timelineEntry.id;
     const message = timelineEntry.message;
@@ -5600,12 +5660,14 @@ export function buildTimelineRows(input: {
       promptStartByMessageId.get(message.id);
     const completionCompletedAt = turnSummary?.completedAt ?? message.completedAt;
     const isHistoricalCompletion =
+      !isActiveTurnMessage &&
       message.role === "assistant" &&
       !message.streaming &&
       turnId != null &&
       lastAssistantByTurn.get(turnId) === timelineEntry.id &&
       (turnSummary != null ||
-        (!input.isWorking && message.completedAt != null) ||
+        // With the running turn known, a completed message from any other turn is history.
+        ((!input.isWorking || activeTurnKnown) && message.completedAt != null) ||
         (lastUserAt != null && message.createdAt < lastUserAt));
     const elapsed =
       completionStartedAt && completionCompletedAt

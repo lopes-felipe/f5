@@ -72,6 +72,7 @@ export type ThreadReadInput = typeof ThreadReadInput.Type;
 export const THREAD_READ_RESULT_MAX_BYTES = 24_000;
 
 export type ThreadToolRequest =
+  | { readonly name: "image_publish"; readonly path: string }
   | { readonly name: "thread_status" }
   | { readonly name: "thread_read"; readonly input: ThreadReadInput }
   | { readonly name: "thread_settle" }
@@ -157,6 +158,15 @@ const annotations = (readOnlyHint: boolean) => ({
   openWorldHint: !readOnlyHint,
 });
 export const THREAD_TOOL_DEFINITIONS = [
+  {
+    name: "image_publish",
+    title: "Publish image to conversation",
+    description:
+      "Publish a local screenshot or image as a durable attachment of this conversation. Pass an absolute image path inside this thread's workspace or the temporary directory (including /tmp), at most 8 MiB. Returns Markdown for displaying and expanding the image, including after reopening the conversation. Do not link temporary paths directly.",
+    shape: { path: z.string().min(1).max(4096) },
+    annotations: annotations(false),
+    alwaysLoad: false,
+  },
   {
     name: "thread_read",
     title: "Read referenced thread",
@@ -331,6 +341,15 @@ export async function callThreadTool(
           throw new Error("item excludes before and limit");
         return { name, input };
       }
+      if (name === "image_publish")
+        return {
+          name,
+          ...Schema.decodeUnknownSync(
+            Schema.Struct({
+              path: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+            }),
+          )(arguments_ ?? {}),
+        };
       if (name === "html_render")
         return { name, input: Schema.decodeUnknownSync(HtmlRenderInput)(arguments_ ?? {}) };
       if (name === "html_preview")
