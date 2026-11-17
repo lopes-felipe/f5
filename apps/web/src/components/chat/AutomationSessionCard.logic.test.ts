@@ -187,6 +187,23 @@ describe("buildAutomationRun", () => {
     ).toBeUndefined();
   });
 
+  it("keeps a target wait inside the computer run", () => {
+    const entries = [
+      computer("screenshot"),
+      computer("wait_for_target", { computerStep: { outcome: "timed-out-user-active" } }),
+      computer("screenshot"),
+    ];
+    expect(automationRunEnd(entries, 0, (entry) => entry)).toBe(3);
+    const run = buildAutomationRun("computer", entries);
+    expect(run.status).toBe("done");
+    expect(run.chips.map((chip) => [chip.op, chip.title, chip.failed])).toEqual([
+      ["screenshot", "Took a screenshot", false],
+      ["waitTarget", "Waited for a turn", false],
+      ["screenshot", "Took a screenshot", false],
+    ]);
+    expect(automationStepDetail(entries[1]!)).toBe("timed-out-user-active");
+  });
+
   it("marks a run whose last action failed", () => {
     expect(
       buildAutomationRun("computer", [computer("click"), computer("key", { status: "failed" })])

@@ -66,6 +66,7 @@ const OP_ICON: Record<string, LucideIcon> = {
   activateApp: AppWindowIcon,
   open: AppWindowIcon,
   wait: HourglassIcon,
+  waitTarget: HourglassIcon,
   wait_for: HourglassIcon,
   status: ShieldCheckIcon,
   requestAccess: ShieldCheckIcon,
