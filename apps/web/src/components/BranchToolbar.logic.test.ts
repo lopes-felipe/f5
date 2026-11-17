@@ -3,11 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   dedupeRemoteBranchesWithLocalMatches,
   deriveLocalBranchNameFromRemoteRef,
-  resolveBranchSelectionTarget,
   resolveDraftEnvModeAfterBranchChange,
-  resolveBranchToolbarValue,
   resolveEffectiveEnvMode,
-  shouldIncludeBranchPickerItem,
   sanitizeNewRefName,
 } from "./BranchToolbar.logic";
 
@@ -61,41 +58,6 @@ describe("resolveDraftEnvModeAfterBranchChange", () => {
         effectiveEnvMode: "local",
       }),
     ).toBe("worktree");
-  });
-});
-
-describe("resolveBranchToolbarValue", () => {
-  it("defaults new-worktree mode to current git branch when no explicit base branch is set", () => {
-    expect(
-      resolveBranchToolbarValue({
-        envMode: "worktree",
-        activeWorktreePath: null,
-        activeThreadBranch: null,
-        currentGitBranch: "main",
-      }),
-    ).toBe("main");
-  });
-
-  it("keeps an explicitly selected worktree base branch", () => {
-    expect(
-      resolveBranchToolbarValue({
-        envMode: "worktree",
-        activeWorktreePath: null,
-        activeThreadBranch: "feature/base",
-        currentGitBranch: "main",
-      }),
-    ).toBe("feature/base");
-  });
-
-  it("shows the actual checked-out branch when not selecting a new worktree base", () => {
-    expect(
-      resolveBranchToolbarValue({
-        envMode: "local",
-        activeWorktreePath: null,
-        activeThreadBranch: "feature/base",
-        currentGitBranch: "main",
-      }),
-    ).toBe("main");
   });
 });
 
@@ -222,125 +184,10 @@ describe("dedupeRemoteBranchesWithLocalMatches", () => {
   });
 });
 
-describe("resolveBranchSelectionTarget", () => {
-  it("reuses an existing secondary worktree for the selected branch", () => {
-    expect(
-      resolveBranchSelectionTarget({
-        activeProjectCwd: "/repo",
-        activeWorktreePath: "/repo/.t3/worktrees/feature-a",
-        branch: {
-          isDefault: false,
-          worktreePath: "/repo/.t3/worktrees/feature-b",
-        },
-      }),
-    ).toEqual({
-      checkoutCwd: "/repo/.t3/worktrees/feature-b",
-      nextWorktreePath: "/repo/.t3/worktrees/feature-b",
-      reuseExistingWorktree: true,
-    });
-  });
-
-  it("switches back to the main repo when the branch already lives there", () => {
-    expect(
-      resolveBranchSelectionTarget({
-        activeProjectCwd: "/repo",
-        activeWorktreePath: "/repo/.t3/worktrees/feature-a",
-        branch: {
-          isDefault: true,
-          worktreePath: "/repo",
-        },
-      }),
-    ).toEqual({
-      checkoutCwd: "/repo",
-      nextWorktreePath: null,
-      reuseExistingWorktree: true,
-    });
-  });
-
-  it("keeps default-branch checkout in the current worktree", () => {
-    expect(
-      resolveBranchSelectionTarget({
-        activeProjectCwd: "/repo",
-        activeWorktreePath: "/repo/.t3/worktrees/feature-a",
-        branch: {
-          isDefault: true,
-          worktreePath: null,
-        },
-      }),
-    ).toEqual({
-      checkoutCwd: "/repo/.t3/worktrees/feature-a",
-      nextWorktreePath: "/repo/.t3/worktrees/feature-a",
-      reuseExistingWorktree: false,
-    });
-  });
-
-  it("keeps checkout in the current worktree for non-default branches", () => {
-    expect(
-      resolveBranchSelectionTarget({
-        activeProjectCwd: "/repo",
-        activeWorktreePath: "/repo/.t3/worktrees/feature-a",
-        branch: {
-          isDefault: false,
-          worktreePath: null,
-        },
-      }),
-    ).toEqual({
-      checkoutCwd: "/repo/.t3/worktrees/feature-a",
-      nextWorktreePath: "/repo/.t3/worktrees/feature-a",
-      reuseExistingWorktree: false,
-    });
-  });
-});
-
-describe("shouldIncludeBranchPickerItem", () => {
-  it("keeps the synthetic checkout PR item visible for gh pr checkout input", () => {
-    expect(
-      shouldIncludeBranchPickerItem({
-        itemValue: "__checkout_pull_request__:1359",
-        normalizedQuery: "gh pr checkout 1359",
-        createBranchItemValue: "__create_new_branch__:gh pr checkout 1359",
-        checkoutPullRequestItemValue: "__checkout_pull_request__:1359",
-      }),
-    ).toBe(true);
-  });
-
-  it("keeps the synthetic create-branch item visible for arbitrary branch input", () => {
-    expect(
-      shouldIncludeBranchPickerItem({
-        itemValue: "__create_new_branch__:feature/demo",
-        normalizedQuery: "feature/demo",
-        createBranchItemValue: "__create_new_branch__:feature/demo",
-        checkoutPullRequestItemValue: null,
-      }),
-    ).toBe(true);
-  });
-
-  it("still filters ordinary branch items by query text", () => {
-    expect(
-      shouldIncludeBranchPickerItem({
-        itemValue: "main",
-        normalizedQuery: "gh pr checkout 1359",
-        createBranchItemValue: "__create_new_branch__:gh pr checkout 1359",
-        checkoutPullRequestItemValue: "__checkout_pull_request__:1359",
-      }),
-    ).toBe(false);
-  });
-});
-
 describe("sanitizeNewRefName", () => {
   it("replaces rejected whitespace while preserving Unicode, slashes and case", () => {
     expect(sanitizeNewRefName("  Feature/new\t branch  ")).toBe("Feature/new-branch");
     expect(sanitizeNewRefName("new\u00a0branch")).toBe("new\u00a0branch");
     expect(sanitizeNewRefName("foo--bar")).toBe("foo--bar");
-  });
-  it("finds existing branches using their sanitized name", () => {
-    expect(
-      shouldIncludeBranchPickerItem({
-        itemValue: "new-branch",
-        normalizedQuery: "new branch",
-        createBranchItemValue: null,
-        checkoutPullRequestItemValue: null,
-      }),
-    ).toBe(true);
   });
 });

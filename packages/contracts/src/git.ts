@@ -127,6 +127,8 @@ export const GitCheckoutInput = Schema.Struct({
   operationId: Schema.optional(Schema.String),
   cwd: FilesystemPath,
   branch: TrimmedNonEmptyStringSchema,
+  /** Create `branch` first, only after the switch is allowed, under the same lock. */
+  create: Schema.optional(Schema.Boolean),
 });
 export type GitCheckoutInput = typeof GitCheckoutInput.Type;
 
