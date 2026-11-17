@@ -1,0 +1,114 @@
+{
+  "baseSha": "a9e709f15f825cacac1b6d665fa1920c328d68b7",
+  "commits": [
+    {
+      "pr": 31379,
+      "sha": "8e6a7323050ea8d2891f745f7e624e84f9fd8d9a",
+      "subject": "feat(web,mobile): move a scheduled task to another thread (#31379)",
+      "topic": "pr-31379"
+    },
+    {
+      "pr": 32498,
+      "sha": "22dc6f9e98cc826ac3581aeeb0fb1852f49a43f1",
+      "subject": "fix(mobile): keep scheduled task prompts clear of microphone (#32498)",
+      "topic": "pr-32498"
+    },
+    {
+      "pr": 25198,
+      "sha": "dff0b1159bf7aa3ad5e5598d6e1bb7d6243f51a2",
+      "subject": "fix(connect): show why relay unlink failed (#25198)",
+      "topic": "pr-25198"
+    },
+    {
+      "pr": 32242,
+      "sha": "09a54f01bc0ae83865347a965ced50f8c8ec2953",
+      "subject": "fix(search): keep whole-word title matches above busy prefixes (#32242)",
+      "topic": "pr-32242"
+    },
+    {
+      "pr": 32833,
+      "sha": "d6c2b09c52e96a71e22124a734190cc0d14ca25f",
+      "subject": "feat(server): html tools take a file path, so agents stop retyping pages (#32833)",
+      "topic": "pr-32833"
+    },
+    {
+      "pr": 26737,
+      "sha": "20fcc6ca57195cf9180114387e4f659d8e1ee2b4",
+      "subject": "fix(server): refresh linking tools in existing agent sessions (#26737)",
+      "topic": "pr-26737"
+    },
+    {
+      "pr": 28255,
+      "sha": "3cd97a1ee230437b1bfd8441dffe65eac55be1e5",
+      "subject": "fix(server): saved preview screenshots keep full resolution (#28255)",
+      "topic": "pr-28255"
+    },
+    {
+      "pr": 32266,
+      "sha": "e11c2fdca7d1e67b0a9ada3bdbd87314efa78557",
+      "subject": "fix(mobile): share PDFs from the Android attachment viewer (#32266)",
+      "topic": "pr-32266"
+    },
+    {
+      "pr": 32503,
+      "sha": "7b680b616f6d35fa3ba16c3dbdd6f9146b1f3a92",
+      "subject": "feat(antigravity): support agy CLI as custom binaryPath (#32503)",
+      "topic": "pr-32503"
+    },
+    {
+      "pr": 23821,
+      "sha": "8a84e9426d26bb50de24a8d36c262a851a3befd2",
+      "subject": "perf(server): skip oversized history during handoff selection (#23821)",
+      "topic": "pr-23821"
+    },
+    {
+      "pr": 32777,
+      "sha": "a1af1841ede2acc64e83b0e9c2b5efab4ab4ca34",
+      "subject": "fix(scripts): report:renders starts on Windows without a vp shim (#32777)",
+      "topic": "pr-32777"
+    },
+    {
+      "pr": 25883,
+      "sha": "71c2d3a302092b94511eb7e6ab4e6844a66dbf22",
+      "subject": "fix(server): storage report lists project worktrees nested inside plain folders (#25883)",
+      "topic": "pr-25883"
+    },
+    {
+      "pr": 27582,
+      "sha": "28eff11d81ec687f5c090137a869d63c822b675c",
+      "subject": "fix(web): lineage phase headers truncate instead of overflowing the details card (#27582)",
+      "topic": "pr-27582"
+    },
+    {
+      "pr": 27541,
+      "sha": "ecf7f1ab95b7df475d6d97921508f7db31f0c329",
+      "subject": "fix(web): mobile sidebar keeps its width when shelves expand (#27541)",
+      "topic": "pr-27541"
+    },
+    {
+      "pr": 27030,
+      "sha": "f475de2f7563b66b4e96f2746718e2a06274f0f6",
+      "subject": "fix(web): device tool update buttons fit their popovers (#27030)",
+      "topic": "pr-27030"
+    },
+    {
+      "pr": 25694,
+      "sha": "57ded10b74ed995b5e8ad99a016ba0fb09bb6df0",
+      "subject": "fix(web): restore bold weight in rendered Markdown (#25694)",
+      "topic": "pr-25694"
+    },
+    {
+      "pr": 28454,
+      "sha": "0450f854f2cf54c8cfcfe541cfb056950056172c",
+      "subject": "fix(muse): a declined /compact reports its reason and no longer wedges the thread (#28454)",
+      "topic": "pr-28454"
+    }
+  ],
+  "count": 17,
+  "createdAt": "2026-11-08T11:05:32.990Z",
+  "digest": "094fe40811c0a01e525777e740f659fd11f4b833bbfceb7ebbdd2eb4f3aab3a8",
+  "interval": 21,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "8e6a7323050ea8d2891f745f7e624e84f9fd8d9a"
+}

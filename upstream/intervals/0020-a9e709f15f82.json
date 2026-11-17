@@ -1,0 +1,102 @@
+{
+  "baseSha": "beaeeff40ef108e2cdb37112bfd0dd31b4660eae",
+  "commits": [
+    {
+      "pr": 32239,
+      "sha": "a9e709f15f825cacac1b6d665fa1920c328d68b7",
+      "subject": "fix(mobile): center Android header confirmation buttons (#32239)",
+      "topic": "pr-32239"
+    },
+    {
+      "pr": 32551,
+      "sha": "af96a01afd78a693314d0a5bcf2bb7505afa976e",
+      "subject": "fix(mobile): shorten the model picker save action (#32551)",
+      "topic": "pr-32551"
+    },
+    {
+      "pr": 27941,
+      "sha": "0080084c7109b0c0e9dff2904674b2ce75f76f2a",
+      "subject": "fix(mobile): group settled PR threads in the continue menu (#27941)",
+      "topic": "pr-27941"
+    },
+    {
+      "pr": 32666,
+      "sha": "511238c3bd8388f26824f59c0ae1a4e70e0ee52d",
+      "subject": "fix(mobile): Android terminal sends hardware-keyboard arrows, Tab, and Escape to the PTY (#32666)",
+      "topic": "pr-32666"
+    },
+    {
+      "pr": 27450,
+      "sha": "25bf84ab07f53f141c20239c63e383823a9d5ea0",
+      "subject": "fix(mobile): center the Choose project empty-state buttons (#27450)",
+      "topic": "pr-27450"
+    },
+    {
+      "pr": 32315,
+      "sha": "e455200077ce60806a01c8f28435b58860dcfc74",
+      "subject": "fix: side chats start with the parent's permission mode and reasoning level (#32315)",
+      "topic": "pr-32315"
+    },
+    {
+      "pr": 32401,
+      "sha": "97d04c3bb791f47d9893da5a33c51e94a9011345",
+      "subject": "fix(forgejo): tea's `pull` and `m` aliases count as shell merges (#32401)",
+      "topic": "pr-32400"
+    },
+    {
+      "pr": 32400,
+      "sha": "a601caaffd45ba7527bf2e8dcb1e8b966c70fa92",
+      "subject": "fix(gitlab): `glab mr accept` counts as a shell merge (#32400)",
+      "topic": "pr-32400"
+    },
+    {
+      "pr": 32186,
+      "sha": "917ce994e4c64864bad3eed39044607b86896320",
+      "subject": "fix(web): agent sign-in defaults to Auto access (#32186)",
+      "topic": "pr-32186"
+    },
+    {
+      "pr": 32448,
+      "sha": "4c3a9d58184f20bd76833bd599c3544d2c09e3eb",
+      "subject": "fix(cursor): use the SDK account for usage data (#32448)",
+      "topic": "pr-32448"
+    },
+    {
+      "pr": 19660,
+      "sha": "9f00ced8da5c6cd65d7a05492185154924c3705a",
+      "subject": "fix(antigravity): explain missing SOCKS dependency during refresh (#19660)",
+      "topic": "pr-19660"
+    },
+    {
+      "pr": 19659,
+      "sha": "f016a16b390f0a0237f71c691596fbd7bce43bc7",
+      "subject": "fix(acp): preserve native form questions and typed answers (#19659)",
+      "topic": "pr-19659"
+    },
+    {
+      "pr": 32446,
+      "sha": "e3441535afbbdf7af5349f619b7cc96dc2da44ef",
+      "subject": "fix(antigravity): check account access after installation (#32446)",
+      "topic": "pr-32446"
+    },
+    {
+      "pr": 26324,
+      "sha": "67fdc53823894f96e5946da80fac5b6c34c0487d",
+      "subject": "fix(desktop): published themes reach the app when it uses this machine's service (#26324)",
+      "topic": "pr-26324"
+    },
+    {
+      "pr": 27397,
+      "sha": "eeb6e236750da8d63f585ea4aa30af0320dd5ca2",
+      "subject": "fix(web): keep Pi thinking controls visible before selection (#27397)",
+      "topic": "pr-27397"
+    }
+  ],
+  "count": 15,
+  "createdAt": "2026-11-07T23:27:07.774Z",
+  "digest": "7615f168e811924814d3075dc1d1dbb25394e0b17944565705f4e82be156edd0",
+  "interval": 20,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "a9e709f15f825cacac1b6d665fa1920c328d68b7"
+}

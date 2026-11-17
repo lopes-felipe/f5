@@ -1,0 +1,534 @@
+{
+  "baseSha": "8e6a7323050ea8d2891f745f7e624e84f9fd8d9a",
+  "commits": [
+    {
+      "pr": 33291,
+      "sha": "2b65ffb641f152fadf443096bad7f4a0677caae4",
+      "subject": "fix(server): steering during a Claude compaction shows it stopped, not failed (#33291)",
+      "topic": "pr-33291"
+    },
+    {
+      "pr": 33260,
+      "sha": "1a43f4870d4d27e6514b7485a8742027e2f48b34",
+      "subject": "fix(server): Codex /goal no longer tries to create the goal twice (#33260)",
+      "topic": "pr-33260"
+    },
+    {
+      "pr": 31739,
+      "sha": "402d0623d5f4160859607e9b7c11fc829fbe3e18",
+      "subject": "fix(composer): persist model picks before the next message (#31739)",
+      "topic": "pr-31739"
+    },
+    {
+      "pr": 33255,
+      "sha": "cd87cce9002c39e00d68dd7a6881da85a72fe990",
+      "subject": "fix(server): include thread titles in MCP links (#33255)",
+      "topic": "pr-32830"
+    },
+    {
+      "pr": 21687,
+      "sha": "c73b38b379542cde87ec8bc855b70e7fae78fb5c",
+      "subject": "fix(mobile): Android sends with Return on a hardware keyboard (#21687)",
+      "topic": "pr-21687"
+    },
+    {
+      "pr": 33226,
+      "sha": "c6ca6056309904f89b90b6055d797973be0a0939",
+      "subject": "fix(deps): update vulnerable dependencies and lockfile resolutions (#33226)",
+      "topic": "pr-33226"
+    },
+    {
+      "pr": 24079,
+      "sha": "60514be91175f648634a7b8dd00fe45a3483feee",
+      "subject": "fix(server): phones get the approval push when a subagent waits (#24079)",
+      "topic": "pr-24079"
+    },
+    {
+      "pr": 33213,
+      "sha": "b87abfb200a9ee5ed2e01ec70699ee4ea2c51e59",
+      "subject": "fix(mobile): restore the sidebar toggle and drop the inspector toggle on iPhone Duo (#33213)",
+      "topic": "pr-33213"
+    },
+    {
+      "pr": 31286,
+      "sha": "8f144827f680f4064cb3951b4b60d4e24043748d",
+      "subject": "fix(mobile): select file text across lines on Android (#31286)",
+      "topic": "pr-31286"
+    },
+    {
+      "pr": 28125,
+      "sha": "4df0c1302a54805f821590e4eabe9e6ea4ab80fd",
+      "subject": "refactor: upgrade Legend List to 3.7.2 and drop our list workarounds (#28125)",
+      "topic": "pr-28125"
+    },
+    {
+      "pr": 28524,
+      "sha": "ea876cc4acc28287974d87b1ede2e5725f6c947d",
+      "subject": "fix(mobile): nested code blocks no longer overlap the next message on Android (#28524)",
+      "topic": "pr-28524"
+    },
+    {
+      "pr": 27753,
+      "sha": "c45cbd742b6bbe7e9594ca60ffedcab81a3e2dde",
+      "subject": "fix(server): delegated Claude tasks report the model that ran (#27753)",
+      "topic": "pr-27753"
+    },
+    {
+      "pr": 31207,
+      "sha": "88109cea46dfc6735f948f165772ecbdffe8b80c",
+      "subject": "feat(web,mobile): @-mention a model to name it for the agent (#31207)",
+      "topic": "pr-31207"
+    },
+    {
+      "pr": 25828,
+      "sha": "b07fdeb1438071a56c909ec705393bed89d1d321",
+      "subject": "fix(mobile): iOS terminal can copy, paste, and stop freezing (#25828)",
+      "topic": "pr-25828"
+    },
+    {
+      "pr": 33155,
+      "sha": "5ee1dbffbea1c3e2930f6512a99e81e8c4ecc3c4",
+      "subject": "feat(marketing): localize the site in 8 languages (#33155)",
+      "topic": "pr-33155"
+    },
+    {
+      "pr": 31998,
+      "sha": "445efb6dfcfc634f20367f5f79701bbac5dc24e5",
+      "subject": "perf(mobile): sign DPoP proofs natively, up to 355x faster on Android (#31998)",
+      "topic": "pr-31998"
+    },
+    {
+      "pr": 33093,
+      "sha": "9fcfd4c16e3ce82b67c6ccb02f5ef3aa26df3b8c",
+      "subject": "feat(source-control): add Cursor Origin provider (#33093)",
+      "topic": "pr-33093"
+    },
+    {
+      "pr": 33135,
+      "sha": "c4ce7b0fd74f6beb37ed6034f5c8416e5aa7e165",
+      "subject": "fix(desktop): update xa11y to 0.15.4 so App Shots read window text faster (#33135)",
+      "topic": "pr-33135"
+    },
+    {
+      "pr": 24933,
+      "sha": "06f8b99f4675568fa035cd9dd8e6aecb95caef75",
+      "subject": "fix(mobile): keep Android live activity independent of alerts (#24933)",
+      "topic": "pr-24933"
+    },
+    {
+      "pr": 21652,
+      "sha": "eb3e95cfbc72a5a0e2b38b4eafe38893f7c8b1c5",
+      "subject": "fix(android): keep diagonal horizontal swipes inside HTML blocks (#21652)",
+      "topic": "pr-21652"
+    },
+    {
+      "pr": 27576,
+      "sha": "42b2df9995c0d42db8cae70609a1e282270ddc50",
+      "subject": "fix(mobile): Android navigation bar follows the app theme (#27576)",
+      "topic": "pr-27576"
+    },
+    {
+      "pr": 21163,
+      "sha": "97c6773cc6797a28ea53927adf81d44644d818ee",
+      "subject": "fix(mobile): iOS Agent Activity widget shows your agents instead of a blank tile (#21163)",
+      "topic": "pr-21163"
+    },
+    {
+      "pr": 33126,
+      "sha": "61629df695f244b295edfc953b0c57a03bb55217",
+      "subject": "fix(mobile): Android chip taps open the chip from either half (#33126)",
+      "topic": "pr-33126"
+    },
+    {
+      "pr": 25532,
+      "sha": "9cd337ff9ac1d57001d3ceb039d742384cefa909",
+      "subject": "fix(mobile): accept image drops in the iOS message input (#25532)",
+      "topic": "pr-25532"
+    },
+    {
+      "pr": 32995,
+      "sha": "c7c2bcc3a6cf6ee32d1975f8d51e82dc37ace156",
+      "subject": "fix(mobile): compose button no longer covers the last tab on iPhone (#32995)",
+      "topic": "pr-32995"
+    },
+    {
+      "pr": 19064,
+      "sha": "6c41890c7e446e15a09b2befa29eafd230b2bfc7",
+      "subject": "fix(mobile): text no longer clips in Android desktop windows on external displays (#19064)",
+      "topic": "pr-19064"
+    },
+    {
+      "pr": 24482,
+      "sha": "f4cf7a95b21d64d2fa425817640dbe1933da16e7",
+      "subject": "fix(mobile): Android keyboard clipboard pastes fold into attachments (#24482)",
+      "topic": "pr-24482"
+    },
+    {
+      "pr": 32812,
+      "sha": "47e336b1317c442bdbd42f7468d8545d12e0ebdb",
+      "subject": "fix(mobile): SVG markers with orient=\"auto-start-reverse\" no longer crash Android (#32812)",
+      "topic": "pr-32812"
+    },
+    {
+      "pr": 33192,
+      "sha": "69dd6956d579b2313b3741512c80da366b91e57c",
+      "subject": "fix(web): return focus to composer after timeline prompts (#33192)",
+      "topic": "pr-33192"
+    },
+    {
+      "pr": 27353,
+      "sha": "202e8ef77cf537dfcf65db157f5ca89b99bdbe06",
+      "subject": "fix(web): Markdown tasks no longer stay checked after their source is unchecked (#27353)",
+      "topic": "pr-27353"
+    },
+    {
+      "pr": 33193,
+      "sha": "637507056c9e46e8bca21e557e8c61044a314563",
+      "subject": "fix(mobile): feature screens use the components/ui menu, dialog and search primitives (#33193)",
+      "topic": "pr-33193"
+    },
+    {
+      "pr": 33147,
+      "sha": "eb97d82156f031d0533d4de80d4eeb9ad82788e7",
+      "subject": "feat: text generators let model APIs write titles, commits, and transcript cleanup (#33147)",
+      "topic": "pr-33147"
+    },
+    {
+      "pr": 33189,
+      "sha": "1d5404ad5d1ed12e6feb84773d3f0c6baf32056c",
+      "subject": "fix(mobile): older chat messages show the date, not just the time (#33189)",
+      "topic": "pr-33189"
+    },
+    {
+      "pr": 33177,
+      "sha": "225685a8d5a620503d7713a8e48131f567df9f6b",
+      "subject": "feat(pi): Fast and Ultrafast service tiers for Pi models (#33177)",
+      "topic": "pr-33177"
+    },
+    {
+      "pr": 33173,
+      "sha": "415f68d2fe8b79dbcabc0e3e9bf1eae4be44f231",
+      "subject": "refactor(mobile): components/ui platform primitives are iOS files with .android overrides (#33173)",
+      "topic": "pr-33173"
+    },
+    {
+      "pr": 33146,
+      "sha": "357fb754fa9dae4111f0945fb8a13d30b012a62a",
+      "subject": "ci: startup and sidebar changes open the seeded thread before merge (#33146)",
+      "topic": "pr-33146"
+    },
+    {
+      "pr": 33145,
+      "sha": "2877a5e734b94984f3a9ca40aedd2bc967d3bbdc",
+      "subject": "ci(release): hosted web alias job checks out 3 files, not the repo (#33145)",
+      "topic": "pr-33145"
+    },
+    {
+      "pr": 33142,
+      "sha": "ca920d5cdba5521b7f5ad813cbe38b2829fcb81a",
+      "subject": "ci(release): Linux desktop builds reuse cached AppImage, FPM, and 7-Zip downloads (#33142)",
+      "topic": "pr-33142"
+    },
+    {
+      "pr": 27748,
+      "sha": "743bb8cf3db54d8408492db3ea9d781a0e5339c2",
+      "subject": "fix(provider-core): agents ask for a sudo password through the private secret card (#27748)",
+      "topic": "pr-27748"
+    },
+    {
+      "pr": 31760,
+      "sha": "d0f1f7200dce1229f75314b3d9eb1d7ac3abb607",
+      "subject": "docs(secrets): sign op in with a service account or Connect on remote servers (#31760)",
+      "topic": "pr-31760"
+    },
+    {
+      "pr": 33141,
+      "sha": "81fb019fb7756fa0a3cdd42eef38e49281afc732",
+      "subject": "ci(release): scheduled nightly checks read 10 KB instead of 28 MB (#33141)",
+      "topic": "pr-33141"
+    },
+    {
+      "pr": 33157,
+      "sha": "3bb4544f901c55d9bc1276581e8b9073ef8bb205",
+      "subject": "fix: secret cards show the agent's sign-in link as a button (#33157)",
+      "topic": "pr-33157"
+    },
+    {
+      "pr": 33148,
+      "sha": "35675bf671164525ed76b4c9214c5a44c905d989",
+      "subject": "fix(release): Windows signing retries transient Azure Trusted Signing errors (#33148)",
+      "topic": "pr-33148"
+    },
+    {
+      "pr": 33153,
+      "sha": "3dc54f43dfaf9f3fa7258c7cf65b63c5428a8c7c",
+      "subject": "feat(desktop): a fresh install sets up the t3 command (#33153)",
+      "topic": "pr-33150"
+    },
+    {
+      "pr": 32190,
+      "sha": "d0807b705f36a79dc194fb2281d064d8103f3745",
+      "subject": "feat(mobile): Mermaid and math fences render like they do on web (#32190)",
+      "topic": "pr-32180"
+    },
+    {
+      "pr": 32180,
+      "sha": "986a4f56a80963cc139dbc581665b40411855659",
+      "subject": "chore(mobile): sync Enriched Markdown with upstream 1d00a92a (#32180)",
+      "topic": "pr-32180"
+    },
+    {
+      "pr": 31337,
+      "sha": "8e1581ad8cbca6a2c0f91a0c16fe8f15ec87afff",
+      "subject": "fix(server): a duplicate variable row no longer deletes a stored secret (#31337)",
+      "topic": "pr-31337"
+    },
+    {
+      "pr": 31754,
+      "sha": "b690f08cbf2bec04267202fb6b66db65d1b53b1f",
+      "subject": "fix(web): removing a secret provider lists the Simlock tokens that read from it (#31754)",
+      "topic": "pr-31754"
+    },
+    {
+      "pr": 33150,
+      "sha": "6dad2adc720cb4945530c9e4cf8e10d9a8c92d88",
+      "subject": "feat(cli): npx t3 offers to install the t3 command (#33150)",
+      "topic": "pr-33150"
+    },
+    {
+      "pr": 33151,
+      "sha": "7da0ef0e1f874caca679bab15a309b9542aecc44",
+      "subject": "fix(muse): retries show while Muse waits and fold away once it recovers (#33151)",
+      "topic": "pr-33151"
+    },
+    {
+      "pr": 33149,
+      "sha": "0770446869d247a8b28c27d7ed93f47f8ff0c1e4",
+      "subject": "ci(release): retry transient GitHub API errors when resolving the release commit (#33149)",
+      "topic": "pr-33149"
+    },
+    {
+      "pr": 33139,
+      "sha": "920ffcdd043ef184d21fb11be7b052f628667142",
+      "subject": "test(web): OpenInPicker announcement test no longer hears the previous test (#33139)",
+      "topic": "pr-33139"
+    },
+    {
+      "pr": 33143,
+      "sha": "51675e047378e108f6b3cdcae9f3c89a700f6ab2",
+      "subject": "fix(antigravity): agy CLI threads open in Full access and Auto-accept edits (#33143)",
+      "topic": "pr-32503"
+    },
+    {
+      "pr": 28047,
+      "sha": "b24959d579b7ec2b527eeeccf043c74a95ab705a",
+      "subject": "feat: Labs option to suggest your next prompt after Claude and Codex turns (#28047)",
+      "topic": "pr-28047"
+    },
+    {
+      "pr": 33131,
+      "sha": "521ac7c218b3faa74281fb72fc36ce74a0951fb3",
+      "subject": "feat(settings): clean up Labs: promote tool calls, remove plan mode and old toggles (#33131)",
+      "topic": "pr-33131"
+    },
+    {
+      "pr": 29598,
+      "sha": "9028d760b49e523145ff5a7fe92592f2b47ecd96",
+      "subject": "feat(mobile): long-press an image to save it to Photos (#29598)",
+      "topic": "pr-29598"
+    },
+    {
+      "pr": 33134,
+      "sha": "25868edf9a382b156c5739f225589cf4c425da93",
+      "subject": "fix(github): hidden GitHub comments and reviews no longer show in T3 Code (#33134)",
+      "topic": "pr-33134"
+    },
+    {
+      "pr": 32941,
+      "sha": "8969e1d8d0433be9e598d122431c54c69e0aa83c",
+      "subject": "feat: Settings reclaims freed database space in one click (#32941)",
+      "topic": "pr-32941"
+    },
+    {
+      "pr": 33133,
+      "sha": "d5290e9167ccbd8d2c7043eab8e311fd21a14464",
+      "subject": "fix(web): mic button always sits next to send (#33133)",
+      "topic": "pr-33133"
+    },
+    {
+      "pr": 32927,
+      "sha": "b7d33af938c92e00f24d5de94f1ae8e5806184ec",
+      "subject": "perf(server): macOS worktrees open 2x faster by cloning a cached checkout (#32927)",
+      "topic": "pr-32927"
+    },
+    {
+      "pr": 32288,
+      "sha": "f26623febe9ea7f73ad18340efa096df0f72943d",
+      "subject": "feat(mobile): iOS socket compresses traffic (#32288)",
+      "topic": "pr-32288"
+    },
+    {
+      "pr": 32287,
+      "sha": "9557ab46c5ebbc04d5307780b4397dfde952b196",
+      "subject": "perf(mobile): thread list resumes from the saved cache, and large gaps reload over gzip HTTP (#32287)",
+      "topic": "pr-32287"
+    },
+    {
+      "pr": 27733,
+      "sha": "d456cd77e56b73906cd155000a276d17f70a240e",
+      "subject": "fix(server): respect gh Unix sockets for GitHub requests (#27733)",
+      "topic": "pr-27733"
+    },
+    {
+      "pr": 33109,
+      "sha": "e6d42567ba927e3ee66c143d7ba810cb22ab4d07",
+      "subject": "fix(web): cmd+shift+o picks the current project before pinned ones (#33109)",
+      "topic": "pr-33109"
+    },
+    {
+      "pr": 32937,
+      "sha": "7fe1310ee552e508a6be318e664d5e546c6a4bc5",
+      "subject": "fix(web): Copy MCP URL uses the T3 Connect address (#32937)",
+      "topic": "pr-32937"
+    },
+    {
+      "pr": 26724,
+      "sha": "3fa57b92a238cdd8e079af925b673b2f99618b98",
+      "subject": "fix(web): boring sidebar threads drag onto the composer again (#26724)",
+      "topic": "pr-26724"
+    },
+    {
+      "pr": 21596,
+      "sha": "4549bee918ec8bb877f1e21a82c51d562b178406",
+      "subject": "fix(web): terminal types macOS Option-layer characters (#21596)",
+      "topic": "pr-21596"
+    },
+    {
+      "pr": 28060,
+      "sha": "1d78b3320328709d266ffd36af0dd75e614d14de",
+      "subject": "fix(server): name rejected certificates when linking peers (#28060)",
+      "topic": "pr-28060"
+    },
+    {
+      "pr": 25211,
+      "sha": "385851d7fedc645d3ecf6363135c3c8c35c32b2d",
+      "subject": "fix(server): allow slow Antigravity browser preflights (#25211)",
+      "topic": "pr-25211"
+    },
+    {
+      "pr": 28016,
+      "sha": "ecea300d3c63f757efcfb6e90e4cbd1f18aa7129",
+      "subject": "fix(web): sidebar search results can be dragged onto the composer (#28016)",
+      "topic": "pr-28016"
+    },
+    {
+      "pr": 27993,
+      "sha": "78756043c21003262e184b3c166e93505320ac32",
+      "subject": "fix(web): file chip tooltips show the whole path (#27993)",
+      "topic": "pr-27993"
+    },
+    {
+      "pr": 24084,
+      "sha": "9c0baf481eaf8a38e83e33e09111c9fe086d6b27",
+      "subject": "fix(web): keep the wide table scrollbar visible when it overflows (#24084)",
+      "topic": "pr-24084"
+    },
+    {
+      "pr": 22295,
+      "sha": "f92daf1fcfba55d9aed5a0fde46a6c99b432b491",
+      "subject": "fix(server): macOS Bash terminals now start as login shells (#22295)",
+      "topic": "pr-22295"
+    },
+    {
+      "pr": 21592,
+      "sha": "bc929737227655404caae7805ae54b6f32c1e6c7",
+      "subject": "fix(desktop): declare Calendar access for hosted commands (#21592)",
+      "topic": "pr-21592"
+    },
+    {
+      "pr": 32240,
+      "sha": "a61cdb5c6fe873a3f8bb5dc91fee014d63ebda5f",
+      "subject": "fix(mobile): keep side chats readable over the conversation (#32240)",
+      "topic": "pr-32240"
+    },
+    {
+      "pr": 32573,
+      "sha": "36d0dcbf55544d7c12353506897b7dc0cb9cbb9f",
+      "subject": "fix(server): wake idle parents for late delegated results (#32573)",
+      "topic": "pr-32573"
+    },
+    {
+      "pr": 32933,
+      "sha": "b76a5958890f8d1dbcc150e1d435a3dced222202",
+      "subject": "perf(server): skip unnecessary worktree cleanup scans (#32933)",
+      "topic": "pr-32933"
+    },
+    {
+      "pr": 32934,
+      "sha": "564b2f96b21076353c334a82eaf7af6e60781f60",
+      "subject": "perf(server): batch worktree branch allocation and avoid path collisions (#32934)",
+      "topic": "pr-32934"
+    },
+    {
+      "pr": 23486,
+      "sha": "ea9fbc1a076e1544ba397731c2d2365d90f5c365",
+      "subject": "fix(desktop): open cursor:// and vscode:// file links from chat (#23486)",
+      "topic": "pr-23486"
+    },
+    {
+      "pr": 33050,
+      "sha": "3da48c1234045f89bac7db885bbee73464a60624",
+      "subject": "fix(desktop): prepare server bytecode on Linux ARM64 (#33050)",
+      "topic": "pr-32987"
+    },
+    {
+      "pr": 30709,
+      "sha": "f558007b20926ba49a51dba158933a13f3f20c9e",
+      "subject": "fix(clients): parse angle-bracketed thread link destinations (#30709)",
+      "topic": "pr-32830"
+    },
+    {
+      "pr": 32830,
+      "sha": "23e3465ec6a509db01aaf364c7ca6675525aac25",
+      "subject": "fix(clients): unloaded thread links show their title and project icon (#32830)",
+      "topic": "pr-32830"
+    },
+    {
+      "pr": 32987,
+      "sha": "401318317177a375f064d4fabd18d49fb4b5231f",
+      "subject": "perf(desktop): speed up cold Linux x64 backend startup (#32987)",
+      "topic": "pr-32987"
+    },
+    {
+      "pr": 32947,
+      "sha": "0d809db501817356882ed4a2d79b3f2d52f515f1",
+      "subject": "perf(sidebar): avoid full git status for branch labels (#32947)",
+      "topic": "pr-32947"
+    },
+    {
+      "pr": 21524,
+      "sha": "ade473018d32003658b7d38693e083ee2e314bd8",
+      "subject": "fix(server): mise-installed providers update through mise instead of their own updater (#21524)",
+      "topic": "pr-21524"
+    },
+    {
+      "pr": 32926,
+      "sha": "6417151c093e54dbba0e6c824c69d03983793b9a",
+      "subject": "fix(web): fill combobox search fields (#32926)",
+      "topic": "pr-32926"
+    },
+    {
+      "pr": 31149,
+      "sha": "af65a55dc77f7a2adaae28a9a80032a2f4d61da1",
+      "subject": "perf(server): Codex tool calls no longer wait on reasoning summaries (#31149)",
+      "topic": "pr-31149"
+    }
+  ],
+  "count": 87,
+  "createdAt": "2026-11-09T11:09:57.237Z",
+  "digest": "2c0d1a04d28f89222b581b2592c1617de5c38b67d48befed49d93054a835d8bc",
+  "interval": 22,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "2b65ffb641f152fadf443096bad7f4a0677caae4"
+}
