@@ -94,6 +94,27 @@ describe("inPlaceSwitchBlockers", () => {
       { kind: "unknown", threadId: null },
     ]);
   });
+
+  it("fails closed when pending turn starts were not checked", () => {
+    expect(inPlaceSwitchBlockers(claims({ pendingTurnsChecked: false }), projectFolder)).toEqual([
+      { kind: "unknown", threadId: null },
+    ]);
+  });
+
+  it("blocks on a known thread's starting, connecting or running session in the project folder", () => {
+    expect(
+      inPlaceSwitchBlockers(
+        claims({ sessions: [{ threadId: idle, cwd: "/repo", live: true }] }),
+        projectFolder,
+      ),
+    ).toEqual([{ kind: "session", threadId: idle }]);
+  });
+
+  it("keeps blocking threads that record a worktree for a path that is also a project root", () => {
+    expect(
+      inPlaceSwitchBlockers(claims({ worktreeThreadIds: [own, idle] }), projectFolder),
+    ).toEqual([{ kind: "thread", threadId: idle }]);
+  });
 });
 
 describe("formatInPlaceSwitchBlockers", () => {
