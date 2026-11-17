@@ -1,1 +1,0 @@
-- Hide the Following control until a conversation has messages and place its new-content indicator to the right of the follow toggle.

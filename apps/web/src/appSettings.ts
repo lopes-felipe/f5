@@ -392,10 +392,6 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),
   ),
-  autoFollowNewMessages: Schema.Boolean.pipe(
-    Schema.withConstructorDefault(() => Option.some(false)),
-    Schema.withDecodingDefault(() => false),
-  ),
   composerRichTextEnabled: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),

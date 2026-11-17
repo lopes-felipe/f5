@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,10 +16,48 @@ import { ThreadToolError, keepThreadToolError } from "./threadMcpTools.ts";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 
+const isInside = (root: string, target: string) => {
+  const relative = path.relative(root, target);
+  return (
+    !!relative &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+};
+
+const realpathOrNull = (target: string) => realpath(target).catch(() => null);
+
+/**
+ * Opens `sourcePath` only when its canonical location is inside one of `roots` and outside
+ * `excluded`. Roots and the source's parent directory are compared after resolving symlinks,
+ * so aliases such as macOS `/tmp` -> `/private/tmp` match either spelling. The file itself
+ * must not be a link; `openContainedFile` enforces that and guards against swaps.
+ */
+async function openPublishableImage(input: {
+  readonly sourcePath: string;
+  readonly roots: ReadonlyArray<string>;
+  readonly excluded: ReadonlyArray<string>;
+}) {
+  if (!path.isAbsolute(input.sourcePath)) throw new Error("Absolute path required");
+  const normalized = path.resolve(input.sourcePath);
+  const parent = await realpath(path.dirname(normalized));
+  const resolved = path.join(parent, path.basename(normalized));
+  const excluded = await Promise.all(input.excluded.map(realpathOrNull));
+  if (excluded.some((dir) => dir && (dir === resolved || isInside(dir, resolved))))
+    throw new Error("Outside available directories");
+  const roots = await Promise.all(input.roots.map(realpathOrNull));
+  const root = roots.find((dir): dir is string => !!dir && isInside(dir, resolved));
+  if (!root) throw new Error("Outside available directories");
+  return openContainedFile(root, path.relative(root, resolved));
+}
+
 /** Only explicitly published image bytes cross from temporary files into chat storage. */
 export const makeThreadImagePublisher = (input: {
   engine: Pick<OrchestrationEngineShape, "getReadModel" | "dispatch">;
   attachmentsDir: string;
+  /** Temporary directories agents may publish from; defaults to the OS temp dir and /tmp. */
+  temporaryDirectories?: ReadonlyArray<string>;
 }) =>
   Effect.gen(function* () {
     const services = yield* Effect.services<
@@ -36,18 +75,18 @@ export const makeThreadImagePublisher = (input: {
         if (!thread || !project)
           return yield* new ThreadToolError({ message: "This thread is no longer active." });
         const workspace = threadWorkspaceCwd(thread, project);
-        const roots = [workspace, input.attachmentsDir, os.tmpdir(), "/tmp"].filter(
+        // The shared attachment store holds every thread's uploads, so it is never a source,
+        // even when it happens to live under an allowed directory.
+        const roots = [workspace, ...(input.temporaryDirectories ?? [os.tmpdir(), "/tmp"])].filter(
           (root): root is string => !!root,
         );
         const bytes = yield* Effect.tryPromise({
           try: async () => {
-            if (!path.isAbsolute(sourcePath)) throw new Error("Absolute path required");
-            const root = roots.find((root) => {
-              const relative = path.relative(root, sourcePath);
-              return relative && !relative.startsWith("..") && !path.isAbsolute(relative);
+            const file = await openPublishableImage({
+              sourcePath,
+              roots,
+              excluded: [input.attachmentsDir],
             });
-            if (!root) throw new Error("Outside available directories");
-            const file = await openContainedFile(root, path.relative(root, sourcePath));
             try {
               if ((await file.stat()).size > MAX_BYTES) throw new Error("Image too large");
               // Bound the read even if a writer grows the file after stat.
@@ -119,9 +158,9 @@ export const makeThreadImagePublisher = (input: {
             sizeBytes: ref.sizeBytes,
           },
         })!;
+        // The stored path stays server-side; agents only need the renderable Markdown.
         return {
           ...ref,
-          path: imagePath,
           markdown: "![Screenshot](<" + pathToFileURL(imagePath).href + ">)",
           message:
             "Published to this conversation. Use the returned Markdown to show the image in your reply; do not use the original temporary path.",

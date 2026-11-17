@@ -189,7 +189,14 @@ function isElementVisibleWithinContainer(element: HTMLElement, container: HTMLEl
   return elementRect.bottom > containerRect.top && elementRect.top < containerRect.bottom;
 }
 
+/** Reader input that precedes a scroll; the timeline pauses following only after input. */
+function dispatchReaderWheel(container: HTMLElement, nextScrollTop: number) {
+  const deltaY = Math.sign(nextScrollTop - container.scrollTop) * 120;
+  if (deltaY !== 0) container.dispatchEvent(new WheelEvent("wheel", { deltaY, bubbles: true }));
+}
+
 function scrollContainerToOffset(container: HTMLElement, nextScrollTop: number) {
+  dispatchReaderWheel(container, nextScrollTop);
   container.scrollTop = nextScrollTop;
   container.dispatchEvent(new Event("scroll"));
 }
@@ -200,6 +207,7 @@ async function scrollTimelineToOffset(
   nextScrollTop: number,
 ) {
   await vi.waitFor(async () => {
+    dispatchReaderWheel(container, nextScrollTop);
     if (listRef?.scrollToOffset) {
       await listRef.scrollToOffset({ offset: nextScrollTop, animated: false });
     } else {
@@ -278,47 +286,62 @@ describe("MessagesTimeline (LegendList)", () => {
     await expect.element(page.getByText("Skill: team:review", { exact: true })).toBeVisible();
   });
 
-  it("restores a thread reading position after navigating away", async () => {
-    const threadId = ThreadId.makeUnsafe("remember-reading-position");
-    const entries = makeOverflowEntries(40);
-    let list: LegendListRef | null = null;
-    const screen = await render(
-      <TimelineHarness
-        threadId={threadId}
-        initialEntries={entries}
-        onIsAtEndChangeSpy={vi.fn()}
-        initialHeight={360}
-        onListRefChange={(value) => {
-          list = value;
-        }}
-      />,
-    );
-    const node = () =>
-      document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
-    await expect.poll(() => node()?.scrollHeight ?? 0).toBeGreaterThan(1000);
-    await scrollTimelineToOffset(list, node(), 700);
-    const before = readTimelineScrollAnchor(node());
+  it.each([false, true])(
+    "restores a thread reading position after navigating away (initialAutoFollow=%s)",
+    async (initialAutoFollow) => {
+      const threadId = ThreadId.makeUnsafe(`remember-reading-position-${initialAutoFollow}`);
+      const entries = makeOverflowEntries(40);
+      let list: LegendListRef | null = null;
+      let api: TimelineHarnessApi | null = null;
+      const screen = await render(
+        <TimelineHarness
+          threadId={threadId}
+          initialAutoFollow={initialAutoFollow}
+          initialEntries={entries}
+          onIsAtEndChangeSpy={vi.fn()}
+          initialHeight={360}
+          onListRefChange={(value) => {
+            list = value;
+          }}
+        />,
+      );
+      const node = () =>
+        document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
+      await expect.poll(() => node()?.scrollHeight ?? 0).toBeGreaterThan(1000);
+      await scrollTimelineToOffset(list, node(), 700);
+      const before = readTimelineScrollAnchor(node());
 
-    await screen.unmount();
-    const reopened = await render(
-      <TimelineHarness
-        threadId={threadId}
-        initialEntries={entries}
-        onIsAtEndChangeSpy={vi.fn()}
-        initialHeight={360}
-      />,
-    );
-    try {
-      await expect
-        .poll(() => {
-          const after = readTimelineScrollAnchor(node());
-          return after.rowId === before.rowId ? Math.abs(after.top - before.top) : 99999;
-        })
-        .toBeLessThan(3);
-    } finally {
-      await reopened.unmount();
-    }
-  });
+      await screen.unmount();
+      const reopened = await render(
+        <TimelineHarness
+          threadId={threadId}
+          initialAutoFollow={initialAutoFollow}
+          initialEntries={entries}
+          onIsAtEndChangeSpy={vi.fn()}
+          initialHeight={360}
+          setApi={(value) => {
+            api = value;
+          }}
+        />,
+      );
+      const offsetFromSaved = () => {
+        const after = readTimelineScrollAnchor(node());
+        return after.rowId === before.rowId ? Math.abs(after.top - before.top) : 99999;
+      };
+      try {
+        await expect.poll(offsetFromSaved).toBeLessThan(3);
+        // Late size callbacks must not pin the reopened thread to the end.
+        await waitForTimelineLayout(() => node());
+        expect(offsetFromSaved()).toBeLessThan(3);
+        // Following stays paused above the end and new rows do not move the reader.
+        api!.setEntries([...entries, makeAssistantEntry("restored-tail", "Later reply", 120)]);
+        await waitForTimelineLayout(() => node());
+        expect(offsetFromSaved()).toBeLessThan(3);
+      } finally {
+        await reopened.unmount();
+      }
+    },
+  );
 
   it("navigates from a turn-rail tick to an offscreen user turn", async () => {
     await page.viewport(1200, 896);
@@ -1235,6 +1258,48 @@ describe("MessagesTimeline (LegendList)", () => {
         },
         { timeout: 3_000, interval: 16 },
       );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps following when scrollTop drops without reader input", async () => {
+    const history = makeOverflowEntries(16);
+    let api: TimelineHarnessApi | null = null;
+    const host = document.body.appendChild(document.createElement("div"));
+    const screen = await render(
+      <TimelineHarness
+        initialAutoFollow
+        initialEntries={history}
+        initialHeight={360}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(value) => {
+          api = value;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await waitForTimelineLayout(() => node);
+      await vi.waitFor(() => {
+        expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeLessThan(8);
+      });
+      // LegendList lowers scrollTop by itself when rows above the viewport shrink; with no
+      // wheel, touch, key or scrollbar input that correction must not pause following.
+      node.scrollTop -= 200;
+      node.dispatchEvent(new Event("scroll"));
+      await waitForTimelineLayout(() => node);
+      const beforeAppend = node.scrollHeight;
+      api!.setEntries([
+        ...history,
+        makeAssistantEntry("after-correction-tail", "New reply\n\n".repeat(20), 200),
+      ]);
+      await vi.waitFor(() => {
+        expect(node.scrollHeight).toBeGreaterThan(beforeAppend);
+        expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeLessThan(8);
+      });
     } finally {
       await screen.unmount();
       host.remove();
@@ -2422,8 +2487,7 @@ describe("MessagesTimeline (LegendList)", () => {
       // The previous disclosure pins the end for two layout frames. Finish that
       // phase before establishing this separate scrolled-up precondition.
       await waitForTimelineLayout(() => scrollContainer);
-      scrollContainer.scrollTop -= 120;
-      scrollContainer.dispatchEvent(new Event("scroll"));
+      scrollContainerToOffset(scrollContainer, scrollContainer.scrollTop - 120);
       await waitForTimelineLayout(() => scrollContainer);
       const rowTop = toggle()!.getBoundingClientRect().top;
       toggle()!.click();
@@ -3633,6 +3697,33 @@ describe("MessagesTimeline working ribbon", () => {
         });
       } finally {
         await userEvent.keyboard("{/ArrowRight}");
+      }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("reads cached dock geometry instead of computed styles on every frame", async () => {
+    const mounted = await mountWorkingTimeline();
+    const { host } = mounted;
+    try {
+      await grab(host);
+      await nextFrames(2);
+      const computed = vi.spyOn(window, "getComputedStyle");
+      try {
+        await nextFrames(10);
+        const stageParent = stage(host)!.offsetParent;
+        expect(computed.mock.calls.filter(([element]) => element === stageParent)).toHaveLength(0);
+        // A dock resize still refreshes the cached height.
+        mounted.api().setDockHeight(120);
+        const dockHost = host.querySelector<HTMLElement>("[data-composer-dock-host]")!;
+        await vi.waitFor(() => {
+          expect(stage(host)!.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+            dockHost.getBoundingClientRect().bottom - 120,
+          );
+        });
+      } finally {
+        computed.mockRestore();
       }
     } finally {
       await mounted.cleanup();

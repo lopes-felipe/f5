@@ -1,1 +1,0 @@
-- Remove the duplicate Usage shortcut from the top sidebar navigation; Usage remains accessible through the limits panel at the bottom.

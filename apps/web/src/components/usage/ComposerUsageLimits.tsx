@@ -16,7 +16,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { providerLabel } from "./format";
 import { UsageBar } from "./kit";
 import { sidebarUsageWindows, sidebarWeeklyUsageWindow } from "./sidebarUsageWindows";
-import { UsageGauge } from "./UsageGauge";
+import { UsageGauge, describeWeeklyUsage } from "./UsageGauge";
 
 function LimitAction(props: {
   label: string;
@@ -73,6 +73,7 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
   });
   const busy = refresh.isPending || (account != null && account.refreshState !== "idle");
   const label = selection ? providerLabel(selection.provider) : "Usage";
+  const weeklyDescription = describeWeeklyUsage(weekly?.usedPercent ?? null);
   const resetRefresh = refresh.reset;
 
   useEffect(() => {
@@ -205,8 +206,8 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
             type="button"
             variant="ghost"
             size="icon-sm"
-            aria-label={label + " usage limits"}
-            title={label + " usage limits"}
+            aria-label={`${label} usage limits, ${weeklyDescription}`}
+            title={`${label} usage limits · ${weeklyDescription}`}
             className="shrink-0 text-muted-foreground"
           />
         }

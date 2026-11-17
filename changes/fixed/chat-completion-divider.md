@@ -1,1 +1,0 @@
-- Show the Worked for divider only after the turn finishes, keeping intermediate messages free of completion timing while the agent is working.

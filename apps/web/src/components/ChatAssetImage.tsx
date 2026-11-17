@@ -11,6 +11,9 @@ import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
 import { useAppSettingsSelector } from "../appSettings";
 
 type ImageGrant = { url: string; width?: number | undefined; height?: number | undefined };
+/** URL schemes other than `https:` and `file:` (http, data, blob, …) never resolve to a file. */
+const isUnsupportedImageScheme = (src: string) =>
+  /^[a-z][a-z0-9+.-]*:/iu.test(src) && !/^file:/iu.test(src) && !/^[a-z]:[\\/]/iu.test(src);
 type Identity = ProjectIssueAssetUrlInput["identity"];
 const batches = new Map<
   string,
@@ -109,7 +112,9 @@ export function ChatAssetImage({
   const url = remote ? (loadRemoteImagesInChat ? src : undefined) : grant.data?.url;
   const error =
     visible && !remote && !target
-      ? "Image outside available directories"
+      ? isUnsupportedImageScheme(src)
+        ? "Unsupported image source"
+        : "Image outside available directories"
       : grant.isError || (url && failedUrl === url)
         ? "Image unavailable"
         : undefined;
@@ -158,7 +163,9 @@ export function ChatAssetImage({
           />
         </button>
       ) : (
-        <span className="text-muted-foreground" role={error ? "alert" : "status"}>
+        // Only failures are announced: every offscreen placeholder starts out loading, and
+        // a live region per image would flood screen readers.
+        <span className="text-muted-foreground" role={error ? "alert" : undefined}>
           {alt || "Image"}
           {remote && !loadRemoteImagesInChat
             ? " (remote images disabled)"

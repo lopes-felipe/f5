@@ -10,6 +10,8 @@ import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
 
 /** A small pixel band prevents a large viewport from rearming while the reader is in history. */
 export const TIMELINE_AT_END_PX = 40;
+/** How long after wheel, touch or key input a falling scrollTop still counts as the reader's. */
+export const USER_SCROLL_INTENT_MS = 600;
 
 export function timelineIsAtEnd(state: {
   contentLength: number;

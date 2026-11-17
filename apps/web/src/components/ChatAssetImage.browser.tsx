@@ -45,6 +45,32 @@ it("distinguishes inaccessible paths from loading without requesting a file", as
   }
 });
 
+it.each(["http://example.com/capture.png", "data:image/png;base64,AAAA", "blob:capture"])(
+  "reports %s as an unsupported source rather than a directory problem",
+  async (src) => {
+    const view = await render(<ImageFixture src={src} />);
+    try {
+      await expect.element(page.getByRole("alert")).toHaveTextContent("Unsupported image source");
+      expect(document.body.textContent).not.toContain("outside available directories");
+      expect(state.issue).not.toHaveBeenCalled();
+    } finally {
+      await view.unmount();
+    }
+  },
+);
+
+it("keeps loading placeholders out of live regions", async () => {
+  state.issue.mockImplementation(() => new Promise(() => {}));
+  const src = "/state/attachments/thread-1-12345678-1234-1234-1234-123456789abc.png";
+  const view = await render(<ImageFixture src={src} />);
+  try {
+    await vi.waitFor(() => expect(document.body.textContent).toContain("(loading…)"));
+    expect(document.querySelector('[role="status"], [role="alert"]')).toBeNull();
+  } finally {
+    await view.unmount();
+  }
+});
+
 it("shows, expands and reloads a published screenshot after reopening", async () => {
   const canvas = document.createElement("canvas");
   canvas.width = 240;

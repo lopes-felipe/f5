@@ -341,6 +341,54 @@ describe("MessagesTimeline", () => {
     },
   );
 
+  it("keeps earlier completion dividers while a turn runs in a thread without user messages", async () => {
+    const { deriveTimelineEntries } = await import("../../session-logic");
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const earlierTurn = TurnId.makeUnsafe("automation-earlier");
+    const runningTurn = TurnId.makeUnsafe("automation-running");
+    const startedAt = "2026-11-14T12:40:00.000Z";
+    const completedAt = "2026-11-14T12:40:10.000Z";
+    const earlier = {
+      id: MessageId.makeUnsafe("automation-earlier-answer"),
+      role: "assistant" as const,
+      text: "First run done",
+      createdAt: startedAt,
+      completedAt,
+      streaming: false,
+      turnId: earlierTurn,
+    };
+    const running = {
+      id: MessageId.makeUnsafe("automation-running-answer"),
+      role: "assistant" as const,
+      text: "Second run in progress",
+      createdAt: "2026-11-14T12:41:00.000Z",
+      completedAt: "2026-11-14T12:41:05.000Z",
+      streaming: false,
+      turnId: runningTurn,
+    };
+    const rows = buildTimelineRows({
+      timelineEntries: deriveTimelineEntries([earlier, running], [], [], []),
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      turnDiffSummaryByTurnId: new Map([
+        [earlierTurn, { turnId: earlierTurn, startedAt, completedAt, files: [] }],
+      ]),
+      isWorking: true,
+      activeTurnStartedAt: running.createdAt,
+      activeTurnId: runningTurn,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    });
+    expect(rows.find((row) => row.id === earlier.id)).toMatchObject({
+      showCompletionDivider: true,
+      completionSummary: "Worked for 10s",
+    });
+    expect(rows.find((row) => row.id === running.id)).toMatchObject({
+      showCompletionDivider: false,
+    });
+  });
+
   it("keeps a paginated turn start unknown until its persisted timing is available", async () => {
     const { deriveTimelineEntries } = await import("../../session-logic");
     const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");

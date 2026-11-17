@@ -755,7 +755,6 @@ function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null 
 // the selection's identity and does not re-render the conversation.
 function selectChatViewSettings(settings: AppSettings) {
   return {
-    autoFollowNewMessages: settings.autoFollowNewMessages,
     alwaysExpandAgentCommandTranscripts: settings.alwaysExpandAgentCommandTranscripts,
     claudeBinaryPath: settings.claudeBinaryPath,
     claudeLaunchArgs: settings.claudeLaunchArgs,
@@ -913,7 +912,9 @@ export default memo(function ChatView({
     return node instanceof HTMLElement ? node : null;
   }, []);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const [autoFollow, setAutoFollow] = useState(settings.autoFollowNewMessages);
+  // Following is positional: on at the end, paused by scrolling up, resumed at the end.
+  // The timeline turns it off on mount when it restores a reading position above the end.
+  const [autoFollow, setAutoFollow] = useState(true);
   const [isJumpingToLatest, setIsJumpingToLatest] = useState(false);
 
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
@@ -8248,6 +8249,7 @@ export default memo(function ChatView({
                         hasMessages={timelineEntries.length > 0}
                         isWorking={isWorking}
                         activeTurnStartedAt={activeWorkStartedAt}
+                        activeTurnId={latestTurnSettled ? null : (activeLatestTurn?.turnId ?? null)}
                         liveActivity={liveActivity}
                         listRef={legendListRef}
                         entryRowIndexMapRef={timelineEntryRowIndexMapRef}

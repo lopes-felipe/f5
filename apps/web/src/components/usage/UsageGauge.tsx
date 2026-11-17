@@ -1,20 +1,26 @@
 import { cn } from "../../lib/utils";
 
-/** A speedometer whose needle moves only when reported weekly consumption changes. */
+const clampUsage = (percent: number | null) =>
+  percent !== null && Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : null;
+
+/** Spoken and tooltip text for reported weekly consumption. */
+export function describeWeeklyUsage(percent: number | null): string {
+  const used = clampUsage(percent);
+  return used === null ? "Weekly usage unavailable" : Math.round(used) + "% of weekly limit used";
+}
+
+/**
+ * A speedometer whose needle moves only when reported weekly consumption changes. It is
+ * decorative: the control that hosts it carries `describeWeeklyUsage` in its accessible name,
+ * since a progressbar nested in a button is never announced.
+ */
 export function UsageGauge({ percent }: { readonly percent: number | null }) {
-  const used =
-    percent !== null && Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : null;
-  const description =
-    used === null ? "Weekly usage unavailable" : Math.round(used) + "% of weekly limit used";
+  const used = clampUsage(percent);
   return (
     <span
-      role="progressbar"
-      aria-label="Weekly usage"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={used ?? undefined}
-      aria-valuetext={description}
-      title={description}
+      aria-hidden="true"
+      data-slot="usage-gauge"
+      data-used={used === null ? undefined : used}
       className={cn(
         "inline-flex size-4 shrink-0 items-center justify-center",
         used !== null && used >= 100
@@ -25,7 +31,6 @@ export function UsageGauge({ percent }: { readonly percent: number | null }) {
       )}
     >
       <svg
-        aria-hidden="true"
         viewBox="0 -0.5 24 24"
         className="size-full"
         style={{ margin: 0 }}

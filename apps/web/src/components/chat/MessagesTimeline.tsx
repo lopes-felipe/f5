@@ -150,6 +150,7 @@ import {
   type TimelineTurnRailItem,
   timelineIsAtEnd,
   TIMELINE_AT_END_PX,
+  USER_SCROLL_INTENT_MS,
 } from "./MessagesTimeline.logic";
 import { TimelineTurnRail } from "./TimelineTurnRail";
 import { createPortal } from "react-dom";
@@ -312,6 +313,8 @@ interface MessagesTimelineProps {
   hasMessages: boolean;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
+  /** The running turn; its messages are intermediate work, not completions. */
+  activeTurnId?: TurnId | null | undefined;
   /** What the running turn is doing now; null shows a plain "Working". */
   liveActivity?: LiveWorkActivity | undefined;
   listRef: React.RefObject<LegendListRef | null>;
@@ -490,6 +493,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hasMessages,
   isWorking,
   activeTurnStartedAt,
+  activeTurnId,
   liveActivity = null,
   listRef,
   entryRowIndexMapRef,
@@ -587,10 +591,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // Physical position drives the rail; following intent can stay enabled during layout changes.
   const [railIsAtEnd, setRailIsAtEnd] = useState(false);
   const liveFollowEnabled = autoFollow;
-  const liveFollowEnabledRef = useRef(autoFollow);
+  // A reading position restored above the end wins over the owner's initial follow
+  // state: following resumes only once the reader returns to the end.
+  const restoredAboveEnd = !!restoredAnchor && !restoredAnchor.atEnd;
+  const liveFollowEnabledRef = useRef(autoFollow && !restoredAboveEnd);
+  const autoFollowPropRef = useRef(autoFollow);
   useLayoutEffect(() => {
+    if (autoFollowPropRef.current === autoFollow) return;
+    autoFollowPropRef.current = autoFollow;
     liveFollowEnabledRef.current = autoFollow;
   }, [autoFollow]);
+  const initialAutoFollowRef = useRef({ autoFollow, restoredAboveEnd, onAutoFollowChange });
+  useLayoutEffect(() => {
+    const initial = initialAutoFollowRef.current;
+    if (initial.autoFollow && initial.restoredAboveEnd) initial.onAutoFollowChange?.(false);
+  }, []);
   const [atEndThreshold, setAtEndThreshold] = useState(0);
   const manualScrollGenerationRef = useRef(0);
   const newestTurnDiffId = useMemo(
@@ -613,11 +628,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         turnDiffSummaryByTurnId,
         isWorking,
         activeTurnStartedAt,
+        activeTurnId: activeTurnId ?? null,
         liveActivity,
         expandMcpToolCalls: settings.expandMcpToolCalls,
         cache: rowCache,
       }),
     [
+      activeTurnId,
       activeTurnStartedAt,
       completionDividerBeforeEntryId,
       completionSummary,
@@ -983,11 +1000,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const disclosurePinsEndRef = useRef(false);
   const endSettleFrameRef = useRef<number | null>(null);
+  const userScrollIntentAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const scrollbarPointerDownRef = useRef(false);
   // A jump or scroll away from the end: stop following the tail now, and drop
   // any follow scroll or disclosure pin already queued for a later frame.
   const leaveEnd = useCallback(() => {
     setSelectedNavigationRowId(null);
     onLeaveEnd?.();
+    // An explicit jump is reader intent too: the scroll it starts must keep following
+    // paused even if a layout pass briefly reports the end before it lands.
+    userScrollIntentAtRef.current = performance.now();
     manualScrollGenerationRef.current++;
     isAtEndRef.current = false;
     setRailIsAtEnd(false);
@@ -1056,7 +1078,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           if (scrollableNode.scrollHeight <= scrollableNode.clientHeight) return;
           leaveEnd();
         };
+        const markIntent = () => {
+          userScrollIntentAtRef.current = performance.now();
+        };
+        // Global scroll shortcuts (Page Up/Down commands) scroll the list from outside it.
+        const windowKeydown = () => markIntent();
+        const releaseScrollbar = () => {
+          if (!scrollbarPointerDownRef.current) return;
+          scrollbarPointerDownRef.current = false;
+          markIntent();
+        };
         const wheel = (event: WheelEvent) => {
+          markIntent();
           if (event.deltaY !== 0) setSelectedNavigationRowId(null);
           if (event.deltaY < 0) {
             cancelFollow();
@@ -1078,13 +1111,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           }
         };
         const pointerdown = (event: PointerEvent) => {
-          if (event.target === scrollableNode) cancelFollow();
+          if (event.target !== scrollableNode) return;
+          scrollbarPointerDownRef.current = true;
+          cancelFollow();
         };
         let lastTouchY: number | null = null;
         const touchstart = (event: TouchEvent) => {
+          markIntent();
           lastTouchY = event.touches[0]?.clientY ?? null;
         };
         const touchmove = (event: TouchEvent) => {
+          markIntent();
           setSelectedNavigationRowId(null);
           const y = event.touches[0]?.clientY ?? null;
           const movingUp = y !== null && lastTouchY !== null && y > lastTouchY;
@@ -1098,12 +1135,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         scrollableNode.addEventListener("pointerdown", pointerdown, { passive: true });
         scrollableNode.addEventListener("touchstart", touchstart, { passive: true });
         scrollableNode.addEventListener("touchmove", touchmove, { passive: true });
+        window.addEventListener("keydown", windowKeydown, { capture: true, passive: true });
+        window.addEventListener("pointerup", releaseScrollbar, { capture: true, passive: true });
+        window.addEventListener("pointercancel", releaseScrollbar, {
+          capture: true,
+          passive: true,
+        });
         cleanups.push(() => {
           scrollableNode.removeEventListener("wheel", wheel);
           scrollableNode.removeEventListener("keydown", keydown);
           scrollableNode.removeEventListener("pointerdown", pointerdown);
           scrollableNode.removeEventListener("touchstart", touchstart);
           scrollableNode.removeEventListener("touchmove", touchmove);
+          window.removeEventListener("keydown", windowKeydown, { capture: true });
+          window.removeEventListener("pointerup", releaseScrollbar, { capture: true });
+          window.removeEventListener("pointercancel", releaseScrollbar, { capture: true });
+          scrollbarPointerDownRef.current = false;
         });
       }
       if (typeof ResizeObserver !== "undefined" && scrollableNode instanceof HTMLElement) {
@@ -1165,9 +1212,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (node instanceof HTMLElement) {
       const previousTop = lastTimelineScrollTopRef.current;
       const aboveEnd = node.scrollHeight - node.scrollTop - node.clientHeight >= TIMELINE_AT_END_PX;
-      // Scrollbars and programmatic history navigation need the same pause as
-      // wheel/touch gestures. Content growth alone keeps the same scrollTop.
-      if (aboveEnd && previousTop !== null && node.scrollTop < previousTop - 1) leaveEnd();
+      // Scrollbar drags and keyboard shortcuts pause like wheel/touch gestures. Only a
+      // drop that follows reader input counts: LegendList also lowers scrollTop when
+      // rows above the viewport shrink, and that correction must keep following on.
+      const readerScrolled =
+        scrollbarPointerDownRef.current ||
+        performance.now() - userScrollIntentAtRef.current < USER_SCROLL_INTENT_MS;
+      if (readerScrolled && aboveEnd && previousTop !== null && node.scrollTop < previousTop - 1)
+        leaveEnd();
       lastTimelineScrollTopRef.current = node.scrollTop;
     }
     syncIsAtEndFromListState();
@@ -5360,6 +5412,7 @@ export function buildTimelineRows(input: {
   turnDiffSummaryByTurnId?: ReadonlyMap<TurnId, TurnDiffSummary> | undefined;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
+  activeTurnId?: TurnId | null | undefined;
   liveActivity: LiveWorkActivity | null;
   expandMcpToolCalls: boolean;
   cache: TimelineRowCache;
@@ -5372,6 +5425,7 @@ export function buildTimelineRows(input: {
     input.turnDiffSummaryByTurnId,
     input.isWorking,
     input.activeTurnStartedAt,
+    input.activeTurnId ?? null,
     input.liveActivity,
     input.expandMcpToolCalls,
   ];
@@ -5582,7 +5636,13 @@ export function buildTimelineRows(input: {
     }
 
     // A finished message or checkpoint can still be intermediate work in a running turn.
-    const isActiveTurnMessage = input.isWorking && index > lastUserMessageEntryIndex;
+    // Match the running turn by id; position after the newest user message is only a
+    // fallback, since automation and continuation turns have no user message at all.
+    const isActiveTurnMessage =
+      input.isWorking &&
+      (input.activeTurnId && timelineEntry.message.turnId
+        ? timelineEntry.message.turnId === input.activeTurnId
+        : index > lastUserMessageEntryIndex);
     const isLatestCompletion =
       !isActiveTurnMessage &&
       !timelineEntry.message.streaming &&

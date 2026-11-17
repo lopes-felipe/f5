@@ -9,6 +9,7 @@ import {
 
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
 import { WORKING_RIBBON_SLOT } from "~/lib/workingRibbon";
+import { COMPOSER_DOCK_HEIGHT_VAR } from "./composer/ComposerDock";
 import {
   advanceRibbon,
   collisionMargin,
@@ -182,26 +183,47 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
       releaseRef.current("invalid");
       return;
     }
+    // The parent's box and the dock height change only on resizes and dock style writes, so
+    // they are cached from observers. Each frame reads one rect: the Working row moves as
+    // the timeline streams, which no ResizeObserver reports.
+    const dockHost = parent.closest<HTMLElement>("[data-composer-dock-host]") ?? parent;
+    const readDockHeight = () =>
+      Math.max(
+        0,
+        Number.parseFloat(getComputedStyle(parent).getPropertyValue(COMPOSER_DOCK_HEIGHT_VAR)) || 0,
+      );
+    let dockHeight = readDockHeight();
+    let parentRect = parent.getBoundingClientRect();
+    const refreshCachedGeometry = () => {
+      dockHeight = readDockHeight();
+      parentRect = parent.getBoundingClientRect();
+    };
+    const stageStyle = { left: "", top: "", width: "", height: "" };
+    const setStageStyle = (key: keyof typeof stageStyle, value: string) => {
+      if (stageStyle[key] === value) return;
+      stageStyle[key] = value;
+      stage.style[key] = value;
+    };
     const updateBounds = () => {
       if (!boundsElement.isConnected) {
         releaseRef.current("no-space");
         return false;
       }
       const region = boundsElement.getBoundingClientRect();
-      const parentRect = parent.getBoundingClientRect();
-      const dockHeight = Math.max(
-        0,
-        Number.parseFloat(getComputedStyle(parent).getPropertyValue("--composer-dock-height")) || 0,
-      );
       const left = Math.max(region.left, parentRect.left);
       const top = Math.max(region.top, parentRect.top);
       const width = Math.max(0, Math.min(region.right, parentRect.right) - left);
       const height = Math.max(0, Math.min(region.bottom, parentRect.bottom - dockHeight) - top);
-      stage.style.left =
-        String(left - parentRect.left - parent.clientLeft + parent.scrollLeft) + "px";
-      stage.style.top = String(top - parentRect.top - parent.clientTop + parent.scrollTop) + "px";
-      stage.style.width = String(width) + "px";
-      stage.style.height = String(height) + "px";
+      setStageStyle(
+        "left",
+        String(left - parentRect.left - parent.clientLeft + parent.scrollLeft) + "px",
+      );
+      setStageStyle(
+        "top",
+        String(top - parentRect.top - parent.clientTop + parent.scrollTop) + "px",
+      );
+      setStageStyle("width", String(width) + "px");
+      setStageStyle("height", String(height) + "px");
       const resized = simulation.bounds.width !== width || simulation.bounds.height !== height;
       simulation.bounds = { width, height };
       if (resized) fitToStageRef.current();
@@ -225,12 +247,18 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
     writeFrameRef.current();
     stage.focus({ preventScroll: true });
 
-    const resizeObserver = new ResizeObserver(() => {
+    const refreshBounds = () => {
       if (disposed) return;
+      refreshCachedGeometry();
       updateBounds();
-    });
+    };
+    const resizeObserver = new ResizeObserver(refreshBounds);
     resizeObserver.observe(boundsElement);
     resizeObserver.observe(parent);
+    // ComposerDock publishes its height as an inline custom property on the dock host.
+    const dockObserver = new MutationObserver(refreshBounds);
+    dockObserver.observe(dockHost, { attributes: true, attributeFilter: ["style"] });
+    window.addEventListener("resize", refreshBounds);
 
     const remeasure = () => {
       if (!disposed) setMeasureVersion((version) => version + 1);
@@ -276,6 +304,8 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
       if (updateBoundsRef.current === updateBounds) updateBoundsRef.current = null;
       window.cancelAnimationFrame(frame);
       resizeObserver.disconnect();
+      dockObserver.disconnect();
+      window.removeEventListener("resize", refreshBounds);
       appearanceObserver.disconnect();
       fonts?.removeEventListener("loadingdone", remeasure);
       window.removeEventListener("blur", onWindowBlur);

@@ -2343,6 +2343,7 @@ describe("Thread sidebar", () => {
         "Home",
         "Search threads",
         "Pull requests",
+        "Usage",
         "Scheduled",
         "Projects",
         "Recent",
@@ -2355,9 +2356,10 @@ describe("Thread sidebar", () => {
         ).toBeGreaterThan(0);
       }
       const footer = document.querySelector<HTMLElement>('[data-sidebar="footer"]')!;
-      expect(navigation.querySelector('button[aria-label="Usage"]')).toBeNull();
+      expect(navigation.querySelector('button[aria-label="Usage"]')).not.toBeNull();
       expect(footer.querySelector('button[aria-label="Pull requests"]')).toBeNull();
-      expect(footer.querySelector('button[aria-label="Usage limits"]')).toBeNull();
+      // Limit details moved to the composer gauge; the footer keeps no limits panel.
+      expect(footer.querySelector('button[aria-label^="Usage limits"]')).toBeNull();
       const settingsButton = footer.querySelector<HTMLButtonElement>(
         'button[aria-label="Settings"]',
       )!;
@@ -2401,10 +2403,10 @@ describe("Thread sidebar", () => {
       );
       await vi.waitFor(() => expect(projectsToggle.getAttribute("aria-checked")).toBe("true"));
       const homeButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Home"]')!;
-      // Usage is opened from the composer now; switch routes directly to
-      // verify sidebar navigation without recreating its removed limits panel.
-      await mounted.router.navigate({ to: "/usage" });
+      const usageButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Usage"]')!;
+      usageButton.click();
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/usage"));
+      await vi.waitFor(() => expect(usageButton.getAttribute("aria-current")).toBe("page"));
       expect(homeButton.hasAttribute("aria-current")).toBe(false);
       // Pull requests is marked in the strip, so its page keeps Settings in the footer.
       const pullRequestsButton = navigation.querySelector<HTMLButtonElement>(

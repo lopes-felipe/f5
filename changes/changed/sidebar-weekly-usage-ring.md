@@ -1,1 +1,0 @@
-- Replace the sidebar limits icon with an animated ring showing weekly consumption for the selected provider, with warning colors near the limit and a neutral ring when usage is unavailable.

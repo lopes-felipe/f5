@@ -1,1 +1,0 @@
-- Keep Following pinned to the latest content when tool results and diffs grow within existing rows, while respecting manual scrolling.

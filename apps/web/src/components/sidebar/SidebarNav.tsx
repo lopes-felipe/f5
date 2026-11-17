@@ -1,6 +1,7 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   CalendarClockIcon,
+  ChartNoAxesCombinedIcon,
   GitMergeIcon,
   GitPullRequestIcon,
   ClockIcon,
@@ -163,7 +164,7 @@ function NavIconButton(props: {
 }
 
 /**
- * One strip of icon buttons (Home, Search, Pull requests, Upstream, Scheduled), ending
+ * One strip of icon buttons (Home, Search, Pull requests, Usage, Upstream, Scheduled), ending
  * with the Projects | Recent toggle. Search toggles the thread search field under the strip;
  * the field stays while it holds a query.
  */
@@ -181,6 +182,7 @@ export function SidebarNav(props: {
   const isOnScheduled = useLocation({ select: (loc) => loc.pathname === "/scheduled" });
   const isOnHome = useLocation({ select: (loc) => loc.pathname === "/" });
   const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
+  const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
   const isOnUpstream = useLocation({ select: (loc) => loc.pathname === "/upstream" });
   const prHubNeedsYouCount = usePrHubNeedsYouCount();
   const upstream = useUpstreamNav();
@@ -223,6 +225,12 @@ export function SidebarNav(props: {
           shortcutLabel={props.pullRequestsShortcutLabel}
           badge={{ count: prHubNeedsYouCount, label: "need you", tone: "warning" }}
           onSelect={() => void navigate({ to: "/pull-requests" })}
+        />
+        <NavIconButton
+          icon={ChartNoAxesCombinedIcon}
+          label="Usage"
+          isActive={isOnUsage}
+          onSelect={() => void navigate({ to: "/usage" })}
         />
         {upstream.visible ? (
           <NavIconButton

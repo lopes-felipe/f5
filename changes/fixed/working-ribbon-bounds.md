@@ -1,1 +1,0 @@
-- Keep the Castlevania-inspired Working animation inside the status indicator, preserving its compact font size and keeping messages, Following, and the composer clear.

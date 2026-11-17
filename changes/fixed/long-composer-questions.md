@@ -1,1 +1,0 @@
-- Keep the answer editor and submit controls visible for long agent questions and answer options by scrolling the question separately within the available chat height.

@@ -1,1 +1,0 @@
-- Resume following automatically at the bottom of the conversation without a toggle, and move usage limits from the sidebar to an animated speedometer before the composer model picker with no pin option.
