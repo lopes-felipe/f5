@@ -2662,6 +2662,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 : contentType,
               "Cache-Control": fingerprinted ? "public, max-age=31536000, immutable" : "no-cache",
               "X-Content-Type-Options": "nosniff",
+              ...(contentType === "text/html"
+                ? {
+                    "Content-Security-Policy": "frame-ancestors 'none'",
+                    "X-Frame-Options": "DENY",
+                  }
+                : {}),
             });
           } catch {
             if (res.headersSent) res.destroy();

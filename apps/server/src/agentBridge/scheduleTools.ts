@@ -75,7 +75,10 @@ const Delete = Schema.Struct({
   expectedVersion: Schema.Int,
 });
 const Run = Schema.Struct({ clientRequestId: RequestId, taskId: ScheduledTaskId });
-const List = Schema.Struct({ projectId: Schema.optional(ProjectId) });
+const List = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  scheduledTaskId: Schema.optional(ScheduledTaskId),
+});
 const History = Schema.Struct({
   taskId: ScheduledTaskId,
   runId: Schema.optional(ScheduledTaskRunId),
@@ -396,11 +399,15 @@ export const makeScheduleTools = (deps: {
         const at = new Date(yield* Clock.currentTimeMillis).toISOString();
         return {
           revision: list.revision,
-          tasks: list.tasks.map((row) => ({
-            ...echo(row.task, at),
-            latestRun: publicRun(row.latestRun),
-            activeRun: publicRun(row.activeRun),
-          })),
+          tasks: list.tasks
+            .filter(
+              (row) => input.scheduledTaskId === undefined || row.task.id === input.scheduledTaskId,
+            )
+            .map((row) => ({
+              ...echo(row.task, at),
+              latestRun: publicRun(row.latestRun),
+              activeRun: publicRun(row.activeRun),
+            })),
         };
       }),
     ),

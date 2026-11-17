@@ -1,0 +1,1 @@
+- Other websites can no longer embed the F5 web app in a frame to disguise approval or thread actions.
