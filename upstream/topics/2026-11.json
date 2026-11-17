@@ -17738,9 +17738,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T11:48:29.532Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28111",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "usage",
