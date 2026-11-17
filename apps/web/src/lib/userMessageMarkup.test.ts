@@ -13,7 +13,9 @@ const summarize = (segments: readonly UserMessageSegment[]) =>
       ? ["text", segment.raw]
       : segment.kind === "thread-reference"
         ? [segment.kind, segment.threadId]
-        : [segment.kind, segment.value],
+        : segment.kind === "response-context"
+          ? [segment.kind, segment.record.text]
+          : [segment.kind, segment.value],
   );
 
 const rawOf = (segments: readonly UserMessageSegment[]) =>

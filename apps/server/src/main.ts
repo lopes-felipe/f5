@@ -169,6 +169,7 @@ const CliEnvConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   acpHardeningEnabled: Config.boolean("F5_ACP_HARDENING_ENABLED").pipe(Config.withDefault(false)),
+  githubPrEventsEnabled: Config.boolean("F5_GITHUB_PR_EVENTS").pipe(Config.withDefault(false)),
 });
 
 const resolveBooleanFlag = (flag: Option.Option<boolean>, envValue: boolean) =>
@@ -376,6 +377,7 @@ const ServerConfigLive = (input: CliInput) => {
         logWebSocketEvents,
         observabilityEnabled: env.observabilityEnabled ?? false,
         acpHardeningEnabled: env.acpHardeningEnabled,
+        githubPrEventsEnabled: env.githubPrEventsEnabled,
       } satisfies ServerConfigShape;
 
       if (

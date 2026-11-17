@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { evaluateMergeRequirements } from "./mergeRequirements.ts";
+import {
+  evaluateMergeRequirements,
+  mergePolicyDenial,
+  rawReviewGateSatisfied,
+} from "./mergeRequirements.ts";
 const node = (checks: unknown[] = [], complete = true) => ({
   mergeable: "MERGEABLE",
   mergeStateStatus: "CLEAN",
@@ -69,6 +73,35 @@ describe("effective merge requirements", () => {
     ).toBe(false);
     expect(evaluateMergeRequirements(node(), [{ type: "merge_queue" }]).mandatorySatisfied).toBe(
       false,
+    );
+  });
+});
+
+describe("mergePolicyDenial", () => {
+  const satisfied = evaluateMergeRequirements(node(), []);
+  const allow = { requirements: satisfied, viewerPermission: "WRITE" };
+
+  it("lets a merge through when no review rule applies", () => {
+    expect(mergePolicyDenial({ ...allow, reviewDecision: null })).toBeNull();
+    expect(mergePolicyDenial({ ...allow, reviewDecision: undefined })).toBeNull();
+    expect(mergePolicyDenial({ ...allow, reviewDecision: "APPROVED" })).toBeNull();
+  });
+
+  it.each(["REVIEW_REQUIRED", "CHANGES_REQUESTED", "approved", ""])(
+    "refuses review decision %j with a review-specific reason",
+    (reviewDecision) => {
+      expect(mergePolicyDenial({ ...allow, reviewDecision })).toMatch(/approving review/);
+      expect(rawReviewGateSatisfied(reviewDecision)).toBe(false);
+    },
+  );
+
+  it("reports unmet branch requirements and missing write access", () => {
+    const blocked = evaluateMergeRequirements(node(), [{ type: "merge_queue" }]);
+    expect(mergePolicyDenial({ ...allow, requirements: blocked, reviewDecision: null })).toBe(
+      blocked.explanation,
+    );
+    expect(mergePolicyDenial({ ...allow, viewerPermission: "READ", reviewDecision: null })).toMatch(
+      /write access/,
     );
   });
 });

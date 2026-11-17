@@ -221,6 +221,7 @@ export interface TrialChild {
   stop(): Promise<void>;
 }
 export interface HandoffDependencies {
+  signal?: AbortSignal;
   stopOld(): Promise<void>;
   trial(version: string, id: string): TrialChild;
   restart(version: string, outcome: UpdateOutcome): Promise<void>;
@@ -232,11 +233,13 @@ export async function performHandoff(
   request: UpdateRequest,
   deps: HandoffDependencies,
 ): Promise<UpdateOutcome> {
+  deps.signal?.throwIfAborted();
   database = await canonicalDatabase(database);
   const current = await readInstalled(root);
   if (compareCliReleaseVersions(request.version, current.version) <= 0)
     throw new Error("Update is not newer than the active runtime.");
   await deps.preflight(request.version); // Never stop a healthy child for an unusable launcher.
+  deps.signal?.throwIfAborted();
   const file = path.join(root, "handoff.json");
   let journal: Journal = { ...request, database, previous: current.version, phase: "snapshotting" };
   let required = 8 * 1024 * 1024;
@@ -256,10 +259,11 @@ export async function performHandoff(
   let child: TrialChild | undefined;
   try {
     await snapshotDatabase(database, path.join(root, "db-backup", request.id));
+    deps.signal?.throwIfAborted();
     journal = { ...journal, phase: "trial" };
     await atomicJson(file, journal);
     child = deps.trial(request.version, request.id);
-    await child.prepared;
+    await interruptibleHandoffWait(child.prepared, deps.signal);
     // Publish the decision durably before releasing the child activation gate.
     const committed: Journal = { ...journal, phase: "committed" };
     await atomicJson(file, committed);
@@ -276,7 +280,7 @@ export async function performHandoff(
     };
     await atomicJson(path.join(root, "outcome.json"), outcome);
     await child.activate();
-    await child.activated;
+    await interruptibleHandoffWait(child.activated, deps.signal);
     // Cleanup failure must never restore a database after activation.
     await cleanupCommitted(root).catch((error) =>
       console.error(`Committed update cleanup will retry on restart: ${String(error)}`),
@@ -309,12 +313,22 @@ export async function performHandoff(
     await atomicJson(path.join(root, "outcome.json"), outcome);
     await fs.rm(path.join(root, "pending.json"), { force: true });
     await fs.unlink(file);
+    if (deps.signal?.aborted) throw error;
     await deps.restart(current.version, outcome);
     console.error(
       `F5 update ${request.id} rolled back: ${error instanceof Error ? error.message : "trial failed"}`,
     );
     return outcome;
   }
+}
+function interruptibleHandoffWait(promise: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(signal.reason ?? new Error("Update handoff stopped."));
+    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) aborted();
+    void promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+  });
 }
 function deadline(promise: Promise<void>, timeout: number): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -417,7 +431,8 @@ export function managedChild(
           child.off("exit", exited);
         };
         child.once("exit", exited);
-        child.kill("SIGTERM");
+        if (process.platform === "win32" && child.connected) child.send({ type: "stop" }, () => {});
+        else child.kill("SIGTERM");
       });
     },
   };

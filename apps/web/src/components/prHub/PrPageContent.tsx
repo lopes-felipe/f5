@@ -17,7 +17,7 @@ import { PrActionDialogs } from "./PrActionDialogs";
 import { PrAuthorLink } from "./PrAuthorLink";
 import { PrDetailsTabs, type PrDetailTab } from "./PrDetailsTabs";
 import { PrPageActions } from "./PrPageActions";
-import { prRowPrimaryAction } from "./prQueueModel";
+import { prPageActionAvailability, prRowPrimaryAction } from "./prQueueModel";
 import { usePrActions } from "./usePrActions";
 import { usePrMarkSeen } from "./usePrMarkSeen";
 
@@ -89,7 +89,10 @@ export function PrPageContent({
     if (!initialAction || handledQuickAction.current === initialAction.id) return;
     handledQuickAction.current = initialAction.id;
     onInitialActionHandled?.();
-    if (!prQuickActions(pr).includes(initialAction.kind)) {
+    if (
+      !prQuickActions(pr).includes(initialAction.kind) ||
+      (initialAction.kind === "merge" && !prPageActionAvailability(pr).canMerge)
+    ) {
       toastManager.add({
         type: "info",
         title: "This PR action is no longer available. Refresh its state.",

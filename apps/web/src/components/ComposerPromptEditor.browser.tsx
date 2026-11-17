@@ -47,9 +47,39 @@ function Harness({
       <output aria-label="Serialized prompt">{snapshot}</output>
       <output aria-label="Mentions">{JSON.stringify(mentions)}</output>
       <button onClick={() => editor.current?.focusAtEnd()}>Focus end</button>
+      <button
+        onClick={() =>
+          editor.current?.insertAssistantQuote({
+            threadId: "source",
+            messageId: "response",
+            text: "Quoted",
+            comment: "Explain",
+          })
+        }
+      >
+        Insert commented quote
+      </button>
     </>
   );
 }
+it("keeps a retained quote comment outside the atomic token while editing", async () => {
+  const screen = await render(<Harness initial="" />);
+  try {
+    await screen.getByRole("button", { name: "Insert commented quote" }).click();
+    await screen.getByRole("button", { name: "Focus end" }).click();
+    await userEvent.keyboard("More");
+    await screen.getByRole("button", { name: "Read prompt" }).click();
+    const text = screen.getByLabelText("Serialized prompt").element().textContent!;
+    expect(text).toContain("f5-context://");
+    expect(text).toContain("Explain");
+    expect(text.trimEnd()).toMatch(/Explain\s*More$/);
+    await screen.getByRole("button", { name: "Toggle styling" }).click();
+    await screen.getByRole("button", { name: "Read prompt" }).click();
+    expect(screen.getByLabelText("Serialized prompt").element().textContent).toBe(text);
+  } finally {
+    await screen.unmount();
+  }
+});
 it("changes Markdown styling without rewriting prompt bytes or file mentions", async () => {
   const screen = await render(<Harness />);
   const editor = screen.getByTestId("composer-editor");

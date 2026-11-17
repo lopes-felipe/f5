@@ -252,8 +252,23 @@ describe("prPageActionAvailability", () => {
     { action: "request-changes", supported: false, reason: "Not allowed" },
   ] as const satisfies TrackedPullRequest["capabilities"];
 
+  it("offers Merge now only for a PR classified ready to merge", () => {
+    expect(prPageActionAvailability(makePr()).canMerge).toBe(false);
+    expect(prPageActionAvailability(makePr({ attentionState: "awaiting_review" }))).toMatchObject({
+      canMerge: false,
+      canMergeWhenReady: true,
+    });
+    expect(
+      prPageActionAvailability(
+        makePr({ attentionState: "ready_to_merge", attentionBucket: "needs_you" }),
+      ).canMerge,
+    ).toBe(true);
+  });
+
   it("offers the author the merge choices and no review ones", () => {
-    const can = prPageActionAvailability(makePr({ capabilities }));
+    const can = prPageActionAvailability(
+      makePr({ capabilities, attentionState: "ready_to_merge", attentionBucket: "needs_you" }),
+    );
     expect(can).toMatchObject({
       canMerge: true,
       canReview: false,

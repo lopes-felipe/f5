@@ -6,7 +6,11 @@ import { GitHubCliError } from "../../git/Errors.ts";
 import { GitHubRequestPolicy } from "../../git/githubRequestPolicy.ts";
 import { PrHubRepository } from "../Services/PrHubRepository.ts";
 import { prHubActionError } from "../errors.ts";
-import { PR_HUB_BRANCH_REQUIREMENTS_FIELDS, readMergeRequirements } from "../mergeRequirements.ts";
+import {
+  mergePolicyDenial,
+  PR_HUB_BRANCH_REQUIREMENTS_FIELDS,
+  readMergeRequirements,
+} from "../mergeRequirements.ts";
 
 import { prComparisonsEqual } from "@t3tools/shared/prReview";
 import { PrHubJobCoordinator } from "../Services/PrHubJobCoordinator.ts";
@@ -978,17 +982,19 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
                             query,
                           }),
                       );
-                      if (
-                        action === "merge" &&
-                        (requirements.verification !== "verified" ||
-                          !requirements.mandatorySatisfied ||
-                          live.reviewDecision !== "APPROVED" ||
-                          !["WRITE", "MAINTAIN", "ADMIN"].includes(String(repo.viewerPermission)))
-                      )
+                      const denial =
+                        action === "merge"
+                          ? mergePolicyDenial({
+                              requirements,
+                              reviewDecision: live.reviewDecision,
+                              viewerPermission: repo.viewerPermission,
+                            })
+                          : null;
+                      if (denial)
                         return yield* new GitHubCliError({
                           operation: "prHub.requestPolicy",
                           kind: "forbidden",
-                          detail: requirements.explanation,
+                          detail: denial,
                         });
                     }
                     if (action === "merge" && expected) {

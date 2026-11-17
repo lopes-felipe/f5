@@ -41,7 +41,7 @@ it("round-trips quote metadata through Lexical while keeping plain draft text us
   const json = editor.getEditorState().toJSON();
   expect(JSON.stringify(json)).toContain('"messageId":"assistant-1"');
   const restored = editor.parseEditorState(json);
-  restored.read(() => expect($getRoot().getTextContent()).toBe("> **quoted**\n\nExplain"));
+  restored.read(() => expect($getRoot().getTextContent()).toBe("> **quoted**"));
 });
 
 it("rejects a quote that would push the draft over the limit", () => {
@@ -55,4 +55,18 @@ it("rejects a quote that would push the draft over the limit", () => {
   expect(assistantQuoteLimitError(0, quote, 0)).toBe(
     "Waiting for server capabilities. Reconnect before adding a quote.",
   );
+});
+
+it("preserves turn and subagent identity in serialized quotes", () => {
+  const quote = {
+    messageId: "message",
+    threadId: "source",
+    text: "Quoted",
+    comment: "",
+    turnId: "turn" as import("@t3tools/contracts").TurnId,
+    subagents: [{ threadId: "child" as import("@t3tools/contracts").ThreadId, title: "Agent" }],
+  };
+  const text = serializeAssistantQuote(quote);
+  expect(decodeURIComponent(text)).toContain('"turnId":"turn"');
+  expect(decodeURIComponent(text)).toContain('"threadId":"child"');
 });

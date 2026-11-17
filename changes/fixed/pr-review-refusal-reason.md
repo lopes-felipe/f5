@@ -1,0 +1,1 @@
+- Refused PR reviews now show GitHub's detailed reason. Drafts stay preserved, and submissions that require recovery keep guidance to check their saved state before retrying.

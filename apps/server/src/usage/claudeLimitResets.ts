@@ -183,9 +183,11 @@ function defaultGrantLabel(kind: ClaudeLimitResetGrant["kind"]): string {
     case "full":
       return "Full reset";
     case "session":
-      return "Session reset";
+      return "5-hour reset";
     case "weekly":
       return "Weekly reset";
+    case "fable":
+      return "Fable reset";
     default:
       return "Limit reset";
   }
@@ -196,13 +198,27 @@ function normalizeGrant(value: unknown): ClaudeLimitResetGrant | null {
   const id = asTrimmedString(grant?.id);
   const resetsLeft = asNonNegativeInteger(grant?.resets_left);
   if (!grant || !id || !GRANT_ID.test(id) || resetsLeft === null) return null;
+  // Weekly give-back identifies a Fable reset even when its type says weekly.
+  // Older grants infer their kind from the limits they clear.
+  const clears = stringList(grant.clears);
+  const session = clears.includes("five_hour");
+  const other = clears.some((limit) => limit !== "five_hour");
   const kind =
-    grant.type === "session" || grant.type === "weekly" || grant.type === "full"
-      ? grant.type
-      : null;
+    grant.gives_back_weekly === true
+      ? "fable"
+      : grant.type === "session" || grant.type === "weekly" || grant.type === "full"
+        ? grant.type
+        : session && !other
+          ? "session"
+          : other && !session
+            ? "weekly"
+            : "full";
   return {
     id,
-    label: asTrimmedString(grant.label) ?? defaultGrantLabel(kind),
+    label:
+      kind === "fable"
+        ? defaultGrantLabel(kind)
+        : (asTrimmedString(grant.label) ?? defaultGrantLabel(kind)),
     kind,
     resetsLeft,
     resetsTotal: Math.max(asNonNegativeInteger(grant.resets_total) ?? 0, resetsLeft),
@@ -211,7 +227,7 @@ function normalizeGrant(value: unknown): ClaudeLimitResetGrant | null {
     useRequiresLimit: grant.use_requires_limit !== false,
     givesBackWeekly: grant.gives_back_weekly === true,
     paused: grant.paused === true,
-    clears: stringList(grant.clears),
+    clears,
     blocking: stringList(grant.blocking),
     unavailableReason: asTrimmedString(grant.unavailable_reason),
   };

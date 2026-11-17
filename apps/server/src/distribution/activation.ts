@@ -1,8 +1,26 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // @effect-diagnostics globalTimers:off
-/** Installed children terminate if their supervising launcher disappears. */
-export function watchLauncher(): void {
-  if (process.env.F5_LAUNCHER_CHILD === "1") process.once("disconnect", () => process.exit(1));
+let stopLauncherChild: () => void = () => {};
+const launcherStopped = new Promise<void>((resolve) => {
+  stopLauncherChild = resolve;
+});
+/** Latches even a stop received before the server's Effect runtime has started. */
+export const waitForLauncherStop = (): Promise<void> => launcherStopped;
+/** Installed children shut down through their runtime finalizers on IPC stop or launcher loss. */
+export function watchLauncher(
+  host: {
+    readonly env: NodeJS.ProcessEnv;
+    once(event: "disconnect", listener: () => void): unknown;
+    on(event: "message", listener: (message: unknown) => void): unknown;
+  } = process,
+  stop = stopLauncherChild,
+): void {
+  if (host.env.F5_LAUNCHER_CHILD !== "1") return;
+  host.once("disconnect", stop);
+  host.on("message", (message: unknown) => {
+    if (message && typeof message === "object" && "type" in message && message.type === "stop")
+      stop();
+  });
 }
 let activation: Promise<void> | undefined;
 export function waitForActivation(): Promise<void> {

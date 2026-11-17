@@ -88,6 +88,8 @@ export interface WorkspaceAssetReader {
     relativePath: string;
     maxBytes: number;
     rejectSymlink?: boolean;
+    /** Read only the first maxBytes, even when the file is larger. */
+    truncate?: boolean;
   }) => Promise<string>;
   readonly issueImageHandle: (input: {
     relativePath: string;
@@ -199,6 +201,7 @@ async function readContainedFile(input: {
   relativePath: string;
   maxBytes: number;
   rejectSymlink?: boolean;
+  truncate?: boolean;
 }): Promise<{ bytes: Uint8Array; relativePath: string }> {
   const requestedPath = resolveRequestedPath(input.rootRealPath, input.relativePath);
   let requestedStat: Awaited<ReturnType<typeof lstat>> | null = null;
@@ -248,7 +251,7 @@ async function readContainedFile(input: {
       "Workspace asset path may not contain symbolic links.",
     );
   }
-  if (beforeStat.size > input.maxBytes) {
+  if (!input.truncate && beforeStat.size > input.maxBytes) {
     throw new WorkspaceAssetAuthorizationError(
       "too_large",
       "Workspace asset exceeds its byte cap.",
@@ -265,7 +268,7 @@ async function readContainedFile(input: {
     if (!openedStat.isFile()) {
       throw new WorkspaceAssetAuthorizationError("not_file", "Workspace asset is not a file.");
     }
-    if (openedStat.size > input.maxBytes) {
+    if (!input.truncate && openedStat.size > input.maxBytes) {
       throw new WorkspaceAssetAuthorizationError(
         "too_large",
         "Workspace asset exceeds its byte cap.",
@@ -300,8 +303,9 @@ async function readContainedFile(input: {
 
     const chunks: Uint8Array[] = [];
     let offset = 0;
-    while (offset <= input.maxBytes) {
-      const chunk = new Uint8Array(Math.min(64 * 1024, input.maxBytes + 1 - offset));
+    const readLimit = input.maxBytes + (input.truncate ? 0 : 1);
+    while (offset < readLimit) {
+      const chunk = new Uint8Array(Math.min(64 * 1024, readLimit - offset));
       const { bytesRead } = await file.read(chunk, 0, chunk.byteLength, offset);
       if (bytesRead === 0) break;
       chunks.push(chunk.subarray(0, bytesRead));
@@ -434,16 +438,20 @@ export function makeWorkspaceAssetAuthorizer(input: {
         return { handle, expiresAt };
       },
       readImage,
-      readText: async ({ relativePath, maxBytes, rejectSymlink }) => {
+      readText: async ({ relativePath, maxBytes, rejectSymlink, truncate }) => {
         const result = await readContainedFile({
           rootPath,
           rootRealPath,
           relativePath,
           maxBytes: normalizeMaxBytes(maxBytes),
           ...(rejectSymlink !== undefined ? { rejectSymlink } : {}),
+          ...(truncate !== undefined ? { truncate } : {}),
         });
         try {
-          return new TextDecoder("utf-8", { fatal: true }).decode(result.bytes);
+          // A bounded prefix may end inside a UTF-8 character.
+          return new TextDecoder("utf-8", { fatal: true }).decode(result.bytes, {
+            stream: truncate === true && result.bytes.byteLength === maxBytes,
+          });
         } catch {
           throw new WorkspaceAssetAuthorizationError(
             "mime_mismatch",

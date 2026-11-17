@@ -189,3 +189,28 @@ export function evaluateMergeRequirements(
 }
 
 export const isBranchRulePage = Schema.is(Rules);
+
+/**
+ * The review gate on a raw GitHub `reviewDecision`: APPROVED, or null when no review rule
+ * applies (a rule that requires reviews reports REVIEW_REQUIRED). Any other value fails, so
+ * an unexpected one never opens a merge.
+ */
+export function rawReviewGateSatisfied(value: unknown): boolean {
+  return value === null || value === undefined || value === "APPROVED";
+}
+
+/** Why a merge must not be sent, from live GitHub facts, or null when it may go. */
+export function mergePolicyDenial(input: {
+  readonly requirements: PrHubMergeRequirements;
+  readonly reviewDecision: unknown;
+  readonly viewerPermission: unknown;
+}): string | null {
+  const { requirements } = input;
+  if (requirements.verification !== "verified" || !requirements.mandatorySatisfied)
+    return requirements.explanation;
+  if (!rawReviewGateSatisfied(input.reviewDecision))
+    return "GitHub still requires an approving review before this PR can merge.";
+  if (!["WRITE", "MAINTAIN", "ADMIN"].includes(String(input.viewerPermission)))
+    return "You need write access to this repository to merge.";
+  return null;
+}

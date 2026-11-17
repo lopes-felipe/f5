@@ -567,6 +567,47 @@ describe("composerDraftStore prompt stash", () => {
     resetComposerDraftBaseStorageForTesting();
   });
 
+  it("persists reply context through hydration, stash restore and clearing", async () => {
+    const replyTo = {
+      version: 1 as const,
+      kind: "response" as const,
+      threadId: sourceThreadId,
+      messageId: "assistant-response" as import("@t3tools/contracts").MessageId,
+      text: "Opening",
+    };
+    const store = useComposerDraftStore.getState();
+    store.setReplyTo(sourceThreadId, replyTo);
+    const options = useComposerDraftStore.persist.getOptions();
+    const persisted = options.partialize!(useComposerDraftStore.getState());
+    const hydrated = options.merge!(persisted, useComposerDraftStore.getInitialState());
+    expect(hydrated.draftsByThreadId[sourceThreadId]?.replyTo).toEqual(replyTo);
+    const saved = await store.stashPromptDraft({
+      threadId: sourceThreadId,
+      projectId,
+      workspaceRoot: "/repo",
+    });
+    expect(saved.status).toBe("stored");
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.replyTo ?? null,
+    ).toBeNull();
+    const stashId = useComposerDraftStore.getState().promptStashes[0]!.id;
+    expect(
+      await store.restorePromptStash({
+        stashId,
+        threadId: sourceThreadId,
+        projectId,
+        workspaceRoots: ["/repo"],
+      }),
+    ).toMatchObject({ status: "restored" });
+    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.replyTo).toEqual(
+      replyTo,
+    );
+    store.clearComposerContent(sourceThreadId);
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.replyTo ?? null,
+    ).toBeNull();
+  });
+
   it("persists explicit occurrences through hydration, stash restore and clearing", async () => {
     const prompt = "@src/main.ts @creditornot/wolt-auth ";
     const mentions = [createComposerMention("src/main.ts", 0)];

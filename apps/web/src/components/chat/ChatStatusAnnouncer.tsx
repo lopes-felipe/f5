@@ -1,5 +1,5 @@
 import type { OrchestrationLatestTurnState } from "@t3tools/contracts";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export type ChatStatusOutcome =
   | "working"
@@ -89,6 +89,20 @@ export function ChatStatusAnnouncer(props: {
 }) {
   const [state, setState] = useState<AnnouncerState>(() => initialState(props));
   const attentionRequestId = props.attentionRequestId ?? null;
+  // Clear spoken text so returning focus from a dialog cannot replay an obsolete announcement.
+  useEffect(() => {
+    if (!state.message) return;
+    const timer = setTimeout(
+      () =>
+        setState((current) =>
+          current.threadId === state.threadId && current.sequence === state.sequence
+            ? { ...current, message: "" }
+            : current,
+        ),
+      7000,
+    );
+    return () => clearTimeout(timer);
+  }, [state.message, state.sequence, state.threadId]);
 
   if (state.threadId !== props.threadId) {
     setState(initialState(props));
@@ -103,7 +117,7 @@ export function ChatStatusAnnouncer(props: {
       lastAttentionRequestId: attentionRequestId,
     };
     if (props.outcome === "idle") {
-      setState(next);
+      setState({ ...next, message: "" });
     } else if (isTerminalOutcome(props.outcome)) {
       const key = `${props.turnId}:${props.outcome}`;
       setState(

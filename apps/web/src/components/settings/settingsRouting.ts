@@ -328,6 +328,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "conversation.work-log-detail": {
     category: "conversation",
   },
+  "conversation.screen-reader-announcements": {
+    category: "conversation",
+  },
   "conversation.work-log-category": {
     category: "conversation",
   },

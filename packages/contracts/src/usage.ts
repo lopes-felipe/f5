@@ -353,7 +353,7 @@ export const ClaudeLimitResetGrantId = TrimmedNonEmptyString.check(
 export const ClaudeLimitResetGrant = Schema.Struct({
   id: ClaudeLimitResetGrantId,
   label: TrimmedNonEmptyString,
-  kind: Schema.NullOr(Schema.Literals(["session", "weekly", "full"])),
+  kind: Schema.NullOr(Schema.Literals(["session", "weekly", "fable", "full"])),
   resetsLeft: NonNegativeInt,
   resetsTotal: NonNegativeInt,
   endsAt: Schema.NullOr(IsoDateTime),
@@ -446,7 +446,11 @@ export const AccountUsageSection = Schema.Union([
     snapshot: Schema.NullOr(
       Schema.Struct({
         fetchedAt: IsoDateTime,
-        data: Schema.Struct({ windows: Schema.Array(ProviderUsageWindow) }),
+        data: Schema.Struct({
+          windows: Schema.Array(ProviderUsageWindow),
+          plan: Schema.optional(TrimmedNonEmptyString),
+          accountFingerprint: Schema.optional(TrimmedNonEmptyString),
+        }),
       }),
     ),
   }),

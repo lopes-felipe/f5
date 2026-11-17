@@ -1,4 +1,9 @@
 import { ensureNativeApi } from "./nativeApi";
+import type { AssistantResponseContext } from "@t3tools/contracts";
+import {
+  normalizeResponseReply,
+  splitResponseReply,
+} from "@t3tools/shared/assistantResponseContext";
 import { processComposerImageBounded } from "./lib/imageCompression";
 import { getServerAttachmentLimits } from "./protocolState";
 import {
@@ -464,6 +469,7 @@ interface PersistedTerminalContextDraft {
 }
 
 interface PersistedComposerThreadDraftState {
+  replyTo?: AssistantResponseContext | null;
   recoveredRewindOperationIds?: readonly string[];
   prompt: string;
   mentions?: readonly ComposerMention[];
@@ -520,6 +526,7 @@ interface PersistedComposerDraftStoreState {
 }
 
 export interface ComposerThreadDraftState {
+  replyTo?: AssistantResponseContext | null;
   recoveredRewindOperationIds?: readonly string[];
   prompt: string;
   mentions: readonly ComposerMention[];
@@ -558,6 +565,7 @@ export interface PromptStashEntry {
   readonly createdAt: string;
   readonly preview: string;
   readonly draft: PromptStashDraftSelection & {
+    readonly replyTo?: AssistantResponseContext | null;
     readonly prompt: string;
     readonly mentions?: readonly ComposerMention[];
     readonly attachments: PersistedComposerImageAttachment[];
@@ -797,6 +805,7 @@ interface ComposerDraftStoreState {
     mode?: "replace" | "append",
   ) => void;
   setPrompt: (threadId: ThreadId, prompt: string, mentions?: readonly ComposerMention[]) => void;
+  setReplyTo: (threadId: ThreadId, replyTo: AssistantResponseContext | null) => void;
   setFilePaths: (threadId: ThreadId, filePaths: string[]) => void;
   setTerminalContexts: (threadId: ThreadId, contexts: TerminalContextDraft[]) => void;
   setProvider: (threadId: ThreadId, provider: ProviderKind | null | undefined) => void;
@@ -998,6 +1007,7 @@ function normalizeTerminalContextsForThread(
 
 function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
   return (
+    !draft.replyTo &&
     (draft.recoveredRewindOperationIds?.length ?? 0) === 0 &&
     draft.prompt.length === 0 &&
     draft.images.length === 0 &&
@@ -1016,9 +1026,13 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
 }
 
 export function hasSendableComposerDraftContent(
-  draft: Pick<ComposerThreadDraftState, "prompt" | "images" | "filePaths" | "terminalContexts">,
+  draft: Pick<
+    ComposerThreadDraftState,
+    "prompt" | "images" | "filePaths" | "terminalContexts" | "replyTo"
+  >,
 ): boolean {
   return (
+    Boolean(draft.replyTo) ||
     draft.prompt.replaceAll(INLINE_TERMINAL_CONTEXT_PLACEHOLDER, "").trim().length > 0 ||
     draft.images.length > 0 ||
     draft.filePaths.length > 0 ||
@@ -1028,7 +1042,7 @@ export function hasSendableComposerDraftContent(
 
 export type ComposerDraftPreviewInput = Pick<
   ComposerThreadDraftState,
-  "prompt" | "images" | "filePaths" | "terminalContexts"
+  "prompt" | "images" | "filePaths" | "terminalContexts" | "replyTo"
 >;
 
 export function composerDraftPreview(draft: ComposerDraftPreviewInput): string {
@@ -1040,6 +1054,7 @@ export function composerDraftPreview(draft: ComposerDraftPreviewInput): string {
     return textPreview.length > 80 ? `${textPreview.slice(0, 77)}...` : textPreview;
   }
   const parts: string[] = [];
+  if (draft.replyTo) parts.push("Replying to response");
   if (draft.images.length > 0) {
     parts.push(`${draft.images.length} image${draft.images.length === 1 ? "" : "s"}`);
   }
@@ -1059,6 +1074,7 @@ function clearSendableComposerDraftContent(
 ): ComposerThreadDraftState {
   return {
     ...draft,
+    replyTo: null,
     prompt: "",
     mentions: [],
     images: [],
@@ -1076,6 +1092,7 @@ function hasSameStashableDraftContent(
   if (!left) return false;
   return (
     left.prompt === right.prompt &&
+    JSON.stringify(left.replyTo ?? null) === JSON.stringify(right.replyTo ?? null) &&
     composerMentionsEqual(left.mentions, right.mentions) &&
     left.images.length === right.images.length &&
     left.images.every((image, index) => image === right.images[index]) &&
@@ -1391,6 +1408,9 @@ function normalizePromptStashEntry(value: unknown): PromptStashEntry | null {
     createdAt: candidate.createdAt,
     preview: candidate.preview.slice(0, 80),
     draft: {
+      ...(normalizeResponseReply(draft.replyTo)
+        ? { replyTo: normalizeResponseReply(draft.replyTo) }
+        : {}),
       prompt: typeof draft.prompt === "string" ? draft.prompt : "",
       mentions: normalizeComposerMentions(
         typeof draft.prompt === "string" ? draft.prompt : "",
@@ -1559,6 +1579,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     }
     const draftCandidate = draftValue as Record<string, unknown>;
     const promptCandidate = typeof draftCandidate.prompt === "string" ? draftCandidate.prompt : "";
+    const replyTo = normalizeResponseReply(draftCandidate.replyTo);
     const attachments = Array.isArray(draftCandidate.attachments)
       ? draftCandidate.attachments.flatMap((entry) => {
           const normalized = normalizePersistedAttachment(entry);
@@ -1622,6 +1643,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     );
     if (
       recoveredRewindOperationIds.length === 0 &&
+      !replyTo &&
       promptCandidate.length === 0 &&
       attachments.length === 0 &&
       filePaths.length === 0 &&
@@ -1638,6 +1660,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       continue;
     }
     nextDraftsByThreadId[threadId as ThreadId] = {
+      ...(replyTo ? { replyTo } : {}),
       ...(recoveredRewindOperationIds.length ? { recoveredRewindOperationIds } : {}),
       prompt,
       mentions: reconcileComposerMentions(
@@ -1713,6 +1736,7 @@ function toPersistedThreadDraft(
   draft: ComposerThreadDraftState,
 ): PersistedComposerThreadDraftState {
   const persistedDraft: PersistedComposerThreadDraftState = {
+    ...(draft.replyTo ? { replyTo: draft.replyTo } : {}),
     prompt: draft.prompt,
     ...(draft.recoveredRewindOperationIds?.length
       ? { recoveredRewindOperationIds: draft.recoveredRewindOperationIds }
@@ -1764,6 +1788,7 @@ function toPersistedThreadDraft(
 
 function isEmptyThreadDraft(draft: ComposerThreadDraftState): boolean {
   return (
+    !draft.replyTo &&
     // Recovered rewind ids stop the same prompt from being restored twice.
     (draft.recoveredRewindOperationIds?.length ?? 0) === 0 &&
     draft.prompt.length === 0 &&
@@ -1885,6 +1910,7 @@ function toHydratedThreadDraft(
   persistedDraft: PersistedComposerThreadDraftState,
 ): ComposerThreadDraftState {
   return {
+    ...(persistedDraft.replyTo ? { replyTo: persistedDraft.replyTo } : {}),
     prompt: persistedDraft.prompt,
     ...(persistedDraft.recoveredRewindOperationIds?.length
       ? { recoveredRewindOperationIds: persistedDraft.recoveredRewindOperationIds }
@@ -2238,19 +2264,37 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           };
         });
       },
+      setReplyTo: (threadId, replyTo) => {
+        if (!threadId) return;
+        set((state) => ({
+          draftsByThreadId: {
+            ...state.draftsByThreadId,
+            [threadId]: {
+              ...(state.draftsByThreadId[threadId] ?? createEmptyThreadDraft()),
+              replyTo: normalizeResponseReply(replyTo),
+            },
+          },
+        }));
+      },
       setPrompt: (threadId, prompt, mentions) => {
         if (threadId.length === 0) {
           return;
         }
         set((state) => {
           const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
+          const reply = splitResponseReply(prompt);
           const nextDraft: ComposerThreadDraftState = {
             ...existing,
-            prompt,
+            prompt: reply.prompt,
+            ...(reply.replyTo ? { replyTo: reply.replyTo } : {}),
             mentions:
               mentions === undefined
-                ? reconcileComposerMentions(existing.prompt, prompt, existing.mentions)
-                : normalizeComposerMentions(prompt, mentions),
+                ? reconcileComposerMentions(existing.prompt, reply.prompt, existing.mentions)
+                : reconcileComposerMentions(
+                    prompt,
+                    reply.prompt,
+                    normalizeComposerMentions(prompt, mentions),
+                  ),
           };
           const nextDraftsByThreadId = { ...state.draftsByThreadId };
           if (shouldRemoveDraft(nextDraft)) {
@@ -3163,6 +3207,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           const nextDraft: ComposerThreadDraftState = {
             ...current,
+            replyTo: null,
             prompt: "",
             mentions: [],
             images: [],
@@ -3259,6 +3304,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             attachments,
             filePaths: [...sourceDraft.filePaths],
             terminalContexts: sourceDraft.terminalContexts.map((context) => ({ ...context })),
+            ...(sourceDraft.replyTo ? { replyTo: sourceDraft.replyTo } : {}),
             provider: sourceDraft.provider,
             providerInstanceId: sourceDraft.providerInstanceId,
             model: sourceDraft.model,
@@ -3396,6 +3442,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           images,
           nonPersistedImageIds: [],
           persistedAttachments: stash.draft.attachments,
+          replyTo: stash.draft.replyTo ?? null,
           filePaths: authorizedFiles.filePaths,
           terminalContexts: normalizeTerminalContextsForThread(input.threadId, terminalContexts),
           provider,

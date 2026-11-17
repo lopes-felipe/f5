@@ -1,4 +1,12 @@
-import { MCP_APPS_WS_METHODS, McpAppToolInfo, McpAppToolResult } from "@t3tools/contracts";
+import {
+  MCP_APPS_WS_METHODS,
+  McpAppToolInfo,
+  McpAppToolResult,
+  McpLoginStatusResult,
+  McpOauthLoginStatusResult,
+  ProjectIssueAssetUrlResult,
+} from "@t3tools/contracts";
+import { isWebUrl } from "./browser/webUrl";
 import { THREAD_SETTLEMENT_WS_METHODS } from "@t3tools/contracts";
 import {
   PR_WATCH_WS_METHODS,
@@ -765,7 +773,10 @@ export function createWsNativeApi(): NativeApi {
         };
       },
       openHtmlPreview: requestMethod(WS_METHODS.projectsOpenHtmlPreview),
-      issueAssetUrl: requestMethod(WS_METHODS.projectsIssueAssetUrl),
+      issueAssetUrl: async (input) =>
+        Schema.decodeUnknownSync(ProjectIssueAssetUrlResult)(
+          await transport.request(WS_METHODS.projectsIssueAssetUrl, input),
+        ),
     },
     filesystem: {
       browse: requestMethod(WS_METHODS.filesystemBrowse),
@@ -787,6 +798,7 @@ export function createWsNativeApi(): NativeApi {
           return;
         }
 
+        if (!isWebUrl(url)) throw new Error("Unable to open link.");
         // Some mobile browsers can return null here even when the tab opens.
         // Avoid false negatives and let the browser handle popup policy.
         window.open(url, "_blank", "noopener,noreferrer");
@@ -886,13 +898,25 @@ export function createWsNativeApi(): NativeApi {
       inspectServer: requestMethod(WS_METHODS.mcpInspectServer),
       reconnectServer: requestMethod(WS_METHODS.mcpReconnectServer),
       // The policy gives Codex logins the OAuth window and others the default deadline.
-      startLogin: requestMethod(WS_METHODS.mcpStartLogin),
-      getLoginStatus: requestMethod(WS_METHODS.mcpGetLoginStatus),
+      startLogin: async (input) =>
+        Schema.decodeUnknownSync(McpLoginStatusResult)(
+          await transport.request(WS_METHODS.mcpStartLogin, input),
+        ),
+      getLoginStatus: async (input) =>
+        Schema.decodeUnknownSync(McpLoginStatusResult)(
+          await transport.request(WS_METHODS.mcpGetLoginStatus, input),
+        ),
       getCodexStatus: requestMethod(WS_METHODS.mcpGetCodexStatus),
       reloadProject: requestMethod(WS_METHODS.mcpReloadProject),
       applyToLiveSessions: requestMethod(WS_METHODS.mcpApplyToLiveSessions),
-      startOAuthLogin: requestMethod(WS_METHODS.mcpStartOAuthLogin),
-      getOAuthStatus: requestMethod(WS_METHODS.mcpGetOAuthStatus),
+      startOAuthLogin: async (input) =>
+        Schema.decodeUnknownSync(McpOauthLoginStatusResult)(
+          await transport.request(WS_METHODS.mcpStartOAuthLogin, input),
+        ),
+      getOAuthStatus: async (input) =>
+        Schema.decodeUnknownSync(McpOauthLoginStatusResult)(
+          await transport.request(WS_METHODS.mcpGetOAuthStatus, input),
+        ),
       onStatusUpdated: (callback) => {
         mcpStatusUpdatedListeners.add(callback);
         return () => {

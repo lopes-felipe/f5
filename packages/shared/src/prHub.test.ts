@@ -11,6 +11,7 @@ import {
   prAttentionText,
   prHubSection,
   prHubSectionOf,
+  prReviewGateSatisfied,
   PR_HUB_NEEDS_YOU_SECTIONS,
   PR_HUB_NEEDS_YOU_STATES,
   PR_HUB_SECTIONS,
@@ -88,7 +89,18 @@ describe("derivePrAttention", () => {
       "needs_you",
       "Ready to merge",
     ],
-    [{ isAuthor: true }, "awaiting_review", "waiting_on_others", "Waiting on reviewers"],
+    [
+      { isAuthor: true, reviewDecision: "none" as const },
+      "ready_to_merge",
+      "needs_you",
+      "Ready to merge",
+    ],
+    [
+      { isAuthor: true, reviewDecision: "review_required" as const },
+      "awaiting_review",
+      "waiting_on_others",
+      "Waiting on reviewers",
+    ],
     [
       { viewerReviewRequested: true, viewerHasReviewed: false },
       "review_requested",
@@ -163,7 +175,8 @@ describe("derivePrAttention", () => {
     [{ mergeStateStatus: "BEHIND" }, "branch_behind"],
     [{ reviewDecision: "changes_requested" }, "changes_requested"],
     [{ reviewDecision: "approved" }, "ready_to_merge"],
-    [{}, "unresolved_comments"],
+    [{ reviewDecision: "none" }, "ready_to_merge"],
+    [{ reviewDecision: "review_required" }, "unresolved_comments"],
   ] as const)(
     "orders unresolved author feedback behind blockers and approval: %j",
     (overrides, expected) => {
@@ -187,14 +200,80 @@ describe("derivePrAttention", () => {
     },
   );
 
-  it.each(["BLOCKED", "UNKNOWN", "", "BEHIND"])(
-    "never calls a blocked or unknown PR ready: %s",
-    (mergeStateStatus) => {
+  it.each(
+    ["BLOCKED", "UNKNOWN", "", "BEHIND"].flatMap((mergeStateStatus) =>
+      (["approved", "none"] as const).map(
+        (reviewDecision) => [mergeStateStatus, reviewDecision] as const,
+      ),
+    ),
+  )("never calls a blocked or unknown PR ready: %s (%s)", (mergeStateStatus, reviewDecision) => {
+    expect(derive({ isAuthor: true, reviewDecision, mergeStateStatus }).attentionState).not.toBe(
+      "ready_to_merge",
+    );
+  });
+
+  describe("repositories without a review rule", () => {
+    it("calls a mergeable PR with no review decision ready, even with reviewers pending", () => {
+      expect(derive({ isAuthor: true, reviewDecision: "none" }).attentionState).toBe(
+        "ready_to_merge",
+      );
       expect(
-        derive({ isAuthor: true, reviewDecision: "approved", mergeStateStatus }).attentionState,
-      ).not.toBe("ready_to_merge");
-    },
-  );
+        prHubSection(
+          tracked({
+            roles: ["author"],
+            reviewDecision: "none",
+            reviewRequestsCount: 1,
+            reviewRequestReviewers: ["octocat"],
+            ...derive({ isAuthor: true, reviewDecision: "none" }),
+          }),
+          { now: NOW, staleAfterDays: 30 },
+        ),
+      ).toBe("ready");
+    });
+
+    it("keeps a required review and requested changes blocking", () => {
+      expect(derive({ isAuthor: true, reviewDecision: "review_required" }).attentionState).toBe(
+        "awaiting_review",
+      );
+      expect(derive({ isAuthor: true, reviewDecision: "changes_requested" }).attentionState).toBe(
+        "changes_requested",
+      );
+    });
+
+    it("explains a blocked merge instead of waiting on reviewers", () => {
+      const codes = derivePrAttentionReasons(
+        { ...basePr, isAuthor: true, reviewDecision: "none", mergeStateStatus: "BLOCKED" },
+        { at: "2026-01-01T00:00:00.000Z", url: "url", verified: true },
+      ).map((reason) => reason.code);
+      expect(codes).toContain("merge_blocked");
+      expect(codes).not.toContain("awaiting_review");
+    });
+
+    it("keeps waiting on reviewers when nothing about the merge was read", () => {
+      const codes = derivePrAttentionReasons(
+        {
+          ...basePr,
+          isAuthor: true,
+          reviewDecision: "none",
+          checkRollup: "pending",
+          mergeable: "unknown",
+          mergeStateStatus: "UNKNOWN",
+          mergePermission: "unknown",
+          mergeRequirements: undefined,
+        },
+        { at: "2026-01-01T00:00:00.000Z", url: "url", verified: false },
+      ).map((reason) => reason.code);
+      expect(codes).toEqual(["awaiting_review", "ci_pending"]);
+    });
+
+    it("shares one review gate", () => {
+      expect(
+        (["approved", "none", "review_required", "changes_requested"] as const).map(
+          prReviewGateSatisfied,
+        ),
+      ).toEqual([true, true, false, false]);
+    });
+  });
 
   it("tracks exactly the needs-you states produced by the fixture matrix", () => {
     const matrix: Partial<RawPrFields>[] = [
@@ -206,8 +285,8 @@ describe("derivePrAttention", () => {
       { isAuthor: true, mergeStateStatus: "BEHIND" },
       { isAuthor: true, reviewDecision: "changes_requested" },
       { isAuthor: true, reviewDecision: "approved" },
-      { isAuthor: true, actionableUnresolvedThreadCount: 1 },
-      { isAuthor: true },
+      { isAuthor: true, reviewDecision: "review_required", actionableUnresolvedThreadCount: 1 },
+      { isAuthor: true, reviewDecision: "review_required" },
       { viewerReviewRequested: true },
       { viewerReviewRequested: true, viewerHasReviewed: true },
       { viewerHasReviewed: true, headRefOid: "new", viewerLastReviewedCommitOid: "old" },
@@ -301,7 +380,7 @@ describe("attention reasons", () => {
   it("identifies who acts next without treating degraded evidence as verified", () => {
     expect(
       derivePrAttentionReasons(
-        { ...basePr, isAuthor: true },
+        { ...basePr, isAuthor: true, reviewDecision: "review_required" },
         { at: "2026-01-01T00:00:00.000Z", url: "url", verified: false },
       )[0],
     ).toMatchObject({ actor: "reviewer", action: "wait", verification: "unverified" });
@@ -315,7 +394,12 @@ describe("attention reasons", () => {
 });
 
 it("retains stable observation times for provider evidence independent of response ordering", () => {
-  const input = { ...basePr, isAuthor: true, actionableUnresolvedThreadCount: 2 };
+  const input = {
+    ...basePr,
+    isAuthor: true,
+    reviewDecision: "review_required" as const,
+    actionableUnresolvedThreadCount: 2,
+  };
   const observation = {
     at: "2026-01-01T00:00:00.000Z",
     url: "pr-url",

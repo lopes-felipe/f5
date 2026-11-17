@@ -22,6 +22,34 @@ afterEach(async () => {
 });
 const request = () => ({ schemaVersion: 1 as const, id: randomUUID(), version: "2.0.0" });
 describe("staged server update", () => {
+  it("cancels an unprepared trial, stops it before restoration, and never restarts during shutdown", async () => {
+    await fs.writeFile(database, "old");
+    const controller = new AbortController();
+    let stopped = false;
+    const running = performHandoff(root, database, request(), {
+      signal: controller.signal,
+      preflight: async () => {},
+      stopOld: async () => {},
+      trial: () => {
+        controller.abort(new Error("service stopped"));
+        return {
+          prepared: new Promise(() => {}),
+          activated: new Promise(() => {}),
+          activate: async () => {},
+          stop: async () => {
+            stopped = true;
+          },
+        };
+      },
+      restart: async () => {
+        throw new Error("Must not restart");
+      },
+    });
+    await expect(running).rejects.toThrow("service stopped");
+    expect(stopped).toBe(true);
+    expect(await fs.readFile(database, "utf8")).toBe("old");
+    expect(await readJson(path.join(root, "current.json"))).toMatchObject({ version: "1.0.0" });
+  });
   it("commits before releasing activation and correlates the outcome", async () => {
     await fs.writeFile(database, "old");
     const update = request();
