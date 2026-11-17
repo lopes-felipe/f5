@@ -1,0 +1,1 @@
+- Grok commit, PR, branch and title generation no longer inherits always-approve settings and denies tool approval requests.

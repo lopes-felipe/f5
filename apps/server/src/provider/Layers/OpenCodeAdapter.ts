@@ -1768,9 +1768,7 @@ export function makeOpenCodeAdapter(
                   sessionID: context.openCodeSessionId,
                   messageID: messageId,
                   command: nativeCommand,
-                  arguments: [commandMatch?.[2] ?? "", attachmentContext]
-                    .filter(Boolean)
-                    .join("\n\n"),
+                  arguments: commandMatch?.[2] ?? "",
                   model: `${parsedModel.providerID}/${parsedModel.modelID}`,
                   ...(context.activeAgent ? { agent: context.activeAgent } : {}),
                   ...(context.activeVariant ? { variant: context.activeVariant } : {}),

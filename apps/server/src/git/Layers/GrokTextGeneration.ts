@@ -121,7 +121,13 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         childProcessSpawner: commandSpawner,
         cwd,
         clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
+        // Override always-approve in user config; background generation grants no tools.
+        runtimeMode: "approval-required",
       });
+
+      yield* runtime.handleRequestPermission(() =>
+        Effect.succeed({ outcome: { outcome: "cancelled" as const } }),
+      );
 
       yield* runtime.handleSessionUpdate((notification) => {
         const update = notification.update;

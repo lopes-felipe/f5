@@ -1,0 +1,1 @@
+- OpenCode native slash commands keep attachment metadata out of command arguments while still receiving attached files.

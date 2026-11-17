@@ -76,6 +76,7 @@ const runtimeMock = {
       messageID: string;
       command: string;
       arguments: string;
+      parts: ReadonlyArray<{ filename?: string }>;
     }>,
     commands: [] as Array<{ name: string; description: string }>,
     releaseCommand: undefined as (() => void) | undefined,
@@ -225,6 +226,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           messageID: string;
           command: string;
           arguments: string;
+          parts: ReadonlyArray<{ filename?: string }>;
         }) => {
           runtimeMock.state.commandCalls.push(input);
           const wait = new Promise<void>((resolve) => {
@@ -1424,7 +1426,25 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           .sendTurn({
             threadId,
             input: "/review current changes",
-            attachments: [],
+            attachments: [
+              {
+                type: "file",
+                id: "review-notes",
+                name: "review-notes.txt",
+                mimeType: "text/plain",
+                sizeBytes: 24,
+              },
+            ],
+            resolvedAttachments: [
+              {
+                type: "file",
+                id: "review-notes",
+                name: "review-notes.txt",
+                mimeType: "text/plain",
+                sizeBytes: 24,
+                localPath: "/tmp/review-notes.txt",
+              },
+            ],
             modelSelection: {
               instanceId: ProviderInstanceId.make("opencode"),
               model: "openai/gpt-5",
@@ -1435,6 +1455,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         assert.equal(runtimeMock.state.promptCalls.length, 0);
         assert.equal(runtimeMock.state.commandCalls[0]?.command, "review");
         assert.equal(runtimeMock.state.commandCalls[0]?.arguments, "current changes");
+        assert.deepEqual(
+          runtimeMock.state.commandCalls[0]?.parts.map((part) => part.filename),
+          ["review-notes.txt"],
+        );
         runtimeMock.state.releaseCommand?.();
         yield* adapter.stopSession(threadId);
       }),
