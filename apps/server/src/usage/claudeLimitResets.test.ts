@@ -223,7 +223,7 @@ describe("normalizeClaudeLimitResets", () => {
         },
         expect.objectContaining({
           id: "fable",
-          kind: "weekly",
+          kind: "fable",
           resetsLeft: 2,
           givesBackWeekly: true,
         }),
@@ -241,8 +241,23 @@ describe("normalizeClaudeLimitResets", () => {
         next_grant_id: "gone",
       },
     });
-    expect(value?.grants[0]?.label).toBe("Session reset");
+    expect(value?.grants[0]?.label).toBe("5-hour reset");
     expect(value?.nextGrantId).toBeNull();
+  });
+
+  it.each([
+    [{ type: "weekly", gives_back_weekly: true }, "fable", "Fable reset"],
+    [{ type: "full", gives_back_weekly: true }, "fable", "Fable reset"],
+    [{ type: undefined, clears: ["five_hour"] }, "session", "5-hour reset"],
+    [{ type: undefined, clears: ["seven_day"] }, "weekly", "Weekly reset"],
+    [{ type: undefined, clears: ["five_hour", "seven_day"] }, "full", "Full reset"],
+    [{ type: undefined, clears: [] }, "full", "Full reset"],
+    [{ type: "session", clears: ["seven_day"] }, "session", "5-hour reset"],
+  ])("classifies reset grants using the CLI rule (%j)", (fields, kind, label) => {
+    const value = normalizeClaudeLimitResets({
+      cedar_ember: { eligible: true, grants: [grant({ ...fields, label: "" })] },
+    });
+    expect(value?.grants[0]).toMatchObject({ kind, label, id: "full_2026_11" });
   });
 
   it.each([

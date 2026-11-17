@@ -57,6 +57,15 @@ export function claudeGrantDisabledReason(
 }
 
 export function claudeGrantDescription(grant: ClaudeLimitResetGrant, accountName: string): string {
+  if (grant.kind === "fable") {
+    return [
+      `This uses one ${grant.label} for ${accountName}.`,
+      "It refills your Fable allowance and gives back what Fable used on your weekly limit. It doesn't reset your whole week.",
+      grant.endsAt ? `Expires ${formatAbsoluteTimeLabel(grant.endsAt)}.` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
   const clears =
     grant.clears.length > 0
       ? `It clears the ${joinLabels(grant.clears.map(claudeLimitLabel))}.`

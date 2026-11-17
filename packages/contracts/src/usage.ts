@@ -353,7 +353,7 @@ export const ClaudeLimitResetGrantId = TrimmedNonEmptyString.check(
 export const ClaudeLimitResetGrant = Schema.Struct({
   id: ClaudeLimitResetGrantId,
   label: TrimmedNonEmptyString,
-  kind: Schema.NullOr(Schema.Literals(["session", "weekly", "full"])),
+  kind: Schema.NullOr(Schema.Literals(["session", "weekly", "fable", "full"])),
   resetsLeft: NonNegativeInt,
   resetsTotal: NonNegativeInt,
   endsAt: Schema.NullOr(IsoDateTime),
