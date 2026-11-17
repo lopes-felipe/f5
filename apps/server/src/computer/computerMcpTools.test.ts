@@ -7,6 +7,7 @@ import {
   ComputerToolGeometry,
 } from "./computerMcpTools";
 import { COMPUTER_INTERRUPTED_STOP, ComputerControlError } from "@t3tools/shared/computerControl";
+import { computerToolOp } from "@t3tools/shared/computerAction";
 import { buildSharedAssistantContractText } from "../provider/sharedAssistantContract";
 import { Effect, Metric } from "effect";
 import { computerToolDuration, metricAttributes } from "../observability/Metrics";
@@ -524,6 +525,13 @@ describe("shared computer tool catalog", () => {
     expect(
       COMPUTER_TOOL_DEFINITIONS.find((tool) => tool.name === "computer_scroll")?.description,
     ).toContain("Positive deltaY scrolls down; positive deltaX scrolls right.");
+  });
+  it("gives every tool a timeline op, so no call falls out of the computer card", () => {
+    expect(
+      COMPUTER_TOOL_DEFINITIONS.filter((tool) => !computerToolOp(tool.name)).map(
+        (tool) => tool.name,
+      ),
+    ).toEqual([]);
   });
   it("installs one catalog of eighteen tools, with only discovery tools always loaded", () => {
     expect(COMPUTER_TOOL_DEFINITIONS).toHaveLength(19);

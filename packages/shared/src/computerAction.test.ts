@@ -12,6 +12,7 @@ describe("computerToolOp", () => {
   it("maps prefixed and bare tool names to ops", () => {
     expect(computerToolOp("mcp__f5_computer__computer_activate_app")).toBe("activateApp");
     expect(computerToolOp("computer_click")).toBe("click");
+    expect(computerToolOp("mcp__f5_computer__computer_wait_for_target")).toBe("waitTarget");
     expect(computerToolOp("computer_unknown")).toBeUndefined();
     expect(computerToolOp("preview_click")).toBeUndefined();
   });
@@ -20,6 +21,13 @@ describe("computerToolOp", () => {
     expect(computerToolHeading("computer_click", "inProgress")).toBe("Clicking…");
     expect(computerToolHeading("computer_click", "failed")).toBe("Clicking failed");
     expect(computerToolHeading("computer_click", "completed")).toBe("Clicked");
+  });
+
+  it("words waiting for a target as waiting for a turn", () => {
+    expect(computerToolHeading("computer_wait_for_target", "inProgress")).toBe(
+      "Waiting for a turn…",
+    );
+    expect(computerToolHeading("computer_wait_for_target", "completed")).toBe("Waited for a turn");
   });
 });
 
@@ -157,6 +165,27 @@ describe("extractComputerStep", () => {
         ],
       }),
     ).toEqual({ appName: "Finder", x: 640, y: 212, outcome: "verified" });
+  });
+
+  it.each([
+    [{ available: true, timedOut: false }, "available"],
+    [
+      { available: false, timedOut: true, reason: "user-active", detail: "keyboard" },
+      "user-active",
+    ],
+    [{ available: false, timedOut: true }, "timed-out"],
+  ])("summarizes a target wait %j as %s", (availability, outcome) => {
+    const result = { ...availability, requiresFreshObservation: true };
+    const input = { app: "com.google.Chrome", timeoutMs: 5000 };
+    expect(extractComputerStep("computer_wait_for_target", { input, result: ok(result) })).toEqual({
+      outcome,
+    });
+    expect(
+      extractComputerStep("computer_wait_for_target", {
+        input,
+        result: [{ type: "text", text: JSON.stringify(result) }],
+      }),
+    ).toEqual({ outcome });
   });
 
   it("ignores non-computer tools", () => {
