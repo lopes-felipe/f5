@@ -943,6 +943,7 @@ export function createWsNativeApi(): NativeApi {
       inspect: requestMethod(WS_METHODS.worktreesInspect),
       remove: requestMethod(WS_METHODS.worktreesRemove),
       threadState: requestMethod(WS_METHODS.worktreesThreadState),
+      switchAvailability: requestMethod(WS_METHODS.worktreesSwitchAvailability),
       recover: requestMethod(WS_METHODS.worktreesRecover),
     },
     worktreeSetup: {

@@ -449,6 +449,7 @@ export const RPC_METHOD_POLICY = {
   "worktrees.recover": MUTATION_RT,
   "worktrees.remove": MUTATION_RT,
   "worktrees.resolveTransition": long(true, null),
+  "worktrees.switchAvailability": READ_RT,
   "worktrees.switchWorkspace": long(true, null),
   "worktrees.threadState": MUTATION_RT,
 

@@ -30,26 +30,80 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     );
   });
 
-  it("blocks in-place checkout for an idle archived local reference and live terminals", async () => {
+  it("switches the project folder in place past idle and archived local references", async () => {
     const f = await fixture();
     git(f.repo.root, "branch", "topic");
-    const foreign = ThreadId.makeUnsafe("archived");
-    await f.create(foreign);
+    await f.create(ThreadId.makeUnsafe("idle"));
+    const archived = ThreadId.makeUnsafe("archived");
+    await f.create(archived);
     await f.runtime.runPromise(
       f.engine.dispatch({
         type: "thread.archive",
         commandId: CommandId.makeUnsafe("archive"),
-        threadId: foreign,
+        threadId: archived,
         createdAt: new Date().toISOString(),
       }),
     );
     const result = await f.runtime.runPromise(
-      f.transition.switchWorkspace(
-        await f.request("checkout_branch", { branch: "topic", sharedFilesystemConfirmed: true }),
-      ),
+      f.transition.switchWorkspace(await f.request("checkout_branch", { branch: "topic" })),
+    );
+    expect(result.error).toBeNull();
+    expect(result.phase).toBe("completed");
+    expect(git(f.repo.root, "branch", "--show-current")).toBe("topic");
+  });
+
+  it("refuses an in-place switch of the project folder while another local thread has queued work, naming it", async () => {
+    const f = await fixture();
+    git(f.repo.root, "branch", "topic");
+    const busy = ThreadId.makeUnsafe("busy");
+    await f.create(busy);
+    await f.runtime.runPromise(
+      f.queue.insertSubmission({
+        submissionId: CommandId.makeUnsafe("busy-queued"),
+        itemId: CommandId.makeUnsafe("busy-queued"),
+        atHead: false,
+        requestHash: "busy-queued",
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("busy-queued"),
+          threadId: busy,
+          message: {
+            messageId: MessageId.makeUnsafe("busy-queued"),
+            role: "user",
+            text: "next",
+            attachments: [],
+          },
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          createdAt: new Date().toISOString(),
+        },
+      }),
+    );
+    const result = await f.runtime.runPromise(
+      f.transition.switchWorkspace(await f.request("checkout_branch", { branch: "topic" })),
     );
     expect(result.phase).toBe("failed");
-    expect(result.error).toMatch(/references this checkout/);
+    expect(result.errorCode).toBe("WorkspaceRequiresNewWorktree");
+    expect(result.error).toBe("In use by Thread (queued messages). Start a new worktree instead.");
+    expect(git(f.repo.root, "branch", "--show-current")).toBe("main");
+  });
+
+  it("refuses an in-place switch of the project folder while another local thread's turn start is pending", async () => {
+    const f = await fixture();
+    git(f.repo.root, "branch", "topic");
+    const busy = ThreadId.makeUnsafe("busy");
+    await f.create(busy);
+    await f.runtime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_turns(thread_id,pending_message_id,state,requested_at,checkpoint_files_json) VALUES (${busy},'busy-message','pending','now','[]')`;
+      }),
+    );
+    const result = await f.runtime.runPromise(
+      f.transition.switchWorkspace(await f.request("checkout_branch", { branch: "topic" })),
+    );
+    expect(result.phase).toBe("failed");
+    expect(result.error).toBe("In use by Thread (running turn). Start a new worktree instead.");
     expect(git(f.repo.root, "branch", "--show-current")).toBe("main");
   });
 
@@ -187,7 +241,8 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     it("refuses while another conversation shares the checkout", async () => {
       const { f, target, restore } = await drifted();
       await f.create(ThreadId.makeUnsafe("peer"), "agent-branch", target);
-      expect(await restore()).toMatch(/references this checkout/);
+      // A managed worktree keeps the strict rule: an idle peer still blocks.
+      expect(await restore()).toMatch(/In use by Thread \(uses this worktree\)/);
       expect(git(target, "branch", "--show-current")).toBe("agent-branch");
     });
 

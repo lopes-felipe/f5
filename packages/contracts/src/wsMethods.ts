@@ -178,6 +178,7 @@ export const WS_METHODS = {
   worktreesInspect: "worktrees.inspect",
   worktreesRemove: "worktrees.remove",
   worktreesThreadState: "worktrees.threadState",
+  worktreesSwitchAvailability: "worktrees.switchAvailability",
   worktreesRecover: "worktrees.recover",
   worktreesSwitchWorkspace: "worktrees.switchWorkspace",
   worktreesGetTransition: "worktrees.getTransition",
