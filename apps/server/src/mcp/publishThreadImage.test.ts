@@ -21,7 +21,8 @@ const PNG = Buffer.from(
   "base64",
 );
 
-const storedPath = (markdown: string) => fileURLToPath(/\(<(file:[^>]+)>\)/u.exec(markdown)![1]!);
+const markdownUrl = (markdown: string) => /\(<(file:[^>]+)>\)/u.exec(markdown)![1]!;
+const storedPath = (markdown: string) => fileURLToPath(markdownUrl(markdown));
 
 it("publishes temporary screenshots durably and rejects invalid inputs", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "f5-publish-image-"));
@@ -109,8 +110,10 @@ it("publishes temporary screenshots durably and rejects invalid inputs", async (
         const reopened = yield* makeThreadImagePublisher(options);
         const imagePath = storedPath((yield* reopened(threadId, source)).markdown);
         expect(imagePath).toBe(storedPath(first.markdown));
-        // The chat resolves this Markdown to the attachment capability with the same matcher.
-        expect(savedAttachmentFilename(imagePath)).toBe(path.basename(imagePath));
+        // The chat resolves this Markdown to the attachment capability with the same matcher,
+        // applied to the URL's decoded `/`-separated pathname (also on Windows).
+        const urlPath = decodeURIComponent(new URL(markdownUrl(first.markdown)).pathname);
+        expect(savedAttachmentFilename(urlPath)).toBe(path.basename(imagePath));
         yield* Effect.promise(async () => {
           await rm(source);
           expect(await readFile(imagePath)).toEqual(PNG);
