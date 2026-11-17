@@ -92,6 +92,16 @@ describe("CI workflow policy", () => {
     expect(commands).not.toContain("${{");
     expect(commands).not.toMatch(/\bbun (install|run)\b|npm |npx /);
   });
+
+  it("leaves browser setup and diagnostics time outside the test watchdog", () => {
+    const job = workflow.jobs.browser!;
+    const command = job.steps?.find((step) => step.name === "Browser tests")?.run ?? "";
+    const watchdog = command.match(/timeout --signal=TERM --kill-after=20s (\d+)m\b/);
+    expect(watchdog).not.toBeNull();
+    // Dependency setup and the image pull have taken seven minutes on cold
+    // runners; leave another three for watchdog termination and report uploads.
+    expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(Number(watchdog![1]) + 10);
+  });
   it("uses status functions only in composite action conditions", () => {
     const visit = (value: unknown, path: string): void => {
       if (Array.isArray(value)) {

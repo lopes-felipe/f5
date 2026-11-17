@@ -9,6 +9,8 @@ import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration, getPrHubDraftIdentity } from "../../lib/prHubAccount";
 import { Textarea } from "../ui/textarea";
 import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
+import { reviewSubmissionFailure } from "./reviewSubmissionFailure";
 
 export function PrReviewSubmit({
   prKey,
@@ -42,14 +44,29 @@ export function PrReviewSubmit({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [toastedError, setToastedError] = useState<string | null>(null);
   const operation = query.data;
-  async function run(action: () => Promise<PrHubReviewOperation>) {
+  async function run(action: () => Promise<PrHubReviewOperation>, submitting = false) {
     setBusy(true);
     onBusyChange(true);
     setError(null);
+    setToastedError(null);
     try {
       const result = await action();
       queryClient.setQueryData(queryKey, result);
+      if (submitting && (result.status === "rejected" || result.status === "outcome_unknown")) {
+        setToastedError(result.errorMessage ?? null);
+        toastManager.add({
+          type: "error",
+          title: "The review could not be submitted",
+          description: reviewSubmissionFailure(
+            result.errorMessage,
+            result.status === "rejected"
+              ? "The host refused the review. Your draft is still here to try again."
+              : "Check the saved submission state before retrying.",
+          ),
+        });
+      }
       if (quickEvent && result.status === "succeeded") setQuickBody("");
     } catch (cause) {
       setError(
@@ -82,7 +99,9 @@ export function PrReviewSubmit({
     );
   return (
     <div className="space-y-2 border-t border-border pt-3">
-      {operation?.errorMessage ? <p role="status">{operation.errorMessage}</p> : null}
+      {operation?.errorMessage && operation.errorMessage !== toastedError ? (
+        <p role="status">{operation.errorMessage}</p>
+      ) : null}
       {error || query.error ? (
         <p role="alert" className="text-sm">
           {error ?? query.error?.message}
@@ -135,13 +154,15 @@ export function PrReviewSubmit({
                 size="sm"
                 disabled={busy}
                 onClick={() =>
-                  void run(() =>
-                    ensureNativeApi().prHub.submitReview({
-                      key: prKey,
-                      accountGeneration,
-                      id: operation.id,
-                      payloadHash: operation.payloadHash,
-                    }),
+                  void run(
+                    () =>
+                      ensureNativeApi().prHub.submitReview({
+                        key: prKey,
+                        accountGeneration,
+                        id: operation.id,
+                        payloadHash: operation.payloadHash,
+                      }),
+                    true,
                   )
                 }
               >

@@ -1289,6 +1289,27 @@ describe("TerminalManager", () => {
     await manager.dispose();
   });
 
+  // Mixed case stands in for a filesystem alias on case-sensitive hosts.
+  it.each(["terminal_", "Terminal_", "TERMINAL_"])(
+    "never reads or deletes another thread's history through a %s legacy name",
+    async (prefix) => {
+      const { manager, logsDir } = makeManager();
+      const threadId = prefix + Encoding.encodeBase64Url("a");
+      const otherThreadPath = path.join(logsDir, `${threadId}.log`);
+      fs.writeFileSync(otherThreadPath, "thread a\n", "utf8");
+
+      expect((await manager.open(openInput({ threadId }))).history).toBe("");
+      expect(fs.readFileSync(otherThreadPath, "utf8")).toBe("thread a\n");
+
+      await manager.close({ threadId, terminalId: DEFAULT_TERMINAL_ID, deleteHistory: true });
+      expect(fs.readFileSync(otherThreadPath, "utf8")).toBe("thread a\n");
+
+      await manager.close({ threadId, deleteHistory: true });
+      expect(fs.readFileSync(otherThreadPath, "utf8")).toBe("thread a\n");
+      await manager.dispose();
+    },
+  );
+
   it("keeps long-thread histories separate from adversarial legacy thread ids", async () => {
     const { manager, ptyAdapter } = makeManager();
     const threadId = "x".repeat(300);

@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, Schema } from "effect";
-import { classifyPrWrite } from "./writeOutcome.ts";
+import { classifyPrWrite, classifyReviewWrite } from "./writeOutcome.ts";
 import type { GitHubApiResponse } from "../git/githubApi.ts";
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 import {
@@ -232,7 +232,7 @@ export function submitPreparedReview(
             });
             return false;
           }
-          const outcome = classifyPrWrite(creation);
+          const outcome = classifyReviewWrite(creation, "creation");
           if (outcome.safeToRetry || outcome.rejected) {
             yield* transitionReviewOperation(owner, {
               id,
@@ -385,17 +385,12 @@ export function submitPreparedReview(
           Exit.isSuccess(remote) &&
           matches(remote.value, owner, submitting) &&
           submitted(remote.value, submitting);
+        const outcome = classifyReviewWrite(result, "submission");
         const settled = yield* transitionReviewOperation(owner, {
           id,
           from: "submitting",
-          to: confirmed
-            ? "succeeded"
-            : classifyPrWrite(result).safeToRetry
-              ? "created"
-              : "outcome_unknown",
-          ...(confirmed
-            ? {}
-            : { remoteId: submitting.remoteId!, errorMessage: classifyPrWrite(result).message }),
+          to: confirmed ? "succeeded" : outcome.safeToRetry ? "created" : "outcome_unknown",
+          ...(confirmed ? {} : { remoteId: submitting.remoteId!, errorMessage: outcome.message }),
         });
         // A concurrent reconciliation can move this row off `submitting` mid-flight.
         // Proven acceptance outranks that guess rather than being discarded.
