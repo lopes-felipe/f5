@@ -60257,12 +60257,14 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T11:47:58.169Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-35761",
       "relatedTopics": [
         "pr-32648"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "composer"
@@ -68100,9 +68102,11 @@
     },
     {
       "createdAt": "2026-11-15T11:14:38.505Z",
+      "decidedAt": "2026-11-17T11:48:00.007Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37007",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr-hub",
