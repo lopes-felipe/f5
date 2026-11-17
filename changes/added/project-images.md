@@ -1,1 +1,0 @@
-- Choose a project image in Project settings by entering its path inside the project. Emoji, colored symbols and automatic monograms remain available.

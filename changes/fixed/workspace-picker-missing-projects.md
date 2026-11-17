@@ -1,1 +1,0 @@
-- The workspace picker stays usable when worktree inventory is unavailable or incomplete.

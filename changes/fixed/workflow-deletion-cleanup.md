@@ -1,1 +1,0 @@
-- Workflow deletion retries failed provider shutdowns and offers one cleanup prompt for orphaned worktrees. Reconnects clean retained deleted-thread state without replaying every historical deletion.
