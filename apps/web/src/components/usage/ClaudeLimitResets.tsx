@@ -73,7 +73,6 @@ export function claudeGrantDescription(grant: ClaudeLimitResetGrant, accountName
   return [
     `This uses one ${grant.label} for ${accountName}.`,
     clears,
-    grant.givesBackWeekly ? "It also gives back weekly usage." : null,
     grant.endsAt ? `Expires ${formatAbsoluteTimeLabel(grant.endsAt)}.` : null,
   ]
     .filter(Boolean)

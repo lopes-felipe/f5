@@ -2060,7 +2060,7 @@ describe("limits", () => {
                   claudeGrant({
                     id: "fable_reset",
                     label: "Fable reset",
-                    kind: "weekly",
+                    kind: "fable",
                     resetsLeft: 2,
                     resetsTotal: 2,
                     usableNow: false,
@@ -2138,7 +2138,7 @@ describe("limits", () => {
         <ClaudeGrantButton
           instanceId={ProviderInstanceId.make("claude-test")}
           accountName="Claude"
-          grant={claudeGrant({ givesBackWeekly: true })}
+          grant={claudeGrant()}
           cooldownUntil={null}
         />
       </QueryClientProvider>,
@@ -2149,7 +2149,7 @@ describe("limits", () => {
       await expect
         .element(
           page.getByText(
-            /This uses one Full reset for Claude\. It clears the 5-hour limit and weekly limit\. It also gives back weekly usage\./,
+            /This uses one Full reset for Claude\. It clears the 5-hour limit and weekly limit\./,
           ),
         )
         .toBeVisible();
@@ -2164,6 +2164,39 @@ describe("limits", () => {
         grantId: "full_reset",
       });
       expect(localStorage.getItem("f5:reset-credit:claude-test:full_reset")).toBeNull();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("explains the Fable allowance in the real reset confirmation", async () => {
+    api.consumeResetCredit.mockReset();
+    const queryClient = new QueryClient();
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <ClaudeGrantButton
+          instanceId={ProviderInstanceId.make("claude-test")}
+          accountName="Claude"
+          grant={claudeGrant({
+            id: "fable_reset",
+            kind: "fable",
+            label: "Fable reset",
+            givesBackWeekly: true,
+            clears: ["seven_day_overage_included"],
+          })}
+          cooldownUntil={null}
+        />
+      </QueryClientProvider>,
+    );
+    try {
+      await page.getByRole("button", { name: "Use Fable reset (1)" }).click();
+      const dialog = page.getByRole("alertdialog");
+      await expect.element(dialog).toHaveTextContent("Use a Fable reset?");
+      await expect.element(dialog).toHaveTextContent("doesn't reset your whole week");
+      await expect.element(dialog).not.toHaveTextContent("It clears the");
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      expect(api.consumeResetCredit).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
       queryClient.clear();

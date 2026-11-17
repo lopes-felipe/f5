@@ -215,7 +215,10 @@ function normalizeGrant(value: unknown): ClaudeLimitResetGrant | null {
             : "full";
   return {
     id,
-    label: asTrimmedString(grant.label) ?? defaultGrantLabel(kind),
+    label:
+      kind === "fable"
+        ? defaultGrantLabel(kind)
+        : (asTrimmedString(grant.label) ?? defaultGrantLabel(kind)),
     kind,
     resetsLeft,
     resetsTotal: Math.max(asNonNegativeInteger(grant.resets_total) ?? 0, resetsLeft),

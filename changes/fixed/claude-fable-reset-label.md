@@ -1,0 +1,1 @@
+- Claude Fable reset buttons and confirmation titles now consistently say "Fable reset", even when the account API supplies a weekly or full-reset label.

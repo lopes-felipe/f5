@@ -260,6 +260,19 @@ describe("normalizeClaudeLimitResets", () => {
     expect(value?.grants[0]).toMatchObject({ kind, label, id: "full_2026_11" });
   });
 
+  it.each(["Weekly reset", "Full reset", "", "Fable bonus"])(
+    "uses the Fable kind label instead of the API label %j",
+    (label) => {
+      const value = normalizeClaudeLimitResets({
+        cedar_ember: {
+          eligible: true,
+          grants: [grant({ label, type: "weekly", gives_back_weekly: true })],
+        },
+      });
+      expect(value?.grants[0]).toMatchObject({ kind: "fable", label: "Fable reset" });
+    },
+  );
+
   it.each([
     [{}],
     [{ cedar_ember: null }],
