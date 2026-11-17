@@ -4,8 +4,8 @@ export interface AdmissionLease {
   readonly release: () => void;
   /**
    * Charges more bytes to a data lease without taking another entry, for text
-   * merged into a notification that is still waiting. Fails on a control
-   * lease, after release, or past the byte limit.
+   * merged into a notification that is still waiting. Fails on non-data
+   * leases, after release, or past the byte limit.
    */
   readonly extend: (bytes: number) => boolean;
 }
@@ -19,6 +19,12 @@ export interface NotificationAdmissionLimits {
   readonly controls: number;
   /** Data entries held across all contexts. Defaults to 8,192. */
   readonly globalEntries?: number;
+  /** Diagnostic batches held per context. Defaults to two. */
+  readonly diagnosticsPerContext?: number;
+  /** Diagnostic batches held globally. Defaults to 64. */
+  readonly diagnostics?: number;
+  /** Diagnostic bytes held globally, independently of data/control. Defaults to 1 MiB. */
+  readonly diagnosticBytes?: number;
 }
 
 const DEFAULT_LIMITS = {
@@ -26,6 +32,9 @@ const DEFAULT_LIMITS = {
   bytes: 32 * 1024 * 1024,
   controls: 64,
   globalEntries: 8192,
+  diagnosticsPerContext: 2,
+  diagnostics: 64,
+  diagnosticBytes: 1024 * 1024,
 };
 const CONTROL_BYTE_LIMIT = 1024 * 1024;
 
@@ -41,6 +50,9 @@ export class NotificationAdmission {
   private bytes = 0;
   private controls = 0;
   private controlBytes = 0;
+  private diagnostics = 0;
+  private diagnosticBytes = 0;
+  private readonly contextDiagnostics = new Map<string, number>();
   private readonly contextEntries = new Map<string, number>();
   private readonly admitted = new Map<symbol, number>();
   private readonly limits: Required<NotificationAdmissionLimits>;
@@ -50,12 +62,40 @@ export class NotificationAdmission {
       ...DEFAULT_LIMITS,
       ...limits,
       globalEntries: limits?.globalEntries ?? DEFAULT_LIMITS.globalEntries,
+      diagnosticsPerContext: limits?.diagnosticsPerContext ?? DEFAULT_LIMITS.diagnosticsPerContext,
+      diagnostics: limits?.diagnostics ?? DEFAULT_LIMITS.diagnostics,
+      diagnosticBytes: limits?.diagnosticBytes ?? DEFAULT_LIMITS.diagnosticBytes,
     };
   }
 
   reserve(contextKey: string, bytes: number, control = false): AdmissionLease | undefined {
+    return this.reserveLane(contextKey, bytes, control ? "control" : "data");
+  }
+
+  /**
+   * Lossy diagnostics never borrow transcript or lifecycle capacity: at most
+   * two batches per context, 64 globally, and 1 MiB across those batches by default.
+   * Batches reserve their full text allowance, so bytes can bind before entries.
+   */
+  reserveDiagnostic(contextKey: string, bytes: number): AdmissionLease | undefined {
+    return this.reserveLane(contextKey, bytes, "diagnostic");
+  }
+
+  private reserveLane(
+    contextKey: string,
+    bytes: number,
+    lane: "data" | "control" | "diagnostic",
+  ): AdmissionLease | undefined {
     if (!isByteCount(bytes)) return undefined;
-    if (control) {
+    if (lane === "diagnostic") {
+      const held = this.contextDiagnostics.get(contextKey) ?? 0;
+      if (held >= this.limits.diagnosticsPerContext || this.diagnostics >= this.limits.diagnostics)
+        return undefined;
+      if (this.diagnosticBytes + bytes > this.limits.diagnosticBytes) return undefined;
+      this.contextDiagnostics.set(contextKey, held + 1);
+      this.diagnostics++;
+      this.diagnosticBytes += bytes;
+    } else if (lane === "control") {
       if (this.controls >= this.limits.controls) return undefined;
       const byteLimit = Math.min(this.limits.bytes, CONTROL_BYTE_LIMIT);
       // A valid large native notification may occupy the queue alone. This is
@@ -78,7 +118,7 @@ export class NotificationAdmission {
     let released = false;
     return {
       extend: (more) => {
-        if (control || released || !isByteCount(more)) return false;
+        if (lane !== "data" || released || !isByteCount(more)) return false;
         if (this.bytes + more > this.limits.bytes) return false;
         this.bytes += more;
         leaseBytes += more;
@@ -88,7 +128,15 @@ export class NotificationAdmission {
         if (released) return;
         released = true;
         this.admitted.delete(id);
-        if (control) {
+        if (lane === "diagnostic") {
+          this.diagnostics--;
+          this.diagnosticBytes -= leaseBytes;
+          const held = (this.contextDiagnostics.get(contextKey) ?? 1) - 1;
+          if (held > 0) this.contextDiagnostics.set(contextKey, held);
+          else this.contextDiagnostics.delete(contextKey);
+          return;
+        }
+        if (lane === "control") {
           this.controls--;
           this.controlBytes -= leaseBytes;
           return;
@@ -106,7 +154,8 @@ export class NotificationAdmission {
     return {
       entries: this.entries,
       controls: this.controls,
-      bytes: this.bytes + this.controlBytes,
+      diagnostics: this.diagnostics,
+      bytes: this.bytes + this.controlBytes + this.diagnosticBytes,
       oldestAgeMs: this.admitted.size
         ? Math.max(0, Date.now() - Math.min(...this.admitted.values()))
         : 0,

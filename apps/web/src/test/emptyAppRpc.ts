@@ -15,6 +15,7 @@ export function resolveEmptyAppRpc(body: { _tag: string; threadId?: string }): u
   // `null` means the provider history is complete; `{}` would show the recovery banner.
   if (body._tag === NATIVE_OPERATION_WS_METHODS.historyRecovery) return null;
   if (body._tag === WS_METHODS.storageGetDiskSpace) return emptyDiskSpaceStatus;
+  if (body._tag === WS_METHODS.worktreesList) return { projects: [] };
   if (body._tag === WS_METHODS.nextTurnQueueSummary) return { threads: [] };
   // Not read-only, so it waits for synchronization and is then sent.
   if (body._tag === WS_METHODS.scheduledTasksList) return { tasks: [], revision: 0 };

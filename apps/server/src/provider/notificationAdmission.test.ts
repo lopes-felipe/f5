@@ -2,6 +2,85 @@ import { describe, expect, it, vi } from "vitest";
 import { NotificationAdmission } from "./notificationAdmission.ts";
 
 describe("notification admission", () => {
+  it("uses configured diagnostic entry, context, and byte ceilings", () => {
+    const queue = new NotificationAdmission({
+      entries: 1,
+      bytes: 1,
+      controls: 1,
+      diagnosticsPerContext: 1,
+      diagnostics: 2,
+      diagnosticBytes: 100,
+    });
+    const a = queue.reserveDiagnostic("a", 40)!;
+    expect(queue.reserveDiagnostic("a", 1)).toBeUndefined();
+    expect(queue.reserveDiagnostic("b", 61)).toBeUndefined();
+    const b = queue.reserveDiagnostic("b", 60)!;
+    expect(queue.reserveDiagnostic("c", 0)).toBeUndefined();
+    expect(queue.reserve("c", 1)).toBeDefined();
+    expect(queue.reserve("c", 1, true)).toBeDefined();
+    a.release();
+    b.release();
+    expect(queue.snapshot().diagnostics).toBe(0);
+    expect(queue.reserveDiagnostic("c", 100)).toBeDefined();
+  });
+
+  it("can disable diagnostic admission without disabling lifecycle events", () => {
+    const queue = new NotificationAdmission({
+      entries: 1,
+      bytes: 100,
+      controls: 1,
+      diagnostics: 0,
+    });
+    expect(queue.reserveDiagnostic("a", 1)).toBeUndefined();
+    expect(queue.reserve("a", 1, true)).toBeDefined();
+  });
+
+  it("rejects another context when conservative full-batch byte reservations fill the lane", () => {
+    const queue = new NotificationAdmission({
+      entries: 1,
+      bytes: 100,
+      controls: 1,
+      diagnosticBytes: 34000,
+    });
+    const a = queue.reserveDiagnostic("a", 16900)!;
+    const b = queue.reserveDiagnostic("b", 16900)!;
+    expect(queue.reserveDiagnostic("c", 16900)).toBeUndefined();
+    expect(queue.reserve("c", 1, true)).toBeDefined();
+    a.release();
+    expect(queue.reserveDiagnostic("c", 16900)).toBeDefined();
+    b.release();
+  });
+
+  it("isolates diagnostic quotas from transcript and control admission", () => {
+    const queue = new NotificationAdmission({ entries: 1, bytes: 1, controls: 1 });
+    const first = queue.reserveDiagnostic("a", 100)!;
+    const second = queue.reserveDiagnostic("a", 100)!;
+    expect(queue.reserveDiagnostic("a", 1)).toBeUndefined();
+    expect(queue.reserveDiagnostic("b", 1)).toBeDefined();
+    expect(queue.reserve("a", 1)).toBeDefined();
+    expect(queue.reserve("a", 1, true)).toBeDefined();
+    expect(first.extend(1)).toBe(false);
+    first.release();
+    first.release();
+    second.release();
+    expect(queue.reserveDiagnostic("a", 100)).toBeDefined();
+    expect(queue.snapshot()).toMatchObject({ diagnostics: 2 });
+  });
+
+  it("bounds diagnostics globally by entries and bytes, including oversized first entries", () => {
+    const queue = new NotificationAdmission();
+    expect(queue.reserveDiagnostic("a", 1024 * 1024 + 1)).toBeUndefined();
+    expect(queue.reserveDiagnostic("a", -1)).toBeUndefined();
+    const full = queue.reserveDiagnostic("a", 1024 * 1024)!;
+    expect(queue.reserveDiagnostic("b", 1)).toBeUndefined();
+    full.release();
+    for (let index = 0; index < 64; index++) {
+      expect(queue.reserveDiagnostic(String(index), 1)).toBeDefined();
+    }
+    expect(queue.reserveDiagnostic("another", 1)).toBeUndefined();
+    expect(queue.reserve("another", 1, true)).toBeDefined();
+  });
+
   it("reserves control entries under entry saturation and releases each lease once", () => {
     const queue = new NotificationAdmission({ entries: 2, bytes: 100, controls: 1 });
     const first = queue.reserve("a", 10)!,
@@ -14,7 +93,13 @@ describe("notification admission", () => {
     first.release();
     second.release();
     control.release();
-    expect(queue.snapshot()).toEqual({ entries: 0, controls: 0, bytes: 0, oldestAgeMs: 0 });
+    expect(queue.snapshot()).toEqual({
+      entries: 0,
+      controls: 0,
+      diagnostics: 0,
+      bytes: 0,
+      oldestAgeMs: 0,
+    });
   });
 
   it("gives each context its own entry quota under a global entry ceiling", () => {
@@ -48,7 +133,13 @@ describe("notification admission", () => {
     lease.release();
     lease.release();
     expect(lease.extend(1)).toBe(false);
-    expect(queue.snapshot()).toEqual({ entries: 0, controls: 0, bytes: 0, oldestAgeMs: 0 });
+    expect(queue.snapshot()).toEqual({
+      entries: 0,
+      controls: 0,
+      diagnostics: 0,
+      bytes: 0,
+      oldestAgeMs: 0,
+    });
   });
 
   it("admits one oversized valid frame alone without allowing a second allocation", () => {

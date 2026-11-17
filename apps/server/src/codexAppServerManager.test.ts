@@ -5354,6 +5354,29 @@ describe("Codex process settlement and source draining", () => {
     internal.attachProcessListeners(context);
     return { context, output, child, reject, internal, lines, lifecycle, errors };
   }
+
+  it("drains an 8,690-line stderr burst split across UTF-8 chunks without blocking stdout or exit", () => {
+    const f = fixture();
+    const burst = Buffer.from(
+      "2026-11-17T11:06:44.701708Z ERROR codex_core::tools::router: apply_patch verification failed\n" +
+        "import { Source } from './source'; // 🙂\n".repeat(8690),
+    );
+    const split = burst.indexOf(Buffer.from("🙂")) + 2;
+    f.child.stderr.emit("data", burst.subarray(0, split));
+    f.child.stderr.emit("data", burst.subarray(split, split + 100003));
+    f.output.emit("line", '{"jsonrpc":"2.0","method":"turn/completed"}');
+    f.child.stderr.emit("data", burst.subarray(split + 100003));
+    expect(f.errors).toHaveBeenCalledTimes(8691);
+    expect(f.errors.mock.calls.some((call) => String(call[2]).includes("�"))).toBe(false);
+    expect(f.errors.mock.calls[1]?.[2]).toContain("🙂");
+    expect(f.lines).toHaveBeenCalled();
+    f.child.emit("exit", 0, null);
+    f.child.stderr.emit("end");
+    f.output.emit("close");
+    expect(f.lifecycle).toHaveBeenCalledTimes(1);
+    expect(f.reject).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["exit", "error"])(
     "settles written requests on %s before pipes close, including replaced contexts",
     (kind) => {
