@@ -478,6 +478,11 @@ describe("tryHandleProjectFaviconRequest", () => {
   it.each([
     ["near the start", '<link rel="icon" href="/brand/logo.svg">' + " ".repeat(512 * 1024), true],
     [
+      "before a split UTF-8 character",
+      '<link rel="icon" href="/brand/logo.svg"> ' + "é".repeat(128 * 1024),
+      true,
+    ],
+    [
       "at the byte limit",
       " ".repeat(128 * 1024) + '<link rel="icon" href="/brand/logo.svg">',
       false,
