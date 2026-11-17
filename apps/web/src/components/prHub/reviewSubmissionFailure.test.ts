@@ -2,19 +2,20 @@ import { describe, expect, it } from "vitest";
 import { reviewSubmissionFailure } from "./reviewSubmissionFailure";
 
 describe("review submission failure", () => {
-  it("removes the operation prefix from host errors", () => {
+  it("trims host errors", () => {
     expect(
       reviewSubmissionFailure(
-        new Error("Pull request operation failed: Can not approve your own pull request"),
+        new Error("  Can not approve your own pull request  "),
         "Draft preserved",
       ),
     ).toBe("Can not approve your own pull request");
   });
 
-  it.each([undefined, {}, "", "  ", "Pull request operation failed: "])(
-    "uses the fallback for an absent message: %j",
-    (failure) => {
-      expect(reviewSubmissionFailure(failure, "Draft preserved")).toBe("Draft preserved");
-    },
-  );
+  it("caps long descriptions", () => {
+    expect(reviewSubmissionFailure("x".repeat(500), "Draft preserved")).toBe("x".repeat(319) + "…");
+  });
+
+  it.each([undefined, {}, "", "  "])("uses the fallback for an absent message: %j", (failure) => {
+    expect(reviewSubmissionFailure(failure, "Draft preserved")).toBe("Draft preserved");
+  });
 });

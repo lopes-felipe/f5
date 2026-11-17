@@ -44,15 +44,18 @@ export function PrReviewSubmit({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [toastedError, setToastedError] = useState<string | null>(null);
   const operation = query.data;
   async function run(action: () => Promise<PrHubReviewOperation>, submitting = false) {
     setBusy(true);
     onBusyChange(true);
     setError(null);
+    setToastedError(null);
     try {
       const result = await action();
       queryClient.setQueryData(queryKey, result);
-      if (submitting && result.status !== "succeeded") {
+      if (submitting && (result.status === "rejected" || result.status === "outcome_unknown")) {
+        setToastedError(result.errorMessage ?? null);
         toastManager.add({
           type: "error",
           title: "The review could not be submitted",
@@ -66,16 +69,6 @@ export function PrReviewSubmit({
       }
       if (quickEvent && result.status === "succeeded") setQuickBody("");
     } catch (cause) {
-      if (submitting) {
-        toastManager.add({
-          type: "error",
-          title: "The review could not be submitted",
-          description: reviewSubmissionFailure(
-            cause,
-            "Check the saved submission state before retrying.",
-          ),
-        });
-      }
       setError(
         cause instanceof Error
           ? cause.message
@@ -106,7 +99,9 @@ export function PrReviewSubmit({
     );
   return (
     <div className="space-y-2 border-t border-border pt-3">
-      {operation?.errorMessage ? <p role="status">{operation.errorMessage}</p> : null}
+      {operation?.errorMessage && operation.errorMessage !== toastedError ? (
+        <p role="status">{operation.errorMessage}</p>
+      ) : null}
       {error || query.error ? (
         <p role="alert" className="text-sm">
           {error ?? query.error?.message}

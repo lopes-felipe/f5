@@ -84,7 +84,10 @@ it.layer(SqliteClient.layerMemory())("review submission", (it) => {
           request: (method) => {
             if (method === "GET") return Effect.succeed(response([]));
             writes++;
-            return Effect.succeed({ ...response({ message }), status: 422 });
+            return Effect.succeed({
+              ...response({ message: "Unprocessable Entity", errors: message ? [message] : [] }),
+              status: 422,
+            });
           },
         });
         assert.equal(result.status, "rejected");
@@ -99,6 +102,50 @@ it.layer(SqliteClient.layerMemory())("review submission", (it) => {
       }),
     );
   }
+
+  it.effect(
+    "preserves the events-stage refusal reason and requires recovery without resending",
+    () =>
+      Effect.gen(function* () {
+        const { owner, operation, remote } = yield* setup(43);
+        let creates = 0;
+        let submits = 0;
+        const dependencies: ReviewSubmissionDependencies = {
+          verify: () => Effect.void,
+          request: (method, path) => {
+            if (method === "GET") {
+              if (path.endsWith("/reviews")) return Effect.succeed(response([]));
+              return Effect.succeed(response(path.endsWith("/comments") ? [] : remote("PENDING")));
+            }
+            if (path.endsWith("/events")) {
+              submits++;
+              return Effect.succeed({
+                ...response({
+                  message: "Unprocessable Entity",
+                  errors: ["Can not approve your own pull request"],
+                }),
+                status: 422,
+              });
+            }
+            creates++;
+            return Effect.succeed(response(remote("PENDING")));
+          },
+        };
+        const result = yield* submitPreparedReview(owner, operation.id, dependencies);
+        assert.equal(result.status, "outcome_unknown");
+        assert.equal(
+          result.errorMessage,
+          "Can not approve your own pull request Check the saved submission state before retrying.",
+        );
+        assert.equal(result.remoteId, "123");
+        const draft = yield* readPrHubReviewDraft(owner);
+        assert.equal(draft?.content.body, "Review text");
+        assert.equal(draft?.frozen, true);
+        yield* Effect.exit(submitPreparedReview(owner, operation.id, dependencies));
+        assert.equal(creates, 1);
+        assert.equal(submits, 1);
+      }),
+  );
 
   for (const mode of ["scheduler", "precondition", "rate_limit", "verification"] as const)
     it.effect(`keeps an explicit retry usable after ${mode} failure`, () =>

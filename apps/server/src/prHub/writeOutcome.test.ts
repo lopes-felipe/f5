@@ -1,7 +1,7 @@
 import { Exit } from "effect";
 import { describe, expect, it } from "vitest";
 import type { GitHubApiResponse } from "../git/githubApi.ts";
-import { classifyPrWrite } from "./writeOutcome.ts";
+import { classifyPrWrite, classifyReviewWrite } from "./writeOutcome.ts";
 
 const response = (body: unknown, status = 422): GitHubApiResponse => ({
   status,
@@ -17,7 +17,15 @@ const response = (body: unknown, status = 422): GitHubApiResponse => ({
 describe("refused PR writes", () => {
   it("preserves the host's reason without permitting an automatic retry", () => {
     expect(
-      classifyPrWrite(Exit.succeed(response({ message: "Can not approve your own pull request" }))),
+      classifyReviewWrite(
+        Exit.succeed(
+          response({
+            message: "Unprocessable Entity",
+            errors: ["Can not approve your own pull request"],
+          }),
+        ),
+        "creation",
+      ),
     ).toMatchObject({
       message: "Can not approve your own pull request",
       rejected: true,
@@ -25,11 +33,11 @@ describe("refused PR writes", () => {
     });
   });
 
-  it.each([null, {}, { message: "  " }, { message: 42 }])(
+  it.each([null, {}, { message: "  " }, { message: 42 }, { message: "Validation Failed" }])(
     "uses the review fallback when the host gives no message: %j",
     (body) => {
-      expect(classifyPrWrite(Exit.succeed(response(body)), "Draft preserved").message).toBe(
-        "Draft preserved",
+      expect(classifyReviewWrite(Exit.succeed(response(body)), "creation").message).toBe(
+        "The host refused the review. Your draft is still here to try again.",
       );
     },
   );
@@ -42,7 +50,41 @@ describe("refused PR writes", () => {
       },
     );
     expect(
-      classifyPrWrite(Exit.succeed(response({ message: "server error" }, 500)), "Draft preserved"),
-    ).toMatchObject({ safeToRetry: false, rejected: false, message: "server error" });
+      classifyReviewWrite(Exit.succeed(response({ message: "server error" }, 500)), "submission"),
+    ).toMatchObject({
+      safeToRetry: false,
+      rejected: false,
+      message:
+        "GitHub returned HTTP 500. Inspect repository permissions and the saved submission before continuing.",
+    });
+  });
+
+  it("reads validation details and retains submission recovery guidance", () => {
+    expect(
+      classifyReviewWrite(
+        Exit.succeed(
+          response({
+            message: "Validation Failed",
+            errors: [{ message: "Line is outside the diff" }],
+          }),
+        ),
+        "submission",
+      ).message,
+    ).toBe("Line is outside the diff Check the saved submission state before retrying.");
+  });
+
+  it("leaves other PR write diagnostics unchanged", () => {
+    expect(
+      classifyPrWrite(
+        Exit.succeed(
+          response({
+            message: "Unprocessable Entity",
+            errors: ["Not allowed"],
+          }),
+        ),
+      ).message,
+    ).toBe(
+      "GitHub returned HTTP 422. Inspect repository permissions and the saved submission before continuing.",
+    );
   });
 });

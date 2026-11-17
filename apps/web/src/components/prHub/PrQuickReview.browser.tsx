@@ -55,10 +55,7 @@ const operation = (body: string): PrHubReviewOperation => ({
   },
 });
 it.each([
-  [
-    "Pull request operation failed: Can not approve your own pull request",
-    "Can not approve your own pull request",
-  ],
+  ["Can not approve your own pull request", "Can not approve your own pull request"],
   [undefined, "The host refused the review. Your draft is still here to try again."],
 ])(
   "shows a refused review's reason and preserves its note: %s",
@@ -122,6 +119,49 @@ it("does not submit a saved request-changes operation from an Approve dialog", a
     .element(page.getByRole("button", { name: "Submit review to GitHub" }))
     .not.toBeInTheDocument();
 });
+
+it.each(["outcome_unknown", "prepared", "created"] as const)(
+  "shows a submission failure once for %s",
+  async (status) => {
+    const errorMessage =
+      status === "outcome_unknown"
+        ? "Can not approve your own pull request. Check the saved submission state before retrying."
+        : "Verify the saved preview before retrying.";
+    const saved = { ...operation("Keep this review"), status, errorMessage };
+    api.getReviewOperation.mockResolvedValue(operation("Keep this review"));
+    api.submitReview.mockResolvedValue(saved);
+    const editor = () => (
+      <QueryClientProvider client={new QueryClient()}>
+        <PrReviewSubmit
+          prKey={key}
+          prUrl="https://github.com/org/repo/pull/1"
+          draft={null}
+          disabled={false}
+          onBusyChange={() => {}}
+          quickEvent="APPROVE"
+        />
+      </QueryClientProvider>
+    );
+    const first = await render(editor());
+    await page.getByRole("button", { name: "Submit review to GitHub" }).click();
+    if (status === "outcome_unknown") {
+      expect(toast.add).toHaveBeenLastCalledWith({
+        type: "error",
+        title: "The review could not be submitted",
+        description: errorMessage,
+      });
+      await expect.element(page.getByText(errorMessage, { exact: true })).not.toBeInTheDocument();
+      await expect.element(page.getByText(/Automatic retry is disabled/)).toBeVisible();
+      await first.unmount();
+      api.getReviewOperation.mockResolvedValue(saved);
+      await render(editor());
+      await expect.element(page.getByText(errorMessage, { exact: true })).toBeVisible();
+    } else {
+      expect(toast.add).not.toHaveBeenCalled();
+      await expect.element(page.getByText(errorMessage, { exact: true })).toBeVisible();
+    }
+  },
+);
 
 it("retains unsubmitted comment text after a server restart under the same numeric account", async () => {
   api.getCommentOperation.mockResolvedValue(null);
