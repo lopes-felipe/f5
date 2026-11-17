@@ -475,6 +475,36 @@ describe("tryHandleProjectFaviconRequest", () => {
     });
   });
 
+  it.each([
+    ["near the start", '<link rel="icon" href="/brand/logo.svg">' + " ".repeat(512 * 1024), true],
+    [
+      "at the byte limit",
+      " ".repeat(128 * 1024) + '<link rel="icon" href="/brand/logo.svg">',
+      false,
+    ],
+    [
+      "across the byte limit",
+      " ".repeat(128 * 1024 - 10) + '<link rel="icon" href="/brand/logo.svg">',
+      false,
+    ],
+    [
+      "after multibyte padding",
+      "é".repeat(64 * 1024) + '<link rel="icon" href="/brand/logo.svg">',
+      false,
+    ],
+  ])("bounds metadata reads with an icon %s", async (_label, source, found) => {
+    const root = makeTempDir("f5-favicon-prefix-");
+    fs.mkdirSync(path.join(root, "public/brand"), { recursive: true });
+    fs.writeFileSync(path.join(root, "public/brand/logo.svg"), "<svg>brand</svg>");
+    fs.writeFileSync(path.join(root, "index.html"), source);
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => root,
+    });
+    expect(await findFaviconRelativePath(authorizer, PROJECT_ID)).toBe(
+      found ? "public/brand/logo.svg" : null,
+    );
+  });
+
   it("bounds parsing work for large source files without icon declarations", async () => {
     const projectRoot = makeTempDir("f5-favicon-route-pathological-");
     fs.writeFileSync(
