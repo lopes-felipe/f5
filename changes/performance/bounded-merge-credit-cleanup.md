@@ -1,0 +1,1 @@
+- Merge message cleanup stays responsive with long malformed agent credits, Markdown links, or large runs of blank lines.

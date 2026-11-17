@@ -146,6 +146,7 @@ import { usageResumeTargetAfterCredit } from "./usage/usageResumeAfterCredit.ts"
 import { usageLimitKey } from "./nextTurnQueue/usageLimitResume.ts";
 import { awaitActivation, waitForActivation, reportActive } from "./distribution/activation";
 import { ForgeAccounts } from "./sourceControl/accountRouting.ts";
+import { SourceControlProviderError } from "./sourceControl/SourceControlProvider.ts";
 import { PrHubExtensions } from "./prHub/PrHubExtensions.ts";
 import { prHubPeekErrorCode } from "./prHub/prHubPeekError.ts";
 import { withPrHubThreadLinks } from "./prHub/readModel.ts";
@@ -1003,6 +1004,9 @@ function formatRouteFailure(
       ...(squashed.code !== undefined ? { code: squashed.code } : {}),
     };
   }
+  // PR Hub's own precondition checks are written for the user; skip the provider prefix.
+  if (Schema.is(SourceControlProviderError)(squashed) && squashed.operation === "prHub.action")
+    return { message: squashed.detail };
   return { message: routeFailureMessage(cause) };
 }
 

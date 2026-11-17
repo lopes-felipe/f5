@@ -55,8 +55,11 @@ f5 service start
 f5 service uninstall
 ```
 
-Linux uses a user systemd unit and macOS a user launchd agent. On macOS, logs go to the state
-directory's `logs` folder. Installing fails rather than replacing an existing service definition.
+Linux uses a user systemd unit and macOS a user launchd agent. Windows uses a per-user Task
+Scheduler task, which runs while that user is signed in and restarts after sign-in or a failure.
+Windows installation does not require administrator rights. On macOS and Windows, logs go to
+the state directory's `logs` folder (`service.log` on Windows).
+Installing fails rather than replacing an existing service definition.
 Uninstalling removes only the service, never your data.
 
 ## Update
@@ -73,8 +76,7 @@ backup and restarts the old version.
 ## Good to know
 
 > [!NOTE]
-> Windows supports `f5 serve` in the foreground, but not service registration. Intel Macs should
-> use the desktop app. WSL and SSH remote launch aren't supported.
+> Intel Macs should use the desktop app. WSL and SSH remote launch aren't supported.
 
 - One supervised profile per state directory. For another profile, use a separate install and
   state directory.

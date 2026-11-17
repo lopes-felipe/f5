@@ -85,6 +85,36 @@ describe("WorkspaceAssetAuthorizer", () => {
     ).rejects.toMatchObject({ failure: "invalid_path" });
   });
 
+  it("reads bounded text prefixes without relaxing full-file limits or containment", async () => {
+    const root = makeTempDir("f5-workspace-text-prefix-");
+    const outside = makeTempDir("f5-workspace-text-outside-");
+    fs.writeFileSync(path.join(root, "source.html"), "hello é" + " ".repeat(128 * 1024));
+    fs.writeFileSync(path.join(outside, "secret.html"), "secret");
+    fs.symlinkSync(path.join(outside, "secret.html"), path.join(root, "escape.html"));
+    const reader = await makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => root,
+    }).forProject(PROJECT_ID);
+
+    await expect(
+      reader.readText({ relativePath: "source.html", maxBytes: 7 }),
+    ).rejects.toMatchObject({
+      failure: "too_large",
+    });
+    await expect(
+      reader.readText({ relativePath: "source.html", maxBytes: 7, truncate: true }),
+    ).resolves.toBe("hello ");
+    await expect(
+      reader.readText({ relativePath: "source.html", maxBytes: 8, truncate: true }),
+    ).resolves.toBe("hello é");
+    await expect(
+      reader.readText({ relativePath: "escape.html", maxBytes: 7, truncate: true }),
+    ).rejects.toMatchObject({ failure: "invalid_path" });
+    fs.mkdirSync(path.join(root, "directory"));
+    await expect(
+      reader.readText({ relativePath: "directory", maxBytes: 7, truncate: true }),
+    ).rejects.toMatchObject({ failure: "not_file" });
+  });
+
   it("expires opaque handles and reauthorizes their project and path on every read", async () => {
     const root = makeTempDir("f5-workspace-assets-handle-");
     const outside = makeTempDir("f5-workspace-assets-handle-outside-");

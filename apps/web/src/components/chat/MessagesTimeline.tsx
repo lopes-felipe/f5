@@ -116,6 +116,8 @@ import { PromptLinkCopyButton } from "../promptLinks/PromptLinkCopyButton";
 import { UserMessageRevertPopover } from "./UserMessageRevertPopover";
 import { computeRevertImpact } from "./revertImpact";
 import { AssistantMessageActions } from "./AssistantMessageActions";
+import { AssistantResponseCard } from "./AssistantResponseCard";
+import { assistantResponseContextMatches } from "@t3tools/shared/assistantResponseContext";
 import { PromptCacheMissPill } from "./PromptCacheMissPill";
 import type { TurnCacheSummary } from "./cacheIndicator.logic";
 import {
@@ -404,7 +406,9 @@ interface MessagesTimelineProps {
    */
   onWorkingRibbonFocusLost?: (() => void) | undefined;
   /** Quotes a settled assistant message into the composer; omitted hides "Quote in reply". */
-  onQuoteAssistantMessage?: ((messageId: MessageId, text: string) => void) | undefined;
+  onQuoteAssistantMessage?:
+    | ((messageId: MessageId, text: string, reply?: boolean) => void)
+    | undefined;
   /**
    * Routes rail, minimap, popover and revert jumps through the navigation
    * owner. Omitted scrolls to the row directly.
@@ -1456,8 +1460,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       },
       setChangedFilesPresentationOverrides,
       startRibbon: (origin) => setRibbonOrigin(origin),
-      quoteAssistantMessage: (messageId, text) =>
-        latestRowInputsRef.current.onQuoteAssistantMessage?.(messageId, text),
+      quoteAssistantMessage: (messageId, text, reply) =>
+        reply
+          ? latestRowInputsRef.current.onQuoteAssistantMessage?.(messageId, text, true)
+          : latestRowInputsRef.current.onQuoteAssistantMessage?.(messageId, text),
     }),
     [],
   );
@@ -2287,12 +2293,19 @@ const UserMessageTerminalContextInlineLabel = memo(
 
 /** `text` with each complete thread reference shown as a linked chip. */
 function renderWithThreadReferences(text: string): ReactNode {
-  const matches = threadReferenceMatches(text);
+  const matches = [...threadReferenceMatches(text), ...assistantResponseContextMatches(text)].sort(
+    (left, right) => left.start - right.start,
+  );
   if (matches.length === 0) return text;
   const nodes: ReactNode[] = [];
   let cursor = 0;
   for (const match of matches) {
     if (match.start > cursor) nodes.push(text.slice(cursor, match.start));
+    if ("record" in match) {
+      nodes.push(<AssistantResponseCard key={match.start} record={match.record} />);
+      cursor = match.end;
+      continue;
+    }
     nodes.push(
       <ThreadReferenceChip
         key={`thread-reference:${match.start}`}
@@ -2341,6 +2354,8 @@ function UserMessageMarkupText(props: {
     >
       {segments.map((segment) => {
         switch (segment.kind) {
+          case "response-context":
+            return <AssistantResponseCard key={segment.start} record={segment.record} />;
           case "text":
             return <Fragment key={segment.start}>{segment.raw}</Fragment>;
           case "code":
@@ -4405,7 +4420,7 @@ interface TimelineRowActions {
     SetStateAction<Readonly<Record<string, ChangedFilesPresentation>>>
   >;
   startRibbon: (origin: RibbonPoint) => void;
-  quoteAssistantMessage: (messageId: MessageId, text: string) => void;
+  quoteAssistantMessage: (messageId: MessageId, text: string, reply?: boolean) => void;
 }
 
 /**
@@ -5095,6 +5110,17 @@ function AssistantMessageRowContent(props: {
           {/* Always laid out, only faded: hovering never shifts the row. */}
           <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
             {settledText ? <MessageCopyButton text={rawText} /> : null}
+            {settledText && canQuoteAssistantMessages ? (
+              <button
+                type="button"
+                title="Reply to response"
+                aria-label="Reply to response"
+                className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => actions.quoteAssistantMessage(messageId, rawText, true)}
+              >
+                Reply
+              </button>
+            ) : null}
             {settledText && canQuoteAssistantMessages ? (
               <AssistantMessageActions
                 onQuote={() => actions.quoteAssistantMessage(messageId, rawText)}

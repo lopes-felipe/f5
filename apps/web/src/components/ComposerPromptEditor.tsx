@@ -299,14 +299,16 @@ type ComposerInlineTokenNode =
   | ComposerMentionNode
   | ComposerTerminalContextNode
   | ComposerPullRequestReferenceNode
-  | ComposerThreadReferenceNode;
+  | ComposerThreadReferenceNode
+  | ComposerAssistantQuoteNode;
 
 function isComposerInlineTokenNode(candidate: unknown): candidate is ComposerInlineTokenNode {
   return (
     candidate instanceof ComposerMentionNode ||
     candidate instanceof ComposerTerminalContextNode ||
     candidate instanceof ComposerPullRequestReferenceNode ||
-    candidate instanceof ComposerThreadReferenceNode
+    candidate instanceof ComposerThreadReferenceNode ||
+    candidate instanceof ComposerAssistantQuoteNode
   );
 }
 
@@ -639,6 +641,20 @@ function $setComposerEditorPrompt(
 
   const segments = splitPromptIntoComposerSegments(prompt, terminalContexts, mentions);
   for (const segment of segments) {
+    if (segment.type === "assistant-quote") {
+      paragraph.append(
+        $createAssistantQuoteNode({
+          ...segment.record,
+          messageId: segment.record.messageId,
+          threadId: segment.record.threadId,
+          text: segment.record.text,
+          prefix: segment.record.prefix,
+          suffix: segment.record.suffix,
+          comment: "",
+        }),
+      );
+      continue;
+    }
     if (segment.type === "pull-request") {
       paragraph.append($createPullRequestReferenceNode(segment.raw));
       continue;
@@ -1275,7 +1291,14 @@ function ComposerPromptEditorInner({
           () => {
             const root = $getRoot();
             const paragraph = $createParagraphNode();
-            paragraph.append($createAssistantQuoteNode(quote), $createLineBreakNode());
+            paragraph.append($createAssistantQuoteNode({ ...quote, comment: "" }));
+            if (quote.comment.trim())
+              paragraph.append(
+                $createLineBreakNode(),
+                $createLineBreakNode(),
+                $createTextNode(quote.comment.trim()),
+              );
+            paragraph.append($createLineBreakNode());
             root.append(paragraph);
             paragraph.selectEnd();
           },

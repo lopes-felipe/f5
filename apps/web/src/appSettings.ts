@@ -68,6 +68,8 @@ export const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
 export const RUNTIME_WARNING_VISIBILITY_OPTIONS = ["hidden", "summarized", "full"] as const;
 export type RuntimeWarningVisibility = (typeof RUNTIME_WARNING_VISIBILITY_OPTIONS)[number];
 export const WORK_LOG_MODE_OPTIONS = ["essential", "diagnostics"] as const;
+export const SCREEN_READER_ANNOUNCEMENT_OPTIONS = ["status", "messages", "everything"] as const;
+export type ScreenReaderAnnouncements = (typeof SCREEN_READER_ANNOUNCEMENT_OPTIONS)[number];
 export type WorkLogMode = (typeof WORK_LOG_MODE_OPTIONS)[number];
 export const WORK_LOG_FILTER_OPTIONS = ["all", "tools", "hooks", "issues"] as const;
 export type WorkLogFilter = (typeof WORK_LOG_FILTER_OPTIONS)[number];
@@ -604,6 +606,10 @@ export const AppSettingsSchema = Schema.Struct({
   keepRunningThreadsSynced: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
     Schema.withDecodingDefault(() => false),
+  ),
+  screenReaderAnnouncements: Schema.Literals(SCREEN_READER_ANNOUNCEMENT_OPTIONS).pipe(
+    Schema.withConstructorDefault(() => Option.some("status" as const)),
+    Schema.withDecodingDefault(() => "status" as const),
   ),
   workLogMode: Schema.Literals(WORK_LOG_MODE_OPTIONS).pipe(
     Schema.withConstructorDefault(() => Option.some("essential" as const)),

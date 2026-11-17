@@ -174,6 +174,9 @@ describe("assistant message actions", () => {
       const assistant = page.getByRole("button", { name: "Copy message" }).last();
       await assistant.click();
       await vi.waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(raw));
+      await page.getByRole("button", { name: "Reply to response" }).click();
+      expect(onQuote).toHaveBeenCalledWith("q-assistant", raw, true);
+      onQuote.mockClear();
       await page.getByRole("button", { name: "Message actions" }).click();
       await page.getByRole("menuitem", { name: "Quote in reply" }).click();
       expect(onQuote).toHaveBeenCalledWith("q-assistant", raw);

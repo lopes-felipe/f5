@@ -8,7 +8,12 @@ import type {
 
 import { prQuickActions } from "../../lib/prQuickActions";
 import { PrActionDialogs } from "./PrActionDialogs";
-import { prRowPrimaryAction, type PrRowAction, type PrRowActionKind } from "./prQueueModel";
+import {
+  prPageActionAvailability,
+  prRowPrimaryAction,
+  type PrRowAction,
+  type PrRowActionKind,
+} from "./prQueueModel";
 import { usePrActions, type PrActionFlags, type PrActionHandlers } from "./usePrActions";
 
 /** A row's next action, or one of the steps every pull request offers. */
@@ -73,7 +78,7 @@ export function PrQueueActionHost({
   });
   const primary = prRowPrimaryAction(pr, { runningThreadId });
   const quick = prQuickActions(pr);
-  const canMerge = flags.isOpen && !flags.isIgnored && flags.isAuthor && quick.includes("merge");
+  const canMerge = prPageActionAvailability(pr).canMerge;
   const canClose = quick.includes("close");
   const canReopen = quick.includes("reopen");
 

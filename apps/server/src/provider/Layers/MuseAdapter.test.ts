@@ -24,6 +24,7 @@ import { makeMuseAdapter, parseMuseResumeCursor } from "./MuseAdapter.ts";
 const INSTANCE = ProviderInstanceId.make("muse");
 
 interface Harness {
+  readonly usageReports: import("../msp/MuseUsageLimits").MuseSubscriptionUsage[];
   readonly adapter: MuseAdapterShape;
   readonly hosts: MockMspHost[];
   configure: (host: MockMspHost) => void;
@@ -37,8 +38,13 @@ const HarnessLayer = Layer.effect(
   MuseHarness,
   Effect.gen(function* () {
     const hosts: MockMspHost[] = [];
+    const usageReports: import("../msp/MuseUsageLimits").MuseSubscriptionUsage[] = [];
     const harness: { configure: (host: MockMspHost) => void } = { configure: () => undefined };
     const adapter = yield* makeMuseAdapter(Schema.decodeSync(MuseSettings)({}), {
+      onSubscriptionUsage: (usage) =>
+        Effect.sync(() => {
+          usageReports.push(usage);
+        }),
       instanceId: INSTANCE,
       nativeCommandIds: memoryNativeCommandIdStore(),
       sessionOpenTimeoutMs: 1_000,
@@ -53,6 +59,7 @@ const HarnessLayer = Layer.effect(
     });
     return {
       adapter,
+      usageReports,
       hosts,
       get configure() {
         return harness.configure;
@@ -120,6 +127,8 @@ it.layer(HarnessLayer)("MuseAdapter", (it) => {
       const error = events.find((event) => event.type === "runtime.error");
       assert.deepEqual(error?.payload.usageLimit, terminal?.payload.usageLimit);
       assert.isFalse(events.some((event) => event.type === "account.rate-limits.updated"));
+      assert.equal(harness.usageReports.length, 1);
+      assert.equal(harness.usageReports[0]?.tier, "tier-1");
       assert.isTrue(yield* harness.adapter.hasSession(threadId));
       yield* stop;
     }),

@@ -7,6 +7,7 @@ import {
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
+  SignInUrl,
 } from "./baseSchemas";
 import { ServerProviderAuthStatus } from "./server";
 import { McpServerDefinition, McpProjectServersConfig } from "./mcpServer";
@@ -155,7 +156,7 @@ export const McpLoginStatusResult = Schema.Struct({
   projectId: ProjectId,
   serverName: Schema.optional(TrimmedNonEmptyString),
   status: McpLoginStatus,
-  authorizationUrl: Schema.optional(TrimmedNonEmptyString),
+  authorizationUrl: Schema.optional(SignInUrl),
   startedAt: Schema.optional(IsoDateTime),
   completedAt: Schema.optional(IsoDateTime),
   message: Schema.optional(TrimmedNonEmptyString),
@@ -170,7 +171,7 @@ export const McpOauthLoginStatusResult = Schema.Struct({
   projectId: ProjectId,
   serverName: TrimmedNonEmptyString,
   status: McpOauthLoginStatus,
-  authorizationUrl: Schema.optional(TrimmedNonEmptyString),
+  authorizationUrl: Schema.optional(SignInUrl),
   startedAt: Schema.optional(IsoDateTime),
   completedAt: Schema.optional(IsoDateTime),
   message: Schema.optional(TrimmedNonEmptyString),

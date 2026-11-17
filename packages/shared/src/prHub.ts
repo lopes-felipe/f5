@@ -115,6 +115,38 @@ export function prAttentionText(
   return { primaryReason, nextAction };
 }
 
+/**
+ * Whether reviews no longer stand between the author and a merge. GitHub reports no
+ * decision when no review rule applies to the base branch; a rule that requires reviews
+ * reports REVIEW_REQUIRED and keeps the merge state off CLEAN.
+ */
+export function prReviewGateSatisfied(decision: PrReviewDecision): boolean {
+  return decision === "approved" || decision === "none";
+}
+
+/** The author can merge now: every forge requirement is met, verified, and allowed. */
+export function isPrMergeableNow(
+  input: Pick<
+    RawPrFields,
+    | "mergeRequirements"
+    | "reviewDecision"
+    | "checkRollup"
+    | "mergeable"
+    | "mergePermission"
+    | "mergeStateStatus"
+  >,
+): boolean {
+  return (
+    input.mergeRequirements?.verification === "verified" &&
+    input.mergeRequirements.mandatorySatisfied &&
+    prReviewGateSatisfied(input.reviewDecision) &&
+    isPassingOrNoChecks(input.checkRollup) &&
+    input.mergeable === "mergeable" &&
+    input.mergePermission === "allowed" &&
+    input.mergeStateStatus.trim().toUpperCase() === "CLEAN"
+  );
+}
+
 function attentionCodes(input: RawPrFields): PrAttentionState[] {
   const isAuthor = input.isAuthor === true || input.roles.includes("author");
   if (input.state === "merged") return ["merged"];
@@ -128,16 +160,7 @@ function attentionCodes(input: RawPrFields): PrAttentionState[] {
       codes.push("merge_conflict");
     if (isBehindMergeState(input.mergeStateStatus)) codes.push("branch_behind");
     if (input.reviewDecision === "changes_requested") codes.push("changes_requested");
-    if (
-      input.mergeRequirements?.verification === "verified" &&
-      input.mergeRequirements.mandatorySatisfied &&
-      input.reviewDecision === "approved" &&
-      isPassingOrNoChecks(input.checkRollup) &&
-      input.mergeable === "mergeable" &&
-      input.mergePermission === "allowed" &&
-      input.mergeStateStatus.trim().toUpperCase() === "CLEAN"
-    )
-      codes.push("ready_to_merge");
+    if (isPrMergeableNow(input)) codes.push("ready_to_merge");
     if (input.actionableUnresolvedThreadCount > 0) codes.push("unresolved_comments");
     return codes.length ? codes : ["awaiting_review"];
   }
@@ -195,7 +218,13 @@ export function derivePrAttentionReasons(
   ) {
     const extra: PrAttentionReason["code"][] = [];
     if (input.checkRollup === "pending") extra.push("ci_pending");
-    if (input.reviewDecision === "approved") {
+    // "none" is also what a degraded row reports when nothing was read, so it explains a
+    // blocked merge only once GitHub's merge requirements were actually verified.
+    const reviewSatisfied =
+      input.reviewDecision === "approved" ||
+      (prReviewGateSatisfied(input.reviewDecision) &&
+        input.mergeRequirements?.verification === "verified");
+    if (reviewSatisfied) {
       if (
         input.mergeRequirements?.verification !== "verified" ||
         !input.mergeRequirements.mandatorySatisfied
@@ -211,8 +240,7 @@ export function derivePrAttentionReasons(
         extra.push("merge_blocked");
       if (input.mergePermission !== "allowed") extra.push("merge_permission");
     }
-    if (extra.length && codes[0] === "awaiting_review" && input.reviewDecision === "approved")
-      codes.shift();
+    if (extra.length && codes[0] === "awaiting_review" && reviewSatisfied) codes.shift();
     codes.push(...new Set(extra));
   }
   let evidenceBudget = 50;

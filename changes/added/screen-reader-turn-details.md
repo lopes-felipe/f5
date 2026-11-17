@@ -1,0 +1,1 @@
+- Choose status only, status and messages, or every step for screen reader announcements in Conversation settings. The default remains status only, and the choice is saved on this device.

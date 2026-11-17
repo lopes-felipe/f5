@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { MessageId, ThreadId } from "@t3tools/contracts";
+import { serializeAssistantResponseContext } from "@t3tools/shared/assistantResponseContext";
 
 import {
   buildCollapsedUserMessageText,
@@ -7,6 +9,20 @@ import {
 } from "./userMessageCollapse";
 
 describe("userMessageCollapse", () => {
+  it("keeps quote cards intact without spending the comment's character budget", () => {
+    const card = serializeAssistantResponseContext({
+      version: 1,
+      kind: "quote",
+      threadId: ThreadId.make("source"),
+      messageId: MessageId.make("response"),
+      text: "A long highlighted passage ".repeat(100),
+    });
+    expect(shouldCollapseUserMessage(card + "\n\nA short comment")).toBe(false);
+    const longMessage = card + "\n\n" + "a".repeat(700);
+    expect(shouldCollapseUserMessage(longMessage)).toBe(true);
+    expect(buildCollapsedUserMessageText(longMessage)).toBe(card + "\n\n" + "a".repeat(598));
+  });
+
   it("does not collapse empty text", () => {
     expect(shouldCollapseUserMessage("")).toBe(false);
     expect(buildCollapsedUserMessageText("")).toBe("");

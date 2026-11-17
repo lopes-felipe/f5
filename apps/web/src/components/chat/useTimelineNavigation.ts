@@ -13,6 +13,7 @@ export interface TimelineNavigateOptions {
   /** Where the target lands, as a fraction of the viewport from the top. */
   position?: number;
   animated?: boolean;
+  focus?: boolean;
   /**
    * A find match: after the row lands, its active range is reported back with
    * the request id and placed once at `position`.
@@ -174,7 +175,7 @@ export function useTimelineNavigation(input: {
           );
         return true;
       }
-      const animated = pending.options.animated ?? false;
+      const animated = pending.options.focus ? false : (pending.options.animated ?? false);
       const scrollToTarget = () => {
         const current = entryRowIndexMapRef.current?.get(pending.entryId) ?? index;
         void listRef.current?.scrollToIndex({
@@ -186,6 +187,18 @@ export function useTimelineNavigation(input: {
       scrollToTarget();
       setState({ threadId, status: "idle" });
       const finish = () => {
+        if (pending.options.focus) {
+          const row =
+            node instanceof HTMLElement
+              ? node.querySelector<HTMLElement>(
+                  `[data-message-id="${CSS.escape(pending.entryId)}"]`,
+                )
+              : null;
+          if (row) {
+            row.tabIndex = -1;
+            row.focus({ preventScroll: true });
+          }
+        }
         if (!pending.options.placeRange) {
           settle(pending, "idle");
           return;

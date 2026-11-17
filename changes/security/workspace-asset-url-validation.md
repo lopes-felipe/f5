@@ -1,0 +1,1 @@
+- Workspace asset URLs are validated before use so a server response cannot redirect file previews to another origin.

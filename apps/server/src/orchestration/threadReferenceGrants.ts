@@ -7,6 +7,7 @@ import {
 } from "@t3tools/shared/threadReferences";
 import { threadIdsForPlanningWorkflow } from "@t3tools/shared/workflowThreads";
 import { Effect } from "effect";
+import { responseContextsForProvider } from "@t3tools/shared/assistantResponseContext";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { escapeRuntimeContextLine } from "../provider/attachmentRuntimeContext.ts";
@@ -103,9 +104,12 @@ export function projectProviderInput(input: {
   readonly readModel: ReferenceReadModel;
   readonly threadId: string;
 }): string {
-  if (isThreadReferenceCommandInput(input.text)) return input.text;
+  if (isThreadReferenceCommandInput(input.text)) return responseContextsForProvider(input.text);
   const refs = authorizedReferencesForDispatch(input);
-  if (refs.length === 0) return input.text;
+  if (refs.length === 0) return responseContextsForProvider(input.text);
   // Trailing whitespace goes, so the input matches the trimmed length the message check measured.
-  return input.text.trimEnd() + buildThreadReferenceContext(refs, input.readModel);
+  return (
+    responseContextsForProvider(input.text).trimEnd() +
+    buildThreadReferenceContext(refs, input.readModel)
+  );
 }

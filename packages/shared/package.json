@@ -8,6 +8,10 @@
       "types": "./src/savedAttachmentPath.ts",
       "import": "./src/savedAttachmentPath.ts"
     },
+    "./assistantResponseContext": {
+      "types": "./src/assistantResponseContext.ts",
+      "import": "./src/assistantResponseContext.ts"
+    },
     "./video": {
       "types": "./src/video.ts",
       "import": "./src/video.ts"

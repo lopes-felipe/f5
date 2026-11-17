@@ -32,6 +32,16 @@ function run<A, E>(
 ) {
   return fixture.pipe(Effect.flatMap(test), Effect.provide(SqliteClient.layerMemory()));
 }
+it.effect("keeps backed-off watches in the subscription inventory", () =>
+  run((store) =>
+    Effect.gen(function* () {
+      const row = yield* store.start({ threadId, key, accountId: "one", watch });
+      yield* store.failure(row, now, "2026-10-20T00:00:00.000Z", true);
+      assert.lengthOf(yield* store.due(now), 0);
+      assert.lengthOf(yield* store.all(), 1);
+    }),
+  ),
+);
 it.effect("coalesces repeated starts and gives a restarted watch a new incarnation", () =>
   run((store) =>
     Effect.gen(function* () {
