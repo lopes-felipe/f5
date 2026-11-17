@@ -351,6 +351,11 @@ Rate limits pause it; eight consecutive read failures end it with a thread notic
 Ten consecutive comment-only updates also end it to prevent bot loops. Forge
 capabilities determine which check and review facts are available.
 
+For watched GitHub.com PRs, start the server with `F5_GITHUB_PR_EVENTS=1` to opt in
+to GitHub's preview event stream. Events trigger a fresh PR read; the two-minute sweep
+continues as a fallback when a stream disconnects or the account cannot subscribe.
+Stopping or closing a watch releases its subscription.
+
 ## Related
 
 - [Project settings](project-settings.md) (per-project merge method)
