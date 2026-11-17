@@ -4,21 +4,12 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { ChatMessage } from "../../types";
 import { messageTextRevision } from "../../lib/streamingTextRevision";
 import { Kbd } from "../ui/kbd";
-import {
-  classifyTimelineTailChange,
-  type TimelineTailSnapshot,
-} from "./MessagesTimeline.logic";
+import { classifyTimelineTailChange, type TimelineTailSnapshot } from "./MessagesTimeline.logic";
 import { CHAT_CONTENT_COLUMN_CLASS_NAME } from "./chatLayout";
 
 /** The last timeline entry, as the pill compares it. */
 export function timelineTailSnapshot(
-  entry:
-    | {
-        readonly id: string;
-        readonly kind: string;
-        readonly message?: ChatMessage;
-      }
-    | undefined,
+  entry: { readonly id: string; readonly kind: string; readonly message?: ChatMessage } | undefined,
 ): TimelineTailSnapshot {
   const message = entry?.kind === "message" ? entry.message : undefined;
   const revision = message ? messageTextRevision(message) : undefined;
@@ -67,19 +58,12 @@ export function JumpToLatestButton(props: {
     };
   }, []);
   const [baseline, setBaseline] = useState(props.leftEndTail ?? props.tail);
-  const [latched, setLatched] = useState<
-    "new-messages" | "response-updated" | null
-  >(null);
+  const [latched, setLatched] = useState<"new-messages" | "response-updated" | null>(null);
   const change = classifyTimelineTailChange(baseline, props.tail);
   if (props.isAtEnd && (change || latched)) {
     setBaseline(props.tail);
     setLatched(null);
-  } else if (
-    !props.isAtEnd &&
-    change &&
-    latched !== "new-messages" &&
-    change !== latched
-  ) {
+  } else if (!props.isAtEnd && change && latched !== "new-messages" && change !== latched) {
     setLatched(change);
   }
   const hasNewContent = !props.isAtEnd && latched !== null;
@@ -114,9 +98,7 @@ export function JumpToLatestButton(props: {
             <span className="sr-only">, response updated</span>
           ) : null}
           {props.shortcutLabel && !props.isAtEnd ? (
-            <Kbd className="h-4 min-w-4 px-1 text-2xs">
-              {props.shortcutLabel}
-            </Kbd>
+            <Kbd className="h-4 min-w-4 px-1 text-2xs">{props.shortcutLabel}</Kbd>
           ) : null}
         </button>
         {hasNewContent ? (

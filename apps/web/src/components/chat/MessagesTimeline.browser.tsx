@@ -66,10 +66,7 @@ vi.mock("../../hooks/useReducedMotion", async () => {
   const { useSyncExternalStore } = await import("react");
   return {
     useReducedMotion: () =>
-      useSyncExternalStore(
-        reducedMotionStore.subscribe,
-        reducedMotionStore.get,
-      ),
+      useSyncExternalStore(reducedMotionStore.subscribe, reducedMotionStore.get),
   };
 });
 
@@ -110,11 +107,7 @@ function makeQueryClient() {
   });
 }
 
-function makeReadWorkEntry(
-  id: string,
-  path: string,
-  offsetSeconds: number,
-): TimelineEntry {
+function makeReadWorkEntry(id: string, path: string, offsetSeconds: number): TimelineEntry {
   const createdAt = new Date(
     Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
   ).toISOString();
@@ -170,11 +163,7 @@ function makeCommandEntry(
 function makeOverflowEntries(count: number): TimelineEntry[] {
   return Array.from({ length: count }, (_, index) =>
     index % 2 === 0
-      ? makeUserEntry(
-          `overflow-user-${index}`,
-          `user row ${index} `.repeat(12),
-          index,
-        )
+      ? makeUserEntry(`overflow-user-${index}`, `user row ${index} `.repeat(12), index)
       : makeAssistantEntry(
           `overflow-assistant-${index}`,
           `assistant row ${index} `.repeat(18),
@@ -186,37 +175,21 @@ function makeOverflowEntries(count: number): TimelineEntry[] {
 async function waitForScrollContainer(host: HTMLElement): Promise<HTMLElement> {
   let scrollContainer: HTMLElement | null = null;
   await vi.waitFor(() => {
-    scrollContainer = host.querySelector<HTMLElement>(
-      '[data-slot="messages-scroll-container"]',
-    );
-    expect(
-      scrollContainer,
-      "Unable to find the LegendList scroll container.",
-    ).not.toBeNull();
-    expect(scrollContainer!.scrollHeight).toBeGreaterThan(
-      scrollContainer!.clientHeight,
-    );
+    scrollContainer = host.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]');
+    expect(scrollContainer, "Unable to find the LegendList scroll container.").not.toBeNull();
+    expect(scrollContainer!.scrollHeight).toBeGreaterThan(scrollContainer!.clientHeight);
   });
   await waitForTimelineLayout(() => scrollContainer);
   return scrollContainer!;
 }
 
-function isElementVisibleWithinContainer(
-  element: HTMLElement,
-  container: HTMLElement,
-): boolean {
+function isElementVisibleWithinContainer(element: HTMLElement, container: HTMLElement): boolean {
   const elementRect = element.getBoundingClientRect();
   const containerRect = container.getBoundingClientRect();
-  return (
-    elementRect.bottom > containerRect.top &&
-    elementRect.top < containerRect.bottom
-  );
+  return elementRect.bottom > containerRect.top && elementRect.top < containerRect.bottom;
 }
 
-function scrollContainerToOffset(
-  container: HTMLElement,
-  nextScrollTop: number,
-) {
+function scrollContainerToOffset(container: HTMLElement, nextScrollTop: number) {
   container.scrollTop = nextScrollTop;
   container.dispatchEvent(new Event("scroll"));
 }
@@ -237,10 +210,7 @@ async function scrollTimelineToOffset(
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     });
-    const expectedOffset = Math.min(
-      nextScrollTop,
-      container.scrollHeight - container.clientHeight,
-    );
+    const expectedOffset = Math.min(nextScrollTop, container.scrollHeight - container.clientHeight);
     expect(Math.abs(container.scrollTop - expectedOffset)).toBeLessThan(2);
   });
 }
@@ -305,9 +275,7 @@ describe("MessagesTimeline (LegendList)", () => {
         onIsAtEndChangeSpy={vi.fn()}
       />,
     );
-    await expect
-      .element(page.getByText("Skill: team:review", { exact: true }))
-      .toBeVisible();
+    await expect.element(page.getByText("Skill: team:review", { exact: true })).toBeVisible();
   });
 
   it("restores a thread reading position after navigating away", async () => {
@@ -327,9 +295,7 @@ describe("MessagesTimeline (LegendList)", () => {
       />,
     );
     const node = () =>
-      document.querySelector<HTMLElement>(
-        '[data-slot="messages-scroll-container"]',
-      )!;
+      document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
     await expect.poll(() => node()?.scrollHeight ?? 0).toBeGreaterThan(1000);
     await scrollTimelineToOffset(list, node(), 700);
     const before = readTimelineScrollAnchor(node());
@@ -348,9 +314,7 @@ describe("MessagesTimeline (LegendList)", () => {
     );
     const offsetFromSaved = () => {
       const after = readTimelineScrollAnchor(node());
-      return after.rowId === before.rowId
-        ? Math.abs(after.top - before.top)
-        : 99999;
+      return after.rowId === before.rowId ? Math.abs(after.top - before.top) : 99999;
     };
     try {
       await expect.poll(offsetFromSaved).toBeLessThan(3);
@@ -358,10 +322,7 @@ describe("MessagesTimeline (LegendList)", () => {
       await waitForTimelineLayout(() => node());
       expect(offsetFromSaved()).toBeLessThan(3);
       // Following stays paused above the end and new rows do not move the reader.
-      api!.setEntries([
-        ...entries,
-        makeAssistantEntry("restored-tail", "Later reply", 120),
-      ]);
+      api!.setEntries([...entries, makeAssistantEntry("restored-tail", "Later reply", 120)]);
       await waitForTimelineLayout(() => node());
       expect(offsetFromSaved()).toBeLessThan(3);
     } finally {
@@ -394,29 +355,18 @@ describe("MessagesTimeline (LegendList)", () => {
       ).toBe("true");
     });
     await scrollTimelineToOffset(listRef, container, container.scrollHeight);
-    const targetBefore = host.querySelector<HTMLElement>(
-      '[data-message-id="overflow-user-0"]',
+    const targetBefore = host.querySelector<HTMLElement>('[data-message-id="overflow-user-0"]');
+    expect(targetBefore === null || !isElementVisibleWithinContainer(targetBefore, container)).toBe(
+      true,
     );
-    expect(
-      targetBefore === null ||
-        !isElementVisibleWithinContainer(targetBefore, container),
-    ).toBe(true);
-    const strip = host.querySelector<HTMLButtonElement>(
-      '[data-testid="timeline-turn-rail-strip"]',
-    );
+    const strip = host.querySelector<HTMLButtonElement>('[data-testid="timeline-turn-rail-strip"]');
     expect(strip).not.toBeNull();
     const rect = strip!.getBoundingClientRect();
     strip!.dispatchEvent(
-      new MouseEvent("click", {
-        bubbles: true,
-        clientY: rect.top + 1,
-        clientX: rect.left + 1,
-      }),
+      new MouseEvent("click", { bubbles: true, clientY: rect.top + 1, clientX: rect.left + 1 }),
     );
     await vi.waitFor(() => {
-      const target = host.querySelector<HTMLElement>(
-        '[data-message-id="overflow-user-0"]',
-      );
+      const target = host.querySelector<HTMLElement>('[data-message-id="overflow-user-0"]');
       expect(target).not.toBeNull();
       expect(isElementVisibleWithinContainer(target!, container)).toBe(true);
     });
@@ -426,25 +376,19 @@ describe("MessagesTimeline (LegendList)", () => {
     await page.viewport(1200, 896);
     const host = document.createElement("div");
     document.body.append(host);
-    const entries = makeOverflowEntries(40).map(
-      (entry, index): TimelineEntry => {
-        if (entry.kind !== "message") return entry;
-        return {
-          ...entry,
-          message: {
-            ...entry.message,
-            turnId: TurnId.makeUnsafe(`rail-turn-${Math.floor(index / 2)}`),
-            ...(entry.message.role === "assistant"
-              ? {
-                  completedAt: new Date(
-                    Date.parse(entry.createdAt) + 1000,
-                  ).toISOString(),
-                }
-              : {}),
-          },
-        };
-      },
-    );
+    const entries = makeOverflowEntries(40).map((entry, index): TimelineEntry => {
+      if (entry.kind !== "message") return entry;
+      return {
+        ...entry,
+        message: {
+          ...entry.message,
+          turnId: TurnId.makeUnsafe(`rail-turn-${Math.floor(index / 2)}`),
+          ...(entry.message.role === "assistant"
+            ? { completedAt: new Date(Date.parse(entry.createdAt) + 1000).toISOString() }
+            : {}),
+        },
+      };
+    });
     let listRef: LegendListRef | null = null;
     const screen = await render(
       <TimelineHarness
@@ -459,9 +403,7 @@ describe("MessagesTimeline (LegendList)", () => {
     );
     try {
       const container = await waitForScrollContainer(host);
-      const userRail = host.querySelector<HTMLElement>(
-        '[data-testid="timeline-turn-rail"]',
-      )!;
+      const userRail = host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail"]')!;
       const answerRail = host.querySelector<HTMLElement>(
         '[data-testid="timeline-assistant-rail"]',
       )!;
@@ -478,17 +420,13 @@ describe("MessagesTimeline (LegendList)", () => {
         }),
       );
       await vi.waitFor(() => {
-        const answer = host.querySelector<HTMLElement>(
-          '[data-message-id="overflow-assistant-1"]',
-        );
+        const answer = host.querySelector<HTMLElement>('[data-message-id="overflow-assistant-1"]');
         expect(answer).not.toBeNull();
         expect(isElementVisibleWithinContainer(answer!, container)).toBe(true);
       });
       await page.viewport(600, 896);
       await vi.waitFor(() => {
-        const column = host.querySelector<HTMLElement>(
-          '[data-timeline-root="true"]',
-        )!;
+        const column = host.querySelector<HTMLElement>('[data-timeline-root="true"]')!;
         const rightStrip = userRail.querySelector("button")!;
         expect(strip.getBoundingClientRect().right).toBeLessThanOrEqual(
           column.getBoundingClientRect().left,
@@ -521,19 +459,13 @@ describe("MessagesTimeline (LegendList)", () => {
     const container = await waitForScrollContainer(host);
     await scrollTimelineToOffset(listRef, container, container.scrollHeight);
     const targets = [
-      host.querySelector<HTMLElement>(
-        '[data-testid="timeline-turn-rail-strip"]',
-      ),
+      host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail-strip"]'),
       host.querySelector<HTMLElement>('[aria-label="Conversation minimap"]'),
     ];
     for (const target of targets) {
       expect(target).not.toBeNull();
       const before = container.scrollTop;
-      const wheel = new WheelEvent("wheel", {
-        bubbles: true,
-        cancelable: true,
-        deltaY: -200,
-      });
+      const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -200 });
       target!.dispatchEvent(wheel);
       expect(wheel.defaultPrevented).toBe(true);
       await vi.waitFor(() => expect(container.scrollTop).toBeLessThan(before));
@@ -561,9 +493,7 @@ describe("MessagesTimeline (LegendList)", () => {
     await vi.waitFor(() => {
       const active = host.querySelector('[data-turn-rail-active="true"]');
       expect(active).not.toBeNull();
-      expect(
-        [...host.querySelectorAll("[data-turn-rail-tick]")].indexOf(active!),
-      ).toBe(0);
+      expect([...host.querySelectorAll("[data-turn-rail-tick]")].indexOf(active!)).toBe(0);
     });
     await scrollTimelineToOffset(listRef, container, container.scrollHeight);
     await vi.waitFor(() => {
@@ -587,34 +517,20 @@ describe("MessagesTimeline (LegendList)", () => {
       { container: host },
     );
     await waitForScrollContainer(host);
-    const rail = host.querySelector<HTMLElement>(
-      '[data-testid="timeline-turn-rail"]',
-    );
-    const strip = host.querySelector<HTMLElement>(
-      '[data-testid="timeline-turn-rail-strip"]',
-    );
+    const rail = host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail"]');
+    const strip = host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail-strip"]');
     await vi.waitFor(() => expect(rail?.dataset.persistentGutter).toBe("true"));
-    expect(Number.parseFloat(getComputedStyle(strip!).width)).toBeGreaterThan(
-      0,
-    );
+    expect(Number.parseFloat(getComputedStyle(strip!).width)).toBeGreaterThan(0);
 
     await page.viewport(600, 896);
     await vi.waitFor(() => {
       expect(rail?.dataset.persistentGutter).toBe("false");
-      expect(Number.parseFloat(getComputedStyle(strip!).width)).toBeGreaterThan(
-        0,
-      );
+      expect(Number.parseFloat(getComputedStyle(strip!).width)).toBeGreaterThan(0);
       expect(getComputedStyle(strip!).pointerEvents).toBe("auto");
-      expect(
-        Number.parseFloat(getComputedStyle(rail!).opacity),
-      ).toBeGreaterThan(0);
+      expect(Number.parseFloat(getComputedStyle(rail!).opacity)).toBeGreaterThan(0);
     });
-    const messageText = host.querySelector<HTMLElement>(
-      '[data-message-id="overflow-user-0"]',
-    );
-    const contentColumn = host.querySelector<HTMLElement>(
-      '[data-timeline-root="true"]',
-    );
+    const messageText = host.querySelector<HTMLElement>('[data-message-id="overflow-user-0"]');
+    const contentColumn = host.querySelector<HTMLElement>('[data-timeline-root="true"]');
     expect(rail!.dataset.railSide).toBe("right");
     expect(strip!.getBoundingClientRect().left).toBeGreaterThanOrEqual(
       contentColumn!.getBoundingClientRect().right,
@@ -645,25 +561,16 @@ describe("MessagesTimeline (LegendList)", () => {
       <TimelineHarness
         initialEntries={[]}
         onIsAtEndChangeSpy={() => {}}
-        headerContent={
-          <div data-testid="tasks-panel-stub">Tasks panel content</div>
-        }
+        headerContent={<div data-testid="tasks-panel-stub">Tasks panel content</div>}
       />,
       { container: host },
     );
 
     try {
       await vi.waitFor(() => {
-        expect(host.textContent).toContain(
-          "Send a message to start the conversation.",
-        );
-        const taskPanel = host.querySelector(
-          '[data-testid="tasks-panel-stub"]',
-        );
-        expect(
-          taskPanel,
-          "Tasks panel must render alongside the empty state.",
-        ).not.toBeNull();
+        expect(host.textContent).toContain("Send a message to start the conversation.");
+        const taskPanel = host.querySelector('[data-testid="tasks-panel-stub"]');
+        expect(taskPanel, "Tasks panel must render alongside the empty state.").not.toBeNull();
       });
     } finally {
       await screen.unmount();
@@ -701,10 +608,7 @@ describe("MessagesTimeline (LegendList)", () => {
       expect(summaryButton()).toBeNull();
 
       // The turn settles under the reader: the group must stay open.
-      const settledTurn = [
-        ...firstTurn,
-        makeAssistantEntry("collapse-assistant-1", "Done.", 3),
-      ];
+      const settledTurn = [...firstTurn, makeAssistantEntry("collapse-assistant-1", "Done.", 3)];
       api!.setTimelineState({ entries: settledTurn, isWorking: false });
       await vi.waitFor(() => {
         expect(host.textContent).toContain("Done.");
@@ -714,10 +618,7 @@ describe("MessagesTimeline (LegendList)", () => {
 
       // The next send pushes the group into a prior turn, which collapses.
       api!.setTimelineState({
-        entries: [
-          ...settledTurn,
-          makeUserEntry("collapse-user-2", "Now fix it", 4),
-        ],
+        entries: [...settledTurn, makeUserEntry("collapse-user-2", "Now fix it", 4)],
         isWorking: true,
       });
       await vi.waitFor(() => {
@@ -776,9 +677,7 @@ describe("MessagesTimeline (LegendList)", () => {
     try {
       await vi.waitFor(() => {
         expect(
-          host
-            .querySelector('[data-slot="work-group-summary"]')
-            ?.getAttribute("aria-expanded"),
+          host.querySelector('[data-slot="work-group-summary"]')?.getAttribute("aria-expanded"),
         ).toBe("false");
         expect(host.textContent).toContain("Send a message to reconnect.");
       });
@@ -858,9 +757,7 @@ describe("MessagesTimeline (LegendList)", () => {
           providerItemId: "first-call",
           status: "inProgress",
         }),
-        call("run-complete", 2, "tool.completed", {
-          providerItemId: "first-call",
-        }),
+        call("run-complete", 2, "tool.completed", { providerItemId: "first-call" }),
         call("run-failed", 3, "tool.completed", {
           providerItemId: "failed-call",
           status: "failed",
@@ -893,16 +790,11 @@ describe("MessagesTimeline (LegendList)", () => {
           { container: host },
         );
       const cards = () =>
-        host.querySelectorAll<HTMLElement>(
-          '[data-testid="automation-session-card"]',
-        );
+        host.querySelectorAll<HTMLElement>('[data-testid="automation-session-card"]');
       const firstCard = () => cards()[0]!;
       const button = (card: HTMLElement, text: string) =>
-        page
-          .elementLocator(card)
-          .getByRole("button", { name: text, exact: true });
-      const title =
-        surface === "computer" ? "Used the computer" : "Used browser preview";
+        page.elementLocator(card).getByRole("button", { name: text, exact: true });
+      const title = surface === "computer" ? "Used the computer" : "Used browser preview";
       let screen = await renderTimeline(entries("turn-1"));
       try {
         await vi.waitFor(() => {
@@ -911,17 +803,15 @@ describe("MessagesTimeline (LegendList)", () => {
         });
         await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
         messages.push(
-          ...[makeUserEntry("automation-user-2", "Another turn", 10)].flatMap(
-            (entry) => (entry.kind === "message" ? [entry.message] : []),
+          ...[makeUserEntry("automation-user-2", "Another turn", 10)].flatMap((entry) =>
+            entry.kind === "message" ? [entry.message] : [],
           ),
         );
         api!.setTimelineState({ entries: entries("turn-2"), isWorking: true });
         await vi.waitFor(() => {
           expect(cards()).toHaveLength(1);
           expect(firstCard().getAttribute("data-status")).toBe("done");
-          expect(
-            firstCard().querySelector('[aria-label="Collapse"]'),
-          ).toBeNull();
+          expect(firstCard().querySelector('[aria-label="Collapse"]')).toBeNull();
         });
         await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
         await button(firstCard(), "Show 3 steps").click();
@@ -931,13 +821,7 @@ describe("MessagesTimeline (LegendList)", () => {
         });
 
         activities.push(
-          call(
-            "second-run",
-            12,
-            "tool.completed",
-            { status: "completed" },
-            "turn-2",
-          ),
+          call("second-run", 12, "tool.completed", { status: "completed" }, "turn-2"),
           {
             id: EventId.makeUnsafe("provider-handoff"),
             turnId: null,
@@ -952,9 +836,7 @@ describe("MessagesTimeline (LegendList)", () => {
           ...[
             makeAssistantEntry("automation-answer-2", "Finished again.", 13),
             makeUserEntry("automation-user-3", "Continue with Claude", 15),
-          ].flatMap((entry) =>
-            entry.kind === "message" ? [entry.message] : [],
-          ),
+          ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
         );
         api!.setTimelineState({ entries: entries("turn-3"), isWorking: true });
         await vi.waitFor(() => {
@@ -967,18 +849,13 @@ describe("MessagesTimeline (LegendList)", () => {
         host.remove();
         host = document.createElement("div");
         document.body.append(host);
-        const restored: {
-          activities: OrchestrationThreadActivity[];
-          messages: typeof messages;
-        } = JSON.parse(JSON.stringify({ activities, messages }));
+        const restored: { activities: OrchestrationThreadActivity[]; messages: typeof messages } =
+          JSON.parse(JSON.stringify({ activities, messages }));
         screen = await renderTimeline(
           deriveTimelineEntries(
             restored.messages,
             [],
-            deriveWorkLogEntries(
-              restored.activities,
-              TurnId.makeUnsafe("turn-3"),
-            ),
+            deriveWorkLogEntries(restored.activities, TurnId.makeUnsafe("turn-3")),
           ),
         );
         await vi.waitFor(() => {
@@ -1012,9 +889,7 @@ describe("MessagesTimeline (LegendList)", () => {
       ].map((callPayload, index) => ({
         id: EventId.makeUnsafe("separate-call-" + index),
         turnId: TurnId.makeUnsafe("turn-1"),
-        createdAt: new Date(
-          Date.UTC(2026, 2, 4, 12, 0, index + 1),
-        ).toISOString(),
+        createdAt: new Date(Date.UTC(2026, 2, 4, 12, 0, index + 1)).toISOString(),
         kind: "tool.completed",
         tone: "tool",
         summary: "Tool",
@@ -1045,9 +920,7 @@ describe("MessagesTimeline (LegendList)", () => {
         { container: host },
       );
       const cards = () =>
-        host.querySelectorAll<HTMLElement>(
-          '[data-testid="automation-session-card"]',
-        );
+        host.querySelectorAll<HTMLElement>('[data-testid="automation-session-card"]');
       try {
         await vi.waitFor(() => expect(cards()).toHaveLength(2));
         const first = cards()[0]!;
@@ -1057,15 +930,11 @@ describe("MessagesTimeline (LegendList)", () => {
           .getByRole("button", { name: "Show 1 step", exact: true })
           .click();
         await expect
-          .element(
-            page
-              .elementLocator(second)
-              .getByRole("button", { name: "Hide steps" }),
-          )
+          .element(page.elementLocator(second).getByRole("button", { name: "Hide steps" }))
           .toBeVisible();
         messages.push(
-          ...[makeUserEntry("separate-user-2", "Continue", 6)].flatMap(
-            (entry) => (entry.kind === "message" ? [entry.message] : []),
+          ...[makeUserEntry("separate-user-2", "Continue", 6)].flatMap((entry) =>
+            entry.kind === "message" ? [entry.message] : [],
           ),
         );
         api!.setTimelineState({ entries: entries("turn-2"), isWorking: true });
@@ -1076,18 +945,10 @@ describe("MessagesTimeline (LegendList)", () => {
           expect(host.textContent).not.toContain("echo between runs");
         });
         await expect
-          .element(
-            page
-              .elementLocator(first)
-              .getByRole("button", { name: "Show 1 step" }),
-          )
+          .element(page.elementLocator(first).getByRole("button", { name: "Show 1 step" }))
           .toBeVisible();
         await expect
-          .element(
-            page
-              .elementLocator(second)
-              .getByRole("button", { name: "Hide steps" }),
-          )
+          .element(page.elementLocator(second).getByRole("button", { name: "Hide steps" }))
           .toBeVisible();
       } finally {
         await screen.unmount();
@@ -1167,10 +1028,7 @@ describe("MessagesTimeline (LegendList)", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const screen = await render(
-      <TimelineHarness
-        initialEntries={[lone, pair]}
-        onIsAtEndChangeSpy={() => {}}
-      />,
+      <TimelineHarness initialEntries={[lone, pair]} onIsAtEndChangeSpy={() => {}} />,
       { container: host },
     );
 
@@ -1179,27 +1037,16 @@ describe("MessagesTimeline (LegendList)", () => {
         expect(host.querySelector('img[alt="right.png"]')).not.toBeNull();
       });
       expect(host.textContent).not.toContain(IMAGE_ONLY_BOOTSTRAP_PROMPT);
-      const bubbles = host.querySelectorAll(
-        '[data-slot="user-message-bubble"]',
-      );
-      expect(
-        [...bubbles].map((bubble) => bubble.hasAttribute("data-media-only")),
-      ).toEqual([true, true]);
-      expect(
-        host.querySelector('img[alt="lone.png"]')!.getBoundingClientRect()
-          .height,
-      ).toBe(192);
-      const collage = host
-        .querySelector('img[alt="left.png"]')!
-        .closest(".grid")!;
+      const bubbles = host.querySelectorAll('[data-slot="user-message-bubble"]');
+      expect([...bubbles].map((bubble) => bubble.hasAttribute("data-media-only"))).toEqual([
+        true,
+        true,
+      ]);
+      expect(host.querySelector('img[alt="lone.png"]')!.getBoundingClientRect().height).toBe(192);
+      const collage = host.querySelector('img[alt="left.png"]')!.closest(".grid")!;
       expect(collage.getBoundingClientRect().width).toBe(320);
-      expect(
-        host.querySelector('img[alt="left.png"]')!.getBoundingClientRect()
-          .height,
-      ).toBe(192);
-      expect(
-        host.querySelector('button[aria-label="Copy message"]'),
-      ).toBeNull();
+      expect(host.querySelector('img[alt="left.png"]')!.getBoundingClientRect().height).toBe(192);
+      expect(host.querySelector('button[aria-label="Copy message"]')).toBeNull();
     } finally {
       await screen.unmount();
       host.remove();
@@ -1233,17 +1080,13 @@ describe("MessagesTimeline (LegendList)", () => {
 
     try {
       await vi.waitFor(() => {
-        expect(
-          host.querySelector('img[alt="web-screenshot.png"]'),
-        ).not.toBeNull();
+        expect(host.querySelector('img[alt="web-screenshot.png"]')).not.toBeNull();
       });
       const contextMenuEvent = new MouseEvent("contextmenu", {
         bubbles: true,
         cancelable: true,
       });
-      host
-        .querySelector('img[alt="web-screenshot.png"]')!
-        .dispatchEvent(contextMenuEvent);
+      host.querySelector('img[alt="web-screenshot.png"]')!.dispatchEvent(contextMenuEvent);
 
       expect(contextMenuEvent.defaultPrevented).toBe(false);
       expect(onImageActionMenu).not.toHaveBeenCalled();
@@ -1269,16 +1112,11 @@ describe("MessagesTimeline (LegendList)", () => {
     );
     try {
       // Let the empty pane finish mounting before its history arrives.
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => resolve()),
-      );
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       const entries = Array.from({ length: 12 }, (_, index) =>
         makeAssistantEntry(
           "loaded-tall-" + index,
-          Array.from(
-            { length: 60 },
-            (_, line) => "Paragraph " + index + "." + line,
-          ).join("\n\n"),
+          Array.from({ length: 60 }, (_, line) => "Paragraph " + index + "." + line).join("\n\n"),
           index,
         ),
       );
@@ -1305,11 +1143,7 @@ describe("MessagesTimeline (LegendList)", () => {
     let nested = 0;
     let maximumNested = 0;
     const short = Array.from({ length: 80 }, (_, index) =>
-      makeAssistantEntry(
-        "history-short-" + index,
-        "Short reply " + index,
-        index,
-      ),
+      makeAssistantEntry("history-short-" + index, "Short reply " + index, index),
     );
     const long = Array.from({ length: 4 }, (_, index) =>
       makeAssistantEntry(
@@ -1395,9 +1229,7 @@ describe("MessagesTimeline (LegendList)", () => {
       await vi.waitFor(
         () => {
           // Row rendered
-          expect(
-            host.querySelector('[data-message-id="msg-1"]'),
-          ).not.toBeNull();
+          expect(host.querySelector('[data-message-id="msg-1"]')).not.toBeNull();
         },
         { timeout: 3_000, interval: 16 },
       );
@@ -1407,8 +1239,7 @@ describe("MessagesTimeline (LegendList)", () => {
       await vi.waitFor(
         () => {
           if (currentRef && typeof currentRef.scrollToEnd === "function") {
-            currentRef.scrollToEnd =
-              scrollToEndSpy as LegendListRef["scrollToEnd"];
+            currentRef.scrollToEnd = scrollToEndSpy as LegendListRef["scrollToEnd"];
           }
           expect(isAtEndCalls).toContain(true);
         },
@@ -1447,9 +1278,7 @@ describe("MessagesTimeline (LegendList)", () => {
       await waitForTimelineLayout(() => node);
       await vi.waitFor(() => {
         expect(node.scrollHeight).toBeGreaterThan(before);
-        expect(
-          node.scrollHeight - node.scrollTop - node.clientHeight,
-        ).toBeLessThan(40);
+        expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeLessThan(40);
       });
     } finally {
       await screen.unmount();
@@ -1487,14 +1316,10 @@ describe("MessagesTimeline (LegendList)", () => {
         api!.setEntries(entries(lines));
         await vi.waitFor(() => {
           expect(node.scrollHeight).toBeGreaterThan(beforeHeight);
-          expect(
-            node.scrollHeight - node.scrollTop - node.clientHeight,
-          ).toBeLessThan(8);
+          expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeLessThan(8);
         });
       }
-      node.dispatchEvent(
-        new WheelEvent("wheel", { deltaY: -120, bubbles: true }),
-      );
+      node.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
       node.scrollTop -= 120;
       node.dispatchEvent(new Event("scroll"));
       await waitForTimelineLayout(() => node);
@@ -1502,9 +1327,7 @@ describe("MessagesTimeline (LegendList)", () => {
       api!.setEntries(entries(18));
       await waitForTimelineLayout(() => node);
       expect(Math.abs(node.scrollTop - beforeScroll)).toBeLessThan(8);
-      expect(
-        node.scrollHeight - node.scrollTop - node.clientHeight,
-      ).toBeGreaterThan(40);
+      expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeGreaterThan(40);
     } finally {
       await screen.unmount();
       host.remove();
@@ -1536,38 +1359,27 @@ describe("MessagesTimeline (LegendList)", () => {
       const scrollContainer = await waitForScrollContainer(host);
       await vi.waitFor(() => {
         const distanceFromEnd =
-          scrollContainer.scrollHeight -
-          scrollContainer.clientHeight -
-          scrollContainer.scrollTop;
+          scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
         expect(distanceFromEnd).toBeLessThan(8);
       });
 
       isAtEndCalls.length = 0;
       api!.setEntries([
         ...initialEntries,
-        makeAssistantEntry(
-          "msg-assistant-auto-follow-tail",
-          "tail append target",
-          120,
-        ),
+        makeAssistantEntry("msg-assistant-auto-follow-tail", "tail append target", 120),
       ]);
 
       await vi.waitFor(() => {
         const appendedRow = host.querySelector<HTMLElement>(
           '[data-message-id="msg-assistant-auto-follow-tail"]',
         );
-        expect(
-          appendedRow,
-          "Appended row should render after the update.",
-        ).not.toBeNull();
+        expect(appendedRow, "Appended row should render after the update.").not.toBeNull();
         expect(
           isElementVisibleWithinContainer(appendedRow!, scrollContainer),
           "Appended row should stay visible when the user is already at the end.",
         ).toBe(true);
         const distanceFromEnd =
-          scrollContainer.scrollHeight -
-          scrollContainer.clientHeight -
-          scrollContainer.scrollTop;
+          scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
         expect(distanceFromEnd).toBeLessThan(8);
         expect(isAtEndCalls.at(-1)).toBe(true);
       });
@@ -1602,22 +1414,15 @@ describe("MessagesTimeline (LegendList)", () => {
         const node = await waitForScrollContainer(host);
         await waitForTimelineLayout(() => node);
         await vi.waitFor(() =>
-          expect(
-            node.scrollHeight - node.clientHeight - node.scrollTop,
-          ).toBeLessThan(8),
+          expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
         );
         isAtEndCalls.length = 0;
-        const first = makeAssistantEntry(
-          "follow-mid-scroll-a",
-          "Reply\n\n".repeat(20),
-          120,
-        );
+        const first = makeAssistantEntry("follow-mid-scroll-a", "Reply\n\n".repeat(20), 120);
         api!.setEntries([...initialEntries, first]);
         // The follow scroll is animated; update again while it is under way.
         await nextFrame();
         await nextFrame();
-        const lastId =
-          update === "another row arrives" ? "follow-mid-scroll-b" : first.id;
+        const lastId = update === "another row arrives" ? "follow-mid-scroll-b" : first.id;
         api!.setEntries(
           update === "another row arrives"
             ? [
@@ -1625,20 +1430,13 @@ describe("MessagesTimeline (LegendList)", () => {
                 first,
                 makeAssistantEntry(lastId, "Second reply\n\n".repeat(20), 121),
               ]
-            : [
-                ...initialEntries,
-                makeAssistantEntry(lastId, "Longer reply\n\n".repeat(60), 120),
-              ],
+            : [...initialEntries, makeAssistantEntry(lastId, "Longer reply\n\n".repeat(60), 120)],
         );
         await vi.waitFor(
           () => {
-            const row = host.querySelector<HTMLElement>(
-              `[data-message-id="${lastId}"]`,
-            );
+            const row = host.querySelector<HTMLElement>(`[data-message-id="${lastId}"]`);
             expect(row).not.toBeNull();
-            expect(
-              node.scrollHeight - node.clientHeight - node.scrollTop,
-            ).toBeLessThan(8);
+            expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8);
           },
           { timeout: 3_000, interval: 16 },
         );
@@ -1670,28 +1468,19 @@ describe("MessagesTimeline (LegendList)", () => {
       />,
       { container: host },
     );
-    const nextFrame = () =>
-      new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     try {
       // Not waitForScrollContainer: that waits for content to overflow.
       let node!: HTMLElement;
       await vi.waitFor(() => {
-        node = host.querySelector<HTMLElement>(
-          '[data-slot="messages-scroll-container"]',
-        )!;
+        node = host.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
         expect(node).not.toBeNull();
-        expect(
-          host.querySelector('[data-message-id="fits-reply"]'),
-        ).not.toBeNull();
+        expect(host.querySelector('[data-message-id="fits-reply"]')).not.toBeNull();
       });
       for (let frame = 0; frame < 4; frame += 1) await nextFrame();
       expect(node.scrollHeight).toBeLessThanOrEqual(node.clientHeight + 1);
       isAtEndCalls.length = 0;
-      const grown = makeAssistantEntry(
-        "fits-grown",
-        "Long reply\n\n".repeat(30),
-        2,
-      );
+      const grown = makeAssistantEntry("fits-grown", "Long reply\n\n".repeat(30), 2);
       api!.setEntries([...initialEntries, grown]);
       await nextFrame();
       await nextFrame();
@@ -1700,10 +1489,7 @@ describe("MessagesTimeline (LegendList)", () => {
         makeAssistantEntry(grown.id, "Longer reply\n\n".repeat(80), 2),
       ]);
       await vi.waitFor(
-        () =>
-          expect(
-            node.scrollHeight - node.clientHeight - node.scrollTop,
-          ).toBeLessThan(8),
+        () => expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
         { timeout: 3_000, interval: 16 },
       );
       expect(isAtEndCalls).not.toContain(false);
@@ -1733,33 +1519,23 @@ describe("MessagesTimeline (LegendList)", () => {
       const node = await waitForScrollContainer(host);
       await waitForTimelineLayout(() => node);
       await vi.waitFor(() =>
-        expect(
-          node.scrollHeight - node.clientHeight - node.scrollTop,
-        ).toBeLessThan(8),
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
       );
       // Pressing the scrollbar stops following without moving the list.
       node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
       const before = node.scrollTop;
       const paused = [
         ...initialEntries,
-        makeAssistantEntry(
-          "jump-resume-paused",
-          "Paused reply\n\n".repeat(20),
-          120,
-        ),
+        makeAssistantEntry("jump-resume-paused", "Paused reply\n\n".repeat(20), 120),
       ];
       api!.setEntries(paused);
       await waitForTimelineLayout(() => node);
       expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
-      expect(
-        node.scrollHeight - node.clientHeight - node.scrollTop,
-      ).toBeGreaterThan(40);
+      expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeGreaterThan(40);
 
       api!.jumpToLatest();
       await vi.waitFor(() =>
-        expect(
-          node.scrollHeight - node.clientHeight - node.scrollTop,
-        ).toBeLessThan(8),
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
       );
       await waitForTimelineLayout(() => node);
 
@@ -1770,20 +1546,12 @@ describe("MessagesTimeline (LegendList)", () => {
       await waitForTimelineLayout(() => node);
       api!.setEntries([
         ...paused,
-        makeAssistantEntry(
-          "jump-resume-followed",
-          "Followed reply\n\n".repeat(20),
-          121,
-        ),
+        makeAssistantEntry("jump-resume-followed", "Followed reply\n\n".repeat(20), 121),
       ]);
       await vi.waitFor(
         () => {
-          expect(
-            host.querySelector('[data-message-id="jump-resume-followed"]'),
-          ).not.toBeNull();
-          expect(
-            node.scrollHeight - node.clientHeight - node.scrollTop,
-          ).toBeLessThan(8);
+          expect(host.querySelector('[data-message-id="jump-resume-followed"]')).not.toBeNull();
+          expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8);
         },
         { timeout: 3_000, interval: 16 },
       );
@@ -1820,9 +1588,7 @@ describe("MessagesTimeline (LegendList)", () => {
       const scrollContainer = await waitForScrollContainer(host);
       await vi.waitFor(() => {
         const distanceFromEnd =
-          scrollContainer.scrollHeight -
-          scrollContainer.clientHeight -
-          scrollContainer.scrollTop;
+          scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
         expect(distanceFromEnd).toBeLessThan(8);
       });
 
@@ -1830,11 +1596,7 @@ describe("MessagesTimeline (LegendList)", () => {
       api!.setTimelineState({
         entries: [
           ...initialEntries,
-          makeAssistantEntry(
-            "msg-assistant-final-tail",
-            "final tail message",
-            122,
-          ),
+          makeAssistantEntry("msg-assistant-final-tail", "final tail message", 122),
         ],
         isWorking: false,
         activeTurnStartedAt: null,
@@ -1853,9 +1615,7 @@ describe("MessagesTimeline (LegendList)", () => {
           "Replacing the working row at the tail should still keep the user pinned to the end.",
         ).toBe(true);
         const distanceFromEnd =
-          scrollContainer.scrollHeight -
-          scrollContainer.clientHeight -
-          scrollContainer.scrollTop;
+          scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
         expect(distanceFromEnd).toBeLessThan(8);
         expect(isAtEndCalls.at(-1)).toBe(true);
       });
@@ -1897,9 +1657,7 @@ describe("MessagesTimeline (LegendList)", () => {
 
       await vi.waitFor(() => {
         const distanceFromEnd =
-          scrollContainer.scrollHeight -
-          scrollContainer.clientHeight -
-          scrollContainer.scrollTop;
+          scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
         expect(distanceFromEnd).toBeGreaterThan(80);
         expect(isAtEndCalls.at(-1)).toBe(false);
       });
@@ -1908,22 +1666,14 @@ describe("MessagesTimeline (LegendList)", () => {
       const scrollTopBeforeAppend = scrollContainer.scrollTop;
       api!.setEntries([
         ...initialEntries,
-        makeAssistantEntry(
-          "msg-assistant-manual-tail",
-          "manual tail target",
-          121,
-        ),
+        makeAssistantEntry("msg-assistant-manual-tail", "manual tail target", 121),
       ]);
 
       await vi.waitFor(() => {
         const distanceFromEnd =
-          scrollContainer.scrollHeight -
-          scrollContainer.clientHeight -
-          scrollContainer.scrollTop;
+          scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
         expect(distanceFromEnd).toBeGreaterThan(80);
-        expect(
-          Math.abs(scrollContainer.scrollTop - scrollTopBeforeAppend),
-        ).toBeLessThan(8);
+        expect(Math.abs(scrollContainer.scrollTop - scrollTopBeforeAppend)).toBeLessThan(8);
         const appendedRow = host.querySelector<HTMLElement>(
           '[data-message-id="msg-assistant-manual-tail"]',
         );
@@ -1967,11 +1717,7 @@ describe("MessagesTimeline (LegendList)", () => {
     );
     try {
       const node = await waitForScrollContainer(host);
-      await scrollTimelineToOffset(
-        currentRef,
-        node,
-        node.scrollHeight - node.clientHeight - 65,
-      );
+      await scrollTimelineToOffset(currentRef, node, node.scrollHeight - node.clientHeight - 65);
       node.dispatchEvent(new WheelEvent("wheel", { deltaY: -65 }));
       node.dispatchEvent(new Event("scroll"));
       await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(false));
@@ -1980,23 +1726,14 @@ describe("MessagesTimeline (LegendList)", () => {
         ...initialEntries.slice(0, -1),
         makeAssistantEntry(
           "streaming-tail",
-          Array.from(
-            { length: 12 },
-            (_, index) => "Streamed paragraph " + index,
-          ).join("\n\n"),
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
           121,
         ),
       ]);
       await waitForTimelineLayout(() => node);
       expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
-      expect(
-        node.scrollHeight - node.clientHeight - node.scrollTop,
-      ).toBeGreaterThan(40);
-      await scrollTimelineToOffset(
-        currentRef,
-        node,
-        node.scrollHeight - node.clientHeight - 30,
-      );
+      expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeGreaterThan(40);
+      await scrollTimelineToOffset(currentRef, node, node.scrollHeight - node.clientHeight - 30);
       node.dispatchEvent(new Event("scroll"));
       await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(true));
       const beforeContinuedStream = node.scrollHeight;
@@ -2005,18 +1742,13 @@ describe("MessagesTimeline (LegendList)", () => {
         ...initialEntries.slice(0, -1),
         makeAssistantEntry(
           "streaming-tail",
-          Array.from(
-            { length: 24 },
-            (_, index) => "Continued paragraph " + index,
-          ).join("\n\n"),
+          Array.from({ length: 24 }, (_, index) => "Continued paragraph " + index).join("\n\n"),
           121,
         ),
       ]);
       await vi.waitFor(() => {
         expect(node.scrollHeight).toBeGreaterThan(beforeContinuedStream + 100);
-        expect(
-          node.scrollHeight - node.clientHeight - node.scrollTop,
-        ).toBeLessThan(40);
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(40);
         expect(isAtEndCalls.at(-1)).toBe(true);
       });
     } finally {
@@ -2066,13 +1798,8 @@ describe("MessagesTimeline (LegendList)", () => {
           const appendedRow = host.querySelector<HTMLElement>(
             '[data-message-id="msg-user-followed-tail"]',
           );
-          expect(
-            appendedRow,
-            "The followed row should be rendered.",
-          ).not.toBeNull();
-          expect(
-            isElementVisibleWithinContainer(appendedRow!, scrollContainer),
-          ).toBe(true);
+          expect(appendedRow, "The followed row should be rendered.").not.toBeNull();
+          expect(isElementVisibleWithinContainer(appendedRow!, scrollContainer)).toBe(true);
         },
         { timeout: 4_000 },
       );
@@ -2108,20 +1835,13 @@ describe("MessagesTimeline (LegendList)", () => {
       expect(api).not.toBeNull();
 
       const scrollContainer = await waitForScrollContainer(host);
-      const initialMaxScrollTop =
-        scrollContainer.scrollHeight - scrollContainer.clientHeight;
+      const initialMaxScrollTop = scrollContainer.scrollHeight - scrollContainer.clientHeight;
       const targetScrollTop = Math.max(0, initialMaxScrollTop - 80);
-      await scrollTimelineToOffset(
-        currentRef,
-        scrollContainer,
-        targetScrollTop,
-      );
+      await scrollTimelineToOffset(currentRef, scrollContainer, targetScrollTop);
 
       await vi.waitFor(() => {
         const distanceFromEnd =
-          scrollContainer.scrollHeight -
-          scrollContainer.clientHeight -
-          scrollContainer.scrollTop;
+          scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
         expect(distanceFromEnd).toBeGreaterThan(40);
       });
 
@@ -2148,9 +1868,7 @@ describe("MessagesTimeline (LegendList)", () => {
       <TimelineHarness
         initialEntries={makeOverflowEntries(16)}
         initialHeight={260}
-        headerContent={
-          <div data-testid="tall-header" style={{ height: 260 }} />
-        }
+        headerContent={<div data-testid="tall-header" style={{ height: 260 }} />}
         onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
         onListRefChange={(ref) => {
           currentRef = ref;
@@ -2166,27 +1884,18 @@ describe("MessagesTimeline (LegendList)", () => {
       expect(api).not.toBeNull();
 
       const scrollContainer = await waitForScrollContainer(host);
-      const initialMaxScrollTop =
-        scrollContainer.scrollHeight - scrollContainer.clientHeight;
+      const initialMaxScrollTop = scrollContainer.scrollHeight - scrollContainer.clientHeight;
       const targetScrollTop = Math.max(0, initialMaxScrollTop - 50);
-      await scrollTimelineToOffset(
-        currentRef,
-        scrollContainer,
-        targetScrollTop,
-      );
+      await scrollTimelineToOffset(currentRef, scrollContainer, targetScrollTop);
 
       await vi.waitFor(() => {
         const distanceFromEnd =
-          scrollContainer.scrollHeight -
-          scrollContainer.clientHeight -
-          scrollContainer.scrollTop;
+          scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
         expect(distanceFromEnd).toBeGreaterThan(30);
       });
 
       isAtEndCalls.length = 0;
-      api!.setHeaderContent(
-        <div data-testid="short-header" style={{ height: 0 }} />,
-      );
+      api!.setHeaderContent(<div data-testid="short-header" style={{ height: 0 }} />);
 
       // Reflow settles over a few frames; under full-suite load that can exceed 1s.
       await vi.waitFor(
@@ -2216,21 +1925,14 @@ describe("MessagesTimeline (LegendList)", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const screen = await render(
-      <TimelineHarness
-        initialEntries={entries}
-        onIsAtEndChangeSpy={() => {}}
-      />,
+      <TimelineHarness initialEntries={entries} onIsAtEndChangeSpy={() => {}} />,
       { container: host },
     );
 
     try {
       await vi.waitFor(() => {
-        expect(
-          host.querySelector('[data-message-id="msg-user-a"]'),
-        ).not.toBeNull();
-        expect(
-          host.querySelector('[data-message-id="msg-asst-b"]'),
-        ).not.toBeNull();
+        expect(host.querySelector('[data-message-id="msg-user-a"]')).not.toBeNull();
+        expect(host.querySelector('[data-message-id="msg-asst-b"]')).not.toBeNull();
       });
     } finally {
       await screen.unmount();
@@ -2257,11 +1959,7 @@ describe("MessagesTimeline (LegendList)", () => {
         expect(host.textContent).not.toContain(tail);
       });
 
-      host
-        .querySelector<HTMLButtonElement>(
-          '[data-message-id="msg-long-single"] button',
-        )
-        ?.click();
+      host.querySelector<HTMLButtonElement>('[data-message-id="msg-long-single"] button')?.click();
 
       await vi.waitFor(() => {
         expect(host.textContent).toContain("Show less");
@@ -2274,9 +1972,7 @@ describe("MessagesTimeline (LegendList)", () => {
   });
 
   it("collapses multi-line user messages by line count", async () => {
-    const text = Array.from({ length: 12 }, (_, index) => `line-${index}`).join(
-      "\n",
-    );
+    const text = Array.from({ length: 12 }, (_, index) => `line-${index}`).join("\n");
     const host = document.createElement("div");
     document.body.append(host);
     const screen = await render(
@@ -2361,11 +2057,7 @@ describe("MessagesTimeline (LegendList)", () => {
       <TimelineHarness
         initialEntries={[
           makeUserEntry("msg-long-first", `${"a".repeat(600)}${firstTail}`, 0),
-          makeUserEntry(
-            "msg-long-second",
-            `${"b".repeat(600)}${secondTail}`,
-            1,
-          ),
+          makeUserEntry("msg-long-second", `${"b".repeat(600)}${secondTail}`, 1),
         ]}
         onIsAtEndChangeSpy={() => {}}
       />,
@@ -2384,11 +2076,7 @@ describe("MessagesTimeline (LegendList)", () => {
       );
       expect(secondBodyBefore).not.toBeNull();
       const secondRenderCountBefore = secondBodyBefore?.dataset.renderCount;
-      host
-        .querySelector<HTMLButtonElement>(
-          '[data-message-id="msg-long-first"] button',
-        )
-        ?.click();
+      host.querySelector<HTMLButtonElement>('[data-message-id="msg-long-first"] button')?.click();
 
       await vi.waitFor(() => {
         expect(host.textContent).toContain(firstTail);
@@ -2396,9 +2084,7 @@ describe("MessagesTimeline (LegendList)", () => {
         const secondBodyAfter = host.querySelector<HTMLElement>(
           '[data-message-id="msg-long-second"] [data-render-count]',
         );
-        expect(secondBodyAfter?.dataset.renderCount).toBe(
-          secondRenderCountBefore,
-        );
+        expect(secondBodyAfter?.dataset.renderCount).toBe(secondRenderCountBefore);
       });
     } finally {
       await screen.unmount();
@@ -2430,9 +2116,7 @@ describe("MessagesTimeline (LegendList)", () => {
         expect(host.textContent).not.toContain(tail);
       });
 
-      host
-        .querySelector<HTMLButtonElement>('button[title="Copy message"]')
-        ?.click();
+      host.querySelector<HTMLButtonElement>('button[title="Copy message"]')?.click();
 
       await vi.waitFor(() => {
         expect(clipboardWrite).toHaveBeenCalledWith(longText);
@@ -2461,14 +2145,10 @@ describe("MessagesTimeline (LegendList)", () => {
     try {
       let bubble: HTMLElement | null = null;
       await vi.waitFor(() => {
-        bubble = host.querySelector<HTMLElement>(
-          '[data-slot="user-message-bubble"]',
-        );
+        bubble = host.querySelector<HTMLElement>('[data-slot="user-message-bubble"]');
         expect(bubble).not.toBeNull();
         expect(
-          host.querySelector(
-            'button[aria-label="Revert to before this message"]',
-          ),
+          host.querySelector('button[aria-label="Revert to before this message"]'),
         ).not.toBeNull();
       });
       const bubbleRect = bubble!.getBoundingClientRect();
@@ -2510,30 +2190,17 @@ describe("MessagesTimeline (LegendList)", () => {
     const rowOf = (id: MessageId) =>
       host
         .querySelector(`[data-message-id="${id}"]`)
-        ?.closest<HTMLElement>(
-          "[data-revert-dimmed], [data-timeline-root] > div",
-        );
+        ?.closest<HTMLElement>("[data-revert-dimmed], [data-timeline-root] > div");
 
     try {
-      const triggers = page.getByRole("button", {
-        name: "Revert to before this message",
-      });
+      const triggers = page.getByRole("button", { name: "Revert to before this message" });
       await triggers.nth(1).click();
-      const popover = page.getByRole("dialog", {
-        name: "Revert to before this message",
-      });
+      const popover = page.getByRole("dialog", { name: "Revert to before this message" });
       await vi.waitFor(() => {
-        expect(popover.element().textContent).toContain(
-          "Removes this message.",
-        );
-        expect(popover.element().textContent).toContain(
-          "needs an isolated workspace",
-        );
+        expect(popover.element().textContent).toContain("Removes this message.");
+        expect(popover.element().textContent).toContain("needs an isolated workspace");
         expect(
-          page
-            .getByRole("button", { name: "Restore files" })
-            .element()
-            .hasAttribute("disabled"),
+          page.getByRole("button", { name: "Restore files" }).element().hasAttribute("disabled"),
         ).toBe(true);
         // Only the target and what follows it are dimmed while deciding.
         expect(rowOf(targetId)?.hasAttribute("data-revert-dimmed")).toBe(true);
@@ -2543,9 +2210,7 @@ describe("MessagesTimeline (LegendList)", () => {
       await userEvent.keyboard("{Escape}");
       await vi.waitFor(() => {
         expect(rowOf(targetId)?.hasAttribute("data-revert-dimmed")).toBe(false);
-        expect(
-          document.querySelector('[data-slot="revert-popover"]'),
-        ).toBeNull();
+        expect(document.querySelector('[data-slot="revert-popover"]')).toBeNull();
       });
       expect(onRevertUserMessage).not.toHaveBeenCalled();
 
@@ -2573,11 +2238,7 @@ describe("MessagesTimeline (LegendList)", () => {
       await userEvent.keyboard("{Enter}");
       await vi.waitFor(() => {
         expect(onRevertUserMessage).toHaveBeenCalledTimes(1);
-        expect(onRevertUserMessage).toHaveBeenLastCalledWith(
-          firstId,
-          true,
-          null,
-        );
+        expect(onRevertUserMessage).toHaveBeenLastCalledWith(firstId, true, null);
       });
     } finally {
       await screen.unmount();
@@ -2603,23 +2264,15 @@ describe("MessagesTimeline (LegendList)", () => {
     const screen = await render(harness(seenTail), { container: host });
 
     try {
-      await page
-        .getByRole("button", { name: "Revert to before this message" })
-        .click();
+      await page.getByRole("button", { name: "Revert to before this message" }).click();
       await vi.waitFor(() => {
-        expect(
-          document.querySelector('[data-slot="revert-popover"]'),
-        ).not.toBeNull();
+        expect(document.querySelector('[data-slot="revert-popover"]')).not.toBeNull();
       });
       // A message arrives while the user is still deciding.
       await screen.rerender(harness("msg-arrived-later" as MessageId));
       await userEvent.keyboard("{Enter}");
       await vi.waitFor(() => {
-        expect(onRevertUserMessage).toHaveBeenCalledWith(
-          messageId,
-          false,
-          seenTail,
-        );
+        expect(onRevertUserMessage).toHaveBeenCalledWith(messageId, false, seenTail);
       });
     } finally {
       await screen.unmount();
@@ -2663,9 +2316,7 @@ describe("MessagesTimeline (LegendList)", () => {
       );
       await vi.waitFor(() => {
         expect(onRevertReopenHandled).toHaveBeenLastCalledWith(8);
-        expect(
-          document.querySelector('[data-slot="revert-popover"]'),
-        ).not.toBeNull();
+        expect(document.querySelector('[data-slot="revert-popover"]')).not.toBeNull();
       });
     } finally {
       await screen.unmount();
@@ -2690,17 +2341,13 @@ describe("MessagesTimeline (LegendList)", () => {
     );
 
     try {
-      const trigger = page.getByRole("button", {
-        name: "Revert to before this message",
-      });
+      const trigger = page.getByRole("button", { name: "Revert to before this message" });
       await vi.waitFor(() => {
         expect(trigger.element().getAttribute("aria-disabled")).toBe("true");
       });
       await trigger.hover();
       await vi.waitFor(() => {
-        expect(document.body.textContent).toContain(
-          "Cursor doesn't support revert",
-        );
+        expect(document.body.textContent).toContain("Cursor doesn't support revert");
       });
       // Playwright refuses to click aria-disabled controls; a DOM click must not open it either.
       (trigger.element() as HTMLElement).click();
@@ -2713,16 +2360,13 @@ describe("MessagesTimeline (LegendList)", () => {
           onIsAtEndChangeSpy={() => {}}
           revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
           onRevertUserMessage={onRevertUserMessage}
-          pendingRevert={{
-            targetMessageId: messageId,
-            label: "Reverting conversation…",
-          }}
+          pendingRevert={{ targetMessageId: messageId, label: "Reverting conversation…" }}
         />,
       );
       await vi.waitFor(() => {
-        expect(
-          host.querySelector('[data-slot="revert-status-pill"]')?.textContent,
-        ).toContain("Reverting conversation…");
+        expect(host.querySelector('[data-slot="revert-status-pill"]')?.textContent).toContain(
+          "Reverting conversation…",
+        );
         expect(host.querySelector('[aria-busy="true"]')).not.toBeNull();
       });
     } finally {
@@ -2763,14 +2407,9 @@ describe("MessagesTimeline (LegendList)", () => {
     const screen = await render(
       <TimelineHarness
         initialEntries={[
-          makeUserEntry(
-            "msg-skill-chip-newline",
-            "$review\nplease look at this",
-            0,
-            {
-              skillCall: { name: "review" },
-            },
-          ),
+          makeUserEntry("msg-skill-chip-newline", "$review\nplease look at this", 0, {
+            skillCall: { name: "review" },
+          }),
         ]}
         onIsAtEndChangeSpy={() => {}}
       />,
@@ -2795,14 +2434,9 @@ describe("MessagesTimeline (LegendList)", () => {
     const screen = await render(
       <TimelineHarness
         initialEntries={[
-          makeUserEntry(
-            "msg-skill-chip-slash",
-            "/review please look at this",
-            0,
-            {
-              skillCall: { name: "review" },
-            },
-          ),
+          makeUserEntry("msg-skill-chip-slash", "/review please look at this", 0, {
+            skillCall: { name: "review" },
+          }),
         ]}
         onIsAtEndChangeSpy={() => {}}
       />,
@@ -2861,9 +2495,7 @@ describe("MessagesTimeline (LegendList)", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialEntries={[
-          makeUserEntry("msg-skill-plain", "$review please look at this", 0),
-        ]}
+        initialEntries={[makeUserEntry("msg-skill-plain", "$review please look at this", 0)]}
         onIsAtEndChangeSpy={() => {}}
       />,
       { container: host },
@@ -2895,8 +2527,7 @@ describe("MessagesTimeline (LegendList)", () => {
       { container: host },
     );
 
-    const getRow = () =>
-      host.querySelector<HTMLElement>(`[data-timeline-row-id="${commandId}"]`);
+    const getRow = () => host.querySelector<HTMLElement>(`[data-timeline-row-id="${commandId}"]`);
     const getToggleButton = () =>
       host.querySelector<HTMLButtonElement>(
         `[data-timeline-row-id="${commandId}"] button[aria-expanded]`,
@@ -2904,10 +2535,7 @@ describe("MessagesTimeline (LegendList)", () => {
 
     try {
       await vi.waitFor(() => {
-        expect(
-          getRow(),
-          "Unable to find the command transcript row.",
-        ).not.toBeNull();
+        expect(getRow(), "Unable to find the command transcript row.").not.toBeNull();
         expect(getToggleButton()?.getAttribute("aria-expanded")).toBe("false");
         expect(getRow()?.textContent).not.toContain("Output");
       });
@@ -2941,10 +2569,7 @@ describe("MessagesTimeline (LegendList)", () => {
         initialEntries={[
           ...makeOverflowEntries(16),
           makeCommandEntry(commandId, {
-            output: Array.from(
-              { length: 40 },
-              (_, line) => `line ${line}`,
-            ).join("\n"),
+            output: Array.from({ length: 40 }, (_, line) => `line ${line}`).join("\n"),
           }),
         ]}
         initialHeight={240}
@@ -2959,9 +2584,7 @@ describe("MessagesTimeline (LegendList)", () => {
     try {
       const scrollContainer = await waitForScrollContainer(host);
       const distanceFromEnd = () =>
-        scrollContainer.scrollHeight -
-        scrollContainer.clientHeight -
-        scrollContainer.scrollTop;
+        scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
       await vi.waitFor(() => {
         expect(toggle()).not.toBeNull();
         expect(distanceFromEnd()).toBeLessThan(8);
@@ -2984,9 +2607,7 @@ describe("MessagesTimeline (LegendList)", () => {
       toggle()!.click();
       await vi.waitFor(() => {
         expect(toggle()?.getAttribute("aria-expanded")).toBe("true");
-        expect(
-          Math.abs(toggle()!.getBoundingClientRect().top - rowTop),
-        ).toBeLessThan(2);
+        expect(Math.abs(toggle()!.getBoundingClientRect().top - rowTop)).toBeLessThan(2);
         expect(distanceFromEnd()).toBeGreaterThan(100);
       });
     } finally {
@@ -3046,13 +2667,7 @@ describe("MessagesTimeline (LegendList)", () => {
                 turnId,
                 completedAt: "2026-03-04T12:00:20.000Z",
                 checkpointTurnCount: 2,
-                files: [
-                  {
-                    path: "packages/foo/src/bar.ts",
-                    additions: 1,
-                    deletions: 0,
-                  },
-                ],
+                files: [{ path: "packages/foo/src/bar.ts", additions: 1, deletions: 0 }],
               },
             ],
           ])
@@ -3074,9 +2689,7 @@ describe("MessagesTimeline (LegendList)", () => {
     try {
       await vi.waitFor(() => {
         expect(getTurnDiffSpy).toHaveBeenCalledTimes(1);
-        expect(
-          host.querySelector('[data-testid="inline-file-diff"]'),
-        ).not.toBeNull();
+        expect(host.querySelector('[data-testid="inline-file-diff"]')).not.toBeNull();
         expect(host.innerHTML).toContain("max-h-80");
       });
     } finally {
@@ -3152,13 +2765,7 @@ describe("MessagesTimeline (LegendList)", () => {
                 turnId,
                 completedAt: "2026-03-04T12:01:10.000Z",
                 checkpointTurnCount: 3,
-                files: [
-                  {
-                    path: "apps/web/src/always-visible.ts",
-                    additions: 1,
-                    deletions: 0,
-                  },
-                ],
+                files: [{ path: "apps/web/src/always-visible.ts", additions: 1, deletions: 0 }],
               },
             ],
           ])
@@ -3173,8 +2780,8 @@ describe("MessagesTimeline (LegendList)", () => {
     );
 
     const findButton = (label: string) =>
-      Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(
-        (button) => button.textContent?.includes(label),
+      Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+        button.textContent?.includes(label),
       );
     const findInlineDiff = () =>
       host.querySelector(
@@ -3211,20 +2818,14 @@ describe("MessagesTimeline (LegendList)", () => {
   });
 
   it("keeps a historical file-change row rendered after appending a newer user message", async () => {
-    const fillerEntries: TimelineEntry[] = Array.from(
-      { length: 32 },
-      (_, index) =>
-        index % 2 === 0
-          ? makeUserEntry(
-              `msg-user-filler-${index}`,
-              `filler user ${index}`,
-              index * 3,
-            )
-          : makeAssistantEntry(
-              `msg-assistant-filler-${index}`,
-              `filler assistant ${index}`,
-              index * 3,
-            ),
+    const fillerEntries: TimelineEntry[] = Array.from({ length: 32 }, (_, index) =>
+      index % 2 === 0
+        ? makeUserEntry(`msg-user-filler-${index}`, `filler user ${index}`, index * 3)
+        : makeAssistantEntry(
+            `msg-assistant-filler-${index}`,
+            `filler assistant ${index}`,
+            index * 3,
+          ),
     );
     const remoteFileChangeEntry: TimelineEntry = {
       id: "remote-file-change-entry",
@@ -3283,9 +2884,7 @@ describe("MessagesTimeline (LegendList)", () => {
     try {
       await vi.waitFor(() => {
         expect(
-          host.querySelector(
-            '[data-timeline-row-id="remote-file-change-entry"]',
-          ),
+          host.querySelector('[data-timeline-row-id="remote-file-change-entry"]'),
           "Historical file-change row should render before the newer user message arrives.",
         ).not.toBeNull();
       });
@@ -3293,9 +2892,7 @@ describe("MessagesTimeline (LegendList)", () => {
       if (api === null) {
         throw new Error("Expected timeline harness API to be available.");
       }
-      const timelineApi = api as {
-        setEntries: (entries: TimelineEntry[]) => void;
-      };
+      const timelineApi = api as { setEntries: (entries: TimelineEntry[]) => void };
       timelineApi.setEntries([
         ...initialEntries,
         makeUserEntry("msg-user-next", "ok, another one now", 139),
@@ -3399,18 +2996,14 @@ describe("MessagesTimeline (LegendList)", () => {
     try {
       await vi.waitFor(() => {
         expect(getTurnDiffSpy).toHaveBeenCalledTimes(1);
-        expect(
-          host.querySelector('[data-testid="inline-file-diff"]'),
-        ).not.toBeNull();
+        expect(host.querySelector('[data-testid="inline-file-diff"]')).not.toBeNull();
         expect(host.textContent).toContain(".docs/ci.md");
       });
 
       if (api === null) {
         throw new Error("Expected timeline harness API to be available.");
       }
-      const timelineApi = api as {
-        setEntries: (entries: TimelineEntry[]) => void;
-      };
+      const timelineApi = api as { setEntries: (entries: TimelineEntry[]) => void };
       timelineApi.setEntries([
         ...initialEntries,
         makeUserEntry("msg-user-next-inline", "another one", 100),
@@ -3497,13 +3090,7 @@ describe("MessagesTimeline (LegendList)", () => {
                 turnId,
                 completedAt: "2026-03-04T12:02:40.000Z",
                 checkpointTurnCount: 13,
-                files: [
-                  {
-                    path: ".docs/codex-prerequisites.md",
-                    additions: 2,
-                    deletions: 0,
-                  },
-                ],
+                files: [{ path: ".docs/codex-prerequisites.md", additions: 2, deletions: 0 }],
               },
             ],
           ])
@@ -3530,9 +3117,7 @@ describe("MessagesTimeline (LegendList)", () => {
       if (api === null) {
         throw new Error("Expected timeline harness API to be available.");
       }
-      const timelineApi = api as {
-        setEntries: (entries: TimelineEntry[]) => void;
-      };
+      const timelineApi = api as { setEntries: (entries: TimelineEntry[]) => void };
       timelineApi.setEntries([
         ...initialEntries,
         makeUserEntry("msg-user-next-open-state", "another one", 110),
@@ -3554,41 +3139,38 @@ describe("MessagesTimeline (LegendList)", () => {
   });
 
   it("renders hook-heavy diagnostics incrementally and expands full hook details", async () => {
-    const hookDiagnostics = Array.from(
-      { length: 14 },
-      (_, offset): TimelineWorkEntry => {
-        const handlerNumber = offset + 1;
-        const createdAt = new Date(
-          Date.parse("2026-03-04T12:03:00.000Z") + offset * 1_000,
-        ).toISOString();
-        return {
-          id: `hook-work-${handlerNumber}`,
-          createdAt,
-          label: `Handler ${handlerNumber} completed`,
-          tone: "info",
-          activityKind: "hook.completed",
-          category: "hook",
-          isIssue: false,
-          diagnostic: {
-            type: "hook",
-            id: `hook-${handlerNumber}`,
-            hookEvent: "preToolUse",
-            source: "plugin",
-            sourcePath: `/Users/example/.codex/plugins/example/handler-${handlerNumber}.json`,
-            handlerType: "command",
-            executionMode: "sync",
-            scope: "project",
-            displayOrder: handlerNumber,
-            status: "completed",
-            durationMs: handlerNumber,
-            statusMessage: `Handler ${handlerNumber} finished successfully`,
-            ...(handlerNumber === 1
-              ? { entries: [{ message: `diagnostic output ${handlerNumber}` }] }
-              : { output: `diagnostic output ${handlerNumber}` }),
-          },
-        };
-      },
-    );
+    const hookDiagnostics = Array.from({ length: 14 }, (_, offset): TimelineWorkEntry => {
+      const handlerNumber = offset + 1;
+      const createdAt = new Date(
+        Date.parse("2026-03-04T12:03:00.000Z") + offset * 1_000,
+      ).toISOString();
+      return {
+        id: `hook-work-${handlerNumber}`,
+        createdAt,
+        label: `Handler ${handlerNumber} completed`,
+        tone: "info",
+        activityKind: "hook.completed",
+        category: "hook",
+        isIssue: false,
+        diagnostic: {
+          type: "hook",
+          id: `hook-${handlerNumber}`,
+          hookEvent: "preToolUse",
+          source: "plugin",
+          sourcePath: `/Users/example/.codex/plugins/example/handler-${handlerNumber}.json`,
+          handlerType: "command",
+          executionMode: "sync",
+          scope: "project",
+          displayOrder: handlerNumber,
+          status: "completed",
+          durationMs: handlerNumber,
+          statusMessage: `Handler ${handlerNumber} finished successfully`,
+          ...(handlerNumber === 1
+            ? { entries: [{ message: `diagnostic output ${handlerNumber}` }] }
+            : { output: `diagnostic output ${handlerNumber}` }),
+        },
+      };
+    });
     const hookEntries: TimelineEntry[] = [
       {
         id: "hook-parent-entry",
@@ -3626,8 +3208,8 @@ describe("MessagesTimeline (LegendList)", () => {
       });
 
       const findButton = (label: string) =>
-        Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(
-          (button) => button.textContent?.includes(label),
+        Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+          button.textContent?.includes(label),
         );
 
       findButton("Show 6 more")?.click();
@@ -3645,9 +3227,7 @@ describe("MessagesTimeline (LegendList)", () => {
 
       findButton("Handler 1 completed")?.click();
       await vi.waitFor(() => {
-        expect(host.textContent).toContain(
-          "/Users/example/.codex/plugins/example/handler-1.json",
-        );
+        expect(host.textContent).toContain("/Users/example/.codex/plugins/example/handler-1.json");
         expect(host.textContent).toContain("Handler 1 finished successfully");
         expect(host.textContent).toContain("diagnostic output 1");
       });
@@ -3702,21 +3282,15 @@ describe("MessagesTimeline (LegendList)", () => {
 
     try {
       await vi.waitFor(() => {
-        expect(host.textContent).toContain(
-          "postToolUse hook applied output replacement",
-        );
+        expect(host.textContent).toContain("postToolUse hook applied output replacement");
         expect(host.textContent).toContain("plugin:hooks-codex.json");
         expect(host.textContent).toContain("order 7");
         expect(host.textContent).toContain("118ms");
         expect(host.textContent).toContain("stopped (output replaced)");
       });
 
-      const rowButton = Array.from(
-        host.querySelectorAll<HTMLButtonElement>("button"),
-      ).find((button) =>
-        button.textContent?.includes(
-          "postToolUse hook applied output replacement",
-        ),
+      const rowButton = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent?.includes("postToolUse hook applied output replacement"),
       );
       expect(rowButton?.querySelector("svg.lucide-check")).not.toBeNull();
       expect(rowButton?.querySelector("svg.lucide-circle-alert")).toBeNull();
@@ -3726,9 +3300,7 @@ describe("MessagesTimeline (LegendList)", () => {
         expect(host.textContent).toContain(
           "/Users/example/.codex/plugins/example/hooks-codex.json",
         );
-        expect(host.textContent).toContain(
-          "PostToolUse hook stopped execution",
-        );
+        expect(host.textContent).toContain("PostToolUse hook stopped execution");
       });
     } finally {
       await screen.unmount();
@@ -3737,9 +3309,7 @@ describe("MessagesTimeline (LegendList)", () => {
   });
 
   it("keeps a manually collapsed Codex collaboration row closed across stable rerenders", async () => {
-    const makeCollaborationEntry = (
-      status: "inProgress" | "completed",
-    ): TimelineEntry =>
+    const makeCollaborationEntry = (status: "inProgress" | "completed"): TimelineEntry =>
       ({
         id: "collaboration-row",
         kind: "work",
@@ -3788,29 +3358,21 @@ describe("MessagesTimeline (LegendList)", () => {
     try {
       expect(api).not.toBeNull();
       expect(host.textContent).toContain("Sending message to 1 agent");
-      expect(
-        host.querySelector('[data-subagent-state="completed"]'),
-      ).toBeNull();
+      expect(host.querySelector('[data-subagent-state="completed"]')).toBeNull();
 
       api!.setEntries([completed]);
       await vi.waitFor(() => {
         expect(host.textContent).toContain("Sent message to 1 agent");
-        expect(
-          host.querySelector('[data-subagent-state="completed"]'),
-        ).not.toBeNull();
+        expect(host.querySelector('[data-subagent-state="completed"]')).not.toBeNull();
       });
 
-      const trigger = Array.from(
-        host.querySelectorAll<HTMLButtonElement>("button"),
-      ).find((button) =>
-        button.textContent?.includes("Sent message to 1 agent"),
+      const trigger = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent?.includes("Sent message to 1 agent"),
       );
       expect(trigger).toBeDefined();
       trigger!.click();
       await vi.waitFor(() => {
-        expect(
-          host.querySelector('[data-subagent-state="completed"]'),
-        ).toBeNull();
+        expect(host.querySelector('[data-subagent-state="completed"]')).toBeNull();
       });
 
       api!.setEntries([
@@ -3819,12 +3381,8 @@ describe("MessagesTimeline (LegendList)", () => {
         makeAssistantEntry("unrelated-after", "Unrelated later row", 120),
       ]);
       await vi.waitFor(() => {
-        expect(
-          host.querySelector('[data-timeline-row-id="collaboration-row"]'),
-        ).not.toBeNull();
-        expect(
-          host.querySelector('[data-subagent-state="completed"]'),
-        ).toBeNull();
+        expect(host.querySelector('[data-timeline-row-id="collaboration-row"]')).not.toBeNull();
+        expect(host.querySelector('[data-subagent-state="completed"]')).toBeNull();
       });
     } finally {
       await screen.unmount();
@@ -3835,14 +3393,13 @@ describe("MessagesTimeline (LegendList)", () => {
 
 describe("MessagesTimeline working ribbon", () => {
   const TURN_START = "2026-03-04T12:00:00.000Z";
-  const at = (seconds: number) =>
-    new Date(Date.parse(TURN_START) + seconds * 1000).toISOString();
+  const at = (seconds: number) => new Date(Date.parse(TURN_START) + seconds * 1000).toISOString();
 
   const grabButton = (host: HTMLElement) =>
     host.querySelector<HTMLButtonElement>("[data-working-ribbon-grab]");
   const plainLabel = (host: HTMLElement) =>
-    Array.from(host.querySelectorAll<HTMLElement>("span.tabular-nums")).find(
-      (element) => element.textContent?.startsWith("Working"),
+    Array.from(host.querySelectorAll<HTMLElement>("span.tabular-nums")).find((element) =>
+      element.textContent?.startsWith("Working"),
     ) ?? null;
   const stage = (host: HTMLElement) =>
     host.querySelector<HTMLElement>('[data-slot="working-ribbon"]');
@@ -3882,9 +3439,7 @@ describe("MessagesTimeline working ribbon", () => {
 
   async function nextFrames(count = 2) {
     for (let index = 0; index < count; index += 1) {
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => resolve()),
-      );
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
   }
 
@@ -3894,9 +3449,7 @@ describe("MessagesTimeline working ribbon", () => {
         const before = headGlyph(host);
         await new Promise((resolve) => setTimeout(resolve, 120));
         const after = headGlyph(host);
-        expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeLessThan(
-          2,
-        );
+        expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeLessThan(2);
       },
       { timeout: 5_000, interval: 50 },
     );
@@ -3919,14 +3472,10 @@ describe("MessagesTimeline working ribbon", () => {
     const focusLost = vi.fn();
     const harness = (
       <TimelineHarness
-        initialEntries={
-          options.entries ?? [makeUserEntry("ribbon-user", "Keep going", 0)]
-        }
+        initialEntries={options.entries ?? [makeUserEntry("ribbon-user", "Keep going", 0)]}
         initialIsWorking
         initialHeight={options.initialHeight ?? 400}
-        {...(options.initialNowIso
-          ? { initialNowIso: options.initialNowIso }
-          : {})}
+        {...(options.initialNowIso ? { initialNowIso: options.initialNowIso } : {})}
         {...(options.initialActiveTurnStartedAt !== undefined
           ? { initialActiveTurnStartedAt: options.initialActiveTurnStartedAt }
           : {})}
@@ -3941,12 +3490,9 @@ describe("MessagesTimeline working ribbon", () => {
         }}
       />
     );
-    const screen = await render(
-      options.strict ? <StrictMode>{harness}</StrictMode> : harness,
-      {
-        container: host,
-      },
-    );
+    const screen = await render(options.strict ? <StrictMode>{harness}</StrictMode> : harness, {
+      container: host,
+    });
     await vi.waitFor(() => {
       expect(grabButton(host) ?? plainLabel(host)).not.toBeNull();
     });
@@ -3969,10 +3515,7 @@ describe("MessagesTimeline working ribbon", () => {
     });
   }
 
-  async function expectReleasedTo(
-    host: HTMLElement,
-    focused: () => Element | null,
-  ) {
+  async function expectReleasedTo(host: HTMLElement, focused: () => Element | null) {
     await vi.waitFor(() => {
       expect(stage(host)).toBeNull();
       expect(document.activeElement).toBe(focused());
@@ -4001,11 +3544,7 @@ describe("MessagesTimeline working ribbon", () => {
           makeReadWorkEntry("ribbon-footprint-read", "src/a.ts", 1),
         ],
         initialActiveTurnStartedAt: startedAt,
-        initialLiveActivity: {
-          kind: "tool",
-          providerItemId: null,
-          title: "Read src/a.ts",
-        },
+        initialLiveActivity: { kind: "tool", providerItemId: null, title: "Read src/a.ts" },
       });
       const { host } = mounted;
       const measure = () => {
@@ -4032,9 +3571,7 @@ describe("MessagesTimeline working ribbon", () => {
       try {
         await vi.waitFor(() => {
           expect(grabButton(host)).not.toBeNull();
-          expect(
-            grabButton(host)!.parentElement!.querySelector("span.truncate"),
-          ).not.toBeNull();
+          expect(grabButton(host)!.parentElement!.querySelector("span.truncate")).not.toBeNull();
         });
         const asButton = measure();
         reducedMotionStore.set(true);
@@ -4051,9 +3588,7 @@ describe("MessagesTimeline working ribbon", () => {
   });
 
   it("picks the label up on click without moving the row or the list", async () => {
-    const mounted = await mountWorkingTimeline({
-      entries: makeOverflowEntries(30),
-    });
+    const mounted = await mountWorkingTimeline({ entries: makeOverflowEntries(30) });
     const { host } = mounted;
     try {
       const scroller = await waitForScrollContainer(host);
@@ -4174,9 +3709,7 @@ describe("MessagesTimeline working ribbon", () => {
   });
 
   it("keeps steering keys from scrolling the list", async () => {
-    const mounted = await mountWorkingTimeline({
-      entries: makeOverflowEntries(30),
-    });
+    const mounted = await mountWorkingTimeline({ entries: makeOverflowEntries(30) });
     const { host } = mounted;
     // Captured on the way down; checked once dispatch has finished.
     const arrowEvents: KeyboardEvent[] = [];
@@ -4257,9 +3790,7 @@ describe("MessagesTimeline working ribbon", () => {
   });
 
   it("keeps the same stage when the turn's start time arrives mid-flight", async () => {
-    const mounted = await mountWorkingTimeline({
-      initialActiveTurnStartedAt: null,
-    });
+    const mounted = await mountWorkingTimeline({ initialActiveTurnStartedAt: null });
     const { host } = mounted;
     try {
       await grab(host);
@@ -4296,18 +3827,14 @@ describe("MessagesTimeline working ribbon", () => {
       try {
         await nextFrames(10);
         const stageParent = stage(host)!.offsetParent;
-        expect(
-          computed.mock.calls.filter(([element]) => element === stageParent),
-        ).toHaveLength(0);
+        expect(computed.mock.calls.filter(([element]) => element === stageParent)).toHaveLength(0);
         // A dock resize still refreshes the cached height.
         mounted.api().setDockHeight(120);
-        const dockHost = host.querySelector<HTMLElement>(
-          "[data-composer-dock-host]",
-        )!;
+        const dockHost = host.querySelector<HTMLElement>("[data-composer-dock-host]")!;
         await vi.waitFor(() => {
-          expect(
-            stage(host)!.getBoundingClientRect().bottom,
-          ).toBeLessThanOrEqual(dockHost.getBoundingClientRect().bottom - 120);
+          expect(stage(host)!.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+            dockHost.getBoundingClientRect().bottom - 120,
+          );
         });
       } finally {
         computed.mockRestore();
@@ -4322,12 +3849,8 @@ describe("MessagesTimeline working ribbon", () => {
     const { host } = mounted;
     try {
       await grab(host);
-      const dockHost = host.querySelector<HTMLElement>(
-        "[data-composer-dock-host]",
-      )!;
-      const region = host.querySelector<HTMLElement>(
-        "[data-working-ribbon-bounds]",
-      )!;
+      const dockHost = host.querySelector<HTMLElement>("[data-composer-dock-host]")!;
+      const region = host.querySelector<HTMLElement>("[data-working-ribbon-bounds]")!;
       const expectAligned = () => {
         const rect = stage(host)!.getBoundingClientRect();
         const bounds = region.getBoundingClientRect();
@@ -4377,9 +3900,7 @@ describe("MessagesTimeline working ribbon", () => {
       } finally {
         await userEvent.keyboard("{/ArrowRight}");
       }
-      host.querySelector<HTMLElement>(
-        "[data-working-ribbon-bounds]",
-      )!.style.maxWidth = "200px";
+      host.querySelector<HTMLElement>("[data-working-ribbon-bounds]")!.style.maxWidth = "200px";
       await vi.waitFor(() => {
         expect(stage(host)!.getBoundingClientRect().width).toBeCloseTo(200, 0);
       });
@@ -4415,9 +3936,7 @@ describe("MessagesTimeline working ribbon", () => {
       await grab(host);
       const spread = () => {
         const all = glyphs(host);
-        return Math.abs(
-          glyphTranslate(all.at(-1)!).x - glyphTranslate(all[0]!).x,
-        );
+        return Math.abs(glyphTranslate(all.at(-1)!).x - glyphTranslate(all[0]!).x);
       };
       const before = spread();
       root.style.fontSize = "24px";
@@ -4474,9 +3993,7 @@ describe("MessagesTimeline working ribbon", () => {
         </button>,
       );
       const headerButton = () =>
-        host.querySelector<HTMLButtonElement>(
-          '[data-testid="ribbon-header-button"]',
-        );
+        host.querySelector<HTMLButtonElement>('[data-testid="ribbon-header-button"]');
       await vi.waitFor(() => {
         expect(headerButton()).not.toBeNull();
       });
@@ -4501,10 +4018,7 @@ describe("MessagesTimeline working ribbon", () => {
       });
 
       await grab(host);
-      Object.defineProperty(document, "hidden", {
-        configurable: true,
-        get: () => true,
-      });
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
       try {
         document.dispatchEvent(new Event("visibilitychange"));
         await vi.waitFor(() => {
@@ -4575,13 +4089,10 @@ describe("MessagesTimeline working ribbon", () => {
     const pendingFrames = new Set<number>();
     let tickCount = 0;
     let maxPendingFrames = 0;
-    const originalRequestAnimationFrame =
-      window.requestAnimationFrame.bind(window);
-    const originalCancelAnimationFrame =
-      window.cancelAnimationFrame.bind(window);
+    const originalRequestAnimationFrame = window.requestAnimationFrame.bind(window);
+    const originalCancelAnimationFrame = window.cancelAnimationFrame.bind(window);
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-      if (callback.name !== "tick")
-        return originalRequestAnimationFrame(callback);
+      if (callback.name !== "tick") return originalRequestAnimationFrame(callback);
       const frame = originalRequestAnimationFrame((now) => {
         pendingFrames.delete(frame);
         tickCount += 1;
@@ -4591,12 +4102,10 @@ describe("MessagesTimeline working ribbon", () => {
       maxPendingFrames = Math.max(maxPendingFrames, pendingFrames.size);
       return frame;
     });
-    const cancelSpy = vi
-      .spyOn(window, "cancelAnimationFrame")
-      .mockImplementation((frame) => {
-        pendingFrames.delete(frame);
-        originalCancelAnimationFrame(frame);
-      });
+    const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
+      pendingFrames.delete(frame);
+      originalCancelAnimationFrame(frame);
+    });
     return {
       tickCount: () => tickCount,
       pendingCount: () => pendingFrames.size,
@@ -4607,14 +4116,8 @@ describe("MessagesTimeline working ribbon", () => {
 
   it("tears down its loop and observers on release", async () => {
     const { tickCount, pendingCount, cancelSpy } = trackRibbonFrames();
-    const resizeDisconnectSpy = vi.spyOn(
-      ResizeObserver.prototype,
-      "disconnect",
-    );
-    const mutationDisconnectSpy = vi.spyOn(
-      MutationObserver.prototype,
-      "disconnect",
-    );
+    const resizeDisconnectSpy = vi.spyOn(ResizeObserver.prototype, "disconnect");
+    const mutationDisconnectSpy = vi.spyOn(MutationObserver.prototype, "disconnect");
     const mounted = await mountWorkingTimeline();
     const { host } = mounted;
     try {
@@ -4694,10 +4197,7 @@ describe("MessagesTimeline row stability", () => {
     };
   }
 
-  function buildRows(
-    entries: TimelineEntry[],
-    cache: ReturnType<typeof createTimelineRowCache>,
-  ) {
+  function buildRows(entries: TimelineEntry[], cache: ReturnType<typeof createTimelineRowCache>) {
     return buildTimelineRows({
       timelineEntries: entries,
       completionDividerBeforeEntryId: null,
@@ -4721,29 +4221,17 @@ describe("MessagesTimeline row stability", () => {
     const work = makeReadWorkEntry("row-work", "src/a.ts", 1);
     const assistant = makeAssistantEntry("row-assistant", "Hel", 2);
     const before = buildRows([user, work, assistant], cache);
-    const externalsBefore = buildTimelineRowExternals(
-      before,
-      externalsInputs(),
-      new Map(),
-    );
+    const externalsBefore = buildTimelineRowExternals(before, externalsInputs(), new Map());
 
     const grown = makeAssistantEntry("row-assistant", "Hello there", 2);
     const after = buildRows([user, work, grown], cache);
-    const externalsAfter = buildTimelineRowExternals(
-      after,
-      externalsInputs(),
-      externalsBefore,
-    );
+    const externalsAfter = buildTimelineRowExternals(after, externalsInputs(), externalsBefore);
 
     expect(after[0]).toBe(before[0]);
     expect(after[1]).toBe(before[1]);
     expect(after[2]).not.toBe(before[2]);
-    expect(externalsAfter.get("row-user")).toBe(
-      externalsBefore.get("row-user"),
-    );
-    expect(externalsAfter.get("row-work")).toBe(
-      externalsBefore.get("row-work"),
-    );
+    expect(externalsAfter.get("row-user")).toBe(externalsBefore.get("row-user"));
+    expect(externalsAfter.get("row-work")).toBe(externalsBefore.get("row-work"));
     // Rebuilding the same entries returns the same array.
     expect(buildRows([user, work, grown], cache)).toBe(after);
   });
@@ -4767,31 +4255,20 @@ describe("MessagesTimeline row stability", () => {
       idleMs: null,
       completedAt: "2026-03-04T12:00:01.000Z",
     };
-    const without = buildTimelineRowExternals(
-      rows,
-      externalsInputs(),
-      new Map(),
-    );
+    const without = buildTimelineRowExternals(rows, externalsInputs(), new Map());
     const withMiss = buildTimelineRowExternals(
       rows,
-      externalsInputs({
-        cacheMissByAssistantMessageId: new Map([
-          [missed.id as MessageId, miss],
-        ]),
-      }),
+      externalsInputs({ cacheMissByAssistantMessageId: new Map([[missed.id as MessageId, miss]]) }),
       without,
     );
     const externalsOf = (map: typeof without, id: string) => {
       const externals = map.get(id)?.externals;
-      if (externals?.kind !== "assistant-message")
-        throw new Error("expected an assistant row");
+      if (externals?.kind !== "assistant-message") throw new Error("expected an assistant row");
       return externals;
     };
     expect(externalsOf(without, "row-missed").cacheMiss).toBeUndefined();
     expect(externalsOf(withMiss, "row-missed").cacheMiss).toBe(miss);
-    expect(withMiss.get("row-missed")?.version).not.toBe(
-      without.get("row-missed")?.version,
-    );
+    expect(withMiss.get("row-missed")?.version).not.toBe(without.get("row-missed")?.version);
     // The warm reply keeps its entry, so its row does not re-render.
     expect(withMiss.get("row-warm")).toBe(without.get("row-warm"));
     expect(externalsOf(withMiss, "row-warm").cacheMiss).toBeUndefined();
@@ -4809,47 +4286,26 @@ describe("MessagesTimeline row stability", () => {
       }
     }
     const inputs = externalsInputs({
-      revertTurnCountByUserMessageId: new CountingMap([
-        [user.id as MessageId, 0],
-      ]),
+      revertTurnCountByUserMessageId: new CountingMap([[user.id as MessageId, 0]]),
     });
     const before = buildRows([user, assistant], cache);
-    const externalsBefore = buildTimelineRowExternals(
-      before,
-      inputs,
-      new Map(),
-    );
+    const externalsBefore = buildTimelineRowExternals(before, inputs, new Map());
     expect(revertLookups).toBe(1);
 
-    const after = buildRows(
-      [user, makeAssistantEntry("row-assistant", "Hello there", 1)],
-      cache,
-    );
-    const externalsAfter = buildTimelineRowExternals(
-      after,
+    const after = buildRows([user, makeAssistantEntry("row-assistant", "Hello there", 1)], cache);
+    const externalsAfter = buildTimelineRowExternals(after, inputs, externalsBefore, {
+      rows: before,
       inputs,
-      externalsBefore,
-      {
-        rows: before,
-        inputs,
-      },
-    );
+    });
     expect(externalsAfter).toBe(externalsBefore);
     expect(revertLookups).toBe(1);
 
     // A new user message is structural, so rows are described again.
     const next = buildRows(
-      [
-        user,
-        makeAssistantEntry("row-assistant", "Hello there", 1),
-        makeUserEntry("u2", "more", 2),
-      ],
+      [user, makeAssistantEntry("row-assistant", "Hello there", 1), makeUserEntry("u2", "more", 2)],
       cache,
     );
-    buildTimelineRowExternals(next, inputs, externalsAfter, {
-      rows: after,
-      inputs,
-    });
+    buildTimelineRowExternals(next, inputs, externalsAfter, { rows: after, inputs });
     expect(revertLookups).toBe(3);
   });
 
@@ -4865,17 +4321,11 @@ describe("MessagesTimeline row stability", () => {
       ],
       cache,
     );
-    const summaryA = {
-      turnId: turnA,
-      completedAt: "2026-03-04T12:00:00.000Z",
-      files: [],
-    };
+    const summaryA = { turnId: turnA, completedAt: "2026-03-04T12:00:00.000Z", files: [] };
     const externalsBefore = buildTimelineRowExternals(
       rows,
       externalsInputs({
-        turnDiffSummaryByTurnId: new Map([
-          [turnA, summaryA as unknown as TurnDiffSummary],
-        ]),
+        turnDiffSummaryByTurnId: new Map([[turnA, summaryA as unknown as TurnDiffSummary]]),
       }),
       new Map(),
     );
@@ -4883,20 +4333,14 @@ describe("MessagesTimeline row stability", () => {
     const externalsAfter = buildTimelineRowExternals(
       rows,
       externalsInputs({
-        turnDiffSummaryByTurnId: new Map([
-          [turnA, nextSummaryA as unknown as TurnDiffSummary],
-        ]),
+        turnDiffSummaryByTurnId: new Map([[turnA, nextSummaryA as unknown as TurnDiffSummary]]),
       }),
       externalsBefore,
     );
 
-    expect(externalsAfter.get("work-a")?.version).not.toBe(
-      externalsBefore.get("work-a")?.version,
-    );
+    expect(externalsAfter.get("work-a")?.version).not.toBe(externalsBefore.get("work-a")?.version);
     expect(externalsAfter.get("work-b")).toBe(externalsBefore.get("work-b"));
-    expect(externalsAfter.get("user-between")).toBe(
-      externalsBefore.get("user-between"),
-    );
+    expect(externalsAfter.get("user-between")).toBe(externalsBefore.get("user-between"));
   });
 
   it("keeps an earlier work group open while a subagent in it is still running", () => {
@@ -4905,12 +4349,7 @@ describe("MessagesTimeline row stability", () => {
       if (base.kind !== "work") throw new Error("expected a work entry");
       return {
         ...base,
-        entry: {
-          ...base.entry,
-          label: "Agent",
-          subagentType: "Explore",
-          status,
-        },
+        entry: { ...base.entry, label: "Agent", subagentType: "Explore", status },
       } as TimelineEntry;
     };
     const rows = (status: string) =>
@@ -4922,14 +4361,8 @@ describe("MessagesTimeline row stability", () => {
         ],
         createTimelineRowCache(),
       ).find((row) => row.id === "agent-work");
-    expect(rows("inProgress")).toMatchObject({
-      kind: "work",
-      isPriorTurn: false,
-    });
-    expect(rows("completed")).toMatchObject({
-      kind: "work",
-      isPriorTurn: true,
-    });
+    expect(rows("inProgress")).toMatchObject({ kind: "work", isPriorTurn: false });
+    expect(rows("completed")).toMatchObject({ kind: "work", isPriorTurn: true });
   });
 
   it("prunes cached rows that a rewind removed", () => {
@@ -4938,17 +4371,10 @@ describe("MessagesTimeline row stability", () => {
     const assistant = makeAssistantEntry("rewind-assistant", "reply", 1);
     const later = makeUserEntry("rewind-later", "second", 2);
     buildRows([user, assistant, later], cache);
-    expect([...cache.rows.keys()]).toEqual([
-      "rewind-user",
-      "rewind-assistant",
-      "rewind-later",
-    ]);
+    expect([...cache.rows.keys()]).toEqual(["rewind-user", "rewind-assistant", "rewind-later"]);
 
     const rewound = buildRows([user, assistant], cache);
-    expect(rewound.map((row) => row.id)).toEqual([
-      "rewind-user",
-      "rewind-assistant",
-    ]);
+    expect(rewound.map((row) => row.id)).toEqual(["rewind-user", "rewind-assistant"]);
     expect([...cache.rows.keys()]).toEqual(["rewind-user", "rewind-assistant"]);
   });
 
@@ -4961,12 +4387,7 @@ describe("MessagesTimeline row stability", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialEntries={[
-          user,
-          firstAnswer,
-          followUp,
-          makeAssistantEntry("render-live", "Str", 3),
-        ]}
+        initialEntries={[user, firstAnswer, followUp, makeAssistantEntry("render-live", "Str", 3)]}
         onIsAtEndChangeSpy={() => {}}
         setApi={(next) => {
           api = next;
@@ -4975,9 +4396,8 @@ describe("MessagesTimeline row stability", () => {
       { container: host },
     );
     const renderCount = (rowId: string) =>
-      host.querySelector<HTMLElement>(
-        `[data-timeline-row-id="${rowId}"][data-render-count]`,
-      )?.dataset.renderCount;
+      host.querySelector<HTMLElement>(`[data-timeline-row-id="${rowId}"][data-render-count]`)
+        ?.dataset.renderCount;
 
     try {
       await vi.waitFor(() => {
@@ -4992,12 +4412,7 @@ describe("MessagesTimeline row stability", () => {
       };
 
       for (const text of ["Strea", "Streami", "Streaming reply"]) {
-        api!.setEntries([
-          user,
-          firstAnswer,
-          followUp,
-          makeAssistantEntry("render-live", text, 3),
-        ]);
+        api!.setEntries([user, firstAnswer, followUp, makeAssistantEntry("render-live", text, 3)]);
         await vi.waitFor(() => {
           expect(host.textContent).toContain(text);
         });
@@ -5006,9 +4421,7 @@ describe("MessagesTimeline row stability", () => {
       expect(renderCount("render-user")).toBe(before.user);
       expect(renderCount("render-first")).toBe(before.first);
       expect(renderCount("render-follow-up")).toBe(before.followUp);
-      expect(Number(renderCount("render-live"))).toBeGreaterThan(
-        Number(before.live),
-      );
+      expect(Number(renderCount("render-live"))).toBeGreaterThan(Number(before.live));
     } finally {
       await screen.unmount();
       host.remove();
@@ -5023,9 +4436,7 @@ describe("MessagesTimeline row stability", () => {
     }
     const host = document.createElement("div");
     document.body.append(host);
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const screen = await render(
       <TimelineHarness
         initialEntries={[
@@ -5040,12 +4451,8 @@ describe("MessagesTimeline row stability", () => {
 
     try {
       await vi.waitFor(() => {
-        const brokenRow = host.querySelector(
-          '[data-timeline-row-id="malformed-user"]',
-        );
-        expect(brokenRow?.textContent).toContain(
-          "This entry could not be displayed",
-        );
+        const brokenRow = host.querySelector('[data-timeline-row-id="malformed-user"]');
+        expect(brokenRow?.textContent).toContain("This entry could not be displayed");
         expect(brokenRow?.textContent).toContain("Copy error report");
         expect(host.textContent).toContain("Healthy question");
         expect(host.textContent).toContain("Healthy answer");
@@ -5065,16 +4472,11 @@ describe("MessagesTimeline HTML renders", () => {
     localStorage.clear();
     persistAppSettings();
     pages = {};
-    (window as typeof window & { nativeApi?: NativeApi }).nativeApi =
-      nativeApiMock;
+    (window as typeof window & { nativeApi?: NativeApi }).nativeApi = nativeApiMock;
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const id = /\/attachments\/(html-[^/?]+)/.exec(String(input))?.[1];
       return id && pages[id] !== undefined
-        ? Promise.resolve(
-            new Response(pages[id], {
-              headers: { "content-type": "text/html" },
-            }),
-          )
+        ? Promise.resolve(new Response(pages[id], { headers: { "content-type": "text/html" } }))
         : originalFetch(input, init);
     });
   });
@@ -5083,11 +4485,7 @@ describe("MessagesTimeline HTML renders", () => {
     document.body.innerHTML = "";
   });
 
-  const makeHtmlRenderEntry = (
-    id: string,
-    page: string,
-    offsetSeconds: number,
-  ): TimelineEntry => {
+  const makeHtmlRenderEntry = (id: string, page: string, offsetSeconds: number): TimelineEntry => {
     pages[id] = page;
     const createdAt = new Date(
       Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
@@ -5111,11 +4509,7 @@ describe("MessagesTimeline HTML renders", () => {
   it("stops following the tail when the wheel turns up over a page while a reply streams", async () => {
     const initialEntries = [
       ...makeOverflowEntries(16),
-      makeHtmlRenderEntry(
-        "html-follow",
-        '<div style="height:300px">Chart</div>',
-        120,
-      ),
+      makeHtmlRenderEntry("html-follow", '<div style="height:300px">Chart</div>', 120),
       makeAssistantEntry("follow-tail", "Reply", 121),
     ];
     let api: TimelineHarnessApi | null = null;
@@ -5136,12 +4530,9 @@ describe("MessagesTimeline HTML renders", () => {
     );
     try {
       const node = await waitForScrollContainer(host);
-      const distanceFromEnd = () =>
-        node.scrollHeight - node.clientHeight - node.scrollTop;
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
       await vi.waitFor(() => {
-        expect(
-          frameFor(host, "html-follow")?.getBoundingClientRect().height,
-        ).toBe(316);
+        expect(frameFor(host, "html-follow")?.getBoundingClientRect().height).toBe(316);
         expect(distanceFromEnd()).toBeLessThan(8);
       });
       await userEvent.wheel(page.getByTitle("html-follow", { exact: true }), {
@@ -5152,10 +4543,7 @@ describe("MessagesTimeline HTML renders", () => {
         ...initialEntries.slice(0, -1),
         makeAssistantEntry(
           "follow-tail",
-          Array.from(
-            { length: 12 },
-            (_, index) => "Streamed paragraph " + index,
-          ).join("\n\n"),
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
           121,
         ),
       ]);
@@ -5195,11 +4583,8 @@ describe("MessagesTimeline HTML renders", () => {
     );
     try {
       const node = await waitForScrollContainer(host);
-      const distanceFromEnd = () =>
-        node.scrollHeight - node.clientHeight - node.scrollTop;
-      await expect
-        .element(page.getByRole("button", { name: "Retry sizing" }))
-        .toBeVisible();
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await expect.element(page.getByRole("button", { name: "Retry sizing" })).toBeVisible();
       // The notice grows the row after the thread settled, which LegendList does not follow.
       node.scrollTop = node.scrollHeight;
       await vi.waitFor(() => expect(distanceFromEnd()).toBeLessThan(8));
@@ -5211,10 +4596,7 @@ describe("MessagesTimeline HTML renders", () => {
         ...initialEntries.slice(0, -1),
         makeAssistantEntry(
           "paused-tail",
-          Array.from(
-            { length: 12 },
-            (_, index) => "Streamed paragraph " + index,
-          ).join("\n\n"),
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
           121,
         ),
       ]);
@@ -5235,16 +4617,9 @@ describe("MessagesTimeline HTML renders", () => {
       <TimelineHarness
         initialEntries={[
           ...makeOverflowEntries(16),
-          makeHtmlRenderEntry(
-            "html-disclosure",
-            '<div style="height:200px">Chart</div>',
-            120,
-          ),
+          makeHtmlRenderEntry("html-disclosure", '<div style="height:200px">Chart</div>', 120),
           makeCommandEntry(commandId, {
-            output: Array.from(
-              { length: 40 },
-              (_, line) => `line ${line}`,
-            ).join("\n"),
+            output: Array.from({ length: 40 }, (_, line) => `line ${line}`).join("\n"),
           }),
         ]}
         initialHeight={400}
@@ -5259,8 +4634,7 @@ describe("MessagesTimeline HTML renders", () => {
       );
     try {
       const node = await waitForScrollContainer(host);
-      const distanceFromEnd = () =>
-        node.scrollHeight - node.clientHeight - node.scrollTop;
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
       await vi.waitFor(() => {
         expect(toggle()).not.toBeNull();
         expect(distanceFromEnd()).toBeLessThan(8);
@@ -5309,20 +4683,14 @@ describe("MessagesTimeline HTML renders", () => {
       const node = await waitForScrollContainer(host);
       await scrollTimelineToOffset(currentRef, node, 0);
       await vi.waitFor(() =>
-        expect(
-          frameFor(host, "html-grows")?.getBoundingClientRect().height,
-        ).toBe(216),
+        expect(frameFor(host, "html-grows")?.getBoundingClientRect().height).toBe(216),
       );
       const frame = frameFor(host, "html-grows")!;
       const frameBottom =
-        frame.getBoundingClientRect().bottom -
-        node.getBoundingClientRect().top +
-        node.scrollTop;
+        frame.getBoundingClientRect().bottom - node.getBoundingClientRect().top + node.scrollTop;
       await scrollTimelineToOffset(currentRef, node, frameBottom + 40);
       await waitForTimelineLayout(() => node);
-      const anchor = host.querySelector<HTMLElement>(
-        '[data-message-id="overflow-user-2"]',
-      )!;
+      const anchor = host.querySelector<HTMLElement>('[data-message-id="overflow-user-2"]')!;
       expect(anchor).not.toBeNull();
       const before = anchor.getBoundingClientRect().top;
       const anchorTop = () =>
@@ -5334,13 +4702,10 @@ describe("MessagesTimeline HTML renders", () => {
       // Frame height and the virtual list's scroll correction settle separately.
       await vi.waitFor(
         () => {
-          frameFor(host, "html-grows")?.contentWindow?.postMessage(
-            "grow-test-page",
-            "*",
+          frameFor(host, "html-grows")?.contentWindow?.postMessage("grow-test-page", "*");
+          expect(frameFor(host, "html-grows")?.getBoundingClientRect().height).toBeGreaterThan(
+            3000,
           );
-          expect(
-            frameFor(host, "html-grows")?.getBoundingClientRect().height,
-          ).toBeGreaterThan(3000);
           expect(Math.abs(anchorTop() - before)).toBeLessThan(4);
           expect(node.scrollTop).toBeGreaterThan(3000);
         },
