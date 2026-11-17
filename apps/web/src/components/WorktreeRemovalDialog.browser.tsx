@@ -310,9 +310,7 @@ it("offers explicit recovery with a fresh queue revision for a missing branch", 
     expectedQueueRevision: 42,
     action: "recreateFromBase",
   });
-  await expect
-    .element(screen.getByRole("button", { name: "Continue in project checkout" }))
-    .toBeEnabled();
+  await expect.element(screen.getByRole("button", { name: "Continue in Local" })).toBeEnabled();
 });
 it("offers recreate now in the queue when the original branch survives", async () => {
   api.worktrees.threadState.mockResolvedValue({
@@ -365,9 +363,7 @@ it("offers one-click branch fixes when the worktree only switched branches", asy
   });
   await screen.getByRole("button", { name: "More options" }).click();
   await expect.element(screen.getByRole("menuitem", { name: "Recreate from main" })).toBeVisible();
-  await expect
-    .element(screen.getByRole("menuitem", { name: "Continue in project checkout" }))
-    .toBeVisible();
+  await expect.element(screen.getByRole("menuitem", { name: "Continue in Local" })).toBeVisible();
 });
 
 it("keeps adopting available but disables transitions while a turn is running", async () => {
@@ -523,7 +519,7 @@ it("offers recovery after a restart between switching to the project and clearin
   const screen = await mount(
     <WorktreeMissingBanner threadId={threadId} worktreePath={null} branch="main" />,
   );
-  await screen.getByRole("button", { name: "Continue in project checkout" }).click();
+  await screen.getByRole("button", { name: "Continue in Local" }).click();
   expect(api.worktrees.recover).toHaveBeenCalledWith({
     threadId,
     action: "useProjectCheckout",

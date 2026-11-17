@@ -518,6 +518,7 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return { parentPath: "/", entries: [] };
   }
   if (tag === WS_METHODS.worktreesGetTransition) return null;
+  if (tag === WS_METHODS.worktreesList) return { projects: [] };
 
   return {};
 }

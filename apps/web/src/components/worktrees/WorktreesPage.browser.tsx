@@ -196,13 +196,9 @@ it.each([["node_modules/"], ["dist/", ".env"]])(
   },
 );
 
-it("requires shared-filesystem confirmation and uses a server transition for a persisted conversation", async () => {
+it("acknowledges sharing from the listed conversations and uses a server transition for a persisted conversation", async () => {
   await mount();
   await page.getByRole("textbox", { name: "Search worktrees" }).fill("topic");
-  mocks.confirm.mockResolvedValueOnce(false);
-  await page.getByRole("button", { name: "Use for this conversation" }).click();
-  expect(mocks.switchWorkspace).not.toHaveBeenCalled();
-  mocks.confirm.mockResolvedValueOnce(true);
   mocks.switchWorkspace.mockResolvedValue({ phase: "completed" });
   await page.getByRole("button", { name: "Use for this conversation" }).click();
   await expect.poll(() => mocks.switchWorkspace.mock.calls.length).toBe(1);
@@ -212,6 +208,7 @@ it("requires shared-filesystem confirmation and uses a server transition for a p
     branch: "topic",
     sharedFilesystemConfirmed: true,
   });
+  expect(mocks.confirm).not.toHaveBeenCalled();
 });
 it("shows server failures and stops inventory work when unmounted", async () => {
   mocks.list.mockResolvedValue({
@@ -262,9 +259,8 @@ it("uses the project checkout for a worktree-mode draft instead of preparing a n
     .toMatchObject({ envMode: "local", worktreePath: null, branch: "main" });
   expect(mocks.switchWorkspace).not.toHaveBeenCalled();
 });
-it("attaches a new draft to the selected worktree after confirming sharing", async () => {
+it("attaches a new draft to the selected worktree, acknowledging sharing without a dialog", async () => {
   const draftId = ThreadId.makeUnsafe("new-draft");
-  mocks.confirm.mockResolvedValue(true);
   mocks.newThread.mockImplementation(async () => {
     useComposerDraftStore.getState().setProjectDraftThreadId(projectId, draftId, {
       envMode: "worktree",
@@ -292,20 +288,7 @@ it("attaches a new draft to the selected worktree after confirming sharing", asy
     envMode: "worktree",
     forceNonDefaultEnvMode: true,
   });
-});
-it("opens no draft when the project is removed while the sharing dialog is open", async () => {
-  mocks.confirm.mockImplementation(async () => {
-    mocks.store.projects = [];
-    return true;
-  });
-  await mount();
-  await page
-    .getByRole("article", { name: "topic /managed/shared" })
-    .getByRole("button", { name: "New conversation here" })
-    .click();
-  await expect.poll(() => mocks.confirm.mock.calls.length).toBe(1);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  expect(mocks.newThread).not.toHaveBeenCalled();
+  expect(mocks.confirm).not.toHaveBeenCalled();
 });
 it("follows the conversation URL and clears the visible selection for another project", async () => {
   const draftId = ThreadId.makeUnsafe("draft-url");
@@ -343,21 +326,20 @@ it("does not ask a local conversation to confirm the project checkout it already
   await expect.poll(() => mocks.switchWorkspace.mock.calls.length).toBe(1);
   expect(mocks.confirm).not.toHaveBeenCalled();
 });
-it("still confirms shared project files when a draft leaves a different checkout", async () => {
+it("still acknowledges shared project files when a draft leaves a different checkout", async () => {
   const draftId = ThreadId.makeUnsafe("shared-project-draft");
   useComposerDraftStore.getState().setProjectDraftThreadId(projectId, draftId, {
     envMode: "worktree",
     branch: "topic",
     worktreePath: "/managed/original",
   });
-  mocks.confirm.mockResolvedValue(true);
   await mount(draftId);
   await page
     .getByRole("article", { name: "main /repo", exact: true })
     .getByRole("button", { name: "Use for this conversation" })
     .click();
   await expect
-    .poll(() => useComposerDraftStore.getState().getDraftThread(draftId)?.envMode)
-    .toBe("local");
-  expect(mocks.confirm).toHaveBeenCalledOnce();
+    .poll(() => useComposerDraftStore.getState().getDraftThread(draftId))
+    .toMatchObject({ envMode: "local", sharedFilesystemConfirmed: true });
+  expect(mocks.confirm).not.toHaveBeenCalled();
 });

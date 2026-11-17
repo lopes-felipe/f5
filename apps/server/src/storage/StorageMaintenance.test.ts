@@ -3784,6 +3784,8 @@ it.layer(
           assert.include(localBranches(repo.root), "squashed-orphan");
         }),
       ),
+    // This real-Git inspection/cleanup workflow needs the same NTFS budget as discovery below.
+    process.platform === "win32" ? 90_000 : 30_000,
   );
   it.effect(
     "discovers linked worktrees in selected folders without importing a project",
