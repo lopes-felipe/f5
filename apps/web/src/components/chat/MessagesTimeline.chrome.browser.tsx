@@ -351,4 +351,21 @@ describe("JumpToLatestButton", () => {
       await screen.unmount();
     }
   });
+
+  it("marks a row that arrived between leaving the end and the pill mounting", async () => {
+    const screen = await render(
+      <JumpToLatestButton
+        tail={tail({ rowId: "arrived-during-debounce" })}
+        leftEndTail={tail()}
+        shortcutLabel={null}
+        onJump={() => {}}
+      />,
+    );
+    try {
+      await vi.waitFor(() => expect(dot()).not.toBeNull());
+      expect(document.body.textContent).toContain("new messages");
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

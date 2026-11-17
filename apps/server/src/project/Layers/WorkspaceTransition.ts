@@ -43,7 +43,11 @@ import {
   formatInPlaceSwitchBlockers,
   inPlaceSwitchBlockers,
 } from "../worktreeClaims.ts";
-import { canonicalWorkspace, inspectAttachableWorkspace } from "../workspaceAttachment.ts";
+import {
+  canonicalWorkspace,
+  inspectAttachableWorkspace,
+  isProjectCheckout,
+} from "../workspaceAttachment.ts";
 import { WorkspaceWriteContext } from "../workspaceTransitionContext.ts";
 import { WorktreePreparation } from "../Services/WorktreePreparation.ts";
 import { WorktreeSetupGate } from "../Services/WorktreeSetupGate.ts";
@@ -86,7 +90,9 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
     | WorkspaceTransitions
   >();
   const scope = yield* Effect.scope;
-  const withClaimServices = yield* captureOptionalClaimServices;
+  // Transition claims read settlement hooks and transition rows as before this
+  // capture existed: not here, so a stale row cannot block returning to Local.
+  const withClaimServices = yield* captureOptionalClaimServices({ includeSql: false });
   const textGeneration = yield* Effect.serviceOption(TextGeneration);
   const settings = yield* Effect.serviceOption(ServerSettingsService);
   const secret = randomBytes(32).toString("hex");
@@ -162,7 +168,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         const { project } = yield* context(record.threadId);
         const blockers = inPlaceSwitchBlockers(usage, {
           requester: record.threadId,
-          projectCheckout: path === (yield* canonicalWorkspace(project.workspaceRoot)),
+          projectCheckout: yield* isProjectCheckout(yield* engine.getReadModel(), path, project.id),
         });
         if (blockers.length) {
           const model = yield* engine.getReadModel();

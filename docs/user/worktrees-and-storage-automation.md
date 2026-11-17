@@ -163,12 +163,15 @@ same files and uncommitted changes. In the workspace picker, each checkout's row
 conversations already use it, and picking the row is the confirmation.
 
 Changing a branch in place is blocked only by live use: another conversation's running or
-pending turn, queued work, worktree setup or workspace transition, an open terminal (yours
-included), or another profile's reference. In the project folder, idle and archived local
-conversations do not block it; they show whatever branch the folder is on. A managed worktree
-keeps the stricter rule, because its conversations record a branch: any other conversation using
-it, or an open agent session, also blocks the switch. A refused switch names the conversations
-and what they are doing; use a separate worktree instead.
+pending turn, queued work, worktree setup or workspace transition, an agent session that is
+starting or running, an open terminal (yours included), or another profile's reference. In the
+project folder, idle and archived local conversations do not block it; they show whatever branch
+the folder is on. A new turn waits for a switch that is already under way and then starts on the
+new branch. A managed worktree keeps the stricter rule, because its conversations record a
+branch: any other conversation using it, or an open agent session, also blocks the switch. The
+same applies to a conversation that records a worktree at a path that is also a project's folder.
+A refused switch names the conversations and what they are doing; use a separate worktree
+instead.
 
 Interrupted switches keep their checkout and block sending until resolved. Choose
 **Inspect workspace** to see the actual branch, commit, and path. **Accept inspected
