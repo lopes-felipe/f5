@@ -122,6 +122,8 @@ usage accounts, and the optional `latestCacheWrites` and observed `executableVer
 on session capability snapshots. Older clients could not decode the new fields or call the
 analysis, so the bump forces them to reload.
 
+Claude Release 6 (Agent SDK 0.3.326) keeps version 43: it changes no decoded browser shape.
+
 Request scheduling and startup (performance Releases 1 and 2) ship together as version 42.
 Version 41 was reserved for Release 1 on its own and was never released, so no client or
 server speaks it.

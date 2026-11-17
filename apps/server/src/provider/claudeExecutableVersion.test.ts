@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { writeCliScript } from "../testUtils/cli.ts";
 import {
+  claudeMcpServersDelivery,
   claudeVersionCacheKey,
   clearClaudeExecutableVersionCache,
   readClaudeExecutableVersion,
@@ -61,5 +62,15 @@ describe("readClaudeExecutableVersion", () => {
     const started = Date.now();
     expect(await readClaudeExecutableVersion(reader, process.env)).toBeUndefined();
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});
+
+describe("claudeMcpServersDelivery", () => {
+  it("uses initialize only for the bundled runtime or a custom 2.1.326+", () => {
+    expect(claudeMcpServersDelivery(undefined, undefined)).toBe("initialize");
+    expect(claudeMcpServersDelivery("/opt/claude", "2.1.326")).toBe("initialize");
+    expect(claudeMcpServersDelivery("/opt/claude", "2.2.0")).toBe("initialize");
+    expect(claudeMcpServersDelivery("/opt/claude", "2.1.317")).toBe("argv");
+    expect(claudeMcpServersDelivery("/opt/claude", undefined)).toBe("argv");
   });
 });

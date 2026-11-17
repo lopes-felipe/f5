@@ -97,7 +97,7 @@ arguments**.
 
 | Topic                | Detail                                                                                                                           |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Bundled runtime      | Claude Code v2.1.317 (Agent SDK 0.3.317)                                                                                         |
+| Bundled runtime      | Claude Code v2.1.326 (Agent SDK 0.3.326)                                                                                         |
 | Model requirements   | Fable 5.2 needs v2.1.290+; Fable 5.1 needs v2.1.257+; Opus 5.5 needs v2.1.280+; Sonnet 5.5 and Haiku 5.5 need v2.1.299+          |
 | Default model        | Opus 5.5 with `medium` effort                                                                                                    |
 | Custom executables   | Known older versions hide models they can't run and show an upgrade notice; unknown versions list all models                     |
@@ -106,6 +106,7 @@ arguments**.
 | Task tools           | Native `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` by default; set `CLAUDE_CODE_ENABLE_TASKS=0` on the server for `TodoWrite` |
 | Thinking             | Provider option `thinking`: `{ "type": "adaptive" }`, `{ "type": "enabled", "budgetTokens": 8000 }` or `{ "type": "disabled" }`  |
 | Account usage        | One card per Claude provider on the Usage page; values above 100% are shown as reported                                          |
+| Full access          | Claude Code's own safety checks, ask rules and policy can still ask; F5 shows those asks instead of approving them for you       |
 
 </details>
 

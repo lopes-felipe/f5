@@ -343,6 +343,7 @@ import {
 } from "../claudeSdkExecutable.ts";
 import {
   claudeHookOnFailureSupported,
+  claudeMcpServersDelivery,
   readClaudeExecutableVersion,
 } from "../claudeExecutableVersion.ts";
 import { buildClaudeFlagPermissions } from "../claudeFlagPermissions.ts";
@@ -568,6 +569,8 @@ interface ClaudeSessionContext {
   streamUsageInvalidated?: boolean;
   /** Selected base model whose CLI rejected auto; independent of raw init model spelling. */
   autoRejectedForModel?: string | undefined;
+  /** Last `credential_expires_at` value already warned about in this session. */
+  credentialExpiryWarned?: string;
   requestedRuntime?: Record<string, unknown>;
   lastProviderTitle?: string;
   nativeControl?:
@@ -1224,7 +1227,57 @@ const CLAUDE_STARTUP_FAILURE_MESSAGES: Partial<Record<string, string>> = {
 export function claudeStartupFailureMessage(result: SDKResultMessage): string | undefined {
   if (result.subtype !== "error_during_execution") return undefined;
   const reason = (result as { startup_failure_reason?: unknown }).startup_failure_reason;
+  if (reason === "config_file_invalid") return claudeInvalidConfigFileMessage(result);
   return typeof reason === "string" ? CLAUDE_STARTUP_FAILURE_MESSAGES[reason] : undefined;
+}
+
+const DAY_MS = 24 * 60 * 60_000;
+const CLAUDE_CREDENTIAL_EXPIRY_WARNING_MS = 7 * DAY_MS;
+/** The SDK: the login's real end "can be up to 3 days earlier" than the reported date. */
+const CLAUDE_CREDENTIAL_EXPIRY_EARLY_MS = 3 * DAY_MS;
+
+/**
+ * Warning for a result's `credential_expires_at` (2.1.326+): the end of the claude.ai login's
+ * refresh chain, an estimate the login can beat by up to 3 days. Silent until 7 days remain
+ * before the earliest end. The date is formatted in UTC so a remote server's locale and time
+ * zone do not leak into it.
+ */
+export function claudeCredentialExpiryWarning(
+  expiresAt: unknown,
+  nowMs: number,
+  formatDate: (date: Date) => string = (date) =>
+    `${date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" })} (UTC)`,
+): string | undefined {
+  if (typeof expiresAt !== "string") return undefined;
+  const expiresMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresMs)) return undefined;
+  const earliestMs = expiresMs - CLAUDE_CREDENTIAL_EXPIRY_EARLY_MS;
+  if (earliestMs <= nowMs) return "This Claude login may end at any time; sign in again.";
+  if (earliestMs - nowMs > CLAUDE_CREDENTIAL_EXPIRY_WARNING_MS) return undefined;
+  return `This Claude login may end as early as ${formatDate(new Date(earliestMs))}; sign in again before then.`;
+}
+
+/**
+ * `config_file_invalid` (2.1.326+): paths come from `invalid_config_file`, never from the
+ * error text. The file is left unchanged and every headless start fails until it is fixed.
+ */
+function claudeInvalidConfigFileMessage(result: SDKResultMessage): string | undefined {
+  const file = (result as { invalid_config_file?: unknown }).invalid_config_file;
+  if (typeof file !== "object" || file === null) return undefined;
+  const {
+    path,
+    backup_path: backupPath,
+    backup_searched: backupSearched,
+  } = file as { path?: unknown; backup_path?: unknown; backup_searched?: unknown };
+  if (typeof path !== "string" || !path.trim()) return undefined;
+  // The named backup may itself not parse, so it is offered for checking, not copying blindly.
+  const repair =
+    typeof backupPath === "string" && backupPath.trim()
+      ? `A backup is at ${backupPath}; check that it is valid JSON before restoring it.`
+      : backupSearched === true
+        ? "Claude found no backup, so repair the file by hand."
+        : "Repair it by hand.";
+  return `Claude's config file ${path} is not valid JSON, and Claude refuses to start until it is fixed. ${repair}`;
 }
 
 function resultUserFacingError(result: SDKResultMessage): string | undefined {
@@ -5525,6 +5578,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
       });
 
+    /** Warns once per session for each reported expiry date. */
+    const warnClaudeCredentialExpiry = (
+      context: ClaudeSessionContext,
+      message: SDKResultMessage,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const expiresAt = (message as { credential_expires_at?: unknown }).credential_expires_at;
+        if (typeof expiresAt !== "string" || context.credentialExpiryWarned === expiresAt) return;
+        const warning = claudeCredentialExpiryWarning(expiresAt, yield* Clock.currentTimeMillis);
+        if (!warning) return;
+        context.credentialExpiryWarned = expiresAt;
+        yield* emitRuntimeWarning(context, warning, { category: "provider", actionable: true });
+      });
+
     const handleResultMessage = (
       context: ClaudeSessionContext,
       message: SDKMessage,
@@ -5535,6 +5602,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
         if (context.lifecycle.seenResults.has(message.uuid)) return;
         yield* refreshFastModeFromResult(context, message);
+        yield* warnClaudeCredentialExpiry(context, message);
         const ownedUuids = context.turnState?.userMessageUuids;
         const resultUuids =
           message.user_message_uuids ??
@@ -8213,7 +8281,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
               const requestType = classifyRequestType(toolName);
               const detail = summarizeToolRequest(toolName, toolInput);
-              const presentation = claudeApprovalPresentation(callbackOptions);
+              const presentation = claudeApprovalPresentation(callbackOptions, {
+                // A session accept saves the CLI's suggestions, or F5's preview grant. Workflow
+                // stages return above without a card, and "mutate" implies an agent browser.
+                sessionGrantAvailable:
+                  (callbackOptions.suggestions?.length ?? 0) > 0 || previewToolClass === "mutate",
+              });
               const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
               const pendingApproval: PendingApproval = {
                 ...(callbackOptions.agentID ? { agentId: callbackOptions.agentID } : {}),
@@ -8625,13 +8698,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const customBinaryPath = isDefaultClaudeBinary(providerOptions?.binaryPath)
           ? undefined
           : providerOptions?.binaryPath?.trim();
+        const customExecutableVersion = customBinaryPath
+          ? yield* Effect.promise(() =>
+              readClaudeExecutableVersion(customBinaryPath, queryEnvironment, input.cwd),
+            )
+          : undefined;
         const hookFailClosed = claudeHookOnFailureSupported(
           customBinaryPath,
-          customBinaryPath
-            ? yield* Effect.promise(() =>
-                readClaudeExecutableVersion(customBinaryPath, queryEnvironment, input.cwd),
-              )
-            : undefined,
+          customExecutableVersion,
+        );
+        const mcpServersDelivery = claudeMcpServersDelivery(
+          customBinaryPath,
+          customExecutableVersion,
         );
         const processDiagnostics = { stderrTail: "" };
         const recordStderr = (data: string) => {
@@ -8651,6 +8729,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           stderr: recordStderr,
           ...(spawnClaudeCodeProcess ? { spawnClaudeCodeProcess } : {}),
           ...sdkExecutableOptions,
+          // Recovery launches reuse these options, so they take the same delivery path.
+          mcpServersDelivery,
           settingSources: [...CLAUDE_SETTING_SOURCES],
           ...(effectiveEffort ? { effort: effectiveEffort } : {}),
           ...(permissionMode ? { permissionMode } : {}),
@@ -9974,6 +10054,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               query: context.query,
               desired,
               owned,
+              // The replacement also covers in-process servers; omitting them disconnects them.
+              preserved: context.internalMcpServers,
               beforeSetServers: (names) => {
                 context.ownedMcpServerNames = names;
               },

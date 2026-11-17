@@ -152,11 +152,17 @@ interface ClaudeMcpControl<TConfig> {
  * the payload, so they are neither replaced nor removed by omission; a
  * desired server whose name they already use is skipped with a notice.
  * Status is always re-read after the change, including after errors.
+ *
+ * `setMcpServers` also replaces the session's in-process SDK servers: one the
+ * payload omits is disconnected. F5's own servers are therefore always sent as
+ * `preserved`; they are never owned, lingering or limited like user servers.
  */
 export async function reconcileClaudeMcpServers<TConfig>(input: {
   readonly query: ClaudeMcpControl<TConfig>;
   readonly desired: Readonly<Record<string, TConfig>>;
   readonly owned: ReadonlySet<string>;
+  /** F5's in-process servers, re-sent unchanged so the replacement keeps them. */
+  readonly preserved?: Readonly<Record<string, TConfig>>;
   /** Install host policy for the actual payload before the CLI can expose its tools. */
   readonly beforeSetServers?: (names: ReadonlySet<string>) => void;
 }): Promise<{
@@ -172,10 +178,19 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
     };
   }
 
+  const preserved = input.preserved ?? {};
+  const preservedNames = new Set(Object.keys(preserved));
   const before = await query.mcpServerStatus();
   const notices: McpReloadError[] = [];
   const payload: Record<string, TConfig> = {};
   for (const [name, config] of Object.entries(input.desired)) {
+    if (preservedNames.has(name)) {
+      notices.push({
+        server: name,
+        message: "F5 uses this name for its own tools; F5 left its server in place.",
+      });
+      continue;
+    }
     const existing = before.find((server) => server.name === name);
     if (existing && classifyMcpOwnership(existing, input.owned) !== "managed") {
       const origin = existing.source ?? existing.scope ?? "settings or plugin";
@@ -192,7 +207,7 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
   input.beforeSetServers?.(attemptedOwned);
   let setResult: Awaited<ReturnType<NonNullable<ClaudeMcpControl<TConfig>["setMcpServers"]>>>;
   try {
-    setResult = await query.setMcpServers(payload);
+    setResult = await query.setMcpServers({ ...payload, ...preserved });
   } catch (cause) {
     const detail = cause instanceof Error ? trimmed(cause.message, 300) : undefined;
     return {
@@ -222,6 +237,7 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
   const lingering = [...input.owned].filter(
     (name) =>
       !(name in payload) &&
+      !preservedNames.has(name) &&
       !removed.has(name) &&
       (after === undefined ||
         after.some(
@@ -235,7 +251,7 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
     observed: after?.map((server) => ({
       name: server.name,
       status: claudeObservedMcpStatus(server.status),
-      ownership: classifyMcpOwnership(server, owned),
+      ownership: classifyMcpOwnership(server, owned, preservedNames),
       ...(server.error ? { error: server.error } : {}),
     })),
     errors: Object.entries(setResult.errors ?? {}).map(([server, message]) => ({

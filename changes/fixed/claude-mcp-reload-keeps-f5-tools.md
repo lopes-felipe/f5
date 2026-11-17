@@ -1,0 +1,1 @@
+- Reloading MCP servers in a running Claude thread no longer disconnects F5's own thread, preview and computer tools.
