@@ -240,8 +240,8 @@ describe("buildWorkspaceRows", () => {
         "switch main",
         "switch origin/remote-only",
       ]);
+      // Back stays out of Enter's way while a query names a target.
       expect(outline(buildWorkspaceRows(input({ mode: "switch", query: "new topic" })))).toEqual([
-        "back",
         "# Switch Local to",
         "create new-topic",
       ]);
@@ -249,7 +249,6 @@ describe("buildWorkspaceRows", () => {
 
     it("does not offer creating a branch that matches a remote branch's local name", () => {
       expect(outline(buildWorkspaceRows(input({ mode: "switch", query: "remote-only" })))).toEqual([
-        "back",
         "# Switch Local to",
         "switch origin/remote-only",
       ]);
@@ -268,11 +267,43 @@ describe("buildWorkspaceRows", () => {
           ),
         ),
       ).toEqual([
-        "back",
         "! In use by Review PR 719 (running turn). Start a new worktree instead.",
         "# Switch Local to",
         "create zzz (disabled)",
       ]);
+    });
+
+    it("disables every switch until availability has answered", () => {
+      expect(
+        outline(buildWorkspaceRows(input({ mode: "switch", query: "", switchChecking: true }))),
+      ).toEqual([
+        "back",
+        "! Checking who uses this checkout…",
+        "# Switch Local to",
+        "switch fix/sidebar current (disabled)",
+        "switch feature/a (disabled)",
+        "switch main (disabled)",
+        "switch origin/remote-only (disabled)",
+      ]);
+    });
+
+    it("takes the current branch from live Git state after an outside checkout change", () => {
+      // The thread recorded fix/route, but a terminal moved the worktree to feature/a.
+      const rows = outline(
+        buildWorkspaceRows(
+          input({
+            mode: "switch",
+            state: { kind: "worktree", path: "/wt/route", branch: "fix/route" },
+            branches: [
+              branch("fix/sidebar", { current: true, worktreePath: "/repo" }),
+              branch("feature/a", { worktreePath: "/wt/route" }),
+              branch("fix/route"),
+            ],
+          }),
+        ),
+      );
+      expect(rows).toContain("switch feature/a current (disabled)");
+      expect(rows).toContain("switch fix/route");
     });
 
     it("switches a worktree to branches that are not checked out elsewhere", () => {

@@ -1241,39 +1241,6 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
-  it("keeps follow disabled by default even after reaching the bottom", async () => {
-    const initialEntries = makeOverflowEntries(16);
-    let api: TimelineHarnessApi | null = null;
-    const host = document.createElement("div");
-    document.body.append(host);
-    const screen = await render(
-      <TimelineHarness
-        initialEntries={initialEntries}
-        initialHeight={240}
-        onIsAtEndChangeSpy={() => {}}
-        setApi={(value) => {
-          api = value;
-        }}
-      />,
-      { container: host },
-    );
-    try {
-      const node = await waitForScrollContainer(host);
-      await waitForTimelineLayout(() => node);
-      const before = node.scrollTop;
-      api!.setEntries([
-        ...initialEntries,
-        makeAssistantEntry("default-off-tail", "New reply\n\n".repeat(30), 120),
-      ]);
-      await waitForTimelineLayout(() => node);
-      expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
-      expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeGreaterThan(40);
-    } finally {
-      await screen.unmount();
-      host.remove();
-    }
-  });
-
   it("auto-follows appended rows when the user is already at the end", async () => {
     const initialEntries = makeOverflowEntries(16);
     const isAtEndCalls: boolean[] = [];
@@ -1283,7 +1250,6 @@ describe("MessagesTimeline (LegendList)", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={240}
         onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
@@ -1330,6 +1296,178 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it.each(["another row arrives", "the new row grows"] as const)(
+    "keeps following when %s during its own animated follow scroll",
+    async (update) => {
+      const initialEntries = makeOverflowEntries(16);
+      const isAtEndCalls: boolean[] = [];
+      let api: TimelineHarnessApi | null = null;
+      const host = document.createElement("div");
+      document.body.append(host);
+      const screen = await render(
+        <TimelineHarness
+          initialEntries={initialEntries}
+          initialHeight={240}
+          onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+          setApi={(nextApi) => {
+            api = nextApi;
+          }}
+        />,
+        { container: host },
+      );
+      const nextFrame = () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      try {
+        const node = await waitForScrollContainer(host);
+        await waitForTimelineLayout(() => node);
+        await vi.waitFor(() =>
+          expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
+        );
+        isAtEndCalls.length = 0;
+        const first = makeAssistantEntry("follow-mid-scroll-a", "Reply\n\n".repeat(20), 120);
+        api!.setEntries([...initialEntries, first]);
+        // The follow scroll is animated; update again while it is under way.
+        await nextFrame();
+        await nextFrame();
+        const lastId = update === "another row arrives" ? "follow-mid-scroll-b" : first.id;
+        api!.setEntries(
+          update === "another row arrives"
+            ? [
+                ...initialEntries,
+                first,
+                makeAssistantEntry(lastId, "Second reply\n\n".repeat(20), 121),
+              ]
+            : [...initialEntries, makeAssistantEntry(lastId, "Longer reply\n\n".repeat(60), 120)],
+        );
+        await vi.waitFor(
+          () => {
+            const row = host.querySelector<HTMLElement>(`[data-message-id="${lastId}"]`);
+            expect(row).not.toBeNull();
+            expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8);
+          },
+          { timeout: 3_000, interval: 16 },
+        );
+        expect(isAtEndCalls).not.toContain(false);
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
+
+  it("keeps following when content that fit grows during the first animated follow scroll", async () => {
+    const initialEntries = [
+      makeUserEntry("fits-user", "Question", 0),
+      makeAssistantEntry("fits-reply", "Short reply", 1),
+    ];
+    const isAtEndCalls: boolean[] = [];
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={240}
+        onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    try {
+      // Not waitForScrollContainer: that waits for content to overflow.
+      let node!: HTMLElement;
+      await vi.waitFor(() => {
+        node = host.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
+        expect(node).not.toBeNull();
+        expect(host.querySelector('[data-message-id="fits-reply"]')).not.toBeNull();
+      });
+      for (let frame = 0; frame < 4; frame += 1) await nextFrame();
+      expect(node.scrollHeight).toBeLessThanOrEqual(node.clientHeight + 1);
+      isAtEndCalls.length = 0;
+      const grown = makeAssistantEntry("fits-grown", "Long reply\n\n".repeat(30), 2);
+      api!.setEntries([...initialEntries, grown]);
+      await nextFrame();
+      await nextFrame();
+      api!.setEntries([
+        ...initialEntries,
+        makeAssistantEntry(grown.id, "Longer reply\n\n".repeat(80), 2),
+      ]);
+      await vi.waitFor(
+        () => expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
+        { timeout: 3_000, interval: 16 },
+      );
+      expect(isAtEndCalls).not.toContain(false);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("resumes following after Jump to latest even when the list never left the end", async () => {
+    const initialEntries = makeOverflowEntries(16);
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={240}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await waitForTimelineLayout(() => node);
+      await vi.waitFor(() =>
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
+      );
+      // Pressing the scrollbar stops following without moving the list.
+      node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      const before = node.scrollTop;
+      const paused = [
+        ...initialEntries,
+        makeAssistantEntry("jump-resume-paused", "Paused reply\n\n".repeat(20), 120),
+      ];
+      api!.setEntries(paused);
+      await waitForTimelineLayout(() => node);
+      expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
+      expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeGreaterThan(40);
+
+      api!.jumpToLatest();
+      await vi.waitFor(() =>
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8),
+      );
+      await waitForTimelineLayout(() => node);
+
+      // Paused again at the end, Jump to latest has nothing to scroll, so no
+      // scroll event can resume following. The jump itself must.
+      node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      api!.jumpToLatest();
+      await waitForTimelineLayout(() => node);
+      api!.setEntries([
+        ...paused,
+        makeAssistantEntry("jump-resume-followed", "Followed reply\n\n".repeat(20), 121),
+      ]);
+      await vi.waitFor(
+        () => {
+          expect(host.querySelector('[data-message-id="jump-resume-followed"]')).not.toBeNull();
+          expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(8);
+        },
+        { timeout: 3_000, interval: 16 },
+      );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("auto-follows when a final assistant row replaces the trailing working row", async () => {
     const initialEntries = makeOverflowEntries(16);
     const isAtEndCalls: boolean[] = [];
@@ -1339,7 +1477,6 @@ describe("MessagesTimeline (LegendList)", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={240}
         initialIsWorking
@@ -1507,8 +1644,7 @@ describe("MessagesTimeline (LegendList)", () => {
       node.dispatchEvent(new Event("scroll"));
       await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(true));
       const beforeContinuedStream = node.scrollHeight;
-      // Reaching the bottom does not enable following; the reader opts in.
-      api!.setAutoFollow(true);
+      // Scrolling back to the bottom resumes following.
       api!.setEntries([
         ...initialEntries.slice(0, -1),
         makeAssistantEntry(
@@ -4252,7 +4388,6 @@ describe("MessagesTimeline HTML renders", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={800}
         initialIsWorking
@@ -4306,7 +4441,6 @@ describe("MessagesTimeline HTML renders", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={800}
         initialIsWorking
@@ -4351,7 +4485,6 @@ describe("MessagesTimeline HTML renders", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
-        initialAutoFollow
         initialEntries={[
           ...makeOverflowEntries(16),
           makeHtmlRenderEntry("html-disclosure", '<div style="height:200px">Chart</div>', 120),

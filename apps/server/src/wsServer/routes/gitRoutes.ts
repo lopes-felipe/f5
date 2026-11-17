@@ -207,6 +207,6 @@ export const gitRoutes = ({
     switchWorkspace(
       body.threadId,
       body.operationId,
-    )({ cwd: body.cwd, branch: body.branch, create: false }),
+    )({ cwd: body.cwd, branch: body.branch, create: body.create === true }),
   [WS_METHODS.gitInit]: (body) => git.initRepo(withoutTag(body)),
 });

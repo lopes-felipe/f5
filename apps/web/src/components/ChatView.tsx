@@ -755,7 +755,6 @@ function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null 
 // the selection's identity and does not re-render the conversation.
 function selectChatViewSettings(settings: AppSettings) {
   return {
-    autoFollowNewMessages: settings.autoFollowNewMessages,
     alwaysExpandAgentCommandTranscripts: settings.alwaysExpandAgentCommandTranscripts,
     claudeBinaryPath: settings.claudeBinaryPath,
     claudeLaunchArgs: settings.claudeLaunchArgs,
@@ -913,8 +912,13 @@ export default memo(function ChatView({
     return node instanceof HTMLElement ? node : null;
   }, []);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const [autoFollow, setAutoFollow] = useState(settings.autoFollowNewMessages);
   const [isJumpingToLatest, setIsJumpingToLatest] = useState(false);
+  // The tail when the reader left the end. The pill mounts after a debounce,
+  // so it compares against this rather than the tail at mount.
+  const latestTimelineTailRef = useRef<ReturnType<typeof timelineTailSnapshot> | null>(null);
+  const [leftEndTail, setLeftEndTail] = useState<ReturnType<typeof timelineTailSnapshot> | null>(
+    null,
+  );
 
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const {
@@ -1130,6 +1134,7 @@ export default memo(function ChatView({
       showScrollDebouncer.current?.cancel();
       setShowScrollToBottom(false);
     } else {
+      setLeftEndTail(latestTimelineTailRef.current);
       showScrollDebouncer.current?.maybeExecute();
     }
   }, []);
@@ -1197,9 +1202,13 @@ export default memo(function ChatView({
         )
           return;
         await scrollToEnd(false);
+        // Resume following explicitly: a list already at the end emits no
+        // scroll event that would resume it.
+        if (!controller.signal.aborted && isMountedRef.current) {
+          setFollowNextTailNonce((nonce) => nonce + 1);
+        }
       } catch (error) {
         if (!controller.signal.aborted && isMountedRef.current) {
-          setAutoFollow(false);
           toastManager.add({
             type: "error",
             title: "Could not jump to latest",
@@ -1222,14 +1231,6 @@ export default memo(function ChatView({
     scrollToEnd,
     threadId,
   ]);
-  const handleFollowingChange = useCallback(
-    (enabled: boolean) => {
-      setAutoFollow(enabled);
-      if (enabled) jumpToLatest();
-      else cancelEndScroll();
-    },
-    [cancelEndScroll, jumpToLatest],
-  );
   const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(null);
 
   const terminalState = useTerminalStateStore((state) =>
@@ -2514,6 +2515,13 @@ export default memo(function ChatView({
       workLogEntries,
     ],
   );
+  const timelineTail = useMemo(
+    () => timelineTailSnapshot(timelineEntries.at(-1)),
+    [timelineEntries],
+  );
+  useLayoutEffect(() => {
+    latestTimelineTailRef.current = timelineTail;
+  }, [timelineTail]);
   // A route focus request (deep link, search result) is one navigation, issued
   // once the thread details are loaded and the timeline had a frame to mount.
   const routeFocusRequestedRef = useRef<string | null>(null);
@@ -8259,8 +8267,6 @@ export default memo(function ChatView({
                         onLeaveEnd={cancelEndScroll}
                         onIsAtEndChange={onIsAtEndChange}
                         followNextTailNonce={followNextTailNonce}
-                        autoFollow={autoFollow}
-                        onAutoFollowChange={setAutoFollow}
                         hasOlderHistory={hasOlderTimelineHistory}
                         isLoadingOlderHistory={activeThreadHistory.stage === "backfilling"}
                         hasHistoryLoadError={activeThreadHistory.stage === "error"}
@@ -8324,14 +8330,13 @@ export default memo(function ChatView({
                   <ThreadDetailsLoadingState testId="chat-thread-details-loading" />
                 )}
 
-                {/* Keep the controls available while following is enabled. */}
-                {(showScrollToBottom || autoFollow || isJumpingToLatest) && (
+                {/* Shown while the reader is away from the end, and while a jump runs. */}
+                {(showScrollToBottom || isJumpingToLatest) && (
                   <JumpToLatestButton
-                    tail={timelineTailSnapshot(timelineEntries.at(-1))}
+                    tail={timelineTail}
+                    leftEndTail={leftEndTail}
                     shortcutLabel={scrollToBottomShortcutLabel ?? null}
                     onJump={jumpToLatest}
-                    following={autoFollow}
-                    onFollowingChange={handleFollowingChange}
                     isAtEnd={!showScrollToBottom}
                     jumping={isJumpingToLatest}
                   />

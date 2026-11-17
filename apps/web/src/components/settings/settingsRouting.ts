@@ -316,9 +316,6 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "conversation.streaming": {
     category: "conversation",
   },
-  "conversation.auto-follow": {
-    category: "conversation",
-  },
   "conversation.remote-images": {
     category: "conversation",
   },

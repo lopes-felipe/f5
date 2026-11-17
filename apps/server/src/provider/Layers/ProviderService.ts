@@ -2502,13 +2502,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               detail:
                 "Provider output is incomplete. Review history recovery before starting another turn.",
             });
-          yield* checkWorkspace(
-            input.threadId,
-            Option.isSome(deliveryBinding)
-              ? readPersistedCwd(deliveryBinding.value.runtimePayload)
-              : undefined,
-            { allowBranchDrift: input.expectedTurnId !== undefined },
-          ).pipe(
+          const sessionCwd = readPersistedCwd(deliveryBinding.value.runtimePayload);
+          const admit = checkWorkspace(input.threadId, sessionCwd, {
+            allowBranchDrift: input.expectedTurnId !== undefined,
+          }).pipe(
             Effect.mapError(
               (error) =>
                 new ProviderTurnDeliveryError({
@@ -2518,39 +2515,62 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 }),
             ),
           );
-          yield* requireProjectProvider(deliveryBinding.value);
-          yield* ensureAccepting;
-          const turn = yield* (
-            input.expectedTurnId !== undefined
-              ? routed.adapter.steerTurn!({
-                  ...input,
-                  expectedTurnId: input.expectedTurnId,
-                  attachments: nativeAttachments,
-                  resolvedAttachments,
-                })
-              : routed.adapter.sendTurn({
-                  ...input,
-                  attachments: nativeAttachments,
-                  resolvedAttachments,
-                })
-          ).pipe(
-            Effect.mapError((error) =>
-              Schema.is(ProviderAdapterRequestError)(error) && error.deliveryCertainty
-                ? new ProviderTurnDeliveryError({
-                    certainty: error.deliveryCertainty,
-                    retryable:
-                      error.deliveryCertainty === "not_sent" && error.deliveryRetryable === true,
-                    detail: error.detail,
-                    ...(error.usageLimit ? { usageLimit: error.usageLimit } : {}),
+          // A new turn is admitted under its directory's lifecycle lock, as session
+          // start is. An in-place branch switch validates and checks out under the
+          // same lock, so it either finishes first (and this turn starts on the new
+          // branch) or sees this accepted turn's pending start and refuses. The send
+          // itself runs outside the lock: an unresolved transport must not hold it.
+          // Steering joins a running turn, which already blocks such a switch.
+          yield* sessionCwd && input.expectedTurnId === undefined
+            ? withWorktreeLifecycleLock(sessionCwd, admit).pipe(
+                Effect.catchTag("RepositoryLifecycleError", (error) =>
+                  Effect.fail(
+                    new ProviderTurnDeliveryError({
+                      certainty: "not_sent",
+                      retryable: true,
+                      detail: error.message,
+                    }),
+                  ),
+                ),
+              )
+            : admit;
+          const send = Effect.gen(function* () {
+            yield* requireProjectProvider(deliveryBinding.value);
+            yield* ensureAccepting;
+            const turn = yield* (
+              input.expectedTurnId !== undefined
+                ? routed.adapter.steerTurn!({
+                    ...input,
+                    expectedTurnId: input.expectedTurnId,
+                    attachments: nativeAttachments,
+                    resolvedAttachments,
                   })
-                : error,
-            ),
-          );
-          if (deliveryAttempt)
-            yield* deliveryAttempt.accepted(turn, {
-              runtimeGeneration: generation,
-              nativeHistoryIdentity,
-            });
+                : routed.adapter.sendTurn({
+                    ...input,
+                    attachments: nativeAttachments,
+                    resolvedAttachments,
+                  })
+            ).pipe(
+              Effect.mapError((error) =>
+                Schema.is(ProviderAdapterRequestError)(error) && error.deliveryCertainty
+                  ? new ProviderTurnDeliveryError({
+                      certainty: error.deliveryCertainty,
+                      retryable:
+                        error.deliveryCertainty === "not_sent" && error.deliveryRetryable === true,
+                      detail: error.detail,
+                      ...(error.usageLimit ? { usageLimit: error.usageLimit } : {}),
+                    })
+                  : error,
+              ),
+            );
+            if (deliveryAttempt)
+              yield* deliveryAttempt.accepted(turn, {
+                runtimeGeneration: generation,
+                nativeHistoryIdentity,
+              });
+            return turn;
+          });
+          const turn = yield* send;
           return yield* withProviderThreadAccess(
             input.threadId,
             Effect.gen(function* () {

@@ -1135,10 +1135,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const prHubAdvisory = yield* PrHubAdvisoryService;
   const prHubReviewGuide = yield* PrHubReviewGuideService;
   const git = yield* GitCore;
-  const withClaimServices = yield* captureOptionalClaimServices;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const sql = yield* SqlClient.SqlClient;
+  // The turn repository lives in the orchestration runtime, built later; build one
+  // here so claims on the draft branch-switch route see accepted, undelivered turns.
+  const withClaimServices = yield* captureOptionalClaimServices({
+    turns: yield* makeProjectionTurnRepository.pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    ),
+  });
   yield* sql`UPDATE scheduled_control SET ready=0 WHERE id=1`.pipe(
     Effect.mapError(
       (cause) => new ServerLifecycleError({ operation: "scheduledTasks.closeStartupGate", cause }),
@@ -4091,6 +4097,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 detail: result.error ?? "Local changes block branch switching.",
                 checkoutConflict: result.checkoutConflict,
               });
+            // Keep the code so clients can offer "Start a new worktree" here too.
+            if (result.errorCode === "WorkspaceRequiresNewWorktree")
+              return yield* Effect.fail(
+                new WorkspaceRequiresNewWorktreeError(
+                  result.error ?? "Start a new worktree instead.",
+                ),
+              );
             return yield* Effect.fail(
               new Error(result.error ?? "Inspect and resolve the workspace transition."),
             );
