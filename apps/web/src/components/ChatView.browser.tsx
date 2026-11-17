@@ -1318,6 +1318,7 @@ const uploadedFiles = new Map<string, import("@t3tools/contracts").AttachmentUpl
 function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   const tag = body._tag;
   if (tag === WS_METHODS.worktreesGetTransition) return null;
+  if (tag === WS_METHODS.worktreesList) return { projects: [] };
   if (tag === WS_METHODS.attachmentsGetUploads)
     return (body.uploadIds as string[]).map((id) => uploadedFiles.get(id) ?? null);
   if (tag === AGENTS_WS_METHODS.getSnapshot) {
@@ -5549,6 +5550,98 @@ describe("ChatView timeline (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("starts a local draft in a new worktree from the picker and creates it only at send", async () => {
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {
+        [THREAD_ID]: {
+          projectId: PROJECT_ID,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "main",
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (next) => {
+        next.serverConfig = {
+          ...next.serverConfig,
+          keybindings: [
+            createModKeybinding("composer.envMode", "e", { shiftKey: true }),
+            createModKeybinding("composer.branch", "b", { shiftKey: true }),
+          ],
+        };
+      },
+    });
+    const useMetaForMod = isMacPlatform(navigator.platform);
+    const pressMod = (key: string) =>
+      userEvent.keyboard(
+        useMetaForMod
+          ? `{Meta>}{Shift>}${key}{/Shift}{/Meta}`
+          : `{Control>}{Shift>}${key}{/Shift}{/Control}`,
+      );
+    try {
+      const editor = await waitForComposerEditor();
+      const trigger = page.getByLabelText("Workspace: Local · main", { exact: true });
+      await expect.element(trigger).toBeVisible();
+
+      // Both the workspace and the branch command open the same picker.
+      for (const key of ["E", "B"]) {
+        await userEvent.click(editor);
+        await pressMod(key);
+        await expect.element(page.getByPlaceholder("Search branches and worktrees…")).toBeVisible();
+        await userEvent.keyboard("{Escape}");
+        await expect
+          .element(page.getByPlaceholder("Search branches and worktrees…"))
+          .not.toBeInTheDocument();
+      }
+
+      await trigger.click();
+      await page.getByRole("option", { name: /^main\s*default/ }).click();
+      await expect
+        .element(page.getByLabelText("Workspace: New worktree · from main", { exact: true }))
+        .toBeVisible();
+      expect(page.getByRole("dialog").elements()).toHaveLength(0);
+
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Ship it");
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          const dispatchRequests = getDispatchCommandRequests();
+          expect(dispatchRequests).toHaveLength(1);
+          const command = dispatchRequests[0]?.command as
+            | { bootstrap?: { prepareWorktree?: Record<string, unknown> } }
+            | undefined;
+          expect(command?.bootstrap?.prepareWorktree).toMatchObject({
+            projectCwd: "/repo/project",
+            baseBranch: "main",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      for (const tag of [
+        WS_METHODS.gitCheckout,
+        WS_METHODS.gitCreateWorktree,
+        WS_METHODS.gitPrepareWorktree,
+      ]) {
+        expect(wsRequests.some((request) => request._tag === tag)).toBe(false);
+      }
     } finally {
       await mounted.cleanup();
     }

@@ -8,7 +8,9 @@ clean up idle worktrees and keep backups.
 ## How to
 
 1. Start a new thread in a project that is a Git repository.
-2. To work in one isolated checkout, switch the workspace under the composer to **Worktree**.
+2. To work in one isolated checkout, open the workspace picker under the composer (it reads
+   **Local · <branch>**) and pick a branch under **New worktree from**. Nothing is created
+   until you send.
 3. To send to several models, Shift+click (or Shift+Enter) up to six models in the model picker
    instead. A plain click goes back to a single model.
 4. Send. With several models, F5 creates one thread per model, each with its own worktree and
@@ -156,11 +158,20 @@ prove that local commits are disposable. Use a separate worktree to keep both hi
 
 Only the current project checkout and registered, attached-branch worktrees inside the
 current profile's managed root can be attached. Other profiles' managed checkouts and
-external or detached checkouts cannot be attached. Sharing a checkout with other
-conversations requires explicit confirmation because they share the same files.
-Changing a branch in place is stricter: any other surviving conversation reference,
-including archived conversations, blocks it. Terminals, sessions, queued operations, and
-other profiles' references also block an in-place change. Use a separate worktree instead.
+external or detached checkouts cannot be attached. Conversations that share a checkout see the
+same files and uncommitted changes. In the workspace picker, each checkout's row says how many
+conversations already use it, and picking the row is the confirmation.
+
+Changing a branch in place is blocked only by live use: another conversation's running or
+pending turn, queued work, worktree setup or workspace transition, an agent session that is
+starting or running, an open terminal (yours included), or another profile's reference. In the
+project folder, idle and archived local conversations do not block it; they show whatever branch
+the folder is on. A new turn waits for a switch that is already under way and then starts on the
+new branch. A managed worktree keeps the stricter rule, because its conversations record a
+branch: any other conversation using it, or an open agent session, also blocks the switch. The
+same applies to a conversation that records a worktree at a path that is also a project's folder.
+A refused switch names the conversations and what they are doing; use a separate worktree
+instead.
 
 Interrupted switches keep their checkout and block sending until resolved. Choose
 **Inspect workspace** to see the actual branch, commit, and path. **Accept inspected
@@ -196,17 +207,42 @@ confirmation because they see the same files and uncommitted changes. New local 
 already share the project checkout. The server rechecks eligibility when attaching or switching,
 so a list entry never grants permission to mutate a checkout.
 
-The conversation's worktree chip shows its branch and shortened path. Open it with a mouse
-or keyboard to copy the exact path, open an editor or terminal, reveal the directory, or review
-removal. The **Local** menu links to existing worktrees and offers **New worktree**.
+## The workspace picker
 
-Before sending in **New worktree** mode, choose **Branch: auto** to enter an explicit branch
-name, or **Clear** to restore automatic naming. The existing branch selector chooses the base.
-The new worktree starts from committed contents of the base branch; uncommitted edits stay
-where they are. **Run setup script** can be turned off when the project has an opted-in setup
-script. Both choices persist with the draft. Multi-model sends generate independent names;
-explicit naming is disabled for them. Invalid or occupied branch names are rejected by the
-server before creating a conversation, keeping the draft available for correction.
+One picker under the composer chooses where a conversation works. Its label says where that is:
+**Local · main** for the project folder, **New worktree · from main** for a worktree created at
+send, the branch name inside an existing worktree, and **· missing** when that worktree's
+directory is gone. The workspace and branch keyboard commands both open it.
+
+The top of the picker shows the current path, with buttons to copy it, open it in an editor,
+reveal it, or open a terminal there. The list below has these groups:
+
+- **Project folder**: work in the project folder on its current branch. The row shows how many
+  conversations already work there.
+- **New worktree from** (new conversations only): the default branch first, then local and
+  remote-only branches that no worktree has checked out. Picking one selects the base; the
+  worktree and its branch are created when you send.
+- **Open worktrees**: join a worktree that already exists. The row shows how many conversations
+  already use it.
+- **Manage**: **Switch branch here…**, **Move to a new worktree…**, **Manage worktrees…**,
+  **Discard originals from move…** and **Remove worktree…**, where they apply.
+
+Type to filter. A pull request reference offers **Checkout Pull Request**. In a new
+conversation, a name with no matching branch offers **New worktree on new branch "name"**,
+which keeps the selected base (the default branch if none).
+
+**Switch branch here…** lists the branches this checkout can switch to, plus **Create branch
+"name" here**. When live use blocks the switch, the rows are disabled and the picker names the
+conversations that are using the checkout and what they are doing. If Git reports files that
+the switch would overwrite, a new conversation can start in a new worktree instead.
+
+While a new conversation is set to a new worktree, the bottom of the picker has a **Branch
+name** field (leave it empty for an automatic name) and, when the project has an opted-in setup
+script, **Run setup script**. The new worktree starts from committed contents of the base
+branch; uncommitted edits stay where they are. Both choices persist with the draft.
+Multi-model sends generate independent names; explicit naming is disabled for them. Invalid or
+occupied branch names are rejected by the server before creating a conversation, keeping the
+draft available for correction.
 
 ## Related
 
@@ -272,7 +308,7 @@ filtered by source. Backup audit rows are history and never resume cleanup after
 
 ## Move a local conversation to a worktree
 
-For an existing local conversation, open the **Local** menu and choose **Move to new
+For an existing local conversation, open the workspace picker and choose **Move to a new
 worktree…**. Finish the active turn and remove queued work first. You can supply a
 new branch name or let F5 generate one from the first user message.
 

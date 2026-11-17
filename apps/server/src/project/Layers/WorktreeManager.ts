@@ -18,12 +18,19 @@ import { OrchestrationEngineService } from "../../orchestration/Services/Orchest
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import {
+  captureOptionalClaimServices,
   evaluateWorktreeRemoval,
+  inPlaceSwitchBlockers,
+  type InPlaceSwitchBlocker,
+  readWorktreeClaims,
   removeWorktreeSafely,
   stopDeletedWorktreeClaims,
 } from "../worktreeClaims.ts";
+import { assertExclusiveProfileCheckout } from "../../profiles/RepositorySharing.ts";
+import { WorkspaceRequiresNewWorktreeError } from "../../git/workspaceSwitch.ts";
 import { followsCheckoutBranchAtTurnEnd, readWorktreeState } from "../worktreeReadiness.ts";
 import { dispatchVerifiedWorkspace } from "../workspaceTransitionContext.ts";
+import { isProjectCheckout, isProjectOrManagedPath } from "../workspaceAttachment.ts";
 import { WorktreeManager, type WorktreeManagerShape } from "../Services/WorktreeManager.ts";
 import { WorktreeSetupGate } from "../Services/WorktreeSetupGate.ts";
 
@@ -45,6 +52,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
   const transitions = yield* Effect.serviceOption(WorkspaceTransition);
   const dispatcher = yield* NextTurnQueueDispatcher;
   const fileSystem = yield* FileSystem.FileSystem;
+  const withClaimServices = yield* captureOptionalClaimServices();
   const canonical = (path: string) => Effect.tryPromise(() => canonicalWorktreePath(path));
   const projectFor = (id: WorktreesInspectInput["projectId"]) =>
     Effect.gen(function* () {
@@ -308,6 +316,66 @@ export const makeWorktreeManager = Effect.gen(function* () {
               : "none";
       return { ...state, checkoutDirty, followsCheckoutAtTurnEnd, recovery } as const;
     });
+  const switchAvailability: WorktreeManagerShape["switchAvailability"] = (input) =>
+    Effect.gen(function* () {
+      const project = yield* projectFor(input.projectId);
+      const [target, root] = yield* Effect.all([
+        canonical(input.path),
+        canonical(project.workspaceRoot),
+      ]);
+      if (!(yield* isProjectOrManagedPath(config, root, target)))
+        return yield* Effect.fail(
+          new Error("Only the project folder and this profile's managed worktrees can switch."),
+        );
+      const usage = yield* withClaimServices(
+        readWorktreeClaims(target).pipe(Effect.provideServices(services)),
+      );
+      const requester = input.threadId ?? null;
+      const before = yield* engine.getReadModel();
+      const blockers: InPlaceSwitchBlocker[] = [
+        ...inPlaceSwitchBlockers(usage, {
+          requester,
+          projectCheckout: yield* isProjectCheckout(before, target, input.projectId),
+        }),
+      ];
+      // The predicate ignores the requester, whose own session the transition stops
+      // first. Its own running turn or queued messages still make the switch refuse.
+      if (requester !== null && !usage.unknown) {
+        if (usage.activeThreadIds.includes(requester as ThreadId))
+          blockers.unshift({ kind: "turn", threadId: requester });
+        else if (usage.queuedThreadIds.includes(requester as ThreadId))
+          blockers.unshift({ kind: "queued", threadId: requester });
+      }
+      const otherProfile = yield* Effect.tryPromise(() =>
+        assertExclusiveProfileCheckout(config, target),
+      ).pipe(
+        Effect.as(null),
+        Effect.catch((error) =>
+          Effect.succeed<InPlaceSwitchBlocker>({
+            kind:
+              error.cause instanceof WorkspaceRequiresNewWorktreeError ? "otherProfile" : "unknown",
+            threadId: null,
+          }),
+        ),
+      );
+      if (otherProfile) blockers.push(otherProfile);
+      const model = yield* engine.getReadModel();
+      return {
+        blockers: blockers.map((blocker) => {
+          // Only name conversations of the requesting project.
+          const thread = blocker.threadId
+            ? model.threads.find(
+                (entry) => entry.id === blocker.threadId && entry.projectId === input.projectId,
+              )
+            : undefined;
+          return {
+            kind: blocker.kind,
+            threadId: thread?.id ?? null,
+            title: thread?.title ?? null,
+          };
+        }),
+      };
+    });
   const recover: WorktreeManagerShape["recover"] = (input) =>
     Effect.gen(function* () {
       const { thread } = yield* context(input.threadId);
@@ -456,6 +524,13 @@ export const makeWorktreeManager = Effect.gen(function* () {
       .pipe(
         Effect.flatMap((model) => listWorktreeInventory(input, model, git, config, fileSystem)),
       );
-  return { list, inspect, remove, threadState, recover } satisfies WorktreeManagerShape;
+  return {
+    list,
+    inspect,
+    remove,
+    threadState,
+    switchAvailability,
+    recover,
+  } satisfies WorktreeManagerShape;
 });
 export const WorktreeManagerLive = Layer.effect(WorktreeManager, makeWorktreeManager);

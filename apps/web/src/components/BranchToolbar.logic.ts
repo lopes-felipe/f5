@@ -32,19 +32,6 @@ export function resolveDraftEnvModeAfterBranchChange(input: {
   return "local";
 }
 
-export function resolveBranchToolbarValue(input: {
-  envMode: EnvMode;
-  activeWorktreePath: string | null;
-  activeThreadBranch: string | null;
-  currentGitBranch: string | null;
-}): string | null {
-  const { envMode, activeWorktreePath, activeThreadBranch, currentGitBranch } = input;
-  if (envMode === "worktree" && !activeWorktreePath) {
-    return activeThreadBranch ?? currentGitBranch;
-  }
-  return currentGitBranch ?? activeThreadBranch;
-}
-
 export function deriveLocalBranchNameFromRemoteRef(branchName: string): string {
   const firstSeparatorIndex = branchName.indexOf("/");
   if (firstSeparatorIndex <= 0 || firstSeparatorIndex === branchName.length - 1) {
@@ -97,63 +84,9 @@ export function dedupeRemoteBranchesWithLocalMatches(
   });
 }
 
-export function resolveBranchSelectionTarget(input: {
-  activeProjectCwd: string;
-  activeWorktreePath: string | null;
-  branch: Pick<GitBranch, "isDefault" | "worktreePath">;
-}): {
-  checkoutCwd: string;
-  nextWorktreePath: string | null;
-  reuseExistingWorktree: boolean;
-} {
-  const { activeProjectCwd, activeWorktreePath, branch } = input;
-
-  if (branch.worktreePath) {
-    return {
-      checkoutCwd: branch.worktreePath,
-      nextWorktreePath: branch.worktreePath === activeProjectCwd ? null : branch.worktreePath,
-      reuseExistingWorktree: true,
-    };
-  }
-
-  const nextWorktreePath = activeWorktreePath;
-
-  return {
-    checkoutCwd: nextWorktreePath ?? activeProjectCwd,
-    nextWorktreePath,
-    reuseExistingWorktree: false,
-  };
-}
-
 /** Replace only ASCII whitespace rejected by Git; preserve valid Unicode names. */
 export function sanitizeNewRefName(rawName: string): string {
   return rawName.trim().replace(/[ \t\n\r\f\v]+/g, "-");
-}
-
-export function shouldIncludeBranchPickerItem(input: {
-  itemValue: string;
-  normalizedQuery: string;
-  createBranchItemValue: string | null;
-  checkoutPullRequestItemValue: string | null;
-}): boolean {
-  const { itemValue, normalizedQuery, createBranchItemValue, checkoutPullRequestItemValue } = input;
-
-  if (normalizedQuery.length === 0) {
-    return true;
-  }
-
-  if (createBranchItemValue && itemValue === createBranchItemValue) {
-    return true;
-  }
-
-  if (checkoutPullRequestItemValue && itemValue === checkoutPullRequestItemValue) {
-    return true;
-  }
-
-  return (
-    itemValue.toLowerCase().includes(normalizedQuery) ||
-    itemValue.toLowerCase().includes(sanitizeNewRefName(normalizedQuery))
-  );
 }
 
 /**
@@ -172,7 +105,7 @@ export function shouldVirtualizeBranchListForCount(count: number): boolean {
  * Upstream `96c9306d` swapped unconditional mouse-hover scroll-into-view for
  * a keyboard-only guard, so the popup no longer jumps when the pointer
  * happens to pass over an off-screen item. The guard mirrors the behavior
- * inside `BranchToolbarBranchSelector`'s `onItemHighlighted` handler.
+ * inside `WorkspacePicker`'s `onItemHighlighted` handler.
  */
 export function shouldScrollHighlightedBranchIntoView(input: {
   isMenuOpen: boolean;

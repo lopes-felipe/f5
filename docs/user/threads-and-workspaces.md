@@ -12,8 +12,9 @@ afterwards.
 2. Pick the **provider and model** from the model chip, and **traits** such as reasoning effort.
 3. Pick **Access**, the thread's [runtime mode](../runtime-modes.md).
 4. Choose **Agent** or **Plan**. Plan asks for a plan you can accept or revise before any change.
-5. Choose the **workspace**: **Local** (the project checkout) or a
-   [worktree](worktrees-and-storage-automation.md) with its own branch and directory.
+5. Choose the **workspace** in the picker under the composer: **Local** (the project folder), a
+   new [worktree](worktrees-and-storage-automation.md#the-workspace-picker) from any branch
+   (created when you send), or a worktree that already exists.
    For unrelated work, use [a thread without a project](#threads-without-a-project).
 6. Send your message.
 

@@ -49,7 +49,7 @@ import {
   WorkspaceRequiresNewWorktreeError,
   type GitWorkspaceSwitchHandler,
 } from "./git/workspaceSwitch.ts";
-import { inspectAttachableWorkspace } from "./project/workspaceAttachment.ts";
+import { inspectAttachableWorkspace, isProjectCheckout } from "./project/workspaceAttachment.ts";
 import { discoverSourceControlProviderIdentities } from "./sourceControl/discovery.ts";
 import {
   initializeNewProject,
@@ -66,7 +66,12 @@ import {
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { answerMessageIdFor } from "@t3tools/shared/answerDelivery";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
-import { readWorktreeClaims } from "./project/worktreeClaims.ts";
+import {
+  captureOptionalClaimServices,
+  formatInPlaceSwitchBlockers,
+  inPlaceSwitchBlockers,
+  readWorktreeClaims,
+} from "./project/worktreeClaims.ts";
 import { withRepositoryLifecycleLock } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
 import { GitHubCli } from "./git/Services/GitHubCli.ts";
 import { GitService } from "./git/Services/GitService.ts";
@@ -980,6 +985,8 @@ function formatRouteFailure(
       checkoutConflict: squashed.checkoutConflict,
     };
   }
+  if (squashed instanceof WorkspaceRequiresNewWorktreeError)
+    return { message: squashed.message, code: squashed.code };
   if (Schema.is(AttachmentIngressError)(squashed)) {
     return { message: squashed.message };
   }
@@ -1131,6 +1138,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const sql = yield* SqlClient.SqlClient;
+  // The turn repository lives in the orchestration runtime, built later; build one
+  // here so claims on the draft branch-switch route see accepted, undelivered turns.
+  const withClaimServices = yield* captureOptionalClaimServices({
+    turns: yield* makeProjectionTurnRepository.pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    ),
+  });
   yield* sql`UPDATE scheduled_control SET ready=0 WHERE id=1`.pipe(
     Effect.mapError(
       (cause) => new ServerLifecycleError({ operation: "scheduledTasks.closeStartupGate", cause }),
@@ -4083,6 +4097,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 detail: result.error ?? "Local changes block branch switching.",
                 checkoutConflict: result.checkoutConflict,
               });
+            // Keep the code so clients can offer "Start a new worktree" here too.
+            if (result.errorCode === "WorkspaceRequiresNewWorktree")
+              return yield* Effect.fail(
+                new WorkspaceRequiresNewWorktreeError(
+                  result.error ?? "Start a new worktree instead.",
+                ),
+              );
             return yield* Effect.fail(
               new Error(result.error ?? "Inspect and resolve the workspace transition."),
             );
@@ -4105,26 +4126,32 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 return yield* Effect.fail(
                   new Error("The checkout identity changed. Inspect it before switching branches."),
                 );
-              const usage = yield* readWorktreeClaims(checkout.canonicalRoot).pipe(
-                Effect.provideService(OrchestrationEngineService, orchestrationEngine),
-                Effect.provideService(ProviderService, providerService),
-                Effect.provideService(TerminalManager, terminalManager),
-                Effect.provideService(NextTurnQueueStore, nextTurnQueueStore),
+              const usage = yield* withClaimServices(
+                readWorktreeClaims(checkout.canonicalRoot).pipe(
+                  Effect.provideService(OrchestrationEngineService, orchestrationEngine),
+                  Effect.provideService(ProviderService, providerService),
+                  Effect.provideService(TerminalManager, terminalManager),
+                  Effect.provideService(NextTurnQueueStore, nextTurnQueueStore),
+                ),
               );
-              if (
-                usage.unknown ||
-                usage.threadIds.length ||
-                usage.sessions.length ||
-                usage.terminals.length ||
-                usage.setupThreadIds.length
-              )
+              const model = yield* orchestrationEngine.getReadModel();
+              const blockers = inPlaceSwitchBlockers(usage, {
+                requester: null,
+                projectCheckout: yield* isProjectCheckout(model, checkout.canonicalRoot),
+              });
+              if (blockers.length)
                 return yield* Effect.fail(
-                  new Error(
-                    "This checkout is referenced by a conversation or process. Switch it through that conversation.",
+                  new WorkspaceRequiresNewWorktreeError(
+                    formatInPlaceSwitchBlockers(
+                      blockers,
+                      (id) => model.threads.find((thread) => thread.id === id)?.title ?? null,
+                    ),
                   ),
                 );
               yield* Effect.tryPromise(() =>
                 assertExclusiveProfileCheckout(serverConfig, checkout.canonicalRoot),
+              ).pipe(
+                Effect.mapError((error) => (error.cause instanceof Error ? error.cause : error)),
               );
               if (input.create) yield* git.createBranch({ cwd: input.cwd, branch: input.branch });
               yield* Effect.scoped(
@@ -6781,6 +6808,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* worktreeManager
           .threadState(request.body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesSwitchAvailability: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager
+          .switchAvailability(stripRequestTag(request.body))
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }
       case WS_METHODS.worktreesRecover: {

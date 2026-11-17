@@ -7,13 +7,16 @@ import {
   WS_METHODS,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
-import { Effect } from "effect";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Effect, Layer } from "effect";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { GitCommandError, GitManagerError } from "./git/Errors.ts";
+import { makeSqlitePersistenceLive } from "./persistence/Layers/Sqlite.ts";
 import { type GitManagerShape } from "./git/Services/GitManager.ts";
 import { withProviderThreadAccess } from "./provider/providerThreadAccess.ts";
 import { TerminalError } from "./terminal/Services/Manager.ts";
@@ -104,6 +107,127 @@ describe("WebSocket Server", () => {
       code: "GitCheckoutConflict",
       message: `Local changes in ${checkoutConflict.cwd} would be overwritten by switching to 'main'.`,
       checkoutConflict,
+    });
+  });
+
+  describe("switching a draft's project folder branch in place", () => {
+    const repoWithTopic = () => {
+      const cwd = fs.realpathSync(makeTempDir("f5-draft-switch-"));
+      const run = (...args: string[]) =>
+        execFileSync(
+          "git",
+          ["-c", "user.name=F5 Test", "-c", "user.email=f5@example.com", ...args],
+          { cwd, encoding: "utf8" },
+        ).trim();
+      run("init", "-q", "-b", "main");
+      fs.writeFileSync(path.join(cwd, "README.md"), "hello\n");
+      run("add", ".");
+      run("commit", "-qm", "init");
+      run("branch", "topic");
+      return { cwd, run };
+    };
+
+    it("switches past an idle local thread", async () => {
+      const { cwd, run } = repoWithTopic();
+      h.server = await createTestServer({ cwd, autoBootstrapProjectFromCwd: true });
+      const addr = h.server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      const [ws, welcome] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      expect((welcome.data as { bootstrapThreadId?: string }).bootstrapThreadId).toBeTruthy();
+      const response = await sendRequest(ws, WS_METHODS.gitCheckout, { cwd, branch: "topic" });
+      expect(response.error).toBeUndefined();
+      expect(run("branch", "--show-current")).toBe("topic");
+    });
+
+    it("refuses while a terminal is open in it, naming the conversation", async () => {
+      const { cwd, run } = repoWithTopic();
+      const terminalManager = new MockTerminalManager();
+      let threadId = "";
+      Object.defineProperty(terminalManager, "listSessions", {
+        value: Effect.sync(() =>
+          threadId ? [{ threadId, terminalId: "default", cwd, status: "running" as const }] : [],
+        ),
+      });
+      h.server = await createTestServer({
+        cwd,
+        autoBootstrapProjectFromCwd: true,
+        terminalManager,
+      });
+      const addr = h.server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      const [ws, welcome] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      threadId = (welcome.data as { bootstrapThreadId: string }).bootstrapThreadId;
+      const response = await sendRequest(ws, WS_METHODS.gitCheckout, { cwd, branch: "topic" });
+      expect(response.error?.code).toBe("WorkspaceRequiresNewWorktree");
+      expect(response.error?.message).toMatch(
+        /^In use by .+ \(open terminal\)\. Start a new worktree instead\.$/,
+      );
+      expect(run("branch", "--show-current")).toBe("main");
+      const availability = await sendRequest(ws, WS_METHODS.worktreesSwitchAvailability, {
+        projectId: (welcome.data as { bootstrapProjectId: string }).bootstrapProjectId,
+        path: cwd,
+      });
+      expect(availability.error).toBeUndefined();
+      expect(availability.result).toEqual({
+        blockers: [{ kind: "terminal", threadId, title: expect.any(String) }],
+      });
+      // The asking conversation's own idle reference never blocks it; its terminal does.
+      const own = await sendRequest(ws, WS_METHODS.worktreesSwitchAvailability, {
+        projectId: (welcome.data as { bootstrapProjectId: string }).bootstrapProjectId,
+        path: cwd,
+        threadId,
+      });
+      expect((own.result as { blockers: unknown[] }).blockers).toHaveLength(1);
+    });
+
+    it("refuses while another thread's turn was accepted but not delivered yet", async () => {
+      const { cwd, run } = repoWithTopic();
+      const stateDir = makeTempDir("f5-draft-switch-state-");
+      h.server = await createTestServer({
+        cwd,
+        autoBootstrapProjectFromCwd: true,
+        stateDir,
+        persistenceLayer: makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      });
+      const addr = h.server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      const [ws, welcome] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      const threadId = (welcome.data as { bootstrapThreadId: string }).bootstrapThreadId;
+      // A pending turn start with no projected session: only the turn repository sees it.
+      const db = new DatabaseSync(path.join(stateDir, "state.sqlite"));
+      try {
+        db.exec("PRAGMA busy_timeout = 5000");
+        db.prepare(
+          `INSERT INTO projection_turns(thread_id,pending_message_id,state,requested_at,checkpoint_files_json)
+           VALUES (?, 'pending-message', 'pending', ?, '[]')`,
+        ).run(threadId, new Date().toISOString());
+      } finally {
+        db.close();
+      }
+      const response = await sendRequest(ws, WS_METHODS.gitCheckout, { cwd, branch: "topic" });
+      expect(response.error?.code).toBe("WorkspaceRequiresNewWorktree");
+      expect(response.error?.message).toMatch(/\(running turn\)/);
+      expect(run("branch", "--show-current")).toBe("main");
+    });
+
+    it("answers availability only for the project folder and managed worktrees", async () => {
+      const { cwd } = repoWithTopic();
+      h.server = await createTestServer({ cwd, autoBootstrapProjectFromCwd: true });
+      const addr = h.server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      const [ws, welcome] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      const elsewhere = fs.realpathSync(makeTempDir("f5-not-a-checkout-"));
+      const response = await sendRequest(ws, WS_METHODS.worktreesSwitchAvailability, {
+        projectId: (welcome.data as { bootstrapProjectId: string }).bootstrapProjectId,
+        path: elsewhere,
+      });
+      expect(response.error?.message).toMatch(/Only the project folder/);
     });
   });
 
