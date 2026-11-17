@@ -10,6 +10,12 @@ export type FilesystemPath = typeof FilesystemPath.Type;
 export const TrimmedString = Schema.Trim;
 export const TrimmedNonEmptyString = TrimmedString.check(Schema.isNonEmpty());
 
+/** Sign-in links supplied by providers must only open web pages. */
+export const SignInUrl = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(16_384),
+  Schema.isPattern(/^https?:\/\//i),
+);
+
 /** Shared slug constraints; callers choose their own alphabet and length. */
 export const makeSlugSchema = ({ maxChars, pattern }: { maxChars: number; pattern: RegExp }) =>
   TrimmedNonEmptyString.check(Schema.isMaxLength(maxChars), Schema.isPattern(pattern));
