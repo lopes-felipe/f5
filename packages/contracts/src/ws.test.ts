@@ -22,7 +22,7 @@ import {
 } from "./ws";
 
 const decodeWebSocketRequest = Schema.decodeUnknownEffect(WebSocketRequest);
-it("requires an entry for the conflict override while allowing project queue controls", () => {
+it("accepts the conflict override for one entry or every waiting entry, and project queue controls", () => {
   const decode = Schema.decodeUnknownSync(WebSocketRequest);
   for (const action of ["pause", "resume", "clear"])
     assert.doesNotThrow(() =>
@@ -42,6 +42,17 @@ it("requires an entry for the conflict override while allowing project queue con
       },
     }),
   );
+  // No entry: every queued entry that is currently waiting on files.
+  assert.doesNotThrow(() =>
+    decode({
+      id: "queue",
+      body: {
+        _tag: "upstreamPorts.controlPortQueue",
+        projectId: "project",
+        action: "ignore-conflicts",
+      },
+    }),
+  );
   assert.throws(() =>
     decode({
       id: "queue",
@@ -49,6 +60,7 @@ it("requires an entry for the conflict override while allowing project queue con
         _tag: "upstreamPorts.controlPortQueue",
         projectId: "project",
         action: "ignore-conflicts",
+        entryId: "",
       },
     }),
   );

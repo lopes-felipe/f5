@@ -547,7 +547,12 @@ function QueueJob(props: {
                   )}
                   {(blocker.attention || blocker.needsAttention) && (
                     <Badge size="sm" variant="warning">
-                      {blocker.attention ? BLOCKER_ATTENTION_LABELS[blocker.attention] : "Blocker needs attention"}
+                      {blocker.attention === "archived" && blocker.prUrl
+                        ? // Merging or closing the PR frees the files, not the thread.
+                          "Thread archived, PR still open"
+                        : blocker.attention
+                          ? BLOCKER_ATTENTION_LABELS[blocker.attention]
+                          : "Blocker needs attention"}
                     </Badge>
                   )}
                 </li>

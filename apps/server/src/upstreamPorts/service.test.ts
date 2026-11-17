@@ -2141,6 +2141,96 @@ layer("upstream port queue", (it) => {
     }),
   );
 
+  const archivedThread = (threadId: string, turnId: string, messageId: string, state?: string) =>
+    ({
+      ...completedThread(threadId, turnId, messageId, state),
+      archivedAt: "2026-10-22T12:02:00.000Z",
+    }) as OrchestrationThread;
+  const assertStillHeld = (
+    fixture: { host: { submissions: ReadonlyArray<unknown> } },
+    service: Pick<UpstreamPortsService, "getPortQueue" | "testing">,
+    entryId: string,
+  ) =>
+    Effect.gen(function* () {
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(fixture.host.submissions.length, 1);
+      const held = yield* waitingEntry(service, entryId);
+      assert.equal(held.status, "queued");
+      assert.lengthOf(held.waitingOn, 1);
+    });
+
+  it.effect("an archived blocker with a scoped PR outcome and no linked PR keeps its files", () =>
+    Effect.gen(function* () {
+      const { fixture, service, waiting, blocker, sql } = yield* blockedBehindSharedFile;
+      const topicId = blocker.topics[0]!.topicId;
+      fixture.host.threads = [archivedThread(blocker.threadId!, "turn-scoped", "message-scoped")];
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('message-scoped',${blocker.threadId},'assistant',${`UPSTREAM-OUTCOME ${topicId}: pr https://github.com/o/f5/pull/43`},0,'now','now','turn-scoped')`;
+      yield* assertStillHeld(fixture, service, waiting.entryId);
+    }),
+  );
+
+  it.effect("an archived blocker whose PR is known only from a saved receipt keeps its files", () =>
+    Effect.gen(function* () {
+      const { fixture, service, waiting, blocker, sql } = yield* blockedBehindSharedFile;
+      const topic = blocker.topics[0]!;
+      // Archiving interrupted a follow-up turn, so no outcome message is readable.
+      fixture.host.threads = [
+        archivedThread(blocker.threadId!, "turn-followup", "message-followup", "interrupted"),
+      ];
+      yield* sql`INSERT INTO upstream_port_topic_outcomes
+        (project_id,topic_id,epoch,thread_id,turn_id,message_id,kind,detail,explicit,source_at)
+        VALUES (${PROJECT_ID},${topic.topicId},${topic.epoch},${blocker.threadId},'turn-pr','message-pr','pr','https://github.com/o/f5/pull/44',1,'2026-10-22T12:00:30.000Z')`;
+      yield* assertStillHeld(fixture, service, waiting.entryId);
+    }),
+  );
+
+  it.effect("an archived blocker with a linked PR and no outcome keeps its files", () =>
+    Effect.gen(function* () {
+      const { fixture, service, waiting, blocker, sql } = yield* blockedBehindSharedFile;
+      fixture.host.threads = [archivedThread(blocker.threadId!, "turn-linked", "message-linked")];
+      yield* sql`INSERT OR IGNORE INTO projection_threads
+        (thread_id,project_id,title,model,created_at,last_interaction_at,updated_at)
+        VALUES (${blocker.threadId},${PROJECT_ID},'Port','model','now','now','now')`;
+      yield* sql`INSERT INTO projection_thread_pull_requests
+        (link_id,thread_id,provider,host,repository,number,title,url,updated_at)
+        VALUES ('pr-link-archived',${blocker.threadId},'github','github.com','o/f5',45,'Port','https://github.com/o/f5/pull/45','now')`;
+      yield* assertStillHeld(fixture, service, waiting.entryId);
+      const held = yield* waitingEntry(service, waiting.entryId);
+      assert.equal(held.waitingOn[0]?.attention, "archived");
+      assert.equal(held.waitingOn[0]?.prUrl, "https://github.com/o/f5/pull/45");
+    }),
+  );
+
+  it.effect("an archived blocker keeps its files when its outcomes cannot be read", () =>
+    Effect.gen(function* () {
+      const { fixture, service, waiting, blocker, sql } = yield* blockedBehindSharedFile;
+      fixture.host.threads = [archivedThread(blocker.threadId!, "turn-unreadable", "message-x")];
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('message-x',${blocker.threadId},'assistant','unreadable',0,'now','now','turn-unreadable')`;
+      // Reading this thread's reply now raises "malformed JSON", so its outcomes cannot be
+      // read; the queue view (same release rule as the reservation recheck) must keep the
+      // blocker rather than treat it as "no PR".
+      yield* sql`ALTER TABLE projection_thread_messages RENAME TO projection_thread_messages_real`;
+      // Views cannot bind parameters; thread ids are generated UUID-like strings.
+      assert.match(blocker.threadId!, /^[\w-]+$/);
+      yield* sql.unsafe(`CREATE VIEW projection_thread_messages AS SELECT message_id,thread_id,turn_id,role,
+        CASE WHEN thread_id = '${blocker.threadId}' THEN json_extract('not json', '$') ELSE text END AS text,
+        is_streaming,created_at,updated_at FROM projection_thread_messages_real`);
+      const overview = yield* service.getOverview(PROJECT_ID).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            yield* sql`DROP VIEW projection_thread_messages`;
+            yield* sql`ALTER TABLE projection_thread_messages_real RENAME TO projection_thread_messages`;
+          }).pipe(Effect.orDie),
+        ),
+      );
+      assert.equal(overview.portQueue.waitingOnFiles, 1);
+      assert.equal((yield* waitingEntry(service, waiting.entryId)).status, "queued");
+      assert.equal(fixture.host.submissions.length, 1);
+    }),
+  );
+
   it.effect("Start all anyway flags only the entries waiting on files", () =>
     Effect.gen(function* () {
       const { fixture, service, ids } = yield* prepareQueue(3, 1, (index) => [

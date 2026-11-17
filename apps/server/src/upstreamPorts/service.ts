@@ -129,7 +129,7 @@ import {
   portFileKeys,
   type PortGroupingTopic,
 } from "@t3tools/shared/upstreamPortsGrouping";
-import { Cause, Data, Effect, Exit, Schema, Scope, Semaphore, Stream } from "effect";
+import { Cause, Data, Effect, Exit, Option, Schema, Scope, Semaphore, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeBackgroundWorker } from "../backgroundWorker.ts";
 import { canonicalJsonHash } from "../canonicalJsonHash.ts";
@@ -3255,34 +3255,78 @@ export function makeUpstreamPortsService(
       });
 
     /**
-     * Links whose files other queued ports must wait for. An archived thread without a PR
-     * will not land anything, so it releases its files; one with a PR holds them until the
-     * PR merges and its trailers release the topic. The queue view and the reservation
-     * recheck both read this, so a released blocker cannot fail a start later.
+     * Links whose files other queued ports must wait for. An archived, idle thread with no
+     * known PR will not land anything, so it releases its files. A PR known from any source
+     * (a linked PR, the thread or a scoped outcome, or a saved receipt) holds them until it
+     * merges and its trailers release the topic. When the outcomes cannot be read, the files
+     * stay held. The queue view and the reservation recheck both read this, so a released
+     * blocker cannot fail a start later.
      */
-    const conflictLinks = (context: ProjectContext, snapshot: CurrentView) =>
+    const conflictState = (context: ProjectContext, snapshot: CurrentView) =>
       Effect.gen(function* () {
-        const open = yield* activeConflictLinks(context, snapshot);
-        if (open.length === 0) return open;
+        const active = yield* activeConflictLinks(context, snapshot);
         const model = yield* host.readModel;
+        const outcomes = new Map<string, ParsedUpstreamOutcomes>();
+        const outcomesReadFor = new Set<string>();
+        const unchanged = { open: active, model, outcomes, outcomesReadFor };
         const archived = new Set(
           model.threads
             .filter(
               (thread) =>
-                thread.archivedAt != null && open.some((link) => link.threadId === thread.id),
+                thread.archivedAt != null && active.some((link) => link.threadId === thread.id),
             )
             .map((thread) => thread.id as string),
         );
-        if (archived.size === 0) return open;
-        const summaries = yield* linkSummaries(context, [...archived], model);
-        return open.filter(
-          (link) => !archived.has(link.threadId) || Boolean(summaries.get(link.threadId)?.prUrl),
+        if (archived.size === 0) return unchanged;
+        const running = yield* runningThreads(context.projectId, snapshot);
+        const candidates = [...archived].filter((threadId) => !running.has(threadId));
+        if (candidates.length === 0) return unchanged;
+        const evidence = yield* Effect.all({
+          outcomes: readOutcomes(context, model, candidates, snapshot),
+          receipts: topicOutcomes.listForThreads(context.projectId, candidates),
+        }).pipe(
+          Effect.flatMap(({ outcomes: read, receipts }) =>
+            linkSummaries(context, candidates, model, read).pipe(
+              Effect.map((summaries) => ({ read, receipts, summaries })),
+            ),
+          ),
+          Effect.tapError((error) =>
+            Effect.logWarning("Could not read archived port outcomes; keeping files held", error),
+          ),
+          Effect.option,
         );
+        if (Option.isNone(evidence)) return unchanged;
+        const { read, receipts, summaries } = evidence.value;
+        for (const threadId of candidates) outcomesReadFor.add(threadId);
+        for (const [threadId, parsed] of read) outcomes.set(threadId, parsed);
+        const releasable = new Set(candidates);
+        const knownPr = (link: (typeof active)[number]) =>
+          Boolean(summaries.get(link.threadId)?.prUrl) ||
+          read.get(link.threadId)?.thread?.kind === "pr" ||
+          read.get(link.threadId)?.byTopic.get(link.topicId)?.kind === "pr" ||
+          receipts.some(
+            (receipt) =>
+              receipt.threadId === link.threadId &&
+              receipt.topicId === link.topicId &&
+              receipt.epoch === link.epoch &&
+              receipt.outcome.kind === "pr",
+          );
+        return {
+          ...unchanged,
+          open: active.filter((link) => !releasable.has(link.threadId) || knownPr(link)),
+        };
       });
+    const conflictLinks = (context: ProjectContext, snapshot: CurrentView) =>
+      conflictState(context, snapshot).pipe(Effect.map((state) => state.open));
 
     const openConflicts = (context: ProjectContext, snapshot: CurrentView) =>
       Effect.gen(function* () {
-        const open = yield* conflictLinks(context, snapshot);
+        const {
+          open,
+          model,
+          outcomes: known,
+          outcomesReadFor,
+        } = yield* conflictState(context, snapshot);
         const keys = portFileKeys(
           yield* topicFileSets(
             context,
@@ -3291,13 +3335,19 @@ export function makeUpstreamPortsService(
           ),
           { dropHotPaths: false },
         ).keysByTopic;
-        const model = yield* host.readModel;
-        const outcomes = yield* readOutcomes(
-          context,
-          model,
-          open.map((link) => link.threadId),
-          snapshot,
-        ).pipe(Effect.orElseSucceed(() => new Map<string, ParsedUpstreamOutcomes>()));
+        // Reuse what the release check already read; only fetch the remaining threads.
+        const remaining = [
+          ...new Set(open.map((link) => link.threadId).filter((id) => !outcomesReadFor.has(id))),
+        ];
+        const outcomes = new Map(known);
+        if (remaining.length > 0)
+          for (const [threadId, parsed] of yield* readOutcomes(
+            context,
+            model,
+            remaining,
+            snapshot,
+          ).pipe(Effect.orElseSucceed(() => new Map<string, ParsedUpstreamOutcomes>())))
+            outcomes.set(threadId, parsed);
         const summaries = yield* linkSummaries(
           context,
           open.map((link) => link.threadId),
