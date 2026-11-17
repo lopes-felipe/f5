@@ -3,6 +3,7 @@ import {
   RUNTIME_WARNING_VISIBILITY_OPTIONS,
   WORK_LOG_FILTER_OPTIONS,
   WORK_LOG_MODE_OPTIONS,
+  SCREEN_READER_ANNOUNCEMENT_OPTIONS,
   type AppSettings,
   buildAppSettingsPatch,
   parsePersistedAppSettings,
@@ -32,6 +33,11 @@ const WORK_LOG_MODE_LABELS = {
   essential: "Essential",
   diagnostics: "Diagnostics",
 } as const;
+const SCREEN_READER_ANNOUNCEMENT_LABELS = {
+  status: "Status only",
+  messages: "Status and messages",
+  everything: "Everything",
+} as const;
 const WORK_LOG_FILTER_LABELS = {
   all: "All activity",
   tools: "Tools",
@@ -52,7 +58,7 @@ const MESSAGE_KEYS = [
   "diffWordWrap",
   "diffFileDefaultState",
 ] as const;
-const WORK_LOG_KEYS = ["workLogMode", "workLogFilter"] as const;
+const WORK_LOG_KEYS = ["workLogMode", "workLogFilter", "screenReaderAnnouncements"] as const;
 
 function hasSettingsChanges<K extends keyof AppSettings>(
   keys: readonly K[],
@@ -274,6 +280,35 @@ export function ConversationSettings() {
       >
         <div className="space-y-4">
           <div>
+            <SettingsRow
+              title="Screen reader announcements"
+              description="Status only reads turn transitions. Status and messages also reads finished messages during a turn. Everything adds the agent's current step. This setting applies to this device."
+              control={
+                <Select
+                  value={settings.screenReaderAnnouncements}
+                  onValueChange={(value) => {
+                    if (SCREEN_READER_ANNOUNCEMENT_OPTIONS.some((option) => option === value))
+                      updateSettings({
+                        screenReaderAnnouncements:
+                          value as AppSettings["screenReaderAnnouncements"],
+                      });
+                  }}
+                >
+                  <SelectTrigger className="w-48" aria-label="Screen reader announcements">
+                    <SelectValue>
+                      {SCREEN_READER_ANNOUNCEMENT_LABELS[settings.screenReaderAnnouncements]}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup>
+                    {SCREEN_READER_ANNOUNCEMENT_OPTIONS.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {SCREEN_READER_ANNOUNCEMENT_LABELS[value]}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+              }
+            />
             <SettingsRow
               title="Work log detail level"
               description="Essential hides successful hooks and reviews. Diagnostics shows the full activity history."

@@ -283,6 +283,7 @@ export type PendingTurnDispatchStatus =
   | "awaiting-user-action";
 
 export interface PendingTurnDispatchRollback {
+  replyTo?: import("@t3tools/contracts").AssistantResponseContext | null | undefined;
   prompt: string;
   mentions?: readonly import("../composer-editor-mentions").ComposerMention[];
   images: ComposerImageAttachment[];
@@ -923,6 +924,7 @@ export function deriveProviderRuntimeInfoEntries(input: {
 }
 
 export function deriveComposerSendState(options: {
+  replyTo?: import("@t3tools/contracts").AssistantResponseContext | null | undefined;
   prompt: string;
   imageCount: number;
   filePathCount: number;
@@ -942,6 +944,7 @@ export function deriveComposerSendState(options: {
     sendableTerminalContexts,
     expiredTerminalContextCount,
     hasSendableContent:
+      Boolean(options.replyTo) ||
       trimmedPrompt.length > 0 ||
       options.imageCount > 0 ||
       options.filePathCount > 0 ||

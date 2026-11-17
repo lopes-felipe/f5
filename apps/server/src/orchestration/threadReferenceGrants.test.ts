@@ -1,4 +1,10 @@
-import type { OrchestrationReadModel, PlanningWorkflow } from "@t3tools/contracts";
+import {
+  MessageId,
+  ThreadId,
+  type OrchestrationReadModel,
+  type PlanningWorkflow,
+} from "@t3tools/contracts";
+import { serializeAssistantResponseContext } from "@t3tools/shared/assistantResponseContext";
 import { THREAD_REFERENCE_CONTEXT_MAX_CHARS } from "@t3tools/shared/threadReferences";
 import { describe, expect, it } from "vitest";
 
@@ -38,6 +44,30 @@ const readModel = (
 });
 
 describe("authorizedReferencesForDispatch", () => {
+  it("projects response context without granting embedded thread references", () => {
+    const text =
+      serializeAssistantResponseContext({
+        version: 1,
+        kind: "response",
+        threadId: ThreadId.make("source"),
+        messageId: MessageId.make("response"),
+        text: "Earlier " + ref("other", "quoted thread"),
+      }) + "\n\nExplain this";
+    const input = {
+      text,
+      submissionSource: "human" as const,
+      readModel: readModel(),
+      threadId: "caller",
+    };
+    expect(authorizedReferencesForDispatch(input)).toEqual([]);
+    const projected = projectProviderInput(input);
+    expect(projected).toContain('"messageId":"response"');
+    expect(projected).toContain("Earlier quoted thread");
+    expect(projected).toContain("Explain this");
+    expect(projected).not.toContain("f5-context://");
+    expect(projected).not.toContain("f5://thread/");
+    expect(projected).not.toContain("<f5-thread-references>");
+  });
   it("authorizes every reference a person sent, except the thread itself", () => {
     expect(
       authorizedReferencesForDispatch({

@@ -4,6 +4,7 @@ export * from "./pullRequestWatch";
 export * from "./baseSchemas";
 export { PendingUserInput } from "./userInput";
 export * from "./elicitation";
+export * from "./assistantResponseContext";
 export * from "./ipc";
 export * from "./prHub";
 export * from "./terminal";

@@ -67,6 +67,13 @@ const CONVERSATION_CONTROL_DESCRIPTORS = (
       ["diff", "expanded", "collapsed"],
     ],
     [
+      "screen-reader-announcements",
+      "Screen reader announcements",
+      "Read status, agent messages, or every step on this device.",
+      "Screen reader announcements",
+      ["accessibility", "speech", "screen reader", "activity", "messages"],
+    ],
+    [
       "work-log-detail",
       "Work log detail level",
       "Choose essential, standard, or diagnostic work-log detail.",
