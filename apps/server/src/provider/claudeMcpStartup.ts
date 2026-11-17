@@ -11,15 +11,17 @@ interface PrivateMcpRuntime {
 }
 
 /**
- * SDK startup configs become --mcp-config JSON in argv. Send header/env-bearing
- * servers over the existing control channel instead, before admitting a prompt.
- * Keep the original options intact so every recovery launch takes this path too.
+ * With `mcpServersDelivery: "argv"`, SDK startup configs become --mcp-config JSON in argv.
+ * Send header/env-bearing servers over the existing control channel instead, before
+ * admitting a prompt. `"initialize"` already keeps them off argv, so the SDK delivers them.
+ * Keep the original options intact so every recovery launch takes the same path.
  */
 export async function createClaudeQueryWithPrivateMcp<Q extends PrivateMcpRuntime>(
   input: QueryInput,
   createQuery: (input: QueryInput) => Q,
   options: { readonly signal?: AbortSignal; readonly timeoutMs?: number } = {},
 ): Promise<Q> {
+  if (input.options.mcpServersDelivery === "initialize") return createQuery(input);
   const servers = input.options.mcpServers;
   const hasPrivateValues = (server: McpServerConfig) =>
     ("headers" in server && Object.values(server.headers ?? {}).some(Boolean)) ||

@@ -343,6 +343,7 @@ import {
 } from "../claudeSdkExecutable.ts";
 import {
   claudeHookOnFailureSupported,
+  claudeMcpServersDelivery,
   readClaudeExecutableVersion,
 } from "../claudeExecutableVersion.ts";
 import { buildClaudeFlagPermissions } from "../claudeFlagPermissions.ts";
@@ -568,6 +569,8 @@ interface ClaudeSessionContext {
   streamUsageInvalidated?: boolean;
   /** Selected base model whose CLI rejected auto; independent of raw init model spelling. */
   autoRejectedForModel?: string | undefined;
+  /** Last `credential_expires_at` value already warned about in this session. */
+  credentialExpiryWarned?: string;
   requestedRuntime?: Record<string, unknown>;
   lastProviderTitle?: string;
   nativeControl?:
@@ -1224,7 +1227,45 @@ const CLAUDE_STARTUP_FAILURE_MESSAGES: Partial<Record<string, string>> = {
 export function claudeStartupFailureMessage(result: SDKResultMessage): string | undefined {
   if (result.subtype !== "error_during_execution") return undefined;
   const reason = (result as { startup_failure_reason?: unknown }).startup_failure_reason;
+  if (reason === "config_file_invalid") return claudeInvalidConfigFileMessage(result);
   return typeof reason === "string" ? CLAUDE_STARTUP_FAILURE_MESSAGES[reason] : undefined;
+}
+
+const CLAUDE_CREDENTIAL_EXPIRY_WARNING_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Warning for a result's `credential_expires_at` (2.1.326+): the end of the claude.ai login's
+ * refresh chain, possibly an estimate up to 3 days late. Silent until 7 days remain; a past
+ * date means the login has probably ended, not that it has.
+ */
+export function claudeCredentialExpiryWarning(
+  expiresAt: unknown,
+  nowMs: number,
+  formatDate: (date: Date) => string = (date) =>
+    date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }),
+): string | undefined {
+  if (typeof expiresAt !== "string") return undefined;
+  const expiresMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresMs)) return undefined;
+  if (expiresMs <= nowMs) return "This Claude login has probably ended; sign in again.";
+  if (expiresMs - nowMs > CLAUDE_CREDENTIAL_EXPIRY_WARNING_MS) return undefined;
+  return `This Claude login ends around ${formatDate(new Date(expiresMs))}; sign in again before then.`;
+}
+
+/**
+ * `config_file_invalid` (2.1.326+): paths come from `invalid_config_file`, never from the
+ * error text. The file is left unchanged and every headless start fails until it is fixed.
+ */
+function claudeInvalidConfigFileMessage(result: SDKResultMessage): string | undefined {
+  const file = (result as { invalid_config_file?: unknown }).invalid_config_file;
+  if (typeof file !== "object" || file === null) return undefined;
+  const { path, backup_path: backupPath } = file as { path?: unknown; backup_path?: unknown };
+  if (typeof path !== "string" || !path.trim()) return undefined;
+  const repair =
+    typeof backupPath === "string" && backupPath.trim()
+      ? `Restore or repair it from ${backupPath}.`
+      : "Repair it; Claude refuses to start until then.";
+  return `Claude's config file ${path} is not valid JSON. ${repair}`;
 }
 
 function resultUserFacingError(result: SDKResultMessage): string | undefined {
@@ -5525,6 +5566,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
       });
 
+    /** Warns once per session for each reported expiry date. */
+    const warnClaudeCredentialExpiry = (
+      context: ClaudeSessionContext,
+      message: SDKResultMessage,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const expiresAt = (message as { credential_expires_at?: unknown }).credential_expires_at;
+        if (typeof expiresAt !== "string" || context.credentialExpiryWarned === expiresAt) return;
+        const warning = claudeCredentialExpiryWarning(expiresAt, yield* Clock.currentTimeMillis);
+        if (!warning) return;
+        context.credentialExpiryWarned = expiresAt;
+        yield* emitRuntimeWarning(context, warning, { category: "provider", actionable: true });
+      });
+
     const handleResultMessage = (
       context: ClaudeSessionContext,
       message: SDKMessage,
@@ -5535,6 +5590,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
         if (context.lifecycle.seenResults.has(message.uuid)) return;
         yield* refreshFastModeFromResult(context, message);
+        yield* warnClaudeCredentialExpiry(context, message);
         const ownedUuids = context.turnState?.userMessageUuids;
         const resultUuids =
           message.user_message_uuids ??
@@ -8213,7 +8269,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
               const requestType = classifyRequestType(toolName);
               const detail = summarizeToolRequest(toolName, toolInput);
-              const presentation = claudeApprovalPresentation(callbackOptions);
+              const presentation = claudeApprovalPresentation(callbackOptions, {
+                // A session accept saves the CLI's suggestions, or F5's preview grant.
+                sessionGrantAvailable:
+                  (callbackOptions.suggestions?.length ?? 0) > 0 || previewToolClass === "mutate",
+              });
               const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
               const pendingApproval: PendingApproval = {
                 ...(callbackOptions.agentID ? { agentId: callbackOptions.agentID } : {}),
@@ -8625,13 +8685,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const customBinaryPath = isDefaultClaudeBinary(providerOptions?.binaryPath)
           ? undefined
           : providerOptions?.binaryPath?.trim();
+        const customExecutableVersion = customBinaryPath
+          ? yield* Effect.promise(() =>
+              readClaudeExecutableVersion(customBinaryPath, queryEnvironment, input.cwd),
+            )
+          : undefined;
         const hookFailClosed = claudeHookOnFailureSupported(
           customBinaryPath,
-          customBinaryPath
-            ? yield* Effect.promise(() =>
-                readClaudeExecutableVersion(customBinaryPath, queryEnvironment, input.cwd),
-              )
-            : undefined,
+          customExecutableVersion,
+        );
+        const mcpServersDelivery = claudeMcpServersDelivery(
+          customBinaryPath,
+          customExecutableVersion,
         );
         const processDiagnostics = { stderrTail: "" };
         const recordStderr = (data: string) => {
@@ -8651,6 +8716,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           stderr: recordStderr,
           ...(spawnClaudeCodeProcess ? { spawnClaudeCodeProcess } : {}),
           ...sdkExecutableOptions,
+          // Recovery launches reuse these options, so they take the same delivery path.
+          mcpServersDelivery,
           settingSources: [...CLAUDE_SETTING_SOURCES],
           ...(effectiveEffort ? { effort: effectiveEffort } : {}),
           ...(permissionMode ? { permissionMode } : {}),
@@ -9974,6 +10041,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               query: context.query,
               desired,
               owned,
+              // The replacement also covers in-process servers; omitting them disconnects them.
+              preserved: context.internalMcpServers,
               beforeSetServers: (names) => {
                 context.ownedMcpServerNames = names;
               },

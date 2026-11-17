@@ -1,11 +1,11 @@
 # Claude provider: implementation and release notes
 
 Contributor reference for the Claude adapter: SDK pinning, cost accounting, host instructions,
-Release 0–5 behavior and live-verification records. The user guide is [providers/claude.md](../providers/claude.md).
+Release 0–6 behavior and live-verification records. The user guide is [providers/claude.md](../providers/claude.md).
 
 ## Bundled runtime and models
 
-F5 pins Claude Agent SDK 0.3.317, which bundles Claude Code v2.1.317. Claude Fable 5.2
+F5 pins Claude Agent SDK 0.3.326, which bundles Claude Code v2.1.326. Claude Fable 5.2
 requires v2.1.290+ and provides native 1M context; Fable 5.1 remains available with v2.1.257+.
 Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
 with `medium` effort.
@@ -750,3 +750,114 @@ On 2026-11-03 the bundled 2.1.317 initialized in an isolated home: it reported
 authenticated Claude account. Sonnet 5.5/Haiku 5.5 answers, the `dismissed` annotation in a real
 tool result, the `system/init` capability set, and a real MCP App render and approved app call
 are **unverified here**.
+
+## Release 6: SDK 0.3.326
+
+Release 6 updates the bundled SDK from 0.3.317 to **0.3.326** and Claude Code from 2.1.317 to
+**2.1.326**. Peer dependencies are unchanged (`@anthropic-ai/sdk >=0.93`,
+`@modelcontextprotocol/sdk ^1.29`, `zod ^4`). Wire protocol stays 43: no decoded browser shape
+changed.
+
+### Why: the account email check in Full access
+
+Claude Code 2.1.317 ships a built-in privacy plugin, `cc-plugin-privacy` (on by default). Its
+`tool.check` hook returned `ask` for any Bash, Monitor, PowerShell, Tmux or web tool call whose
+input held the signed-in account's email next to a network word (`https`, `curl`, `ssh`, ...).
+A hook's ask survives `bypassPermissions`, and F5 forwards every CLI ask in Full access (ask
+rules and policy can override it), so a command that legitimately sent the email, such as an
+`X-Grafana-User` header, prompted on every call with only a one-time approval.
+
+In 2.1.326 the plugin never asks. It refuses a call (the model is told to retry without the
+address, or to have the person set it in an environment variable or run the command with `!`)
+only when the email appears beside a client-identity marker: a User-Agent setting, a `From:`
+header, `identity=`, `mailto=`, `git config user.email` and similar, or the email in a WebFetch
+URL, or a file write or a script the command names that pairs the two. Anything else runs under
+the normal permission flow. F5 still forwards CLI asks in Full access and never auto-approves by
+matching `decisionReason` text. The plugin can be turned off only from user, `--settings` or
+managed settings (`enabledPlugins: {"cc-plugin-privacy@builtin": false}`); F5 does not set it.
+
+### Declaration diff and audit
+
+- `bun run sdk:audit`: 39 message discriminators, all classified; no new deprecated references.
+- `mcpServersDelivery: 'argv' | 'initialize'` and initialize `mcp_servers_applied`. A custom
+  executable that leaves the option unset gets a `DeprecationWarning`; the default moves to
+  `initialize` in a later release.
+- `setMcpServers` documents that it also replaces in-process SDK servers: one the payload omits
+  is disconnected. 0.3.317 already behaved this way (its implementation disconnects omitted
+  `type: "sdk"` servers); only the documentation changed.
+- Startup failure reasons `config_file_invalid` (with `invalid_config_file`) and
+  `managed_settings_not_delivered`; result `credential_expires_at`.
+- `resolveSettings().machinePolicy.didNotLoad`.
+- `archiveSession`/`unarchiveSession`/`getSessionInfo`, `matchDeniedModels` (alpha),
+  `reloadPlugins({ refuseIfBusy })` (`reload_plugins_refuse_if_busy_v1`), `mcp_call`
+  `check_permissions`, `set_has_subscribers`, flag setting `permissions.denyInsteadOfPrompting`,
+  `list_permission_rules` `withheld`, `init.plugin_errors[].managed_lock`, plugin `engines`.
+- `BUILTIN_TOOL_NAMES` renames `ProposeGoal` to `SetGoal`. `SandboxSettings` is now derived from
+  `PublishedSandboxSettingsSchema`. F5 references neither.
+- Tool shapes: `propose_skills` accepts `edits`, Read results add `image_attached`/`page`, Artifact
+  adds `folder_audience`, observers accept a comma list.
+- Assistant `supersedes` is now also sent after a response whose tool call could not be parsed.
+
+The Claude in Chrome descriptor check reports 2.1.326 as covered by the certified
+`claude-chrome-darwin-arm64-2.1.317` floor, so no record is added or withdrawn.
+
+### Adopted
+
+- **MCP reload keeps F5's own servers.** `reconcileClaudeMcpServers` takes a `preserved` set and
+  re-sends F5's in-process thread, preview and computer servers with every `setMcpServers`
+  payload. Before, any MCP reload disconnected them. Preserved names are never owned, never
+  reported as lingering, and a user server that reuses one is skipped with a notice.
+- **MCP delivery.** The bundled runtime, or a custom executable reporting 2.1.326+
+  (`CLAUDE_MCP_INITIALIZE_DELIVERY_MIN_VERSION`), launches with `mcpServersDelivery:
+"initialize"`, so server `env` and `headers` stay off argv and F5's private startup path is
+  skipped. Every other executable, unknown versions included, gets an explicit `"argv"` and
+  keeps the private path (header- and env-bearing servers installed over the control channel
+  before a prompt is admitted). Recovery launches reuse the same options.
+- **Session accept only when it saves something.** 2.1.325 offers a rule suggestion only when
+  saving it would allow the call again. An ask without `suggestions` is presented with
+  `suppressAlwaysAllowRule`, so the card offers one-time approval only. F5's preview mutate tools
+  keep the session accept: it sets F5's own preview grant.
+- **`config_file_invalid`.** F5 names the file and the backup from `invalid_config_file`, never
+  from the error text. Not retried. `managed_settings_not_delivered` keeps Claude's message
+  because F5 never sends managed settings in initialize.
+- **`credential_expires_at`.** One actionable provider warning per session per reported value,
+  once 7 days or less remain ("ends around <date>") or when the date has passed ("has probably
+  ended").
+- **Managed policy load failures.** `resolveClaudeBypassAvailability` fails closed when
+  `machinePolicy.didNotLoad` lists a source, naming it in the failure reason. Not cached.
+
+### Not adopted
+
+`archiveSession`/`unarchiveSession`/`getSessionInfo` (F5 owns its thread list),
+`matchDeniedModels` (alpha), `reloadPlugins({ refuseIfBusy })` (F5 never reloads plugins),
+`mcp_call` `check_permissions` (F5 approves app calls itself; routing them through Claude's
+policy too would double-prompt), `set_has_subscribers` (F5 sets no stream hold),
+`permissions.denyInsteadOfPrompting` (F5 answers every ask in `canUseTool`), the `propose_skills`
+`edits` form, Read `image_attached`/`page`, Artifact `folder_audience`, observer lists and
+`CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES`.
+
+**Follow-up:** F5 does not honor assistant `supersedes` at all, after a refusal fallback or now
+after an unparseable tool call. Removing already-projected items needs a canonical retraction
+event and a wire protocol bump.
+
+### Behavior changes absorbed
+
+The privacy check is deny-only and broader (web fetch URLs, file writes, MCP calls, scripts a
+command names). Sandboxed Bash follows the normal permission flow unless
+`sandbox.autoAllowBashIfSandboxed` is set. The tool that finishes an MCP server sign-in asks even
+under bypass; F5 forwards that ask. Unrecognized `claude-*` model IDs are assumed to have a 1M
+context window. An `applyFlagSettings` value that would discard the flag layer now rejects; F5's
+per-turn call already runs through the control-request failure path. A permission check that
+fails after a hook's `allow` is decided as if no hook had answered (F5's mandatory hook never
+returns allow). Saved Fable 5.1 picks migrate to `fable`, but F5 passes explicit model IDs.
+
+### Live verification status
+
+On 2026-11-17 the bundled 2.1.326 initialized in an isolated home with a stdio MCP server
+carrying `env` and `mcpServersDelivery: "initialize"`: it reported `claude_code_version`
+2.1.326, `hook_on_failure_supported: true`, `mcp_servers_applied: true`, and the capabilities
+`ui_surface_v1`, `mcp_call_result_not_for_model_v1`, `mcp_call_check_permissions_v1`,
+`voice_call_talk_line_v1`, `ui_pane_widget_v1` and `reload_plugins_refuse_if_busy_v1`.
+`test:claude:live` was not run: this environment has no authenticated Claude account. The
+privacy check's allow and deny decisions in a real Full-access turn, and an MCP reload in a live
+thread followed by an `f5_thread` call, are **unverified here**.

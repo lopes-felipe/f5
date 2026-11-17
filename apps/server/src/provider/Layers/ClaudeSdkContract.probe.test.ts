@@ -125,6 +125,52 @@ describe("Claude SDK host contract transport", () => {
       runtime.close();
     }
   });
+  it("delivers launch MCP servers in initialize, off argv, when F5 picks initialize", async () => {
+    const servers = {
+      remote: {
+        type: "http",
+        url: "https://example.invalid/mcp",
+        headers: { Authorization: "Bearer header-value-fixture" },
+      },
+      local: { type: "stdio", command: "node", env: { ACCESS_TOKEN: "env-value-fixture" } },
+    } satisfies NonNullable<Options["mcpServers"]>;
+    let spawn: SpawnOptions | undefined;
+    let initialize: Record<string, unknown> | undefined;
+    let setServers = false;
+    const runtime = await createClaudeQueryWithPrivateMcp(
+      {
+        prompt: emptyPrompt(),
+        options: {
+          persistSession: false,
+          mcpServers: servers,
+          mcpServersDelivery: "initialize",
+          spawnClaudeCodeProcess: (args) => {
+            spawn = args;
+            return new FakeClaudeCodeProcess((message, child) => {
+              if (respondToInitializeRequest(message, child, { mcp_servers_applied: true })) {
+                initialize = message.request as Record<string, unknown>;
+                return;
+              }
+              if ((message.request as { subtype?: string })?.subtype === "mcp_set_servers")
+                setServers = true;
+            });
+          },
+        },
+      },
+      query,
+    );
+    try {
+      const result = (await runtime.initializationResult()) as { mcp_servers_applied?: boolean };
+      expect(initialize?.mcpServers).toEqual(servers);
+      expect(result.mcp_servers_applied).toBe(true);
+      expect(setServers).toBe(false);
+      expect(spawn!.args).not.toContain("--mcp-config");
+      expect(JSON.stringify(spawn!.args)).not.toContain("header-value-fixture");
+      expect(JSON.stringify(spawn!.args)).not.toContain("env-value-fixture");
+    } finally {
+      runtime.close();
+    }
+  });
   it.each([undefined, "550e8400-e29b-41d4-a716-446655440000"])(
     "serializes host instructions and mandatory flags (resume=%s)",
     async (resume) => {

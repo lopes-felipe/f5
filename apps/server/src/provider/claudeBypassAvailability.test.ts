@@ -68,3 +68,27 @@ it("reports parse failures without including settings contents", async () => {
   expect(result.failureReason).toContain("Could not parse remote-settings.json");
   expect(result.failureReason).not.toContain("do-not-report");
 });
+
+it("fails closed while a machine policy source did not load", async () => {
+  vi.spyOn(fs, "readFile").mockResolvedValue("{}");
+  const resolve = vi.spyOn(sdk, "resolveSettings").mockResolvedValue({
+    effective: {},
+    sources: [],
+    provenance: {},
+    machinePolicy: { didNotLoad: ["profile", "file"] },
+  });
+  const failed = await resolveClaudeBypassAvailability("/profile", "/repo");
+  expect(failed.bypassDisabled).toBe(true);
+  expect(failed.failureReason).toContain("Managed policy source(s) profile, file did not load.");
+  // `false` (or an older SDK leaving it out) keeps the normal answer.
+  resolve.mockResolvedValue({
+    effective: {},
+    sources: [],
+    provenance: {},
+    machinePolicy: { didNotLoad: false },
+  });
+  expect(await resolveClaudeBypassAvailability("/profile", "/repo")).toEqual({
+    bypassDisabled: false,
+    autoDisabled: false,
+  });
+});

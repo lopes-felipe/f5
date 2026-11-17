@@ -96,3 +96,17 @@ it.each(["failure", "abort", "timeout"])(
     expect(consumed).toEqual([]);
   },
 );
+
+it("leaves initialize delivery to the SDK without a private control start", async () => {
+  const runtime = { initializationResult: vi.fn(), setMcpServers: vi.fn(), close: vi.fn() };
+  const input = {
+    options: { ...options, mcpServersDelivery: "initialize" as const },
+    prompt: (async function* () {
+      yield message;
+    })(),
+  };
+  const createQuery = vi.fn(() => runtime);
+  expect(await createClaudeQueryWithPrivateMcp(input, createQuery)).toBe(runtime);
+  expect(createQuery).toHaveBeenCalledExactlyOnceWith(input);
+  expect(runtime.setMcpServers).not.toHaveBeenCalled();
+});

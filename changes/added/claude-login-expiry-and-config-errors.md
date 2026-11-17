@@ -1,0 +1,3 @@
+- Claude threads warn when the Claude login is about to end (within 7 days) or has probably ended, once per session.
+- When Claude refuses to start because one of its config files is not valid JSON, F5 names the file and, when Claude found one, the backup to restore it from.
+- Full access for Claude stays off while a managed policy source on this machine (a macOS profile, the Windows registry policy or the managed settings file) fails to load, and F5 says which one.
