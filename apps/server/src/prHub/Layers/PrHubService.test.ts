@@ -596,7 +596,8 @@ function makePrNode(input: {
   readonly url?: string;
   readonly updatedAt?: string;
   readonly isDraft?: boolean;
-  readonly reviewDecision?: string;
+  /** null is GitHub's answer when no review rule applies. */
+  readonly reviewDecision?: string | null;
   readonly mergeable?: string;
   readonly mergeStateStatus?: string;
   readonly checkState?: string;
@@ -613,7 +614,7 @@ function makePrNode(input: {
     state: "OPEN",
     isDraft: input.isDraft ?? false,
     mergeable: input.mergeable ?? "UNKNOWN",
-    reviewDecision: input.reviewDecision ?? "REVIEW_REQUIRED",
+    reviewDecision: input.reviewDecision === undefined ? "REVIEW_REQUIRED" : input.reviewDecision,
     mergeStateStatus: input.mergeStateStatus ?? "UNKNOWN",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: input.updatedAt ?? "2026-01-02T00:00:00.000Z",
@@ -2295,6 +2296,113 @@ it.effect("refuses merge when the tracked head oid is missing", () => {
       makeLayer({
         calls,
         searchResponses: [searchResponse("author", [readyPr])],
+      }),
+    ),
+  );
+});
+
+it.effect("merges a clean PR in a repository without a review rule", () => {
+  const calls = makeCalls();
+  const noRulePr = makePrNode({
+    id: "PR_no_rule",
+    number: 22,
+    author: "me",
+    reviewDecision: null,
+    reviewRequests: ["reviewer"],
+    mergeable: "MERGEABLE",
+    mergeStateStatus: "CLEAN",
+    checkState: "SUCCESS",
+    headRefOid: "tracked-head",
+  });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const tracked = snapshot.pullRequests[0];
+    assert.ok(tracked);
+    assert.equal(tracked.reviewDecision, "none");
+    assert.equal(tracked.mergeRequirements?.verification, "verified");
+    assert.equal(tracked.attentionState, "ready_to_merge");
+
+    yield* service.merge({
+      url: tracked.url,
+      method: "squash",
+      expectedComparison: {
+        baseRepository: "octo/repo",
+        baseRef: "main",
+        baseOid: "base",
+        headRepository: "octo/repo",
+        headRef: "feature",
+        headOid: "tracked-head",
+        mergeBaseOid: "base",
+        mode: "current_pr",
+      },
+    });
+    assert.deepStrictEqual(calls.merges, [
+      { url: tracked.url, method: "squash", expectedHeadOid: "tracked-head" },
+    ]);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        apiRequest: (input) =>
+          Effect.succeed({
+            status: 200,
+            graphqlErrors: [],
+            links: {},
+            etag: null,
+            lastModified: null,
+            rateLimit: {},
+            rateLimitResource: "core",
+            body: input.endpoint.includes("/rules/branches/")
+              ? []
+              : input.endpoint.endsWith("/files")
+                ? []
+                : input.endpoint.includes("/compare/")
+                  ? { merge_base_commit: { sha: "base" } }
+                  : {
+                      base: { ref: "main", sha: "base", repo: { full_name: "octo/repo" } },
+                      head: {
+                        ref: "feature",
+                        sha: "tracked-head",
+                        repo: { full_name: "octo/repo" },
+                      },
+                      changed_files: 1,
+                    },
+          }),
+        searchResponses: [searchResponse("author", [noRulePr])],
+      }),
+    ),
+  );
+});
+
+it.effect("refuses to merge a clean PR that still requires a review", () => {
+  const calls = makeCalls();
+  const reviewRequired = makePrNode({
+    id: "PR_review_required",
+    number: 23,
+    author: "me",
+    reviewDecision: "REVIEW_REQUIRED",
+    mergeable: "MERGEABLE",
+    mergeStateStatus: "CLEAN",
+    checkState: "SUCCESS",
+  });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const tracked = snapshot.pullRequests[0];
+    assert.ok(tracked);
+    assert.equal(tracked.attentionState, "awaiting_review");
+
+    const exit = yield* Effect.exit(service.merge({ url: tracked.url, method: "squash" }));
+    assert.equal(Exit.isFailure(exit), true);
+    assert.deepStrictEqual(calls.merges, []);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("author", [reviewRequired])],
       }),
     ),
   );

@@ -150,7 +150,9 @@ export function prPageActionAvailability(pr: TrackedPullRequest): PrPageActionAv
   const supports = (action: "approve" | "comment" | "request-changes") =>
     pr.capabilities?.some((item) => item.action === action && item.supported) ?? false;
   return {
-    canMerge: actionable && isAuthor && quick.includes("merge"),
+    // The server merges only what PR Hub classified ready; anything else gets Merge when ready.
+    canMerge:
+      actionable && isAuthor && pr.attentionState === "ready_to_merge" && quick.includes("merge"),
     canMergeWhenReady:
       actionable && isAuthor && !pr.isDraft && !!caps?.actions.includes("enable-auto-merge"),
     canReview,
