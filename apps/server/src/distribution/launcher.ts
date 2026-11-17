@@ -2,11 +2,9 @@
 // @effect-diagnostics globalTimers:off
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { atomicJson, exclusiveJson, exists, readJson } from "./files";
-import { runWindowsPowerShell } from "../windowsPowerShell";
+import { processBirth, sameProcess } from "./processIdentity";
 import { readInstalled, preflightRuntime } from "./installation";
 import {
   managedChild,
@@ -16,49 +14,6 @@ import {
   readUpdateOutcome,
   type UpdateOutcome,
 } from "./handoff";
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-};
-const exec = promisify(execFile);
-async function processBirth(pid: number): Promise<string> {
-  if (process.platform === "linux") {
-    const [stat, boot] = await Promise.all([
-      fs.readFile(`/proc/${pid}/stat`, "utf8"),
-      fs.readFile("/proc/sys/kernel/random/boot_id", "utf8"),
-    ]);
-    return `${boot.trim()}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`;
-  }
-  const result =
-    process.platform === "win32"
-      ? await runWindowsPowerShell(
-          `[Console]::Write([System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().Ticks)`,
-          { timeoutMs: 10_000, maxBuffer: 4096 },
-        )
-      : await exec("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
-          timeout: 5000,
-          maxBuffer: 4096,
-        });
-  if (!result.stdout.trim()) throw new Error("Process identity is unavailable.");
-  return result.stdout.trim();
-}
-async function sameProcess(
-  pid: number,
-  birth: string | undefined,
-  probeBirth: typeof processBirth,
-): Promise<boolean> {
-  if (!alive(pid)) return false;
-  if (!birth) return true; // Old leases fail closed; never guess whether a live PID is the server.
-  try {
-    return (await probeBirth(pid)) === birth;
-  } catch {
-    return alive(pid);
-  }
-}
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 interface Lease {
   pid: number;
@@ -167,6 +122,7 @@ export async function runLauncher(
   root: string,
   stateDir: string,
   args: readonly string[] = [],
+  probeBirth: typeof processBirth = processBirth,
 ): Promise<void> {
   // A launcher owns one explicit profile database. Services never auto-resolve a different profile.
   let child: ReturnType<typeof managedChild> | undefined;
@@ -188,7 +144,30 @@ export async function runLauncher(
   process.on("message", onMessage);
   if (process.env.F5_LAUNCHER_SUPERVISOR === "1") process.once("disconnect", stop);
   if (process.env.F5_LAUNCHER_SUPERVISOR === "1" && !process.connected) stop();
-  const lease = await acquireLauncherLease(root);
+  const lease = await acquireLauncherLease(root, probeBirth);
+  // Startup can wait indefinitely for activation. Observe service stop requests independently.
+  const stopWatcher = (async () => {
+    while (!stopping) {
+      const request = await readJson(path.join(root, "service-stop.json")).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError)
+          return null;
+        throw error;
+      });
+      if (
+        request &&
+        typeof request === "object" &&
+        "token" in request &&
+        request.token === lease.token
+      )
+        stop();
+      if (!stopping) await Promise.race([delay(250), stopped]);
+    }
+  })();
+  let watcherError: unknown;
+  void stopWatcher.catch((error) => {
+    watcherError = error;
+    stop();
+  });
   try {
     if (stopping) return;
     const recovered = await recoverHandoff(root, path.join(stateDir, "state.sqlite"));
@@ -201,19 +180,6 @@ export async function runLauncher(
     const outcome = recovered ?? (await readUpdateOutcome(root));
     await start(version, outcome?.version === version ? outcome : undefined);
     while (!stopping) {
-      const stopPath = path.join(root, "service-stop.json");
-      if (await exists(stopPath)) {
-        const request = await readJson(stopPath).catch(() => null);
-        if (
-          request &&
-          typeof request === "object" &&
-          "token" in request &&
-          request.token === lease.token
-        ) {
-          stop();
-          break;
-        }
-      }
       if (await exists(path.join(root, "pending.json"))) {
         let request;
         try {
@@ -283,7 +249,10 @@ export async function runLauncher(
         throw new Error("F5 server exited; restart the launcher after reviewing server logs.");
       await delay(250);
     }
+    if (watcherError) throw watcherError;
   } finally {
+    stop();
+    await stopWatcher.catch(() => {});
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
     process.off("message", onMessage);

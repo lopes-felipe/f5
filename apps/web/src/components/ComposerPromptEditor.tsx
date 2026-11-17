@@ -1290,7 +1290,14 @@ function ComposerPromptEditorInner({
           () => {
             const root = $getRoot();
             const paragraph = $createParagraphNode();
-            paragraph.append($createAssistantQuoteNode(quote), $createLineBreakNode());
+            paragraph.append($createAssistantQuoteNode({ ...quote, comment: "" }));
+            if (quote.comment.trim())
+              paragraph.append(
+                $createLineBreakNode(),
+                $createLineBreakNode(),
+                $createTextNode(quote.comment.trim()),
+              );
+            paragraph.append($createLineBreakNode());
             root.append(paragraph);
             paragraph.selectEnd();
           },

@@ -11,6 +11,7 @@ describe("selected CLIProxyAPI hub accounts", () => {
     "uses the selected %s auth file and local quota mapper",
     async (provider) => {
       const requests: Record<string, unknown>[] = [];
+      let failUserInfo = false;
       const fetcher = vi.fn(async (url: string, init: RequestInit) => {
         expect(new URL(url).origin).toBe("https://hub.example");
         if (url.endsWith("/auth-files"))
@@ -26,6 +27,7 @@ describe("selected CLIProxyAPI hub accounts", () => {
         requests.push(request);
         expect(request.auth_index).toBe("right");
         expect(request.header.Authorization).toBe("Bearer $TOKEN$");
+        if (failUserInfo && request.url.includes("/userinfo")) throw new Error("Unavailable");
         const body =
           request.url === GROK_USAGE_URL
             ? { config: { creditUsagePercent: 35 } }
@@ -71,6 +73,11 @@ describe("selected CLIProxyAPI hub accounts", () => {
             expect(accountUsageSnapshotIdentity(capability, result.snapshot)).not.toBe(
               capability.identity,
             );
+            const identity = accountUsageSnapshotIdentity(capability, result.snapshot);
+            failUserInfo = true;
+            yield* capability.invalidate!;
+            const retry = yield* capability.refreshAccount!(yield* Semaphore.make(1), "if-stale");
+            expect(accountUsageSnapshotIdentity(capability, retry.snapshot)).toBe(identity);
           }
         }).pipe(Effect.scoped),
       );

@@ -95,7 +95,7 @@ export class ComposerAssistantQuoteNode extends DecoratorNode<ReactElement> {
     return true;
   }
   override getTextContent() {
-    return serializeAssistantQuote(this.__quote);
+    return serializeAssistantQuote({ ...this.__quote, comment: "" });
   }
   override createDOM() {
     const node = document.createElement("span");
@@ -108,7 +108,7 @@ export class ComposerAssistantQuoteNode extends DecoratorNode<ReactElement> {
   override decorate(): ReactElement {
     return (
       <span data-composer-assistant-quote className="whitespace-pre-wrap">
-        {serializeAssistantQuote({ ...this.__quote, threadId: undefined })}
+        {serializeAssistantQuote({ ...this.__quote, threadId: undefined, comment: "" })}
       </span>
     );
   }

@@ -274,6 +274,7 @@ it.effect("reads a newly created watch immediately while the service is running"
     Effect.gen(function* () {
       yield* f.service.start;
       yield* f.service.startWatch(f.input);
+      yield* Deferred.await(f.entered);
       assert.equal(f.state.calls, 1);
     }),
   ),

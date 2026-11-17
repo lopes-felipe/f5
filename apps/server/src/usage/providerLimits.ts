@@ -432,6 +432,8 @@ export function makeProviderLimits(input: {
   serverUrl?: string;
   apiEndpoint?: string;
 }) {
+  // This capability belongs to one fixed provider/account configuration.
+  let lastAntigravityFingerprint: string | undefined;
   const read = Effect.tryPromise({
     try: async (signal): Promise<ReadonlyArray<AccountUsageSection>> => {
       const env = input.environment;
@@ -441,18 +443,17 @@ export function makeProviderLimits(input: {
       let accountFingerprint: string | undefined;
       if (input.provider === "grok" && env.F5_CLIPROXY_HUB_URL) {
         const account = await openCliProxyHub("xai", env, signal, performance.now() + 7000);
-        value = account
-          ? await account.call(
-              GROK_USAGE_URL,
-              undefined,
-              {
-                "x-xai-token-auth": "xai-grok-cli",
-                "x-grok-client-version": "1.0.77",
-                "User-Agent": "grok-cli/1.0.77",
-              },
-              6000,
-            )
-          : {};
+        if (!account) throw new AccountUsageReadError("authentication-required");
+        value = await account.call(
+          GROK_USAGE_URL,
+          undefined,
+          {
+            "x-xai-token-auth": "xai-grok-cli",
+            "x-grok-client-version": "1.0.77",
+            "User-Agent": "grok-cli/1.0.77",
+          },
+          6000,
+        );
       } else if (input.provider === "cursor") {
         const endpoint = (
           input.apiEndpoint?.trim() ||
@@ -632,7 +633,8 @@ export function makeProviderLimits(input: {
         const result = await readAntigravityHub(env, signal);
         value = { windows: result.windows };
         partial = result.partial;
-        accountFingerprint = result.accountFingerprint;
+        lastAntigravityFingerprint = result.accountFingerprint ?? lastAntigravityFingerprint;
+        accountFingerprint = lastAntigravityFingerprint;
       } else {
         const endpoint = env.F5_CLIPROXY_USAGE_URL;
         const token = env.F5_CLIPROXY_API_KEY;

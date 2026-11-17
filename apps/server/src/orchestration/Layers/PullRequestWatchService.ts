@@ -22,7 +22,6 @@ import {
   Layer,
   Option,
   PubSub,
-  Queue,
   Schedule,
   Semaphore,
   ServiceMap,
@@ -50,6 +49,7 @@ import {
 import { readPullRequestWatchRemarks } from "../pullRequestWatchRemarks.ts";
 import { followGitHubPullRequestEvents } from "../../git/githubPullRequestEvents.ts";
 import { githubCredentialEnvironment } from "../../git/githubApi.ts";
+import { makePullRequestEventQueue } from "../pullRequestEventQueue.ts";
 
 interface LastRead {
   readonly at: number;
@@ -92,13 +92,19 @@ export const makePullRequestWatchService = Effect.gen(function* () {
   const lastReads = new Map<string, LastRead>();
   let running = false;
   const eventScope = yield* Effect.scope;
-  const eventChanges = yield* Queue.unbounded<string>();
-  const pendingEventReads = new Set<string>();
-  const eventSubscriptions = new Map<string, { controller: AbortController; retryAt: number }>();
+  const eventChanges = yield* makePullRequestEventQueue;
+  const eventWorkers = new Set<Promise<void>>();
+  const eventSubscriptions = new Map<
+    string,
+    { controller: AbortController; retryAt: number; generation: string }
+  >();
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
       for (const subscription of eventSubscriptions.values()) subscription.controller.abort();
-    }).pipe(Effect.andThen(Queue.shutdown(eventChanges))),
+    }).pipe(
+      Effect.andThen(Effect.promise(() => Promise.allSettled([...eventWorkers]))),
+      Effect.andThen(eventChanges.shutdown),
+    ),
   );
   const changed = (threadId: ThreadId) => PubSub.publish(changes, threadId).pipe(Effect.asVoid);
   const readThread = (threadId: ThreadId) =>
@@ -253,8 +259,8 @@ export const makePullRequestWatchService = Effect.gen(function* () {
           .pipe(Effect.ignore);
       // Establish the baseline now, before CI can finish between watch creation and the sweep.
       if (running) {
-        yield* readOnChange(JSON.stringify([runtime.account.id, key]));
-        yield* syncSubscriptions;
+        eventChanges.offer(JSON.stringify([runtime.account.id, key]));
+        yield* syncSubscriptions.pipe(Effect.forkIn(eventScope));
       }
       return { threadId: thread.id, key, watch: row.watch };
     }).pipe(
@@ -567,12 +573,12 @@ export const makePullRequestWatchService = Effect.gen(function* () {
     .withPermits(1)(
       Effect.gen(function* () {
         // Explicit opt-in while GitHub's event API is in preview; the sweep always remains enabled.
-        if (process.env.F5_GITHUB_PR_EVENTS !== "1") return;
+        if (!config.githubPrEventsEnabled) return;
         const now = Date.now();
         const model = yield* engine.getReadModel();
         const live = new Set(model.threads.filter(active).map((thread) => thread.id));
         const groups = new Map<string, PullRequestWatchRow>();
-        for (const row of yield* store.due(new Date(now).toISOString()))
+        for (const row of yield* store.all())
           if (live.has(row.threadId)) groups.set(JSON.stringify([row.accountId, row.key]), row);
         for (const [key, entry] of eventSubscriptions) {
           if (!groups.has(key)) {
@@ -582,7 +588,6 @@ export const makePullRequestWatchService = Effect.gen(function* () {
         }
         for (const [key, row] of groups) {
           const previous = eventSubscriptions.get(key);
-          if (previous && previous.retryAt > now) continue;
           const ref = parseSourceControlPullRequestKey(row.key);
           if (!ref || ref.provider !== "github" || ref.host !== "github.com") continue;
           const runtime = yield* (yield* federation()).resolve({
@@ -591,13 +596,24 @@ export const makePullRequestWatchService = Effect.gen(function* () {
           });
           const github = runtime.github;
           if (!github) continue;
+          if (
+            previous &&
+            previous.generation === runtime.account.generation &&
+            previous.retryAt > now
+          )
+            continue;
+          previous?.controller.abort();
           const context = yield* github.getCredentialContext({ cwd: config.cwd, host: ref.host });
-          const entry = { controller: new AbortController(), retryAt: Infinity };
+          const entry = {
+            controller: new AbortController(),
+            retryAt: Infinity,
+            generation: runtime.account.generation,
+          };
           eventSubscriptions.set(key, entry);
           yield* Effect.tryPromise({
             try: async (scopeSignal) => {
               const signal = AbortSignal.any([scopeSignal, entry.controller.signal]);
-              const cooldown = await followGitHubPullRequestEvents(
+              const work = followGitHubPullRequestEvents(
                 {
                   subscribe: (signal) =>
                     Effect.runPromise(
@@ -643,15 +659,22 @@ export const makePullRequestWatchService = Effect.gen(function* () {
                     );
                   },
                 },
-                () => {
-                  if (!pendingEventReads.has(key)) {
-                    pendingEventReads.add(key);
-                    Queue.offerUnsafe(eventChanges, key);
-                  }
-                },
+                () => eventChanges.offer(key),
                 signal,
+              ).then(
+                (cooldown) => {
+                  entry.retryAt = Date.now() + cooldown;
+                },
+                () => {
+                  entry.retryAt = Date.now() + 120_000;
+                },
               );
-              entry.retryAt = Date.now() + cooldown;
+              eventWorkers.add(work);
+              try {
+                await work;
+              } finally {
+                eventWorkers.delete(work);
+              }
             },
             catch: () => {
               entry.retryAt = Date.now() + 120_000;
@@ -719,13 +742,7 @@ export const makePullRequestWatchService = Effect.gen(function* () {
     yield* Stream.runForEach(Stream.fromPubSub(changes), () => syncSubscriptions).pipe(
       Effect.forkScoped,
     );
-    yield* Queue.take(eventChanges).pipe(
-      Effect.flatMap((key) =>
-        readOnChange(key).pipe(Effect.ensuring(Effect.sync(() => pendingEventReads.delete(key)))),
-      ),
-      Effect.forever,
-      Effect.forkScoped,
-    );
+    yield* eventChanges.take.pipe(Effect.flatMap(readOnChange), Effect.forever, Effect.forkScoped);
     yield* Stream.runForEach(engine.streamDomainEvents, (event) =>
       [
         "thread.archived",

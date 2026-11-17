@@ -6,6 +6,8 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { atomicJson, exists, readJson } from "./files";
+import { acquireInstanceLock, ProfileBusyError } from "../profiles/InstanceLock";
+import { sameProcess } from "./processIdentity";
 
 const xml = (value: string) =>
   value
@@ -58,6 +60,8 @@ export function windowsServiceTask(command: readonly string[], identity: Windows
 const execute = promisify(execFile);
 export interface WindowsServiceHost extends WindowsServiceIdentity {
   readonly execute: (args: string[]) => Promise<{ stdout: string }>;
+  readonly probeProcess?: (pid: number, birth: string | undefined) => Promise<boolean>;
+  readonly stopTimeoutMs?: number;
 }
 export async function manageWindowsService(
   action: string,
@@ -81,11 +85,16 @@ export async function manageWindowsService(
   );
   const file = path.join(stateDir, task.name);
   await fs.mkdir(stateDir, { recursive: true, mode: 0o700 });
-  const lock = await fs
-    .open(path.join(stateDir, ".service-manager-lock"), "wx", 0o600)
-    .catch(() => {
-      throw new Error("Another service command is running; refusing concurrent changes.");
-    });
+  // The OS releases exclusion on process exit, even after Ctrl+C or a terminal crash.
+  // Legacy empty lock files are no longer consulted.
+  const lock = await acquireInstanceLock(path.join(stateDir, ".service-manager-lock.sqlite")).catch(
+    (error) => {
+      if (error instanceof ProfileBusyError)
+        throw new Error("Another service command is running; refusing concurrent changes.");
+      throw error;
+    },
+  );
+  const probeProcess = host.probeProcess ?? sameProcess;
   const target = ["/TN", task.taskName];
   const run = () => host.execute(["/Run", ...target]);
   const stop = async () => {
@@ -96,20 +105,39 @@ export async function manageWindowsService(
     const lease = (await readJson(leasePath).catch((error) => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
-    })) as { token?: unknown; service?: unknown } | null;
+    })) as {
+      token?: unknown;
+      service?: unknown;
+      pid?: number;
+      birth?: string;
+      child?: number | null;
+      childBirth?: string;
+    } | null;
     if (lease === null) return;
     if (typeof lease?.token !== "string" || lease.service !== true)
       throw new Error("The active launcher is not this Windows service; refusing to stop it.");
+    const isStopped = async (value: typeof lease) => {
+      if (!value || !Number.isSafeInteger(value.pid) || value.pid! < 1)
+        throw new Error("Invalid launcher process identity; refusing to guess whether it stopped.");
+      if (await probeProcess(value.pid!, value.birth)) return false;
+      if (value.child && (await probeProcess(value.child, value.childBirth)))
+        throw new Error(
+          "The launcher exited but its server child is still alive; refusing another lifecycle action.",
+        );
+      return true;
+    };
+    if (await isStopped(lease)) return;
     await atomicJson(path.join(root, "service-stop.json"), { token: lease.token });
-    const deadline = Date.now() + 120_000;
+    const deadline = Date.now() + (host.stopTimeoutMs ?? 120_000);
     while (await exists(leasePath)) {
       const current = (await readJson(leasePath).catch((error) => {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
-      })) as { token?: unknown } | null;
+      })) as typeof lease;
       if (current === null) break;
       if (current.token !== lease.token)
         throw new Error("The launcher changed while stopping; refusing another lifecycle action.");
+      if (await isStopped(current)) break;
       if (Date.now() >= deadline)
         throw new Error("The service has not finished stopping; it remains disabled.");
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -118,14 +146,26 @@ export async function manageWindowsService(
   try {
     if (action === "install") {
       await fs.mkdir(path.join(stateDir, "logs"), { recursive: true, mode: 0o700 });
-      const definition = await fs.open(file, "wx", 0o600);
+      const existing = await fs.readFile(file, "utf8").catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      if (existing !== null && !existing.includes(task.ownership))
+        throw new Error("The service definition belongs to another installation.");
+      if (existing === null) await fs.writeFile(file, task.contents, { flag: "wx", mode: 0o600 });
       try {
-        await definition.writeFile(task.contents, "utf8");
-      } finally {
-        await definition.close();
+        const registered = await host.execute(["/Query", ...target, "/XML"]).catch(() => null);
+        if (registered) {
+          if (!registered.stdout.includes(task.ownership))
+            throw new Error("The scheduled task belongs to another installation.");
+        } else {
+          // No /F: an existing unrelated task is never overwritten, even after a timeout.
+          await host.execute(["/Create", "/XML", file, ...target]);
+        }
+      } catch (error) {
+        if (existing === null) await fs.unlink(file);
+        throw error;
       }
-      // No /F: an existing task, including an unrelated task, is never overwritten.
-      await host.execute(["/Create", "/XML", file, ...target]);
       await run();
       return;
     }
@@ -147,7 +187,6 @@ export async function manageWindowsService(
       await run();
     } else if (action !== "stop") throw new Error("Unknown service action.");
   } finally {
-    await lock.close();
-    await fs.unlink(path.join(stateDir, ".service-manager-lock"));
+    lock.release();
   }
 }

@@ -41,7 +41,7 @@ it("round-trips quote metadata through Lexical while keeping plain draft text us
   const json = editor.getEditorState().toJSON();
   expect(JSON.stringify(json)).toContain('"messageId":"assistant-1"');
   const restored = editor.parseEditorState(json);
-  restored.read(() => expect($getRoot().getTextContent()).toBe("> **quoted**\n\nExplain"));
+  restored.read(() => expect($getRoot().getTextContent()).toBe("> **quoted**"));
 });
 
 it("rejects a quote that would push the draft over the limit", () => {

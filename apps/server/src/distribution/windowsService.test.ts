@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { atomicJson } from "./files";
+import { acquireInstanceLock } from "../profiles/InstanceLock";
 import {
   manageWindowsService,
   quoteWindowsServiceArgument,
@@ -22,6 +23,7 @@ afterEach(async () => {
 });
 function fixture() {
   const calls: string[][] = [];
+  let registered = false;
   const task = windowsServiceTask(
     [
       path.join(root, "launcher-v1", "node.exe"),
@@ -33,8 +35,12 @@ function fixture() {
   );
   const host: WindowsServiceHost = {
     ...identity,
+    probeProcess: async (pid) => pid === process.pid,
     execute: async (args) => {
       calls.push(args);
+      if (args[0] === "/Query" && !registered) throw new Error("Task not found");
+      if (args[0] === "/Create") registered = true;
+      if (args[0] === "/Delete") registered = false;
       return { stdout: args[0] === "/Query" ? task.contents : "" };
     },
   };
@@ -60,8 +66,8 @@ describe("Windows service task", () => {
   it("registers without replacing existing tasks, and enables/disables around start and stop", async () => {
     const { calls, host } = fixture();
     await manageWindowsService("install", root, state, host);
-    expect(calls[0]?.[0]).toBe("/Create");
-    expect(calls[0]).not.toContain("/F");
+    expect(calls[1]?.[0]).toBe("/Create");
+    expect(calls[1]).not.toContain("/F");
     await manageWindowsService("stop", root, state, host);
     expect(calls.at(-1)).toContain("/DISABLE");
     await manageWindowsService("start", root, state, host);
@@ -87,7 +93,11 @@ describe("Windows service task", () => {
   it("waits for graceful launcher shutdown before restart and rejects a foreground launcher", async () => {
     const { calls, task, host } = fixture();
     await manageWindowsService("install", root, state, host);
-    await atomicJson(path.join(root, "launcher.json"), { token: "current", service: true });
+    await atomicJson(path.join(root, "launcher.json"), {
+      token: "current",
+      service: true,
+      pid: process.pid,
+    });
     const restarting = manageWindowsService("restart", root, state, host);
     await expect
       .poll(
@@ -104,5 +114,67 @@ describe("Windows service task", () => {
     await expect(manageWindowsService("stop", root, state, host)).rejects.toThrow(
       "not this Windows service",
     );
+  });
+  it("ignores legacy leftover locks but excludes a live command", async () => {
+    const { host } = fixture();
+    await fs.mkdir(state);
+    await fs.writeFile(path.join(state, ".service-manager-lock"), "");
+    await manageWindowsService("install", root, state, host);
+    const lock = await acquireInstanceLock(path.join(state, ".service-manager-lock.sqlite"));
+    try {
+      await expect(manageWindowsService("start", root, state, host)).rejects.toThrow(
+        "Another service command",
+      );
+    } finally {
+      lock.release();
+    }
+    await manageWindowsService("start", root, state, host);
+  });
+  it("treats a dead launcher and dead child as already stopped", async () => {
+    const { calls, host } = fixture();
+    await manageWindowsService("install", root, state, host);
+    await atomicJson(path.join(root, "launcher.json"), {
+      token: "dead",
+      service: true,
+      pid: 999999999,
+      child: null,
+    });
+    await manageWindowsService("uninstall", root, state, host);
+    expect(calls.at(-1)?.[0]).toBe("/Delete");
+  });
+  it("retries registration after a failed Create without overwriting another task", async () => {
+    const { host, calls } = fixture();
+    let fail = true;
+    const flaky = {
+      ...host,
+      execute: async (args: string[]) => {
+        if (args[0] === "/Create" && fail) {
+          fail = false;
+          throw new Error("Registration failed");
+        }
+        return host.execute(args);
+      },
+    };
+    await expect(manageWindowsService("install", root, state, flaky)).rejects.toThrow(
+      "Registration failed",
+    );
+    await manageWindowsService("install", root, state, flaky);
+    expect(calls.some((args) => args[0] === "/Create")).toBe(true);
+    expect(calls.flat()).not.toContain("/F");
+  });
+  it("keeps a timed out stop disabled and releases the command lock", async () => {
+    const { calls, host } = fixture();
+    await manageWindowsService("install", root, state, host);
+    await atomicJson(path.join(root, "launcher.json"), {
+      token: "live",
+      service: true,
+      pid: process.pid,
+    });
+    await expect(
+      manageWindowsService("stop", root, state, { ...host, stopTimeoutMs: 0 }),
+    ).rejects.toThrow("remains disabled");
+    expect(calls.at(-1)).toContain("/DISABLE");
+    await manageWindowsService("start", root, state, host);
+    expect(calls.at(-1)?.[0]).toBe("/Run");
   });
 });
