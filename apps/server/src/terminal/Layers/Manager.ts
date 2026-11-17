@@ -218,8 +218,8 @@ function hashedThreadPart(threadId: string): string {
 
 function hasLegacyHistoryPath(threadId: string): boolean {
   const legacyId = legacySafeThreadId(threadId);
-  // Legacy names in the current namespace can alias another thread's history,
-  // including on case-insensitive filesystems.
+  // Legacy names starting with "terminal_" can alias current history filenames.
+  // Compare case-insensitively to also exclude filesystem aliases.
   return (
     !legacyId.toLowerCase().startsWith("terminal_") &&
     Buffer.byteLength(`${legacyId}.log`) <= MAX_FILE_NAME_BYTES
@@ -1484,6 +1484,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   private async deleteAllHistoryForThread(threadId: string): Promise<void> {
     const threadParts = [toSafeThreadId(threadId), hashedThreadPart(threadId)];
+    const legacyName = hasLegacyHistoryPath(threadId)
+      ? `${legacySafeThreadId(threadId)}.log`
+      : null;
     try {
       const entries = await fs.promises.readdir(this.logsDir, { withFileTypes: true });
       const removals = entries
@@ -1491,7 +1494,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         .map((entry) => entry.name)
         .filter(
           (name) =>
-            (hasLegacyHistoryPath(threadId) && name === `${legacySafeThreadId(threadId)}.log`) ||
+            name === legacyName ||
             threadParts.some((part) => name === `${part}.log` || name.startsWith(`${part}_`)),
         )
         .map((name) => fs.promises.rm(path.join(this.logsDir, name), { force: true }));
