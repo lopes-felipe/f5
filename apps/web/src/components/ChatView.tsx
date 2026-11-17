@@ -8395,7 +8395,7 @@ export default memo(function ChatView({
                         hasMessages={timelineEntries.length > 0}
                         isWorking={isWorking}
                         activeTurnStartedAt={activeWorkStartedAt}
-                        activeTurnId={latestTurnSettled ? null : (activeLatestTurn?.turnId ?? null)}
+                        activeTurnId={latestTurnSettled ? null : activeLatestTurn?.turnId}
                         liveActivity={liveActivity}
                         listRef={legendListRef}
                         entryRowIndexMapRef={timelineEntryRowIndexMapRef}

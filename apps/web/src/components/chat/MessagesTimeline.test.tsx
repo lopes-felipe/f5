@@ -389,6 +389,64 @@ describe("MessagesTimeline", () => {
     });
   });
 
+  it.each([
+    { name: "a pending send after the turn settled", activeTurn: null },
+    { name: "a continuation turn without a user message", activeTurn: "continuation" },
+  ] as const)("keeps a completed turn's divider during $name", async ({ activeTurn }) => {
+    const { deriveTimelineEntries } = await import("../../session-logic");
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const settledTurn = TurnId.makeUnsafe("settled-turn");
+    const continuationTurn = TurnId.makeUnsafe("continuation-turn");
+    const prompt = {
+      id: MessageId.makeUnsafe("settled-prompt"),
+      role: "user" as const,
+      text: "Do the thing",
+      createdAt: "2026-11-14T12:40:00.000Z",
+      streaming: false,
+      turnId: settledTurn,
+    };
+    const answer = {
+      id: MessageId.makeUnsafe("settled-answer"),
+      role: "assistant" as const,
+      text: "Done",
+      createdAt: "2026-11-14T12:40:08.000Z",
+      completedAt: "2026-11-14T12:40:10.000Z",
+      streaming: false,
+      turnId: settledTurn,
+    };
+    const continuing = {
+      id: MessageId.makeUnsafe("continuation-answer"),
+      role: "assistant" as const,
+      text: "Following up",
+      createdAt: "2026-11-14T12:41:00.000Z",
+      completedAt: "2026-11-14T12:41:05.000Z",
+      streaming: false,
+      turnId: continuationTurn,
+    };
+    const messages = activeTurn ? [prompt, answer, continuing] : [prompt, answer];
+    // No turn summary: the settled turn's timing comes from its messages alone.
+    const rows = buildTimelineRows({
+      timelineEntries: deriveTimelineEntries(messages, [], [], []),
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: true,
+      activeTurnStartedAt: "2026-11-14T12:41:00.000Z",
+      activeTurnId: activeTurn ? continuationTurn : null,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    });
+    expect(rows.find((row) => row.id === answer.id)).toMatchObject({
+      showCompletionDivider: true,
+      completionSummary: "Worked for 10s",
+    });
+    if (activeTurn) {
+      expect(rows.find((row) => row.id === continuing.id)).toMatchObject({
+        showCompletionDivider: false,
+      });
+    }
+  });
+
   it("keeps a paginated turn start unknown until its persisted timing is available", async () => {
     const { deriveTimelineEntries } = await import("../../session-logic");
     const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");

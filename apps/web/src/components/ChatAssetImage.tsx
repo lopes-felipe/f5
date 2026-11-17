@@ -115,7 +115,8 @@ export function ChatAssetImage({
       ? isUnsupportedImageScheme(src)
         ? "Unsupported image source"
         : "Image outside available directories"
-      : grant.isError || (url && failedUrl === url)
+      : // A failed background refresh keeps the previous grant, and its loaded image stays.
+        (grant.isError && !url) || (url && failedUrl === url)
         ? "Image unavailable"
         : undefined;
   return (

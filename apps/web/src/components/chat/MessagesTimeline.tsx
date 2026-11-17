@@ -314,7 +314,11 @@ interface MessagesTimelineProps {
   hasMessages: boolean;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
-  /** The running turn; its messages are intermediate work, not completions. */
+  /**
+   * The running turn; its messages are intermediate work, not completions. `null` means the
+   * latest turn has settled (work still pending belongs to a turn not started yet), and
+   * `undefined` means unknown, which falls back to position after the newest user message.
+   */
   activeTurnId?: TurnId | null | undefined;
   /** What the running turn is doing now; null shows a plain "Working". */
   liveActivity?: LiveWorkActivity | undefined;
@@ -617,7 +621,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         turnDiffSummaryByTurnId,
         isWorking,
         activeTurnStartedAt,
-        activeTurnId: activeTurnId ?? null,
+        activeTurnId,
         liveActivity,
         expandMcpToolCalls: settings.expandMcpToolCalls,
         cache: rowCache,
@@ -5422,7 +5426,7 @@ export function buildTimelineRows(input: {
     input.turnDiffSummaryByTurnId,
     input.isWorking,
     input.activeTurnStartedAt,
-    input.activeTurnId ?? null,
+    input.activeTurnId,
     input.liveActivity,
     input.expandMcpToolCalls,
   ];
@@ -5633,11 +5637,13 @@ export function buildTimelineRows(input: {
     }
 
     // A finished message or checkpoint can still be intermediate work in a running turn.
-    // Match the running turn by id; position after the newest user message is only a
-    // fallback, since automation and continuation turns have no user message at all.
+    // Match the running turn by id (null: none is running yet); position after the newest
+    // user message is only a fallback when the running turn is unknown, since automation and
+    // continuation turns have no user message at all.
+    const activeTurnKnown = input.activeTurnId !== undefined;
     const isActiveTurnMessage =
       input.isWorking &&
-      (input.activeTurnId && timelineEntry.message.turnId
+      (activeTurnKnown && timelineEntry.message.turnId
         ? timelineEntry.message.turnId === input.activeTurnId
         : index > lastUserMessageEntryIndex);
     const isLatestCompletion =
@@ -5660,7 +5666,8 @@ export function buildTimelineRows(input: {
       turnId != null &&
       lastAssistantByTurn.get(turnId) === timelineEntry.id &&
       (turnSummary != null ||
-        (!input.isWorking && message.completedAt != null) ||
+        // With the running turn known, a completed message from any other turn is history.
+        ((!input.isWorking || activeTurnKnown) && message.completedAt != null) ||
         (lastUserAt != null && message.createdAt < lastUserAt));
     const elapsed =
       completionStartedAt && completionCompletedAt

@@ -15,6 +15,13 @@ import type { OrchestrationEngineShape } from "../orchestration/Services/Orchest
 import { ThreadToolError, keepThreadToolError } from "./threadMcpTools.ts";
 
 const MAX_BYTES = 8 * 1024 * 1024;
+/** Dispatch failures that guarantee the command was not stored. */
+const UNSENT_DISPATCH_ERRORS = new Set([
+  "OrchestrationOverloadError",
+  "OrchestrationCommandInvariantError",
+  "OrchestrationCommandPreviouslyRejectedError",
+  "OrchestrationCommandIdConflictError",
+]);
 
 const isInside = (root: string, target: string) => {
   const relative = path.relative(root, target);
@@ -49,7 +56,11 @@ async function openPublishableImage(input: {
   const roots = await Promise.all(input.roots.map(realpathOrNull));
   const root = roots.find((dir): dir is string => !!dir && isInside(dir, resolved));
   if (!root) throw new Error("Outside available directories");
-  return openContainedFile(root, path.relative(root, resolved));
+  const relative = path.relative(root, resolved);
+  // `openContainedFile` splits on both separators. On POSIX a backslash is part of the
+  // filename, so `a\b.png` would open `a/b.png` instead.
+  if (path.sep === "/" && relative.includes("\\")) throw new Error("Unsupported file name");
+  return openContainedFile(root, relative);
 }
 
 /** Only explicitly published image bytes cross from temporary files into chat storage. */
@@ -127,27 +138,43 @@ export const makeThreadImagePublisher = (input: {
             message: "The conversation attachment budget is full.",
           });
         const createdAt = new Date().toISOString();
-        yield* input.engine.dispatch({
-          type: "thread.activity.append",
-          commandId: CommandId.makeUnsafe(id),
-          threadId,
-          createdAt,
-          activity: {
-            id: EventId.makeUnsafe(id),
-            kind: "tool.completed",
-            tone: "tool",
-            summary: "Published image",
-            payload: {
-              itemType: "mcp_tool_call",
-              providerItemId: id,
-              mcpToolName: "image_publish",
-              status: "completed",
-              mcpImages: [ref],
-            },
-            turnId: thread.latestTurn?.turnId ?? null,
+        // Release this activity's claim when the command was refused before it was stored, so
+        // the attachment stops counting toward the thread budget and cleanup can reclaim it.
+        // Any other failure may come after the event committed, so the claim stays.
+        const releaseUnsentOwner = (error: { readonly _tag: string }) =>
+          UNSENT_DISPATCH_ERRORS.has(error._tag)
+            ? Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* sql`
+                  DELETE FROM attachment_owners
+                  WHERE attachment_id = ${ref.attachmentId}
+                    AND owner_kind = 'activity' AND owner_id = ${id}
+                `;
+              }).pipe(Effect.provideServices(services), Effect.ignore)
+            : Effect.void;
+        yield* input.engine
+          .dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.makeUnsafe(id),
+            threadId,
             createdAt,
-          },
-        });
+            activity: {
+              id: EventId.makeUnsafe(id),
+              kind: "tool.completed",
+              tone: "tool",
+              summary: "Published image",
+              payload: {
+                itemType: "mcp_tool_call",
+                providerItemId: id,
+                mcpToolName: "image_publish",
+                status: "completed",
+                mcpImages: [ref],
+              },
+              turnId: thread.latestTurn?.turnId ?? null,
+              createdAt,
+            },
+          })
+          .pipe(Effect.tapError(releaseUnsentOwner));
         const imagePath = resolveAttachmentPath({
           attachmentsDir: input.attachmentsDir,
           attachment: {

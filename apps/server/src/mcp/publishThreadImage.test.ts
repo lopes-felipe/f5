@@ -43,8 +43,16 @@ it("publishes temporary screenshots durably and rejects invalid inputs", async (
     await writeFile(path.join(scratch, "not-image.png"), "not an image");
     await symlink(source, path.join(scratch, "link.png"));
     await symlink(root, path.join(scratch, "escape"));
+    await writeFile(path.join(scratch, "refused.png"), Buffer.concat([PNG, Buffer.from([1])]));
+    // On POSIX `nested\capture.png` is one file name; it must not open `nested/capture.png`.
+    const backslashName = path.join(scratch, "nested\\capture.png");
+    if (path.sep === "/") {
+      await writeFile(path.join(scratch, "nested", "capture.png"), PNG);
+      await writeFile(backslashName, PNG);
+    }
     const threadId = ThreadId.makeUnsafe("thread-1");
     const activities: unknown[] = [];
+    let dispatchFailure: { readonly _tag: string } | null = null;
     const engine = {
       getReadModel: () =>
         Effect.succeed({
@@ -63,10 +71,12 @@ it("publishes temporary screenshots durably and rejects invalid inputs", async (
           ],
         } as never),
       dispatch: (value: unknown) =>
-        Effect.sync(() => {
-          activities.push(value);
-          return { sequence: 1 } as never;
-        }),
+        dispatchFailure
+          ? Effect.fail(dispatchFailure as never)
+          : Effect.sync(() => {
+              activities.push(value);
+              return { sequence: 1 } as never;
+            }),
     };
     const failureMessage = <A, R>(effect: Effect.Effect<A, ThreadToolError, R>) =>
       Effect.match(effect, { onFailure: (error) => error.message, onSuccess: () => null });
@@ -104,9 +114,26 @@ it("publishes temporary screenshots durably and rejects invalid inputs", async (
           path.join(scratch, "link.png"),
           path.join(attachmentsDir, "other-thread.png"),
           path.join(alias, "attachments", "other-thread.png"),
+          ...(path.sep === "/" ? [backslashName] : []),
         ]) {
           expect((yield* Effect.exit(publish(threadId, invalid)))._tag).toBe("Failure");
         }
+        // A refused command releases its attachment claim; a failure that may follow the
+        // commit keeps it, so a stored activity never loses its image.
+        const refused = path.join(scratch, "refused.png");
+        const activityOwners = () =>
+          sql<{ readonly count: number }>`
+            SELECT COUNT(*) AS count FROM attachment_owners
+            WHERE owner_kind = 'activity' AND attachment_id <> ${first.attachmentId}
+          `.pipe(Effect.map((rows) => rows[0]?.count ?? 0));
+        dispatchFailure = { _tag: "OrchestrationOverloadError" };
+        expect((yield* Effect.exit(publish(threadId, refused)))._tag).toBe("Failure");
+        expect(yield* activityOwners()).toBe(0);
+        dispatchFailure = { _tag: "OrchestrationListenerCallbackError" };
+        expect((yield* Effect.exit(publish(threadId, refused)))._tag).toBe("Failure");
+        expect(yield* activityOwners()).toBe(1);
+        dispatchFailure = null;
+        expect(activities).toHaveLength(3);
         const reopened = yield* makeThreadImagePublisher(options);
         const imagePath = storedPath((yield* reopened(threadId, source)).markdown);
         expect(imagePath).toBe(storedPath(first.markdown));

@@ -22,14 +22,25 @@ afterEach(() => {
   if (state.url) URL.revokeObjectURL(state.url);
 });
 
-function ImageFixture({ src }: { src: string }) {
+const testQueryClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+function ImageFixture({ src, client = testQueryClient() }: { src: string; client?: QueryClient }) {
   return (
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-    >
+    <QueryClientProvider client={client}>
       <ChatAssetImage src={src} alt="Capture" cwd="/workspace" />
     </QueryClientProvider>
   );
+}
+
+async function renderableImageUrl() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 240;
+  canvas.height = 120;
+  canvas.getContext("2d")!.fillRect(0, 0, 240, 120);
+  const blob = await new Promise<Blob>((resolve) =>
+    canvas.toBlob((blob) => resolve(blob!), "image/png"),
+  );
+  return URL.createObjectURL(blob);
 }
 
 it("distinguishes inaccessible paths from loading without requesting a file", async () => {
@@ -72,14 +83,7 @@ it("keeps loading placeholders out of live regions", async () => {
 });
 
 it("shows, expands and reloads a published screenshot after reopening", async () => {
-  const canvas = document.createElement("canvas");
-  canvas.width = 240;
-  canvas.height = 120;
-  canvas.getContext("2d")!.fillRect(0, 0, 240, 120);
-  const blob = await new Promise<Blob>((resolve) =>
-    canvas.toBlob((blob) => resolve(blob!), "image/png"),
-  );
-  state.url = URL.createObjectURL(blob);
+  state.url = await renderableImageUrl();
   state.issue.mockImplementation(async () => [{ url: state.url, width: 240, height: 120 }]);
   const src = "/state/attachments/thread-1-12345678-1234-1234-1234-123456789abc.png";
   for (let opened = 0; opened < 2; opened++) {
@@ -103,6 +107,41 @@ it("shows, expands and reloads a published screenshot after reopening", async ()
   }
   expect(state.issue).toHaveBeenCalledTimes(2);
   expect(state.issue.mock.calls[0]?.[0]).toMatchObject({ identity: { kind: "attachments" } });
+});
+
+it("keeps a loaded image when a background grant refresh fails", async () => {
+  state.url = await renderableImageUrl();
+  state.issue.mockImplementation(async () => [{ url: state.url, width: 240, height: 120 }]);
+  const client = testQueryClient();
+  const view = await render(
+    <ImageFixture
+      src="/state/attachments/thread-1-12345678-1234-1234-1234-123456789abc.png"
+      client={client}
+    />,
+  );
+  try {
+    await vi.waitFor(() =>
+      expect(document.querySelector<HTMLImageElement>("img[data-chat-asset]")?.naturalWidth).toBe(
+        240,
+      ),
+    );
+    state.issue.mockRejectedValue(new Error("Grant refresh failed"));
+    await client.refetchQueries({ queryKey: ["chat-asset"] });
+    // The disabled pre-visibility query (no target yet) shares the prefix.
+    const grant = client
+      .getQueryCache()
+      .findAll({ queryKey: ["chat-asset"] })
+      .find((query) => query.queryKey[1] !== undefined);
+    expect(grant?.state.status).toBe("error");
+    // Let React render the failed query before checking that nothing was replaced.
+    for (let frame = 0; frame < 3; frame++) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    await expect.element(page.getByRole("button", { name: "Preview Capture" })).toBeVisible();
+    expect(page.getByRole("alert").query()).toBeNull();
+  } finally {
+    await view.unmount();
+  }
 });
 
 it("reports a failed image download instead of leaving a broken preview", async () => {

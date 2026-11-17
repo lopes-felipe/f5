@@ -82,6 +82,8 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
 
   useEffect(() => {
     if (!open) return;
+    // The clock is idle while the panel is closed; catch up before showing reset times.
+    setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, [open]);
