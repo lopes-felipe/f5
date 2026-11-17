@@ -217,7 +217,13 @@ function hashedThreadPart(threadId: string): string {
 }
 
 function hasLegacyHistoryPath(threadId: string): boolean {
-  return Buffer.byteLength(`${legacySafeThreadId(threadId)}.log`) <= MAX_FILE_NAME_BYTES;
+  const legacyId = legacySafeThreadId(threadId);
+  // Legacy names in the current namespace can alias another thread's history,
+  // including on case-insensitive filesystems.
+  return (
+    !legacyId.toLowerCase().startsWith("terminal_") &&
+    Buffer.byteLength(`${legacyId}.log`) <= MAX_FILE_NAME_BYTES
+  );
 }
 
 function toSessionKey(threadId: string, terminalId: string): string {
@@ -1485,7 +1491,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         .map((entry) => entry.name)
         .filter(
           (name) =>
-            name === `${legacySafeThreadId(threadId)}.log` ||
+            (hasLegacyHistoryPath(threadId) && name === `${legacySafeThreadId(threadId)}.log`) ||
             threadParts.some((part) => name === `${part}.log` || name.startsWith(`${part}_`)),
         )
         .map((name) => fs.promises.rm(path.join(this.logsDir, name), { force: true }));

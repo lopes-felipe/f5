@@ -1,0 +1,1 @@
+- Terminal history migration and deletion now ignore legacy filenames that could read or delete another thread's scrollback.
