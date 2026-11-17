@@ -302,6 +302,9 @@ it("queues the merge for when the pull request is ready, with the chosen method"
 it("leaves out Merge when ready where the forge cannot queue the merge", async () => {
   await mount({
     pr: makePr({
+      attentionState: "ready_to_merge",
+      attentionBucket: "needs_you",
+      checkRollup: "success",
       forgeCapabilities: {
         ...GITHUB_FORGE_CAPABILITIES,
         stacks: false,
@@ -314,6 +317,18 @@ it("leaves out Merge when ready where the forge cannot queue the merge", async (
   await page.getByRole("button", { name: "Merge options" }).click();
   await expect.element(page.getByRole("menuitem", { name: "Merge now…" })).toBeVisible();
   expect(page.getByRole("menuitem", { name: "Merge when ready…" }).query()).toBeNull();
+});
+
+it("offers only Merge when ready while the pull request is not ready to merge", async () => {
+  await mount({ pr: makePr() });
+  await expect
+    .element(
+      page.getByRole("group", { name: "Merge" }).getByRole("button", { name: "Merge when ready" }),
+    )
+    .toBeVisible();
+  await page.getByRole("button", { name: "Merge options" }).click();
+  await expect.element(page.getByRole("menuitem", { name: "Merge when ready…" })).toBeVisible();
+  expect(page.getByRole("menuitem", { name: "Merge now…" }).query()).toBeNull();
 });
 
 it("runs each checklist step where it belongs", async () => {
