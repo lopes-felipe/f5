@@ -2,17 +2,21 @@ import type { ThreadId } from "@t3tools/contracts";
 import { ChevronDownIcon } from "lucide-react";
 import { useEffect } from "react";
 
+import { derivePhase } from "../../session-logic";
 import { useStore } from "../../store";
 import { selectThreadById } from "../../threadSelectors";
 import { Button } from "../ui/button";
 import { Group, GroupSeparator } from "../ui/group";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { toastManager } from "../ui/toast";
-import { useWorktreeRecovery } from "./useWorktreeRecovery";
+import { recreatePlan, useWorktreeRecovery } from "./useWorktreeRecovery";
+
+const AFTER_TURN_REASON = "Available after the current turn finishes.";
 
 /**
  * The header's control for a thread whose worktree directory is gone: recreate
  * it, recreate it from the default branch, or continue in the project folder.
+ * It follows the same plan as the missing-worktree banner.
  */
 export function WorktreeMissingControl({
   threadId,
@@ -61,40 +65,63 @@ export function WorktreeMissingControl({
     );
 
   const data = state.data;
-  const turnActive = Boolean(thread.session?.activeTurnId);
+  // Same rule as the banner: a running session or an active turn refuses transitions.
+  const turnActive =
+    derivePhase(thread.session ?? null) === "running" || Boolean(thread.session?.activeTurnId);
   const recovering = data?.recovery === "running";
   const disabled = busy || recovering || turnActive;
   const defaultBranch = data?.defaultBranch ?? null;
-  // The original branch can come back only when it still exists and nothing else took the path.
-  const canRecreateOriginal =
-    !data ||
-    (data.branchExists &&
-      (data.registration === "matching" ||
-        (!data.directoryExists && data.registration !== "otherBranch")));
   const run = (action: Parameters<typeof recover>[0]) => void recover(action);
+
+  // Until the state is known, offer nothing that could pick the wrong action.
+  if (state.error)
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={disabled}
+        title={
+          turnActive
+            ? AFTER_TURN_REASON
+            : `The recorded workspace could not be verified. ${state.error.message}`
+        }
+        onClick={() => run("useProjectCheckout")}
+      >
+        Continue in Local
+      </Button>
+    );
+
+  const plan = recreatePlan(data);
+  const title = turnActive
+    ? AFTER_TURN_REASON
+    : plan.action === "recreate"
+      ? `Recreate the worktree on ${thread.branch ?? "its branch"}.`
+      : plan.action === "recreateFromBase"
+        ? `Branch ${thread.branch ?? "(unknown)"} is gone. Recreate from ${plan.base}.`
+        : plan.reason;
 
   return (
     <Group aria-label="Worktree recovery" variant="track">
       <Button
         variant="outline"
         size="sm"
-        disabled={disabled || (!canRecreateOriginal && !defaultBranch)}
-        title={
-          turnActive
-            ? "Available after the current turn finishes."
-            : canRecreateOriginal
-              ? `Recreate the worktree on ${thread.branch ?? "its branch"}.`
-              : `Branch ${thread.branch ?? "(unknown)"} is gone. Recreate from ${defaultBranch ?? "the default branch"}.`
-        }
-        onClick={() => run(canRecreateOriginal ? "recreate" : "recreateFromBase")}
+        disabled={disabled || plan.action === null}
+        title={title}
+        onClick={() => {
+          if (plan.action) run(plan.action);
+        }}
       >
-        {recovering ? "Recreating…" : "Recreate worktree"}
+        {recovering
+          ? "Recreating…"
+          : plan.action === "recreateFromBase"
+            ? `Recreate from ${plan.base}`
+            : "Recreate worktree"}
       </Button>
       <GroupSeparator />
       <Menu>
         <MenuTrigger
           render={<Button aria-label="More recovery options" size="icon-xs" variant="ghost" />}
-          disabled={disabled}
+          disabled={disabled || state.isPending}
         >
           <ChevronDownIcon aria-hidden="true" className="size-4" />
         </MenuTrigger>

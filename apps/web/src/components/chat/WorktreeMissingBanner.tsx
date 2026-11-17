@@ -2,7 +2,7 @@ import type { ThreadId } from "@t3tools/contracts";
 import { ChevronDownIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
-import { useWorktreeRecovery } from "./useWorktreeRecovery";
+import { canRecreateOriginal, useWorktreeRecovery } from "./useWorktreeRecovery";
 
 const AFTER_TURN_REASON = "Available after the current turn finishes.";
 
@@ -137,10 +137,7 @@ export function WorktreeMissingBanner({
     );
   }
 
-  const canRecreateOriginal =
-    data.branchExists &&
-    (data.registration === "matching" ||
-      (!data.directoryExists && data.registration !== "otherBranch"));
+  const recreatable = canRecreateOriginal(data);
   return (
     <div
       className="space-y-2 rounded border border-warning/40 bg-warning/5 p-3 text-sm"
@@ -159,7 +156,7 @@ export function WorktreeMissingBanner({
       </p>
       <div className="flex flex-wrap gap-2">
         {data.worktreePath &&
-          (canRecreateOriginal ? (
+          (recreatable ? (
             <Button
               size="sm"
               disabled={transitionDisabled}
