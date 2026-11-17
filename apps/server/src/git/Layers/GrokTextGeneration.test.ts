@@ -63,8 +63,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
               // A custom runtime need not honor the Grok mode hint. The shared
               // permission handler must still cancel requests before prompting.
               makeRuntime: (input) => {
-                expect(input.runtimeMode).toBe("approval-required");
-                return makeGrokAcpRuntime({ ...input, runtimeMode: undefined });
+                const { runtimeMode, ...runtimeInput } = input;
+                expect(runtimeMode).toBe("approval-required");
+                return makeGrokAcpRuntime(runtimeInput);
               },
               normalizeModel: (model) => model,
               defaultModelSelection: createModelSelection(
