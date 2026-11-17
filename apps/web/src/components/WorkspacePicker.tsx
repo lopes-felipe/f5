@@ -291,7 +291,7 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
         projectBranch,
         branches,
         linkedThreads: linkedThreadsByPath(
-          worktreesQuery.data?.projects.find((entry) => entry.projectId === projectId)?.entries,
+          worktreesQuery.data?.projects?.find((entry) => entry.projectId === projectId)?.entries,
         ),
         checkoutMissing,
         prReference: parsePullRequestReference(deferredQuery.trim()),
@@ -437,7 +437,7 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
       .fetchQuery(worktreesListQueryOptions(projectId))
       .catch(() => null);
     return linkedThreadCount(
-      linkedThreadsByPath(data?.projects.find((entry) => entry.projectId === projectId)?.entries),
+      linkedThreadsByPath(data?.projects?.find((entry) => entry.projectId === projectId)?.entries),
       path,
       threadId,
     );

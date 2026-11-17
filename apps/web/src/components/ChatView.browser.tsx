@@ -1,4 +1,12 @@
 import { writePullRequestReferenceDrag } from "../lib/pullRequestReference";
+import { assistantResponseContextMatches } from "@t3tools/shared/assistantResponseContext";
+
+function quotedAssistantText(prompt: string) {
+  return assistantResponseContextMatches(prompt)
+    .filter((match) => match.record.kind === "quote")
+    .map((match) => match.record.text)
+    .join("\n");
+}
 import { F5_THREAD_REFERENCE_MIME, writeThreadReferenceDrag } from "../lib/threadReferenceDrag";
 import { promptLinkScheme } from "./promptLinks/copyPromptLink";
 import { waitForTimelineLayout } from "../test/timeline";
@@ -10246,7 +10254,7 @@ describe("ChatView timeline (full app)", () => {
       await page.getByRole("button", { name: "Add quote to composer", exact: true }).click();
       await vi.waitFor(() => {
         const prompt = useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "";
-        expect(prompt).toContain("> Selected response.\n> \n> Second paragraph.");
+        expect(quotedAssistantText(prompt)).toBe("Selected response.\n\nSecond paragraph.");
         expect(prompt).not.toContain("Next response.");
         expect(prompt).not.toContain("echo ok");
         expect(prompt).not.toContain("> Assistant");
@@ -10405,22 +10413,24 @@ describe("ChatView timeline (full app)", () => {
           await vi.waitFor(() => {
             const prompt =
               useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "";
-            expect(prompt).toContain("> " + text);
+            expect(quotedAssistantText(prompt)).toBe(text);
             expect(prompt).toContain("Please explain.");
           });
           const send = await waitForSendButton();
           await vi.waitFor(() => expect(send.disabled).toBe(false));
           send.click();
         }
-        await vi.waitFor(() =>
-          expect(getDispatchCommandRequests("thread.turn.start")).toContainEqual(
-            expect.objectContaining({
-              command: expect.objectContaining({
-                message: expect.objectContaining({ text: expect.stringContaining("> " + text) }),
-              }),
-            }),
-          ),
-        );
+        await vi.waitFor(() => {
+          const sent = getDispatchCommandRequests("thread.turn.start").map(
+            (request) => (request.command as { message?: { text?: string } }).message?.text ?? "",
+          );
+          expect(
+            sent.some(
+              (prompt) =>
+                quotedAssistantText(prompt) === text && prompt.includes("Please explain."),
+            ),
+          ).toBe(true);
+        });
         await expect
           .element(page.getByRole("textbox", { name: "Quote comment" }))
           .not.toBeInTheDocument();
@@ -10759,8 +10769,10 @@ describe("ChatView timeline (full app)", () => {
         await openQuoteMenu();
         await vi.waitFor(() =>
           expect(
-            useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "",
-          ).toContain("> ## 9. UX Patterns Worth Porting (MEDIUM VALUE)"),
+            quotedAssistantText(
+              useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "",
+            ),
+          ).toContain("## 9. UX Patterns Worth Porting (MEDIUM VALUE)"),
         );
         expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
       } finally {
