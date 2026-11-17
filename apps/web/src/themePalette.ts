@@ -308,14 +308,23 @@ export interface ThemePickerHsv {
 
 const toHsv = converter("hsv");
 
+/** Picker state used when a color cannot be read: opaque black, hue 0. */
+export const DEFAULT_PICKER_HSV: ThemePickerHsv = { h: 0, s: 0, v: 0 };
+
 /**
- * Reads a theme color as sRGB HSV for the visual picker. Achromatic colors report hue 0
- * and out-of-gamut colors are clamped.
+ * Reads a theme color as sRGB HSV for the visual picker. The color is first normalized by
+ * `parseSafeThemeColor`, so out-of-gamut colors start from the same sRGB color the theme
+ * stores instead of from per-channel clamped HSV. Achromatic colors report hue 0.
  */
 export function themeColorToPickerHsv(value: string): ThemePickerHsv | null {
-  const parsed = parse(value.trim());
-  if (!parsed) return null;
-  const hsv = toHsv(parsed);
+  let normalized: string;
+  try {
+    normalized = parseSafeThemeColor(value);
+  } catch {
+    return null;
+  }
+  const hsv = toHsv(parse(normalized.slice(0, 7)));
+  if (!hsv) return null;
   return {
     h: clamp(hsv.h ?? 0, 0, 360),
     s: clamp(hsv.s, 0, 1),
@@ -325,13 +334,16 @@ export function themeColorToPickerHsv(value: string): ThemePickerHsv | null {
 
 /**
  * Turns a visual picker selection into a safe theme color, keeping the previous color's
- * alpha because the picker only edits hue, saturation and value.
+ * alpha because the picker only edits hue, saturation and value. A fully transparent
+ * previous color becomes opaque, since every pick would otherwise stay invisible.
  */
 export function pickerHsvToThemeColor(hsv: ThemePickerHsv, previous: string): string {
   const alpha = parse(previous.trim())?.alpha;
   const color = { mode: "hsv" as const, h: hsv.h, s: hsv.s, v: hsv.v };
   return parseSafeThemeColor(
-    alpha !== undefined && alpha < 1 ? formatHex8({ ...color, alpha }) : formatHex(color),
+    alpha !== undefined && alpha > 0 && alpha < 1
+      ? formatHex8({ ...color, alpha })
+      : formatHex(color),
   );
 }
 

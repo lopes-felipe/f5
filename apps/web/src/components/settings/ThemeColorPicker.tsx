@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 
 import {
+  DEFAULT_PICKER_HSV,
   parseSafeThemeColor,
   pickerHsvToThemeColor,
   themeColorToPickerHsv,
@@ -15,7 +16,14 @@ const HUE_GRADIENT =
 const THUMB_CLASS_NAME =
   "pointer-events-none absolute size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-sm ring-1 ring-black/25";
 const AREA_FOCUS_CLASS_NAME =
-  "relative touch-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-popover";
+  "relative touch-none select-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-popover";
+
+const SATURATION_VALUE_STEP = 0.01;
+const SATURATION_VALUE_LARGE_STEP = 0.1;
+const HUE_STEP = 1;
+const HUE_LARGE_STEP = 10;
+
+type HsvUpdate = (current: ThemePickerHsv) => ThemePickerHsv;
 
 export function ThemeColorPicker({
   label,
@@ -31,30 +39,55 @@ export function ThemeColorPicker({
   const [error, setError] = useState<string | null>(null);
   // Kept while the popover is open so hue survives grey, black and white picks. The ref
   // lets rapid pointer and key events build on each other before React re-renders.
-  const [hsv, setHsv] = useState<ThemePickerHsv>({ h: 0, s: 0, v: 0 });
+  const [hsv, setHsv] = useState<ThemePickerHsv>(DEFAULT_PICKER_HSV);
   const hsvRef = useRef(hsv);
+  // Picks update the local swatch and thumbs immediately, but reach `onChange` at most once
+  // per animation frame, because each change re-resolves the whole draft theme.
+  const pendingRef = useRef<string | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
-  useEffect(() => setDraft(value), [value]);
-
-  const applyColor = (next: string) => {
-    setDraft(next);
-    setError(null);
-    onChange(next);
+  const cancelPending = () => {
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+    pendingRef.current = null;
   };
 
+  const flushPending = () => {
+    const pending = pendingRef.current;
+    cancelPending();
+    if (pending !== null) onChangeRef.current(pending);
+  };
+
+  useEffect(() => {
+    // A pick still waiting for its frame is newer than `value`.
+    if (pendingRef.current === null) setDraft(value);
+  }, [value]);
+
+  useEffect(() => flushPending, []);
+
   const commit = () => {
+    cancelPending();
     try {
-      applyColor(parseSafeThemeColor(draft));
+      const next = parseSafeThemeColor(draft);
+      setDraft(next);
+      setError(null);
+      onChange(next);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
-  const pick = (update: (current: ThemePickerHsv) => ThemePickerHsv) => {
+  const pick = (update: HsvUpdate) => {
     const next = update(hsvRef.current);
     hsvRef.current = next;
     setHsv(next);
-    applyColor(pickerHsvToThemeColor(next, value));
+    const color = pickerHsvToThemeColor(next, value);
+    setDraft(color);
+    setError(null);
+    pendingRef.current = color;
+    frameRef.current ??= requestAnimationFrame(flushPending);
   };
 
   return (
@@ -65,9 +98,11 @@ export function ThemeColorPicker({
       <span className="flex items-center gap-2">
         <Popover
           onOpenChange={(open) => {
-            if (!open) return;
-            const current = themeColorToPickerHsv(value);
-            if (!current) return;
+            if (!open) {
+              flushPending();
+              return;
+            }
+            const current = themeColorToPickerHsv(value) ?? DEFAULT_PICKER_HSV;
             hsvRef.current = current;
             setHsv(current);
           }}
@@ -88,6 +123,7 @@ export function ThemeColorPicker({
           value={draft}
           aria-invalid={error ? true : undefined}
           onChange={(event) => {
+            cancelPending();
             setDraft(event.target.value);
             setError(null);
           }}
@@ -114,9 +150,12 @@ function ThemeColorSpectrum({
   readonly label: string;
   readonly hsv: ThemePickerHsv;
   readonly color: string;
-  readonly onChange: (update: (current: ThemePickerHsv) => ThemePickerHsv) => void;
+  readonly onChange: (update: HsvUpdate) => void;
 }) {
   const pureHue = `hsl(${hsv.h} 100% 50%)`;
+  const saturation = Math.round(hsv.s * 100);
+  const brightness = Math.round(hsv.v * 100);
+  const hue = Math.round(hsv.h);
 
   const saturationValueDrag = pointerDragHandlers((x, y) =>
     onChange((current) => ({ ...current, s: x, v: 1 - y })),
@@ -124,27 +163,17 @@ function ThemeColorSpectrum({
   const hueDrag = pointerDragHandlers((x) => onChange((current) => ({ ...current, h: x * 360 })));
 
   const onSaturationValueKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const step = event.shiftKey ? 0.1 : 0.01;
-    const delta = ARROW_DELTAS[event.key];
-    if (!delta) return;
+    const update = saturationValueKeyUpdate(event.key, event.shiftKey);
+    if (!update) return;
     event.preventDefault();
-    onChange((current) => ({
-      ...current,
-      s: clampUnit(current.s + delta[0] * step),
-      v: clampUnit(current.v + delta[1] * step),
-    }));
+    onChange(update);
   };
 
   const onHueKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const step = event.shiftKey ? 10 : 1;
-    const delta = ARROW_DELTAS[event.key];
-    if (!delta) return;
+    const update = hueKeyUpdate(event.key, event.shiftKey);
+    if (!update) return;
     event.preventDefault();
-    const direction = delta[0] !== 0 ? delta[0] : delta[1];
-    onChange((current) => ({
-      ...current,
-      h: Math.min(360, Math.max(0, current.h + direction * step)),
-    }));
+    onChange(update);
   };
 
   return (
@@ -155,8 +184,8 @@ function ThemeColorSpectrum({
         aria-label={`${label} saturation and brightness`}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(hsv.s * 100)}
-        aria-valuetext={`Saturation ${Math.round(hsv.s * 100)}%, brightness ${Math.round(hsv.v * 100)}%`}
+        aria-valuenow={saturation}
+        aria-valuetext={`Saturation ${saturation}%, brightness ${brightness}%`}
         className={`${AREA_FOCUS_CLASS_NAME} h-36 w-full cursor-crosshair rounded-md border border-border`}
         style={{
           backgroundColor: pureHue,
@@ -178,7 +207,8 @@ function ThemeColorSpectrum({
         aria-label={`${label} hue`}
         aria-valuemin={0}
         aria-valuemax={360}
-        aria-valuenow={Math.round(hsv.h)}
+        aria-valuenow={hue}
+        aria-valuetext={`${hue} degrees`}
         className={`${AREA_FOCUS_CLASS_NAME} h-3 w-full cursor-pointer rounded-full`}
         style={{ backgroundImage: HUE_GRADIENT }}
         onKeyDown={onHueKeyDown}
@@ -202,12 +232,67 @@ function ThemeColorSpectrum({
   );
 }
 
-const ARROW_DELTAS: Readonly<Record<string, readonly [number, number]>> = {
-  ArrowLeft: [-1, 0],
-  ArrowRight: [1, 0],
-  ArrowUp: [0, 1],
-  ArrowDown: [0, -1],
-};
+/**
+ * Keyboard steps for the two-dimensional area: arrows move saturation (left/right) and
+ * brightness (up/down), PageUp/PageDown take large brightness steps, and Home/End jump to
+ * the saturation limits.
+ */
+function saturationValueKeyUpdate(key: string, shiftKey: boolean): HsvUpdate | null {
+  const step = shiftKey ? SATURATION_VALUE_LARGE_STEP : SATURATION_VALUE_STEP;
+  switch (key) {
+    case "ArrowLeft":
+      return (current) => ({ ...current, s: clampUnit(current.s - step) });
+    case "ArrowRight":
+      return (current) => ({ ...current, s: clampUnit(current.s + step) });
+    case "ArrowDown":
+      return (current) => ({ ...current, v: clampUnit(current.v - step) });
+    case "ArrowUp":
+      return (current) => ({ ...current, v: clampUnit(current.v + step) });
+    case "PageDown":
+      return (current) => ({ ...current, v: clampUnit(current.v - SATURATION_VALUE_LARGE_STEP) });
+    case "PageUp":
+      return (current) => ({ ...current, v: clampUnit(current.v + SATURATION_VALUE_LARGE_STEP) });
+    case "Home":
+      return (current) => ({ ...current, s: 0 });
+    case "End":
+      return (current) => ({ ...current, s: 1 });
+    default:
+      return null;
+  }
+}
+
+/** Keyboard steps for the hue bar. Arrows and PageUp/PageDown wrap around the color wheel. */
+function hueKeyUpdate(key: string, shiftKey: boolean): HsvUpdate | null {
+  const step = shiftKey ? HUE_LARGE_STEP : HUE_STEP;
+  const rotate =
+    (delta: number): HsvUpdate =>
+    (current) => ({
+      ...current,
+      h: wrapHue(current.h + delta),
+    });
+  switch (key) {
+    case "ArrowLeft":
+    case "ArrowDown":
+      return rotate(-step);
+    case "ArrowRight":
+    case "ArrowUp":
+      return rotate(step);
+    case "PageDown":
+      return rotate(-HUE_LARGE_STEP);
+    case "PageUp":
+      return rotate(HUE_LARGE_STEP);
+    case "Home":
+      return (current) => ({ ...current, h: 0 });
+    case "End":
+      return (current) => ({ ...current, h: 360 });
+    default:
+      return null;
+  }
+}
+
+function wrapHue(hue: number): number {
+  return ((hue % 360) + 360) % 360;
+}
 
 function clampUnit(value: number): number {
   return Math.min(1, Math.max(0, value));
@@ -227,6 +312,8 @@ function pointerDragHandlers(onMove: (x: number, y: number) => void) {
   return {
     onPointerDown: (event: PointerEvent<HTMLElement>) => {
       if (event.button !== 0) return;
+      // Keeps a mouse drag from selecting text in the popover; focus is moved explicitly.
+      event.preventDefault();
       event.currentTarget.setPointerCapture(event.pointerId);
       event.currentTarget.focus();
       report(event);

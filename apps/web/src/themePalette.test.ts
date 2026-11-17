@@ -16,6 +16,7 @@ import {
   getAvailableThemePalettes,
   getThemeContrastWarnings,
   parseCustomThemeLibrary,
+  parseSafeThemeColor,
   parseThemeDefinitionV1,
   pickerHsvToThemeColor,
   resolveThemePalette,
@@ -269,12 +270,11 @@ describe("visual color picker conversion", () => {
     expect(themeColorToPickerHsv("not a color")).toBeNull();
   });
 
-  it("clamps out-of-gamut colors into the picker range", () => {
-    const hsv = themeColorToPickerHsv("oklch(0.7 0.4 150)");
-    expect(hsv).not.toBeNull();
-    for (const channel of [hsv!.s, hsv!.v]) {
-      expect(channel).toBeGreaterThanOrEqual(0);
-      expect(channel).toBeLessThanOrEqual(1);
+  it("starts out-of-gamut colors from the color the theme stores", () => {
+    for (const color of ["oklch(0.7 0.4 150)", "oklch(0.5 0.185 150)", "color(display-p3 1 0 0)"]) {
+      const hsv = themeColorToPickerHsv(color);
+      expect(hsv).not.toBeNull();
+      expect(pickerHsvToThemeColor(hsv!, color)).toBe(parseSafeThemeColor(color));
     }
   });
 
@@ -287,5 +287,10 @@ describe("visual color picker conversion", () => {
   it("keeps the previous color's alpha", () => {
     expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "#11223380")).toBe("#ff000080");
     expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "#112233")).toBe("#ff0000");
+  });
+
+  it("makes picks from a fully transparent color opaque", () => {
+    expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "transparent")).toBe("#ff0000");
+    expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "#11223300")).toBe("#ff0000");
   });
 });
