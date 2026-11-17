@@ -1,0 +1,1 @@
+- Verbose Codex diagnostics, including large patch failure messages, no longer interrupt turns or block conversations with an incomplete-history error. Excess diagnostic text is summarized without consuming capacity reserved for session events.

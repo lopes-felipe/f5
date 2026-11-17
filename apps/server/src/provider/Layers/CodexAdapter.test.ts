@@ -47,6 +47,7 @@ import {
 } from "./CodexAdapter.ts";
 import { CodexChromeSession } from "../codexChromeSession.ts";
 import { normalizeTurnUsage } from "../../usage/usageMetrics.ts";
+import { NotificationAdmission } from "../notificationAdmission.ts";
 
 it("reports Codex's preview as verified, so its chip can reach ready", () => {
   const [event] = withAgentBrowserPreview(
@@ -3898,6 +3899,284 @@ const collectUntilCompleted = (adapter: CodexAdapterShape, completions: number) 
     Effect.forkChild,
   );
 };
+
+const emitStderrDiagnostic = (
+  manager: FakeCodexManager,
+  base: ReturnType<typeof mergeBase>,
+  id: string,
+  message: string,
+) =>
+  manager.emit("event", {
+    ...base,
+    id: asEventId(id),
+    kind: "error",
+    method: "process/stderr",
+    message,
+  });
+
+it.effect(
+  "releases diagnostic reservations when the adapter shuts down with queued warnings",
+  () => {
+    const manager = new FakeCodexManager();
+    const queues = new Set<NotificationAdmission>();
+    const reserve = NotificationAdmission.prototype.reserveDiagnostic;
+    const spy = vi
+      .spyOn(NotificationAdmission.prototype, "reserveDiagnostic")
+      .mockImplementation(function (this: NotificationAdmission, key, bytes) {
+        queues.add(this);
+        return reserve.call(this, key, bytes);
+      });
+    return Effect.gen(function* () {
+      const gate = yield* makeGatedAdapter(manager, []);
+      yield* Effect.gen(function* () {
+        yield* CodexAdapter;
+        const base = mergeBase("shutdown-stderr");
+        for (let index = 0; index < 100; index++) {
+          emitStderrDiagnostic(manager, base, "shutdown-" + index, "queued diagnostic");
+        }
+        assert.equal([...queues][0]?.snapshot().diagnostics, 1);
+      }).pipe(Effect.provide(gate.layer));
+    }).pipe(
+      Effect.scoped,
+      Effect.tap(() =>
+        Effect.sync(() => {
+          assert.equal(queues.size, 1);
+          for (const queue of queues) {
+            assert.deepEqual(queue.snapshot(), {
+              entries: 0,
+              controls: 0,
+              diagnostics: 0,
+              bytes: 0,
+              oldestAgeMs: 0,
+            });
+          }
+        }),
+      ),
+      Effect.ensuring(Effect.sync(() => spy.mockRestore())),
+    );
+  },
+);
+
+it.effect(
+  "does not require transcript recovery when disposable diagnostic preparation fails",
+  () => {
+    const manager = new FakeCodexManager();
+    const layer = makeCodexAdapterLive({
+      manager,
+      nativeEventLogger: {
+        filePath: "diagnostic-failure.log",
+        close: () => Effect.void,
+        write: (value) =>
+          (value as ProviderEvent).method === "process/stderr"
+            ? Effect.die(new Error("diagnostic log unavailable"))
+            : Effect.void,
+      },
+    }).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const collected = yield* collectUntilCompleted(adapter, 1);
+      const base = mergeBase("failed-diagnostic");
+      emitStderrDiagnostic(manager, base, "failed-stderr", "diagnostic");
+      emitCommandDelta(manager, base, "good-output", "command", "kept");
+      emitTurnCompleted(manager, base, "good-completion");
+      const events = yield* Fiber.join(collected);
+      assert.equal(events.filter((event) => event.type === "runtime.error").length, 0);
+      assert.equal(
+        events
+          .filter((event) => event.type === "content.delta")
+          .map(deltaText)
+          .join(""),
+        "kept",
+      );
+      assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
+      yield* adapter.sendTurn({ threadId: base.threadId, input: "continue" });
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
+
+it.effect("discards active and queued diagnostics from a replaced generation", () => {
+  const manager = new FakeCodexManager();
+  return Effect.gen(function* () {
+    const gate = yield* makeGatedAdapter(manager, ["old-active"]);
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const old = mergeBase("replaced-stderr", 1);
+      const replacement = mergeBase("replaced-stderr", 2);
+      const start = (generation: number) =>
+        adapter.startSession({
+          threadId: old.threadId,
+          runtimeMode: "full-access",
+          mcpEventIdentity: {
+            providerInstanceId: old.providerInstanceId,
+            sessionGeneration: generation,
+          },
+        });
+      yield* start(1);
+      const collected = yield* collectUntilCompleted(adapter, 2);
+      emitStderrDiagnostic(manager, old, "old-active", "old active diagnostic");
+      yield* Deferred.await(gate.entered);
+      emitStderrDiagnostic(manager, old, "old-waiting", "old queued diagnostic");
+      yield* start(2);
+      emitStderrDiagnostic(manager, old, "old-late", "old late diagnostic");
+      emitStderrDiagnostic(manager, replacement, "new-diagnostic", "current diagnostic");
+      emitTurnCompleted(manager, replacement, "new-completed");
+      emitTurnCompleted(manager, old, "old-completed");
+      yield* Deferred.succeed(gate.release, undefined);
+      const events = yield* Fiber.join(collected);
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "runtime.warning")
+          .map((event) => event.payload.message),
+        ["current diagnostic"],
+      );
+      assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("keeps stdout lossless when the canonical consumer stalls during stderr floods", () => {
+  const manager = new FakeCodexManager();
+  return Effect.gen(function* () {
+    const gate = yield* makeGatedAdapter(manager, []);
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const base = mergeBase("slow-stderr-consumer");
+      for (let index = 0; index < 600; index++) {
+        emitStderrDiagnostic(manager, base, "slow-stderr-" + index, "diagnostic");
+        emitCommandDelta(manager, base, "slow-stdout-" + index, "command", String(index) + ";");
+      }
+      emitTurnCompleted(manager, base, "slow-completed");
+      // With no subscriber, the canonical queue's 512-unit budget must stall preparation.
+      yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+      const collected = yield* collectUntilCompleted(adapter, 1);
+      const events = yield* Fiber.join(collected);
+      assert.equal(
+        events
+          .filter((event) => event.type === "content.delta")
+          .map(deltaText)
+          .join(""),
+        Array.from({ length: 600 }, (_, index) => String(index) + ";").join(""),
+      );
+      assert.equal(events.filter((event) => event.type === "runtime.error").length, 0);
+      assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(Effect.scoped);
+});
+
+it.effect(
+  "survives the 8,690-line patch failure flood without losing output or control events",
+  () => {
+    const manager = new FakeCodexManager();
+    return Effect.gen(function* () {
+      const gate = yield* makeGatedAdapter(manager, ["flood-start"]);
+      yield* Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        const collected = yield* collectUntilCompleted(adapter, 2);
+        const base = mergeBase("stderr-flood");
+        const other = mergeBase("unaffected");
+        emitCommandItem(manager, base, "item/started", "flood-start", "command");
+        yield* Deferred.await(gate.entered);
+        emitStderrDiagnostic(manager, base, "patch-error", "apply_patch verification failed");
+        for (let index = 0; index < 8690; index++) {
+          emitStderrDiagnostic(
+            manager,
+            base,
+            "source-" + index,
+            "import { Source } from './source';",
+          );
+        }
+        manager.emit("event", {
+          ...other,
+          id: asEventId("approval-during-flood"),
+          kind: "request",
+          method: "item/commandExecution/requestApproval",
+          requestId: ApprovalRequestId.makeUnsafe("approval-during-flood"),
+          payload: { command: "echo approved" },
+        });
+        emitStderrDiagnostic(
+          manager,
+          other,
+          "fatal",
+          "Failed to connect to websocket after retrying",
+        );
+        emitCommandDelta(manager, base, "intact-output", "command", "stdout remains intact");
+        emitCommandItem(manager, base, "item/completed", "flood-command-done", "command");
+        emitTurnCompleted(manager, base, "flood-completed");
+        emitTurnCompleted(manager, other, "other-completed");
+        yield* Deferred.succeed(gate.release, undefined);
+        const events = yield* Fiber.join(collected);
+        assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
+        assert.equal(events.filter((event) => event.type === "request.opened").length, 1);
+        const errors = events.filter((event) => event.type === "runtime.error");
+        assert.equal(errors.length, 1);
+        assert.equal(errors[0]?.threadId, other.threadId);
+        const warnings = events.filter((event) => event.type === "runtime.warning");
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0]!.payload.message, /^apply_patch verification failed/);
+        assert.match(warnings[0]!.payload.message, /stderr lines omitted\]$/);
+        assert.ok(Buffer.byteLength(warnings[0]!.payload.message) < 16 * 1024 + 100);
+        assert.equal(
+          events
+            .filter((event) => event.type === "content.delta")
+            .map(deltaText)
+            .join(""),
+          "stdout remains intact",
+        );
+        yield* adapter.sendTurn({ threadId: base.threadId, input: "continue" });
+        assert.equal(manager.sendTurnImpl.mock.calls.length, 1);
+      }).pipe(Effect.provide(gate.layer));
+    }).pipe(Effect.scoped);
+  },
+);
+
+it.effect(
+  "seals active and interleaved diagnostics, drops excess batches, and reports omissions later",
+  () => {
+    const manager = new FakeCodexManager();
+    return Effect.gen(function* () {
+      const gate = yield* makeGatedAdapter(manager, ["active-stderr"]);
+      yield* Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        const drained = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil(
+            (event) => event.type === "content.delta" && event.payload.delta === "barrier",
+          ),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const base = mergeBase("diagnostic-quota");
+        emitStderrDiagnostic(manager, base, "active-stderr", "first");
+        yield* Deferred.await(gate.entered);
+        emitStderrDiagnostic(manager, base, "waiting-stderr", "second");
+        emitStderrDiagnostic(manager, base, "merged-stderr", "second continuation");
+        emitCommandDelta(manager, base, "barrier", "command", "barrier");
+        // Both admitted batches still hold leases; stderr cannot borrow data/control capacity.
+        for (let index = 0; index < 100; index++) {
+          emitStderrDiagnostic(manager, base, "omitted-" + index, "omitted");
+        }
+        yield* Deferred.succeed(gate.release, undefined);
+        const before = yield* Fiber.join(drained);
+        assert.deepEqual(
+          before
+            .filter((event) => event.type === "runtime.warning")
+            .map((event) => event.payload.message),
+          ["first", "second\nsecond continuation"],
+        );
+        const collected = yield* collectUntilCompleted(adapter, 1);
+        emitStderrDiagnostic(manager, base, "after-drain", "third");
+        emitTurnCompleted(manager, base, "quota-completed");
+        const events = yield* Fiber.join(collected);
+        const warning = events.find((event) => event.type === "runtime.warning");
+        assert.equal(warning?.payload.message, "third\n[100 stderr lines omitted]");
+        assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
+      }).pipe(Effect.provide(gate.layer));
+    }).pipe(Effect.scoped);
+  },
+);
 
 it.effect(
   "merges finely interleaved command output bursts per item without overflow or loss",

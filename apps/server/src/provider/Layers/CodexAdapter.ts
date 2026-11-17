@@ -103,7 +103,11 @@ import {
   stableMcpConfigKey,
   summarizeMcpReload,
 } from "../mcpReconcile.ts";
-import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
+import {
+  isFatalCodexProcessStderrMessage,
+  isIgnorableCodexProcessStderrMessage,
+} from "@t3tools/shared/codexStderr";
+import { StderrDiagnosticBatch } from "../stderrDiagnosticBatch.ts";
 import { codexNotificationDisposition } from "@t3tools/shared/codexProtocolManifest";
 import {
   Cause,
@@ -435,13 +439,6 @@ function hookCombinedOutput(run: Record<string, unknown> | undefined): string | 
     (entry): entry is string => Boolean(entry && entry.length > 0),
   );
   return parts.length > 0 ? parts.join("\n\n") : undefined;
-}
-
-const FATAL_CODEX_STDERR_SNIPPETS = ["failed to connect to websocket"];
-
-function isFatalCodexProcessStderrMessage(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return FATAL_CODEX_STDERR_SNIPPETS.some((snippet) => normalized.includes(snippet));
 }
 
 function toTurnStatus(value: unknown): "completed" | "failed" | "cancelled" | "interrupted" {
@@ -3446,7 +3443,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       const native = notificationAdmission.snapshot();
       const canonical = [...canonicalQueueResources.values()];
       return {
-        entries: native.entries + native.controls + canonical.length,
+        entries: native.entries + native.controls + native.diagnostics + canonical.length,
         bytes: native.bytes + canonical.reduce((sum, entry) => sum + entry.bytes, 0),
         oldestAgeMs: Math.max(
           native.oldestAgeMs,
@@ -3502,9 +3499,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         // Per context, the one waiting (unprepared) notification of each item
         // that later deltas of the same item may still merge into.
         const openDeltaSlots = new Map<string, Map<string, PendingDeltaSlot>>();
+        const openDiagnostics = new Map<string, StderrDiagnosticBatch>();
+        const omittedDiagnostics = new Map<string, number>();
         const markIncomplete = (event: ProviderEvent) => {
           const key = notificationContextKey(event);
           openDeltaSlots.delete(key);
+          openDiagnostics.delete(key);
           if (incompleteContexts.has(key)) return;
           incompleteContexts.add(key);
           Effect.runSync(Metric.update(providerNotificationOverflows, 1));
@@ -3565,14 +3565,41 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             const chromeSession = chromeSessions.get(event.threadId)?.session;
             if (chromeSession) trackCodexChromeCall(chromeSession, event);
           }
+          const diagnostic =
+            event.method === "process/stderr" &&
+            !isFatalCodexProcessStderrMessage(event.message ?? "");
+          if (diagnostic && isIgnorableCodexProcessStderrMessage(event.message ?? "")) return;
+          const liveGeneration = automationGenerations.get(event.threadId);
+          if (
+            diagnostic &&
+            liveGeneration !== undefined &&
+            liveGeneration !== event.sessionGeneration
+          ) {
+            return;
+          }
           const control =
-            event.kind === "session" ||
-            event.kind === "error" ||
-            /(?:completed|closed|exited|started|requestApproval|requestUserInput)$/.test(
-              event.method,
-            );
+            !diagnostic &&
+            (event.kind === "session" ||
+              event.kind === "error" ||
+              /(?:completed|closed|exited|started|requestApproval|requestUserInput)$/.test(
+                event.method,
+              ));
           const key = notificationContextKey(event);
           if (incompleteContexts.has(key) && !control) return;
+          let diagnosticBatch: StderrDiagnosticBatch | undefined;
+          if (diagnostic) {
+            openDeltaSlots.delete(key);
+            const waiting = openDiagnostics.get(key);
+            if (waiting) {
+              waiting.append(event.message ?? "Codex process stderr");
+              return eventPreparation.get(key);
+            }
+            diagnosticBatch = new StderrDiagnosticBatch(event, omittedDiagnostics.get(key));
+            // Do not close over the original, potentially enormous stderr message.
+            event = diagnosticBatch.first;
+          } else {
+            openDiagnostics.delete(key);
+          }
           const bytes = Buffer.byteLength(JSON.stringify(event));
           const mergeable = mergeableContentDelta(event);
           const contextSlots = openDeltaSlots.get(key);
@@ -3598,10 +3625,23 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           } else {
             openDeltaSlots.delete(key);
           }
-          const lease = notificationAdmission.reserve(key, bytes, control);
+          const lease = diagnosticBatch
+            ? notificationAdmission.reserveDiagnostic(key, diagnosticBatch.reservationBytes)
+            : notificationAdmission.reserve(key, bytes, control);
           if (!lease) {
+            if (diagnosticBatch) {
+              omittedDiagnostics.set(
+                key,
+                Math.min(Number.MAX_SAFE_INTEGER, (omittedDiagnostics.get(key) ?? 0) + 1),
+              );
+              return;
+            }
             markIncomplete(event);
             return;
+          }
+          if (diagnosticBatch) {
+            omittedDiagnostics.delete(key);
+            openDiagnostics.set(key, diagnosticBatch);
           }
           const slot: PendingDeltaSlot | undefined = mergeable
             ? {
@@ -3862,6 +3902,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                   automationGenerations.delete(event.threadId);
                 }
                 incompleteContexts.delete(key);
+                openDiagnostics.delete(key);
+                omittedDiagnostics.delete(key);
                 limitsByThread.delete(key);
                 turnStartedAtByThread.delete(key);
                 reasoningTokenBaselineByThread.delete(key);
@@ -3876,6 +3918,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 });
                 return;
               }
+              const liveGeneration = automationGenerations.get(event.threadId);
+              if (
+                diagnosticBatch &&
+                liveGeneration !== undefined &&
+                liveGeneration !== event.sessionGeneration
+              )
+                return;
               yield* Effect.forEach(safeRuntimeEvents, offerRuntimeEvent, {
                 concurrency: 1,
                 discard: true,
@@ -3885,6 +3934,17 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 Cause.hasInterruptsOnly(cause)
                   ? Effect.interrupt
                   : Effect.gen(function* () {
+                      if (diagnosticBatch) {
+                        yield* Effect.logWarning(
+                          "Codex diagnostic preparation failed; dropping diagnostic",
+                          {
+                            threadId: event.threadId,
+                            eventId: event.id,
+                            cause,
+                          },
+                        );
+                        return;
+                      }
                       yield* Effect.logError(
                         "Codex event preparation failed; history reconciliation required",
                         { threadId: event.threadId, eventId: event.id, cause },
@@ -3913,6 +3973,16 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               (effect) => Effect.runPromiseWith(services)(effect, { signal: controller.signal }),
             );
           const prepare = () => {
+            if (diagnosticBatch) {
+              if (openDiagnostics.get(key) === diagnosticBatch) openDiagnostics.delete(key);
+              const generation = automationGenerations.get(event.threadId);
+              // Retired diagnostics are disposable, unlike authoritative turn output.
+              if (generation !== undefined && generation !== event.sessionGeneration) {
+                omittedDiagnostics.delete(key);
+                return Promise.resolve();
+              }
+              return prepareEvent(diagnosticBatch.toEvent());
+            }
             if (!slot) return prepareEvent(event);
             // Seal at preparation start: later deltas form a new notification.
             const slots = openDeltaSlots.get(key);
@@ -3936,6 +4006,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             .catch(() => {});
           return next;
         };
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            openDiagnostics.clear();
+            omittedDiagnostics.clear();
+          }),
+        );
         manager.on("event", listener);
         return listener;
       }),
