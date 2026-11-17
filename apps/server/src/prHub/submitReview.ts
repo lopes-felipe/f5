@@ -232,7 +232,10 @@ export function submitPreparedReview(
             });
             return false;
           }
-          const outcome = classifyPrWrite(creation);
+          const outcome = classifyPrWrite(
+            creation,
+            "The host refused the review. Your draft is still here to try again.",
+          );
           if (outcome.safeToRetry || outcome.rejected) {
             yield* transitionReviewOperation(owner, {
               id,

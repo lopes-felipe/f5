@@ -1,7 +1,7 @@
 import "../../index.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PullRequestKey, type PrHubReviewOperation } from "@t3tools/contracts";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { PrReviewSubmit } from "./PrReviewSubmit";
@@ -15,6 +15,9 @@ const api = vi.hoisted(() => ({
   getCommentOperation: vi.fn(),
 }));
 const auth = vi.hoisted(() => ({ generation: "account" }));
+const toast = vi.hoisted(() => ({ add: vi.fn() }));
+beforeEach(() => vi.clearAllMocks());
+vi.mock("../ui/toast", () => ({ toastManager: toast }));
 vi.mock("../../nativeApi", () => ({ ensureNativeApi: () => ({ prHub: api }) }));
 vi.mock("../../lib/prHubAccount", () => ({
   getPrHubAccountGeneration: () => auth.generation,
@@ -51,6 +54,50 @@ const operation = (body: string): PrHubReviewOperation => ({
     },
   },
 });
+it.each([
+  [
+    "Pull request operation failed: Can not approve your own pull request",
+    "Can not approve your own pull request",
+  ],
+  [undefined, "The host refused the review. Your draft is still here to try again."],
+])(
+  "shows a refused review's reason and preserves its note: %s",
+  async (errorMessage, description) => {
+    api.getReviewOperation.mockResolvedValue(null);
+    api.getFiles.mockResolvedValue({ comparison });
+    api.prepareQuickReview.mockImplementation(async (input: { body: string }) =>
+      operation(input.body),
+    );
+    api.submitReview.mockResolvedValue({
+      ...operation("Keep my draft"),
+      status: "rejected",
+      errorMessage,
+    });
+    await render(
+      <QueryClientProvider client={new QueryClient()}>
+        <PrReviewSubmit
+          prKey={key}
+          prUrl="https://github.com/org/repo/pull/1"
+          draft={null}
+          disabled={false}
+          onBusyChange={() => {}}
+          quickEvent="APPROVE"
+        />
+      </QueryClientProvider>,
+    );
+    await page.getByRole("textbox", { name: "Quick review note" }).fill("Keep my draft");
+    await page.getByRole("button", { name: "Preview review", exact: true }).click();
+    await page.getByRole("button", { name: "Submit review to GitHub" }).click();
+    await expect
+      .element(page.getByRole("textbox", { name: "Quick review note" }))
+      .toHaveValue("Keep my draft");
+    expect(toast.add).toHaveBeenLastCalledWith({
+      type: "error",
+      title: "The review could not be submitted",
+      description,
+    });
+  },
+);
 it("does not submit a saved request-changes operation from an Approve dialog", async () => {
   api.getReviewOperation.mockResolvedValue({
     ...operation("Please fix"),

@@ -9,6 +9,8 @@ import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration, getPrHubDraftIdentity } from "../../lib/prHubAccount";
 import { Textarea } from "../ui/textarea";
 import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
+import { reviewSubmissionFailure } from "./reviewSubmissionFailure";
 
 export function PrReviewSubmit({
   prKey,
@@ -43,15 +45,37 @@ export function PrReviewSubmit({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const operation = query.data;
-  async function run(action: () => Promise<PrHubReviewOperation>) {
+  async function run(action: () => Promise<PrHubReviewOperation>, submitting = false) {
     setBusy(true);
     onBusyChange(true);
     setError(null);
     try {
       const result = await action();
       queryClient.setQueryData(queryKey, result);
+      if (submitting && result.status !== "succeeded") {
+        toastManager.add({
+          type: "error",
+          title: "The review could not be submitted",
+          description: reviewSubmissionFailure(
+            result.errorMessage,
+            result.status === "rejected"
+              ? "The host refused the review. Your draft is still here to try again."
+              : "Check the saved submission state before retrying.",
+          ),
+        });
+      }
       if (quickEvent && result.status === "succeeded") setQuickBody("");
     } catch (cause) {
+      if (submitting) {
+        toastManager.add({
+          type: "error",
+          title: "The review could not be submitted",
+          description: reviewSubmissionFailure(
+            cause,
+            "Check the saved submission state before retrying.",
+          ),
+        });
+      }
       setError(
         cause instanceof Error
           ? cause.message
@@ -135,13 +159,15 @@ export function PrReviewSubmit({
                 size="sm"
                 disabled={busy}
                 onClick={() =>
-                  void run(() =>
-                    ensureNativeApi().prHub.submitReview({
-                      key: prKey,
-                      accountGeneration,
-                      id: operation.id,
-                      payloadHash: operation.payloadHash,
-                    }),
+                  void run(
+                    () =>
+                      ensureNativeApi().prHub.submitReview({
+                        key: prKey,
+                        accountGeneration,
+                        id: operation.id,
+                        payloadHash: operation.payloadHash,
+                      }),
+                    true,
                   )
                 }
               >

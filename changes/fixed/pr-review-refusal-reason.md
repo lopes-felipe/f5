@@ -1,0 +1,1 @@
+- Failed PR review submissions now show GitHub's refusal reason, with a reminder that the draft is preserved when the host provides no message.

@@ -74,6 +74,32 @@ const setup = (number: number) =>
   });
 
 it.layer(SqliteClient.layerMemory())("review submission", (it) => {
+  for (const message of ["Can not approve your own pull request", undefined]) {
+    it.effect(`preserves a refused review's draft and reason: ${message ?? "no message"}`, () =>
+      Effect.gen(function* () {
+        const { owner, operation } = yield* setup(message ? 41 : 42);
+        let writes = 0;
+        const result = yield* submitPreparedReview(owner, operation.id, {
+          verify: () => Effect.void,
+          request: (method) => {
+            if (method === "GET") return Effect.succeed(response([]));
+            writes++;
+            return Effect.succeed({ ...response({ message }), status: 422 });
+          },
+        });
+        assert.equal(result.status, "rejected");
+        assert.equal(
+          result.errorMessage,
+          message ?? "The host refused the review. Your draft is still here to try again.",
+        );
+        const draft = yield* readPrHubReviewDraft(owner);
+        assert.equal(draft?.content.body, "Review text");
+        assert.equal(draft?.frozen, false);
+        assert.equal(writes, 1);
+      }),
+    );
+  }
+
   for (const mode of ["scheduler", "precondition", "rate_limit", "verification"] as const)
     it.effect(`keeps an explicit retry usable after ${mode} failure`, () =>
       Effect.gen(function* () {
