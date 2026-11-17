@@ -48,10 +48,9 @@ import {
 } from "./orchestration/Errors.ts";
 import {
   WorkspaceRequiresNewWorktreeError,
-  GitWorkspaceSwitch,
   type GitWorkspaceSwitchHandler,
 } from "./git/workspaceSwitch.ts";
-import { inspectAttachableWorkspace } from "./project/workspaceAttachment.ts";
+import { inspectAttachableWorkspace, isProjectCheckout } from "./project/workspaceAttachment.ts";
 import { discoverSourceControlProviderIdentities } from "./sourceControl/discovery.ts";
 import {
   initializeNewProject,
@@ -68,7 +67,12 @@ import {
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { answerMessageIdFor } from "@t3tools/shared/answerDelivery";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
-import { readWorktreeClaims } from "./project/worktreeClaims.ts";
+import {
+  captureOptionalClaimServices,
+  formatInPlaceSwitchBlockers,
+  inPlaceSwitchBlockers,
+  readWorktreeClaims,
+} from "./project/worktreeClaims.ts";
 import { withRepositoryLifecycleLock } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
 import { GitHubCli } from "./git/Services/GitHubCli.ts";
 import { GitService } from "./git/Services/GitService.ts";
@@ -85,7 +89,6 @@ import {
   WorkspaceTransition,
   type WorkspaceTransitionShape,
 } from "./project/Services/WorkspaceTransition.ts";
-import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { WorktreePreparations } from "./persistence/Services/WorktreePreparations.ts";
 import { WorktreePreparationsLive } from "./persistence/Layers/WorktreePreparations.ts";
 import {
@@ -376,11 +379,14 @@ import {
   webSocketRuntimeName,
 } from "./wsServer/webSocketTransport.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
+import { routeFailureMessage } from "./wsServer/routeFailureMessage.ts";
 import { agentBridgeRoutes } from "./wsServer/routes/agentBridgeRoutes.ts";
 import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
 import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
 import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
 import { scheduledTaskRoutes } from "./wsServer/routes/scheduledTaskRoutes.ts";
+import { gitRoutes } from "./wsServer/routes/gitRoutes.ts";
+import { terminalRoutes } from "./wsServer/routes/terminalRoutes.ts";
 import { upstreamPortRoutes } from "./wsServer/routes/upstreamPortRoutes.ts";
 import {
   answerFromTable,
@@ -957,24 +963,6 @@ function toDeliveryRecoveryError(error: Error): RouteRequestError {
   });
 }
 
-function formatRouteFailureMessage(cause: Cause.Cause<unknown>): string {
-  const squashed = Cause.squash(cause);
-  if (Schema.is(AttachmentIngressError)(squashed)) {
-    return squashed.message;
-  }
-  if (
-    squashed &&
-    typeof squashed === "object" &&
-    "_tag" in squashed &&
-    squashed._tag === "RouteRequestError" &&
-    "message" in squashed &&
-    typeof squashed.message === "string"
-  ) {
-    return squashed.message;
-  }
-  return Cause.pretty(cause);
-}
-
 function formatRouteFailure(
   cause: Cause.Cause<unknown>,
   method: string,
@@ -998,6 +986,8 @@ function formatRouteFailure(
       checkoutConflict: squashed.checkoutConflict,
     };
   }
+  if (squashed instanceof WorkspaceRequiresNewWorktreeError)
+    return { message: squashed.message, code: squashed.code };
   if (Schema.is(AttachmentIngressError)(squashed)) {
     return { message: squashed.message };
   }
@@ -1013,7 +1003,7 @@ function formatRouteFailure(
       ...(squashed.code !== undefined ? { code: squashed.code } : {}),
     };
   }
-  return { message: formatRouteFailureMessage(cause) };
+  return { message: routeFailureMessage(cause) };
 }
 
 const MAX_ROUTE_CAUSE_MESSAGE_LENGTH = 1000;
@@ -1032,10 +1022,11 @@ function formatServerLifecycleRouteFailure(error: ServerLifecycleError): string 
     return baseMessage;
   }
 
+  // The message only: the startup failure is logged with its full cause.
   const causeMessage = Cause.isCause(error.cause)
-    ? Cause.pretty(error.cause)
+    ? routeFailureMessage(error.cause)
     : error.cause instanceof Error
-      ? (error.cause.stack ?? error.cause.message)
+      ? error.cause.message
       : String(error.cause);
   const compactedCauseMessage = compactRouteCauseMessage(causeMessage);
   return compactedCauseMessage.length > 0
@@ -1148,6 +1139,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const sql = yield* SqlClient.SqlClient;
+  // The turn repository lives in the orchestration runtime, built later; build one
+  // here so claims on the draft branch-switch route see accepted, undelivered turns.
+  const withClaimServices = yield* captureOptionalClaimServices({
+    turns: yield* makeProjectionTurnRepository.pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    ),
+  });
   yield* sql`UPDATE scheduled_control SET ready=0 WHERE id=1`.pipe(
     Effect.mapError(
       (cause) => new ServerLifecycleError({ operation: "scheduledTasks.closeStartupGate", cause }),
@@ -4105,6 +4103,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 detail: result.error ?? "Local changes block branch switching.",
                 checkoutConflict: result.checkoutConflict,
               });
+            // Keep the code so clients can offer "Start a new worktree" here too.
+            if (result.errorCode === "WorkspaceRequiresNewWorktree")
+              return yield* Effect.fail(
+                new WorkspaceRequiresNewWorktreeError(
+                  result.error ?? "Start a new worktree instead.",
+                ),
+              );
             return yield* Effect.fail(
               new Error(result.error ?? "Inspect and resolve the workspace transition."),
             );
@@ -4127,26 +4132,32 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 return yield* Effect.fail(
                   new Error("The checkout identity changed. Inspect it before switching branches."),
                 );
-              const usage = yield* readWorktreeClaims(checkout.canonicalRoot).pipe(
-                Effect.provideService(OrchestrationEngineService, orchestrationEngine),
-                Effect.provideService(ProviderService, providerService),
-                Effect.provideService(TerminalManager, terminalManager),
-                Effect.provideService(NextTurnQueueStore, nextTurnQueueStore),
+              const usage = yield* withClaimServices(
+                readWorktreeClaims(checkout.canonicalRoot).pipe(
+                  Effect.provideService(OrchestrationEngineService, orchestrationEngine),
+                  Effect.provideService(ProviderService, providerService),
+                  Effect.provideService(TerminalManager, terminalManager),
+                  Effect.provideService(NextTurnQueueStore, nextTurnQueueStore),
+                ),
               );
-              if (
-                usage.unknown ||
-                usage.threadIds.length ||
-                usage.sessions.length ||
-                usage.terminals.length ||
-                usage.setupThreadIds.length
-              )
+              const model = yield* orchestrationEngine.getReadModel();
+              const blockers = inPlaceSwitchBlockers(usage, {
+                requester: null,
+                projectCheckout: yield* isProjectCheckout(model, checkout.canonicalRoot),
+              });
+              if (blockers.length)
                 return yield* Effect.fail(
-                  new Error(
-                    "This checkout is referenced by a conversation or process. Switch it through that conversation.",
+                  new WorkspaceRequiresNewWorktreeError(
+                    formatInPlaceSwitchBlockers(
+                      blockers,
+                      (id) => model.threads.find((thread) => thread.id === id)?.title ?? null,
+                    ),
                   ),
                 );
               yield* Effect.tryPromise(() =>
                 assertExclusiveProfileCheckout(serverConfig, checkout.canonicalRoot),
+              ).pipe(
+                Effect.mapError((error) => (error.cause instanceof Error ? error.cause : error)),
               );
               if (input.create) yield* git.createBranch({ cwd: input.cwd, branch: input.branch });
               yield* Effect.scoped(
@@ -4187,7 +4198,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }),
     )
     .and(upstreamPortRoutes(upstreamPorts))
-    .and(agentBridgeRoutes(agentBridge)).table;
+    .and(agentBridgeRoutes(agentBridge))
+    .and(terminalRoutes({ terminals: terminalManager, startingShellFor: withTerminalThreadAccess }))
+    .and(
+      gitRoutes({
+        git,
+        gitManager,
+        switchWorkspace: switchGitWorkspace,
+        publishActionProgress: (ws, event) =>
+          pushBus.publishClient(ws, WS_CHANNELS.gitActionProgress, event).pipe(Effect.asVoid),
+        createWorktree: createConfiguredWorktree,
+        prepareWorktree,
+        runtime: Effect.map(
+          awaitOrchestrationRuntimeForRoute,
+          ({ orchestrationEngine, worktreeManager }) => ({
+            liveProjects: Effect.map(orchestrationEngine.getReadModel(), (model) =>
+              model.projects.filter((project) => project.deletedAt === null),
+            ),
+            worktrees: worktreeManager,
+          }),
+        ),
+      }),
+    ).table;
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     const requestCwd = (request.body as { readonly cwd?: unknown }).cwd;
@@ -5702,182 +5734,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* revealInFileManager(target.absolutePath);
       }
 
-      case WS_METHODS.gitStatus: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager.status(body);
-      }
-
-      case WS_METHODS.gitPull: {
-        const body = stripRequestTag(request.body);
-        return yield* git.pullCurrentBranch(body.cwd);
-      }
-
-      case WS_METHODS.gitRunStackedAction: {
-        const body = stripRequestTag(request.body);
-        const actionId = body.actionId ?? randomUUID();
-        yield* pushBus
-          .publishClient(ws, WS_CHANNELS.gitActionProgress, {
-            actionId,
-            cwd: body.cwd,
-            action: body.action,
-            kind: "action_started",
-            phases: ["branch", "commit", "push", "pr"],
-          })
-          .pipe(Effect.asVoid);
-        const result = yield* gitManager
-          .runStackedAction(body, {
-            actionId,
-            progressReporter: {
-              publish: (event) =>
-                pushBus.publishClient(ws, WS_CHANNELS.gitActionProgress, event).pipe(Effect.asVoid),
-            },
-          })
-          .pipe(
-            Effect.provideService(
-              GitWorkspaceSwitch,
-              switchGitWorkspace(body.threadId, `git-action:${actionId}`),
-            ),
-            Effect.tap((result) =>
-              pushBus
-                .publishClient(ws, WS_CHANNELS.gitActionProgress, {
-                  actionId,
-                  cwd: body.cwd,
-                  action: body.action,
-                  kind: "action_finished",
-                  result,
-                })
-                .pipe(Effect.asVoid),
-            ),
-            Effect.tapError((cause) =>
-              pushBus
-                .publishClient(ws, WS_CHANNELS.gitActionProgress, {
-                  actionId,
-                  cwd: body.cwd,
-                  action: body.action,
-                  kind: "action_failed",
-                  phase: null,
-                  message: cause instanceof Error ? cause.message : String(cause),
-                })
-                .pipe(Effect.asVoid),
-            ),
-          );
-        return result;
-      }
-
-      case WS_METHODS.gitResolvePullRequest: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager.resolvePullRequest(body);
-      }
-
-      case WS_METHODS.gitPreparePullRequestThread: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager
-          .preparePullRequestThread(body)
-          .pipe(Effect.provideService(GitWorkspaceSwitch, switchGitWorkspace(body.threadId)));
-      }
-
-      case WS_METHODS.gitListBranches: {
-        const body = stripRequestTag(request.body);
-        return yield* git.listBranches(body);
-      }
-
-      case WS_METHODS.gitCreateWorktree: {
-        const body = stripRequestTag(request.body);
-        const targetBranch = body.newBranch ?? body.branch;
-        return yield* createConfiguredWorktree({
-          ...body,
-          path:
-            body.path ?? (yield* git.allocateWorktreePath({ cwd: body.cwd, branch: targetBranch })),
-        });
-      }
-
-      case WS_METHODS.gitPrepareWorktree: {
-        const body = stripRequestTag(request.body);
-        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        const canonicalProject = yield* Effect.promise(() =>
-          canonicalWorktreePath(body.projectCwd),
-        );
-        const projects = (yield* orchestrationEngine.getReadModel()).projects.filter(
-          (project) => project.deletedAt === null,
-        );
-        let script: ReturnType<typeof setupProjectScript> = null;
-        for (const project of projects) {
-          if (
-            (yield* Effect.promise(() => canonicalWorktreePath(project.workspaceRoot))) ===
-            canonicalProject
-          ) {
-            script = setupProjectScript(project.scripts);
-            break;
-          }
-        }
-        return yield* prepareWorktree({
-          ...body,
-          runSetupScript: body.runSetupScript ?? script !== null,
-          setupIdentity: script?.command ?? null,
-        });
-      }
-
-      case WS_METHODS.gitRemoveWorktree: {
-        const body = stripRequestTag(request.body);
-        const { worktreeManager, orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(body.cwd)).pipe(
-          Effect.orElseSucceed(() => null),
-        );
-        const projects = (yield* orchestrationEngine.getReadModel()).projects.filter(
-          (project) => project.deletedAt === null,
-        );
-        let projectId: ProjectId | undefined;
-        for (const project of projects) {
-          if (
-            canonical !== null &&
-            (yield* Effect.tryPromise(() => canonicalWorktreePath(project.workspaceRoot)).pipe(
-              Effect.orElseSucceed(() => null),
-            )) === canonical
-          ) {
-            projectId = project.id;
-            break;
-          }
-        }
-        if (!projectId)
-          return yield* Effect.fail(new RouteRequestError({ message: "Unknown project" }));
-        const preview = yield* worktreeManager
-          .inspect({ projectId, path: body.path })
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        const result = yield* worktreeManager
-          .remove({
-            projectId,
-            path: body.path,
-            deleteBranch: false,
-            expectedHead: preview.headSha,
-          })
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        if (!result.removed)
-          return yield* Effect.fail(
-            new RouteRequestError({
-              message: result.blockedReasons.join("; ") || "Worktree was not removed.",
-            }),
-          );
-        return;
-      }
-
-      case WS_METHODS.gitCreateBranch: {
-        const body = stripRequestTag(request.body);
-        return yield* git.createBranch(body);
-      }
-
-      case WS_METHODS.gitCheckout: {
-        const body = stripRequestTag(request.body);
-        return yield* switchGitWorkspace(
-          body.threadId,
-          body.operationId,
-        )({ cwd: body.cwd, branch: body.branch, create: false });
-      }
-
-      case WS_METHODS.gitInit: {
-        const body = stripRequestTag(request.body);
-        return yield* git.initRepo(body);
-      }
-
       case WS_METHODS.reviewPreviewDiff: {
         const body = stripRequestTag(request.body);
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
@@ -5955,6 +5811,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case PR_HUB_WS_METHODS.listReviewerCandidates:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
         return yield* prHubExtensions.value.listReviewerCandidates(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getChecks:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getChecks(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getCheckLog:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getCheckLog(stripRequestTag(request.body));
 
       case PR_HUB_WS_METHODS.getOverview:
         return yield* prHub.getOverview(stripRequestTag(request.body));
@@ -6062,6 +5924,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
         });
       }
+
+      case PR_HUB_WS_METHODS.bulkUpdate:
+        return yield* prHub.bulkUpdate(stripRequestTag(request.body));
 
       case PR_HUB_WS_METHODS.acknowledgeAttention:
         yield* prHub.acknowledgeAttention(stripRequestTag(request.body));
@@ -6231,39 +6096,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           accountGeneration:
             "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
         });
-
-      case WS_METHODS.terminalSnapshot:
-        return yield* terminalManager.snapshot(stripRequestTag(request.body));
-
-      case WS_METHODS.terminalOpen: {
-        const body = stripRequestTag(request.body);
-        return yield* withTerminalThreadAccess(body.threadId, terminalManager.open(body));
-      }
-
-      case WS_METHODS.terminalWrite: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.write(body);
-      }
-
-      case WS_METHODS.terminalResize: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.resize(body);
-      }
-
-      case WS_METHODS.terminalClear: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.clear(body);
-      }
-
-      case WS_METHODS.terminalRestart: {
-        const body = stripRequestTag(request.body);
-        return yield* withTerminalThreadAccess(body.threadId, terminalManager.restart(body));
-      }
-
-      case WS_METHODS.terminalClose: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.close(body);
-      }
 
       case WS_METHODS.previewOpen: {
         const body = stripRequestTag(request.body);
@@ -6982,6 +6814,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* worktreeManager
           .threadState(request.body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case WS_METHODS.worktreesSwitchAvailability: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager
+          .switchAvailability(stripRequestTag(request.body))
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }
       case WS_METHODS.worktreesRecover: {
@@ -7934,6 +7772,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       });
     }
     if (Exit.isFailure(result)) {
+      // The client is told the message only, so a defect's trace is kept here.
+      if (Cause.hasDies(result.cause))
+        yield* Effect.logError("rpc route defect", {
+          method,
+          cause: Cause.pretty(result.cause),
+        });
       return yield* sendWsResponse(
         {
           id: request.success.id,

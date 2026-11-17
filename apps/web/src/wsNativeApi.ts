@@ -943,6 +943,7 @@ export function createWsNativeApi(): NativeApi {
       inspect: requestMethod(WS_METHODS.worktreesInspect),
       remove: requestMethod(WS_METHODS.worktreesRemove),
       threadState: requestMethod(WS_METHODS.worktreesThreadState),
+      switchAvailability: requestMethod(WS_METHODS.worktreesSwitchAvailability),
       recover: requestMethod(WS_METHODS.worktreesRecover),
     },
     worktreeSetup: {
@@ -1117,6 +1118,8 @@ export function createWsNativeApi(): NativeApi {
       cancelOperation: (input) => transport.request(PR_HUB_WS_METHODS.cancelOperation, input),
       listReviewerCandidates: (input) =>
         transport.request(PR_HUB_WS_METHODS.listReviewerCandidates, input),
+      getChecks: (input) => transport.request(PR_HUB_WS_METHODS.getChecks, input),
+      getCheckLog: (input) => transport.request(PR_HUB_WS_METHODS.getCheckLog, input),
 
       claimNotifications: (input) => requestPrHub(PR_HUB_WS_METHODS.claimNotifications, input),
       acknowledgeNotifications: (input) =>
@@ -1134,6 +1137,7 @@ export function createWsNativeApi(): NativeApi {
       unsnooze: (input) => requestPrHub(PR_HUB_WS_METHODS.unsnooze, input),
       ignore: (input) => requestPrHub(PR_HUB_WS_METHODS.ignore, input),
       unignore: (input) => requestPrHub(PR_HUB_WS_METHODS.unignore, input),
+      bulkUpdate: (input) => requestPrHub(PR_HUB_WS_METHODS.bulkUpdate, input),
       acknowledgeAttention: (input) => requestPrHub(PR_HUB_WS_METHODS.acknowledgeAttention, input),
       markSeen: (input) => requestPrHub(PR_HUB_WS_METHODS.markSeen, input),
       markNotified: (input) => requestPrHub(PR_HUB_WS_METHODS.markNotified, input),

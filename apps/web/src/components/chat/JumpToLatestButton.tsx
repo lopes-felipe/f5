@@ -4,12 +4,21 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { ChatMessage } from "../../types";
 import { messageTextRevision } from "../../lib/streamingTextRevision";
 import { Kbd } from "../ui/kbd";
-import { classifyTimelineTailChange, type TimelineTailSnapshot } from "./MessagesTimeline.logic";
+import {
+  classifyTimelineTailChange,
+  type TimelineTailSnapshot,
+} from "./MessagesTimeline.logic";
 import { CHAT_CONTENT_COLUMN_CLASS_NAME } from "./chatLayout";
 
 /** The last timeline entry, as the pill compares it. */
 export function timelineTailSnapshot(
-  entry: { readonly id: string; readonly kind: string; readonly message?: ChatMessage } | undefined,
+  entry:
+    | {
+        readonly id: string;
+        readonly kind: string;
+        readonly message?: ChatMessage;
+      }
+    | undefined,
 ): TimelineTailSnapshot {
   const message = entry?.kind === "message" ? entry.message : undefined;
   const revision = message ? messageTextRevision(message) : undefined;
@@ -22,16 +31,18 @@ export function timelineTailSnapshot(
 }
 
 /**
- * Floating scroll controls, also kept visible while following is enabled.
- * A dot marks content that arrived after the reader scrolled away:
- * new rows, or more text in the response they left streaming. The baseline is
- * taken on mount and refreshed when the reader returns to the end.
+ * Floating "Jump to latest" pill shown while the reader is scrolled away from
+ * the end, and while a jump is still loading. A dot marks content that arrived
+ * after the reader scrolled away: new rows, or more text in the response they
+ * left streaming. The baseline is `leftEndTail` (the tail when the reader left
+ * the end, since the pill mounts after a debounce) or else the tail at mount,
+ * and is refreshed when the reader returns to the end.
  */
 export function JumpToLatestButton(props: {
   tail: TimelineTailSnapshot;
+  leftEndTail?: TimelineTailSnapshot | null;
   shortcutLabel: string | null;
   onJump: () => void;
-  following?: boolean;
   isAtEnd?: boolean;
   jumping?: boolean;
 }) {
@@ -55,13 +66,20 @@ export function JumpToLatestButton(props: {
       host.style.removeProperty("--timeline-follow-controls-width");
     };
   }, []);
-  const [baseline, setBaseline] = useState(props.tail);
-  const [latched, setLatched] = useState<"new-messages" | "response-updated" | null>(null);
+  const [baseline, setBaseline] = useState(props.leftEndTail ?? props.tail);
+  const [latched, setLatched] = useState<
+    "new-messages" | "response-updated" | null
+  >(null);
   const change = classifyTimelineTailChange(baseline, props.tail);
   if (props.isAtEnd && (change || latched)) {
     setBaseline(props.tail);
     setLatched(null);
-  } else if (!props.isAtEnd && change && latched !== "new-messages" && change !== latched) {
+  } else if (
+    !props.isAtEnd &&
+    change &&
+    latched !== "new-messages" &&
+    change !== latched
+  ) {
     setLatched(change);
   }
   const hasNewContent = !props.isAtEnd && latched !== null;
@@ -89,20 +107,16 @@ export function JumpToLatestButton(props: {
           ) : (
             <ArrowDownIcon className="size-3.5" />
           )}
-          <span>
-            {props.jumping
-              ? "Jumping…"
-              : props.following && props.isAtEnd
-                ? "Following"
-                : "Jump to latest"}
-          </span>
+          <span>{props.jumping ? "Jumping…" : "Jump to latest"}</span>
           {latched === "new-messages" ? (
             <span className="sr-only">, new messages</span>
           ) : latched === "response-updated" ? (
             <span className="sr-only">, response updated</span>
           ) : null}
           {props.shortcutLabel && !props.isAtEnd ? (
-            <Kbd className="h-4 min-w-4 px-1 text-2xs">{props.shortcutLabel}</Kbd>
+            <Kbd className="h-4 min-w-4 px-1 text-2xs">
+              {props.shortcutLabel}
+            </Kbd>
           ) : null}
         </button>
         {hasNewContent ? (

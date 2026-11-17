@@ -358,6 +358,8 @@ const decisionSignature = (fields: DecisionFields) => {
 
 export const UNDO_TOKENS_PER_PROJECT = 20;
 export const UNDO_TTL_MS = 15 * 60_000;
+/** How long the merge release pass waits before re-reading a port thread's unmerged PR. */
+export const MERGE_RELEASE_RECHECK_MS = 10 * 60_000;
 
 /** One user action, however many batches it took. */
 interface UndoRecord {
@@ -475,6 +477,8 @@ export function makeUpstreamPortsService(
       string,
       { value: PullRequestTopicEvidence | null; expiresAt: number }
     >();
+    /** Thread id to the time its unmerged PR may be read again by the merge release pass. */
+    const mergeReleaseCheckedAt = new Map<string, number>();
     const portLocks = new Map<string, Semaphore.Semaphore>();
     const withPortLock = <A, E>(projectId: string, effect: Effect.Effect<A, E>) =>
       Effect.gen(function* () {
@@ -3317,6 +3321,155 @@ export function makeUpstreamPortsService(
               needsAttention,
             }));
 
+    /**
+     * Cached GitHub snapshot of a PR's body and commit trailers. A merged PR's evidence is final
+     * and cached forever; other results are re-read after 120 s, or 15 s when incomplete.
+     * Failures are returned rather than logged so callers can report them once per pass.
+     */
+    const readPrTopicEvidence = (context: ProjectContext, prUrl: string) =>
+      Effect.gen(function* () {
+        const cacheKey = canonicalJson([context.projectId, prUrl]);
+        const cached = prTopicEvidence.get(cacheKey);
+        if (cached && cached.expiresAt > now().getTime())
+          return { evidence: cached.value, failure: null as string | null, deferred: false };
+        const repo = parseGitHubRepo(prUrl.split("/pull/")[0]!);
+        const status: { failure: string | null; deferred: boolean } = {
+          failure: null,
+          deferred: false,
+        };
+        let evidence: PullRequestTopicEvidence | null = null;
+        if (deps.github && repo)
+          evidence = yield* deps.github
+            .readPullRequestTopicEvidence({
+              cwd: context.cwd,
+              repo,
+              number: Number(prUrl.split("/").at(-1)),
+            })
+            .pipe(
+              Effect.tapError((error) =>
+                Effect.sync(() => {
+                  if (error.deferred) status.deferred = true;
+                  else status.failure = describe(error);
+                }),
+              ),
+              Effect.orElseSucceed(() => null),
+            );
+        prTopicEvidence.delete(cacheKey);
+        prTopicEvidence.set(cacheKey, {
+          value: evidence,
+          expiresAt: evidence?.final
+            ? Number.POSITIVE_INFINITY
+            : now().getTime() + (evidence?.complete ? 120_000 : 15_000),
+        });
+        if (prTopicEvidence.size > 1000)
+          prTopicEvidence.delete(prTopicEvidence.keys().next().value!);
+        return { evidence, ...status };
+      });
+
+    /**
+     * A merged PR ends its thread's port work: the branch can carry nothing more. Topics the
+     * merged PR excluded are released so they return to Ready and stop reserving files. Topics it
+     * carried keep their link until the default-branch trailer sync marks them done; releasing
+     * them first would briefly show them as Ready and let the queue port them again.
+     */
+    const releaseMergedPortLinks = (context: ProjectContext, snapshot: CurrentView) =>
+      Effect.gen(function* () {
+        if (!deps.github || !(yield* isWriter(context.cwd))) return false;
+        const candidates = snapshot.links.filter((link) => {
+          if (link.state !== "active") return false;
+          const row = snapshot.rows.find((row) => row.topic.id === link.topicId);
+          return row !== undefined && row.topic.epoch === link.epoch && row.state !== "done";
+        });
+        if (!candidates.length) return false;
+        const model = yield* host.readModel;
+        const nowMs = now().getTime();
+        const threadIds = [...new Set(candidates.map((link) => link.threadId))].filter((id) => {
+          const thread = model.threads.find((thread) => thread.id === id);
+          return (
+            thread?.latestTurn?.processingQuiescedAt != null &&
+            (mergeReleaseCheckedAt.get(id) ?? 0) <= nowMs
+          );
+        });
+        if (!threadIds.length) return false;
+        const running = yield* runningThreads(context.projectId, snapshot);
+        const settled = threadIds.filter((id) => !running.has(id));
+        if (!settled.length) return false;
+        const origin = yield* forkRepoFor(context);
+        const originRepo = origin ? parseGitHubRepo(origin) : null;
+        if (!originRepo) return false;
+        const summaries = yield* linkSummaries(context, settled, model);
+        const failures = new Map<string, { failures: number; threadId: string }>();
+        let deferrals = 0;
+        let released = false;
+        for (const threadId of settled) {
+          const prUrl = summaries.get(threadId)?.prUrl;
+          const prRepo = prUrl ? parseGitHubRepo(prUrl.split("/pull/")[0]!) : null;
+          if (
+            !prUrl ||
+            !prRepo ||
+            !/\/pull\/[1-9][0-9]*$/u.test(prUrl) ||
+            prRepo.owner.toLowerCase() !== originRepo.owner.toLowerCase() ||
+            prRepo.name.toLowerCase() !== originRepo.name.toLowerCase()
+          )
+            continue;
+          const read = yield* readPrTopicEvidence(context, prUrl);
+          if (read.deferred) deferrals++;
+          if (read.failure) {
+            const seen = failures.get(read.failure);
+            failures.set(read.failure, {
+              failures: (seen?.failures ?? 0) + 1,
+              threadId: seen?.threadId ?? threadId,
+            });
+          }
+          const evidence = read.evidence;
+          if (!evidence?.final || !evidence.complete) {
+            // A failed or deferred read retries on a later pass; an unmerged or missing PR waits.
+            if (!read.failure && !read.deferred) {
+              mergeReleaseCheckedAt.delete(threadId);
+              mergeReleaseCheckedAt.set(threadId, nowMs + MERGE_RELEASE_RECHECK_MS);
+              if (mergeReleaseCheckedAt.size > 5000)
+                mergeReleaseCheckedAt.delete(mergeReleaseCheckedAt.keys().next().value!);
+            }
+            continue;
+          }
+          mergeReleaseCheckedAt.delete(threadId);
+          const trailers = evidence.texts.flatMap(parseUpstreamTopicTrailers);
+          const excluded = candidates.filter(
+            (link) =>
+              link.threadId === threadId &&
+              !trailers.some(
+                (trailer) => trailer.id === link.topicId && trailer.epoch === link.epoch,
+              ),
+          );
+          if (!excluded.length) continue;
+          for (const link of excluded)
+            yield* store.setLinkState(
+              { projectId: context.projectId, topicId: link.topicId, threadId },
+              "unlinked",
+            );
+          released = true;
+          yield* portReviews.advance(threadId).pipe(Effect.ignoreCause({ log: true }));
+          yield* Effect.logInfo("upstreamPorts.links.releasedAfterMerge", {
+            projectId: context.projectId,
+            threadId,
+            prUrl,
+            topicIds: excluded.map((link) => link.topicId),
+          });
+        }
+        for (const [detail, failure] of failures)
+          yield* Effect.logWarning("upstreamPorts.outcome.prEvidence.failed", {
+            detail,
+            failures: failure.failures,
+            threadId: failure.threadId,
+          });
+        if (deferrals > 0)
+          yield* Effect.logDebug("upstreamPorts.outcome.prEvidence.deferred", {
+            reads: deferrals,
+          });
+        if (released) yield* emit(context.projectId, "links-updated");
+        return released;
+      });
+
     const autoRecord = (context: ProjectContext, snapshot: CurrentView) =>
       Effect.gen(function* () {
         if (!context.settings.autoRecordOutcomes || !(yield* isWriter(context.cwd))) return;
@@ -3374,9 +3527,12 @@ export function makeUpstreamPortsService(
         });
         const outcomes = yield* readOutcomes(context, model, ids, snapshot);
         const summaries = yield* linkSummaries(context, ids, model, outcomes);
-        // Reported once per pass and distinct cause: while GitHub requests wait for a retry
-        // window every thread fails the same way, and a warning each floods the log.
+        // Reported once per pass and distinct cause: when GitHub is unreachable every thread
+        // fails the same way, and a warning each floods the log.
         const evidenceFailures = new Map<string, { failures: number; threadId: string }>();
+        // Reads the request scheduler held back. Nothing failed: the request that opened the
+        // retry window was reported where it happened, and these reads run on a later pass.
+        let evidenceDeferrals = 0;
         for (const threadId of ids) {
           const thread = model.threads.find(
             (thread) => thread.id === threadId && thread.deletedAt === null,
@@ -3449,40 +3605,15 @@ export function makeUpstreamPortsService(
                   )
                 ) {
                   // Parsing already validated this PR against origin, including credentialed remotes.
-                  const repo = parseGitHubRepo(parsed.thread.detail.split("/pull/")[0]!);
-                  const cacheKey = canonicalJson([context.projectId, parsed.thread.detail]);
-                  const cached = prTopicEvidence.get(cacheKey);
-                  if (cached && cached.expiresAt > now().getTime()) evidence = cached.value;
-                  else {
-                    if (deps.github && repo)
-                      evidence = yield* deps.github
-                        .readPullRequestTopicEvidence({
-                          cwd: context.cwd,
-                          repo,
-                          number: Number(parsed.thread.detail.split("/").at(-1)),
-                        })
-                        .pipe(
-                          Effect.tapError((error) =>
-                            Effect.sync(() => {
-                              const detail = describe(error);
-                              const seen = evidenceFailures.get(detail);
-                              evidenceFailures.set(detail, {
-                                failures: (seen?.failures ?? 0) + 1,
-                                threadId: seen?.threadId ?? threadId,
-                              });
-                            }),
-                          ),
-                          Effect.orElseSucceed(() => null),
-                        );
-                    prTopicEvidence.delete(cacheKey);
-                    prTopicEvidence.set(cacheKey, {
-                      value: evidence,
-                      expiresAt: evidence?.final
-                        ? Number.POSITIVE_INFINITY
-                        : now().getTime() + (evidence?.complete ? 120_000 : 15_000),
+                  const read = yield* readPrTopicEvidence(context, parsed.thread.detail);
+                  evidence = read.evidence;
+                  if (read.deferred) evidenceDeferrals++;
+                  if (read.failure) {
+                    const seen = evidenceFailures.get(read.failure);
+                    evidenceFailures.set(read.failure, {
+                      failures: (seen?.failures ?? 0) + 1,
+                      threadId: seen?.threadId ?? threadId,
                     });
-                    if (prTopicEvidence.size > 1000)
-                      prTopicEvidence.delete(prTopicEvidence.keys().next().value!);
                   }
                   if (!evidence?.final) hasLiveBatchPr = true;
                 }
@@ -3671,6 +3802,10 @@ export function makeUpstreamPortsService(
             failures: failure.failures,
             // The first thread affected, as a starting point for the logs of that thread.
             threadId: failure.threadId,
+          });
+        if (evidenceDeferrals > 0)
+          yield* Effect.logDebug("upstreamPorts.outcome.prEvidence.deferred", {
+            reads: evidenceDeferrals,
           });
       });
 
@@ -4078,6 +4213,7 @@ export function makeUpstreamPortsService(
           changed = true;
         }
         yield* autoRecord(context, snapshot);
+        yield* releaseMergedPortLinks(context, snapshot).pipe(Effect.ignoreCause({ log: true }));
         snapshot = yield* currentView(context);
         changed = (yield* refreshQueuedEntries(context, snapshot)) || changed;
         const state = yield* queue.getQueueState(projectId);

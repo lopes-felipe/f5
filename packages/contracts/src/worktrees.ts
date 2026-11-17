@@ -23,6 +23,18 @@ export type WorktreesRemoveInput = typeof WorktreesRemoveInput.Type;
 export const WorktreesThreadStateInput = Schema.Struct({ threadId: ThreadId });
 export type WorktreesThreadStateInput = typeof WorktreesThreadStateInput.Type;
 
+export const WorktreesSwitchAvailabilityInput = Schema.Struct({
+  projectId: ProjectId,
+  /** The project folder or one of this profile's managed worktrees; anything else fails. */
+  path: FilesystemPath,
+  /**
+   * The asking conversation. Its own references, setup and idle session never block it;
+   * its own running turn or queued messages are reported, since the switch would refuse.
+   */
+  threadId: Schema.optional(ThreadId),
+});
+export type WorktreesSwitchAvailabilityInput = typeof WorktreesSwitchAvailabilityInput.Type;
+
 export const WorktreesRecoverInput = Schema.Struct({
   threadId: ThreadId,
   expectedQueueRevision: NonNegativeInt,

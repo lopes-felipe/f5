@@ -4,10 +4,16 @@ import {
   type PrHubSyncState,
   type TrackedPullRequest,
 } from "@t3tools/contracts";
+import { forgeCapabilitiesFor } from "@t3tools/shared/forgeCapabilities";
 import { describe, expect, it } from "vitest";
 
 import {
+  isPrUnread,
   movePrQueueCursor,
+  prCanRerunChecks,
+  prChangeLabel,
+  prChangesText,
+  prPageActionAvailability,
   prQueueCollapsed,
   prQueueCommand,
   prRowChecks,
@@ -168,6 +174,180 @@ describe("row cells and checklist", () => {
       ),
     ).toMatchObject({ tone: "warning", detail: "Behind main" });
   });
+
+  it("offers the step that moves each line forward", () => {
+    const actions = (overrides: Partial<TrackedPullRequest>) =>
+      Object.fromEntries(
+        prStatusChecklist(makePr(overrides)).map((item) => [
+          item.id,
+          item.actions.map((action) => action.kind),
+        ]),
+      );
+    expect(
+      actions({ checkRollup: "failure", mergeStateStatus: "BEHIND", unresolvedThreadCount: 1 }),
+    ).toEqual({
+      review: ["request_reviewers"],
+      checks: ["view_checks", "rerun_checks", "fix_ci"],
+      branch: ["update_branch"],
+      threads: ["view_threads"],
+    });
+    expect(actions({ mergeable: "conflicting" }).branch).toEqual(["resolve_conflicts"]);
+    // Checks that pass or still run have nothing to re-run or fix.
+    expect(actions({ checkRollup: "pending" }).checks).toEqual(["view_checks"]);
+    expect(actions({ checkRollup: "success" }).checks).toEqual(["view_checks"]);
+    // Nothing to do on an approved, up-to-date pull request without checks.
+    expect(actions({ reviewDecision: "approved", checkRollup: "none" })).toEqual({
+      review: [],
+      checks: [],
+      branch: [],
+    });
+  });
+
+  it("offers a re-run only where the forge can re-run this pull request's checks", () => {
+    const caps = forgeCapabilitiesFor("github")!;
+    const checks = (overrides: Partial<TrackedPullRequest>) =>
+      prStatusChecklist(makePr({ checkRollup: "failure", ...overrides }))
+        .find((item) => item.id === "checks")
+        ?.actions.map((action) => action.label);
+    expect(checks({})).toEqual(["View checks", "Re-run failed jobs", "Fix CI with F5"]);
+    // No write access: the capability is off and the action is not advertised.
+    expect(
+      checks({
+        forgeCapabilities: {
+          ...caps,
+          checks: { logs: true, rerun: false },
+          actions: caps.actions.filter((action) => action !== "rerun-failed-checks"),
+        },
+      }),
+    ).toEqual(["View checks", "Fix CI with F5"]);
+    expect(checks({ provider: "gitlab" })).toEqual(["View checks", "Fix CI with F5"]);
+    expect(prCanRerunChecks(makePr({ state: "merged" }))).toBe(false);
+    // The Checks tab asks the same question, so an ignored pull request has no Re-run there.
+    expect(prCanRerunChecks(makePr({ ignoredAt: "2026-11-02T00:00:00.000Z" }))).toBe(false);
+  });
+
+  it("offers a reviewer no author steps, and nothing on a closed or ignored pull request", () => {
+    const kinds = (overrides: Partial<TrackedPullRequest>) =>
+      prStatusChecklist(makePr(overrides)).flatMap((item) =>
+        item.actions.map((action) => action.kind),
+      );
+    // A reviewer with write access can still re-run; fixing is the author's.
+    expect(kinds({ ...theirs, mergeable: "conflicting", checkRollup: "failure" })).toEqual([
+      "view_checks",
+      "rerun_checks",
+    ]);
+    expect(kinds({ state: "closed", checkRollup: "failure" })).toEqual([]);
+    expect(kinds({ ignoredAt: "2026-11-02T00:00:00.000Z", checkRollup: "failure" })).toEqual([]);
+    // GitLab can only rebase; Bitbucket cannot update a branch at all.
+    expect(kinds({ provider: "bitbucket", mergeStateStatus: "BEHIND" })).not.toContain(
+      "update_branch",
+    );
+  });
+});
+
+describe("prPageActionAvailability", () => {
+  const capabilities = [
+    { action: "approve", supported: true },
+    { action: "comment", supported: true },
+    { action: "request-changes", supported: false, reason: "Not allowed" },
+  ] as const satisfies TrackedPullRequest["capabilities"];
+
+  it("offers the author the merge choices and no review ones", () => {
+    const can = prPageActionAvailability(makePr({ capabilities }));
+    expect(can).toMatchObject({
+      canMerge: true,
+      canReview: false,
+      canApprove: false,
+      canRequestChanges: false,
+      canComment: true,
+      canSnooze: true,
+      canIgnore: true,
+      canClose: true,
+      canReopen: false,
+      canMarkReady: false,
+      canConvertToDraft: true,
+    });
+  });
+
+  it("offers Merge when ready only where the forge can queue the merge", () => {
+    expect(prPageActionAvailability(makePr()).canMergeWhenReady).toBe(true);
+    const caps = forgeCapabilitiesFor("github")!;
+    expect(
+      prPageActionAvailability(
+        makePr({
+          forgeCapabilities: {
+            ...caps,
+            actions: caps.actions.filter((action) => action !== "enable-auto-merge"),
+          },
+        }),
+      ).canMergeWhenReady,
+    ).toBe(false);
+    expect(prPageActionAvailability(makePr({ provider: "bitbucket" })).canMergeWhenReady).toBe(
+      false,
+    );
+    expect(prPageActionAvailability(makePr({ isDraft: true })).canMergeWhenReady).toBe(false);
+  });
+
+  it("offers a requested reviewer the verdicts the forge supports", () => {
+    const can = prPageActionAvailability(
+      makePr({ ...theirs, capabilities, viewerReviewRequested: true }),
+    );
+    expect(can).toMatchObject({
+      canReview: true,
+      canApprove: true,
+      canRequestChanges: false,
+      canComment: true,
+      canMerge: false,
+      canMergeWhenReady: false,
+    });
+    // New commits after a review count as a request to look again.
+    expect(
+      prPageActionAvailability(
+        makePr({ ...theirs, capabilities, attentionState: "changes_pushed" }),
+      ).canReview,
+    ).toBe(true);
+    expect(prPageActionAvailability(makePr({ ...theirs, capabilities })).canApprove).toBe(false);
+  });
+
+  it("offers a draft Mark ready, and a ready pull request Convert to draft", () => {
+    expect(prPageActionAvailability(makePr({ isDraft: true }))).toMatchObject({
+      canMarkReady: true,
+      canConvertToDraft: false,
+      canMerge: false,
+    });
+  });
+
+  it("re-requests review only while the author waits on named reviewers", () => {
+    expect(
+      prPageActionAvailability(makePr({ reviewRequestReviewers: ["alice"] })).canReRequest,
+    ).toBe(true);
+    expect(prPageActionAvailability(makePr()).canReRequest).toBe(false);
+    expect(
+      prPageActionAvailability(
+        makePr({ reviewRequestReviewers: ["alice"], attentionState: "ci_failing" }),
+      ).canReRequest,
+    ).toBe(false);
+  });
+
+  it("leaves a closed pull request Reopen, and a merged, ignored or archived one nothing", () => {
+    expect(prPageActionAvailability(makePr({ state: "closed", capabilities }))).toMatchObject({
+      canReopen: true,
+      canClose: false,
+      canMerge: false,
+      canSnooze: false,
+      canIgnore: false,
+      canComment: false,
+    });
+    expect(Object.values(prPageActionAvailability(makePr({ state: "merged" }))).some(Boolean)).toBe(
+      false,
+    );
+    expect(
+      prPageActionAvailability(makePr({ ignoredAt: "2026-11-02T00:00:00.000Z" })),
+    ).toMatchObject({ canMerge: false, canSnooze: false, canIgnore: false, canClose: true });
+    expect(
+      Object.values(prPageActionAvailability(makePr({ repositoryArchived: true }))).some(Boolean),
+    ).toBe(false);
+  });
 });
 
 describe("sync pill", () => {
@@ -230,6 +410,7 @@ describe("queue keyboard", () => {
       "e",
       "o",
       "r",
+      "x",
     ];
     expect(commands.map((name) => prQueueCommand(key(name), "queue"))).toEqual([
       "next",
@@ -246,13 +427,14 @@ describe("queue keyboard", () => {
       "ignore",
       "forge",
       "refresh",
+      "select",
     ]);
     expect(prQueueCommand(key("]"), "queue")).toBeNull();
-    expect(prQueueCommand(key("x"), "queue")).toBeNull();
+    expect(prQueueCommand(key("z"), "queue")).toBeNull();
   });
 
   it("leaves scrolling keys to the page and adds previous and next", () => {
-    for (const name of ["j", "ArrowDown", " ", "Enter", "/"])
+    for (const name of ["j", "ArrowDown", " ", "Enter", "/", "x"])
       expect(prQueueCommand(key(name), "page")).toBeNull();
     expect(prQueueCommand(key("]"), "page")).toBe("pageNext");
     expect(prQueueCommand(key("["), "page")).toBe("pagePrevious");
@@ -286,6 +468,33 @@ describe("queue keyboard", () => {
     expect(movePrQueueCursor(keys, "c", 1)).toBe("c");
     expect(movePrQueueCursor(keys, "a", -1)).toBe("a");
     expect(movePrQueueCursor([], "a", 1)).toBeNull();
+  });
+});
+
+describe("activity since last seen", () => {
+  it("names each change, counting comments", () => {
+    expect(prChangeLabel({ kind: "new" })).toBe("New");
+    expect(prChangeLabel({ kind: "ci_failed" })).toBe("Checks failed");
+    expect(prChangeLabel({ kind: "comments", count: 1 })).toBe("1 new comment");
+    expect(prChangeLabel({ kind: "comments", count: 4 })).toBe("4 new comments");
+    expect(prChangeLabel({ kind: "comments" })).toBe("New comments");
+  });
+
+  it("is unread while changes remain, and shows the first two", () => {
+    const changed = makePr({
+      changesSinceSeen: [
+        { kind: "changes_requested" },
+        { kind: "commits" },
+        { kind: "comments", count: 2 },
+      ],
+    });
+    expect(isPrUnread(changed)).toBe(true);
+    expect(prChangesText(changed)).toBe("Changes requested · New commits");
+    expect(prChangesText(changed, 3)).toBe("Changes requested · New commits · 2 new comments");
+    // Rows from a server that records no seen state are never unread.
+    expect(isPrUnread(makePr())).toBe(false);
+    expect(isPrUnread(makePr({ changesSinceSeen: [] }))).toBe(false);
+    expect(prChangesText(makePr())).toBe("");
   });
 });
 

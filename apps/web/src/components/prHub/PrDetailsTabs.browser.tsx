@@ -254,6 +254,25 @@ async function renderTabs(timelineOverride?: PrHubTimelinePage) {
         refreshedAt: "2026-01-02T00:00:00.000Z",
       }),
       getFiles: vi.fn().mockResolvedValue(filesPage()),
+      getChecks: vi.fn().mockResolvedValue({
+        headOid: "head",
+        truncated: false,
+        refreshedAt: "2026-01-02T00:00:00.000Z",
+        checks: [
+          {
+            id: "501",
+            name: "build",
+            status: "success",
+            description: null,
+            url: null,
+            workflow: "CI",
+            workflowRunId: "9",
+            startedAt: null,
+            completedAt: null,
+            logAvailable: true,
+          },
+        ],
+      }),
       getReviewOperation: vi.fn().mockImplementation(() => Promise.resolve(savedOperation)),
       prepareReview: nativeApiRef.prepareReview,
       submitReview: nativeApiRef.submitReview,
@@ -283,7 +302,7 @@ async function renderTabs(timelineOverride?: PrHubTimelinePage) {
   active = await render(
     <QueryClientProvider client={queryClient}>
       <div style={{ height: 600, display: "flex", flexDirection: "column" }}>
-        <PrDetailsTabs pr={makePr()} summary={<p>Snapshot summary</p>} />
+        <PrDetailsTabs pr={makePr()} />
       </div>
     </QueryClientProvider>,
   );
@@ -311,16 +330,16 @@ describe("PrDetailsTabs", () => {
       ...(first.type === "comment" ? { body: "Timeline comment " + index } : {}),
     }));
     await renderTabs({ ...timeline, entries });
-    await page.getByRole("tab", { name: "Timeline", exact: true }).click();
+    await page.getByRole("tab", { name: "Conversation", exact: true }).click();
     await expect.element(page.getByText("Timeline comment 0", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Edit comment", exact: true }).first().click();
     await userEvent.fill(page.getByRole("textbox"), "Unsaved draft survives eviction");
     expect(
       document.querySelectorAll(
-        'section[aria-label="Timeline"] article, [aria-label="Timeline"] article',
+        'section[aria-label="Conversation"] article, [aria-label="Conversation"] article',
       ).length,
     ).toBeLessThan(200);
-    const panel = page.getByRole("tabpanel", { name: "Timeline" }).element();
+    const panel = page.getByRole("tabpanel", { name: "Conversation" }).element();
     const scroller = [...panel.querySelectorAll<HTMLElement>("*")].find(
       (element) =>
         element.scrollHeight > element.clientHeight &&
@@ -338,9 +357,11 @@ describe("PrDetailsTabs", () => {
   it("loads summary, timeline, and file detail without leaving the PR surface", async () => {
     await renderTabs();
     await expect.element(page.getByText("Detailed description")).toBeInTheDocument();
-    await expect.element(page.getByText("build")).toBeInTheDocument();
 
-    await page.getByRole("tab", { name: "Timeline" }).click();
+    await page.getByRole("tab", { name: "Checks", exact: true }).click();
+    await expect.element(page.getByText("build", { exact: true })).toBeInTheDocument();
+
+    await page.getByRole("tab", { name: "Conversation" }).click();
     await expect.element(page.getByText("Original comment")).toBeInTheDocument();
 
     await page.getByRole("tab", { name: "Files (1)" }).click();
@@ -513,7 +534,7 @@ describe("PrDetailsTabs", () => {
       thread.isResolved = input.resolved;
       return Promise.resolve(thread);
     });
-    await page.getByRole("tab", { name: "Review threads", exact: true }).click();
+    await page.getByRole("tab", { name: "Threads", exact: true }).click();
     await expect.element(page.getByText("Explain this", { exact: true })).toBeInTheDocument();
     await page.getByRole("button", { name: "Reply", exact: true }).click();
     await userEvent.type(
@@ -649,7 +670,7 @@ describe("PrDetailsTabs", () => {
       );
     });
 
-    await page.getByRole("tab", { name: "Timeline" }).click();
+    await page.getByRole("tab", { name: "Conversation" }).click();
     const thread = page.getByRole("region", { name: "Review thread on src/detail.ts" });
     await expect.element(thread.getByText("Fixed in the next commit")).toBeInTheDocument();
     await expect.element(thread.getByText("Explain this")).toBeInTheDocument();
@@ -675,7 +696,7 @@ describe("PrDetailsTabs", () => {
 
   it("retains an edited comment draft when the remote mutation fails", async () => {
     await renderTabs();
-    await page.getByRole("tab", { name: "Timeline" }).click();
+    await page.getByRole("tab", { name: "Conversation" }).click();
     await expect.element(page.getByText("Original comment")).toBeInTheDocument();
     nativeApiRef.updateComment.mockRejectedValueOnce(new Error("GitHub rejected the edit"));
 

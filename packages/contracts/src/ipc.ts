@@ -38,6 +38,8 @@ import type {
   WorktreesRemoveResult,
   WorktreesThreadStateInput,
   WorktreesThreadStateResult,
+  WorktreesSwitchAvailabilityInput,
+  WorktreesSwitchAvailabilityResult,
   WorktreesRecoverInput,
   WorktreesRecoverResult,
 } from "./worktrees";
@@ -407,6 +409,10 @@ import type {
   PrHubAcknowledgeNotificationsInput,
   PrHubNotificationBatch,
   PrHubDetailInput,
+  PrHubChecksInput,
+  PrHubChecksResult,
+  PrHubCheckLogInput,
+  PrHubCheckLog,
   PrHubDetailMutationResult,
   PrHubDetailResult,
   PrHubFilesInput,
@@ -438,6 +444,8 @@ import type {
   PrHubReviewGuideInput,
   PullRequestReviewGuideResult,
   PrHubIgnoreInput,
+  PrHubBulkUpdateInput,
+  PrHubBulkUpdateResult,
   PrHubLocalCandidatesInput,
   PrHubResolveCheckoutInput,
   PrHubLocalCheckoutCandidate,
@@ -1380,6 +1388,10 @@ export interface NativeApi {
     inspect: (input: WorktreesInspectInput) => Promise<WorktreesInspectResult>;
     remove: (input: WorktreesRemoveInput) => Promise<WorktreesRemoveResult>;
     threadState: (input: WorktreesThreadStateInput) => Promise<WorktreesThreadStateResult>;
+    /** Informational: what would block switching this checkout's branch in place now. */
+    switchAvailability: (
+      input: WorktreesSwitchAvailabilityInput,
+    ) => Promise<WorktreesSwitchAvailabilityResult>;
     recover: (input: WorktreesRecoverInput) => Promise<WorktreesRecoverResult>;
   };
   worktreeSetup: {
@@ -1525,6 +1537,8 @@ export interface NativeApi {
     recoverOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
     cancelOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
     listReviewerCandidates: (input: PrHubStackInput) => Promise<unknown>;
+    getChecks: (input: PrHubChecksInput) => Promise<PrHubChecksResult>;
+    getCheckLog: (input: PrHubCheckLogInput) => Promise<PrHubCheckLog>;
 
     getOverview: (input?: PrHubOverviewInput) => Promise<PrHubOverview>;
     claimNotifications: (input: PrHubClaimNotificationsInput) => Promise<PrHubNotificationBatch>;
@@ -1541,6 +1555,7 @@ export interface NativeApi {
     unsnooze: (input: PrHubUnsnoozeInput) => Promise<PrHubOverview>;
     ignore: (input: PrHubIgnoreInput) => Promise<PrHubOverview>;
     unignore: (input: PrHubIgnoreInput) => Promise<PrHubOverview>;
+    bulkUpdate: (input: PrHubBulkUpdateInput) => Promise<PrHubBulkUpdateResult>;
     acknowledgeAttention: (input: PrHubAcknowledgeAttentionInput) => Promise<PrHubOverview>;
     markSeen: (input: PrHubMarkSeenInput) => Promise<PrHubOverview>;
     markNotified: (input: PrHubMarkNotifiedInput) => Promise<PrHubOverview>;

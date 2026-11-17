@@ -10,6 +10,7 @@ import type {
   PrHubAdvisory,
   PrHubListPage,
   PrHubOverview,
+  PrHubSavedQuery,
   PrHubSection,
   PrHubThreadLink,
   PullRequestKey,
@@ -81,9 +82,11 @@ function useSectionQuery(section: PrHubSection, revision: string | undefined, en
 export function usePrQueue(
   search: PrQueueSearch,
   storedCollapse: Partial<Record<PrHubSection, boolean>>,
+  /** Saved views whose counts the overview should carry. */
+  savedQueries: readonly PrHubSavedQuery[] = [],
 ): PrQueue {
   const queryClient = useQueryClient();
-  const overviewQuery = useQuery(prHubOverviewQueryOptions());
+  const overviewQuery = useQuery(prHubOverviewQueryOptions(undefined, savedQueries));
   const overview = overviewQuery.data;
   const revision = overview?.revision;
   const status = search.status ?? "active";

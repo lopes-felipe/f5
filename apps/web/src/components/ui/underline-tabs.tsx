@@ -20,6 +20,7 @@ function UnderlineTabs<Value extends string>({
   className,
   "aria-label": ariaLabel,
   trailing,
+  scrollable = false,
 }: {
   tabs: ReadonlyArray<UnderlineTab<Value>>;
   value: Value;
@@ -28,6 +29,8 @@ function UnderlineTabs<Value extends string>({
   "aria-label"?: string;
   /** Content aligned to the end of the tab row, such as filters. */
   trailing?: React.ReactNode;
+  /** In a narrow container the tabs scroll sideways instead of overflowing it. */
+  scrollable?: boolean;
 }) {
   const move = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
     const offset =
@@ -56,7 +59,14 @@ function UnderlineTabs<Value extends string>({
       )}
       data-slot="underline-tabs"
     >
-      <div className="flex items-center gap-1" role="tablist" aria-label={ariaLabel}>
+      <div
+        className={cn(
+          "flex items-center gap-1",
+          scrollable && "min-w-0 overflow-x-auto *:shrink-0 *:whitespace-nowrap",
+        )}
+        role="tablist"
+        aria-label={ariaLabel}
+      >
         {tabs.map((tab, index) => {
           const selected = tab.value === value;
           return (

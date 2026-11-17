@@ -10,6 +10,7 @@ import { Data, Effect } from "effect";
 
 import type { GitHubCliError } from "../git/Errors.ts";
 import type { GitHubApiRequest, GitHubApiResponse } from "../git/githubApi.ts";
+import { isDeferredGitHubRequest } from "../git/githubRequestScheduler.ts";
 import type { GitHubCliShape } from "../git/Services/GitHubCli.ts";
 
 export interface LedgerPullRequest {
@@ -38,6 +39,8 @@ export class UpstreamGitHubError extends Data.TaggedError("UpstreamGitHubError")
   readonly detail: string;
   /** Network, timeout, rate-limit or server failures that may succeed later. */
   readonly transient: boolean;
+  /** F5's own request scheduler held the request back; nothing was sent to GitHub. */
+  readonly deferred?: boolean;
 }> {
   override get message(): string {
     return this.detail;
@@ -119,6 +122,7 @@ const cliFailure = (operation: string, error: GitHubCliError) =>
     operation,
     detail: error.detail,
     transient: TRANSIENT_KINDS.has(error.kind ?? ""),
+    ...(isDeferredGitHubRequest(error) ? { deferred: true } : {}),
   });
 
 const isRateLimited = (response: GitHubApiResponse) =>

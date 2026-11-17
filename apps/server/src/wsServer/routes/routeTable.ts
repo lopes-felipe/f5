@@ -15,14 +15,20 @@ export type RouteBody = WebSocketRequest["body"];
 export type RouteMethod = RouteBody["_tag"];
 export type RouteBodyOf<Method extends RouteMethod> = Extract<RouteBody, { readonly _tag: Method }>;
 
-/** Answers one method. The value is sent as the response; a failure is sent as its message. */
-export type RouteHandler<Method extends RouteMethod, R = never> = (
+/**
+ * Answers one method. The value is sent as the response. A `RouteRequestError`
+ * is sent as its message and code; any other failure `E` is sent the way
+ * `formatRouteFailure` in `wsServer.ts` renders it, which for most errors is
+ * the error's message alone. A table names such errors so that moving a route
+ * here does not change what its clients read.
+ */
+export type RouteHandler<Method extends RouteMethod, R = never, E = RouteRequestError> = (
   body: RouteBodyOf<Method>,
   ws: WebSocket,
-) => Effect.Effect<unknown, RouteRequestError, R>;
+) => Effect.Effect<unknown, E, R>;
 
-export type RouteTable<Method extends RouteMethod, R = never> = {
-  readonly [Tag in Method]: RouteHandler<Tag, R>;
+export type RouteTable<Method extends RouteMethod, R = never, E = RouteRequestError> = {
+  readonly [Tag in Method]: RouteHandler<Tag, R, E>;
 };
 
 /**
@@ -30,19 +36,19 @@ export type RouteTable<Method extends RouteMethod, R = never> = {
  * narrowed to the methods the table does not own, which keeps the exhaustive
  * `switch` in `routeRequest` honest: a method must be in a table or a `case`.
  */
-export const tableAnswers = <Method extends RouteMethod, R>(
-  table: RouteTable<Method, R>,
+export const tableAnswers = <Method extends RouteMethod, R, E>(
+  table: RouteTable<Method, R, E>,
   body: RouteBody,
 ): body is RouteBodyOf<Method> => Object.hasOwn(table, body._tag);
 
-export const answerFromTable = <Method extends RouteMethod, R>(
-  table: RouteTable<Method, R>,
+export const answerFromTable = <Method extends RouteMethod, R, E>(
+  table: RouteTable<Method, R, E>,
   body: RouteBodyOf<Method>,
   ws: WebSocket,
-): Effect.Effect<unknown, RouteRequestError, R> =>
+): Effect.Effect<unknown, E, R> =>
   // The table maps each tag to the handler for that tag's body; TypeScript
   // cannot follow that pairing through an indexed lookup.
-  (table[body._tag as Method] as unknown as RouteHandler<RouteMethod, R>)(body, ws);
+  (table[body._tag as Method] as unknown as RouteHandler<RouteMethod, R, E>)(body, ws);
 
 /**
  * One table from two that own different methods. A method both own is a type
@@ -50,15 +56,15 @@ export const answerFromTable = <Method extends RouteMethod, R>(
  * builds its table otherwise: with a plain object spread the later table would
  * win and nothing would say so. Use `routeTables` to merge more than two.
  */
-export const mergeRouteTables = <A extends RouteMethod, B extends RouteMethod, RA, RB>(
-  first: RouteTable<A, RA>,
-  second: RouteTable<B, RB> & NoSharedMethod<A, B>,
-): RouteTable<A | B, RA | RB> => {
+export const mergeRouteTables = <A extends RouteMethod, B extends RouteMethod, RA, RB, EA, EB>(
+  first: RouteTable<A, RA, EA>,
+  second: RouteTable<B, RB, EB> & NoSharedMethod<A, B>,
+): RouteTable<A | B, RA | RB, EA | EB> => {
   const shared = Object.keys(second).filter((method) => Object.hasOwn(first, method));
   if (shared.length > 0) {
     throw new Error(`Route tables both answer: ${shared.join(", ")}`);
   }
-  return { ...first, ...second } as RouteTable<A | B, RA | RB>;
+  return { ...first, ...second } as RouteTable<A | B, RA | RB, EA | EB>;
 };
 
 type NoSharedMethod<A extends RouteMethod, B extends RouteMethod> = [A & B] extends [never]
@@ -66,11 +72,11 @@ type NoSharedMethod<A extends RouteMethod, B extends RouteMethod> = [A & B] exte
   : { readonly methodOwnedByBothTables: A & B };
 
 /** Tables merged one after another: `table` is all of them so far, `and` adds the next. */
-export interface RouteTables<Method extends RouteMethod, R> {
-  readonly table: RouteTable<Method, R>;
-  readonly and: <Next extends RouteMethod, RNext>(
-    next: RouteTable<Next, RNext> & NoSharedMethod<Method, Next>,
-  ) => RouteTables<Method | Next, R | RNext>;
+export interface RouteTables<Method extends RouteMethod, R, E> {
+  readonly table: RouteTable<Method, R, E>;
+  readonly and: <Next extends RouteMethod, RNext, ENext>(
+    next: RouteTable<Next, RNext, ENext> & NoSharedMethod<Method, Next>,
+  ) => RouteTables<Method | Next, R | RNext, E | ENext>;
 }
 
 /**
@@ -78,9 +84,9 @@ export interface RouteTables<Method extends RouteMethod, R> {
  * `routeTables(a).and(b).and(c).table`. Each `and` checks its table against
  * every method before it, so a new domain is one more line.
  */
-export const routeTables = <Method extends RouteMethod, R>(
-  table: RouteTable<Method, R>,
-): RouteTables<Method, R> => ({
+export const routeTables = <Method extends RouteMethod, R, E>(
+  table: RouteTable<Method, R, E>,
+): RouteTables<Method, R, E> => ({
   table,
   and: (next) => routeTables(mergeRouteTables(table, next)),
 });

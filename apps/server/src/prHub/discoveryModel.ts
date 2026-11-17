@@ -105,6 +105,7 @@ export interface PrDbRow {
   readonly snoozed_until: string | null;
   readonly ignored_at: string | null;
   readonly no_longer_relevant_at: string | null;
+  readonly seen_baseline_json?: string | null;
 }
 
 export interface RefreshStateRow {
@@ -746,6 +747,8 @@ export function buildTrackedPullRequest(
       },
       labels: pr.mergePermission === "allowed",
       stackActions: pr.mergePermission === "allowed",
+      // Anyone who can read the pull request can read its logs; a re-run needs write access.
+      checks: { logs: true, rerun: pr.mergePermission === "allowed" },
     },
     nodeId: pr.nodeId,
     number: pr.number,

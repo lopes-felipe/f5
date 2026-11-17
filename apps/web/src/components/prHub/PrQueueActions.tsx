@@ -1,24 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type {
   PrHubAdvisory,
   PullRequestKey,
   ThreadId,
   TrackedPullRequest,
 } from "@t3tools/contracts";
-import { forgeCapabilitiesFor } from "@t3tools/shared/forgeCapabilities";
 
 import { prQuickActions } from "../../lib/prQuickActions";
-import { ensureNativeApi } from "../../nativeApi";
-import {
-  Dialog,
-  DialogDescription,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "../ui/dialog";
-import { toastManager } from "../ui/toast";
-import { ForgeOperationPanel } from "./ForgeOperationPanel";
 import { PrActionDialogs } from "./PrActionDialogs";
 import { prRowPrimaryAction, type PrRowAction, type PrRowActionKind } from "./prQueueModel";
 import { usePrActions, type PrActionFlags, type PrActionHandlers } from "./usePrActions";
@@ -83,7 +71,6 @@ export function PrQueueActionHost({
     advisory,
     onThreadCreated: onOpenThread,
   });
-  const [updatingBranch, setUpdatingBranch] = useState(false);
   const primary = prRowPrimaryAction(pr, { runningThreadId });
   const quick = prQuickActions(pr);
   const canMerge = flags.isOpen && !flags.isIgnored && flags.isAuthor && quick.includes("merge");
@@ -97,12 +84,14 @@ export function PrQueueActionHost({
         onReview(pr.key);
         break;
       case "fix_ci":
+        handlers.onFixCi();
+        break;
       case "resolve_conflicts":
       case "address_feedback":
         handlers.onRunInF5();
         break;
       case "update_branch":
-        setUpdatingBranch(true);
+        handlers.onUpdateBranch();
         break;
       case "merge":
         if (canMerge) handlers.onMerge();
@@ -119,17 +108,17 @@ export function PrQueueActionHost({
         else handlers.onSnooze();
         break;
       case "ignore":
-        if (flags.isIgnored) restore(pr);
+        if (flags.isIgnored) handlers.onRestore();
         else if (flags.isOpen) handlers.onIgnore();
         break;
       case "forge":
         handlers.onOpenGitHub();
         break;
       case "close":
-        if (canClose) dialogProps.setPendingAction("close");
+        if (canClose) handlers.onClose();
         break;
       case "reopen":
-        if (canReopen) dialogProps.setPendingAction("reopen");
+        if (canReopen) handlers.onReopen();
         break;
       default:
         break;
@@ -137,7 +126,6 @@ export function PrQueueActionHost({
   };
 
   const busy =
-    updatingBranch ||
     dialogProps.pendingAction !== null ||
     dialogProps.isRunning ||
     dialogProps.isOpeningInF5 ||
@@ -157,7 +145,6 @@ export function PrQueueActionHost({
     runRef.current(request.kind);
   }, [request, pr.key, onRequestHandled]);
 
-  const method = (pr.forgeCapabilities ?? forgeCapabilitiesFor(pr.provider))?.updateMethods[0];
   return (
     <>
       {children?.({
@@ -171,50 +158,6 @@ export function PrQueueActionHost({
         run,
       })}
       <PrActionDialogs {...dialogProps} />
-      <Dialog open={updatingBranch} onOpenChange={setUpdatingBranch}>
-        <DialogPopup>
-          <DialogHeader>
-            <DialogTitle>Update branch</DialogTitle>
-            <DialogDescription>
-              Brings {pr.headRefName || "the branch"} up to date with {pr.baseRefName || "its base"}{" "}
-              in {pr.repository.nameWithOwner}#{pr.number}.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogPanel>
-            {method ? (
-              <ForgeOperationPanel
-                pr={pr}
-                payload={{ kind: "action", action: "update-branch", method }}
-                label="Branch update"
-                onSucceeded={() => setUpdatingBranch(false)}
-              />
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                This forge cannot update the branch from here.
-              </p>
-            )}
-          </DialogPanel>
-        </DialogPopup>
-      </Dialog>
     </>
   );
-}
-
-function restore(pr: TrackedPullRequest) {
-  void ensureNativeApi()
-    .prHub.unignore({ key: pr.key })
-    .then(
-      () =>
-        toastManager.add({
-          type: "success",
-          title: "Pull request restored",
-          description: `${pr.repository.nameWithOwner}#${pr.number}`,
-        }),
-      (error: unknown) =>
-        toastManager.add({
-          type: "error",
-          title: "Could not restore pull request",
-          description: error instanceof Error ? error.message : String(error),
-        }),
-    );
 }

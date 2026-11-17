@@ -1,12 +1,9 @@
-import { WorktreeChip } from "./WorktreeChip";
-import { WorktreeCreationOptions } from "./worktrees/WorktreeCreationOptions";
 import { setupProjectScript } from "../projectScripts";
 import { switchConversationWorkspace } from "../lib/workspaceTransitions";
 import { toastManager } from "./ui/toast";
 import type { ThreadId } from "@t3tools/contracts";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
-import { FolderIcon, GitForkIcon } from "lucide-react";
 import { useCallback } from "react";
 
 import { useComposerDraftStore } from "../composerDraftStore";
@@ -15,22 +12,15 @@ import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store";
 import { selectThreadById } from "../threadSelectors";
 import {
-  EnvMode,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
 } from "./BranchToolbar.logic";
-import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
-
-const envModeItems = [
-  { value: "local", label: "Local" },
-  { value: "worktree", label: "New worktree" },
-] as const;
+import { type WorkspaceDraftPatch, WorkspacePicker } from "./WorkspacePicker";
 
 interface BranchToolbarProps {
   threadId: ThreadId;
-  onEnvModeChange: (mode: EnvMode) => void;
-  envLocked: boolean;
+  /** A send is being admitted; the workspace cannot change until it settles. */
+  disabled?: boolean;
   multiModel?: boolean;
   onOpenTerminal?: () => void;
   onCheckoutPullRequestRequest?: (reference: string) => void;
@@ -41,8 +31,7 @@ interface BranchToolbarProps {
 
 export default function BranchToolbar({
   threadId,
-  onEnvModeChange,
-  envLocked,
+  disabled = false,
   multiModel = false,
   onOpenTerminal,
   onCheckoutPullRequestRequest,
@@ -158,83 +147,42 @@ export default function BranchToolbar({
     ],
   );
 
+  const changeDraft = useCallback(
+    (patch: WorkspaceDraftPatch) => {
+      if (hasServerThread) return;
+      setDraftThreadContext(threadId, patch);
+    },
+    [hasServerThread, setDraftThreadContext, threadId],
+  );
+
   if (!activeThreadId || !activeProject) return null;
 
   return (
     <div
       data-slot="branch-toolbar"
-      className="mx-auto flex min-h-7 w-full flex-wrap max-w-(--chat-content-max-width) shrink-0 items-center justify-between gap-2 px-1 text-2xs text-muted-foreground"
+      className="mx-auto flex min-h-7 w-full flex-wrap max-w-(--chat-content-max-width) shrink-0 items-center gap-2 px-1 text-2xs text-muted-foreground"
     >
-      {creatingWorktree || envLocked || activeWorktreePath || effectiveEnvMode === "local" ? (
-        <WorktreeChip
-          threadId={threadId}
-          projectId={activeProject.id}
-          branch={activeThreadBranch}
-          path={activeWorktreePath ?? activeProject.cwd}
-          isWorktree={Boolean(activeWorktreePath)}
-          creatingWorktree={creatingWorktree}
-          canMove={hasServerThread && !activeWorktreePath && !creatingWorktree}
-          moveDisabled={serverThread?.moveDisabled ?? false}
-          {...(!envLocked && !activeWorktreePath && !creatingWorktree
-            ? { onNewWorktree: () => onEnvModeChange("worktree") }
-            : {})}
-          {...(onOpenTerminal ? { onOpenTerminal } : {})}
-        />
-      ) : (
-        <Select
-          value={effectiveEnvMode}
-          onValueChange={(value) => onEnvModeChange(value as EnvMode)}
-          items={envModeItems}
-        >
-          <SelectTrigger
-            data-composer-control="envMode"
-            variant="ghost"
-            size="xs"
-            className="h-6 min-h-6 text-2xs font-normal text-muted-foreground hover:text-foreground sm:h-6 sm:min-h-6"
-          >
-            {effectiveEnvMode === "worktree" ? (
-              <GitForkIcon className="size-3" />
-            ) : (
-              <FolderIcon className="size-3" />
-            )}
-            <SelectValue />
-          </SelectTrigger>
-          <SelectPopup>
-            <SelectItem value="local">
-              <span className="inline-flex items-center gap-1.5">
-                <FolderIcon className="size-3" />
-                Local
-              </span>
-            </SelectItem>
-            <SelectItem value="worktree">
-              <span className="inline-flex items-center gap-1.5">
-                <GitForkIcon className="size-3" />
-                New worktree
-              </span>
-            </SelectItem>
-          </SelectPopup>
-        </Select>
-      )}
-
-      {!envLocked && !activeWorktreePath && effectiveEnvMode === "worktree" && (
-        <WorktreeCreationOptions
-          threadId={threadId}
-          multiModel={multiModel}
-          hasSetupScript={Boolean(setupProjectScript(activeProject.scripts))}
-        />
-      )}
-      <BranchToolbarBranchSelector
+      <WorkspacePicker
         key={threadId}
         threadId={threadId}
-        workspaceVersion={workspaceVersion}
-        canApplyWorkspace={canApplyWorkspace}
-        activeProjectCwd={activeProject.cwd}
+        projectId={activeProject.id}
+        projectCwd={activeProject.cwd}
+        hasSetupScript={Boolean(setupProjectScript(activeProject.scripts))}
+        isDraft={!hasServerThread}
+        disabled={disabled}
+        creatingWorktree={creatingWorktree}
+        multiModel={multiModel}
         activeThreadBranch={activeThreadBranch}
         activeWorktreePath={activeWorktreePath}
         branchCwd={branchCwd}
         effectiveEnvMode={effectiveEnvMode}
-        envLocked={envLocked}
+        workspaceVersion={workspaceVersion}
+        canApplyWorkspace={canApplyWorkspace}
+        canMove={hasServerThread && !activeWorktreePath && !creatingWorktree}
+        moveDisabled={serverThread?.moveDisabled ?? false}
         onSetThreadBranch={setThreadBranch}
+        onDraftChange={changeDraft}
+        {...(onOpenTerminal ? { onOpenTerminal } : {})}
         {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
         {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
       />

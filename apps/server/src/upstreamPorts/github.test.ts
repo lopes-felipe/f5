@@ -3,6 +3,7 @@ import { Effect } from "effect";
 
 import { GitHubCliError } from "../git/Errors.ts";
 import type { GitHubApiRequest } from "../git/githubApi.ts";
+import { makeGitHubRequestScheduler } from "../git/githubRequestScheduler.ts";
 import { makeFakeGitHubCli } from "../git/testDoubles.ts";
 import { makeUpstreamGitHub } from "./github.ts";
 
@@ -212,5 +213,30 @@ it.effect("gates availability on the profile credential", () =>
     );
     assert.isTrue(failure.transient);
     assert.isTrue(yield* harness(() => ({ status: 200, body: null })).github.available("/repo"));
+  }),
+);
+
+it.effect("tells a request the scheduler held back from one GitHub rate limited", () =>
+  Effect.gen(function* () {
+    const scheduler = makeGitHubRequestScheduler(() => 0);
+    scheduler.networkFailure("github.com");
+    const heldBack = yield* Effect.flip(scheduler.run("github.com", "rest", Effect.void));
+    const waiting = yield* Effect.flip(
+      harness(() => ({ status: 200, body: null }), heldBack).github.available("/repo"),
+    );
+    assert.equal(waiting.detail, "GitHub requests are waiting for the retry window.");
+    assert.isTrue(waiting.transient);
+    assert.isTrue(waiting.deferred);
+
+    const limited = new GitHubCliError({
+      operation: "request",
+      kind: "rate_limited",
+      detail: "GitHub rate limit exceeded.",
+    });
+    const refused = yield* Effect.flip(
+      harness(() => ({ status: 200, body: null }), limited).github.available("/repo"),
+    );
+    assert.isTrue(refused.transient);
+    assert.isUndefined(refused.deferred);
   }),
 );

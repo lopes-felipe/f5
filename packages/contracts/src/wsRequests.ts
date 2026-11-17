@@ -43,6 +43,8 @@ import {
   PrHubThreadsInput,
   PrHubThreadStateInput,
   PrHubTrackInput,
+  PrHubChecksInput,
+  PrHubCheckLogInput,
 } from "./prHub";
 import {
   ForgeAccountInput,
@@ -79,6 +81,7 @@ import {
   WorktreesRecoverInput,
   WorktreesRemoveInput,
   WorktreesResolveTransitionInput,
+  WorktreesSwitchAvailabilityInput,
   WorktreesSwitchWorkspaceInput,
   WorktreesThreadStateInput,
 } from "./worktrees";
@@ -253,6 +256,7 @@ import {
   PrHubGetAdvisoriesInput,
   PrHubReviewGuideInput,
   PrHubIgnoreInput,
+  PrHubBulkUpdateInput,
   PrHubListInput,
   PrHubLocalCandidatesInput,
   PrHubMarkNotifiedInput,
@@ -720,6 +724,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.worktreesInspect, WorktreesInspectInput),
   tagRequestBody(WS_METHODS.worktreesRemove, WorktreesRemoveInput),
   tagRequestBody(WS_METHODS.worktreesThreadState, WorktreesThreadStateInput),
+  tagRequestBody(WS_METHODS.worktreesSwitchAvailability, WorktreesSwitchAvailabilityInput),
   tagRequestBody(WS_METHODS.worktreesRecover, WorktreesRecoverInput),
   tagRequestBody(WS_METHODS.worktreesSwitchWorkspace, WorktreesSwitchWorkspaceInput),
   tagRequestBody(WS_METHODS.worktreesGetTransition, WorktreesGetTransitionInput),
@@ -786,6 +791,8 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(PR_HUB_WS_METHODS.recoverOperation, ForgeOperationInput),
   tagRequestBody(PR_HUB_WS_METHODS.cancelOperation, ForgeOperationInput),
   tagRequestBody(PR_HUB_WS_METHODS.listReviewerCandidates, PrHubStackInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getChecks, PrHubChecksInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getCheckLog, PrHubCheckLogInput),
 
   tagRequestBody(PR_HUB_WS_METHODS.getOverview, PrHubOverviewInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.claimNotifications, PrHubClaimNotificationsInput),
@@ -805,6 +812,7 @@ const WebSocketRequestBody = Schema.Union([
   tagPrHubRequestBody(PR_HUB_WS_METHODS.unsnooze, PrHubUnsnoozeInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.ignore, PrHubIgnoreInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.unignore, PrHubIgnoreInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.bulkUpdate, PrHubBulkUpdateInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.markSeen, PrHubMarkSeenInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.acknowledgeAttention, PrHubAcknowledgeAttentionInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.markNotified, PrHubMarkNotifiedInput),

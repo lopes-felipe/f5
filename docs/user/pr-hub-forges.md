@@ -12,7 +12,7 @@ Forgejo/Gitea without leaving F5. Each repository can use its own account.
 1. Open **Pull requests**. The queue lists the pull requests that involve you, grouped by what
    they need.
 2. Select a row to read it in the side panel, or press <kbd>Enter</kbd> to open the whole pull
-   request with its conversation, review threads and files.
+   request with its conversation, review threads, files and checks.
 3. Use the button at the end of a row for its next step, such as **Review**, **Fix CI** or
    **Merge**.
 
@@ -54,10 +54,9 @@ when a linked thread is already working, the button reads **Open thread** instea
 
 Selecting a row opens the peek on the right: the next step, the review, checks and branch
 status, the start of the description, and linked threads. <kbd>Enter</kbd>, a double-click or
-**Open** shows the whole pull request, with **Summary**, **Timeline**, **Review threads**,
-**Files** and **Guide · Beta** tabs. In a window too narrow for the peek, selecting a row opens
-the pull request directly. The open pull request, its tab, the search and the filters are part
-of the address, so Back, Forward and copied links restore them.
+**Open** shows [the whole pull request](#the-pull-request-page). In a window too narrow for the
+peek, selecting a row opens the pull request directly. The open pull request, its tab, the
+search and the filters are part of the address, so Back, Forward and copied links restore them.
 
 ### Search and filters
 
@@ -76,6 +75,77 @@ text; unquoted words can match in any order, and quoted phrases stay together.
 - **Active**, **Snoozed**, **Ignored** and **Closed** switch between the queue and the pull
   requests you set aside or finished.
 
+### Saved views
+
+A saved view keeps a search and its filters as a tab above the queue.
+
+1. Search or filter the queue.
+2. Select **Save view** and name the view.
+
+The tab shows how many of the view's pull requests are in **Review requested**, **Your action**
+or **Ready to merge**. **Queue** goes back to the queue without filters. To rename or delete a
+view, select its tab, then **⋯** at the end of the tabs. If you change the search or a filter
+while a view is selected, the queue shows the new results and the view itself is unchanged.
+
+You can keep up to 12 views. They are stored with this app's settings on this computer, not on
+the forge.
+
+### What changed since you last looked
+
+A row is bold when something happened to the pull request since you last opened it. The first
+two changes are written after its number, for example **2 new comments · Checks failed**.
+
+| Text                                  | Meaning                                                      |
+| ------------------------------------- | ------------------------------------------------------------ |
+| **New**                               | Someone else's, it needs you, and you have not opened it yet |
+| **New commits**                       | Someone else pushed (your own pushes are not reported)       |
+| **1 new comment**, **3 new comments** | Comments added to the conversation                           |
+| **Checks failed**, **Checks passed**  | Checks started failing, or recovered                         |
+| **Approved**, **Changes requested**   | A review changed the decision                                |
+| **Conflicts**                         | The branch no longer merges cleanly                          |
+| **Ready to merge**                    | Reviews and checks now allow the merge                       |
+| **Merged**, **Closed**                | It was merged or closed                                      |
+
+Opening a pull request in the peek or on its page marks it seen. The bell in the title bar
+shows how many pull requests in the queue have changes and lists the 20 most recent; select
+one to open it, or **Mark these seen** to clear the ones listed. A pull request that changed
+again after the list was read stays unread.
+
+Your own pull request that you have not opened here says what it needs (**Ready to merge**,
+**Checks failed**, **Changes requested**, **Conflicts** or its comments) instead of **New**.
+A pull request you have never opened is marked only while it is in **Review requested**,
+**Your action** or **Ready to merge**: one that goes stale or moves to the team queue is no
+longer marked.
+
+Pull requests found by the first sync of an account start as seen. Changes are tracked for
+GitHub accounts; pull requests on other forges are never marked.
+
+### Acting on several pull requests
+
+Tick the checkbox at the start of a row to select it. A bar appears at the bottom of the queue.
+
+- <kbd>X</kbd> ticks the row under the cursor.
+- Shift-click a row to tick every row from the last one you ticked to it.
+- The checkbox in a section's header ticks every row loaded in that section.
+- A selection holds at most 200 pull requests. F5 says when rows were left out; act on the
+  selection, then select the rest.
+
+| Button          | What it does                                                                |
+| --------------- | --------------------------------------------------------------------------- |
+| **Snooze**      | Hides the selection until the time you pick                                 |
+| **Ignore**      | Moves the selection to **Ignored**, where you can restore each pull request |
+| **Mark seen**   | Clears the changes shown on the selection                                   |
+| **Merge ready** | Merges the selected pull requests that are in **Ready to merge**            |
+| **Clear**       | Unticks everything. <kbd>Esc</kbd> does the same                            |
+
+**Merge ready** lists each pull request with the commit and the merge method it will use, and
+merges nothing until you confirm. It then merges one at a time. If a pull request received new
+commits after it was listed, or the forge refuses the merge, F5 reports it and continues with
+the next one. One confirmation covers at most 10 pull requests, and only those on GitHub.
+
+Rows can be selected in the **Active** list only. A row that leaves the list leaves the
+selection.
+
 ### Keyboard
 
 These keys work on the Pull requests page when you are not typing in a field. They are also
@@ -86,7 +156,7 @@ listed in the keyboard shortcuts dialog.
 | <kbd>J</kbd> / <kbd>K</kbd>, arrows | Next or previous pull request                |
 | <kbd>Space</kbd>                    | Open or close the peek                       |
 | <kbd>Enter</kbd>                    | Open the pull request                        |
-| <kbd>Esc</kbd>                      | Back to the queue                            |
+| <kbd>Esc</kbd>                      | Clear the selection, or back to the queue    |
 | <kbd>/</kbd>                        | Search                                       |
 | <kbd>A</kbd>                        | Run the row's next step                      |
 | <kbd>M</kbd>                        | Merge                                        |
@@ -94,6 +164,7 @@ listed in the keyboard shortcuts dialog.
 | <kbd>E</kbd>                        | Ignore, or restore an ignored pull request   |
 | <kbd>O</kbd>                        | Open on the forge                            |
 | <kbd>R</kbd>                        | Refresh                                      |
+| <kbd>X</kbd>                        | Select or deselect the pull request          |
 | <kbd>[</kbd> / <kbd>]</kbd>         | Previous or next pull request, from its page |
 
 ### What the sidebar badge counts
@@ -113,6 +184,84 @@ Within a section, the most recently updated pull request comes first.
   stalled after** are marked **Stalled** in their row.
 - **Ignore** shows an **Undo** button for a few seconds. Ignored pull requests remain under
   **Ignored**, where **Restore to the queue** brings one back.
+
+## The pull request page
+
+The page shows one pull request at full width. The bar above it has **Queue** to go back, the
+position in the queue such as "3 of 6", and arrows for the previous and next pull request.
+
+The header shows the state, the repository and number, the title, the author, the branches,
+the size and the last update. Click the branches to copy the branch name.
+
+The action bar has one button for the next step, the same one as in the queue row, and:
+
+- **Merge**, on your own pull requests. Its menu has **Merge now**, **Merge when ready** and the
+  merge method. **Merge when ready** asks the forge to merge by itself once the required
+  reviews and checks pass. It is offered when the repository allows auto-merge and the pull
+  request cannot merge yet.
+- **Review**, when a review is requested from you. It opens the files; its menu has
+  **Approve**, **Comment** and **Request changes**.
+- **Snooze**.
+- **⋯** for the rest: **Open in F5**, **Get an AI recommendation**, **Comment**, **Re-request
+  review**, **Mark ready**, **Convert to draft**, **Close**, **Reopen**, **Copy link**, **Copy
+  number**, **Copy branch name**, **Open on GitHub** and **Ignore**.
+
+The page has six tabs:
+
+| Tab              | What it shows                                                                    |
+| ---------------- | -------------------------------------------------------------------------------- |
+| **Overview**     | Status, description, reviewers, labels, linked threads and the AI recommendation |
+| **Conversation** | Comments, reviews and events in order                                            |
+| **Threads**      | Review threads, with the number that are unresolved                              |
+| **Files**        | The diff, where you write a review                                               |
+| **Checks**       | Every check of the latest commit, with the log of each failed job                |
+| **Guide · Beta** | A generated tour of the change                                                   |
+
+**Overview** starts with the status of the pull request, one line each for **Review**,
+**Checks**, **Branch** and **Threads**, and **Requirements** when a branch rule blocks the
+merge. A line that you can move forward has its step next to it:
+
+| Line        | Step                                                                                 |
+| ----------- | ------------------------------------------------------------------------------------ |
+| **Review**  | **Request reviewers** opens the reviewer picker                                      |
+| **Checks**  | **View checks**, and when checks failed **Re-run failed jobs** or **Fix CI with F5** |
+| **Branch**  | **Update branch**, or **Resolve with F5** when the branch has conflicts              |
+| **Threads** | **View threads** opens the **Threads** tab                                           |
+
+The peek in the queue shows the same lines and steps.
+
+To change reviewers, select **Request reviewers** and choose people from the list. On GitHub
+you can also type a login, or `org/team` for a team. Remove a reviewer with the × on their
+name, then apply the change.
+
+**Sync details**, at the end of the Overview, shows when F5 last verified the pull request and
+which branch rules it read. Open it when a status looks wrong.
+
+### Checks
+
+The **Checks** tab lists the checks of the latest commit: failed first, then running, then
+passed and skipped, which are folded until you select the group. Inside a group, checks are
+listed by workflow, with how long each one ran.
+
+A failed GitHub Actions job shows its log below it, cut down to the lines around the first
+error. The first three open by themselves; select **Show log** for the others.
+
+- **Copy** copies the excerpt. **Open full log** opens the whole log on GitHub.
+- **Re-run failed jobs** starts the failed and cancelled jobs of the commit again, after you
+  confirm. Jobs that passed are not run again, and neither is a run that a newer run of the
+  same workflow replaced. When GitHub refuses one workflow run, the others are still
+  restarted and F5 says how many. It needs write access to the repository.
+- **Fix CI with F5**, on your own pull requests, starts an F5 thread on the branch. F5 gives
+  the agent up to three failing checks with the end of their logs.
+- **Refresh** reads the checks from the forge again.
+
+Limits:
+
+- Logs and re-runs are for GitHub Actions. Checks from other apps, commit statuses and other
+  forges are listed with a link to their own page.
+- GitHub deletes old logs. F5 then says the log is no longer available.
+- A log over 8 MB is not shown; open it on GitHub.
+- F5 reads up to 300 checks for one commit and says so when there are more.
 
 ## Safe actions
 
@@ -221,7 +370,7 @@ in the PR panel. Without a current thread, ordinary clicks open the in-app PR pa
 The panel uses the selected forge account; connect or select a matching account
 in **Pull requests** if a read is refused. Failed reads offer **Retry**.
 
-In **Review threads → Filter comments**, choose whether to show bot comments and
+In **Threads → Filter comments**, choose whether to show bot comments and
 resolved conversations. These choices persist locally. A thread with hidden bot
 comments keeps **Load more comments** available for unloaded human replies.
 Host restrictions on individual comments and threads can disable editing or
@@ -240,15 +389,14 @@ examples and original commits retain their text. Merge queues and native stack
 merges keep their host-generated messages. The setting applies to this profile;
 other forges retain their existing merge-message behavior.
 
-## Quick actions and row menus
+## Linked PR menus
 
-Hold **Shift** without another modifier to show quick actions in the PR inbox and
-on linked PRs in the thread header. Right-click either row to open its action menu.
-Linked PR menus also include **Copy link**, **Open in F5**, **Open on forge** and
-**Watch**.
+A linked PR's menu in the thread header has **Open in browser**, **Open in F5**, **Copy
+link**, **Watch** and **Unlink**, and the quick actions that fit its state: **Merge**,
+**Close**, **Mark ready** or **Reopen**. The pull request panel beside the thread has the same
+action bar as the pull request page; its **⋯** menu adds **Watch from this thread**.
 
-A quick action opens its confirmation view; it does not send a remote change.
+A quick action opens its confirmation view in the panel; it does not send a remote change.
 Linked PRs load their current state when opened, and unavailable actions are
 refused. **Prepare** shows the saved operation and **Confirm** submits it once.
-Only actions supported by that forge are offered. Releasing Shift, changing
-modifiers or leaving the window hides quick actions.
+Only actions supported by that forge are offered.

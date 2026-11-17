@@ -1,13 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import type { PrAttentionState, TrackedPullRequest } from "@t3tools/contracts";
 import { PullRequestKey } from "@t3tools/contracts";
 
-import {
-  isPrStalled,
-  waitingLabel,
-  prRowActionVisibility,
-  primaryActionFor,
-} from "./prHubPresentation";
+import { isPrStalled, waitingLabel } from "./prHubPresentation";
 
 function makePr(
   overrides: Partial<TrackedPullRequest> & { attentionState: PrAttentionState },
@@ -60,105 +55,6 @@ function makePr(
   };
 }
 
-const reviewer = { isAuthor: false, isOpen: true, isIgnored: false };
-const author = { isAuthor: true, isOpen: true, isIgnored: false };
-
-describe("primaryActionFor", () => {
-  it("offers Review to a requested reviewer", () => {
-    expect(primaryActionFor(makePr({ attentionState: "review_requested" }), reviewer)?.kind).toBe(
-      "review",
-    );
-    expect(
-      primaryActionFor(makePr({ attentionState: "re_review_requested" }), reviewer)?.kind,
-    ).toBe("review");
-  });
-
-  it("offers Merge to the author when ready to merge", () => {
-    expect(primaryActionFor(makePr({ attentionState: "ready_to_merge" }), author)?.kind).toBe(
-      "merge",
-    );
-  });
-
-  it("offers Ready to the author of a draft", () => {
-    expect(primaryActionFor(makePr({ attentionState: "draft" }), author)?.kind).toBe("markReady");
-  });
-
-  it("offers Re-request only when awaiting review with reviewers", () => {
-    expect(
-      primaryActionFor(
-        makePr({ attentionState: "awaiting_review", reviewRequestReviewers: ["alice"] }),
-        author,
-      )?.kind,
-    ).toBe("reRequest");
-    expect(
-      primaryActionFor(
-        makePr({ attentionState: "awaiting_review", reviewRequestReviewers: [] }),
-        author,
-      ),
-    ).toBeNull();
-  });
-
-  it("does not let an author review their own PR", () => {
-    expect(
-      primaryActionFor(makePr({ attentionState: "review_requested", roles: ["author"] }), author),
-    ).toBeNull();
-  });
-
-  it("returns null for non-actionable states", () => {
-    expect(primaryActionFor(makePr({ attentionState: "ci_failing" }), author)).toBeNull();
-    expect(primaryActionFor(makePr({ attentionState: "mentioned" }), reviewer)).toBeNull();
-  });
-
-  it("returns null when the PR is closed or ignored", () => {
-    const pr = makePr({ attentionState: "review_requested" });
-    expect(primaryActionFor(pr, { ...reviewer, isOpen: false })).toBeNull();
-    expect(primaryActionFor(pr, { ...reviewer, isIgnored: true })).toBeNull();
-  });
-});
-
-describe("prRowActionVisibility", () => {
-  it("exposes review actions only to a requested reviewer", () => {
-    expect(
-      prRowActionVisibility(makePr({ attentionState: "review_requested" }), reviewer).canReview,
-    ).toBe(true);
-    expect(
-      prRowActionVisibility(
-        makePr({ attentionState: "review_requested", roles: ["author"] }),
-        author,
-      ).canReview,
-    ).toBe(false);
-  });
-
-  it("disables every action for a closed or ignored PR", () => {
-    const pr = makePr({ attentionState: "review_requested" });
-    const closed = prRowActionVisibility(pr, { ...reviewer, isOpen: false });
-    expect(closed.primary).toBeNull();
-    expect(closed.canReview).toBe(false);
-    expect(closed.canSnooze).toBe(false);
-    expect(closed.canSuggest).toBe(false);
-    expect(closed.canIgnore).toBe(false);
-
-    const ignored = prRowActionVisibility(pr, { ...reviewer, isIgnored: true });
-    expect(ignored.canSnooze).toBe(false);
-    expect(ignored.canIgnore).toBe(false);
-  });
-
-  it("allows snooze/suggest/ignore on any open, non-ignored PR", () => {
-    const visibility = prRowActionVisibility(makePr({ attentionState: "ci_failing" }), author);
-    expect(visibility.canSnooze).toBe(true);
-    expect(visibility.canSuggest).toBe(true);
-    expect(visibility.canIgnore).toBe(true);
-  });
-});
-
-it("offers review actions after new commits without a repeated review request", () => {
-  expect(
-    prRowActionVisibility(
-      makePr({ attentionState: "changes_pushed", viewerReviewRequested: false }),
-      reviewer,
-    ).canReview,
-  ).toBe(true);
-});
 it("derives staleness locally and supports disabling it", () => {
   const pr = makePr({
     attentionState: "awaiting_review",

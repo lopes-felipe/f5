@@ -3,6 +3,7 @@ import type {
   PrHubListInput,
   PrHubListPage,
   PrHubReviewComment,
+  PrHubSavedQuery,
   PullRequestKey,
 } from "@t3tools/contracts";
 
@@ -29,10 +30,21 @@ export function prHubPeekQueryOptions(url: string) {
   });
 }
 
-export function prHubOverviewQueryOptions(stalledBefore?: string) {
+export function prHubOverviewQueryOptions(
+  stalledBefore?: string,
+  /** Saved views to count; the queue passes its own, other readers pass none. */
+  savedQueries: readonly PrHubSavedQuery[] = [],
+) {
   const accountId = getPrHubSelectedAccountId();
   return queryOptions({
-    queryKey: [...prHubQueryKeys.overview, getPrHubAccountGeneration(), stalledBefore, accountId],
+    queryKey: [
+      ...prHubQueryKeys.overview,
+      getPrHubAccountGeneration(),
+      stalledBefore,
+      accountId,
+      // Readers without saved views share one entry.
+      ...(savedQueries.length > 0 ? [savedQueries] : []),
+    ],
     placeholderData: (previous, query) =>
       query?.queryKey[2] === getPrHubAccountGeneration() ? previous : undefined,
     queryFn: async () => {
@@ -41,10 +53,25 @@ export function prHubOverviewQueryOptions(stalledBefore?: string) {
       // as that other account's overview.
       if (accountId !== getPrHubSelectedAccountId())
         throw new Error("Discarded a PR Hub read for a previous account.");
-      return ensureNativeApi().prHub.getOverview({ stalledBefore, accountId });
+      return ensureNativeApi().prHub.getOverview({
+        stalledBefore,
+        accountId,
+        ...(savedQueries.length > 0 ? { savedQueries } : {}),
+      });
     },
     staleTime: 30_000,
   });
+}
+
+/** How many unread pull requests the Activity list shows. */
+export const PR_HUB_ACTIVITY_LIMIT = 20;
+
+/** The active pull requests that changed since they were last seen, newest first. */
+export function prHubActivityQueryOptions(revision: string | undefined) {
+  return prHubListQueryOptions(
+    { unread: true, visibility: "active", sort: "updated", limit: PR_HUB_ACTIVITY_LIMIT },
+    revision,
+  );
 }
 
 export function prHubDetailQueryOptions(key: PullRequestKey) {
@@ -53,6 +80,35 @@ export function prHubDetailQueryOptions(key: PullRequestKey) {
     queryKey: prHubQueryKeys.detail(key),
     queryFn: async () => ensureNativeApi().prHub.getDetail({ key, accountGeneration }),
     staleTime: 30_000,
+  });
+}
+
+/** The head commit's checks. A change to the pull request re-reads them. */
+export function prHubChecksQueryOptions(key: PullRequestKey) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return queryOptions({
+    queryKey: ["prHub", "checks", accountGeneration, key] as const,
+    queryFn: async () => ensureNativeApi().prHub.getChecks({ key, accountGeneration }),
+    staleTime: 15_000,
+    // The hub reports a change when the overall result changes, not when one job of many
+    // finishes, so a list with running jobs is read again while it is on screen.
+    refetchInterval: (query) =>
+      query.state.data?.checks.some((check) => check.status === "pending") ? 30_000 : false,
+  });
+}
+
+/**
+ * The part of one check's log around its error. A job that runs again gets a new ID, so a
+ * log that was read stays valid. The pull request's key is kept inside an object so that a
+ * change to the pull request does not re-read every open log.
+ */
+export function prHubCheckLogQueryOptions(key: PullRequestKey, checkId: string) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return queryOptions({
+    queryKey: ["prHub", "checkLog", accountGeneration, { key, checkId }] as const,
+    queryFn: async () => ensureNativeApi().prHub.getCheckLog({ key, accountGeneration, checkId }),
+    staleTime: 5 * 60_000,
+    retry: false,
   });
 }
 

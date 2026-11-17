@@ -2226,6 +2226,38 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("admits a new turn only once an in-place branch switch releases its directory", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-admission-lock");
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const calls = routing.codex.sendTurn.mock.calls.length;
+      // Stands in for a switch holding the lock between validation and checkout.
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const switching = yield* withWorktreeLifecycleLock(
+        process.cwd(),
+        Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      const send = yield* provider
+        .sendTurn({ threadId, input: "Peer work", attachments: [] })
+        .pipe(Effect.forkChild);
+      // Real time, not the test clock: give the send every chance to run.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 150)));
+      assert.equal(routing.codex.sendTurn.mock.calls.length, calls);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(switching);
+      yield* Fiber.join(send);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, calls + 1);
+    }),
+  );
+
   it.effect("recovers stale sessions for sendTurn using persisted cwd", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

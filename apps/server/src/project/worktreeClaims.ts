@@ -8,9 +8,13 @@ import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 import { legacyT3BaseDir } from "@t3tools/shared/appStatePaths";
 import { ServerConfig } from "../config.ts";
-import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
-import { WorktreeSetupGate } from "./Services/WorktreeSetupGate.ts";
 import {
+  ProjectionTurnRepository,
+  type ProjectionTurnRepositoryShape,
+} from "../persistence/Services/ProjectionTurns.ts";
+import { WorktreeSetupGate, type WorktreeSetupGateShape } from "./Services/WorktreeSetupGate.ts";
+import {
+  type InPlaceSwitchBlockerKind,
   ThreadId,
   WorktreeSetupSnapshot,
   worktreeSetupGatesTurn,
@@ -66,14 +70,70 @@ export interface WorktreeClaims {
     readonly terminalId: string;
     readonly cwd: string;
   }>;
-  /** Provider sessions that are not closed and whose cwd is inside the path. */
-  readonly sessions: ReadonlyArray<{ readonly threadId: string; readonly cwd: string }>;
+  /**
+   * Provider sessions that are not closed and whose cwd is inside the path.
+   * `live` marks a session that is starting, connecting or running a turn.
+   */
+  readonly sessions: ReadonlyArray<{
+    readonly threadId: string;
+    readonly cwd: string;
+    readonly live?: boolean;
+  }>;
+  /** Referencing threads that record a worktree path, and so a branch, for this checkout. */
+  readonly worktreeThreadIds?: ReadonlyArray<ThreadId>;
+  /** False when pending turn starts could not be read because the service is missing. */
+  readonly pendingTurnsChecked?: boolean;
 }
 
 const canonical = (value: string) =>
   Effect.tryPromise(() => canonicalWorktreePath(value)).pipe(
     Effect.catch(() => Effect.succeed(null)),
   );
+
+/**
+ * {@link readWorktreeClaims} reads pending turn starts, setup gates and
+ * transition rows from optional services. A layer captures them where it is
+ * built, so claims read from its worker or request fibers still see them.
+ * `turns` supplies the turn repository where the layer context lacks it;
+ * `includeSql: false` keeps settlement hooks and transition rows out, as
+ * workspace transitions read them before this capture existed.
+ */
+export const captureOptionalClaimServices = (
+  options: {
+    readonly turns?: ProjectionTurnRepositoryShape;
+    readonly includeSql?: boolean;
+  } = {},
+) =>
+  Effect.gen(function* () {
+    const turns = options.turns
+      ? Option.some(options.turns)
+      : yield* Effect.serviceOption(ProjectionTurnRepository);
+    const setup = yield* Effect.serviceOption(WorktreeSetupGate);
+    const sql =
+      options.includeSql === false
+        ? Option.none<SqlClient.SqlClient>()
+        : yield* Effect.serviceOption(SqlClient.SqlClient);
+    return <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+      provideClaimServices(effect, turns, setup, sql);
+  });
+
+const provideClaimServices = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  turns: Option.Option<ProjectionTurnRepositoryShape>,
+  setup: Option.Option<WorktreeSetupGateShape>,
+  sql: Option.Option<SqlClient.SqlClient>,
+): Effect.Effect<A, E, R> => {
+  {
+    let provided = effect;
+    if (Option.isSome(turns))
+      provided = provided.pipe(Effect.provideService(ProjectionTurnRepository, turns.value));
+    if (Option.isSome(setup))
+      provided = provided.pipe(Effect.provideService(WorktreeSetupGate, setup.value));
+    if (Option.isSome(sql))
+      provided = provided.pipe(Effect.provideService(SqlClient.SqlClient, sql.value));
+    return provided;
+  }
+};
 
 /** Reads every claim on `path`. Callers hold the worktree lifecycle lock. */
 export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (path: string) {
@@ -98,6 +158,7 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
     target !== null && candidate !== null && pathContains(target, candidate);
   const readModel = yield* engine.getReadModel();
   const threadIds: ThreadId[] = [];
+  const worktreeThreadIds: ThreadId[] = [];
   const deletedThreadIds: ThreadId[] = [];
   const activeThreadIds: ThreadId[] = [];
   const setupThreadIds: ThreadId[] = [];
@@ -126,6 +187,7 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
       continue;
     }
     threadIds.push(thread.id);
+    if (thread.worktreePath !== null) worktreeThreadIds.push(thread.id);
     const session = thread.session;
     if (
       session &&
@@ -239,7 +301,7 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
       });
     }
   }
-  const liveSessions: Array<{ threadId: string; cwd: string }> = [];
+  const liveSessions: Array<{ threadId: string; cwd: string; live: boolean }> = [];
   const startingBefore = yield* providers.listStartingWorkspaces?.() ?? Effect.succeed([]);
   const providerSessions = yield* providers.listSessions().pipe(
     Effect.orElseSucceed(() => {
@@ -248,10 +310,17 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
     }),
   );
   const startingAfter = yield* providers.listStartingWorkspaces?.() ?? Effect.succeed([]);
-  for (const session of [
-    ...startingBefore,
-    ...providerSessions.filter((session) => session.status !== "closed"),
-    ...startingAfter,
+  // Startup reads workspace context after releasing the lifecycle lock, so a
+  // starting session is live use even when its thread is otherwise idle.
+  for (const [session, live] of [
+    ...startingBefore.map((session) => [session, true] as const),
+    ...providerSessions
+      .filter((session) => session.status !== "closed")
+      .map(
+        (session) =>
+          [session, session.status === "connecting" || session.status === "running"] as const,
+      ),
+    ...startingAfter.map((session) => [session, true] as const),
   ]) {
     if (session.cwd === undefined) {
       unknown = true;
@@ -259,7 +328,7 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
     }
     if (inside(yield* resolve(session.cwd))) {
       markDeletedOwner(session.threadId);
-      liveSessions.push({ threadId: session.threadId, cwd: session.cwd });
+      liveSessions.push({ threadId: session.threadId, cwd: session.cwd, live });
     }
   }
   return {
@@ -272,6 +341,8 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
     queuedThreadIds,
     terminals: liveTerminals,
     sessions: liveSessions,
+    worktreeThreadIds,
+    pendingTurnsChecked: Option.isSome(turns),
   } satisfies WorktreeClaims;
 });
 
@@ -314,6 +385,96 @@ export const ignoredFilesBlockRemoval = (
     ),
     Effect.orElseSucceed(() => "ignored files could not be listed"),
   );
+
+export interface InPlaceSwitchBlocker {
+  readonly kind: InPlaceSwitchBlockerKind;
+  readonly threadId: string | null;
+}
+
+/**
+ * What stops switching the branch of `usage`'s checkout in place. Live use
+ * always blocks: running or pending turns, queued work, setup and transition
+ * owners, and terminals. In the project folder, idle and archived local
+ * threads and their idle provider sessions do not: they already follow the
+ * folder's live branch. A managed worktree keeps the strict rule, because its
+ * threads record a branch and would see a drift banner. `otherProfile` is
+ * added by callers that check other profiles; this function is pure.
+ */
+export function inPlaceSwitchBlockers(
+  usage: WorktreeClaims,
+  options: { readonly requester: ThreadId | null; readonly projectCheckout: boolean },
+): ReadonlyArray<InPlaceSwitchBlocker> {
+  // Without the turn repository, accepted-but-undelivered turns are invisible;
+  // refuse rather than let a wiring gap skip that check.
+  if (usage.unknown || usage.pendingTurnsChecked === false)
+    return [{ kind: "unknown", threadId: null }];
+  const blockers: InPlaceSwitchBlocker[] = [];
+  const seen = new Set<string>();
+  const add = (kind: InPlaceSwitchBlockerKind, threadId: string) => {
+    if (threadId === options.requester) return;
+    const key = `${kind}\u0000${threadId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    blockers.push({ kind, threadId });
+  };
+  for (const id of usage.activeThreadIds) add("turn", id);
+  for (const id of usage.queuedThreadIds) add("queued", id);
+  for (const id of usage.setupThreadIds) add("setup", id);
+  // A terminal is live use whoever owns it, including the requester.
+  for (const terminal of usage.terminals) {
+    const key = `terminal\u0000${terminal.threadId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    blockers.push({ kind: "terminal", threadId: terminal.threadId });
+  }
+  const live = new Set(blockers.map((blocker) => blocker.threadId));
+  if (!options.projectCheckout) {
+    for (const id of usage.threadIds) if (!live.has(id)) add("thread", id);
+    for (const session of usage.sessions) add("session", session.threadId);
+    return blockers;
+  }
+  // A thread that records a worktree path records a branch for this checkout
+  // and would see a drift banner, even when the path is also a project root.
+  for (const id of usage.worktreeThreadIds ?? []) if (!live.has(id)) add("thread", id);
+  // An idle session of a local thread follows the folder. A starting, connecting
+  // or running session is live use, and one whose thread is not a known
+  // reference (deleted or from elsewhere) is not proven idle.
+  const known = new Set<string>(usage.threadIds);
+  for (const session of usage.sessions)
+    if (session.live || !known.has(session.threadId)) add("session", session.threadId);
+  return blockers;
+}
+
+const SWITCH_BLOCKER_LABELS: Record<InPlaceSwitchBlockerKind, string> = {
+  turn: "running turn",
+  queued: "queued messages",
+  setup: "workspace setup",
+  terminal: "open terminal",
+  thread: "uses this worktree",
+  session: "agent session",
+  otherProfile: "another profile",
+  unknown: "usage could not be verified",
+};
+
+export const describeInPlaceSwitchBlocker = (kind: InPlaceSwitchBlockerKind) =>
+  SWITCH_BLOCKER_LABELS[kind];
+
+/** "In use by <title> (running turn), …. Start a new worktree instead." */
+export function formatInPlaceSwitchBlockers(
+  blockers: ReadonlyArray<InPlaceSwitchBlocker>,
+  titleOf: (threadId: string) => string | null,
+): string {
+  if (blockers.some((blocker) => blocker.kind === "unknown"))
+    return "Workspace usage could not be verified. Start a new worktree instead.";
+  const names = blockers.map((blocker) =>
+    blocker.kind === "otherProfile"
+      ? "another profile"
+      : `${(blocker.threadId && titleOf(blocker.threadId)) || "another conversation"} (${SWITCH_BLOCKER_LABELS[blocker.kind]})`,
+  );
+  const shown = names.slice(0, 3).join(", ");
+  const more = names.length > 3 ? ` and ${names.length - 3} more` : "";
+  return `In use by ${shown}${more}. Start a new worktree instead.`;
+}
 
 /** Claims held by anything other than `ownThreadId` and the given owned terminals. */
 export function foreignClaims(

@@ -10,15 +10,15 @@ import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
 
 /** A small pixel band prevents a large viewport from rearming while the reader is in history. */
 export const TIMELINE_AT_END_PX = 40;
-/** How long after wheel, touch or key input a falling scrollTop still counts as the reader's. */
-export const USER_SCROLL_INTENT_MS = 600;
 
 export function timelineIsAtEnd(state: {
   contentLength: number;
   scroll: number;
   scrollLength: number;
 }): boolean {
-  return state.contentLength - state.scroll - state.scrollLength < TIMELINE_AT_END_PX;
+  return (
+    state.contentLength - state.scroll - state.scrollLength < TIMELINE_AT_END_PX
+  );
 }
 
 import { extractTrailingAttachedFiles } from "../../lib/attachedFiles";
@@ -74,7 +74,9 @@ export type WorkEntryClassificationSource = Pick<
 export function normalizedWorkEntryHeading(
   workEntry: Pick<WorkLogEntry, "label" | "toolTitle">,
 ): string {
-  return normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label).trim();
+  return normalizeCompactToolLabel(
+    workEntry.toolTitle ?? workEntry.label,
+  ).trim();
 }
 
 function collapsePreviewWhitespace(value: string): string {
@@ -83,7 +85,8 @@ function collapsePreviewWhitespace(value: string): string {
 
 /** "ToolSearch" → "Tool search"; MCP-style `mcp__server__tool` names keep the tool part. */
 export function humanizeToolName(name: string): string {
-  const base = name.split("__").findLast((segment) => segment.length > 0) ?? name;
+  const base =
+    name.split("__").findLast((segment) => segment.length > 0) ?? name;
   const words = base
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
@@ -115,7 +118,9 @@ const PREVIEW_PAIR_VALUE_MAX_CHARS = 60;
 
 function formatToolPreviewValue(key: string, value: string): string {
   const collapsed = collapsePreviewWhitespace(value);
-  return key === "url" ? collapsed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "") : collapsed;
+  return key === "url"
+    ? collapsed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+    : collapsed;
 }
 
 function truncatePreviewValue(value: string): string {
@@ -132,7 +137,9 @@ export function summarizeToolInputPairs(
   const pairs = Object.entries(input)
     .filter(
       ([, value]) =>
-        typeof value === "string" || typeof value === "number" || typeof value === "boolean",
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean",
     )
     .slice(0, 3)
     .map(([key, value]) => {
@@ -175,18 +182,23 @@ function preservesJsonNumbers(text: string): boolean {
       continue;
     }
     if (char !== "-" && (char < "0" || char > "9")) continue;
-    const literal = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(text.slice(index))?.[0];
+    const literal = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(
+      text.slice(index),
+    )?.[0];
     if (!literal) continue;
     const parsed = Number(literal);
     if (!Number.isFinite(parsed)) return false;
-    if (canonicalDecimal(String(parsed)) !== canonicalDecimal(literal)) return false;
+    if (canonicalDecimal(String(parsed)) !== canonicalDecimal(literal))
+      return false;
     index += literal.length - 1;
   }
   return true;
 }
 
 /** A JSON object, or null when the text isn't one or parsing would round one of its numbers. */
-export function parseJsonObject(text: string | undefined): Record<string, unknown> | null {
+export function parseJsonObject(
+  text: string | undefined,
+): Record<string, unknown> | null {
   const trimmed = text?.trim();
   if (!trimmed?.startsWith("{") || !preservesJsonNumbers(trimmed)) return null;
   try {
@@ -215,16 +227,24 @@ function dynamicToolPreview(rest: string): string | null {
     const questions = Array.isArray(input.questions)
       ? input.questions
           .map((item) =>
-            item && typeof item === "object" ? (item as { question?: unknown }).question : null,
+            item && typeof item === "object"
+              ? (item as { question?: unknown }).question
+              : null,
           )
-          .filter((text): text is string => typeof text === "string" && text.trim().length > 0)
+          .filter(
+            (text): text is string =>
+              typeof text === "string" && text.trim().length > 0,
+          )
       : [];
-    if (questions.length > 0) return questions.map(collapsePreviewWhitespace).join(" · ");
+    if (questions.length > 0)
+      return questions.map(collapsePreviewWhitespace).join(" · ");
     return summarizeToolInputPairs(input);
   }
   // The adapter cuts long inputs mid-JSON; read the telling fields out of the prefix.
   for (const key of DYNAMIC_TOOL_PREVIEW_KEYS) {
-    const match = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`).exec(trimmed);
+    const match = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`).exec(
+      trimmed,
+    );
     const raw = match?.[1];
     if (!raw || raw.trim().length === 0) continue;
     let value = raw;
@@ -263,7 +283,8 @@ function dynamicToolIconKind(toolName: string): DynamicToolIconKind {
   const normalized = toolName.toLowerCase();
   if (normalized === "toolsearch") return "search";
   if (normalized === "webfetch") return "web";
-  if (normalized.startsWith("task") || normalized === "todowrite") return "tasks";
+  if (normalized.startsWith("task") || normalized === "todowrite")
+    return "tasks";
   return "tool";
 }
 
@@ -274,10 +295,14 @@ function dynamicToolIconKind(toolName: string): DynamicToolIconKind {
 export function describeDynamicToolEntry(
   workEntry: Pick<WorkLogEntry, "itemType" | "detail" | "label" | "toolTitle">,
 ): DynamicToolDescription | null {
-  if (workEntry.itemType !== "dynamic_tool_call" || !workEntry.detail) return null;
-  if (normalizedWorkEntryHeading(workEntry).toLowerCase() !== "tool call") return null;
+  if (workEntry.itemType !== "dynamic_tool_call" || !workEntry.detail)
+    return null;
+  if (normalizedWorkEntryHeading(workEntry).toLowerCase() !== "tool call")
+    return null;
   // The space after the colon keeps URLs ("https://…") and drive paths ("C:\…") out.
-  const match = /^([A-Za-z][\w.-]*):\s+([\s\S]*)$/.exec(workEntry.detail.trim());
+  const match = /^([A-Za-z][\w.-]*):\s+([\s\S]*)$/.exec(
+    workEntry.detail.trim(),
+  );
   const toolName = match?.[1];
   if (!toolName) return null;
   return {
@@ -304,24 +329,40 @@ export function normalizedSearchSummary(
 export function isSearchWorkEntry(
   workEntry: Pick<
     WorkLogEntry,
-    "command" | "itemType" | "label" | "requestKind" | "searchSummary" | "toolTitle"
+    | "command"
+    | "itemType"
+    | "label"
+    | "requestKind"
+    | "searchSummary"
+    | "toolTitle"
   >,
 ): boolean {
   if (normalizedSearchSummary(workEntry)) {
     return true;
   }
 
-  if (workEntry.requestKind !== "command" && workEntry.itemType !== "command_execution") {
+  if (
+    workEntry.requestKind !== "command" &&
+    workEntry.itemType !== "command_execution"
+  ) {
     return false;
   }
 
-  return normalizedWorkEntryHeading(workEntry).toLowerCase().startsWith("searching ");
+  return normalizedWorkEntryHeading(workEntry)
+    .toLowerCase()
+    .startsWith("searching ");
 }
 
 export function isFileReadWorkEntry(
-  workEntry: Pick<WorkLogEntry, "label" | "readPaths" | "requestKind" | "toolTitle">,
+  workEntry: Pick<
+    WorkLogEntry,
+    "label" | "readPaths" | "requestKind" | "toolTitle"
+  >,
 ): boolean {
-  if (workEntry.requestKind === "file-read" || (workEntry.readPaths?.length ?? 0) > 0) {
+  if (
+    workEntry.requestKind === "file-read" ||
+    (workEntry.readPaths?.length ?? 0) > 0
+  ) {
     return true;
   }
   const normalizedLabel = normalizedWorkEntryHeading(workEntry).toLowerCase();
@@ -345,7 +386,8 @@ export function isFileChangeWorkEntry(
   return normalizedLabel === "file change" || normalizedLabel === "write file";
 }
 
-type WorkSummaryBucket = "edit" | "read" | "search" | "command" | "agent" | "tool" | "error";
+type WorkSummaryBucket =
+  "edit" | "read" | "search" | "command" | "agent" | "tool" | "error";
 
 const WORK_SUMMARY_BUCKET_ORDER: ReadonlyArray<WorkSummaryBucket> = [
   "edit",
@@ -359,11 +401,18 @@ const WORK_SUMMARY_BUCKET_ORDER: ReadonlyArray<WorkSummaryBucket> = [
 
 export const WORK_SUMMARY_MAX_BUCKETS = 4;
 
-function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+function plural(
+  count: number,
+  singular: string,
+  pluralForm = `${singular}s`,
+): string {
   return `${count} ${count === 1 ? singular : pluralForm}`;
 }
 
-const WORK_SUMMARY_BUCKET_LABEL: Record<WorkSummaryBucket, (count: number) => string> = {
+const WORK_SUMMARY_BUCKET_LABEL: Record<
+  WorkSummaryBucket,
+  (count: number) => string
+> = {
   edit: (count) => `Edited ${plural(count, "file")}`,
   read: (count) => `Read ${plural(count, "file")}`,
   search: (count) => plural(count, "search", "searches"),
@@ -379,14 +428,24 @@ function classifyWorkEntryForSummary(entry: WorkEntryClassificationSource): {
 } | null {
   if (entry.tone === "error") return { bucket: "error", weight: 1 };
   if (isFileChangeWorkEntry(entry)) {
-    return { bucket: "edit", weight: Math.max(1, entry.changedFiles?.length ?? 0) };
+    return {
+      bucket: "edit",
+      weight: Math.max(1, entry.changedFiles?.length ?? 0),
+    };
   }
   if (isSearchWorkEntry(entry)) return { bucket: "search", weight: 1 };
   if (isFileReadWorkEntry(entry)) {
-    return { bucket: "read", weight: Math.max(1, entry.readPaths?.length ?? 0) };
+    return {
+      bucket: "read",
+      weight: Math.max(1, entry.readPaths?.length ?? 0),
+    };
   }
   if (entry.subagentType) return { bucket: "agent", weight: 1 };
-  if (entry.command || entry.itemType === "command_execution" || entry.requestKind === "command") {
+  if (
+    entry.command ||
+    entry.itemType === "command_execution" ||
+    entry.requestKind === "command"
+  ) {
     return { bucket: "command", weight: 1 };
   }
   if (entry.tone === "tool") return { bucket: "tool", weight: 1 };
@@ -398,21 +457,33 @@ function classifyWorkEntryForSummary(entry: WorkEntryClassificationSource): {
  * files · Ran 3 commands · 1 more". At most four buckets are named; the rest
  * are counted as "N more". Thinking and info entries are not counted.
  */
-export function summarizeWorkGroup(entries: ReadonlyArray<WorkEntryClassificationSource>): string {
+export function summarizeWorkGroup(
+  entries: ReadonlyArray<WorkEntryClassificationSource>,
+): string {
   const totals = new Map<WorkSummaryBucket, number>();
   const entryCounts = new Map<WorkSummaryBucket, number>();
   for (const entry of entries) {
     const classified = classifyWorkEntryForSummary(entry);
     if (!classified) continue;
-    totals.set(classified.bucket, (totals.get(classified.bucket) ?? 0) + classified.weight);
-    entryCounts.set(classified.bucket, (entryCounts.get(classified.bucket) ?? 0) + 1);
+    totals.set(
+      classified.bucket,
+      (totals.get(classified.bucket) ?? 0) + classified.weight,
+    );
+    entryCounts.set(
+      classified.bucket,
+      (entryCounts.get(classified.bucket) ?? 0) + 1,
+    );
   }
-  const present = WORK_SUMMARY_BUCKET_ORDER.filter((bucket) => totals.has(bucket));
+  const present = WORK_SUMMARY_BUCKET_ORDER.filter((bucket) =>
+    totals.has(bucket),
+  );
   if (present.length === 0) {
     return plural(entries.length, "step");
   }
   const named = present.slice(0, WORK_SUMMARY_MAX_BUCKETS);
-  const parts = named.map((bucket) => WORK_SUMMARY_BUCKET_LABEL[bucket](totals.get(bucket) ?? 0));
+  const parts = named.map((bucket) =>
+    WORK_SUMMARY_BUCKET_LABEL[bucket](totals.get(bucket) ?? 0),
+  );
   const remaining = present
     .slice(WORK_SUMMARY_MAX_BUCKETS)
     .reduce((sum, bucket) => sum + (entryCounts.get(bucket) ?? 0), 0);
@@ -426,7 +497,10 @@ export function summarizeWorkGroup(entries: ReadonlyArray<WorkEntryClassificatio
  * reader.
  */
 export function findLastUserMessageRowIndex(
-  rows: ReadonlyArray<{ readonly kind: string; readonly message?: { readonly role: string } }>,
+  rows: ReadonlyArray<{
+    readonly kind: string;
+    readonly message?: { readonly role: string };
+  }>,
 ): number {
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index];
@@ -456,7 +530,9 @@ function evenlySample(values: ReadonlyArray<number>, count: number): number[] {
   if (count <= 1) return values.length > 0 ? [values[0]!] : [];
   const result: number[] = [];
   for (let index = 0; index < count; index += 1) {
-    result.push(values[Math.round((index * (values.length - 1)) / (count - 1))]!);
+    result.push(
+      values[Math.round((index * (values.length - 1)) / (count - 1))]!,
+    );
   }
   return [...new Set(result)];
 }
@@ -497,9 +573,10 @@ export function sampleTimelineMinimapRowIndices(input: {
 
   const remaining = maxMarkers - keptMandatory.length;
   const mandatorySet = new Set(keptMandatory);
-  const candidates = Array.from({ length: input.rowCount }, (_, index) => index).filter(
-    (index) => !mandatorySet.has(index),
-  );
+  const candidates = Array.from(
+    { length: input.rowCount },
+    (_, index) => index,
+  ).filter((index) => !mandatorySet.has(index));
   return [...keptMandatory, ...evenlySample(candidates, remaining)].sort(
     (left, right) => left - right,
   );
@@ -521,7 +598,8 @@ export function findNearestMinimapMarkerIndex(
   }
   if (low >= markerRowIndices.length) return markerRowIndices.length - 1;
   if (high < 0) return 0;
-  return targetRowIndex - markerRowIndices[high]! <= markerRowIndices[low]! - targetRowIndex
+  return targetRowIndex - markerRowIndices[high]! <=
+    markerRowIndices[low]! - targetRowIndex
     ? high
     : low;
 }
@@ -530,9 +608,14 @@ export function resolveActiveTurnRailIndex(
   markerRowIndices: ReadonlyArray<number>,
   activeRowIndex: number,
 ): number {
-  const nearest = findNearestMinimapMarkerIndex(markerRowIndices, activeRowIndex);
+  const nearest = findNearestMinimapMarkerIndex(
+    markerRowIndices,
+    activeRowIndex,
+  );
   if (nearest < 0) return -1;
-  return markerRowIndices[nearest]! > activeRowIndex && nearest > 0 ? nearest - 1 : nearest;
+  return markerRowIndices[nearest]! > activeRowIndex && nearest > 0
+    ? nearest - 1
+    : nearest;
 }
 
 export const TIMELINE_TURN_RAIL_ITEM_SPACING = 8;
@@ -542,8 +625,13 @@ export const TIMELINE_TURN_RAIL_HIT_STRIP_LEFT = 4;
 export const TIMELINE_TURN_RAIL_HIT_STRIP_MAX_WIDTH = 40;
 export const TIMELINE_TURN_RAIL_EXPANDED_HIT_STRIP_WIDTH = "22rem";
 
-export function resolveTimelineTurnRailHasPersistentGutter(gutterPx: number): boolean {
-  return Number.isFinite(gutterPx) && gutterPx >= TIMELINE_TURN_RAIL_PERSISTENT_GUTTER;
+export function resolveTimelineTurnRailHasPersistentGutter(
+  gutterPx: number,
+): boolean {
+  return (
+    Number.isFinite(gutterPx) &&
+    gutterPx >= TIMELINE_TURN_RAIL_PERSISTENT_GUTTER
+  );
 }
 
 export function resolveTimelineTurnRailHitStripWidth(gutterPx: number): number {
@@ -561,7 +649,10 @@ export function resolveTimelineTurnRailHeightStyle(itemCount: number): string {
   return `min(${Math.max(1, (itemCount - 1) * TIMELINE_TURN_RAIL_ITEM_SPACING)}px, 100%)`;
 }
 
-export function resolveTimelineTurnRailTopPercent(index: number, itemCount: number): number {
+export function resolveTimelineTurnRailTopPercent(
+  index: number,
+  itemCount: number,
+): number {
   if (itemCount <= 1) return 0;
   return (Math.max(0, Math.min(index, itemCount - 1)) / (itemCount - 1)) * 100;
 }
@@ -574,15 +665,23 @@ export function resolveTimelineTurnRailIndexFromPointer(input: {
 }): number | null {
   if (input.itemCount <= 0 || input.railHeight <= 0) return null;
   if (input.itemCount === 1) return 0;
-  const progress = Math.max(0, Math.min(1, (input.pointerY - input.railTop) / input.railHeight));
-  return Math.max(0, Math.min(input.itemCount - 1, Math.round(progress * (input.itemCount - 1))));
+  const progress = Math.max(
+    0,
+    Math.min(1, (input.pointerY - input.railTop) / input.railHeight),
+  );
+  return Math.max(
+    0,
+    Math.min(input.itemCount - 1, Math.round(progress * (input.itemCount - 1))),
+  );
 }
 
 export function resolveTimelineTurnRailInteractiveWidth(
   collapsedWidth: number,
   expanded: boolean,
 ): number | string {
-  return expanded ? TIMELINE_TURN_RAIL_EXPANDED_HIT_STRIP_WIDTH : collapsedWidth;
+  return expanded
+    ? TIMELINE_TURN_RAIL_EXPANDED_HIT_STRIP_WIDTH
+    : collapsedWidth;
 }
 
 export interface TimelineTurnRailRowSource {
@@ -610,9 +709,14 @@ export const TURN_RAIL_PREVIEW_SOURCE_CHARS = 4_096;
 /** Displayed previews are cut to this many characters. */
 export const TURN_RAIL_PREVIEW_DISPLAY_CHARS = 240;
 
-function compactTurnRailPreview(value: string | null | undefined): string | null {
+function compactTurnRailPreview(
+  value: string | null | undefined,
+): string | null {
   const compacted =
-    value?.slice(0, TURN_RAIL_PREVIEW_SOURCE_CHARS).replace(/\s+/g, " ").trim() ?? "";
+    value
+      ?.slice(0, TURN_RAIL_PREVIEW_SOURCE_CHARS)
+      .replace(/\s+/g, " ")
+      .trim() ?? "";
   if (compacted.length === 0) return null;
   return compacted.length > TURN_RAIL_PREVIEW_DISPLAY_CHARS
     ? `${compacted.slice(0, TURN_RAIL_PREVIEW_DISPLAY_CHARS - 1).trimEnd()}…`
@@ -651,7 +755,9 @@ function resolveTurnRailUserPreview(
   const terminal = extractTrailingTerminalContexts(attached.promptText);
   return (
     compactTurnRailPreview(terminal.promptText) ??
-    summarizeNames(attached.filePaths.map((path) => path.split(/[\\/]/).at(-1) ?? path)) ??
+    summarizeNames(
+      attached.filePaths.map((path) => path.split(/[\\/]/).at(-1) ?? path),
+    ) ??
     summarizeNames(message.attachments?.map(({ name }) => name) ?? []) ??
     compactTurnRailPreview(terminal.previewTitle)
   );
@@ -689,8 +795,10 @@ export function deriveTimelineTurnRailItems(
         assistantText: null,
       };
     } else if (message.role === "assistant" && current) {
-      current.assistantText = cachedPreview(assistantPreviewCache, message, () =>
-        compactTurnRailPreview(message.text),
+      current.assistantText = cachedPreview(
+        assistantPreviewCache,
+        message,
+        () => compactTurnRailPreview(message.text),
       );
     }
   }
@@ -743,7 +851,9 @@ export function resolveCodexCollaborationHeading(
   }
   const completed = status === "completed";
   const target =
-    receiverCount > 0 ? `${receiverCount} ${receiverCount === 1 ? "agent" : "agents"}` : null;
+    receiverCount > 0
+      ? `${receiverCount} ${receiverCount === 1 ? "agent" : "agents"}`
+      : null;
   switch (tool) {
     case "spawnAgent":
       return completed ? "Spawned agent" : "Spawning agent";
@@ -777,14 +887,20 @@ export function resolveCodexCollaborationStatusLabel(
   }[status];
 }
 
-export function formatWorkingTimer(startIso: string, endIso: string): string | null {
+export function formatWorkingTimer(
+  startIso: string,
+  endIso: string,
+): string | null {
   const startedAtMs = Date.parse(startIso);
   const endedAtMs = Date.parse(endIso);
   if (!Number.isFinite(startedAtMs) || !Number.isFinite(endedAtMs)) {
     return null;
   }
 
-  const elapsedSeconds = Math.max(0, Math.floor((endedAtMs - startedAtMs) / 1000));
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((endedAtMs - startedAtMs) / 1000),
+  );
   if (elapsedSeconds < 60) {
     return `${elapsedSeconds}s`;
   }
@@ -801,8 +917,13 @@ export function formatWorkingTimer(startIso: string, endIso: string): string | n
 }
 
 /** The working row's label: `Working · 12s`, or `Working…` before the turn has a start. */
-export function formatWorkingLabel(createdAt: string | null, nowIso: string): string {
-  return createdAt ? `Working · ${formatWorkingTimer(createdAt, nowIso) ?? "0s"}` : "Working…";
+export function formatWorkingLabel(
+  createdAt: string | null,
+  nowIso: string,
+): string {
+  return createdAt
+    ? `Working · ${formatWorkingTimer(createdAt, nowIso) ?? "0s"}`
+    : "Working…";
 }
 
 /** How long a newly appended row keeps its entrance animation. */
@@ -857,7 +978,9 @@ export function advanceRowArrivals(
   // can land before a trailing row such as the working indicator, so anything
   // new below the first known row counts as appended.
   const firstKnownIndex =
-    previous.knownIds.size === 0 ? -1 : input.rowIds.findIndex((id) => previous.knownIds.has(id));
+    previous.knownIds.size === 0
+      ? -1
+      : input.rowIds.findIndex((id) => previous.knownIds.has(id));
   const followed = input.followNextTailNonce !== previous.followNextTailNonce;
   const admitsArrivals = input.isWorking || followed;
   const present = new Set(input.rowIds);
@@ -871,7 +994,10 @@ export function advanceRowArrivals(
     else changed = true;
   }
   // Every known row gone (a rewind or reload) leaves nothing to append below.
-  if (admitsArrivals && (previous.knownIds.size === 0 || firstKnownIndex !== -1)) {
+  if (
+    admitsArrivals &&
+    (previous.knownIds.size === 0 || firstKnownIndex !== -1)
+  ) {
     for (const id of input.rowIds.slice(firstKnownIndex + 1)) {
       if (previous.knownIds.has(id)) continue;
       entering.set(id, input.now + ROW_ARRIVAL_DURATION_MS);
@@ -906,10 +1032,13 @@ export function classifyTimelineTailChange(
   baseline: TimelineTailSnapshot,
   current: TimelineTailSnapshot,
 ): "new-messages" | "response-updated" | null {
-  if (current.rowId !== baseline.rowId) return current.rowId === null ? null : "new-messages";
+  if (current.rowId !== baseline.rowId)
+    return current.rowId === null ? null : "new-messages";
   if (current.textEpoch !== null || baseline.textEpoch !== null) {
     if (current.textEpoch !== baseline.textEpoch) return "response-updated";
-    return (current.textRevision ?? 0) > (baseline.textRevision ?? 0) ? "response-updated" : null;
+    return (current.textRevision ?? 0) > (baseline.textRevision ?? 0)
+      ? "response-updated"
+      : null;
   }
   return current.text !== baseline.text ? "response-updated" : null;
 }

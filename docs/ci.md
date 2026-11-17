@@ -336,6 +336,9 @@ Rules:
 - A timeout increase needs the repro run's duration table showing healthy runs near
   the limit. Raising timeouts did not fix the Windows quit or VACUUM flakes.
 
+[Flake burn-down](flake-burndown.md) applies these rules one issue at a time, as a
+runbook an F5 scheduled task can follow.
+
 ## Maintainer rollout
 
 PR #163 combines the Agent Bridge fix, workflow restructure, reports/diagnostics

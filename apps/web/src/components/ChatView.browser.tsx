@@ -1318,6 +1318,7 @@ const uploadedFiles = new Map<string, import("@t3tools/contracts").AttachmentUpl
 function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   const tag = body._tag;
   if (tag === WS_METHODS.worktreesGetTransition) return null;
+  if (tag === WS_METHODS.worktreesList) return { projects: [] };
   if (tag === WS_METHODS.attachmentsGetUploads)
     return (body.uploadIds as string[]).map((id) => uploadedFiles.get(id) ?? null);
   if (tag === AGENTS_WS_METHODS.getSnapshot) {
@@ -1905,7 +1906,6 @@ async function measureTimelineRow(options: {
         // scrollTop writes until it sees the element stretch past the viewport.
         // Using scrollTo with an animated behavior ensures the scroll is driven
         // through the browser's scroll mechanism so the list re-virtualizes.
-        dispatchReaderScrollbarPress(scrollContainer);
         scrollContainer.scrollTo({ top: 0, behavior: "auto" });
         scrollContainer.scrollTop = 0;
         scrollContainer.dispatchEvent(new Event("scroll"));
@@ -1922,7 +1922,6 @@ async function measureTimelineRow(options: {
 
   await waitForImagesToLoad(row!);
   if (scrollToTop) {
-    dispatchReaderScrollbarPress(scrollContainer);
     scrollContainer.scrollTop = 0;
     scrollContainer.dispatchEvent(new Event("scroll"));
   }
@@ -1943,7 +1942,6 @@ async function measureTimelineRow(options: {
   await vi.waitFor(
     async () => {
       if (scrollToTop) {
-        dispatchReaderScrollbarPress(scrollContainer);
         scrollContainer.scrollTop = 0;
         scrollContainer.dispatchEvent(new Event("scroll"));
       }
@@ -2024,18 +2022,6 @@ async function waitForTimelineScrollToSettle(): Promise<void> {
   );
 }
 
-/**
- * Reader input before a simulated timeline scroll: a scrollbar press and release. Following
- * pauses only after reader input. A press is used instead of a wheel so the composer's
- * scroll-collapse gesture, which counts wheel events, is left untouched.
- */
-function dispatchReaderScrollbarPress(container?: HTMLElement | null): void {
-  const target =
-    container ?? document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]');
-  target?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
-}
-
 async function scrollTimelineRowIntoView(rowSelector: string): Promise<void> {
   await waitForTimelineScrollToSettle();
   await vi.waitFor(
@@ -2046,7 +2032,6 @@ async function scrollTimelineRowIntoView(rowSelector: string): Promise<void> {
       const row = document.querySelector<HTMLElement>(rowSelector);
       expect(scrollContainer, "Messages scroll container must be present.").toBeTruthy();
       expect(row, "Target timeline row must be rendered.").toBeTruthy();
-      dispatchReaderScrollbarPress(scrollContainer);
       row!.scrollIntoView({ block: "center" });
       scrollContainer!.dispatchEvent(new Event("scroll"));
       await waitForLayout();
@@ -2800,7 +2785,6 @@ describe("ChatView timeline (full app)", () => {
       await vi.waitFor(() =>
         expect(timeline.scrollHeight).toBeGreaterThan(timeline.clientHeight + 100),
       );
-      dispatchReaderScrollbarPress(timeline);
       timeline.scrollTop = timeline.scrollHeight / 2;
       timeline.dispatchEvent(new Event("scroll"));
       await waitForLayout();
@@ -2817,7 +2801,6 @@ describe("ChatView timeline (full app)", () => {
         const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
         selection.setBaseAndExtent(text, 2, text, 8);
         await waitForLayout();
-        dispatchReaderScrollbarPress(timeline);
         timeline.scrollTop = (timeline.scrollHeight - timeline.clientHeight) / 2;
         timeline.dispatchEvent(new Event("scroll"));
         await waitForLayout();
@@ -5572,6 +5555,98 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("starts a local draft in a new worktree from the picker and creates it only at send", async () => {
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {
+        [THREAD_ID]: {
+          projectId: PROJECT_ID,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "main",
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (next) => {
+        next.serverConfig = {
+          ...next.serverConfig,
+          keybindings: [
+            createModKeybinding("composer.envMode", "e", { shiftKey: true }),
+            createModKeybinding("composer.branch", "b", { shiftKey: true }),
+          ],
+        };
+      },
+    });
+    const useMetaForMod = isMacPlatform(navigator.platform);
+    const pressMod = (key: string) =>
+      userEvent.keyboard(
+        useMetaForMod
+          ? `{Meta>}{Shift>}${key}{/Shift}{/Meta}`
+          : `{Control>}{Shift>}${key}{/Shift}{/Control}`,
+      );
+    try {
+      const editor = await waitForComposerEditor();
+      const trigger = page.getByLabelText("Workspace: Local · main", { exact: true });
+      await expect.element(trigger).toBeVisible();
+
+      // Both the workspace and the branch command open the same picker.
+      for (const key of ["E", "B"]) {
+        await userEvent.click(editor);
+        await pressMod(key);
+        await expect.element(page.getByPlaceholder("Search branches and worktrees…")).toBeVisible();
+        await userEvent.keyboard("{Escape}");
+        await expect
+          .element(page.getByPlaceholder("Search branches and worktrees…"))
+          .not.toBeInTheDocument();
+      }
+
+      await trigger.click();
+      await page.getByRole("option", { name: /^main\s*default/ }).click();
+      await expect
+        .element(page.getByLabelText("Workspace: New worktree · from main", { exact: true }))
+        .toBeVisible();
+      expect(page.getByRole("dialog").elements()).toHaveLength(0);
+
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Ship it");
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          const dispatchRequests = getDispatchCommandRequests();
+          expect(dispatchRequests).toHaveLength(1);
+          const command = dispatchRequests[0]?.command as
+            | { bootstrap?: { prepareWorktree?: Record<string, unknown> } }
+            | undefined;
+          expect(command?.bootstrap?.prepareWorktree).toMatchObject({
+            projectCwd: "/repo/project",
+            baseBranch: "main",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      for (const tag of [
+        WS_METHODS.gitCheckout,
+        WS_METHODS.gitCreateWorktree,
+        WS_METHODS.gitPrepareWorktree,
+      ]) {
+        expect(wsRequests.some((request) => request._tag === tag)).toBe(false);
+      }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it.each([
     {
       alias: "opus-5[1m]",
@@ -7801,7 +7876,6 @@ describe("ChatView timeline (full app)", () => {
       );
       // Scrolling up during the list's initial pin to the end gets undone.
       await waitForTimelineScrollToSettle();
-      dispatchReaderScrollbarPress(scrollContainer);
       scrollContainer.scrollTo({ top: 0, behavior: "auto" });
       scrollContainer.scrollTop = 0;
       scrollContainer.dispatchEvent(new Event("scroll"));
@@ -7859,7 +7933,6 @@ describe("ChatView timeline (full app)", () => {
           () => document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]'),
           "Messages scroll container should render before sending.",
         );
-        dispatchReaderScrollbarPress(scrollContainer);
         scrollContainer.scrollTo({ top: 0, behavior: "auto" });
         scrollContainer.dispatchEvent(new Event("scroll"));
         await waitForButtonContainingText("Jump to latest");
@@ -7944,10 +8017,6 @@ describe("ChatView timeline (full app)", () => {
         () => document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]'),
         "Messages scroll container should render before testing dialog scroll shortcuts.",
       );
-      // Match the scroll-shortcut setup: initial end positioning must settle
-      // before simulating the reader moving up through the conversation.
-      await waitForTimelineScrollToSettle();
-      dispatchReaderScrollbarPress(scrollContainer);
       scrollContainer.scrollTo({ top: 0, behavior: "auto" });
       scrollContainer.scrollTop = 0;
       scrollContainer.dispatchEvent(new Event("scroll"));
@@ -10167,7 +10236,6 @@ describe("ChatView timeline (full app)", () => {
       expect(next).not.toBeNull();
       expect(document.querySelector('[data-timeline-row-kind="work"]')).not.toBeNull();
       expect(document.querySelector('[data-message-id="quote-next"] h2.sr-only')).not.toBeNull();
-      dispatchReaderScrollbarPress();
       first.scrollIntoView({ block: "center" });
       // Paragraph selection can end at the following tool row's empty start,
       // outside the assistant wrapper. Include the real timestamp but no tool text.
@@ -10230,7 +10298,6 @@ describe("ChatView timeline (full app)", () => {
             '[data-slot="messages-scroll-container"]',
           );
           expect(scrollContainer, "Messages scroll container must be present.").toBeTruthy();
-          dispatchReaderScrollbarPress(scrollContainer);
           paragraph.scrollIntoView({ block: "center" });
           scrollContainer!.dispatchEvent(new Event("scroll"));
           await waitForTimelineScrollToSettle();
@@ -10307,7 +10374,6 @@ describe("ChatView timeline (full app)", () => {
         });
         const text = paragraph.textContent!.trim().slice(0, 4000);
         // Quote actions hide while their text is scrolled out of view, as a mouse selection is not.
-        dispatchReaderScrollbarPress();
         paragraph.scrollIntoView({ block: "center" });
         const range = document.createRange();
         range.selectNodeContents(paragraph);
@@ -10525,7 +10591,6 @@ describe("ChatView timeline (full app)", () => {
         await vi.waitFor(() =>
           expect(timeline.scrollHeight).toBeGreaterThan(timeline.clientHeight + 400),
         );
-        dispatchReaderScrollbarPress(timeline);
         timeline.scrollTop = (timeline.scrollHeight - timeline.clientHeight) / 2;
         timeline.dispatchEvent(new Event("scroll"));
         await waitForLayout();
@@ -10678,7 +10743,6 @@ describe("ChatView timeline (full app)", () => {
         expect(node).not.toBeNull();
         return node!;
       });
-      dispatchReaderScrollbarPress();
       row.scrollIntoView({ block: "center" });
       const trigger = row.querySelector<HTMLButtonElement>('button[aria-label="Message actions"]');
       expect(trigger).not.toBeNull();

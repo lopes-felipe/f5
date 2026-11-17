@@ -6,6 +6,8 @@ import type {
 } from "@t3tools/contracts";
 import { PR_HUB_NEEDS_YOU_SECTIONS, prAttentionText, prHubSection } from "@t3tools/shared/prHub";
 
+import { settlePrNeverOpened } from "./seenBaseline.ts";
+
 export interface PrHubRelevanceOptions {
   readonly viewerLogin: string | null;
   /** `org/team` slugs whose review requests count as requests to the viewer. */
@@ -112,15 +114,29 @@ export function applyPrRelevance(
   );
   // Only the "needs you" sections notify; a stale or team row never does.
   const notificationPending = next.notificationPending && PR_HUB_NEEDS_YOU_SECTIONS.has(section);
+  // A pull request never opened reads as new only in the section it is in now.
+  const changesSinceSeen = settlePrNeverOpened(
+    next.changesSinceSeen,
+    next,
+    section,
+    options.viewerLogin,
+  );
   // Most reads change nothing; keeping the object lets callers skip work by identity.
   if (
     next === pr &&
     (pr.reviewRequestSource ?? null) === source &&
     pr.section === section &&
-    pr.notificationPending === notificationPending
+    pr.notificationPending === notificationPending &&
+    pr.changesSinceSeen === changesSinceSeen
   )
     return pr;
-  return { ...next, reviewRequestSource: source, section, notificationPending };
+  return {
+    ...next,
+    reviewRequestSource: source,
+    section,
+    notificationPending,
+    ...(changesSinceSeen === undefined ? {} : { changesSinceSeen }),
+  };
 }
 
 const mapUnchanged = <T>(items: ReadonlyArray<T>, map: (item: T) => T): ReadonlyArray<T> => {

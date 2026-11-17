@@ -18,11 +18,18 @@ const CHECKPOINT_FRAMES = 1_000;
 const WRITER_BACKSTOP_FRAMES = 32_768;
 const CHECKPOINT_IDLE_MS = 100;
 /**
- * Checkpoints this slow are logged. The checkpoint runs off the server's thread, but it
- * writes and syncs the same file the server reads, so the log line lets a statement that
- * stalled on the writer be matched (or not) to a checkpoint running at that moment.
+ * Checkpoints this slow are logged. The checkpoint runs off the server's thread and no
+ * statement of the writer runs during one (see `startCheckpointWorker`), so a slow one
+ * delays database work without stopping the event loop. The log line says how long.
  */
 export const SLOW_CHECKPOINT_LOG_MS = 1_000;
+
+/**
+ * The worker never checkpoints unasked. An inspection (`null`) that finds one due answers
+ * `due`, and the writer answers with that value once it holds its connection:
+ * `"now"` for the frame threshold, `"finish"` for the tail left when writes go idle.
+ */
+export type CheckpointRequest = "now" | "finish";
 
 // A source string works in both the bundled standalone server and source tests.
 // NOOP was added in SQLite 3.51; older versions interpret it as PASSIVE.
@@ -41,11 +48,13 @@ const frames = db.prepare("PRAGMA wal_checkpoint(NOOP)");
 const checkpoint = db.prepare("PRAGMA wal_checkpoint(PASSIVE)");
 let idle;
 let blocked = false;
-const inspect = (finishing) => {
+// permitted: the writer holds its connection for this checkpoint and waits for the answer.
+const inspect = (finishing, permitted) => {
   let state = frames.get();
   let retry = false;
   // Set when this inspection ran a checkpoint: how long it took and how many frames it faced.
   let checkpointed = null;
+  let due = null;
   const knownFrames = state.log >= 0 && state.checkpointed >= 0;
   if (state.busy !== 0 || !knownFrames) {
     // SQLite can return -1/-1 while its checkpoint lock is held. This is
@@ -54,17 +63,20 @@ const inspect = (finishing) => {
   }
   else if (finishing ? state.log >= workerData.frames && state.checkpointed < state.log
                      : state.log - state.checkpointed >= workerData.frames) {
-    const startedAt = Date.now();
-    const pending = state.log - state.checkpointed;
-    state = checkpoint.get();
-    checkpointed = { durationMs: Date.now() - startedAt, frames: pending };
-    blocked = state.busy !== 0 || state.checkpointed < state.log;
-    retry = blocked;
+    if (!permitted) due = finishing ? "finish" : "now";
+    else {
+      const startedAt = Date.now();
+      const pending = state.log - state.checkpointed;
+      state = checkpoint.get();
+      checkpointed = { durationMs: Date.now() - startedAt, frames: pending };
+      blocked = state.busy !== 0 || state.checkpointed < state.log;
+      retry = blocked;
+    }
   }
   else if (state.log === state.checkpointed) blocked = false;
   if (finishing && retry) {
     clearTimeout(idle);
-    idle = setTimeout(() => inspect(true), workerData.idleMs);
+    idle = setTimeout(() => inspect(true, false), workerData.idleMs);
   }
   // fstat on an open handle: Windows stat by name can report the size cached in the directory
   // entry, which stays stale while SQLite holds the WAL open.
@@ -73,19 +85,30 @@ const inspect = (finishing) => {
   try { wal = openSync(workerData.filename + "-wal", "r"); walBytes = fstatSync(wal).size; }
   catch (error) { if (error.code !== "ENOENT") throw error; }
   finally { if (wal !== undefined) closeSync(wal); }
-  parentPort.postMessage({ ack: !finishing, walBytes, blocked, checkpointed });
+  // ack answers an inspection the writer asked for, done a checkpoint it is waiting on.
+  parentPort.postMessage({ ack: !finishing && !permitted, done: permitted, due, walBytes, blocked, checkpointed });
 };
-parentPort.on("message", () => {
-  inspect(false);
+parentPort.on("message", (request) => {
+  if (request === "now" || request === "finish") inspect(request === "finish", true);
+  else inspect(false, false);
+  // A checkpoint that was blocked leaves a tail: look again once writes go idle.
   clearTimeout(idle);
-  idle = setTimeout(() => inspect(true), workerData.idleMs);
+  idle = setTimeout(() => inspect(true, false), workerData.idleMs);
 });
 `;
 
-/** At most one outstanding request and one pending check, irrespective of write rate. */
+/**
+ * At most one outstanding request and one pending check, irrespective of write rate.
+ *
+ * `holdConnection` runs an effect while no statement can run on the writer. A checkpoint
+ * syncs the WAL, and a statement that touches the file meanwhile waits inside SQLite for
+ * that sync, on the server's thread: seconds when the disk is busy. Holding the connection
+ * makes those statements wait for it asynchronously, so the event loop keeps running.
+ */
 export const startCheckpointWorker = Effect.fnUntraced(function* (
   filename: string,
   writer: DatabaseSync,
+  holdConnection: (checkpoint: Effect.Effect<void>) => Effect.Effect<void>,
 ) {
   const runFork = Effect.runForkWith(yield* Effect.services<never>());
   const warn = (reason: string) =>
@@ -106,9 +129,17 @@ export const startCheckpointWorker = Effect.fnUntraced(function* (
   let stopped = false;
   let checking = false;
   let checkAgain = false;
+  // From asking for the connection until the worker answers the checkpoint it was held for.
+  let holding = false;
+  let checkpointAnswered: (() => void) | undefined;
+  const releaseConnection = () => {
+    checkpointAnswered?.();
+    checkpointAnswered = undefined;
+  };
   const handBack = (reason: string) => {
     if (stopped) return;
     stopped = true;
+    releaseConnection();
     try {
       writer.exec(`PRAGMA wal_autocheckpoint=${CHECKPOINT_FRAMES}`);
     } catch {
@@ -121,6 +152,7 @@ export const startCheckpointWorker = Effect.fnUntraced(function* (
   yield* Effect.addFinalizer(() =>
     Effect.promise(() => {
       stopped = true;
+      releaseConnection();
       return worker.terminate();
     }),
   );
@@ -138,14 +170,44 @@ export const startCheckpointWorker = Effect.fnUntraced(function* (
       handBack(String(cause));
     }
   };
+  const checkpointHoldingConnection = (request: CheckpointRequest) => {
+    if (holding) return;
+    holding = true;
+    runFork(
+      holdConnection(
+        Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              if (stopped) return resolve();
+              checkpointAnswered = resolve;
+              try {
+                worker.postMessage(request);
+              } catch (cause) {
+                handBack(String(cause));
+              }
+            }),
+        ),
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            holding = false;
+          }),
+        ),
+      ),
+    );
+  };
   type WorkerReport = {
     ack: boolean;
+    done?: boolean;
+    due?: CheckpointRequest | null;
     walBytes: number;
     blocked: boolean;
     checkpointed?: { durationMs: number; frames: number } | null;
   };
   worker.on("message", (message: WorkerReport) => {
     if (stopped) return;
+    if (message.done) releaseConnection();
+    else if (message.due) checkpointHoldingConnection(message.due);
     const checkpointed = message.checkpointed ?? null;
     runFork(
       Effect.all([

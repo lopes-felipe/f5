@@ -11,7 +11,6 @@ import { PrReviewSubmit } from "./PrReviewSubmit";
 import { Button } from "../ui/button";
 import {
   Dialog,
-  DialogClose,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -21,8 +20,25 @@ import {
 } from "../ui/dialog";
 import { Select, SelectButton, SelectItem, SelectPopup } from "../ui/select";
 import { Textarea } from "../ui/textarea";
-import type { PrActionDialogProps } from "./usePrActions";
+import type { PrActionDialogProps, PrPendingAction } from "./usePrActions";
 import { SnoozePresetPicker } from "../SnoozePresetPicker";
+import { PrReviewerPicker, usePrReviewerCandidates } from "./PrReviewerPicker";
+import type { TrackedPullRequest } from "@t3tools/contracts";
+
+type ForgeMethod = "merge" | "squash" | "rebase";
+
+/** Actions whose own form prepares and confirms them; the dialog adds no Confirm button. */
+const SELF_CONFIRMING: ReadonlySet<PrPendingAction> = new Set([
+  "close",
+  "reopen",
+  "approve",
+  "requestChanges",
+  "comment",
+  "autoMerge",
+  "convertToDraft",
+  "updateBranch",
+  "rerunChecks",
+]);
 
 /**
  * The action dialog (approve / comment / request-changes / merge / mark-ready /
@@ -66,10 +82,20 @@ export function PrActionDialogs({
   const native = pr.provider !== "github";
   const nativeCaps = pr.forgeCapabilities;
   const availableMergeMethods = native ? (nativeCaps?.mergeMethods ?? []) : allowedMergeMethods;
-  const nativeReviewers = reviewers
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  // Merge when ready and Update branch pick a method of their own; both start on the
+  // first one the forge offers.
+  const forgeMethods =
+    pendingAction === "updateBranch"
+      ? (nativeCaps?.updateMethods ?? [])
+      : pendingAction === "autoMerge"
+        ? availableMergeMethods
+        : [];
+  const [forgeMethodChoice, setForgeMethodChoice] = useState<ForgeMethod | null>(null);
+  useEffect(() => setForgeMethodChoice(null), [pendingAction, pr.key]);
+  const preferredMethod =
+    forgeMethodChoice ?? (pendingAction === "autoMerge" ? mergeMethod : null) ?? forgeMethods[0];
+  const forgeMethod =
+    preferredMethod && forgeMethods.includes(preferredMethod) ? preferredMethod : forgeMethods[0];
   useEffect(() => {
     setFolderPath("");
   }, [candidatePicker === null, pr.key]);
@@ -158,7 +184,7 @@ export function PrActionDialogs({
                   {mergeComparison.mergeBaseOid.slice(0, 12)}.
                 </p>
               ) : (
-                <p role="status">{mergeComparisonError ?? "Loading merge comparison?"}</p>
+                <p role="status">{mergeComparisonError ?? "Loading merge comparison…"}</p>
               )}
               {mergeComparisonError ? (
                 <Button size="xs" variant="outline" onClick={reloadMergeComparison}>
@@ -187,11 +213,83 @@ export function PrActionDialogs({
             </Select>
           ) : null}
           {pendingAction === "reRequestReview" ? (
-            <Textarea
+            <ReRequestReviewers
+              pr={pr}
               value={reviewers}
-              onChange={(event) => setReviewers(event.currentTarget.value)}
-              placeholder="reviewer1, reviewer2"
+              onChange={setReviewers}
+              disabled={isRunning}
             />
+          ) : null}
+          {pendingAction === "autoMerge" || pendingAction === "updateBranch" ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                {pendingAction === "autoMerge"
+                  ? "The forge merges this pull request by itself once its required reviews and checks pass."
+                  : `Brings ${pr.headRefName || "the branch"} up to date with ${
+                      pr.baseRefName || "its base branch"
+                    }.`}
+              </p>
+              {forgeMethods.length > 1 ? (
+                <Select
+                  value={forgeMethod ?? null}
+                  onValueChange={(value) => value && setForgeMethodChoice(value as ForgeMethod)}
+                >
+                  <SelectButton
+                    size="sm"
+                    aria-label={pendingAction === "autoMerge" ? "Merge method" : "Update method"}
+                  >
+                    {forgeMethod}
+                  </SelectButton>
+                  <SelectPopup>
+                    {forgeMethods.map((method) => (
+                      <SelectItem key={method} value={method}>
+                        {method}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+              ) : null}
+              {forgeMethod ? (
+                <ForgeOperationPanel
+                  pr={pr}
+                  payload={{
+                    kind: "action",
+                    action: pendingAction === "autoMerge" ? "enable-auto-merge" : "update-branch",
+                    method: forgeMethod,
+                  }}
+                  label={pendingAction === "autoMerge" ? "Merge when ready" : "Branch update"}
+                  onSucceeded={() => setPendingAction(null)}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  {pendingAction === "autoMerge"
+                    ? "Refresh the PR hub to load the repository's merge methods."
+                    : "This forge cannot update the branch from here."}
+                </p>
+              )}
+            </>
+          ) : null}
+          {pendingAction === "convertToDraft" ? (
+            <ForgeOperationPanel
+              pr={pr}
+              payload={{ kind: "action", action: "draft" }}
+              label="Convert to draft"
+              onSucceeded={() => setPendingAction(null)}
+            />
+          ) : null}
+          {pendingAction === "rerunChecks" ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Starts the failed and cancelled jobs of this commit's GitHub Actions runs again.
+                Jobs that passed are not run again.
+              </p>
+              <ForgeOperationPanel
+                pr={pr}
+                payload={{ kind: "action", action: "rerun-failed-checks" }}
+                label="Re-run failed jobs"
+                onSucceeded={() => setPendingAction(null)}
+              />
+            </>
           ) : null}
           {native &&
           pendingAction === "merge" &&
@@ -220,11 +318,11 @@ export function PrActionDialogs({
           ) : null}
           {native &&
           pendingAction === "reRequestReview" &&
-          nativeReviewers.length > 0 &&
+          reviewers.length > 0 &&
           nativeCaps?.reviewers.request ? (
             <ForgeOperationPanel
               pr={pr}
-              payload={{ kind: "reviewers", reviewers: nativeReviewers }}
+              payload={{ kind: "reviewers", reviewers }}
               label="Request reviewers"
               onSucceeded={() => setPendingAction(null)}
             />
@@ -250,18 +348,15 @@ export function PrActionDialogs({
           <Button variant="outline" onClick={() => setPendingAction(null)}>
             Cancel
           </Button>
-          {pendingAction !== "close" &&
-          pendingAction !== "reopen" &&
-          pendingAction !== "approve" &&
-          pendingAction !== "requestChanges" &&
-          pendingAction !== "comment" &&
+          {pendingAction !== null &&
+          !SELF_CONFIRMING.has(pendingAction) &&
           (!native || pendingAction === "snooze") ? (
             <Button
               onClick={() => void runAction()}
               disabled={
                 isRunning ||
                 (pendingAction === "merge" && (!mergeComparison || !mergeMethod)) ||
-                (pendingAction === "reRequestReview" && reviewers.trim().length === 0)
+                (pendingAction === "reRequestReview" && reviewers.length === 0)
               }
             >
               {isRunning ? "Working..." : "Confirm"}
@@ -346,6 +441,50 @@ export function PrActionDialogs({
           </DialogFooter>
         </DialogPopup>
       </Dialog>
+    </>
+  );
+}
+
+/** The reviewers of a re-request, picked from the forge's candidates. */
+function ReRequestReviewers({
+  pr,
+  value,
+  onChange,
+  disabled,
+}: {
+  pr: TrackedPullRequest;
+  value: readonly string[];
+  onChange: (value: readonly string[]) => void;
+  disabled: boolean;
+}) {
+  const native = pr.provider !== "github";
+  const { set, isPending } = usePrReviewerCandidates(
+    pr,
+    !!pr.forgeCapabilities?.reviewers.listCandidates,
+  );
+  // Other forges replace the whole reviewer set by id, so the picker starts from the
+  // forge's own list instead of the names saved with the pull request.
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (!native || seeded.current || !set?.known) return;
+    seeded.current = true;
+    onChange(set.current.map((reviewer) => reviewer.id));
+  }, [native, set, onChange]);
+  return (
+    <>
+      {native && set && !set.known ? (
+        <p role="alert" className="text-xs">
+          Existing reviewer identities could not be verified. Refresh before changing reviewers.
+        </p>
+      ) : null}
+      <PrReviewerPicker
+        pr={pr}
+        set={set}
+        isLoading={isPending}
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+      />
     </>
   );
 }
