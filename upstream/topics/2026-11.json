@@ -7742,9 +7742,11 @@
     },
     {
       "createdAt": "2026-11-14T11:13:10.842Z",
+      "decidedAt": "2026-11-17T11:44:32.691Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24574",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "terminal",
@@ -15591,9 +15593,11 @@
     },
     {
       "createdAt": "2026-11-15T11:14:38.505Z",
+      "decidedAt": "2026-11-17T11:44:32.691Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27716",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "mcp",
@@ -27221,9 +27225,11 @@
     },
     {
       "createdAt": "2026-11-15T11:14:38.505Z",
+      "decidedAt": "2026-11-17T11:44:32.691Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29692",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -64158,9 +64164,11 @@
     },
     {
       "createdAt": "2026-11-14T11:13:10.842Z",
+      "decidedAt": "2026-11-17T11:44:32.691Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-36395",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "security",
@@ -68430,9 +68438,11 @@
     },
     {
       "createdAt": "2026-11-15T11:14:38.505Z",
+      "decidedAt": "2026-11-17T11:44:32.691Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37042",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "security",
@@ -72562,9 +72572,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T11:44:32.691Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37821",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "security",
@@ -72616,9 +72628,13 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T11:44:32.691Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37825",
-      "status": "inbox",
+      "reason": "Hardens pairing grants and peer-link pairing, which the policy files under relay-cloud.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "security",
@@ -73781,9 +73797,13 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-17T11:44:32.691Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-38037",
-      "status": "inbox",
+      "reason": "The fix gates on upstream auth scopes (settings:write vs providers:manage) and the device RPCs, which f5 does not have.",
+      "reasonKey": "upstream-only:auth-scopes",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "security",
