@@ -21,7 +21,7 @@ export function turnDetail(entries: readonly TimelineEntry[], turnId: string | n
     if (entry.kind === "message") {
       if (entry.message.role === "user") break;
       if (entry.message.turnId !== turnId || entry.message.role !== "assistant") continue;
-      activity ??= null;
+      if (activity === undefined) activity = null;
       messages.push({
         id: entry.id,
         text: entry.message.text,
@@ -34,22 +34,24 @@ export function turnDetail(entries: readonly TimelineEntry[], turnId: string | n
       continued = true;
       // Approval/question text already belongs to the status announcer.
       if (work.requestKind !== undefined || work.userInput !== undefined) continue;
-      activity ??=
-        work.tone === "thinking"
-          ? "Thinking"
-          : work.status === "failed" || work.status === "declined"
-            ? null
-            : work.label.replace(/\s+/g, " ").trim().slice(0, 120) || null;
+      if (activity === undefined)
+        activity =
+          work.tone === "thinking"
+            ? "Thinking"
+            : work.status === "failed" || work.status === "declined"
+              ? null
+              : work.label.replace(/\s+/g, " ").trim().slice(0, 120) || null;
     } else if (entry.kind === "command" && entry.commandExecution.turnId === turnId) {
       continued = true;
       const command = entry.commandExecution;
-      activity ??=
-        command.status === "failed" || command.status === "declined"
-          ? null
-          : (command.description ?? command.title ?? command.command)
-              .replace(/\s+/g, " ")
-              .trim()
-              .slice(0, 120);
+      if (activity === undefined)
+        activity =
+          command.status === "failed" || command.status === "declined"
+            ? null
+            : (command.description ?? command.title ?? command.command)
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 120);
     }
   }
   return {

@@ -57,9 +57,9 @@ export function claudeGrantDisabledReason(
 }
 
 export function claudeGrantDescription(grant: ClaudeLimitResetGrant, accountName: string): string {
-  if (grant.kind === "fable") {
+  if (grant.kind === "fable" || grant.givesBackWeekly) {
     return [
-      `This uses one ${grant.label} for ${accountName}.`,
+      `This uses one Fable reset for ${accountName}.`,
       "It refills your Fable allowance and gives back what Fable used on your weekly limit. It doesn't reset your whole week.",
       grant.endsAt ? `Expires ${formatAbsoluteTimeLabel(grant.endsAt)}.` : null,
     ]

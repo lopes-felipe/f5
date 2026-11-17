@@ -8,7 +8,7 @@ import {
 import type { ReactElement } from "react";
 import { threadReferencesToLabels } from "@t3tools/shared/threadReferences";
 import { serializeAssistantResponseContext } from "@t3tools/shared/assistantResponseContext";
-import { MessageId, ThreadId } from "@t3tools/contracts";
+import { MessageId, ThreadId, type AssistantResponseContext } from "@t3tools/contracts";
 
 export interface AssistantQuote {
   messageId: string;
@@ -18,6 +18,8 @@ export interface AssistantQuote {
   threadId?: string | undefined;
   prefix?: string | undefined;
   suffix?: string | undefined;
+  turnId?: AssistantResponseContext["turnId"];
+  subagents?: AssistantResponseContext["subagents"];
 }
 export function serializeAssistantQuote(quote: AssistantQuote): string {
   if (quote.threadId)
@@ -27,6 +29,8 @@ export function serializeAssistantQuote(quote: AssistantQuote): string {
         kind: "quote",
         threadId: ThreadId.make(quote.threadId),
         messageId: MessageId.make(quote.messageId),
+        ...(quote.turnId ? { turnId: quote.turnId } : {}),
+        ...(quote.subagents ? { subagents: quote.subagents } : {}),
         text: threadReferencesToLabels(quote.text).slice(0, 4000),
         prefix: quote.prefix?.slice(-150),
         suffix: quote.suffix?.slice(0, 150),
@@ -101,6 +105,11 @@ export class ComposerAssistantQuoteNode extends DecoratorNode<ReactElement> {
     const node = document.createElement("span");
     node.className = "inline-flex align-middle";
     return node;
+  }
+  override exportDOM() {
+    const element = document.createElement("span");
+    element.textContent = this.getTextContent();
+    return { element };
   }
   override updateDOM(): false {
     return false;

@@ -432,10 +432,17 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
    * when the inventory has not loaded yet, read it before acting on the pick.
    */
   const sharedCount = async (path: string, rowCount: number) => {
-    if (worktreesQuery.data) return rowCount;
+    if (worktreesQuery.data?.projects) return rowCount;
+    await queryClient.invalidateQueries({
+      queryKey: worktreesListQueryOptions(projectId).queryKey,
+    });
     const data = await queryClient
       .fetchQuery(worktreesListQueryOptions(projectId))
       .catch(() => null);
+    if (!data?.projects)
+      throw new Error(
+        "Worktree inventory is unavailable. Refresh before switching shared checkouts.",
+      );
     return linkedThreadCount(
       linkedThreadsByPath(data?.projects?.find((entry) => entry.projectId === projectId)?.entries),
       path,
@@ -460,6 +467,12 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
         else if (state.kind !== "local")
           void sharedCount(projectCwd, row.threadCount).then(
             (count) => canApplyWorkspace() && onSetThreadBranch(null, null, count > 0),
+            () =>
+              toastManager.add({
+                type: "error",
+                title: "Workspace inventory unavailable",
+                description: "Refresh before switching shared checkouts.",
+              }),
           );
         return close();
       case "newWorktree":
@@ -475,18 +488,26 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
         return close();
       case "openWorktree":
         if (row.selected) return close();
-        void sharedCount(row.path, row.threadCount).then((count) => {
-          if (!canApplyWorkspace()) return;
-          if (isDraft)
-            onDraftChange({
-              envMode: "worktree",
-              branch: row.branch,
-              worktreePath: row.path,
-              sharedFilesystemConfirmed: count > 0,
-              worktreeBranchName: null,
-            });
-          else onSetThreadBranch(row.branch, row.path, count > 0);
-        });
+        void sharedCount(row.path, row.threadCount).then(
+          (count) => {
+            if (!canApplyWorkspace()) return;
+            if (isDraft)
+              onDraftChange({
+                envMode: "worktree",
+                branch: row.branch,
+                worktreePath: row.path,
+                sharedFilesystemConfirmed: count > 0,
+                worktreeBranchName: null,
+              });
+            else onSetThreadBranch(row.branch, row.path, count > 0);
+          },
+          () =>
+            toastManager.add({
+              type: "error",
+              title: "Workspace inventory unavailable",
+              description: "Refresh before switching shared checkouts.",
+            }),
+        );
         return close();
       case "newBranchWorktree":
         onDraftChange({

@@ -127,12 +127,14 @@ export async function runLauncher(
   // A launcher owns one explicit profile database. Services never auto-resolve a different profile.
   let child: ReturnType<typeof managedChild> | undefined;
   let stopping = false;
+  const handoffStop = new AbortController();
   let signalStop: () => void = () => {};
   const stopped = new Promise<void>((resolve) => {
     signalStop = resolve;
   });
   const stop = () => {
     stopping = true;
+    handoffStop.abort(new Error("Launcher stopping."));
     signalStop();
   };
   process.once("SIGINT", stop);
@@ -196,6 +198,7 @@ export async function runLauncher(
         }
         try {
           await performHandoff(root, path.join(stateDir, "state.sqlite"), request, {
+            signal: handoffStop.signal,
             stopOld: async () => {
               await child?.stop();
               await lease.child(null);

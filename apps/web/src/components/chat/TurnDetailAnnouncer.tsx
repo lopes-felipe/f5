@@ -22,6 +22,7 @@ export function TurnDetailAnnouncer(props: {
   const quietUntil = useRef(0);
   const pending = useRef<string | null>(null);
   const clearTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const restoreTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => {
     const key = `${props.threadId}:${props.turnId}`;
     const previous = memory.current?.key === key ? memory.current.value : null;
@@ -35,11 +36,14 @@ export function TurnDetailAnnouncer(props: {
     memory.current = { key, value: next.memory };
     const clear = () => {
       if (clearTimer.current !== undefined) clearTimeout(clearTimer.current);
+      if (restoreTimer.current !== undefined) clearTimeout(restoreTimer.current);
       if (region.current) region.current.textContent = "";
     };
     const write = (text: string) => {
       clear();
-      if (region.current) region.current.textContent = text;
+      restoreTimer.current = setTimeout(() => {
+        if (region.current) region.current.textContent = text;
+      }, 0);
       clearTimer.current = setTimeout(clear, 7000);
     };
     if (previous === null || previous.level !== props.level || !props.active) {
@@ -71,6 +75,7 @@ export function TurnDetailAnnouncer(props: {
   useEffect(
     () => () => {
       if (clearTimer.current !== undefined) clearTimeout(clearTimer.current);
+      if (restoreTimer.current !== undefined) clearTimeout(restoreTimer.current);
     },
     [],
   );

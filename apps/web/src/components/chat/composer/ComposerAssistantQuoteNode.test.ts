@@ -56,3 +56,17 @@ it("rejects a quote that would push the draft over the limit", () => {
     "Waiting for server capabilities. Reconnect before adding a quote.",
   );
 });
+
+it("preserves turn and subagent identity in serialized quotes", () => {
+  const quote = {
+    messageId: "message",
+    threadId: "source",
+    text: "Quoted",
+    comment: "",
+    turnId: "turn" as import("@t3tools/contracts").TurnId,
+    subagents: [{ threadId: "child" as import("@t3tools/contracts").ThreadId, title: "Agent" }],
+  };
+  const text = serializeAssistantQuote(quote);
+  expect(decodeURIComponent(text)).toContain('"turnId":"turn"');
+  expect(decodeURIComponent(text)).toContain('"threadId":"child"');
+});

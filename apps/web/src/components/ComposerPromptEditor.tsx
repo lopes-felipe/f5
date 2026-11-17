@@ -644,6 +644,7 @@ function $setComposerEditorPrompt(
     if (segment.type === "assistant-quote") {
       paragraph.append(
         $createAssistantQuoteNode({
+          ...segment.record,
           messageId: segment.record.messageId,
           threadId: segment.record.threadId,
           text: segment.record.text,

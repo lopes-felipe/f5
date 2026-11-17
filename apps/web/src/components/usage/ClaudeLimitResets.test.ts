@@ -25,5 +25,8 @@ describe("Claude reset confirmation", () => {
     expect(description).toContain("gives back what Fable used on your weekly limit");
     expect(description).toContain("doesn't reset your whole week");
     expect(description).not.toContain("It clears the weekly limit");
+    expect(
+      claudeGrantDescription({ ...grant, kind: "weekly", label: "Weekly reset" }, "Personal"),
+    ).toContain("one Fable reset for Personal");
   });
 });

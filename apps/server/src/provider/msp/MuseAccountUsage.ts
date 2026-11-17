@@ -38,6 +38,7 @@ export const makeMuseAccountUsage = (input: {
         input.environment.HOME,
         input.environment.MUSE_HOME,
         input.environment.MUSE_CONFIG_DIR,
+        input.environment.META_API_KEY,
       ]),
       getSnapshot: Ref.get(state).pipe(Effect.map((value) => value.account)),
       refresh: () => Effect.void,

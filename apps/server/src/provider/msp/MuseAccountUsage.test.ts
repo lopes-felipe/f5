@@ -5,6 +5,23 @@ import { ProviderInstanceId } from "@t3tools/contracts";
 import { makeMuseAccountUsage } from "./MuseAccountUsage";
 
 describe("Muse account-wide reports", () => {
+  it("separates accounts when only the API key changes", async () => {
+    const make = (key: string) =>
+      Effect.runPromise(
+        makeMuseAccountUsage({
+          instanceId: ProviderInstanceId.make("same"),
+          displayName: "Muse",
+          enabled: true,
+          environment: { META_API_KEY: key },
+        }),
+      );
+    const first = await make("key-a");
+    const second = await make("key-b");
+    expect(first.capability.identity).not.toBe(second.capability.identity);
+    expect(
+      (await Effect.runPromise(second.capability.getSnapshot)).sections[0]?.snapshot,
+    ).toBeNull();
+  });
   it("publishes limits and tier, ignores older reports, and clears an omitted tier", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {

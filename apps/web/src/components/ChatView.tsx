@@ -6152,6 +6152,7 @@ export default memo(function ChatView({
       }
 
       const threadIdForSend = activeThread.id;
+      const replyTo = useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null;
       if (activeThread.branch && gitCwd) {
         const proceed = await guardBranchDrift({
           cwd: gitCwd,
@@ -6166,7 +6167,6 @@ export default memo(function ChatView({
       }
       const messageIdForSend = newMessageId();
       const messageCreatedAt = new Date().toISOString();
-      const replyTo = useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null;
       const { text: rewrittenText, skillCall } = rewriteComposerRuntimeSkillInvocationForSend({
         text: trimmed,
         provider: selectedProvider,

@@ -270,6 +270,7 @@ it("reads only the configured hub account and never sends its management key to 
           JSON.stringify({
             status_code: 200,
             body: JSON.stringify({
+              id: "verified-google-account",
               buckets: [
                 {
                   bucketId: "gemini-5h",
@@ -325,9 +326,9 @@ it("reads only the configured hub account and never sends its management key to 
       return new URL(sent.url).hostname;
     });
     expect(requests).toEqual([
+      "www.googleapis.com",
       "daily-cloudcode-pa.googleapis.com",
       "cloudcode-pa.googleapis.com",
-      "www.googleapis.com",
     ]);
   } finally {
     vi.unstubAllGlobals();

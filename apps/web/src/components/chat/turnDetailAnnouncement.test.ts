@@ -33,6 +33,12 @@ const work = (id: string, thinking = false): TimelineEntry => ({
 const empty: TurnDetail = { entryIds: ["user"], tailId: "user", messages: [], activity: null };
 
 describe("turn detail announcements", () => {
+  it("does not announce an older tool after the newest tool failed", () => {
+    const failed = work("failed");
+    if (failed.kind === "work") failed.entry.status = "failed";
+    expect(turnDetail([work("previous"), failed], turnId).activity).toBeNull();
+    expect(turnDetail([work("previous"), message("answer", true)], turnId).activity).toBeNull();
+  });
   it("speaks settled intermediate messages once, never streaming tokens or the closing reply", () => {
     let previous = nextTurnDetailAnnouncement(
       null,

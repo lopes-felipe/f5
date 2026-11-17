@@ -36,6 +36,7 @@ function fixture() {
   const host: WindowsServiceHost = {
     ...identity,
     probeProcess: async (pid) => pid === process.pid,
+    isTaskRunning: async () => false,
     execute: async (args) => {
       calls.push(args);
       if (args[0] === "/Query" && !registered) throw new Error("Task not found");
@@ -120,7 +121,7 @@ describe("Windows service task", () => {
     await fs.mkdir(state);
     await fs.writeFile(path.join(state, ".service-manager-lock"), "");
     await manageWindowsService("install", root, state, host);
-    const lock = await acquireInstanceLock(path.join(state, ".service-manager-lock.sqlite"));
+    const lock = await acquireInstanceLock(path.join(root, ".service-manager-lock.sqlite"));
     try {
       await expect(manageWindowsService("start", root, state, host)).rejects.toThrow(
         "Another service command",
@@ -129,6 +130,29 @@ describe("Windows service task", () => {
       lock.release();
     }
     await manageWindowsService("start", root, state, host);
+  });
+  it("serializes one task across different state directories", async () => {
+    const { host } = fixture();
+    const lock = await acquireInstanceLock(path.join(root, ".service-manager-lock.sqlite"));
+    try {
+      await expect(
+        manageWindowsService("install", root, path.join(root, "other-state"), host),
+      ).rejects.toThrow("Another service command");
+    } finally {
+      lock.release();
+    }
+  });
+  it("never uninstalls a starting task whose lease has not appeared", async () => {
+    const { host, calls } = fixture();
+    await manageWindowsService("install", root, state, host);
+    await expect(
+      manageWindowsService("uninstall", root, state, {
+        ...host,
+        stopTimeoutMs: 0,
+        isTaskRunning: async () => true,
+      }),
+    ).rejects.toThrow("still starting");
+    expect(calls.some((args) => args[0] === "/Delete")).toBe(false);
   });
   it("treats a dead launcher and dead child as already stopped", async () => {
     const { calls, host } = fixture();

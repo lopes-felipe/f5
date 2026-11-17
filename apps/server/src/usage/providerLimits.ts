@@ -356,6 +356,14 @@ async function readAntigravityHub(
   const remainingMs = () => Math.max(0, deadline - performance.now());
   const account = await openCliProxyHub("antigravity", env, signal, deadline);
   if (!account) return { windows: [], partial: false };
+  const userInfoRead = account
+    .call(
+      "https://www.googleapis.com/oauth2/v2/userinfo",
+      undefined,
+      { "User-Agent": ANTIGRAVITY_USER_AGENT },
+      Math.min(1000, remainingMs()),
+    )
+    .catch(() => null);
   const fetchWindows = async (host: string, operation: string, timeoutMs: number) => {
     try {
       const requestedAt = Date.now();
@@ -396,17 +404,7 @@ async function readAntigravityHub(
   const windows = mergeProviderUsageWindows(responses.map((response) => response.windows));
   if (!windows.length && responses.some((response) => response.failed))
     throw new AccountUsageReadError("temporary-failure");
-  const userInfo =
-    remainingMs() > 0 && windows.length > 0
-      ? await account
-          .call(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            undefined,
-            { "User-Agent": ANTIGRAVITY_USER_AGENT },
-            Math.min(1000, remainingMs()),
-          )
-          .catch(() => null)
-      : null;
+  const userInfo = await userInfoRead;
   const googleId = asTrimmedString(asRecord(userInfo)?.id);
   return {
     windows,
@@ -432,8 +430,6 @@ export function makeProviderLimits(input: {
   serverUrl?: string;
   apiEndpoint?: string;
 }) {
-  // This capability belongs to one fixed provider/account configuration.
-  let lastAntigravityFingerprint: string | undefined;
   const read = Effect.tryPromise({
     try: async (signal): Promise<ReadonlyArray<AccountUsageSection>> => {
       const env = input.environment;
@@ -633,8 +629,9 @@ export function makeProviderLimits(input: {
         const result = await readAntigravityHub(env, signal);
         value = { windows: result.windows };
         partial = result.partial;
-        lastAntigravityFingerprint = result.accountFingerprint ?? lastAntigravityFingerprint;
-        accountFingerprint = lastAntigravityFingerprint;
+        if (result.windows.length && !result.accountFingerprint)
+          throw new AccountUsageReadError("temporary-failure");
+        accountFingerprint = result.accountFingerprint;
       } else {
         const endpoint = env.F5_CLIPROXY_USAGE_URL;
         const token = env.F5_CLIPROXY_API_KEY;

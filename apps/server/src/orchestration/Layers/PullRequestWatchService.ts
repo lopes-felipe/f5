@@ -94,6 +94,7 @@ export const makePullRequestWatchService = Effect.gen(function* () {
   const eventScope = yield* Effect.scope;
   const eventChanges = yield* makePullRequestEventQueue;
   const eventWorkers = new Set<Promise<void>>();
+  const cleanupAbort = new AbortController();
   const eventSubscriptions = new Map<
     string,
     { controller: AbortController; retryAt: number; generation: string }
@@ -102,7 +103,13 @@ export const makePullRequestWatchService = Effect.gen(function* () {
     Effect.sync(() => {
       for (const subscription of eventSubscriptions.values()) subscription.controller.abort();
     }).pipe(
-      Effect.andThen(Effect.promise(() => Promise.allSettled([...eventWorkers]))),
+      Effect.andThen(
+        Effect.promise(() => Promise.allSettled([...eventWorkers])).pipe(
+          Effect.timeout("5 seconds"),
+          Effect.onExit(() => Effect.sync(() => cleanupAbort.abort())),
+          Effect.ignore,
+        ),
+      ),
       Effect.andThen(eventChanges.shutdown),
     ),
   );
@@ -590,24 +597,39 @@ export const makePullRequestWatchService = Effect.gen(function* () {
           const previous = eventSubscriptions.get(key);
           const ref = parseSourceControlPullRequestKey(row.key);
           if (!ref || ref.provider !== "github" || ref.host !== "github.com") continue;
-          const runtime = yield* (yield* federation()).resolve({
-            key: row.key,
-            accountId: row.accountId,
-          });
-          const github = runtime.github;
+          const runtime = yield* (yield* federation())
+            .resolve({
+              key: row.key,
+              accountId: row.accountId,
+            })
+            .pipe(Effect.option);
+          if (Option.isNone(runtime)) {
+            previous?.controller.abort();
+            eventSubscriptions.delete(key);
+            continue;
+          }
+          const resolved = runtime.value;
+          const github = resolved.github;
           if (!github) continue;
           if (
             previous &&
-            previous.generation === runtime.account.generation &&
+            previous.generation === resolved.account.generation &&
             previous.retryAt > now
           )
             continue;
           previous?.controller.abort();
-          const context = yield* github.getCredentialContext({ cwd: config.cwd, host: ref.host });
+          const contextOption = yield* github
+            .getCredentialContext({ cwd: config.cwd, host: ref.host })
+            .pipe(Effect.option);
+          if (Option.isNone(contextOption)) {
+            eventSubscriptions.delete(key);
+            continue;
+          }
+          const context = contextOption.value;
           const entry = {
             controller: new AbortController(),
             retryAt: Infinity,
-            generation: runtime.account.generation,
+            generation: resolved.account.generation,
           };
           eventSubscriptions.set(key, entry);
           yield* Effect.tryPromise({
@@ -633,6 +655,7 @@ export const makePullRequestWatchService = Effect.gen(function* () {
                           ],
                         },
                       }),
+                      { signal },
                     ),
                   open: (url, signal) => {
                     const environment = githubCredentialEnvironment(context);
@@ -649,13 +672,16 @@ export const makePullRequestWatchService = Effect.gen(function* () {
                   },
                   remove: async (id) => {
                     await Effect.runPromise(
-                      github.request({
-                        cwd: config.cwd,
-                        context,
-                        method: "DELETE",
-                        endpoint: "event-subscriptions/" + encodeURIComponent(String(id)),
-                        timeoutMs: 5000,
-                      }),
+                      github
+                        .request({
+                          cwd: config.cwd,
+                          context,
+                          method: "DELETE",
+                          endpoint: "event-subscriptions/" + encodeURIComponent(String(id)),
+                          timeoutMs: 5000,
+                        })
+                        .pipe(Effect.timeout("5 seconds"), Effect.ignore),
+                      { signal: cleanupAbort.signal },
                     );
                   },
                 },

@@ -104,7 +104,7 @@ export function projectProviderInput(input: {
   readonly readModel: ReferenceReadModel;
   readonly threadId: string;
 }): string {
-  if (isThreadReferenceCommandInput(input.text)) return input.text;
+  if (isThreadReferenceCommandInput(input.text)) return responseContextsForProvider(input.text);
   const refs = authorizedReferencesForDispatch(input);
   if (refs.length === 0) return responseContextsForProvider(input.text);
   // Trailing whitespace goes, so the input matches the trimmed length the message check measured.

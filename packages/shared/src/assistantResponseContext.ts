@@ -65,7 +65,7 @@ export function assistantResponseContextMatches(text: string) {
 export function splitResponseReply(text: string) {
   const match = assistantResponseContextMatches(text)[0];
   return match?.start === 0 && match.record.kind === "response"
-    ? { prompt: text.slice(match.end).trimStart(), replyTo: match.record }
+    ? { prompt: text.slice(match.end).replace(/^\r?\n\r?\n/, ""), replyTo: match.record }
     : { prompt: text, replyTo: null };
 }
 /** A card's reference stays copyable; the readable fallback never exposes an encoded URI to agents. */

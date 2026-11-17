@@ -18,6 +18,12 @@ const record: AssistantResponseContext = {
   subagents: [{ threadId: ThreadId.make("child"), title: "Review" }],
 };
 describe("assistant response references", () => {
+  it("preserves code indentation after the reply separator", () => {
+    const prompt = "    print(value)\n\tindented";
+    expect(
+      splitResponseReply(serializeAssistantResponseContext(record) + "\n\n" + prompt).prompt,
+    ).toBe(prompt);
+  });
   it("round-trips IDs, bounded opening text and subagent references through message text", () => {
     const link = serializeAssistantResponseContext(record);
     expect(parseAssistantResponseContextHref(assistantResponseContextHref(record))).toEqual(record);

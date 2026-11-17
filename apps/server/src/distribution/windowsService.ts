@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { atomicJson, exists, readJson } from "./files";
 import { acquireInstanceLock, ProfileBusyError } from "../profiles/InstanceLock";
 import { sameProcess } from "./processIdentity";
+import { runWindowsPowerShell } from "../windowsPowerShell";
 
 const xml = (value: string) =>
   value
@@ -62,6 +63,7 @@ export interface WindowsServiceHost extends WindowsServiceIdentity {
   readonly execute: (args: string[]) => Promise<{ stdout: string }>;
   readonly probeProcess?: (pid: number, birth: string | undefined) => Promise<boolean>;
   readonly stopTimeoutMs?: number;
+  readonly isTaskRunning?: () => Promise<boolean>;
 }
 export async function manageWindowsService(
   action: string,
@@ -87,7 +89,7 @@ export async function manageWindowsService(
   await fs.mkdir(stateDir, { recursive: true, mode: 0o700 });
   // The OS releases exclusion on process exit, even after Ctrl+C or a terminal crash.
   // Legacy empty lock files are no longer consulted.
-  const lock = await acquireInstanceLock(path.join(stateDir, ".service-manager-lock.sqlite")).catch(
+  const lock = await acquireInstanceLock(path.join(root, ".service-manager-lock.sqlite")).catch(
     (error) => {
       if (error instanceof ProfileBusyError)
         throw new Error("Another service command is running; refusing concurrent changes.");
@@ -101,7 +103,25 @@ export async function manageWindowsService(
     // A repeating trigger must not restart a service while it is stopped or being uninstalled.
     await host.execute(["/Change", ...target, "/DISABLE"]);
     const leasePath = path.join(root, "launcher.json");
-    if (!(await exists(leasePath))) return;
+    const startupDeadline = Date.now() + (host.stopTimeoutMs ?? 120_000);
+    while (!(await exists(leasePath))) {
+      const running = host.isTaskRunning
+        ? await host.isTaskRunning()
+        : (
+            await runWindowsPowerShell(
+              "$scheduler = New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); [Console]::Write($scheduler.GetFolder('\\').GetTask('" +
+                task.taskName +
+                "').GetInstances(0).Count)",
+              { timeoutMs: 10_000, maxBuffer: 4096 },
+            )
+          ).stdout.trim() !== "0";
+      if (!running) return;
+      if (Date.now() >= startupDeadline)
+        throw new Error(
+          "The service is still starting without a launcher lease; it remains disabled.",
+        );
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
     const lease = (await readJson(leasePath).catch((error) => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
