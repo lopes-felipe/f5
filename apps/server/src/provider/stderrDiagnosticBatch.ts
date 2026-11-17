@@ -10,12 +10,14 @@ export class StderrDiagnosticBatch {
   readonly first: ProviderEvent;
   private text = "";
   private textBytes = 0;
-  private omitted: number;
+  private omitted = 0;
+  private readonly earlierOmitted: number;
+  private full = false;
   private truncated = false;
 
   constructor(event: ProviderEvent, omitted = 0) {
     this.first = { ...event, message: undefined };
-    this.omitted = omitted;
+    this.earlierOmitted = omitted;
     this.append(event.message ?? "Codex process stderr");
   }
 
@@ -25,20 +27,27 @@ export class StderrDiagnosticBatch {
   }
 
   append(message: string): void {
+    if (this.full) {
+      this.omitted = Math.min(Number.MAX_SAFE_INTEGER, this.omitted + 1);
+      return;
+    }
     const separator = this.text ? "\n" : "";
     const available = MAX_DIAGNOSTIC_TEXT_BYTES - this.textBytes;
-    if (this.truncated || Buffer.byteLength(separator) + Buffer.byteLength(message) > available) {
-      if (!this.truncated && available > separator.length) {
+    if (Buffer.byteLength(separator) + Buffer.byteLength(message) > available) {
+      if (available > separator.length) {
         // Streaming decode leaves an incomplete UTF-8 code point out of the excerpt.
         const prefix = new TextDecoder().decode(
           Buffer.from(message).subarray(0, available - separator.length),
           { stream: true },
         );
-        this.text += separator + prefix;
-        this.textBytes = Buffer.byteLength(this.text);
+        if (prefix) {
+          this.text += separator + prefix;
+          this.textBytes = Buffer.byteLength(this.text);
+          this.truncated = true;
+        }
       }
-      this.truncated = true;
-      this.omitted = Math.min(Number.MAX_SAFE_INTEGER, this.omitted + 1);
+      this.full = true;
+      if (!this.truncated) this.omitted = Math.min(Number.MAX_SAFE_INTEGER, this.omitted + 1);
       return;
     }
     this.text += separator + message;
@@ -46,11 +55,24 @@ export class StderrDiagnosticBatch {
   }
 
   toEvent(): ProviderEvent {
+    const lines = (count: number) => count + " stderr " + (count === 1 ? "line" : "lines");
+    const earlier = this.earlierOmitted
+      ? "[" + lines(this.earlierOmitted) + " omitted earlier]\n"
+      : "";
+    const truncated = this.truncated ? "…[stderr line truncated]" : "";
+    const omitted = this.omitted ? "\n[" + lines(this.omitted) + " omitted]" : "";
     return {
       ...this.first,
-      message: this.text + (this.omitted ? "\n[" + this.omitted + " stderr lines omitted]" : ""),
-      ...(this.omitted
-        ? { payload: { detail: this.first.payload, omittedLines: this.omitted } }
+      message: earlier + this.text + truncated + omitted,
+      ...(this.earlierOmitted || this.omitted || this.truncated
+        ? {
+            payload: {
+              ...(this.first.payload !== undefined ? { originalPayload: this.first.payload } : {}),
+              earlierOmittedLines: this.earlierOmitted,
+              omittedLines: this.omitted,
+              truncated: this.truncated,
+            },
+          }
         : {}),
     };
   }

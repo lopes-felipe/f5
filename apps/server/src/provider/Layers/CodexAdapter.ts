@@ -3501,6 +3501,18 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         const openDeltaSlots = new Map<string, Map<string, PendingDeltaSlot>>();
         const openDiagnostics = new Map<string, StderrDiagnosticBatch>();
         const omittedDiagnostics = new Map<string, number>();
+        const reportOmittedDiagnostics = (key: string, reason: string) =>
+          Effect.gen(function* () {
+            const omittedLines = omittedDiagnostics.get(key);
+            omittedDiagnostics.delete(key);
+            if (omittedLines) {
+              yield* Effect.logDebug("Codex stderr lines omitted without a later diagnostic", {
+                contextKey: key,
+                omittedLines,
+                reason,
+              });
+            }
+          });
         const markIncomplete = (event: ProviderEvent) => {
           const key = notificationContextKey(event);
           openDeltaSlots.delete(key);
@@ -3588,9 +3600,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           if (incompleteContexts.has(key) && !control) return;
           let diagnosticBatch: StderrDiagnosticBatch | undefined;
           if (diagnostic) {
-            openDeltaSlots.delete(key);
             const waiting = openDiagnostics.get(key);
             if (waiting) {
+              openDeltaSlots.delete(key);
               waiting.append(event.message ?? "Codex process stderr");
               return eventPreparation.get(key);
             }
@@ -3622,7 +3634,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               }
               contextSlots!.delete(mergeable.identity);
             }
-          } else {
+          } else if (!diagnosticBatch) {
             openDeltaSlots.delete(key);
           }
           const lease = diagnosticBatch
@@ -3640,6 +3652,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             return;
           }
           if (diagnosticBatch) {
+            // Dropped diagnostics must not stop stdout deltas from merging.
+            openDeltaSlots.delete(key);
             omittedDiagnostics.delete(key);
             openDiagnostics.set(key, diagnosticBatch);
           }
@@ -3903,7 +3917,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 }
                 incompleteContexts.delete(key);
                 openDiagnostics.delete(key);
-                omittedDiagnostics.delete(key);
+                yield* reportOmittedDiagnostics(key, event.method);
                 limitsByThread.delete(key);
                 turnStartedAtByThread.delete(key);
                 reasoningTokenBaselineByThread.delete(key);
@@ -3923,8 +3937,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 diagnosticBatch &&
                 liveGeneration !== undefined &&
                 liveGeneration !== event.sessionGeneration
-              )
+              ) {
+                yield* reportOmittedDiagnostics(key, "generation retired during preparation");
                 return;
+              }
               yield* Effect.forEach(safeRuntimeEvents, offerRuntimeEvent, {
                 concurrency: 1,
                 discard: true,
@@ -3978,8 +3994,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               const generation = automationGenerations.get(event.threadId);
               // Retired diagnostics are disposable, unlike authoritative turn output.
               if (generation !== undefined && generation !== event.sessionGeneration) {
-                omittedDiagnostics.delete(key);
-                return Promise.resolve();
+                return Effect.runPromiseWith(services)(
+                  reportOmittedDiagnostics(key, "generation retired before preparation"),
+                );
               }
               return prepareEvent(diagnosticBatch.toEvent());
             }
@@ -4007,10 +4024,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           return next;
         };
         yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            openDiagnostics.clear();
-            omittedDiagnostics.clear();
-          }),
+          Effect.forEach(
+            [...omittedDiagnostics.keys()],
+            (key) => reportOmittedDiagnostics(key, "adapter shutdown"),
+            { discard: true },
+          ).pipe(Effect.andThen(Effect.sync(() => openDiagnostics.clear()))),
         );
         manager.on("event", listener);
         return listener;

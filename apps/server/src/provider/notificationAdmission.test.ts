@@ -2,6 +2,55 @@ import { describe, expect, it, vi } from "vitest";
 import { NotificationAdmission } from "./notificationAdmission.ts";
 
 describe("notification admission", () => {
+  it("uses configured diagnostic entry, context, and byte ceilings", () => {
+    const queue = new NotificationAdmission({
+      entries: 1,
+      bytes: 1,
+      controls: 1,
+      diagnosticsPerContext: 1,
+      diagnostics: 2,
+      diagnosticBytes: 100,
+    });
+    const a = queue.reserveDiagnostic("a", 40)!;
+    expect(queue.reserveDiagnostic("a", 1)).toBeUndefined();
+    expect(queue.reserveDiagnostic("b", 61)).toBeUndefined();
+    const b = queue.reserveDiagnostic("b", 60)!;
+    expect(queue.reserveDiagnostic("c", 0)).toBeUndefined();
+    expect(queue.reserve("c", 1)).toBeDefined();
+    expect(queue.reserve("c", 1, true)).toBeDefined();
+    a.release();
+    b.release();
+    expect(queue.snapshot().diagnostics).toBe(0);
+    expect(queue.reserveDiagnostic("c", 100)).toBeDefined();
+  });
+
+  it("can disable diagnostic admission without disabling lifecycle events", () => {
+    const queue = new NotificationAdmission({
+      entries: 1,
+      bytes: 100,
+      controls: 1,
+      diagnostics: 0,
+    });
+    expect(queue.reserveDiagnostic("a", 1)).toBeUndefined();
+    expect(queue.reserve("a", 1, true)).toBeDefined();
+  });
+
+  it("rejects another context when conservative full-batch byte reservations fill the lane", () => {
+    const queue = new NotificationAdmission({
+      entries: 1,
+      bytes: 100,
+      controls: 1,
+      diagnosticBytes: 34000,
+    });
+    const a = queue.reserveDiagnostic("a", 16900)!;
+    const b = queue.reserveDiagnostic("b", 16900)!;
+    expect(queue.reserveDiagnostic("c", 16900)).toBeUndefined();
+    expect(queue.reserve("c", 1, true)).toBeDefined();
+    a.release();
+    expect(queue.reserveDiagnostic("c", 16900)).toBeDefined();
+    b.release();
+  });
+
   it("isolates diagnostic quotas from transcript and control admission", () => {
     const queue = new NotificationAdmission({ entries: 1, bytes: 1, controls: 1 });
     const first = queue.reserveDiagnostic("a", 100)!;

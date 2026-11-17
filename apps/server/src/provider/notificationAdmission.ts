@@ -19,6 +19,12 @@ export interface NotificationAdmissionLimits {
   readonly controls: number;
   /** Data entries held across all contexts. Defaults to 8,192. */
   readonly globalEntries?: number;
+  /** Diagnostic batches held per context. Defaults to two. */
+  readonly diagnosticsPerContext?: number;
+  /** Diagnostic batches held globally. Defaults to 64. */
+  readonly diagnostics?: number;
+  /** Diagnostic bytes held globally, independently of data/control. Defaults to 1 MiB. */
+  readonly diagnosticBytes?: number;
 }
 
 const DEFAULT_LIMITS = {
@@ -26,9 +32,11 @@ const DEFAULT_LIMITS = {
   bytes: 32 * 1024 * 1024,
   controls: 64,
   globalEntries: 8192,
+  diagnosticsPerContext: 2,
+  diagnostics: 64,
+  diagnosticBytes: 1024 * 1024,
 };
 const CONTROL_BYTE_LIMIT = 1024 * 1024;
-const DIAGNOSTIC_BYTE_LIMIT = 1024 * 1024;
 
 const isByteCount = (bytes: number) => Number.isSafeInteger(bytes) && bytes >= 0;
 
@@ -54,6 +62,9 @@ export class NotificationAdmission {
       ...DEFAULT_LIMITS,
       ...limits,
       globalEntries: limits?.globalEntries ?? DEFAULT_LIMITS.globalEntries,
+      diagnosticsPerContext: limits?.diagnosticsPerContext ?? DEFAULT_LIMITS.diagnosticsPerContext,
+      diagnostics: limits?.diagnostics ?? DEFAULT_LIMITS.diagnostics,
+      diagnosticBytes: limits?.diagnosticBytes ?? DEFAULT_LIMITS.diagnosticBytes,
     };
   }
 
@@ -63,7 +74,8 @@ export class NotificationAdmission {
 
   /**
    * Lossy diagnostics never borrow transcript or lifecycle capacity: at most
-   * two batches per context, 64 globally, and 1 MiB across those batches.
+   * two batches per context, 64 globally, and 1 MiB across those batches by default.
+   * Batches reserve their full text allowance, so bytes can bind before entries.
    */
   reserveDiagnostic(contextKey: string, bytes: number): AdmissionLease | undefined {
     return this.reserveLane(contextKey, bytes, "diagnostic");
@@ -77,8 +89,9 @@ export class NotificationAdmission {
     if (!isByteCount(bytes)) return undefined;
     if (lane === "diagnostic") {
       const held = this.contextDiagnostics.get(contextKey) ?? 0;
-      if (held >= 2 || this.diagnostics >= 64) return undefined;
-      if (this.diagnosticBytes + bytes > DIAGNOSTIC_BYTE_LIMIT) return undefined;
+      if (held >= this.limits.diagnosticsPerContext || this.diagnostics >= this.limits.diagnostics)
+        return undefined;
+      if (this.diagnosticBytes + bytes > this.limits.diagnosticBytes) return undefined;
       this.contextDiagnostics.set(contextKey, held + 1);
       this.diagnostics++;
       this.diagnosticBytes += bytes;

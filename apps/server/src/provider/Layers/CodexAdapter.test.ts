@@ -16,7 +16,7 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterAll, it, vi } from "@effect/vitest";
 
-import { Deferred, Effect, Fiber, Layer, Option, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, Logger, Option, References, Stream } from "effect";
 import { holdsAutomaticResume, isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
 import { getDefaultReasoningEffort, normalizeCodexModelOptions } from "@t3tools/shared/model";
 
@@ -47,7 +47,10 @@ import {
 } from "./CodexAdapter.ts";
 import { CodexChromeSession } from "../codexChromeSession.ts";
 import { normalizeTurnUsage } from "../../usage/usageMetrics.ts";
-import { NotificationAdmission } from "../notificationAdmission.ts";
+import {
+  NotificationAdmission,
+  type NotificationAdmissionLimits,
+} from "../notificationAdmission.ts";
 
 it("reports Codex's preview as verified, so its chip can reach ready", () => {
   const [event] = withAgentBrowserPreview(
@@ -3795,7 +3798,7 @@ it.effect(
 const makeGatedAdapter = (
   manager: FakeCodexManager,
   gateIds: ReadonlyArray<string>,
-  notificationLimits?: { entries: number; bytes: number; controls: number },
+  notificationLimits?: NotificationAdmissionLimits,
 ) =>
   Effect.gen(function* () {
     const entered = yield* Deferred.make<void>(),
@@ -4047,7 +4050,13 @@ it.effect("keeps stdout lossless when the canonical consumer stalls during stder
       const base = mergeBase("slow-stderr-consumer");
       for (let index = 0; index < 600; index++) {
         emitStderrDiagnostic(manager, base, "slow-stderr-" + index, "diagnostic");
-        emitCommandDelta(manager, base, "slow-stdout-" + index, "command", String(index) + ";");
+        emitCommandDelta(
+          manager,
+          base,
+          "slow-stdout-" + index,
+          "command-" + index,
+          String(index) + ";",
+        );
       }
       emitTurnCompleted(manager, base, "slow-completed");
       // With no subscriber, the canonical queue's 512-unit budget must stall preparation.
@@ -4065,6 +4074,74 @@ it.effect("keeps stdout lossless when the canonical consumer stalls during stder
       assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
     }).pipe(Effect.provide(gate.layer));
   }).pipe(Effect.scoped);
+});
+
+it.effect(
+  "keeps merging more than 1,024 tiny stdout deltas when interleaved stderr is dropped",
+  () => {
+    const manager = new FakeCodexManager();
+    return Effect.gen(function* () {
+      const gate = yield* makeGatedAdapter(manager, ["hold-output"]);
+      yield* Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        const collected = yield* collectUntilCompleted(adapter, 1);
+        const base = mergeBase("interleaved-dropped-stderr");
+        emitCommandDelta(manager, base, "hold-output", "command", "prefix;");
+        yield* Deferred.await(gate.entered);
+        for (let index = 0; index < 1500; index++) {
+          emitStderrDiagnostic(manager, base, "interleaved-stderr-" + index, "diagnostic");
+          emitCommandDelta(manager, base, "tiny-stdout-" + index, "command", "x");
+        }
+        emitTurnCompleted(manager, base, "interleaved-completed");
+        assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
+        yield* Deferred.succeed(gate.release, undefined);
+        const events = yield* Fiber.join(collected);
+        const deltas = events.filter((event) => event.type === "content.delta");
+        assert.equal(deltas.map(deltaText).join(""), "prefix;" + "x".repeat(1500));
+        assert.ok(deltas.length <= 4);
+        assert.equal(events.filter((event) => event.type === "runtime.error").length, 0);
+        yield* adapter.sendTurn({ threadId: base.threadId, input: "continue" });
+      }).pipe(Effect.provide(gate.layer));
+    }).pipe(Effect.scoped);
+  },
+);
+
+it.effect("records leftover omission counts at shutdown even without a later stderr event", () => {
+  const manager = new FakeCodexManager();
+  const messages: unknown[] = [];
+  return Effect.gen(function* () {
+    const gate = yield* makeGatedAdapter(manager, [], {
+      entries: 1,
+      bytes: 1024,
+      controls: 1,
+      diagnostics: 0,
+    });
+    yield* Effect.gen(function* () {
+      yield* CodexAdapter;
+      const base = mergeBase("omissions-at-shutdown");
+      for (let index = 0; index < 3; index++) {
+        emitStderrDiagnostic(manager, base, "dropped-" + index, "dropped");
+      }
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Logger.layer([Logger.make(({ message }) => messages.push(message))], {
+        mergeWithExisting: false,
+      }),
+    ),
+    Effect.provideService(References.MinimumLogLevel, "Debug"),
+    Effect.tap(() =>
+      Effect.sync(() => {
+        const entry = messages.find((message) =>
+          JSON.stringify(message).includes("omissions-at-shutdown"),
+        );
+        assert.ok(entry);
+        assert.match(JSON.stringify(entry), /"omittedLines":3/);
+        assert.match(JSON.stringify(entry), /adapter shutdown/);
+      }),
+    ),
+  );
 });
 
 it.effect(
@@ -4171,7 +4248,12 @@ it.effect(
         emitTurnCompleted(manager, base, "quota-completed");
         const events = yield* Fiber.join(collected);
         const warning = events.find((event) => event.type === "runtime.warning");
-        assert.equal(warning?.payload.message, "third\n[100 stderr lines omitted]");
+        assert.equal(warning?.payload.message, "[100 stderr lines omitted earlier]\nthird");
+        assert.deepEqual(warning?.payload.detail, {
+          earlierOmittedLines: 100,
+          omittedLines: 0,
+          truncated: false,
+        });
         assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
       }).pipe(Effect.provide(gate.layer));
     }).pipe(Effect.scoped);
