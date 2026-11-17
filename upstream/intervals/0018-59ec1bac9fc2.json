@@ -1,0 +1,72 @@
+{
+  "baseSha": "2756da402b5d795baa05762cba1706a2c0e2fac8",
+  "commits": [
+    {
+      "pr": 31142,
+      "sha": "59ec1bac9fc2624171854cfdb9c4140b0166a115",
+      "subject": "feat(marketing): help search engines tell t3.codes apart from copycat sites (#31142)",
+      "topic": "pr-31142"
+    },
+    {
+      "pr": 31941,
+      "sha": "8344de78eb5e1ee1c32a685bea62cf89afcf1752",
+      "subject": "ci(release): JS bundle jobs stop building an unused Linux helper (#31941)",
+      "topic": "pr-31941"
+    },
+    {
+      "pr": 31158,
+      "sha": "d14f87f80a3de1c732c47309ae3f6c573dcc430d",
+      "subject": "feat(antigravity): identify as T3 Code to agy acp 1.5.1+ (#31158)",
+      "topic": "pr-31158"
+    },
+    {
+      "pr": 31942,
+      "sha": "10af8eed7360a6efc302a036f66474d5012e4882",
+      "subject": "perf(ci): release uploads stop recompressing installers and CLI archives (#31942)",
+      "topic": "pr-31942"
+    },
+    {
+      "pr": 29285,
+      "sha": "6dcaf6cbe727e520f5ff9d854d3be30c89b42bda",
+      "subject": "fix(web): remote subagents no longer split from the lineage list (#29285)",
+      "topic": "pr-29285"
+    },
+    {
+      "pr": 31937,
+      "sha": "9899b4724d14ad1911a228cfebeca35aa6cad8b1",
+      "subject": "ci: stacked PRs stop evicting the shared pnpm cache (#31937)",
+      "topic": "pr-31937"
+    },
+    {
+      "pr": 31924,
+      "sha": "c8267db9ac19d22b4ff799f2529f5e691999697d",
+      "subject": "fix(web): tagging a thread by drag no longer scrolls the sidebar (#31924)",
+      "topic": "pr-30346"
+    },
+    {
+      "pr": 27691,
+      "sha": "86d8838e91b81d328fd8ced042860c7c60160dcd",
+      "subject": "fix(web): dragging a sidebar thread no longer scrolls the list to the bottom (#27691)",
+      "topic": "pr-30346"
+    },
+    {
+      "pr": 25971,
+      "sha": "202d5b5616e3edf65706371e2b8a9c4f486d0a96",
+      "subject": "fix(devices): keep devices listed when simulator discovery fails (#25971)",
+      "topic": "pr-25971"
+    },
+    {
+      "pr": 31888,
+      "sha": "ef81fd15cae6b66d8983c70f38c39854d1fdb06f",
+      "subject": "fix(web): keep task updates static in the timeline (#31888)",
+      "topic": "pr-31888"
+    }
+  ],
+  "count": 10,
+  "createdAt": "2026-11-06T11:04:35.225Z",
+  "digest": "df83d73075dfdc2b24da817e31ee4d85b92a4fc13b6d9bb3b0238bb4a0f5678b",
+  "interval": 18,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "59ec1bac9fc2624171854cfdb9c4140b0166a115"
+}

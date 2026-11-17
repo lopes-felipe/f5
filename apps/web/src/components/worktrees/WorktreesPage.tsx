@@ -237,22 +237,19 @@ export function WorktreesPage({
     candidateThread && (!search.projectId || candidateThread.projectId === search.projectId)
       ? candidateThread
       : null;
-  const confirmSharing = async (row: WorktreeListEntry, own: ThreadId | null = null) => {
+  // The row lists its linked conversations, which is the sharing disclosure, so
+  // choosing it acknowledges sharing without a confirmation dialog.
+  const sharesCheckout = (row: WorktreeListEntry, own: ThreadId | null = null) => {
     // New local drafts already share the project checkout. A transition from
     // another checkout still needs the server's explicit sharing acknowledgment.
     if (row.classification === "projectCheckout" && (!own || !targetThread?.worktreePath))
       return false;
-    if (!row.linkedThreads.some((t) => t.threadId !== own)) return false;
-    const confirmed = await ensureNativeApi().dialogs.confirm(
-      "Other conversations use this checkout. They will share files and uncommitted changes. Continue?",
-    );
-    if (!confirmed) throw new Error("Workspace sharing was cancelled.");
-    return true;
+    return row.linkedThreads.some((t) => t.threadId !== own);
   };
   const useWorkspace = async (projectId: ProjectId, row: WorktreeListEntry) => {
     if (!selectedThread || targetThread?.projectId !== projectId)
       throw new Error("Choose a conversation in this project first.");
-    const sharedFilesystemConfirmed = await confirmSharing(row, selectedThread);
+    const sharedFilesystemConfirmed = sharesCheckout(row, selectedThread);
     try {
       if (drafts[selectedThread]) {
         useComposerDraftStore.getState().setDraftThreadContext(selectedThread, {
@@ -376,12 +373,7 @@ export function WorktreesPage({
                 threadId={targetThread?.projectId === project.projectId ? selectedThread : null}
                 onUse={() => useWorkspace(project.projectId, row)}
                 onNew={async () => {
-                  const sharedFilesystemConfirmed = await confirmSharing(row);
-                  // The project may have been removed while the dialog was open.
-                  const stillPresent = useStore
-                    .getState()
-                    .projects.some((entry) => entry.id === project.projectId);
-                  if (!stillPresent) return;
+                  const sharedFilesystemConfirmed = sharesCheckout(row);
                   const draft = await handleNewThread(project.projectId, {
                     branch: row.branch,
                     worktreePath: row.classification === "projectCheckout" ? null : row.path,

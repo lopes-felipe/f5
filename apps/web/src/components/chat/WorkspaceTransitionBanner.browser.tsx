@@ -134,7 +134,7 @@ it("offers the inspected project checkout when a failed recreation left neither 
   await expect
     .element(page.getByRole("button", { name: "Keep original workspace" }))
     .toBeDisabled();
-  await page.getByRole("button", { name: "Continue in project checkout" }).click();
+  await page.getByRole("button", { name: "Continue in Local" }).click();
   expect(api.resolveTransition).toHaveBeenCalledWith({
     operationId: "switch",
     version: 5,

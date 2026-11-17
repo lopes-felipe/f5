@@ -45,6 +45,7 @@ import {
 } from "../lib/threadPullRequests";
 import { useStore } from "../store";
 import { selectThreadById } from "../threadSelectors";
+import { WorktreeMissingControl } from "./chat/WorktreeMissingControl";
 import {
   ThreadPullRequestMenuItems,
   threadPullRequestsSpanRepositories,
@@ -966,14 +967,7 @@ export default function GitActionsControl({
   return (
     <>
       {branchList?.worktreeMissing ? (
-        <Button
-          variant="outline"
-          size="sm"
-          disabled
-          title="The worktree directory is missing. Sending a turn will attempt recovery."
-        >
-          Worktree missing
-        </Button>
+        <WorktreeMissingControl threadId={activeThreadId} isServerThread={isServerThread} />
       ) : !isRepo ? (
         <Button
           variant="outline"
