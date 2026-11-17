@@ -1413,56 +1413,63 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
-  it.effect(
-    "submits native commands and acknowledges their user-message receipt before generation finishes",
-    () =>
-      Effect.gen(function* () {
-        const adapter = yield* OpenCodeAdapter;
-        runtimeMock.state.commands = [{ name: "review", description: "Review code" }];
-        const threadId = asThreadId("native-command");
-        yield* adapter.startSession({ provider: "opencode", threadId, runtimeMode: "full-access" });
-        while (!runtimeMock.state.emitEvent) yield* sleep(1);
-        const result = yield* adapter
-          .sendTurn({
+  for (const mimeType of ["text/plain", "text/markdown"]) {
+    const name = mimeType === "text/plain" ? "review-notes.txt" : "review-notes.md";
+    it.effect(
+      `submits native commands with ${mimeType} attachments without adding metadata to arguments`,
+      () =>
+        Effect.gen(function* () {
+          const adapter = yield* OpenCodeAdapter;
+          runtimeMock.state.commands = [{ name: "review", description: "Review code" }];
+          const threadId = asThreadId("native-command");
+          yield* adapter.startSession({
+            provider: "opencode",
             threadId,
-            input: "/review current changes",
-            attachments: [
-              {
-                type: "file",
-                id: "review-notes",
-                name: "review-notes.txt",
-                mimeType: "text/plain",
-                sizeBytes: 24,
+            runtimeMode: "full-access",
+          });
+          while (!runtimeMock.state.emitEvent) yield* sleep(1);
+          const result = yield* adapter
+            .sendTurn({
+              threadId,
+              input: "/review current changes",
+              attachments: [
+                {
+                  type: "file",
+                  id: "review-notes",
+                  name,
+                  mimeType,
+                  sizeBytes: 24,
+                },
+              ],
+              resolvedAttachments: [
+                {
+                  type: "file",
+                  id: "review-notes",
+                  name,
+                  mimeType,
+                  sizeBytes: 24,
+                  localPath: `/tmp/${name}`,
+                },
+              ],
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("opencode"),
+                model: "openai/gpt-5",
               },
-            ],
-            resolvedAttachments: [
-              {
-                type: "file",
-                id: "review-notes",
-                name: "review-notes.txt",
-                mimeType: "text/plain",
-                sizeBytes: 24,
-                localPath: "/tmp/review-notes.txt",
-              },
-            ],
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("opencode"),
-              model: "openai/gpt-5",
-            },
-          })
-          .pipe(Effect.timeout("3 seconds"));
-        assert.equal(result.threadId, threadId);
-        assert.equal(runtimeMock.state.promptCalls.length, 0);
-        assert.equal(runtimeMock.state.commandCalls[0]?.command, "review");
-        assert.equal(runtimeMock.state.commandCalls[0]?.arguments, "current changes");
-        assert.deepEqual(
-          runtimeMock.state.commandCalls[0]?.parts.map((part) => part.filename),
-          ["review-notes.txt"],
-        );
-        runtimeMock.state.releaseCommand?.();
-        yield* adapter.stopSession(threadId);
-      }),
-  );
+            })
+            .pipe(Effect.timeout("3 seconds"));
+          assert.equal(result.threadId, threadId);
+          assert.equal(runtimeMock.state.promptCalls.length, 0);
+          assert.equal(runtimeMock.state.commandCalls[0]?.command, "review");
+          assert.equal(runtimeMock.state.commandCalls[0]?.arguments, "current changes");
+          assert.deepEqual(
+            runtimeMock.state.commandCalls[0]?.parts.map((part) => part.filename),
+            mimeType === "text/plain" ? [name] : [],
+          );
+          runtimeMock.state.releaseCommand?.();
+          yield* adapter.stopSession(threadId);
+        }),
+    );
+  }
 
   it.effect("rolls back session state when sendTurn fails before OpenCode accepts the prompt", () =>
     Effect.gen(function* () {

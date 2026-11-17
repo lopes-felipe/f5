@@ -1,23 +1,29 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { GrokSettings } from "@t3tools/contracts";
+import { GrokSettings, ProviderInstanceId } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 import { Effect, FileSystem, Schema } from "effect";
 import { expect } from "vitest";
 
 import { writeCliScript } from "../../testUtils/cli.ts";
 import { makeGrokTextGeneration } from "./GrokTextGeneration.ts";
+import { makeGrokAcpRuntime } from "../../provider/acp/GrokAcpSupport.ts";
 
-it.effect("overrides always-approve and cancels tool requests during background generation", () =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "f5-grok-text-" });
-    const log = dir + "/permission.json";
-    const binaryPath = writeCliScript(
-      dir + "/grok",
-      String.raw`
+for (const customRuntime of [false, true]) {
+  it.effect(`cancels background tool requests with custom runtime=${customRuntime}`, () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "f5-grok-text-" });
+      const log = dir + "/permission.json";
+      const binaryPath = writeCliScript(
+        dir + "/grok",
+        String.raw`
 const fs = require("node:fs");
 const readline = require("node:readline");
-if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["--permission-mode", "default", "agent", "stdio"])) {
+const expectedArgs = process.env.F5_CUSTOM_RUNTIME === "1"
+  ? ["agent", "stdio"]
+  : ["--permission-mode", "default", "agent", "stdio"];
+if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expectedArgs)) {
   throw new Error("background generation inherited permission config");
 }
 const write = (value) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...value }) + "\n");
@@ -48,20 +54,36 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   write({ id: request.id, result });
 });
 `,
-    );
-    const generator = yield* makeGrokTextGeneration(
-      Schema.decodeSync(GrokSettings)({ binaryPath }),
-      { ...process.env, F5_PERMISSION_LOG: log },
-    );
-    const result = yield* generator.generateCommitMessage({
-      cwd: dir,
-      branch: "feature",
-      stagedSummary: "1 file changed",
-      stagedPatch: "untrusted diff text",
-    });
-    expect(result.subject).toBe("Safe commit");
-    expect(JSON.parse(yield* fs.readFileString(log))).toEqual({
-      outcome: { outcome: "cancelled" },
-    });
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
+      );
+      const generator = yield* makeGrokTextGeneration(
+        Schema.decodeSync(GrokSettings)({ binaryPath }),
+        { ...process.env, F5_PERMISSION_LOG: log, F5_CUSTOM_RUNTIME: customRuntime ? "1" : "0" },
+        customRuntime
+          ? {
+              // A custom runtime need not honor the Grok mode hint. The shared
+              // permission handler must still cancel requests before prompting.
+              makeRuntime: (input) => {
+                expect(input.runtimeMode).toBe("approval-required");
+                return makeGrokAcpRuntime({ ...input, runtimeMode: undefined });
+              },
+              normalizeModel: (model) => model,
+              defaultModelSelection: createModelSelection(
+                ProviderInstanceId.make("custom-acp"),
+                "grok-build",
+              ),
+            }
+          : undefined,
+      );
+      const result = yield* generator.generateCommitMessage({
+        cwd: dir,
+        branch: "feature",
+        stagedSummary: "1 file changed",
+        stagedPatch: "untrusted diff text",
+      });
+      expect(result.subject).toBe("Safe commit");
+      expect(JSON.parse(yield* fs.readFileString(log))).toEqual({
+        outcome: { outcome: "cancelled" },
+      });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+}
