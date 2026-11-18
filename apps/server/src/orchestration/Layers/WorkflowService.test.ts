@@ -36,6 +36,7 @@ import {
   type ProjectionTurnRepositoryShape,
 } from "../../persistence/Services/ProjectionTurns.ts";
 import { summarizePlanningWorkflow } from "@t3tools/shared/workflowSummary";
+import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import {
   OrchestrationCommandReceiptRepository,
   type OrchestrationCommandReceiptRepositoryShape,
@@ -587,8 +588,10 @@ async function createHarness(
     readonly retryDelivery?: ProviderTurnDeliveryWorkerShape["retry"];
     readonly getRevisionDelivery?: ProviderTurnDeliveryRepositoryShape["getByCommandId"];
     readonly getProjectedTurn?: ProjectionTurnRepositoryShape["getByTurnId"];
+    readonly latestDelivery?: ProviderTurnDelivery;
     readonly getCommandReceipt?: OrchestrationCommandReceiptRepositoryShape["getByCommandId"];
     readonly requestSummary?: CompactionServiceShape["requestSummary"];
+    readonly readEvents?: OrchestrationEngineShape["readEvents"];
     readonly dispatchDefect?: (command: OrchestrationCommand) => Error | null;
   },
 ) {
@@ -646,7 +649,7 @@ async function createHarness(
   const getReadModel = vi.fn(() => Effect.succeed(snapshot));
   const engine: OrchestrationEngineShape = {
     getReadModel,
-    readEvents: () => Stream.empty,
+    readEvents: options?.readEvents ?? (() => Stream.empty),
     dispatch: (command) =>
       Effect.sync(() => {
         if (acceptedCommandIds.has(command.commandId)) {
@@ -790,7 +793,7 @@ async function createHarness(
       Layer.provideMerge(
         Layer.succeed(ProviderTurnDeliveryRepository, {
           getByCommandId: options?.getRevisionDelivery ?? (() => Effect.succeed(null)),
-          getLatestByThread: () => Effect.succeed(null),
+          getLatestByThread: () => Effect.succeed(options?.latestDelivery ?? null),
           getUnresolvedByThread: () => Effect.succeed(null),
         } as unknown as ProviderTurnDeliveryRepositoryShape),
       ),
@@ -5103,6 +5106,8 @@ describe("WorkflowService", () => {
   it.each([
     "recovered",
     "already fits",
+    "verified rename",
+    "unverified checkout",
     "intrinsically oversized",
     "missing report",
     "cost limit",
@@ -5164,7 +5169,10 @@ describe("WorkflowService", () => {
         implementationTurnId,
         status: "code_reviews_saved",
         codeReviews: reviews.map((review) => review.state),
-        branch: "implementation-branch",
+        branch:
+          scenario === "verified rename" || scenario === "unverified checkout"
+            ? buildTemporaryWorktreeBranchName()
+            : "implementation-branch",
         worktreePath: "/tmp/project/worktrees/implementation",
       }),
     });
@@ -5191,7 +5199,8 @@ describe("WorkflowService", () => {
         lastError: null,
         updatedAt: NOW,
         modelContextWindowTokens: 200_000,
-        estimatedContextTokens: scenario === "already fits" ? 11_567 : 195_238,
+        estimatedContextTokens:
+          scenario === "already fits" || scenario === "verified rename" ? 11_567 : 195_238,
         tokenUsageSource: "provider",
       },
     });
@@ -5203,6 +5212,18 @@ describe("WorkflowService", () => {
         threads: [implementationThread, ...reviews.map((review) => review.thread)],
       }),
       {
+        readEvents: () =>
+          scenario === "verified rename"
+            ? Stream.succeed({
+                ...makeEvent("thread.meta-updated", {
+                  threadId,
+                  branch: implementationThread.branch,
+                  worktreePath: implementationThread.worktreePath,
+                  updatedAt: NOW,
+                }),
+                commandId: CommandId.makeUnsafe("server:worktree-branch-rename:test"),
+              } as OrchestrationEvent)
+            : Stream.empty,
         requestSummary: (input) =>
           Effect.sync(() => {
             request = input;
@@ -5315,12 +5336,13 @@ describe("WorkflowService", () => {
     } else {
       expect(request).toBeUndefined();
     }
-    if (scenario === "recovered" || scenario === "already fits") {
+    if (scenario === "recovered" || scenario === "already fits" || scenario === "verified rename") {
       await waitFor(() => starts().length === 1);
       expect(starts()[0]?.message.text).toContain(reportA);
       expect(starts()[0]?.message.text).toContain(reportB);
       expect(current()?.status).toBe("applying_reviews");
       expect(current()?.revisionTurnId).toBeNull();
+      expect(current()?.branch).toBe("implementation-branch");
       expect(
         harness.getSnapshot().threads.find((thread) => thread.id === threadId)?.worktreePath,
       ).toBe("/tmp/project/worktrees/implementation");
@@ -5333,6 +5355,92 @@ describe("WorkflowService", () => {
 
       if (scenario === "already fits") {
         const initial = starts()[0]!;
+        const revisionTurn = TurnId.makeUnsafe("legacy-revision");
+        const responseId = MessageId.makeUnsafe("legacy-revision-response");
+        const accepted = makeProviderTurnDelivery(threadId, "accepted");
+        const legacy = {
+          ...accepted,
+          providerTurnId: revisionTurn,
+          event: {
+            ...makeEvent("thread.turn-start-requested", {
+              threadId,
+              messageId: accepted.messageId,
+              requestedAt: NOW,
+            } as never),
+            commandId: accepted.commandId,
+          } as OrchestrationEvent,
+        };
+        const projected = {
+          threadId,
+          turnId: revisionTurn,
+          state: "completed" as const,
+          assistantMessageId: responseId,
+          pendingMessageId: legacy.messageId,
+          requestedAt: NOW,
+          startedAt: NOW,
+          completedAt: NOW,
+          processingQuiescedAt: NOW,
+          checkpointTurnCount: null,
+          checkpointRef: null,
+          checkpointStatus: null,
+          checkpointFiles: [],
+        };
+        for (const status of ["code_reviews_saved", "completed"] as const) {
+          const restarted = await createHarness(
+            makeReadModel({
+              workflow: {
+                ...workflow,
+                implementation: {
+                  ...workflow.implementation!,
+                  status,
+                  revisionTurnId: status === "completed" ? implementationTurnId : null,
+                },
+              },
+              threads: [
+                {
+                  ...implementationThread,
+                  latestTurn: projected,
+                  messages: [
+                    {
+                      id: legacy.messageId,
+                      role: "user",
+                      text: initial.message.text.replace(reportA, reportA.trim()),
+                      turnId: revisionTurn,
+                      streaming: false,
+                      createdAt: NOW,
+                      updatedAt: NOW,
+                    },
+                    {
+                      id: responseId,
+                      role: "assistant",
+                      text: "Applied the reviews.",
+                      turnId: revisionTurn,
+                      streaming: false,
+                      createdAt: NOW,
+                      updatedAt: NOW,
+                    },
+                  ],
+                },
+                ...reviews.map((review) => review.thread),
+              ],
+            }),
+            {
+              latestDelivery: legacy,
+              getRevisionDelivery: () => Effect.succeed(legacy),
+              getProjectedTurn: () => Effect.succeed(Option.some(projected)),
+            },
+          );
+          try {
+            await restarted.start();
+            expect(restarted.getSnapshot().planningWorkflows[0]?.implementation).toMatchObject({
+              status: "completed",
+              revisionTurnId: revisionTurn,
+            });
+            expect(turnStartsForThread(restarted.dispatched, threadId)).toHaveLength(0);
+          } finally {
+            await restarted.dispose();
+          }
+        }
         const targetDeliveryId = CommandId.makeUnsafe("revision-delivery-id");
         for (const state of ["missing", "pending", "sending", "rejected", "ambiguous"] as const) {
           const delivery =
@@ -5409,6 +5517,7 @@ describe("WorkflowService", () => {
         reviews.map((review) => review.state.pinnedAssistantMessageId),
       );
       const details = {
+        "unverified checkout": "checkout changed",
         "intrinsically oversized": "maximum",
         "missing report": "Reviewer 2",
         "cost limit": "cost limit",
@@ -5417,6 +5526,55 @@ describe("WorkflowService", () => {
         "restored context too large": "1856 tokens",
       };
       expect(current()?.error).toContain(details[scenario]);
+      if (scenario === "provider failure") {
+        const failed = current()!;
+        const delivery = {
+          ...makeProviderTurnDelivery(threadId, "rejected"),
+          commandId: failed.revisionDispatchCommandId!,
+          certainty: "not_sent" as const,
+        };
+        const retryDelivery = vi.fn(() => Effect.succeed(delivery));
+        let recoveryId: CommandId | undefined;
+        const persisted = harness.getSnapshot();
+        const restarted = await createHarness(persisted, {
+          getRevisionDelivery: () => Effect.succeed(delivery),
+          retryDelivery,
+          requestSummary: (recovery) =>
+            Effect.sync(() => {
+              recoveryId = recovery.requestId;
+              restarted.setSnapshot({
+                ...restarted.getSnapshot(),
+                threads: persisted.threads.map((thread) =>
+                  thread.id === threadId
+                    ? {
+                        ...thread,
+                        session: {
+                          ...implementationThread.session!,
+                          estimatedContextTokens: 11_567,
+                        },
+                      }
+                    : thread,
+                ),
+              });
+              return { kind: "skipped" as const, detail: "Another operation freed capacity." };
+            }),
+        });
+        try {
+          await restarted.start();
+          await Effect.runPromise(restarted.service.retryWorkflow({ workflowId: workflow.id }));
+          await waitFor(() => retryDelivery.mock.calls.length === 1);
+          expect(recoveryId).toBeDefined();
+          expect(recoveryId).not.toBe(failed.revisionCompaction?.requestId);
+          expect(retryDelivery).toHaveBeenCalledWith({
+            threadId,
+            deliveryId: delivery.deliveryId,
+            allowPossibleDuplicate: false,
+          });
+          expect(turnStartsForThread(restarted.dispatched, threadId)).toHaveLength(0);
+        } finally {
+          await restarted.dispose();
+        }
+      }
     }
   });
 

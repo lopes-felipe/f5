@@ -2895,6 +2895,24 @@ describe("runOneOffPrompt warm app-server reuse", () => {
     manager.stopAll();
   });
 
+  it("opens read-only one-off threads on cold and warm workers", async () => {
+    const { manager, startSession, sendRequest } = createOneOffPoolHarness();
+    try {
+      await manager.runOneOffPrompt({ prompt: "cold", runtimeMode: "approval-required" });
+      await manager.runOneOffPrompt({ prompt: "warm", runtimeMode: "approval-required" });
+      expect(startSession).toHaveBeenCalledTimes(1);
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({ runtimeMode: "approval-required" }),
+      );
+      expect(sendRequest.mock.calls.find((call) => call[1] === "thread/start")?.[2]).toMatchObject({
+        sandbox: "read-only",
+        approvalPolicy: "untrusted",
+      });
+    } finally {
+      manager.stopAll();
+    }
+  });
+
   it("replaces a warm app-server that exited while idle", async () => {
     const { manager, sessions, startSession } = createOneOffPoolHarness();
 

@@ -781,6 +781,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                   WHERE delivery.thread_id = ${command.threadId}
                     AND (delivery.state IN ('pending', 'sending', 'ambiguous')
                       OR (delivery.state = 'accepted' AND delivery.reservation_released_at IS NULL
+                        AND ${thread.session?.status === "stopped" ? 1 : 0} = 0
                         AND NOT EXISTS (
                           SELECT 1 FROM projection_turns AS turn WHERE turn.thread_id = delivery.thread_id
                             AND turn.turn_id = delivery.provider_turn_id AND turn.completed_at IS NOT NULL

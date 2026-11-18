@@ -1,4 +1,5 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { estimateModelContextWindowTokens } from "@t3tools/shared/model";
 import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
 import { hasNativeOperationReservation } from "../../provider/nativeOperations.ts";
 import {
@@ -101,18 +102,31 @@ const make = Effect.gen(function* () {
     readonly route: ReturnType<typeof resolveOneOffPromptRoute>;
     readonly cwd?: string | undefined;
     readonly timeoutMs?: number | undefined;
-  }) => {
+    readonly recovery?: boolean;
+  }): Effect.Effect<string, Error> => {
     const promptBody =
       input.direction === null ? getCompactPrompt() : getPartialCompactPrompt(input.direction);
+    const prompt = `${promptBody}\n\n## Conversation Context\n${input.transcript.transcript}`;
+    if (
+      input.recovery &&
+      prompt.length > estimateModelContextWindowTokens(input.route.model, input.route.provider) * 2
+    ) {
+      return Effect.fail(
+        new Error(
+          "The conversation is too large for the summary model. Compact a smaller range or select a model with a larger context window before retrying.",
+        ),
+      );
+    }
     return providerService
       .runOneOffPrompt({
         threadId: input.thread.id,
         provider: input.route.provider,
         model: input.route.model,
-        prompt: `${promptBody}\n\n## Conversation Context\n${input.transcript.transcript}`,
+        prompt,
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
-        runtimeMode: input.thread.runtimeMode,
+        runtimeMode: input.recovery ? "approval-required" : input.thread.runtimeMode,
+        ...(input.recovery && input.route.provider === "codex" ? { providerOptions: {} } : {}),
       })
       .pipe(Effect.map((result) => formatCompactSummary(result.text)));
   };
@@ -544,7 +558,6 @@ const make = Effect.gen(function* () {
       job.running = true;
       yield* Deferred.succeed(job.started, undefined);
       if (job.cancelled) return EXPIRED;
-      const deadline = (yield* Clock.currentTimeMillis) + timeoutMs + 30_000;
       const summary = yield* runSummary({
         thread: start.thread,
         route,
@@ -552,6 +565,7 @@ const make = Effect.gen(function* () {
         transcript,
         direction: null,
         timeoutMs,
+        recovery: true,
       }).pipe(Effect.timeout(timeoutMs + 30_000));
       if (!summary)
         return { kind: "failed", detail: "The provider returned an empty compaction summary." };
@@ -567,7 +581,10 @@ const make = Effect.gen(function* () {
           thread.modelSelection?.instanceId !== start.thread.modelSelection?.instanceId ||
           thread.interactionMode !== start.thread.interactionMode ||
           thread.runtimeMode !== start.thread.runtimeMode ||
-          thread.compaction !== start.thread.compaction ||
+          thread.compaction?.createdAt !== start.thread.compaction?.createdAt ||
+          thread.compaction?.freshSessionRecordId !==
+            start.thread.compaction?.freshSessionRecordId ||
+          thread.compaction?.summary !== start.thread.compaction?.summary ||
           current.project.workspaceRoot !== start.project.workspaceRoot ||
           current.cwd !== start.cwd
         ) {
@@ -640,7 +657,7 @@ const make = Effect.gen(function* () {
             createdAt: record.createdAt,
           });
         }),
-      }).pipe(Effect.timeout(Math.max(0, deadline - (yield* Clock.currentTimeMillis))));
+      }).pipe(Effect.timeout("30 seconds"));
       return { kind: "committed" };
     });
 

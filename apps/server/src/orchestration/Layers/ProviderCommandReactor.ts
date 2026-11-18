@@ -1339,7 +1339,9 @@ const make = Effect.gen(function* () {
         const providerForStart = input?.provider ?? preferredProvider;
         const startInstructionContext =
           input?.carriesHandoff ||
-          (thread.compaction?.freshSessionRecordId && input?.resumeCursor !== undefined)
+          (providerForStart !== "codex" &&
+            thread.compaction?.freshSessionRecordId &&
+            input?.resumeCursor !== undefined)
             ? withoutRestoredHistory(instructionContext)
             : instructionContext;
 
@@ -2050,17 +2052,16 @@ const make = Effect.gen(function* () {
           : {}),
         ...(startCarriesHandoff ? { carriesHandoff: true } : {}),
       });
-      yield* bindSessionToThread(
-        startedSession,
-        Boolean(
-          thread.compaction?.freshSessionRecordId &&
-          resumeCursorForStoppedSession === undefined &&
-          !startCarriesHandoff,
-        ),
+      const freshCompactionLaunch = Boolean(
+        thread.compaction?.freshSessionRecordId &&
+        resumeCursorForStoppedSession === undefined &&
+        !startCarriesHandoff,
       );
+      yield* bindSessionToThread(startedSession, freshCompactionLaunch);
       yield* recordEffectiveStartConfig();
       if (
         resumeCursorForStoppedSession === undefined &&
+        !freshCompactionLaunch &&
         !startCarriesHandoff &&
         persistedBinding !== undefined &&
         hasPriorConversationContext(thread)

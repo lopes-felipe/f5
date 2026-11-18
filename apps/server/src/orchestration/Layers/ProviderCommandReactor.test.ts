@@ -2133,7 +2133,8 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     const resume = harness.startSession.mock.calls[1]?.[1];
     expect(resume).toMatchObject({ resumeCursor: newCursor, cwd: harness.workspaceRoot });
-    expect(resume).not.toHaveProperty("priorWorkSummary");
+    // The manager decides whether to inject this context after opening the native thread.
+    expect(resume).toHaveProperty("priorWorkSummary", summary);
     expect(harness.runOneOffPrompt).not.toHaveBeenCalled();
   });
 

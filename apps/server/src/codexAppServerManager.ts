@@ -1576,7 +1576,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.updateSession(context, {
         status: "ready",
         resumeCursor: codexBrowserResumeCursor(
-          asObject(input.resumeCursor),
+          threadOpenMethod === "thread/start" && input.priorWorkSummary
+            ? { ...asObject(input.resumeCursor), f5ResumedContextPending: true }
+            : asObject(input.resumeCursor),
           providerThreadId,
           context.browserResumeRegistered,
         ),
