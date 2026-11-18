@@ -40,8 +40,22 @@ export function readPersistedLastRuntimeEventAt(runtimePayload: unknown): string
   return asTrimmedString(asRecord(runtimePayload)?.lastRuntimeEventAt);
 }
 
+const ORPHANED_SESSION_EXIT_PREFIX = "provider:orphaned-session-exit:";
+
 export function orphanedSessionExitEventId(threadId: ThreadId, turnId: TurnId): EventId {
-  return EventId.makeUnsafe(`provider:orphaned-session-exit:${threadId}:${turnId}`);
+  return EventId.makeUnsafe(`${ORPHANED_SESSION_EXIT_PREFIX}${threadId}:${turnId}`);
+}
+
+/**
+ * F5's own settlement for a turn whose provider is gone. It carries no
+ * provider output, so it is owned by its turn rather than by a session
+ * generation: it may only settle that exact turn.
+ */
+export function isOrphanedSessionExitEvent(event: {
+  readonly type: string;
+  readonly eventId: string;
+}): boolean {
+  return event.type === "session.exited" && event.eventId.startsWith(ORPHANED_SESSION_EXIT_PREFIX);
 }
 
 export function makeOrphanedSessionExitedEvent(input: {
