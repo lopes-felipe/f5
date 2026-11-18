@@ -3589,10 +3589,18 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ) {
             return;
           }
-          const control =
+          // Turn/session terminals are always admitted: they are the only events
+          // that settle a turn, including the one an overflow interrupt produces.
+          const terminal =
             !diagnostic &&
             (event.kind === "session" ||
               event.kind === "error" ||
+              event.method === "turn/completed" ||
+              event.method === "session/exited" ||
+              event.method === "session/closed");
+          const control =
+            terminal ||
+            (!diagnostic &&
               /(?:completed|closed|exited|started|requestApproval|requestUserInput)$/.test(
                 event.method,
               ));
@@ -3639,7 +3647,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }
           const lease = diagnosticBatch
             ? notificationAdmission.reserveDiagnostic(key, diagnosticBatch.reservationBytes)
-            : notificationAdmission.reserve(key, bytes, control);
+            : notificationAdmission.reserve(
+                key,
+                bytes,
+                terminal ? "terminal" : control ? "control" : "data",
+              );
           if (!lease) {
             if (diagnosticBatch) {
               omittedDiagnostics.set(

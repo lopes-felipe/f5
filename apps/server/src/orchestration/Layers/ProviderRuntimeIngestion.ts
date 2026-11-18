@@ -6994,12 +6994,19 @@ const make = Effect.gen(function* () {
           continue;
         }
         const activeTurnId = thread.session?.activeTurnId;
+        // A failed or interrupted session can also keep an active turn whose
+        // terminal never arrived (for example a runtime.error that expected a
+        // turn.completed). With no live provider nothing else will settle it,
+        // and the queue waits on it forever.
+        const sessionRunning = thread.session?.status === "running";
         if (
-          thread.session?.status !== "running" ||
+          !thread.session ||
+          thread.session.status === "stopped" ||
           activeTurnId === null ||
           activeTurnId === undefined ||
-          thread.latestTurn?.state !== "running" ||
+          !thread.latestTurn ||
           thread.latestTurn.turnId !== activeTurnId ||
+          (sessionRunning && thread.latestTurn.state !== "running") ||
           liveThreadIds.has(thread.id)
         ) {
           continue;
@@ -7027,6 +7034,7 @@ const make = Effect.gen(function* () {
         // that one narrowly-scoped legacy marker so the deployment of this fix
         // can repair turns orphaned by the shutdown that installs it.
         const legacyShutdownMatch =
+          sessionRunning &&
           persistedActiveTurnId === undefined &&
           binding.status === "stopped" &&
           lastRuntimeEvent !== undefined &&

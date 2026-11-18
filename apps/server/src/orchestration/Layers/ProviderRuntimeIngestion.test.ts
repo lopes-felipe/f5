@@ -2365,6 +2365,109 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
+  const projectFailedSessionWithActiveTurn = async (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    input: { readonly threadId: ThreadId; readonly turnId: TurnId; readonly lastError: string },
+  ) => {
+    const startedAt = new Date(Date.now() - 2_000).toISOString();
+    const failedAt = new Date(Date.now() - 1_000).toISOString();
+    const session = {
+      threadId: input.threadId,
+      providerName: "codex",
+      runtimeMode: "approval-required",
+      activeTurnId: input.turnId,
+    } as const;
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe(`cmd-${input.turnId}-running`),
+        threadId: input.threadId,
+        session: { ...session, status: "running", lastError: null, updatedAt: startedAt },
+        createdAt: startedAt,
+      }),
+    );
+    // Mirrors a runtime.error that keeps the active turn while it waits for a
+    // turn.completed that never arrives.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe(`cmd-${input.turnId}-error`),
+        threadId: input.threadId,
+        session: { ...session, status: "error", lastError: input.lastError, updatedAt: failedAt },
+        createdAt: failedAt,
+      }),
+    );
+  };
+
+  it("settles a failed session's stale active turn on startup and keeps its error", async () => {
+    const harness = await createHarness({ startIngestion: false });
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-failed-without-terminal");
+    const lastError = "Provider output is incomplete because notification admission was exhausted.";
+    await projectFailedSessionWithActiveTurn(harness, { threadId, turnId, lastError });
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId,
+        provider: "codex",
+        status: "stopped",
+        runtimeMode: "approval-required",
+        runtimePayload: {
+          activeTurnId: turnId,
+          lastRuntimeEvent: "provider.stopSession",
+          lastRuntimeEventAt: new Date().toISOString(),
+        },
+      }),
+    );
+    harness.clearProviderSessions();
+
+    await harness.startIngestion();
+    await harness.drain();
+
+    const settled = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "stopped" && thread.session.activeTurnId === null,
+    );
+    expect(settled.session?.lastError).toBe(lastError);
+    expect(settled.latestTurn?.turnId).toBe(turnId);
+    expect(settled.latestTurn?.state).not.toBe("running");
+    const binding = await Effect.runPromise(harness.providerSessionDirectory.getBinding(threadId));
+    expect(Option.isSome(binding) && binding.value.runtimePayload).toMatchObject({
+      activeTurnId: null,
+    });
+  });
+
+  it("leaves a failed session's active turn when persisted evidence names another turn", async () => {
+    const harness = await createHarness({ startIngestion: false });
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-failed-projected");
+    await projectFailedSessionWithActiveTurn(harness, { threadId, turnId, lastError: "boom" });
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId,
+        provider: "codex",
+        status: "stopped",
+        runtimeMode: "approval-required",
+        runtimePayload: { activeTurnId: "turn-other-generation" },
+      }),
+    );
+    harness.clearProviderSessions();
+
+    await harness.startIngestion();
+    await harness.drain();
+
+    const thread = await waitForThread(
+      harness.engine,
+      (candidate) => candidate.session?.activeTurnId === turnId,
+    );
+    expect(thread.session?.status).toBe("error");
+    const receipts = await Effect.runPromise(
+      harness.sql<{ readonly count: number }>`
+        SELECT count(*) AS count FROM provider_terminal_events WHERE thread_id = ${threadId}
+      `,
+    );
+    expect(receipts).toEqual([{ count: 0 }]);
+  });
+
   it("does not settle a projected turn when persisted orphan evidence points to another turn", async () => {
     const harness = await createHarness({ startIngestion: false });
     const threadId = asThreadId("thread-1");

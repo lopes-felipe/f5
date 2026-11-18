@@ -2186,6 +2186,97 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  const startStoppedTurn = (threadId: ThreadId, options: { readonly sendTurn: boolean }) =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = options.sendTurn
+        ? yield* provider.sendTurn({ threadId, input: "keep working", attachments: [] })
+        : undefined;
+      // Stopping a live session keeps the persisted active turn for recovery.
+      yield* provider.stopSession({ threadId });
+      routing.codex.interruptTurn.mockClear();
+      return turn?.turnId;
+    });
+  const nextOrphanedSettlement = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      return yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) =>
+            event.type === "session.exited" &&
+            event.threadId === threadId &&
+            event.eventId.startsWith("provider:orphaned-session-exit:"),
+        ),
+      ).pipe(
+        // it.effect runs on the test clock; bound the wait in real time.
+        Effect.raceFirst(sleep(300).pipe(Effect.as(Option.none()))),
+        Effect.forkChild,
+      );
+    });
+
+  it.effect("settles the persisted active turn when interrupting a stopped session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-stopped-interrupt");
+      const turnId = yield* startStoppedTurn(threadId, { sendTurn: true });
+      const settlement = yield* nextOrphanedSettlement(threadId);
+      yield* sleep(20);
+
+      yield* provider.interruptTurn({ threadId, turnId: turnId! });
+      const event = Option.getOrUndefined(yield* Fiber.join(settlement));
+
+      assert.equal(routing.codex.interruptTurn.mock.calls.length, 0);
+      assert.equal(event?.type, "session.exited");
+      assert.equal(event?.turnId, turnId);
+      assert.equal(event?.eventId, `provider:orphaned-session-exit:${threadId}:${turnId}`);
+      assert.equal(typeof event?.sessionGeneration, "number");
+    }),
+  );
+
+  it.effect("settles the persisted active turn when stopping an already stopped session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-stopped-stop");
+      const turnId = yield* startStoppedTurn(threadId, { sendTurn: true });
+      const settlement = yield* nextOrphanedSettlement(threadId);
+      yield* sleep(20);
+
+      yield* provider.stopSession({ threadId });
+      const event = Option.getOrUndefined(yield* Fiber.join(settlement));
+
+      assert.equal(event?.turnId, turnId);
+    }),
+  );
+
+  it.effect("does not settle a stopped session without a matching turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const conflicting = asThreadId("thread-stopped-conflict");
+      yield* startStoppedTurn(conflicting, { sendTurn: true });
+      const conflictSettlement = yield* nextOrphanedSettlement(conflicting);
+      yield* sleep(20);
+      yield* provider.interruptTurn({
+        threadId: conflicting,
+        turnId: asTurnId("turn-from-elsewhere"),
+      });
+      assert.equal(Option.isNone(yield* Fiber.join(conflictSettlement)), true);
+
+      const idle = asThreadId("thread-stopped-idle");
+      yield* startStoppedTurn(idle, { sendTurn: false });
+      const idleSettlement = yield* nextOrphanedSettlement(idle);
+      yield* sleep(20);
+      yield* provider.interruptTurn({ threadId: idle });
+      yield* provider.stopSession({ threadId: idle });
+      assert.equal(Option.isNone(yield* Fiber.join(idleSettlement)), true);
+    }),
+  );
+
   it.effect("recovers stale persisted sessions for rollback by resuming thread identity", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

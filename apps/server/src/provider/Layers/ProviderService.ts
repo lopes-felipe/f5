@@ -2673,6 +2673,44 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         );
       });
 
+    /**
+     * With no live provider, nothing will ever emit the terminal event for a
+     * turn the projection still holds active. Settle it through the same
+     * ordered, durable path recovery uses, so stop/interrupt cannot leave a
+     * phantom active turn that blocks the queue forever. The event id is
+     * deterministic per turn, so repeated stops settle it once.
+     */
+    const queueOrphanedTurnSettlement = (input: {
+      readonly operation: string;
+      readonly binding: ProviderRuntimeBinding;
+      readonly instanceId: ProviderInstanceId;
+      readonly turnId: TurnId;
+    }) =>
+      Effect.gen(function* () {
+        if (startingSessions.has(input.binding.threadId) || input.binding.status === "starting")
+          return;
+        const event: ProviderRuntimeEvent = {
+          ...makeOrphanedSessionExitedEvent({
+            threadId: input.binding.threadId,
+            turnId: input.turnId,
+            provider: input.binding.provider,
+            providerInstanceId: input.instanceId,
+            createdAt: new Date().toISOString(),
+          }),
+          sessionGeneration: readPersistedSessionGeneration(input.binding.runtimePayload),
+        };
+        yield* Queue.offer(runtimeEventQueue, {
+          source: { instanceId: input.instanceId, provider: input.binding.provider },
+          event,
+        });
+        yield* Effect.logInfo("provider service queued orphaned turn settlement", {
+          operation: input.operation,
+          threadId: input.binding.threadId,
+          turnId: input.turnId,
+          provider: input.binding.provider,
+        });
+      });
+
     const interruptTurn: ProviderServiceShape["interruptTurn"] = (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
@@ -2701,6 +2739,19 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           });
           if (routed.isActive && routed.orphanedTurnId === undefined) {
             yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
+          } else if (!routed.isActive && binding) {
+            const persistedTurnId = readPersistedActiveTurnId(binding.runtimePayload);
+            const turnId = input.turnId ?? persistedTurnId;
+            if (
+              turnId !== undefined &&
+              (persistedTurnId === undefined || persistedTurnId === turnId)
+            )
+              yield* queueOrphanedTurnSettlement({
+                operation: "ProviderService.interruptTurn",
+                binding,
+                instanceId: routed.instanceId,
+                turnId,
+              });
           }
           yield* analytics.record("provider.turn.interrupted", {
             provider: routed.adapter.provider,
@@ -2934,7 +2985,19 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             yield* routed.adapter
               .stopSession(routed.threadId)
               .pipe(Effect.ensuring(releaseControls));
-          else yield* releaseControls;
+          else {
+            yield* releaseControls;
+            const persistedTurnId = Option.isSome(binding)
+              ? readPersistedActiveTurnId(binding.value.runtimePayload)
+              : undefined;
+            if (Option.isSome(binding) && persistedTurnId !== undefined)
+              yield* queueOrphanedTurnSettlement({
+                operation: "ProviderService.stopSession",
+                binding: binding.value,
+                instanceId: routed.instanceId,
+                turnId: persistedTurnId,
+              });
+          }
           submissionTokens.delete(input.threadId);
           yield* directory.upsert({
             threadId: input.threadId,
