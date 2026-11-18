@@ -36,6 +36,111 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
+it("keeps login A polled and cancellable while checking gateway B", async () => {
+  const configuration = await mock.request.getMockImplementation()!();
+  const team = configuration.providers.data[0];
+  configuration.providers.data.push({ ...team, id: "other", name: "Other" });
+  let loggedIn = false;
+  mock.request.mockImplementation(async ({ action }) => {
+    if (action.type === "read") return configuration;
+    if (action.type === "gatewayCancel") {
+      loggedIn = false;
+      return {};
+    }
+    if (!action.providerId) throw new Error("Missing provider ID");
+    const gateway = {
+      providerId: action.providerId,
+      providerName: action.providerId === "team" ? "Team" : "Other",
+      required: true,
+      supportsDeviceAuth: true,
+      status: "notReady",
+      error: null,
+    };
+    if (action.type === "gatewayLogin") loggedIn = true;
+    return {
+      gateway,
+      ...(loggedIn && action.providerId === "team"
+        ? {
+            login: {
+              loginId: "login-a",
+              providerId: "team",
+              status: "started",
+              authUrl: "https://example.test/login",
+              verificationUrl: null,
+              userCode: null,
+              error: null,
+            },
+          }
+        : {}),
+    };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <CodexConfigurationSection
+        instanceId={ProviderInstanceId.make("codex")}
+        accountIdentity="oauth"
+        onSelectProvider={() => undefined}
+      />
+    </QueryClientProvider>,
+  );
+  try {
+    await page.getByRole("button", { name: "Codex model providers", exact: true }).click();
+    await page.getByRole("button", { name: "Check Team sign-in" }).click();
+    await page.getByRole("button", { name: "Sign in to gateway", exact: true }).click();
+    await page.getByRole("button", { name: "Check Other sign-in" }).click();
+    await expect.element(page.getByRole("button", { name: "Cancel gateway login" })).toBeVisible();
+    const teamReads = () =>
+      mock.request.mock.calls.filter(
+        ([input]) => input.action.type === "gatewayRead" && input.action.providerId === "team",
+      ).length;
+    const before = teamReads();
+    await expect.poll(teamReads, { timeout: 4000 }).toBeGreaterThan(before);
+    expect(
+      mock.request.mock.calls.every(
+        ([input]) =>
+          !["gatewayRead", "gatewayLogin"].includes(input.action.type) || !!input.action.providerId,
+      ),
+    ).toBe(true);
+    await page.getByRole("button", { name: "Cancel gateway login" }).click();
+    expect(
+      mock.request.mock.calls.some(
+        ([input]) => input.action.type === "gatewayCancel" && input.action.loginId === "login-a",
+      ),
+    ).toBe(true);
+    await expect
+      .element(page.getByRole("button", { name: "Cancel gateway login" }))
+      .not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+    client.clear();
+  }
+});
+
+it("allows resetting an unavailable saved provider when configuration fails", async () => {
+  mock.request.mockRejectedValue(new Error("Provider unavailable"));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const select = vi.fn();
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <CodexConfigurationSection
+        instanceId={ProviderInstanceId.make("codex")}
+        accountIdentity="unavailable"
+        selectedProvider="removed"
+        onSelectProvider={select}
+      />
+    </QueryClientProvider>,
+  );
+  try {
+    await page.getByRole("button", { name: "Codex model providers", exact: true }).click();
+    await page.getByRole("combobox", { name: /Provider for new conversations/ }).selectOptions("");
+    expect(select).toHaveBeenCalledWith("");
+  } finally {
+    await screen.unmount();
+    client.clear();
+  }
+});
+
 it("saves only edited provider fields and keeps media opt-ins off", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const screen = await render(

@@ -6542,15 +6542,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
         if (!instance?.codexConfiguration)
           return yield* new RouteRequestError({ message: "Select a configured Codex provider." });
-        const result = yield* instance
-          .codexConfiguration(body.action)
-          .pipe(
-            Effect.mapError(
-              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
-            ),
-          );
-        if (body.action.type === "write" || body.action.type === "setDefault")
-          yield* instance.invalidateModelCatalog ?? Effect.void;
+        const result = yield* instance.codexConfiguration(body.action).pipe(
+          Effect.ensuring(
+            body.action.type === "write" || body.action.type === "setDefault"
+              ? (instance.invalidateModelCatalog ?? Effect.void)
+              : Effect.void,
+          ),
+          Effect.mapError(
+            (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+          ),
+        );
         return result;
       }
       case WS_METHODS.serverSaveProviderFeedback: {

@@ -1052,16 +1052,20 @@ export function projectEvent(
               entry.id === message.id
                 ? {
                     ...entry,
-                    text: message.streaming
-                      ? `${entry.text}${message.text}`
-                      : message.text.length > 0
-                        ? message.text
-                        : entry.text,
-                    reasoningText: message.streaming
-                      ? `${entry.reasoningText ?? ""}${message.reasoningText ?? ""}`
-                      : (message.reasoningText ?? "").length > 0
-                        ? message.reasoningText
-                        : entry.reasoningText,
+                    text: payload.replace
+                      ? message.text
+                      : message.streaming
+                        ? `${entry.text}${message.text}`
+                        : message.text.length > 0
+                          ? message.text
+                          : entry.text,
+                    reasoningText: payload.replace
+                      ? message.reasoningText
+                      : message.streaming
+                        ? `${entry.reasoningText ?? ""}${message.reasoningText ?? ""}`
+                        : (message.reasoningText ?? "").length > 0
+                          ? message.reasoningText
+                          : entry.reasoningText,
                     streaming: message.streaming,
                     updatedAt: message.updatedAt,
                     turnId: message.turnId,

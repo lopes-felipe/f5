@@ -4,7 +4,10 @@ import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
 import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
 import { probeCodexCliVersion } from "./codex/cliVersionProbe.ts";
-import { presentCodexMessageItem } from "@t3tools/shared/codexMessagePresentation";
+import {
+  codexMessagePresentation,
+  presentCodexMessageItem,
+} from "@t3tools/shared/codexMessagePresentation";
 import { buildCodexResourceReadParams } from "./codex/codexConfigurationRequests";
 import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
 import { Utf8Lines } from "@t3tools/shared/utf8Lines";
@@ -363,11 +366,15 @@ interface CodexAccountSnapshot {
 }
 
 export interface CodexAppServerSendTurnInput {
+  /** Ordinary files remain in attachment context; native audio is an optional extra. */
+  audioFiles?: ReadonlyArray<string>;
   readonly expectedTurnId?: TurnId;
   readonly threadId: ThreadId;
   readonly input?: string;
   readonly attachments?: ReadonlyArray<
-    { type: "image"; url: string } | { type: "localImage" | "localAudio"; path: string }
+    | { type: "image"; url: string }
+    | { type: "localImage"; path: string }
+    | { type: "localAudio"; path: string }
   >;
   readonly model?: string;
   readonly serviceTier?: "fast" | "default" | null;
@@ -895,7 +902,8 @@ export function buildCodexTurnStartParams(
   const turnInput: Array<
     | { type: "text"; text: string; text_elements: [] }
     | { type: "image"; url: string }
-    | { type: "localImage" | "localAudio"; path: string }
+    | { type: "localImage"; path: string }
+    | { type: "localAudio"; path: string }
   > = [];
   if (input.input) {
     turnInput.push({
@@ -924,7 +932,8 @@ export function buildCodexTurnStartParams(
     input: Array<
       | { type: "text"; text: string; text_elements: [] }
       | { type: "image"; url: string }
-      | { type: "localImage" | "localAudio"; path: string }
+      | { type: "localImage"; path: string }
+      | { type: "localAudio"; path: string }
     >;
     model?: string;
     serviceTier?: string | null;
@@ -1008,7 +1017,12 @@ export function buildCodexInitializeParams(cliVersion?: string | null) {
     },
     capabilities: {
       experimentalApi: true,
-      ...(supportsCodexRelease6(cliVersion) ? { requiredHumanApproval: true } : {}),
+      ...(supportsCodexRelease6(cliVersion)
+        ? {
+            requiredHumanApproval: true,
+            explicitGatewayOauth: true,
+          }
+        : {}),
       requestAttestation: false,
       // Legacy opt-in, still accepted by 0.160.1. Its replacement is declaring
       // `openai/form` in `capabilities.extensions`. Standard MCP `form`/`url`
@@ -1581,15 +1595,15 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ? (asString(asObject(threadOpenResponse)?.modelProvider) ??
           asString(asObject(asObject(threadOpenResponse)?.thread)?.modelProvider))
         : undefined;
-      if (
-        nativeModelProvider &&
-        threadOpenMethod === "thread/resume" &&
-        nativeModelProvider !== savedModelProvider
-      ) {
+      if (nativeModelProvider && nativeModelProvider !== savedModelProvider) {
         // Older F5 cursors predate native-provider bindings. Refresh from the
         // resumed thread's provider, never from a newly selected default.
         context.modelContextWindowCatalog = new Map();
-        context.reportedModelCapabilities = new Map();
+        context.reportedModelCapabilities = new Map(
+          [...(input.effectiveModelCapabilities ?? [])].filter(
+            ([, caps]) => caps.source === "reported",
+          ),
+        );
         try {
           const pages = await readCodexModelPages(
             (params) => this.sendRequest(context!, "model/list", params),
@@ -1703,8 +1717,37 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   async sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
     const context = this.requireSession(input.threadId);
+    const providerThreadId = readResumeCursorThreadId(context.session.resumeCursor);
+    if (!providerThreadId) throw new Error("Session is missing provider resume thread id.");
+    const { serviceTier: _requestedTier, ...inputWithoutTier } = input;
+    const turnInput =
+      input.serviceTier === null && !context.serviceTierApplied ? inputWithoutTier : input;
+    const turnStartParams = buildCodexTurnStartParams(turnInput, {
+      providerThreadId,
+      model: context.session.model,
+      account: context.account,
+      instructionContext: context.instructionContext,
+      resumedContextSent: context.resumedContextSent,
+      reportedModelCapabilities: context.reportedModelCapabilities,
+    });
+    if (input.audioFiles?.length && supportsCodexRelease6(context.cliVersion)) {
+      const model = normalizeCodexModelSlug(turnStartParams.model);
+      if (
+        model &&
+        context.reportedModelCapabilities?.get(model)?.inputModalities?.includes("audio")
+      ) {
+        const config = asObject(
+          asObject(await this.sendRequest(context, "config/read", { includeLayers: false }))
+            ?.config,
+        );
+        if (asObject(config?.desktop)?.f5_audio_attachments === true) {
+          for (const path of new Set(input.audioFiles))
+            turnStartParams.input.push({ type: "localAudio", path });
+        }
+      }
+    }
     if (input.attachments?.some((attachment) => attachment.type === "localAudio")) {
-      const model = normalizeCodexModelSlug(input.model ?? context.session.model);
+      const model = normalizeCodexModelSlug(turnStartParams.model ?? context.session.model);
       const capabilities = model ? context.reportedModelCapabilities?.get(model) : undefined;
       try {
         if (
@@ -1730,22 +1773,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         );
       }
     }
-
-    const providerThreadId = readResumeCursorThreadId(context.session.resumeCursor);
-    if (!providerThreadId) throw new Error("Session is missing provider resume thread id.");
-    // `null` only undoes a tier F5 applied; otherwise the thread keeps
-    // whatever tier the user's config chose.
-    const { serviceTier: _requestedTier, ...inputWithoutTier } = input;
-    const turnInput =
-      input.serviceTier === null && !context.serviceTierApplied ? inputWithoutTier : input;
-    const turnStartParams = buildCodexTurnStartParams(turnInput, {
-      providerThreadId,
-      model: context.session.model,
-      account: context.account,
-      instructionContext: context.instructionContext,
-      resumedContextSent: context.resumedContextSent,
-      reportedModelCapabilities: context.reportedModelCapabilities,
-    });
 
     if (input.expectedTurnId !== undefined) {
       if (context.session.activeTurnId !== input.expectedTurnId) {
@@ -1893,11 +1920,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         return;
       }
 
-      if (event.method === "item/completed" && capturedText.length === 0) {
+      if (event.method === "item/completed") {
         const payload = asObject(event.payload);
         const item = asObject(payload?.item) ?? payload;
         const completedText = asString(item?.text);
-        if (completedText) {
+        const presentation = codexMessagePresentation(item);
+        if (presentation.replace) {
+          capturedText = presentation.text ?? "";
+        } else if (completedText && capturedText.length === 0) {
           capturedText = completedText;
         }
       }

@@ -4363,9 +4363,15 @@ describe("ProviderRuntimeIngestion", () => {
     },
   );
 
-  it.each(["hide", "block"])(
-    "replaces streamed Codex text when its final presentation is %s",
-    async (mode) => {
+  it.each([
+    ["hide", false, false],
+    ["block", false, false],
+    ["hide", true, false],
+    ["block", true, true],
+    ["show", false, false],
+  ])(
+    "replaces Codex text and persisted reasoning (%s, late %s, missing turn %s)",
+    async (mode, late, missingTurn) => {
       const harness = await createHarness({ settings: { enableAssistantStreaming: true } });
       const threadId = asThreadId("thread-1");
       const turnId = asTurnId("moderated-turn");
@@ -4388,16 +4394,29 @@ describe("ProviderRuntimeIngestion", () => {
           turnId,
           messageId: asMessageId("assistant:moderated-message"),
           delta: "provisional answer",
+          reasoningDelta: "persisted reasoning",
           createdAt: now,
         }),
       );
+      if (late) {
+        harness.emit({
+          type: "turn.started",
+          eventId: asEventId("later-start"),
+          provider: "codex",
+          createdAt: now,
+          threadId,
+          turnId: asTurnId("later-turn"),
+          payload: {},
+        });
+        await harness.drain();
+      }
       harness.emit({
         type: "item.completed",
         eventId: asEventId("moderated-finalize"),
         provider: "codex",
         createdAt: now,
         threadId,
-        turnId,
+        ...(missingTurn ? {} : { turnId }),
         itemId: asItemId("moderated-message"),
         payload: {
           itemType: "assistant_message",
@@ -4405,7 +4424,7 @@ describe("ProviderRuntimeIngestion", () => {
           data: {
             item: {
               type: "agentMessage",
-              text: "provisional answer",
+              text: "final moderated answer",
               moderation: { moderated: true, display: { mode, version: 1 } },
             },
           },
@@ -4417,9 +4436,11 @@ describe("ProviderRuntimeIngestion", () => {
           (message) => message.id === "assistant:moderated-message" && !message.streaming,
         ),
       );
-      expect(
-        thread.messages.find((message) => message.id === "assistant:moderated-message")?.text,
-      ).not.toContain("provisional answer");
+      const message = thread.messages.find(
+        (message) => message.id === "assistant:moderated-message",
+      );
+      expect(message?.text).not.toContain("provisional answer");
+      expect(message?.reasoningText ?? "").toBe(mode === "show" ? "persisted reasoning" : "");
     },
   );
 
@@ -10612,78 +10633,92 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("runtime still processed");
   });
 
-  it("flushes buffered reasoning onto the finalized assistant message", async () => {
-    const harness = await createHarness();
-    const now = new Date().toISOString();
+  it.each([false, true])(
+    "flushes buffered reasoning onto the finalized assistant message (moderated show: %s)",
+    async (moderated) => {
+      const harness = await createHarness();
+      const now = new Date().toISOString();
 
-    harness.emit({
-      type: "turn.started",
-      eventId: asEventId("evt-turn-started-reasoning"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-reasoning"),
-    });
-    await waitForThread(
-      harness.engine,
-      (thread) =>
-        thread.session?.status === "running" && thread.session?.activeTurnId === "turn-reasoning",
-    );
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-turn-started-reasoning"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-reasoning"),
+      });
+      await waitForThread(
+        harness.engine,
+        (thread) =>
+          thread.session?.status === "running" && thread.session?.activeTurnId === "turn-reasoning",
+      );
 
-    harness.emit({
-      type: "content.delta",
-      eventId: asEventId("evt-reasoning-delta"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-reasoning"),
-      itemId: asItemId("reasoning-item"),
-      payload: {
-        streamKind: "reasoning_text",
-        delta: "thinking...",
-      },
-    });
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-reasoning-delta"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-reasoning"),
+        itemId: asItemId("reasoning-item"),
+        payload: {
+          streamKind: "reasoning_text",
+          delta: "thinking...",
+        },
+      });
 
-    harness.emit({
-      type: "content.delta",
-      eventId: asEventId("evt-answer-delta"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-reasoning"),
-      itemId: asItemId("assistant-item"),
-      payload: {
-        streamKind: "assistant_text",
-        delta: "answer",
-      },
-    });
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-answer-delta"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-reasoning"),
+        itemId: asItemId("assistant-item"),
+        payload: {
+          streamKind: "assistant_text",
+          delta: "answer",
+        },
+      });
 
-    harness.emit({
-      type: "item.completed",
-      eventId: asEventId("evt-answer-completed"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-reasoning"),
-      itemId: asItemId("assistant-item"),
-      payload: {
-        itemType: "assistant_message",
-        status: "completed",
-      },
-    });
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId("evt-answer-completed"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-reasoning"),
+        itemId: asItemId("assistant-item"),
+        payload: {
+          itemType: "assistant_message",
+          status: "completed",
+          ...(moderated
+            ? {
+                data: {
+                  item: {
+                    type: "agentMessage",
+                    text: "answer",
+                    moderation: { moderated: true, display: { mode: "show", version: 1 } },
+                  },
+                },
+              }
+            : {}),
+        },
+      });
 
-    const thread = await waitForThread(harness.engine, (entry) =>
-      entry.messages.some(
-        (message: ProviderRuntimeTestMessage) =>
-          message.id === "assistant:assistant-item" && !message.streaming,
-      ),
-    );
-    const message = thread.messages.find(
-      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:assistant-item",
-    );
-    expect(message?.text).toBe("answer");
-    expect(message?.reasoningText).toBe("thinking...");
-  });
+      const thread = await waitForThread(harness.engine, (entry) =>
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === "assistant:assistant-item" && !message.streaming,
+        ),
+      );
+      const message = thread.messages.find(
+        (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:assistant-item",
+      );
+      expect(message?.text).toBe("answer");
+      expect(message?.reasoningText).toBe("thinking...");
+    },
+  );
 
   it("preserves reasoning buffered before the first assistant token in streaming mode", async () => {
     const harness = await createHarness();

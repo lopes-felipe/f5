@@ -36,6 +36,9 @@ Codex 0.170.0 or later and do not replace a custom executable.
 Audio attachments and animated image generation are experimental opt-ins, disabled
 by default. F5 stores the audio opt-in at `desktop.f5_audio_attachments` in native Codex
 configuration and sends recordings only to models reporting audio input support.
+Audio files always remain available to tools through attachment paths; with the opt-in
+disabled or unsupported, they keep their ordinary file-attachment behavior.
+Media setting changes apply to newly started Codex sessions.
 Unsupported recordings fail before turn dispatch. Animation uses Codex's native
 `features.image_generation_animation` flag; generated GIF bytes are preserved.
 Voice calls, remote execution transports and environment-scoped MCP names are not

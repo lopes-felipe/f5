@@ -45,6 +45,16 @@ configuration, audio and human-checkpoint capabilities require 0.170.0.
 Experimental media defaults to disabled. Native configuration stores animation at
 **features.image_generation_animation** and the F5 audio preference in Codex's
 extensible **desktop.f5_audio_attachments** map. Audio is checked before dispatch.
+Ordinary audio files retain their attachment paths when native audio is disabled
+or unavailable, and tools can still access those paths when native audio is used.
+Media changes apply to new sessions. Gateway OAuth is explicit: session processes
+do not automatically open a browser on the server host.
+
+Protocol audits check nested request keys, including approval capabilities and
+provider authentication fields, against the generated experimental schemas.
+The exact binary's approval-kind schema includes `humanCommand`; server-side
+one-time-only decisions are covered by protocol fixtures. A live policy-triggered
+human checkpoint has not been certified.
 Animation changes apply when the native session next loads its configuration.
 Credentials remain in existing sensitive environment storage or native credential
 files; provider forms expose variable names and server-side paths.

@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { OpenError, type OpenShape } from "./open";
-import { ProviderValidationBusyError } from "./provider/Errors.ts";
+import { ProviderValidationBusyError, ProviderDriverError } from "./provider/Errors.ts";
 import type { ProviderInstance } from "./provider/ProviderDriver.ts";
 import { type HarnessValidationShape } from "./provider/Services/HarnessValidation";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
@@ -49,6 +49,54 @@ import {
 describe("WebSocket Server", () => {
   const h = createWsServerTestHarness();
   const { connections, makeTempDir, createTestServer } = h;
+  it.each(["write", "setDefault", "read"] as const)(
+    "invalidates changed Codex catalogs even when %s returns an error",
+    async (type) => {
+      const instanceId = ProviderInstanceId.makeUnsafe("codex-config-test");
+      const invalidate = vi.fn();
+      const instance = {
+        instanceId,
+        driverKind: ProviderDriverKind.make("codex"),
+        codexConfiguration: () =>
+          Effect.fail(
+            new ProviderDriverError({
+              driver: ProviderDriverKind.make("codex"),
+              instanceId,
+              detail: "Follow-up read failed",
+            }),
+          ),
+        invalidateModelCatalog: Effect.sync(invalidate),
+      } as unknown as ProviderInstance;
+      h.server = await createTestServer({
+        providerInstanceRegistryLayer: Layer.succeed(ProviderInstanceRegistry, {
+          getInstance: () => Effect.succeed(instance),
+          listInstances: Effect.succeed([instance]),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+            Effect.flatMap(PubSub.subscribe),
+          ),
+        }),
+      });
+      const address = h.server.address();
+      const [ws] = await connectAndAwaitWelcome(
+        typeof address === "object" && address ? address.port : 0,
+      );
+      connections.push(ws);
+      const action =
+        type === "write"
+          ? { type, settings: { type: "customGateway", name: "New", baseUrl: "https://new.test" } }
+          : type === "setDefault"
+            ? { type, providerId: "team" }
+            : { type };
+      const response = await sendRequest(ws, WS_METHODS.serverCodexConfiguration, {
+        instanceId,
+        action,
+      });
+      expect(response.error?.message).toContain("Follow-up read failed");
+      expect(invalidate).toHaveBeenCalledTimes(type === "read" ? 0 : 1);
+    },
+  );
 
   it.each(["binaryPath", "homePath"])("rejects client-supplied %s in MCP Apply", async (field) => {
     h.server = await createTestServer({ cwd: "/test/project" });

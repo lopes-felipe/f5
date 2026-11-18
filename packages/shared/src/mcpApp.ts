@@ -134,6 +134,7 @@ export function readMcpAppReference(value: unknown): McpAppReference | undefined
           linkId: value.target.linkId as string | null,
         }
       : undefined;
+  if (value.target !== undefined && target === undefined) return undefined;
   return {
     attachmentId,
     server,

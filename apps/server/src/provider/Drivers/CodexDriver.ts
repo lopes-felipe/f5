@@ -479,11 +479,13 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         ),
       );
 
+      const { modelProvider: _selectedProvider, ...nativeConfig } = effectiveConfig;
+      const configurationOptions = providerOptionsFromCodexSettings(nativeConfig);
       const controlEnvironment = {
         binaryPath: effectiveConfig.binaryPath,
         homePath: effectiveConfig.homePath,
-        ...(defaultProviderOptions.codex?.launchArgs
-          ? { launchArgs: defaultProviderOptions.codex.launchArgs }
+        ...(configurationOptions.codex?.launchArgs
+          ? { launchArgs: configurationOptions.codex.launchArgs }
           : {}),
         cwd: serverConfig.cwd,
         processEnvironment,

@@ -158,6 +158,8 @@ export function CodexConfigurationSection({
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [gateway, setGateway] = useState<CodexConfigurationResult>();
+  const [activeLogin, setActiveLogin] = useState<CodexConfigurationResult["login"]>();
+  const [editorRevision, setEditorRevision] = useState(0);
   const request = (action: CodexConfigurationAction) => {
     const call = ensureNativeApi().server.codexConfiguration;
     if (!call) return Promise.reject(new Error("Update the F5 server to configure Codex."));
@@ -169,18 +171,16 @@ export function CodexConfigurationSection({
     enabled: expanded,
     staleTime: 0,
   });
-  const gatewayId = gateway?.gateway?.providerId;
+  const gatewayId = activeLogin?.providerId;
   const loginQuery = useQuery({
     queryKey: ["codex-gateway", instanceId, accountIdentity, gatewayId],
     queryFn: () => request({ type: "gatewayRead", providerId: gatewayId! }),
-    enabled: expanded && !!gatewayId,
+    enabled: expanded && !!gatewayId && activeLogin?.status === "started",
     refetchInterval: (query) => (query.state.data?.login?.status === "started" ? 1000 : false),
     staleTime: 0,
   });
   const login =
-    loginQuery.data?.login?.loginId === gateway?.login?.loginId
-      ? loginQuery.data?.login
-      : gateway?.login;
+    loginQuery.data?.login?.loginId === activeLogin?.loginId ? loginQuery.data?.login : activeLogin;
   const act = async (action: CodexConfigurationAction) => {
     setBusy(true);
     setError(undefined);
@@ -188,11 +188,21 @@ export function CodexConfigurationSection({
       const result = await request(action);
       if (action.type.startsWith("gateway")) {
         setGateway(result);
-        await loginQuery.refetch();
+        if (action.type === "gatewayCancel") setActiveLogin(undefined);
+        else if (result.login) setActiveLogin(result.login);
       } else {
-        if (action.type === "write") setNewProvider("customGateway");
-        await query.refetch();
-        await ensureNativeApi().server.refreshProviders({ instanceId });
+        if (action.type === "write") {
+          setNewProvider("customGateway");
+          setEditorRevision((revision) => revision + 1);
+        }
+        // The mutation has committed. Refresh failures must not invite a duplicate create.
+        try {
+          const refreshed = await query.refetch();
+          if (refreshed.error) throw refreshed.error;
+          await ensureNativeApi().server.refreshProviders({ instanceId });
+        } catch (cause) {
+          setError("Saved. Could not refresh Codex configuration: " + String(cause));
+        }
       }
     } catch (cause) {
       setError(String(cause));
@@ -224,24 +234,31 @@ export function CodexConfigurationSection({
           {query.isPending && <p>Loading Codex configuration…</p>}
           {(error || query.error) && <p role="alert">{error ?? String(query.error)}</p>}
           {loginQuery.error && <p role="alert">{String(loginQuery.error)}</p>}
+          <label className="block">
+            Provider for new conversations
+            <select
+              className="ml-2 rounded border bg-background p-1"
+              value={selectedProvider ?? ""}
+              disabled={busy}
+              onChange={(event) => onSelectProvider(event.target.value)}
+            >
+              <option value="">
+                Codex default
+                {query.data?.providers ? " (" + query.data.providers.defaultProviderId + ")" : ""}
+              </option>
+              {selectedProvider &&
+                !query.data?.providers?.data.some(
+                  (provider) => provider.id === selectedProvider,
+                ) && <option value={selectedProvider}>{selectedProvider} (unavailable)</option>}
+              {query.data?.providers?.data.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name}
+                </option>
+              ))}
+            </select>
+          </label>
           {query.data?.providers && (
             <>
-              <label className="block">
-                Provider for new conversations
-                <select
-                  className="ml-2 rounded border bg-background p-1"
-                  value={selectedProvider ?? ""}
-                  disabled={busy}
-                  onChange={(event) => onSelectProvider(event.target.value)}
-                >
-                  <option value="">Codex default ({query.data.providers.defaultProviderId})</option>
-                  {query.data.providers.data.map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
               {query.data.providers.data.map((provider) => (
                 <div className="space-y-2" key={provider.id}>
                   <ProviderEditor provider={provider} save={act} key={JSON.stringify(provider)} />
@@ -288,16 +305,18 @@ export function CodexConfigurationSection({
                     ))}
                 </select>
               </label>
-              <ProviderEditor key={newProvider} newProvider={newProvider} save={act} />
+              <ProviderEditor
+                key={newProvider + editorRevision}
+                newProvider={newProvider}
+                save={act}
+              />
             </>
           )}
           {gateway?.gateway && (
             <div className="space-y-2">
               <p>
                 {gateway.gateway.providerName}:{" "}
-                {loginQuery.data?.gateway?.status ??
-                  gateway.gateway.status ??
-                  "No gateway OAuth required"}
+                {gateway.gateway.status ?? "No gateway OAuth required"}
               </p>
               {gateway.gateway.required && (
                 <>

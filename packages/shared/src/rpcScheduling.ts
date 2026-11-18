@@ -360,7 +360,9 @@ export const RPC_METHOD_POLICY = {
   "server.getHealth": READ,
   "server.getProjectSettings": READ,
   "server.getProviderInventory": READ,
-  "server.codexConfiguration": long(false, 30_000),
+  // Native calls are individually bounded. A cold connection plus queued work
+  // must not time out after a gateway write committed and invite a duplicate.
+  "server.codexConfiguration": long(false, null),
   "server.saveProviderFeedback": long(false, 130_000),
   "server.migrateClientSetting": MUTATION,
   "server.probe": HEALTH,
@@ -482,7 +484,19 @@ function commandType(body: { readonly command?: unknown }): string {
 }
 
 /** Inspect the decoded command as well as its transport method. */
-export function rpcLane(body: { readonly _tag: string; readonly command?: unknown }): RpcLane {
+export function rpcLane(body: {
+  readonly _tag: string;
+  readonly command?: unknown;
+  readonly action?: unknown;
+}): RpcLane {
+  if (
+    body._tag === "server.codexConfiguration" &&
+    body.action &&
+    typeof body.action === "object" &&
+    "type" in body.action &&
+    ["read", "securityRead", "gatewayRead"].includes(String(body.action.type))
+  )
+    return "ordinary";
   if (body._tag === "nativeOperation.resolve" && "action" in body && body.action === "cancel")
     return "stop";
   if (body._tag === "orchestration.dispatchCommand") {

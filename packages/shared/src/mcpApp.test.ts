@@ -201,6 +201,16 @@ describe("readMcpAppReference", () => {
     expect(readMcpAppReference(reference)).toEqual(reference);
     expect(readMcpAppReference({ ...reference, resourceUri: "https://x.test" })).toBeUndefined();
     expect(readMcpAppReference({ ...reference, server: "" })).toBeUndefined();
+    for (const target of [
+      null,
+      {},
+      { connectorId: "drive", linkId: "" },
+      { connectorId: "", linkId: null },
+    ])
+      expect(readMcpAppReference({ ...reference, target })).toBeUndefined();
+    expect(
+      readMcpAppReference({ ...reference, target: { connectorId: "drive", linkId: null } })?.target,
+    ).toEqual({ connectorId: "drive", linkId: null });
   });
 });
 

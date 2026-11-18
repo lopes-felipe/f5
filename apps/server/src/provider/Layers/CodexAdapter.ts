@@ -3030,18 +3030,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         const audioAttachments = (input.resolvedAttachments ?? []).filter((attachment) =>
           attachment.mimeType.toLowerCase().startsWith("audio/"),
         );
-        const nativeAttachments = [
-          ...codexAttachments,
-          ...audioAttachments.map((attachment) => ({
-            type: "localAudio" as const,
-            path: attachment.localPath,
-          })),
-        ];
+        const nativeAttachments = [...codexAttachments];
         const providerInput = appendProviderAttachmentRuntimeContext(
           input.mcpAppContext ? `${input.input ?? ""}${input.mcpAppContext}` : input.input,
-          (input.resolvedAttachments ?? []).filter(
-            (attachment) => !audioAttachments.includes(attachment),
-          ),
+          input.resolvedAttachments ?? [],
         );
 
         const selectionOptions = resolveCodexSelectionOptions({
@@ -3092,6 +3084,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 ? { interactionMode: input.interactionMode }
                 : {}),
               ...(nativeAttachments.length > 0 ? { attachments: nativeAttachments } : {}),
+              ...(audioAttachments.length > 0
+                ? { audioFiles: audioAttachments.map((attachment) => attachment.localPath) }
+                : {}),
             };
             try {
               return await manager.sendTurn(managerInput);

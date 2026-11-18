@@ -139,6 +139,14 @@ describe("RPC method policy", () => {
     expect(deadline).toBeNull();
     expect(isReadOnlyRpc("server.runProviderUpdate")).toBe(false);
   });
+  it("keeps Codex configuration reads out of the long mutation lane", () => {
+    for (const type of ["read", "securityRead", "gatewayRead"])
+      expect(rpcLane({ _tag: "server.codexConfiguration", action: { type } })).toBe("ordinary");
+    for (const type of ["write", "setDefault", "setFeature", "gatewayLogin", "gatewayCancel"])
+      expect(rpcLane({ _tag: "server.codexConfiguration", action: { type } })).toBe("long");
+    expect(isReadOnlyRpc("server.codexConfiguration")).toBe(false);
+    expect(rpcLongRunningTimeoutMs({ _tag: "server.codexConfiguration" })).toBeNull();
+  });
 
   it("moves long operations and their deadlines into the policy", () => {
     const longMethods = Object.entries(RPC_METHOD_POLICY)

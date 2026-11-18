@@ -19,6 +19,8 @@
     "v2/ModelProviderConfigWriteParams.ts": "94d55af58586702dc62f99ceecb041f791f17257665266232d013ea431e1853e",
     "v2/GatewayOAuthReadParams.ts": "6aa27f1729e6bdfac6501699f465ca97983629beebb81e96f9cd2cf707989063",
     "v2/GatewayOAuthLoginParams.ts": "8ae575e50785522aa4840d9d1d34a04f26cd3a9c03e88dbdf1cd6455409d3b6c",
-    "v2/McpResourceReadParams.ts": "d86c2e30e267a873a0967a542e37af6222b4d45d3c337a59ac4dc6f16406727d"
+    "v2/McpResourceReadParams.ts": "d86c2e30e267a873a0967a542e37af6222b4d45d3c337a59ac4dc6f16406727d",
+    "InitializeCapabilities.ts": "744ccfe4b48827f351d00f4fcaf8b28596f1710f37036850ffeda1b4e4412408",
+    "v2/CommandExecutionApprovalKind.ts": "f76c84822bbe645eab3cae2976f9f41721c57e68624a5ab3be3e06c0d9dec694"
   }
 }

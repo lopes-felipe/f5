@@ -1,4 +1,8 @@
-import { CodexConfigurationResult, type CodexConfigurationAction } from "@t3tools/contracts";
+import {
+  CodexConfigurationResult,
+  CodexNativeProvider,
+  type CodexConfigurationAction,
+} from "@t3tools/contracts";
 import { supportsCodexRelease6 } from "@t3tools/shared/providerRuntimeCapabilities";
 import { Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -17,6 +21,7 @@ const record = (value: unknown): Record<string, unknown> =>
 /** One bounded control connection per instance. Login notifications stay on their initiating connection. */
 export class CodexConfigurationService {
   private client: CodexControlClient | undefined;
+  private acquisition: Promise<CodexControlClient> | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private login: Login | undefined;
   private chain: Promise<unknown> = Promise.resolve();
@@ -30,7 +35,7 @@ export class CodexConfigurationService {
     const client = this.client;
     this.client = undefined;
     this.login = undefined;
-    await client?.closeAndWait();
+    await Promise.all([client?.closeAndWait(), this.acquisition?.catch(() => undefined)]);
   }
 
   execute(action: CodexConfigurationAction): Promise<CodexConfigurationResult> {
@@ -59,6 +64,17 @@ export class CodexConfigurationService {
 
   private async connect(): Promise<CodexControlClient> {
     if (this.closed) throw new Error("This Codex provider was replaced.");
+    if (this.acquisition) return this.acquisition;
+    const acquisition = this.open();
+    this.acquisition = acquisition;
+    try {
+      return await acquisition;
+    } finally {
+      if (this.acquisition === acquisition) this.acquisition = undefined;
+    }
+  }
+
+  private async open(): Promise<CodexControlClient> {
     if (!this.client) {
       const client = await CodexControlClient.create(
         { ...this.environment, explicitGatewayOauth: true },
@@ -66,11 +82,11 @@ export class CodexConfigurationService {
         { probeConfigRead: true },
       );
       if (this.closed) {
-        client.close();
+        await client.closeAndWait();
         throw new Error("This Codex provider was replaced.");
       }
       if (!supportsCodexRelease6(client.cliVersion)) {
-        client.close();
+        await client.closeAndWait();
         throw new Error("Codex model provider settings require Codex 0.170.0 or later.");
       }
       this.client = client;
@@ -97,8 +113,8 @@ export class CodexConfigurationService {
       try {
         await client.configurationRequest("account/gatewayOAuth/read");
       } catch (error) {
-        client.close();
         this.client = undefined;
+        await client.closeAndWait();
         throw error;
       }
     }
@@ -106,6 +122,12 @@ export class CodexConfigurationService {
   }
 
   private async run(action: CodexConfigurationAction): Promise<CodexConfigurationResult> {
+    if (action.type === "gatewayLogin" && this.login && this.login.status !== "started") {
+      const previous = this.client;
+      this.client = undefined;
+      this.login = undefined;
+      await previous?.closeAndWait();
+    }
     const client = await this.connect();
     const securityNotice = async () =>
       record(
@@ -113,7 +135,14 @@ export class CodexConfigurationService {
           .configurationRequest("account/securitySetup/read", {}, 2_000)
           .catch(() => ({ notice: null })),
       ).notice ?? null;
-    if (action.type === "securityRead") return decode({ securityNotice: await securityNotice() });
+    const readSecurityNotice = async () => {
+      try {
+        return decode({ securityNotice: await securityNotice() }).securityNotice ?? null;
+      } catch {
+        return null;
+      }
+    };
+    if (action.type === "securityRead") return { securityNotice: await readSecurityNotice() };
     const request = (method: string, params?: unknown) =>
       client.configurationRequest(method, params);
     if (action.type === "gatewayCancel") {
@@ -139,6 +168,13 @@ export class CodexConfigurationService {
       if (action.type === "gatewayLogin") {
         if (this.login?.status === "started")
           throw new Error("Cancel the current gateway login first.");
+        if (this.login) {
+          // Completion may arrive while the readiness request above is pending.
+          this.client = undefined;
+          this.login = undefined;
+          await client.closeAndWait();
+          return this.run(action);
+        }
         if (action.deviceAuth && gateway.supportsDeviceAuth !== true)
           throw new Error("This gateway does not support device authorization.");
         this.login = {
@@ -210,13 +246,26 @@ export class CodexConfigurationService {
         ...(this.login?.providerId === action.providerId ? { login: this.login } : {}),
       });
     }
-    const providers = decode({ providers: await request("modelProvider/list") }).providers!;
+    const rawProviders = record(await request("modelProvider/list"));
+    const providers = decode({
+      providers: {
+        ...rawProviders,
+        data: (Array.isArray(rawProviders.data) ? rawProviders.data : []).flatMap((row) => {
+          try {
+            return [Schema.decodeUnknownSync(CodexNativeProvider)(row)];
+          } catch {
+            return [];
+          }
+        }),
+      },
+    }).providers!;
     if (action.type === "write") {
       const id = action.settings.providerId;
       const existing = providers.data.find((provider) => provider.id === id);
       if (id && (existing ? !existing.canEdit : action.settings.type === "customGateway"))
         throw new Error("This model provider is read-only.");
       await request("modelProvider/config/write", buildCodexProviderWriteParams(action.settings));
+      return {};
     }
     if (action.type === "setDefault") {
       if (
@@ -228,6 +277,7 @@ export class CodexConfigurationService {
         edits: [{ keyPath: "model_provider", value: action.providerId, mergeStrategy: "replace" }],
         reloadUserConfig: true,
       });
+      return {};
     }
     if (action.type === "setFeature") {
       await client.batchWriteConfig({
@@ -243,15 +293,16 @@ export class CodexConfigurationService {
         ],
         reloadUserConfig: true,
       });
+      return {};
     }
     const config = (await client.readConfig(false)).config;
     return decode({
-      providers: action.type === "read" ? providers : await request("modelProvider/list"),
+      providers,
       features: {
         audio: record(config.desktop).f5_audio_attachments === true,
         animation: record(config.features).image_generation_animation === true,
       },
-      securityNotice: await securityNotice(),
+      securityNotice: await readSecurityNotice(),
     });
   }
 }

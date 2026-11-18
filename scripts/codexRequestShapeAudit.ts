@@ -1,4 +1,17 @@
 /** Assign the actual runtime builders to fixed-version generated request types. */
+export const EXACT_CODEX_REQUEST = `type DeepExact<Actual, Expected> = Expected extends unknown
+  ? Actual extends Expected
+    ? Actual extends object
+      ? Actual extends readonly unknown[]
+        ? Expected extends readonly unknown[]
+          ? { [K in keyof Actual]: DeepExact<Actual[K], Expected[number]> }
+          : never
+        : { [K in keyof Actual]: K extends keyof Expected ? DeepExact<Actual[K], Expected[K]> : never }
+      : Actual
+    : never
+  : never;
+const exact = <Expected>() => <Actual extends Expected>(value: Actual & DeepExact<Actual, Expected>): Expected => value;`;
+
 export function codexRequestShapeProbe(
   builderPath: string,
   schemaPath: string,
@@ -30,6 +43,16 @@ export function codexRequestShapeProbe(
       "account/gatewayOAuth/read",
       "v2/GatewayOAuthReadParams",
       'buildCodexGatewayReadParams("gateway")',
+    ],
+    [
+      "modelProvider/config/write",
+      "v2/ModelProviderConfigWriteParams",
+      'buildCodexProviderWriteParams({ type: "gcp", providerId: "gcp", credentialFile: "/tmp/credentials", projectId: "project", location: "region" })',
+    ],
+    [
+      "modelProvider/config/write",
+      "v2/ModelProviderConfigWriteParams",
+      'buildCodexProviderWriteParams({ type: "bedrock", providerId: "amazon-bedrock-runtime", profile: "work", region: "region" })',
     ],
     [
       "account/gatewayOAuth/login",
@@ -70,17 +93,20 @@ export function codexRequestShapeProbe(
   ] as const;
   const lines = [
     `import { buildCodexGatewayLoginParams, buildCodexGatewayReadParams, buildCodexProviderWriteParams, buildCodexResourceReadParams } from ${JSON.stringify(builderPath.replace(/codexAppServerManager\.ts$/, "codex/codexConfigurationRequests.ts"))};`,
-    "type ExtraKeys<Actual, Expected> = Exclude<keyof Actual, keyof Expected>;",
-    "const exact = <Expected>() => <Actual extends Expected>(value: Actual & Record<ExtraKeys<Actual, Expected>, never>): Expected => value;",
+    EXACT_CODEX_REQUEST,
     `import { buildCodexInitializeParams, buildCodexThreadOpenRequestParams, buildCodexThreadRevertParams, buildCodexThreadForkParams, buildCodexTurnStartParams, buildCodexTurnSteerParams } from ${JSON.stringify(builderPath)};`,
     'import { ThreadId } from "@t3tools/contracts";',
     `import { buildCodexSampleParams, buildCodexReadMarkParams, buildCodexMemoryReadParams, buildCodexUsageReadParams, buildCodexGoalPauseParams, buildCodexGoalClearParams } from ${JSON.stringify(builderPath)};`,
   ];
-  for (const [method, file, expression] of methods) {
+  for (const [index, [method, file, expression]] of methods.entries()) {
     if (!available.has(method)) continue;
     const type = file.split("/").at(-1)!;
-    lines.push(`import type { ${type} } from ${JSON.stringify(`${schemaPath}/${file}.ts`)};`);
-    lines.push(`const ${type}Check = exact<${type}>()(${expression}); void ${type}Check;`);
+    lines.push(
+      `import type { ${type} as ${type}${index} } from ${JSON.stringify(`${schemaPath}/${file}.ts`)};`,
+    );
+    lines.push(
+      `const ${type}Check${index} = exact<${type}${index}>()(${expression}); void ${type}Check${index};`,
+    );
   }
   return lines.join("\n");
 }

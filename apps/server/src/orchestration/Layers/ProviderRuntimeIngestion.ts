@@ -5944,24 +5944,30 @@ const make = Effect.gen(function* () {
           event.type === "item.completed" && event.provider === "codex"
             ? codexMessagePresentation(asRecord(event.payload.data)?.item)
             : { replace: false };
-        if (presentation.replace && turnId) {
+        if (presentation.replace) {
           // Discard queued provisional chunks before atomically replacing persisted text.
           yield* takeBufferedAssistantText(assistantMessageId);
-          yield* takeBufferedReasoningText(providerTurnKey(thread.id, turnId));
+          const resolvedTurnId = turnId ?? existingAssistantMessage?.turnId ?? undefined;
+          const turnKey = resolvedTurnId ? providerTurnKey(thread.id, resolvedTurnId) : undefined;
+          const reasoningSuffix = turnKey ? yield* takeBufferedReasoningText(turnKey) : "";
           yield* orchestrationEngine.dispatch({
-            type: "thread.message.assistant.reconcile",
+            type: "thread.message.assistant.moderate",
             commandId: providerCommandId(event, "moderation:" + assistantMessageId),
             threadId: thread.id,
             messageId: assistantMessageId,
-            turnId,
-            expectedText: existingAssistantMessage?.text ?? null,
-            expectedReasoningText: existingAssistantMessage?.reasoningText ?? "",
+            ...(resolvedTurnId ? { turnId: resolvedTurnId } : {}),
             text: presentation.text ?? "",
-            reasoningText: "",
+            clearReasoning: presentation.mode !== "show",
+            reasoningSuffix,
             createdAt: now,
           });
           streamingDeltas.forgetMessage(thread.id, assistantMessageId);
-          yield* clearAssistantMessageState(assistantMessageId, providerTurnKey(thread.id, turnId));
+          yield* flushDeferredReasoningTokens({
+            event,
+            threadId: thread.id,
+            messageId: assistantMessageId,
+          });
+          yield* clearAssistantMessageState(assistantMessageId, turnKey);
           return;
         }
         const finalText = assistantCompletion.fallbackText;

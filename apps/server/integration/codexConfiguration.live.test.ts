@@ -20,15 +20,17 @@ it.skipIf(process.env.F5_CODEX_CONFIG_LIVE_TEST !== "1")(
         animation: false,
       });
       await service.execute({ type: "setFeature", feature: "audio", enabled: true });
-      expect(
-        (await service.execute({ type: "setFeature", feature: "animation", enabled: true }))
-          .features,
-      ).toEqual({ audio: true, animation: true });
-      const configured = await service.execute({
+      await service.execute({ type: "setFeature", feature: "animation", enabled: true });
+      expect((await service.execute({ type: "read" })).features).toEqual({
+        audio: true,
+        animation: true,
+      });
+      await service.execute({
         type: "write",
         settings: { type: "customGateway", name: "F5 fixture", baseUrl: "http://127.0.0.1:1/v1" },
       });
-      const cloud = await service.execute({
+      const configured = await service.execute({ type: "read" });
+      await service.execute({
         type: "write",
         settings: {
           type: "gcp",
@@ -37,12 +39,13 @@ it.skipIf(process.env.F5_CODEX_CONFIG_LIVE_TEST !== "1")(
           location: "us-central1",
         },
       });
+      const cloud = await service.execute({ type: "read" });
       expect(cloud.providers?.data.find((row) => row.id === "gcp")?.settings).toMatchObject({
         type: "gcp",
         projectId: "f5-fixture",
         location: "us-central1",
       });
-      const aws = await service.execute({
+      await service.execute({
         type: "write",
         settings: {
           type: "bedrock",
@@ -51,6 +54,7 @@ it.skipIf(process.env.F5_CODEX_CONFIG_LIVE_TEST !== "1")(
           region: "us-east-1",
         },
       });
+      const aws = await service.execute({ type: "read" });
       expect(
         aws.providers?.data.find((row) => row.id === "amazon-bedrock-runtime")?.settings,
       ).toMatchObject({ type: "bedrock", profile: "f5-fixture", region: "us-east-1" });
@@ -93,7 +97,7 @@ it.skipIf(process.env.F5_CODEX_CONFIG_LIVE_TEST !== "1")(
         thread: { modelProvider: string };
       };
       expect(resumed.thread.modelProvider).toBe(provider!.id);
-      const unchanged = await service.execute({
+      await service.execute({
         type: "write",
         settings: {
           type: "customGateway",
@@ -101,6 +105,7 @@ it.skipIf(process.env.F5_CODEX_CONFIG_LIVE_TEST !== "1")(
           name: "Renamed fixture",
         },
       });
+      const unchanged = await service.execute({ type: "read" });
       expect(unchanged.providers?.data.find((row) => row.id === provider!.id)?.baseUrl).toBe(
         "http://127.0.0.1:1/v1",
       );

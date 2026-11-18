@@ -50,6 +50,95 @@ function setup() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Codex native configuration", () => {
+  it("awaits acquisition and process exit when disposed during connection startup", async () => {
+    const { service, client } = setup();
+    let acquire!: (client: CodexControlClient) => void;
+    vi.mocked(CodexControlClient.create).mockReturnValue(
+      new Promise((resolve) => {
+        acquire = resolve;
+      }),
+    );
+    const request = service.execute({ type: "read" });
+    const rejected = expect(request).rejects.toThrow("replaced");
+    await vi.waitFor(() => expect(acquire).toBeTypeOf("function"));
+    let exited!: () => void;
+    client.closeAndWait.mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) => {
+          exited = () => resolve(undefined);
+        }),
+    );
+    let disposed = false;
+    const closing = service.close().then(() => {
+      disposed = true;
+    });
+    acquire(client as unknown as CodexControlClient);
+    await vi.waitFor(() => expect(client.closeAndWait).toHaveBeenCalledOnce());
+    expect(disposed).toBe(false);
+    exited();
+    await closing;
+    await rejected;
+    expect(disposed).toBe(true);
+  });
+
+  it("fences anonymous terminal notifications before another login starts", async () => {
+    const { service, client } = setup();
+    await service.execute({ type: "gatewayLogin", providerId: "team", deviceAuth: false });
+    client.emit("notification", {
+      method: "account/gatewayOAuth/changed",
+      params: { providerId: "team", loginId: null, status: "succeeded" },
+    });
+    const next = setup();
+    try {
+      await service.execute({ type: "gatewayLogin", providerId: "team", deviceAuth: false });
+      expect(client.closeAndWait).toHaveBeenCalledOnce();
+      client.emit("notification", {
+        method: "account/gatewayOAuth/changed",
+        params: {
+          providerId: "team",
+          loginId: null,
+          status: "failed",
+          authUrl: "https://stale.test",
+        },
+      });
+      expect(
+        (await service.execute({ type: "gatewayRead", providerId: "team" })).login,
+      ).toMatchObject({ status: "started", authUrl: null });
+    } finally {
+      await service.close();
+      await next.service.close();
+    }
+  });
+
+  it("skips unknown provider rows and isolates invalid security notices", async () => {
+    const { service, client } = setup();
+    const original = client.configurationRequest.getMockImplementation()!;
+    client.configurationRequest.mockImplementation(async (method, params) => {
+      if (method === "modelProvider/list")
+        return {
+          data: [provider, { ...provider, id: "future", settings: { type: "future" } }],
+          defaultProviderId: "team",
+          canChangeDefault: true,
+        };
+      if (method === "account/securitySetup/read") return { notice: { future: true } };
+      return original(method, params);
+    });
+    try {
+      const result = await service.execute({ type: "read" });
+      expect(result.providers?.data).toEqual([provider]);
+      expect(result.securityNotice).toBeNull();
+      client.readConfig.mockRejectedValue(new Error("refresh unavailable"));
+      await expect(
+        service.execute({
+          type: "write",
+          settings: { type: "customGateway", name: "New", baseUrl: "https://new.test" },
+        }),
+      ).resolves.toEqual({});
+      expect(client.readConfig).toHaveBeenCalledOnce();
+    } finally {
+      await service.close();
+    }
+  });
   it("uses only edited patch fields and preserves unexposed authentication", async () => {
     const { service, client } = setup();
     try {

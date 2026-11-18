@@ -60,6 +60,8 @@ try {
       "v2/GatewayOAuthReadParams.ts",
       "v2/GatewayOAuthLoginParams.ts",
       "v2/McpResourceReadParams.ts",
+      "InitializeCapabilities.ts",
+      "v2/CommandExecutionApprovalKind.ts",
     ];
     const sha256 = Object.fromEntries(
       await Promise.all(
@@ -98,6 +100,12 @@ try {
       "method",
     ),
   );
+  const approvalKinds = await readFile(
+    path.join(schemas, "v2/CommandExecutionApprovalKind.ts"),
+    "utf8",
+  );
+  if (!approvalKinds.includes('"humanCommand"'))
+    throw new Error("Audited Codex must expose the humanCommand approval kind.");
   const groups = checkCodexClientRequests([...available]);
   for (const fallback of groups.usingFallback) console.log(`Fallback selected: ${fallback}`);
   for (const method of ["thread/revert", "thread/rollback", "thread/fork"])
