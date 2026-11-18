@@ -61,7 +61,7 @@ describe("Codex native configuration", () => {
         settings: { type: "customGateway", providerId: "team", name: "Renamed" },
       });
     } finally {
-      service.close();
+      await service.close();
     }
   });
   it("rejects read-only writes and defaults before dispatch", async () => {
@@ -87,7 +87,7 @@ describe("Codex native configuration", () => {
       );
       expect(client.batchWriteConfig).not.toHaveBeenCalled();
     } finally {
-      service.close();
+      await service.close();
     }
   });
   it("ignores another login's completion and rejects cancellation of stale prompts", async () => {
@@ -121,7 +121,7 @@ describe("Codex native configuration", () => {
         (await service.execute({ type: "gatewayRead", providerId: "team" })).login,
       ).toBeUndefined();
     } finally {
-      service.close();
+      await service.close();
     }
   });
   it("retains a browser authorization handoff emitted before the response", async () => {
@@ -148,14 +148,14 @@ describe("Codex native configuration", () => {
           .login,
       ).toMatchObject({ authUrl: "https://example.test/login", status: "started" });
     } finally {
-      service.close();
+      await service.close();
     }
   });
   it("fences a replaced instance and closes its control process", async () => {
     const { service, client } = setup();
     await service.execute({ type: "read" });
-    service.close();
+    await service.close();
     await expect(service.execute({ type: "read" })).rejects.toThrow("replaced");
-    expect(client.close).toHaveBeenCalledOnce();
+    expect(client.closeAndWait).toHaveBeenCalledOnce();
   });
 });

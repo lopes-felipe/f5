@@ -489,7 +489,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         processEnvironment,
       };
       const configurationService = new CodexConfigurationService(controlEnvironment);
-      yield* Effect.addFinalizer(() => Effect.sync(() => configurationService.close()));
+      yield* Effect.addFinalizer(() => Effect.promise(() => configurationService.close()));
       return {
         instanceId,
         driverKind: DRIVER_KIND,

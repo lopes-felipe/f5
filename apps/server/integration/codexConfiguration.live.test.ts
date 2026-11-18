@@ -106,8 +106,8 @@ it.skipIf(process.env.F5_CODEX_CONFIG_LIVE_TEST !== "1")(
       );
     } finally {
       await client?.closeAndWait();
-      service.close();
-      await rm(root, { recursive: true, force: true });
+      await service.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   },
   30_000,

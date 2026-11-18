@@ -24,12 +24,13 @@ export class CodexConfigurationService {
   private pending = 0;
   constructor(private readonly environment: CodexControlEnvironmentConfig) {}
 
-  close(): void {
+  async close(): Promise<void> {
     this.closed = true;
     clearTimeout(this.timer);
-    this.client?.close();
+    const client = this.client;
     this.client = undefined;
     this.login = undefined;
+    await client?.closeAndWait();
   }
 
   execute(action: CodexConfigurationAction): Promise<CodexConfigurationResult> {
