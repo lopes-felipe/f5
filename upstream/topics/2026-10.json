@@ -4659,11 +4659,21 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-18T22:52:39.908Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Drivers/ClaudeDriver.ts:250",
+          "apps/web/src/components/usage/AccountUsageCards.tsx:281"
+        ],
+        "f5Refs": [
+          "310a4f7183c9970ca7c5c12df5f0ca7483c32968"
+        ]
+      },
       "id": "pr-13118",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "usage",
@@ -13157,11 +13167,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-18T22:52:39.908Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-16666",
-      "status": "port",
+      "reason": "F5 threads have no parent-thread relationship for this breadcrumb.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
@@ -19452,11 +19464,21 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-18T22:52:39.908Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "packages/shared/src/promptLinks.ts:201",
+          "apps/web/src/components/promptLinks/linkedPrompt.ts:45"
+        ],
+        "f5Refs": [
+          "310a4f7183c9970ca7c5c12df5f0ca7483c32968"
+        ]
+      },
       "id": "pr-18454",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer",
