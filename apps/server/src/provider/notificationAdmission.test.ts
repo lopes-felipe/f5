@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { NotificationAdmission } from "./notificationAdmission.ts";
+import { NotificationAdmission, SMALL_CONTROL_BYTES } from "./notificationAdmission.ts";
 
 describe("notification admission", () => {
   it("uses configured diagnostic entry, context, and byte ceilings", () => {
@@ -172,23 +172,29 @@ describe("notification admission", () => {
     expect(queue.snapshot()).toMatchObject({ controls: 0, bytes: 0 });
   });
 
-  it("bounds control bytes by the shared byte ceiling and control count", () => {
-    const queue = new NotificationAdmission({ entries: 4, bytes: 100, controls: 3 });
-    const alone = queue.reserve("a", 1000, "control")!;
+  it("bounds large control bytes by the byte ceiling and every control by count", () => {
+    const large = SMALL_CONTROL_BYTES + 1;
+    const queue = new NotificationAdmission({ entries: 4, bytes: 3 * large, controls: 4 });
+    // One control larger than the whole ceiling is still admitted alone.
+    const alone = queue.reserve("a", 10 * large, "control")!;
     expect(alone).toBeDefined();
-    expect(queue.reserve("a", 1, "control")).toBeUndefined();
+    expect(queue.reserve("a", large, "control")).toBeUndefined();
+    // Small lifecycle controls bypass the byte check while it is held.
+    const small = queue.reserve("a", SMALL_CONTROL_BYTES, "control")!;
+    expect(small).toBeDefined();
     alone.release();
-    const first = queue.reserve("a", 60, "control")!;
-    expect(queue.reserve("a", 41, "control")).toBeUndefined();
-    const second = queue.reserve("a", 40, "control")!;
+    small.release();
+    const first = queue.reserve("a", 2 * large, "control")!;
+    expect(queue.reserve("a", large + 1, "control")).toBeUndefined();
+    const second = queue.reserve("a", large, "control")!;
     expect(second).toBeDefined();
     // Control bytes are tracked apart from data, so transcript data still flows.
-    expect(queue.reserve("a", 100)).toBeDefined();
+    expect(queue.reserve("a", 3 * large)).toBeDefined();
     const third = queue.reserve("b", 0, "control")!;
+    const fourth = queue.reserve("b", 1, "control")!;
+    expect(fourth).toBeDefined();
     expect(queue.reserve("b", 0, "control")).toBeUndefined();
-    first.release();
-    second.release();
-    third.release();
+    for (const lease of [first, second, third, fourth]) lease.release();
   });
 
   it("always admits terminal lifecycle notifications and releases each once", () => {

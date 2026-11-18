@@ -3591,19 +3591,21 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }
           // Turn/session terminals are always admitted: they are the only events
           // that settle a turn, including the one an overflow interrupt produces.
+          // Other session/error events (parse errors, stderr, config) can arrive
+          // in floods, so they stay in the count-capped control lane.
           const terminal =
             !diagnostic &&
-            (event.kind === "session" ||
-              event.kind === "error" ||
-              event.method === "turn/completed" ||
+            (event.method === "turn/completed" ||
               event.method === "session/exited" ||
               event.method === "session/closed");
           const control =
             terminal ||
             (!diagnostic &&
-              /(?:completed|closed|exited|started|requestApproval|requestUserInput)$/.test(
-                event.method,
-              ));
+              (event.kind === "session" ||
+                event.kind === "error" ||
+                /(?:completed|closed|exited|started|requestApproval|requestUserInput)$/.test(
+                  event.method,
+                )));
           const key = notificationContextKey(event);
           if (incompleteContexts.has(key) && !control) return;
           let diagnosticBatch: StderrDiagnosticBatch | undefined;

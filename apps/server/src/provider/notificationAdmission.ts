@@ -13,12 +13,17 @@ export interface AdmissionLease {
 export interface NotificationAdmissionLimits {
   /** Data entries one context (thread, instance, generation) may hold. */
   readonly entries: number;
-  /** Data bytes held across all contexts. */
+  /**
+   * Byte ceiling, applied separately to data and to control notifications, so
+   * a transcript flood cannot starve lifecycle events. With the defaults the
+   * worst case is 32 MiB data + 32 MiB control + 1 MiB diagnostics, plus
+   * terminals and one oversized frame admitted alone (up to the Codex frame limit).
+   */
   readonly bytes: number;
   /**
-   * Control entries held across all contexts. Control bytes share the `bytes`
-   * ceiling (tracked separately from data), so one oversized completion cannot
-   * starve every later lifecycle notification.
+   * Control entries held across all contexts. Controls up to
+   * `SMALL_CONTROL_BYTES` are bounded by this count alone, so a held oversized
+   * completion never blocks the next item's lifecycle.
    */
   readonly controls: number;
   /** Data entries held across all contexts. Defaults to 8,192. */
@@ -47,6 +52,13 @@ const DEFAULT_LIMITS = {
  * dropping a turn or session terminal leaves the conversation running forever.
  */
 export type NotificationAdmissionLane = "data" | "control" | "terminal";
+
+/**
+ * Lifecycle controls at or below this size skip the byte check (the count cap
+ * still applies, so at most `controls` x 64 KiB). Item starts, approvals and
+ * small completions stay admissible while a huge completion prepares.
+ */
+export const SMALL_CONTROL_BYTES = 64 * 1024;
 
 const isByteCount = (bytes: number) => Number.isSafeInteger(bytes) && bytes >= 0;
 
@@ -120,9 +132,15 @@ export class NotificationAdmission {
       if (this.controls >= this.limits.controls) return undefined;
       // A valid large native notification may occupy the queue alone. This is
       // an admission bound, never a Codex stdout frame-size limit. A command's
-      // `item/completed` carries its whole output (often over 1 MiB), so the
-      // budget must leave room for the next item's lifecycle while it prepares.
-      if (this.controls > 0 && this.controlBytes + bytes > this.limits.bytes) return undefined;
+      // `item/completed` carries its whole output, so small lifecycle controls
+      // bypass the byte check while it prepares; only another large control
+      // beyond the byte ceiling is refused.
+      if (
+        this.controls > 0 &&
+        bytes > SMALL_CONTROL_BYTES &&
+        this.controlBytes + bytes > this.limits.bytes
+      )
+        return undefined;
       this.controls++;
       this.controlBytes += bytes;
     } else {

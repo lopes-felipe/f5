@@ -2679,6 +2679,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
      * ordered, durable path recovery uses, so stop/interrupt cannot leave a
      * phantom active turn that blocks the queue forever. The event id is
      * deterministic per turn, so repeated stops settle it once.
+     *
+     * Like the recovery settlement, the event carries no session generation:
+     * ingestion then applies it only while the projection still holds this
+     * exact turn. That keeps it correct when a replacement session bumps the
+     * binding generation before ingestion runs, and means a turn id that names
+     * a different projected turn can never settle it.
      */
     const queueOrphanedTurnSettlement = (input: {
       readonly operation: string;
@@ -2689,16 +2695,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       Effect.gen(function* () {
         if (startingSessions.has(input.binding.threadId) || input.binding.status === "starting")
           return;
-        const event: ProviderRuntimeEvent = {
-          ...makeOrphanedSessionExitedEvent({
-            threadId: input.binding.threadId,
-            turnId: input.turnId,
-            provider: input.binding.provider,
-            providerInstanceId: input.instanceId,
-            createdAt: new Date().toISOString(),
-          }),
-          sessionGeneration: readPersistedSessionGeneration(input.binding.runtimePayload),
-        };
+        const event = makeOrphanedSessionExitedEvent({
+          threadId: input.binding.threadId,
+          turnId: input.turnId,
+          provider: input.binding.provider,
+          providerInstanceId: input.instanceId,
+          createdAt: new Date().toISOString(),
+        });
         yield* Queue.offer(runtimeEventQueue, {
           source: { instanceId: input.instanceId, provider: input.binding.provider },
           event,

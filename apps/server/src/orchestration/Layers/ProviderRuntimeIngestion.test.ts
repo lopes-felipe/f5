@@ -1,5 +1,6 @@
 import { backgroundWorkSessionIdentity } from "../../provider/backgroundWorkIdentity.ts";
 import { withProviderThreadAccess } from "../../provider/providerThreadAccess.ts";
+import { makeOrphanedSessionExitedEvent } from "../../provider/orphanedTurnRecovery.ts";
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import { withFixtureWorkspaceWrites } from "../testUtils/workspaceWrites.ts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
@@ -2466,6 +2467,67 @@ describe("ProviderRuntimeIngestion", () => {
       `,
     );
     expect(receipts).toEqual([{ count: 0 }]);
+  });
+
+  // The settlement ProviderService queues when stop/interrupt find no live
+  // provider: generation-less, so it is gated on the projected turn.
+  const emitStopSettlement = (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId: ThreadId,
+    turnId: TurnId,
+  ) =>
+    harness.emit({
+      ...makeOrphanedSessionExitedEvent({
+        threadId,
+        turnId,
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+      }),
+      // The harness defaults a generation; the real settlement has none.
+      sessionGeneration: undefined,
+    });
+
+  it("clears a failed session's phantom turn from a stop settlement after a replacement start", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-wedged-by-admission");
+    const lastError = "Provider output is incomplete.";
+    await projectFailedSessionWithActiveTurn(harness, { threadId, turnId, lastError });
+    // A replacement start already bumped the binding generation.
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId,
+        provider: "codex",
+        status: "running",
+        runtimeMode: "approval-required",
+        runtimePayload: { activeTurnId: null, sessionGeneration: 2 },
+      }),
+    );
+
+    emitStopSettlement(harness, threadId, turnId);
+    await harness.drain();
+
+    const settled = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "stopped" && thread.session.activeTurnId === null,
+    );
+    expect(settled.session?.lastError).toBe(lastError);
+  });
+
+  it("does not let a stop settlement for another turn clear the projected turn", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-projected-active");
+    await projectFailedSessionWithActiveTurn(harness, { threadId, turnId, lastError: "boom" });
+
+    emitStopSettlement(harness, threadId, asTurnId("turn-named-by-interrupt"));
+    await harness.drain();
+
+    const thread = await waitForThread(
+      harness.engine,
+      (candidate) => candidate.session?.activeTurnId === turnId,
+    );
+    expect(thread.session?.status).toBe("error");
   });
 
   it("does not settle a projected turn when persisted orphan evidence points to another turn", async () => {
