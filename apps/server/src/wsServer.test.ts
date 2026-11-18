@@ -1042,18 +1042,11 @@ describe("WebSocket Server", () => {
     const persistenceLayer = makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
       Layer.provide(NodeServices.layer),
     );
-    vi.resetModules();
-    vi.doMock("./serverLayers.ts", async () => ({
-      ...(await vi.importActual<typeof import("./serverLayers.ts")>("./serverLayers.ts")),
-      // The runtime never finishes building, so readiness stays `starting`.
-      makeServerOrchestrationRuntimeLayer: () => Layer.effectDiscard(Effect.never),
-    }));
-    const { createServer: createServerWithStartingRuntime } = await import("./wsServer");
     h.server = await createTestServer({
       cwd: stateDir,
       stateDir,
       persistenceLayer,
-      createServerFactory: createServerWithStartingRuntime,
+      createServerFactory: () => createServer({ orchestrationStartupGate: Effect.never }),
     });
     const addr = h.server.address();
     const port = typeof addr === "object" && addr !== null ? addr.port : 0;

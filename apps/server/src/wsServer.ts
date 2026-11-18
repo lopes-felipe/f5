@@ -1071,7 +1071,9 @@ interface OrchestrationRuntimeServices {
   readonly defaultBranchAutoPull: DefaultBranchAutoPullShape;
 }
 
-export const createServer = Effect.fn(function* (): Effect.fn.Return<
+export const createServer = Effect.fn(function* (
+  options: { readonly orchestrationStartupGate?: Effect.Effect<void> } = {},
+): Effect.fn.Return<
   http.Server,
   ServerLifecycleError,
   | Scope.Scope
@@ -2968,6 +2970,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const startOrchestrationRuntime = withStartupPhaseTiming(
     "orchestration.runtime.start",
     Effect.gen(function* () {
+      // An explicit gate keeps startup/readiness fixtures independent of module caches.
+      yield* options.orchestrationStartupGate ?? Effect.void;
       const orchestrationRuntimeServices = yield* Layer.buildWithScope(
         orchestrationRuntimeLayer,
         subscriptionsScope,
