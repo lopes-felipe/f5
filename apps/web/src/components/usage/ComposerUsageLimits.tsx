@@ -1,4 +1,5 @@
 import type { ThreadId } from "@t3tools/contracts";
+import { quotaPace, quotaPaceLabel, type QuotaWindow } from "@t3tools/shared/usageLimit";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "@tanstack/react-router";
 import { ExternalLinkIcon, RefreshCwIcon } from "lucide-react";
@@ -44,6 +45,66 @@ function LimitAction(props: {
       </TooltipTrigger>
       <TooltipPopup side="top">{props.label}</TooltipPopup>
     </Tooltip>
+  );
+}
+
+/** One limit: used bar with the elapsed-time pace tick, reset time and pace label. */
+export function ComposerLimitRow({
+  window,
+  now,
+}: {
+  window: QuotaWindow & { readonly observedAt: string | null };
+  now: number;
+}) {
+  const percent = window.usedPercent;
+  const resetPassed = window.resetsAt !== null && Date.parse(window.resetsAt) <= now;
+  const pace = resetPassed
+    ? null
+    : quotaPace({
+        usedPercent: percent,
+        resetsAt: window.resetsAt,
+        durationMinutes: window.durationMinutes,
+        observedAt: window.observedAt,
+      });
+  const paceLabel = pace ? quotaPaceLabel(pace) : null;
+  const usedText = percent === null ? "Unknown" : `${Math.round(percent)}% used`;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="min-w-0 truncate">{window.label}</span>
+        <span className="shrink-0 tabular-nums text-muted-foreground">{usedText}</span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={window.label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent === null ? undefined : Math.min(100, Math.max(0, percent))}
+        aria-valuetext={paceLabel ? `${usedText}, ${paceLabel}` : usedText}
+      >
+        <UsageBar
+          percent={percent ?? 0}
+          tickPercent={pace?.elapsedPercent ?? null}
+          tone={
+            percent !== null && percent >= 100
+              ? "error"
+              : percent !== null && percent >= 90
+                ? "warning"
+                : "default"
+          }
+        />
+      </div>
+      <p className="flex flex-wrap items-baseline justify-between gap-x-2 text-2xs text-muted-foreground">
+        <span>
+          {window.resetsAt === null
+            ? "Reset time unavailable"
+            : resetPassed
+              ? "Reset passed · Awaiting updated usage"
+              : `Resets ${formatTimeUntil(window.resetsAt, now) ?? ""} · ${formatUsageResumeTime(window.resetsAt)}`}
+        </span>
+        {paceLabel ? <span className="ml-auto shrink-0 tabular-nums">{paceLabel}</span> : null}
+      </p>
+    </div>
   );
 }
 
@@ -145,46 +206,9 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
               : "No reported limits available. Refresh or open Usage for details."}
           </p>
         ) : (
-          windows.map((window) => {
-            const percent = window.usedPercent;
-            const resetPassed = window.resetsAt !== null && Date.parse(window.resetsAt) <= now;
-            return (
-              <div key={window.windowKey} className="space-y-1.5">
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="min-w-0 truncate">{window.label}</span>
-                  <span className="shrink-0 tabular-nums text-muted-foreground">
-                    {percent === null ? "Unknown" : `${Math.round(percent)}% used`}
-                  </span>
-                </div>
-                <div
-                  role="progressbar"
-                  aria-label={window.label}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={percent === null ? undefined : Math.min(100, Math.max(0, percent))}
-                  aria-valuetext={percent === null ? "Unknown" : `${Math.round(percent)}% used`}
-                >
-                  <UsageBar
-                    percent={percent ?? 0}
-                    tone={
-                      percent !== null && percent >= 100
-                        ? "error"
-                        : percent !== null && percent >= 90
-                          ? "warning"
-                          : "default"
-                    }
-                  />
-                </div>
-                <p className="text-2xs text-muted-foreground">
-                  {window.resetsAt === null
-                    ? "Reset time unavailable"
-                    : resetPassed
-                      ? "Reset passed · Awaiting updated usage"
-                      : `Resets ${formatTimeUntil(window.resetsAt, now) ?? ""} · ${formatUsageResumeTime(window.resetsAt)}`}
-                </p>
-              </div>
-            );
-          })
+          windows.map((window) => (
+            <ComposerLimitRow key={window.windowKey} window={window} now={now} />
+          ))
         )}
       </div>
       {accountsQuery.isError || refresh.isError ? (

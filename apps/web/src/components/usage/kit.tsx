@@ -468,6 +468,7 @@ export function UsageBar(props: {
       />
       {props.tickPercent !== null && props.tickPercent !== undefined ? (
         <div
+          data-testid="quota-pace-tick"
           className="absolute -inset-y-1 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
           style={{ left: `${Math.min(100, Math.max(0, props.tickPercent))}%` }}
         />
