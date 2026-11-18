@@ -750,7 +750,9 @@ const make = Effect.gen(function* () {
           cancelJob();
           return Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
-            : Effect.succeed(SHUTDOWN);
+            : Effect.succeed<WorkflowCompactionOutcome>(
+                sources.stopped ? SHUTDOWN : { kind: "failed", detail: Cause.pretty(cause) },
+              );
         }),
         Effect.onInterrupt(() =>
           Effect.sync(cancelJob).pipe(Effect.andThen(Deferred.succeed(job.outcome, SHUTDOWN))),

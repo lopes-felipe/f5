@@ -1396,22 +1396,49 @@ export const makeWorkflowService = Effect.gen(function* () {
       workflow.id,
       Effect.gen(function* () {
         const current = yield* readWorkflow(orchestrationEngine, workflow.id);
-        if (current?.implementation && isApplyReviewsLifecycle(current)) {
-          // Other stages and cost updates can have read the workflow before Apply
-          // Reviews recorded its intent. They do not own its state or review pins.
-          return yield* writeWorkflow({
-            ...workflow,
-            implementation: current.implementation,
-            archivedAt: current.archivedAt,
-            archiveRestorations: current.archiveRestorations,
-            totalCostUsd: Math.max(workflow.totalCostUsd, current.totalCostUsd),
-            updatedAt:
-              current.updatedAt > workflow.updatedAt ? current.updatedAt : workflow.updatedAt,
-          });
-        }
-        return yield* writeWorkflow(workflow);
+        if (!current) return yield* writeWorkflow(workflow);
+        const applying = current.implementation && isApplyReviewsLifecycle(current);
+        // Stale writers must not reopen a finished revision or replace its pin.
+        // A writer that has observed the finished revision may update it.
+        const preserveImplementation =
+          applying &&
+          (current.implementation?.status !== "completed" ||
+            workflow.implementation?.status !== "completed" ||
+            workflow.implementation.revisionTurnId !== current.implementation.revisionTurnId);
+        return yield* writeWorkflow({
+          ...workflow,
+          ...(preserveImplementation ? { implementation: current.implementation } : {}),
+          ...(applying
+            ? { archivedAt: current.archivedAt, archiveRestorations: current.archiveRestorations }
+            : {}),
+          totalCostUsd: Math.max(workflow.totalCostUsd, current.totalCostUsd),
+          updatedAt:
+            current.updatedAt > workflow.updatedAt ? current.updatedAt : workflow.updatedAt,
+        });
       }),
     );
+
+  const recordWorkflowTurnCost = (
+    workflow: PlanningWorkflow,
+    turnCostUsd: number | undefined,
+    occurredAt: string,
+  ) =>
+    turnCostUsd === undefined || !Number.isFinite(turnCostUsd) || turnCostUsd <= 0
+      ? Effect.succeed(workflow)
+      : withWorkflowGate(
+          workflow.id,
+          Effect.gen(function* () {
+            const current = yield* readWorkflow(orchestrationEngine, workflow.id);
+            if (!current || isDeletedWorkflow(current)) return workflow;
+            const costed = applyWorkflowTurnCost(
+              current,
+              turnCostUsd,
+              current.updatedAt > occurredAt ? current.updatedAt : occurredAt,
+            );
+            yield* writeWorkflow(costed);
+            return costed;
+          }),
+        );
 
   const deliveryForStage = (threadId: ThreadId, intentPersistedAt: string) =>
     providerTurnDeliveryWorker._tag === "Some"
@@ -3834,17 +3861,19 @@ export const makeWorkflowService = Effect.gen(function* () {
               matchingMessage &&
               latest?.messageId !== matchingMessage.id
             ) {
-              const evidence = yield* orchestrationEngine.readEvents(0).pipe(
-                Stream.filter(
-                  (event) =>
-                    event.type === "thread.turn-start-requested" &&
-                    event.payload.threadId === threadId &&
-                    event.payload.messageId === matchingMessage.id &&
-                    event.commandId !== null,
-                ),
-                Stream.take(2),
-                Stream.runCollect,
-              );
+              const evidence = yield* orchestrationEngine
+                .readEvents(0, { threadId, eventTypes: ["thread.turn-start-requested"] })
+                .pipe(
+                  Stream.filter(
+                    (event) =>
+                      event.type === "thread.turn-start-requested" &&
+                      event.payload.threadId === threadId &&
+                      event.payload.messageId === matchingMessage.id &&
+                      event.commandId !== null,
+                  ),
+                  Stream.take(2),
+                  Stream.runCollect,
+                );
               const [intent] = evidence;
               if (evidence.length === 1 && intent?.commandId)
                 latest = yield* getRevisionDelivery(intent.commandId);
@@ -3900,10 +3929,22 @@ export const makeWorkflowService = Effect.gen(function* () {
                 yield* writeWorkflow(workflow);
               }
             }
+            if (!commandId && repairOnly) {
+              if (options.retry !== "manual") {
+                if (options.recheck)
+                  yield* Effect.logWarning("Could not verify the legacy Apply Reviews completion", {
+                    workflowId,
+                    threadId,
+                  });
+                return result;
+              }
+              if (!options.allowPossibleDuplicate)
+                return { status: "confirmation_required" as const, threadIds: [threadId] };
+            }
             if (
               !commandId &&
-              (repairOnly ||
-                matchingMessages.length > 0 ||
+              !repairOnly &&
+              (matchingMessages.length > 0 ||
                 (possibleLegacyDelivery &&
                   implementation.status === "code_reviews_saved" &&
                   latest &&
@@ -4041,7 +4082,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           }
 
           if (options.session) return result;
-          if (repairOnly) return result;
+          if (repairOnly && options.retry !== "manual") return result;
           if (options.expectedTurnId && !settledFailure && delivery) return result;
           if (delivery?.state === "pending" || delivery?.state === "sending") return result;
           if (implementation.status === "error" && !options.retry) return result;
@@ -4126,16 +4167,19 @@ export const makeWorkflowService = Effect.gen(function* () {
             implementation.branch != null &&
             isTemporaryWorktreeBranch(implementation.branch) &&
             thread.branch != null &&
-            (yield* orchestrationEngine.readEvents(0).pipe(
-              Stream.filter(
-                (event) =>
-                  event.type === "thread.meta-updated" &&
-                  event.payload.threadId === threadId &&
-                  (event.payload.branch !== undefined || event.payload.worktreePath !== undefined),
-              ),
-              Stream.runLast,
-              Effect.map(Option.getOrNull),
-            ));
+            (yield* orchestrationEngine
+              .readEvents(0, { threadId, eventTypes: ["thread.meta-updated"] })
+              .pipe(
+                Stream.filter(
+                  (event) =>
+                    event.type === "thread.meta-updated" &&
+                    event.payload.threadId === threadId &&
+                    (event.payload.branch !== undefined ||
+                      event.payload.worktreePath !== undefined),
+                ),
+                Stream.runLast,
+                Effect.map(Option.getOrNull),
+              ));
           const verifiedRename =
             sameWorktreeRename &&
             sameWorktreeRename.type === "thread.meta-updated" &&
@@ -4227,6 +4271,7 @@ export const makeWorkflowService = Effect.gen(function* () {
               implementation: {
                 ...implementation,
                 codeReviews: prepared.value.pinnedReviews,
+                ...(repairOnly ? { revisionTurnId: null } : {}),
                 revisionAttempt: attempt,
                 revisionDispatchCommandId: dispatchId,
                 ...(newAttempt ? { revisionCompaction: null } : {}),
@@ -5140,12 +5185,11 @@ export const makeWorkflowService = Effect.gen(function* () {
               current.readerPass?.readerThreadId === threadId ||
               (current.merge.status === "manual_review" && event.payload.session.status === "error")
             ) {
-              current = applyWorkflowTurnCost(
+              current = yield* recordWorkflowTurnCost(
                 current,
                 event.payload.session.turnCostUsd,
                 event.occurredAt,
               );
-              if (current !== document) yield* upsertWorkflow(current);
             }
             if (
               event.payload.session.status === "error" &&
@@ -5594,7 +5638,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         case "thread.session-set": {
           const readModel = yield* orchestrationEngine.getReadModel();
           const applyTurnCost = (workflow: PlanningWorkflow) =>
-            applyWorkflowTurnCost(workflow, event.payload.session.turnCostUsd, event.occurredAt);
+            recordWorkflowTurnCost(workflow, event.payload.session.turnCostUsd, event.occurredAt);
           const reviewMatch = workflowForReviewThread(
             readModel.planningWorkflows,
             event.payload.threadId,
@@ -5621,19 +5665,13 @@ export const makeWorkflowService = Effect.gen(function* () {
               implementationMatch?.workflow.implementation &&
               event.payload.session.status === "ready"
             ) {
-              const workflowWithCost = applyTurnCost(implementationMatch.workflow);
+              const workflowWithCost = yield* applyTurnCost(implementationMatch.workflow);
               const nextWorkflow = yield* maybeAdvanceImplementationLifecycle(
                 workflowWithCost,
                 readModel,
                 event.payload.threadId,
                 event.occurredAt,
               );
-              if (
-                nextWorkflow === workflowWithCost &&
-                workflowWithCost !== implementationMatch.workflow
-              ) {
-                yield* upsertWorkflow(workflowWithCost);
-              }
               yield* maybeContinueImplementationLifecycle(
                 nextWorkflow,
                 readModel,
@@ -5646,19 +5684,13 @@ export const makeWorkflowService = Effect.gen(function* () {
               codeReviewMatch?.workflow.implementation &&
               event.payload.session.status === "ready"
             ) {
-              const workflowWithCost = applyTurnCost(codeReviewMatch.workflow);
+              const workflowWithCost = yield* applyTurnCost(codeReviewMatch.workflow);
               const nextWorkflow = yield* maybeAdvanceImplementationLifecycle(
                 workflowWithCost,
                 readModel,
                 event.payload.threadId,
                 event.occurredAt,
               );
-              if (
-                nextWorkflow === workflowWithCost &&
-                workflowWithCost !== codeReviewMatch.workflow
-              ) {
-                yield* upsertWorkflow(workflowWithCost);
-              }
               yield* maybeContinueImplementationLifecycle(
                 nextWorkflow,
                 readModel,
@@ -5670,7 +5702,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             const planningWorkflow =
               reviewMatch?.workflow ?? authorMatch?.workflow ?? mergeMatch?.workflow;
             if (planningWorkflow) {
-              const workflowWithCost = applyTurnCost(planningWorkflow);
+              const workflowWithCost = yield* applyTurnCost(planningWorkflow);
               const nextWorkflow =
                 event.payload.session.status === "ready"
                   ? yield* maybeAdvancePlanningWorkflowFromCompletedThread(
@@ -5680,9 +5712,6 @@ export const makeWorkflowService = Effect.gen(function* () {
                       event.occurredAt,
                     )
                   : workflowWithCost;
-              if (nextWorkflow === workflowWithCost && workflowWithCost !== planningWorkflow) {
-                yield* upsertWorkflow(workflowWithCost);
-              }
               if (event.payload.session.status === "ready") {
                 const lifecycleSnapshot =
                   nextWorkflow !== workflowWithCost
@@ -5700,7 +5729,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             return;
           }
           if (reviewMatch) {
-            const baseWorkflow = applyTurnCost(reviewMatch.workflow);
+            const baseWorkflow = yield* applyTurnCost(reviewMatch.workflow);
             const reviewedBranch =
               reviewMatch.branchId === "a" ? baseWorkflow.branchA : baseWorkflow.branchB;
             const review = reviewedBranch.reviews.find(
@@ -5755,13 +5784,10 @@ export const makeWorkflowService = Effect.gen(function* () {
           }
 
           if (authorMatch) {
-            const baseWorkflow = applyTurnCost(authorMatch.workflow);
+            const baseWorkflow = yield* applyTurnCost(authorMatch.workflow);
             const branch =
               authorMatch.branchId === "a" ? baseWorkflow.branchA : baseWorkflow.branchB;
             if (branch.status !== "authoring" && branch.status !== "revising") {
-              if (baseWorkflow !== authorMatch.workflow) {
-                yield* upsertWorkflow(baseWorkflow);
-              }
               return;
             }
             if (
@@ -5842,7 +5868,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           }
 
           if (implementationMatch) {
-            const baseWorkflow = applyTurnCost(implementationMatch.workflow);
+            const baseWorkflow = yield* applyTurnCost(implementationMatch.workflow);
             if (
               baseWorkflow.implementation &&
               baseWorkflow.implementation.status === "implementing" &&
@@ -5908,7 +5934,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           }
 
           if (codeReviewMatch) {
-            const baseWorkflow = applyTurnCost(codeReviewMatch.workflow);
+            const baseWorkflow = yield* applyTurnCost(codeReviewMatch.workflow);
             const review = baseWorkflow.implementation?.codeReviews.find(
               (entry) => entry.threadId === event.payload.threadId,
             );
@@ -6004,7 +6030,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           if (mergeMatch) {
             yield* upsertWorkflow(
               markMergeError(
-                applyTurnCost(mergeMatch.workflow),
+                yield* applyTurnCost(mergeMatch.workflow),
                 formatSessionError(event.payload.session, "Merge failed."),
                 event.occurredAt,
               ),
@@ -6546,7 +6572,10 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (isArchivedWorkflow(workflow))
         return yield* Effect.fail(new Error("Restore the workflow before retrying it."));
 
-      if (isApplyReviewsLifecycle(workflow) && workflow.implementation?.status !== "completed") {
+      if (
+        isApplyReviewsLifecycle(workflow) &&
+        (workflow.implementation?.status !== "completed" || hasMisattributedRevision(workflow))
+      ) {
         return yield* reconcileApplyReviews(workflow.id, {
           retry: "manual",
           allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,

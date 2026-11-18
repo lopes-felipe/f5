@@ -2059,84 +2059,114 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.tokenUsageSource).toBe("estimated");
   });
 
-  it("starts fresh after workflow compaction and resumes with the new cursor", async () => {
-    const harness = await createHarness({ nativeCursors: true });
-    const threadId = ThreadId.makeUnsafe("thread-1");
-    const instanceId = ProviderInstanceId.makeUnsafe("codex");
-    const recordId = CommandId.makeUnsafe("apply-reviews-compaction-record");
-    const at = new Date().toISOString();
-    const summary = "The original implementation is complete and remains in the checkout.";
-    harness.upsertBinding({
-      threadId,
-      provider: "codex",
-      providerInstanceId: instanceId,
-      status: "stopped",
-      resumeCursor: null,
-      runtimePayload: { cwd: harness.workspaceRoot, sessionGeneration: 5 },
-    });
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.compacted.record",
-        commandId: recordId,
+  it.each(["codex", "claudeAgent"] as const)(
+    "restores workflow compaction context across %s session starts",
+    async (provider) => {
+      const harness = await createHarness({ nativeCursors: true });
+      const threadId = ThreadId.makeUnsafe("thread-1");
+      const instanceId = ProviderInstanceId.makeUnsafe(provider);
+      const model = provider === "codex" ? "gpt-5-codex" : "claude-sonnet-4-6";
+      const recordId = CommandId.makeUnsafe("apply-reviews-compaction-record");
+      const at = new Date().toISOString();
+      const summary = "The original implementation is complete and remains in the checkout.";
+      harness.upsertBinding({
         threadId,
+        provider,
+        providerInstanceId: instanceId,
+        status: "stopped",
+        resumeCursor: null,
+        runtimePayload: { cwd: harness.workspaceRoot, sessionGeneration: 5 },
+      });
+      await appendAssistantContext(harness.engine, {
+        threadId,
+        turnId: asTurnId("implementation-before-compaction"),
         createdAt: at,
-        compaction: {
-          kind: "summary",
-          summary,
-          trigger: "automatic",
-          estimatedTokens: 11_567,
-          freshSessionRecordId: recordId,
-          retiredSessionGeneration: 4,
-          modelContextWindowTokens: 200_000,
-          createdAt: at,
-          direction: null,
-          pivotMessageId: null,
-          fromTurnCount: 1,
-          toTurnCount: 1,
-        },
-      }),
-    );
-    const send = (id: string) =>
-      Effect.runPromise(
+      });
+      await Effect.runPromise(
         harness.engine.dispatch({
-          type: "thread.turn.start",
-          commandId: CommandId.makeUnsafe(id),
+          type: "thread.compacted.record",
+          commandId: recordId,
           threadId,
-          message: {
-            messageId: asMessageId(id),
-            role: "user",
-            text: "Apply the saved reviews.",
-            attachments: [],
+          createdAt: at,
+          compaction: {
+            kind: "summary",
+            summary,
+            trigger: "automatic",
+            estimatedTokens: 11_567,
+            freshSessionRecordId: recordId,
+            retiredSessionGeneration: 4,
+            modelContextWindowTokens: 200_000,
+            createdAt: at,
+            direction: null,
+            pivotMessageId: null,
+            fromTurnCount: 1,
+            toTurnCount: 1,
           },
-          provider: "codex",
-          model: "gpt-5-codex",
-          interactionMode: "default",
-          runtimeMode: "approval-required",
-          createdAt: new Date().toISOString(),
         }),
       );
-    await send("first-after-compaction");
-    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    const start = harness.startSession.mock.calls[0]?.[1];
-    expect(start).toMatchObject({ priorWorkSummary: summary, cwd: harness.workspaceRoot });
-    expect(start).not.toHaveProperty("resumeCursor");
-    const newCursor = harness.getBinding(threadId)?.resumeCursor;
-    expect(newCursor).toEqual({ threadId: "codex-native-1" });
-    const snapshot = await Effect.runPromise(harness.engine.getReadModel());
-    const session = snapshot.threads.find((entry) => entry.id === threadId)?.session;
-    expect(session?.modelContextWindowTokens).toBe(200_000);
-    expect(session?.estimatedContextTokens).toBeGreaterThan(100);
-    expect(session?.estimatedContextTokens).toBeLessThan(11_567);
+      const send = (id: string) =>
+        Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.makeUnsafe(id),
+            threadId,
+            message: {
+              messageId: asMessageId(id),
+              role: "user",
+              text: "Apply the saved reviews.",
+              attachments: [],
+            },
+            provider,
+            model,
+            interactionMode: "default",
+            runtimeMode: "approval-required",
+            createdAt: new Date().toISOString(),
+          }),
+        );
+      await send("first-after-compaction");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      const start = harness.startSession.mock.calls[0]?.[1];
+      expect(start).toMatchObject({ priorWorkSummary: summary, cwd: harness.workspaceRoot });
+      expect(start).not.toHaveProperty("resumeCursor");
+      const newCursor = harness.getBinding(threadId)?.resumeCursor;
+      expect(newCursor).toBeDefined();
+      const snapshot = await Effect.runPromise(harness.engine.getReadModel());
+      const session = snapshot.threads.find((entry) => entry.id === threadId)?.session;
+      expect(session?.modelContextWindowTokens).toBe(200_000);
+      expect(session?.estimatedContextTokens).toBeGreaterThan(100);
+      expect(session?.estimatedContextTokens).toBeLessThan(11_567);
+      const contextReset = (model: typeof snapshot) =>
+        model.threads
+          .find((entry) => entry.id === threadId)
+          ?.activities.find((activity) => activity.summary === "Session context reset");
+      expect(contextReset(snapshot)).toBeUndefined();
 
-    harness.removeLiveSession(threadId);
-    await send("restart-after-compaction");
-    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
-    const resume = harness.startSession.mock.calls[1]?.[1];
-    expect(resume).toMatchObject({ resumeCursor: newCursor, cwd: harness.workspaceRoot });
-    // The manager decides whether to inject this context after opening the native thread.
-    expect(resume).toHaveProperty("priorWorkSummary", summary);
-    expect(harness.runOneOffPrompt).not.toHaveBeenCalled();
-  });
+      harness.removeLiveSession(threadId);
+      await send("restart-after-compaction");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      const resume = harness.startSession.mock.calls[1]?.[1];
+      expect(resume).toMatchObject({ resumeCursor: newCursor, cwd: harness.workspaceRoot });
+      // Claude rebuilds its system prompt on resume. Codex decides whether to
+      // inject the same summary after opening the native conversation.
+      expect(resume).toHaveProperty("priorWorkSummary", summary);
+      harness.removeLiveSession(threadId);
+      harness.upsertBinding({
+        threadId,
+        provider,
+        providerInstanceId: instanceId,
+        status: "stopped",
+        resumeCursor: null,
+        runtimePayload: { cwd: harness.workspaceRoot, sessionGeneration: 7 },
+      });
+      await send("later-cold-start");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 3);
+      const afterColdStart = await Effect.runPromise(harness.engine.getReadModel());
+      expect(contextReset(afterColdStart)).toMatchObject({
+        payload: { detail: { reason: "missing-resume-cursor" } },
+      });
+      expect(harness.runOneOffPrompt).not.toHaveBeenCalled();
+    },
+  );
 
   it("records ensure-session traces and reactor event metrics", async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-observability-"));

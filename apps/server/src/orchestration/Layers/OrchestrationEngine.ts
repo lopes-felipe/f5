@@ -1235,8 +1235,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const getReadModel: OrchestrationEngineShape["getReadModel"] = () =>
     Effect.sync((): OrchestrationReadModel => readModel);
 
-  const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
-    eventStore.readFromSequence(fromSequenceExclusive);
+  const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive, options) =>
+    eventStore.readFromSequence(
+      fromSequenceExclusive,
+      options === undefined ? undefined : Number.MAX_SAFE_INTEGER,
+      options,
+    );
 
   // Every thread of the scratch project gets its own folder before it is created, whichever
   // path creates it. The name depends only on the command, so a retried create reuses it.

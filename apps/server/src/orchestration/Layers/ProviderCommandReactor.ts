@@ -1337,13 +1337,9 @@ const make = Effect.gen(function* () {
         readonly carriesHandoff?: boolean;
       }) => {
         const providerForStart = input?.provider ?? preferredProvider;
-        const startInstructionContext =
-          input?.carriesHandoff ||
-          (providerForStart !== "codex" &&
-            thread.compaction?.freshSessionRecordId &&
-            input?.resumeCursor !== undefined)
-            ? withoutRestoredHistory(instructionContext)
-            : instructionContext;
+        const startInstructionContext = input?.carriesHandoff
+          ? withoutRestoredHistory(instructionContext)
+          : instructionContext;
 
         return Effect.gen(function* () {
           yield* Effect.annotateCurrentSpan({
@@ -2036,6 +2032,20 @@ const make = Effect.gen(function* () {
         persistedBinding.resumeCursor !== null
           ? persistedBinding.resumeCursor
           : undefined;
+      const retiredGeneration = thread.compaction?.retiredSessionGeneration;
+      const freshCompactionLaunch = Boolean(
+        thread.compaction?.freshSessionRecordId &&
+        resumeCursorForStoppedSession === undefined &&
+        !startCarriesHandoff &&
+        (retiredGeneration === undefined
+          ? persistedBinding === undefined
+          : persistedProviderMatches &&
+            persistedInstanceMatches &&
+            persistedCwdMatches &&
+            persistedBinding?.status === "stopped" &&
+            readPersistedSessionGeneration(persistedBinding.runtimePayload) ===
+              retiredGeneration + 1),
+      );
       yield* Effect.annotateCurrentSpan({
         "provider.session_decision":
           resumeCursorForStoppedSession !== undefined ? "resume-stopped" : "start",
@@ -2052,11 +2062,6 @@ const make = Effect.gen(function* () {
           : {}),
         ...(startCarriesHandoff ? { carriesHandoff: true } : {}),
       });
-      const freshCompactionLaunch = Boolean(
-        thread.compaction?.freshSessionRecordId &&
-        resumeCursorForStoppedSession === undefined &&
-        !startCarriesHandoff,
-      );
       yield* bindSessionToThread(startedSession, freshCompactionLaunch);
       yield* recordEffectiveStartConfig();
       if (

@@ -5441,6 +5441,42 @@ describe("WorkflowService", () => {
             await restarted.dispose();
           }
         }
+        const ambiguousLegacy = await createHarness(
+          makeReadModel({
+            workflow: {
+              ...workflow,
+              implementation: {
+                ...workflow.implementation!,
+                status: "completed",
+                revisionTurnId: implementationTurnId,
+              },
+            },
+            threads: [implementationThread, ...reviews.map((review) => review.thread)],
+          }),
+        );
+        try {
+          await ambiguousLegacy.start();
+          expect(ambiguousLegacy.getSnapshot().planningWorkflows[0]?.implementation).toMatchObject({
+            status: "completed",
+            revisionTurnId: implementationTurnId,
+          });
+          const retry = (allowPossibleDuplicate = false) =>
+            Effect.runPromise(
+              ambiguousLegacy.service.retryWorkflow({
+                workflowId: workflow.id,
+                allowPossibleDuplicate,
+              }),
+            );
+          expect(await retry()).toEqual({ status: "confirmation_required", threadIds: [threadId] });
+          expect(turnStartsForThread(ambiguousLegacy.dispatched, threadId)).toHaveLength(0);
+          expect(await retry(true)).toEqual({ status: "started" });
+          expect(turnStartsForThread(ambiguousLegacy.dispatched, threadId)).toHaveLength(1);
+          expect(
+            ambiguousLegacy.getSnapshot().planningWorkflows[0]?.implementation?.revisionTurnId,
+          ).toBeNull();
+        } finally {
+          await ambiguousLegacy.dispose();
+        }
         const targetDeliveryId = CommandId.makeUnsafe("revision-delivery-id");
         for (const state of ["missing", "pending", "sending", "rejected", "ambiguous"] as const) {
           const delivery =

@@ -490,6 +490,28 @@ describe("OrchestrationEngine", () => {
           VALUES (${threadId}, 'codex', ${instanceId}, 'codex', 'stopped', ${at},
             ${oldCursor}, '{"sessionGeneration":3}')
         `);
+        if (scenario === "commits") {
+          const stoppedAt = new Date(Date.parse(at) + 1_000).toISOString();
+          await dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.makeUnsafe("implementation-provider-stopped"),
+            threadId,
+            session: {
+              threadId,
+              status: "stopped",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: stoppedAt,
+            },
+            createdAt: stoppedAt,
+          });
+          const thread = (await system.run(system.engine.getReadModel())).threads.find(
+            (entry) => entry.id === threadId,
+          );
+          expect(thread?.lastInteractionAt).toBe(at);
+        }
         if (scenario === "competing delivery") {
           await dispatch({
             type: "thread.turn.start",
