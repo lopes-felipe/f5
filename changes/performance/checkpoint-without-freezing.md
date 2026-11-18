@@ -1,1 +1,0 @@
-- The app no longer freezes for seconds when the database checkpoints while the disk is busy. Terminals and the interface keep responding; only work that needs the database waits for the checkpoint.

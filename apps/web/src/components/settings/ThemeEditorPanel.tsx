@@ -47,8 +47,8 @@ export function ThemeEditorPanel({
       }),
     [baseHue, chroma, contrast, definition.id, definition.name, name, overrides],
   );
-  const palette = resolveThemePalette(draft.id, [draft]);
-  const warnings = getThemeContrastWarnings(palette);
+  const palette = useMemo(() => resolveThemePalette(draft.id, [draft]), [draft]);
+  const warnings = useMemo(() => getThemeContrastWarnings(palette), [palette]);
   const currentColors = palette[variant];
 
   const setOverride = (token: ThemeTokenName, value: string) => {

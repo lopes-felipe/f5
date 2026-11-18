@@ -3044,6 +3044,43 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const stopSession: ProviderServiceShape["stopSession"] = (input) =>
       withSessionOperation(input.threadId, stopSessionUnlocked(input));
 
+    const withStoppedSessionForCompaction: NonNullable<
+      ProviderServiceShape["withStoppedSessionForCompaction"]
+    > = (input) =>
+      withProviderThreadAccess(
+        input.threadId,
+        withSessionOperation(
+          input.threadId,
+          Effect.gen(function* () {
+            const binding = Option.getOrNull(yield* directory.getBinding(input.threadId));
+            const expected = input.expected;
+            if (
+              startingSessions.has(input.threadId) ||
+              (binding && expected
+                ? binding.provider !== expected.provider ||
+                  resolveBindingInstanceId(binding) !== expected.instanceId ||
+                  readPersistedSessionGeneration(binding.runtimePayload) !== expected.generation
+                : binding !== expected) ||
+              (binding?.status !== "stopped" &&
+                binding?.runtimePayload &&
+                typeof binding.runtimePayload === "object" &&
+                "activeTurnId" in binding.runtimePayload &&
+                binding.runtimePayload.activeTurnId)
+            ) {
+              return yield* toValidationError(
+                "ProviderService.withStoppedSessionForCompaction",
+                "The provider session changed or became active during compaction.",
+              );
+            }
+            yield* input.validate;
+            if (binding) {
+              yield* stopSessionUnlocked({ threadId: input.threadId });
+            }
+            yield* input.commit;
+          }),
+        ),
+      );
+
     const replaceSession: ProviderServiceShape["replaceSession"] = (threadId, input, expected) =>
       withProviderThreadAccess(
         threadId,
@@ -4285,6 +4322,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             : withProviderThreadAccess(input.threadId, respondToElicitation(input));
         }),
       stopSession: (input) => withControlTarget(input.threadId, stopSession(input)),
+      withStoppedSessionForCompaction,
       listStartingWorkspaces: () =>
         Effect.sync(() =>
           Array.from(startingSessions, ([threadId, { session }]) => ({

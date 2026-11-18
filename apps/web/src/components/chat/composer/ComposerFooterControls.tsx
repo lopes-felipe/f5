@@ -32,6 +32,7 @@ import type {
   ComposerSendControls,
 } from "./composerControls";
 import { NativeGoalDialog } from "./NativeGoalDialog";
+import { ComposerUsageLimits } from "../../usage/ComposerUsageLimits";
 
 const INTERACTION_MODE_TOGGLE_CLASS_NAME =
   "h-6 min-w-0 gap-1 rounded-sm border-0 px-2 text-ui font-normal text-muted-foreground hover:bg-transparent hover:text-foreground data-pressed:bg-background data-pressed:text-foreground data-pressed:shadow-xs sm:h-6 [&_svg:not([class*='size-'])]:size-3.5";
@@ -197,6 +198,7 @@ export function ComposerFooterControls(props: {
         />
       ) : null}
       {/* Provider/model picker */}
+      <ComposerUsageLimits threadId={props.threadId} />
       {model.noProviderAvailable ? (
         <span className="px-2 text-xs text-muted-foreground" role="status">
           No provider available

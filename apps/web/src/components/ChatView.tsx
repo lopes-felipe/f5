@@ -2507,6 +2507,9 @@ export default memo(function ChatView({
       projectAttachmentPreviewHandoff,
     ],
   );
+  // Shown while the reader is away from the end, and while a jump runs.
+  const showFollowingControls =
+    timelineMessages.length > 0 && (showScrollToBottom || isJumpingToLatest);
   const imageSources = messageAttachmentSources(timelineMessages);
   useEffect(() => {
     setExpandedImage((existing) =>
@@ -8354,10 +8357,7 @@ export default memo(function ChatView({
           {/* Main content area with optional plan sidebar */}
           <div className="flex min-h-0 min-w-0 flex-1">
             {/* Chat column */}
-            <div
-              className="flex min-h-0 min-w-0 flex-1 flex-col"
-              style={composerRedesign ? { containerType: "size" } : undefined}
-            >
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col" style={{ containerType: "size" }}>
               {/* Messages Wrapper */}
               <div
                 {...CONVERSATION_WORKSPACE_AREA}
@@ -8395,6 +8395,7 @@ export default memo(function ChatView({
                         hasMessages={timelineEntries.length > 0}
                         isWorking={isWorking}
                         activeTurnStartedAt={activeWorkStartedAt}
+                        activeTurnId={latestTurnSettled ? null : activeLatestTurn?.turnId}
                         liveActivity={liveActivity}
                         listRef={legendListRef}
                         entryRowIndexMapRef={timelineEntryRowIndexMapRef}
@@ -8465,8 +8466,7 @@ export default memo(function ChatView({
                   <ThreadDetailsLoadingState testId="chat-thread-details-loading" />
                 )}
 
-                {/* Shown while the reader is away from the end, and while a jump runs. */}
-                {(showScrollToBottom || isJumpingToLatest) && (
+                {showFollowingControls && (
                   <JumpToLatestButton
                     tail={timelineTail}
                     leftEndTail={leftEndTail}

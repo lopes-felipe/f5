@@ -1,0 +1,1 @@
+- OpenCode native slash commands receive only the arguments you typed. Images, plain-text files and PDFs are still attached; other file types are omitted from native commands.

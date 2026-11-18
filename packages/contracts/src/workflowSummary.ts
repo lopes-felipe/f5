@@ -1,5 +1,5 @@
 import { Schema, Struct } from "effect";
-import { PlanningWorkflow, WorkflowImplementation } from "./planningWorkflow";
+import { PlanningWorkflow, WorkflowCodeReview, WorkflowImplementation } from "./planningWorkflow";
 import { CodeReviewWorkflow } from "./codeReviewWorkflow";
 import { InvestigationWorkflow } from "./investigationWorkflow";
 
@@ -13,7 +13,19 @@ export const PlanningWorkflowSummary = Schema.Struct({
     "archiveRestorations",
   ]),
   implementation: Schema.NullOr(
-    Schema.Struct(Struct.omit(WorkflowImplementation.fields, ["reviewArtifact"])),
+    Schema.Struct({
+      ...Struct.omit(WorkflowImplementation.fields, [
+        "reviewArtifact",
+        "revisionAttempt",
+        "revisionDispatchCommandId",
+        "revisionCompaction",
+      ]),
+      codeReviews: Schema.Array(
+        Schema.Struct(
+          Struct.omit(WorkflowCodeReview.fields, ["pinnedTurnId", "pinnedAssistantMessageId"]),
+        ),
+      ),
+    }),
   ).pipe(Schema.withDecodingDefault(() => null)),
 });
 export type PlanningWorkflowSummary = typeof PlanningWorkflowSummary.Type;

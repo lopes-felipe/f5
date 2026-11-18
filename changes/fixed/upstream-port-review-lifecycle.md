@@ -1,2 +1,0 @@
-- Windows service commands recover from interrupted commands and failed registrations, and can stop a server that never finishes starting. PR event watches retain changes received during a read and subscriptions during backoff, and wait for cleanup at shutdown.
-- Usage history keeps the last known Antigravity account identity during temporary userinfo failures. Incomplete Grok hub configuration reports an authentication error. Quote comments remain editable without shifting composer cursor offsets.

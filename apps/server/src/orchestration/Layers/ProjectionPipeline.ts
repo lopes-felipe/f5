@@ -1154,6 +1154,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             ...existingRow.value,
             compaction: event.payload.compaction,
             estimatedContextTokens: event.payload.compaction.estimatedTokens,
+            ...(event.payload.compaction.freshSessionRecordId
+              ? { modelContextWindowTokens: event.payload.compaction.modelContextWindowTokens }
+              : {}),
             lastInteractionAt: event.occurredAt,
             updatedAt: event.occurredAt,
           });
@@ -1974,6 +1977,14 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           }
           yield* projectionThreadSessionRepository.upsert({
             ...existingRow.value,
+            ...(event.payload.compaction.freshSessionRecordId
+              ? {
+                  status: "stopped" as const,
+                  activeTurnId: null,
+                  capabilities: null,
+                  modelContextWindowTokens: event.payload.compaction.modelContextWindowTokens,
+                }
+              : {}),
             estimatedContextTokens: event.payload.compaction.estimatedTokens,
             tokenUsageSource: "estimated",
             updatedAt: event.occurredAt,

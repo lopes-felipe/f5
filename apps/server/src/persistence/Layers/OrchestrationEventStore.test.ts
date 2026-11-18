@@ -115,6 +115,33 @@ layer("OrchestrationEventStore", (it) => {
         eventStore.readFromSequence(cursor, Number.MAX_SAFE_INTEGER, { eventTypes: [] }),
       );
       assert.equal(none.length, 0);
+      const threadId = ThreadId.makeUnsafe("filter-thread");
+      const change = yield* eventStore.append({
+        eventId: EventId.makeUnsafe("filter-thread-meta"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        type: "thread.meta-updated",
+        occurredAt: timestamp,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        payload: { threadId, branch: "implementation", updatedAt: timestamp },
+        metadata: {},
+      });
+      const otherThreadId = ThreadId.makeUnsafe("other-filter-thread");
+      yield* eventStore.append({
+        ...change,
+        eventId: EventId.makeUnsafe("filter-other-thread-meta"),
+        aggregateId: otherThreadId,
+        payload: { threadId: otherThreadId, branch: "other", updatedAt: timestamp },
+      });
+      const threadEvents = yield* Stream.runCollect(
+        eventStore.readFromSequence(cursor, Number.MAX_SAFE_INTEGER, {
+          threadId,
+          eventTypes: ["thread.meta-updated"],
+        }),
+      );
+      assert.deepEqual(Array.from(threadEvents), [change]);
       yield* sql`DELETE FROM orchestration_events WHERE event_id LIKE 'filter-%'`;
     }),
   );

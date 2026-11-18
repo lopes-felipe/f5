@@ -106,8 +106,12 @@ export function directionFromCodes(pressed: ReadonlySet<string>): RibbonInput {
 }
 
 /** Keeps a glyph clear of the edges at any rotation. */
-export function collisionMargin(maxGlyphWidth: number, maxGlyphHeight: number): number {
-  return RIBBON_PHYSICS.edgeGap + Math.ceil(Math.hypot(maxGlyphWidth, maxGlyphHeight) / 2);
+export function collisionMargin(
+  maxGlyphWidth: number,
+  maxGlyphHeight: number,
+  edgeGap: number = RIBBON_PHYSICS.edgeGap,
+): number {
+  return edgeGap + Math.ceil(Math.hypot(maxGlyphWidth, maxGlyphHeight) / 2);
 }
 
 /** Room to move, and to lay the whole text out flat inside the margins. */

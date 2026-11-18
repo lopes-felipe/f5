@@ -1,5 +1,15 @@
 import type { UsageAccount } from "@t3tools/contracts";
-import { quotaWindowsFromSection } from "@t3tools/shared/usageLimit";
+import { quotaWindowsFromSection, type QuotaWindow } from "@t3tools/shared/usageLimit";
+
+/** Prefer the account-wide weekly quota over a model-specific weekly limit. */
+export function sidebarWeeklyUsageWindow(windows: ReadonlyArray<QuotaWindow>) {
+  const weekly = windows.filter((window) => window.durationMinutes === 10_080);
+  return (
+    weekly.find((window) => window.windowKey === "seven_day") ??
+    weekly.find((window) => window.windowKey.startsWith("codex:")) ??
+    weekly[0]
+  );
+}
 
 /** Uses reported window identities and durations, so new model versions need no catalog update. */
 export function sidebarUsageWindows(account: UsageAccount) {

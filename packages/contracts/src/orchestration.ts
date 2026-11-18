@@ -498,6 +498,9 @@ export type ThreadCompactionTrigger = typeof ThreadCompactionTrigger.Type;
 
 export const ThreadCompaction = Schema.Struct({
   kind: Schema.optional(Schema.Literals(["summary", "native"])),
+  /** Record that rotated the provider conversation and measured the restored input. */
+  freshSessionRecordId: Schema.optional(CommandId),
+  retiredSessionGeneration: Schema.optional(NonNegativeInt),
   summary: TrimmedNonEmptyString,
   trigger: ThreadCompactionTrigger,
   estimatedTokens: NonNegativeInt,
@@ -1892,6 +1895,26 @@ const ThreadCompactedRecordCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   compaction: ThreadCompaction,
+  freshSessionGuard: Schema.optional(
+    Schema.Struct({
+      workflowId: PlanningWorkflowId,
+      attempt: NonNegativeInt,
+      requestId: CommandId,
+      dispatchCommandId: CommandId,
+      lastInteractionAt: IsoDateTime,
+      branch: Schema.NullOr(TrimmedNonEmptyString),
+      worktreePath: Schema.NullOr(FilesystemPath),
+      workspaceRoot: FilesystemPath,
+      model: TrimmedNonEmptyString,
+      binding: Schema.NullOr(
+        Schema.Struct({
+          provider: ProviderKind,
+          instanceId: ProviderInstanceId,
+          generation: NonNegativeInt,
+        }),
+      ),
+    }),
+  ),
   createdAt: IsoDateTime,
 });
 

@@ -1,4 +1,5 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { CODEX_ONE_OFF_PROMPT_TIMEOUT_MS } from "./provider/oneOffPromptTimeouts.ts";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
 import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
@@ -454,7 +455,6 @@ const CODEX_SPARK_FALLBACK_MODEL = "gpt-5.3-codex";
 const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
 const CODEX_SPARK_DISABLED_PLAN_TYPES = new Set<CodexPlanType>(["free", "go", "plus"]);
 const CODEX_ONE_OFF_THREAD_PREFIX = "one-off:";
-const CODEX_ONE_OFF_PROMPT_TIMEOUT_MS = 120_000;
 /** A warm one-off app-server stops after this long without a prompt. */
 export const CODEX_ONE_OFF_WORKER_IDLE_MS = 5 * 60_000;
 /** Retire a warm one-off app-server after this many prompts to bound its memory. */
@@ -1576,7 +1576,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.updateSession(context, {
         status: "ready",
         resumeCursor: codexBrowserResumeCursor(
-          asObject(input.resumeCursor),
+          threadOpenMethod === "thread/start" && input.priorWorkSummary
+            ? { ...asObject(input.resumeCursor), f5ResumedContextPending: true }
+            : asObject(input.resumeCursor),
           providerThreadId,
           context.browserResumeRegistered,
         ),

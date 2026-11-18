@@ -84,6 +84,7 @@ type ClaudeQueryOptionsForTest = Omit<ClaudeQueryOptions, "effort"> & {
 };
 
 import { FakeClaudeQuery } from "../testUtils/FakeClaudeQuery.ts";
+import { writeCliScript } from "../../testUtils/cli.ts";
 import {
   BROWSER_OPEN_TOKEN_ENV,
   browserOpenTokenFor,
@@ -683,6 +684,9 @@ describe("ClaudeAdapter agent browser", () => {
           assert.equal(hookDecision(yield* call("write")), "deny");
           assert.equal(hookDecision(yield* call("unlisted")), "deny");
           assert.notEqual(hookDecision(yield* call("write", "sdk")), "deny");
+          // Startup names the launch servers once so a reload can remove them in place.
+          assert.equal(setMcpServers.mock.calls.length, 1);
+          setMcpServers.mockClear();
           const reloaded = yield* adapter.reloadMcpConfig!({
             threadId: THREAD_ID,
             mcpServers: {
@@ -942,18 +946,27 @@ describe("ClaudeAdapter agent browser", () => {
               ]),
           },
         );
+        const setPayloads: Array<Record<string, unknown>> = [];
         Object.assign(harness.query, {
+          // Like the SDK: an in-process server survives only when the payload names it.
           setMcpServers: async (servers: Record<string, unknown>) => {
+            setPayloads.push(servers);
+            const sdk = harness.query.mcpServerStatusValue.filter(
+              (server) => server.source === "sdk" && server.name in servers,
+            );
+            const dynamic = Object.keys(servers).filter(
+              (name) => !sdk.some((server) => server.name === name),
+            );
             harness.query.mcpServerStatusValue = [
-              ...harness.query.mcpServerStatusValue.filter((server) => server.source === "sdk"),
-              ...Object.keys(servers).map((name) => ({
+              ...sdk,
+              ...dynamic.map((name) => ({
                 name,
                 status: "connected" as const,
                 source: "dynamic",
               })),
             ];
             return {
-              added: Object.keys(servers),
+              added: dynamic,
               removed: "old" in servers ? [] : ["old"],
               errors: {},
             };
@@ -1012,6 +1025,15 @@ describe("ClaudeAdapter agent browser", () => {
           });
           assert.equal(reload.restartRequired, true);
           assert.equal(reload.converged, false);
+          for (const [name, config] of Object.entries(internal))
+            assert.strictEqual(setPayloads[0]?.[name], config);
+          assert.deepEqual(
+            harness.query.mcpServerStatusValue
+              .filter((server) => server.source === "sdk")
+              .map((server) => server.name)
+              .sort(),
+            Object.keys(internal).sort(),
+          );
           harness.query.emit({
             type: "result",
             subtype: "error_during_execution",
@@ -1273,9 +1295,80 @@ describe("ClaudeAdapter agent browser", () => {
     );
   });
 
+  const privateMcpServers = {
+    privateHttp: {
+      type: "http" as const,
+      url: "https://example.invalid/mcp",
+      headers: { Authorization: "Bearer private-header-fixture" },
+    },
+    privateStdio: {
+      type: "stdio" as const,
+      command: "node",
+      env: { ACCESS_KEY: "private-env-fixture" },
+    },
+  };
+
   it.effect(
-    "installs private MCP configuration over the control channel before returning a ready session",
+    "hands private MCP configuration to the bundled runtime in initialize and removes it in place",
     () => {
+      const harness = makeHarness();
+      // Like Claude Code 2.1.326: a launch server is removed by omission only once a
+      // `setMcpServers` call has named it (verified against the real binary).
+      const named = new Set<string>();
+      const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => {
+        const removed = harness.query.mcpServerStatusValue
+          .filter((server) => named.has(server.name) && !(server.name in servers))
+          .map((server) => server.name);
+        for (const name of Object.keys(servers)) named.add(name);
+        for (const name of removed) named.delete(name);
+        harness.query.mcpServerStatusValue = harness.query.mcpServerStatusValue.filter(
+          (server) => !removed.includes(server.name),
+        );
+        return { added: [], removed, errors: {} };
+      });
+      Object.assign(harness.query, { setMcpServers });
+      harness.query.mcpServerStatusValue = Object.keys(privateMcpServers).map((name) => ({
+        name,
+        status: "connected",
+        source: "dynamic",
+      }));
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          providerOptions: { mcpServers: privateMcpServers },
+        });
+        const options = harness.getLastCreateQueryInput()!.options;
+        // The SDK sends these over stdin in initialize (pinned by the contract probe).
+        assert.equal(options.mcpServersDelivery, "initialize");
+        assert.deepEqual(
+          Object.keys(options.mcpServers ?? {}).sort(),
+          Object.keys(privateMcpServers).sort(),
+        );
+        assert.equal(setMcpServers.mock.calls.length, 1);
+        const reload = yield* adapter.reloadMcpConfig!({
+          threadId: THREAD_ID,
+          mcpServers: { privateStdio: privateMcpServers.privateStdio },
+        });
+        assert.equal(reload.restartRequired, false);
+        assert.equal(reload.converged, true);
+        assert.deepEqual(
+          harness.query.mcpServerStatusValue.map((server) => server.name),
+          ["privateStdio"],
+        );
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "installs private MCP configuration over the control channel for a pre-2.1.326 executable",
+    () => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "f5-claude-delivery-"));
+      const binaryPath = writeCliScript(
+        path.join(directory, "claude"),
+        `process.stdout.write("2.1.317 (Claude Code)\\n");`,
+      );
       const harness = makeHarness();
       const setMcpServers = vi.fn(async () => ({
         added: ["privateHttp", "privateStdio"],
@@ -1283,25 +1376,14 @@ describe("ClaudeAdapter agent browser", () => {
         errors: {},
       }));
       Object.assign(harness.query, { setMcpServers });
-      const mcpServers = {
-        privateHttp: {
-          type: "http" as const,
-          url: "https://example.invalid/mcp",
-          headers: { Authorization: "Bearer private-header-fixture" },
-        },
-        privateStdio: {
-          type: "stdio" as const,
-          command: "node",
-          env: { ACCESS_KEY: "private-env-fixture" },
-        },
-      };
       return Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter;
         yield* adapter.startSession({
           threadId: THREAD_ID,
           runtimeMode: "full-access",
-          providerOptions: { mcpServers },
+          providerOptions: { claudeAgent: { binaryPath }, mcpServers: privateMcpServers },
         });
+        assert.equal(harness.getLastCreateQueryInput()!.options.mcpServersDelivery, "argv");
         assert.equal(setMcpServers.mock.calls.length, 1);
         const startup = JSON.stringify(harness.getLastCreateQueryInput()!.options);
         assert.equal(startup.includes("private-header-fixture"), false);
@@ -1314,7 +1396,10 @@ describe("ClaudeAdapter agent browser", () => {
           JSON.stringify(setMcpServers.mock.calls).includes("private-env-fixture"),
           true,
         );
-      }).pipe(Effect.provide(harness.layer));
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => rmSync(directory, { recursive: true, force: true }))),
+        Effect.provide(harness.layer),
+      );
     },
   );
 
@@ -1352,6 +1437,8 @@ describe("ClaudeAdapter agent browser", () => {
         );
         assert.equal(opened._tag, "Some");
         if (opened._tag !== "Some" || opened.value.type !== "request.opened") return;
+        // F5's own preview grant keeps the session accept on offer without CLI suggestions.
+        assert.notEqual(opened.value.payload.presentation?.suppressAlwaysAllowRule, true);
         yield* adapter.respondToRequest(
           THREAD_ID,
           ApprovalRequestId.makeUnsafe(opened.value.requestId!),
@@ -2839,6 +2926,56 @@ describe("ClaudeAdapterLive", () => {
         | { permissions?: Record<string, unknown> }
         | undefined;
       assert.equal(settings?.permissions?.blockWritesOutsideWorkingDirectories, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("warns once per reported credential expiry in a session", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const warningFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "runtime.warning",
+      ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+      // The adapter reads the live clock; both earliest ends (3 days before) fall within 7 days.
+      const inDays = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+      const soon = inDays(5);
+      const result = (uuid: string, credentialExpiresAt: string) =>
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-session-expiry",
+          uuid,
+          total_cost_usd: 0,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          duration_ms: 1,
+          duration_api_ms: 1,
+          num_turns: 1,
+          result: "done",
+          credential_expires_at: credentialExpiresAt,
+        } as unknown as SDKMessage);
+      result("result-1", soon);
+      result("result-2", soon);
+      result("result-3", inDays(8));
+      // A repeated value is skipped, so the second warning is the new value's.
+      const warnings = Array.from(yield* Fiber.join(warningFiber)).map((event) =>
+        event.type === "runtime.warning" ? event.payload.message : "",
+      );
+      assert.equal(warnings.length, 2);
+      assert.ok(
+        warnings.every((message) => message.startsWith("This Claude login may end as early as")),
+      );
+      assert.notEqual(warnings[0], warnings[1]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -10437,6 +10574,13 @@ describe("ClaudeAdapterLive", () => {
         assert.deepEqual(requested.value.providerRefs, {
           providerItemId: ProviderItemId.makeUnsafe("tool-use-1"),
         });
+        // Without suggestions a session accept would save nothing, so it is not offered.
+        const noSessionGrant =
+          approvalCase === "session-empty" || approvalCase === "session-absent";
+        assert.equal(
+          requested.value.payload.presentation?.suppressAlwaysAllowRule,
+          noSessionGrant ? true : undefined,
+        );
         const runtimeRequestId = requested.value.requestId;
         assert.equal(typeof runtimeRequestId, "string");
         if (runtimeRequestId === undefined) {
@@ -10461,7 +10605,7 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(resolved.value.requestId, requested.value.requestId);
         assert.equal(
           resolved.value.payload.decision,
-          approvalCase === "accept" ? "accept" : "acceptForSession",
+          approvalCase === "session-suggestions" ? "acceptForSession" : "accept",
         );
         assert.deepEqual(resolved.value.providerRefs, {
           providerItemId: ProviderItemId.makeUnsafe("tool-use-1"),
@@ -14370,6 +14514,40 @@ describe("ClaudeAdapterLive", () => {
         );
       assert.equal((yield* decide({ source: "sdk", name: "f5_thread" }))?.behavior, "allow");
       assert.notEqual((yield* decide({ source: "stdio", name: "f5_thread" }))?.behavior, "allow");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps F5's in-process thread server through an MCP reload", () => {
+    const harness = makeHarness({ threadMcpBroker: Effect.runSync(makeThreadMcpBroker) });
+    const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => ({
+      added: Object.keys(servers).filter((name) => name !== "f5_thread"),
+      removed: [],
+      errors: {},
+    }));
+    Object.assign(harness.query, { setMcpServers });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const threadServer = harness.getLastCreateQueryInput()!.options.mcpServers?.["f5_thread"];
+      assert.ok(threadServer);
+      harness.query.mcpServerStatusValue = [
+        { name: "f5_thread", status: "connected", source: "sdk" },
+      ];
+      yield* adapter.reloadMcpConfig!({
+        threadId: THREAD_ID,
+        mcpServers: { team__docs: { type: "stdio", command: "node" } },
+      });
+      assert.equal(setMcpServers.mock.calls.length, 1);
+      const payload = setMcpServers.mock.calls[0]![0];
+      assert.deepEqual(Object.keys(payload).toSorted(), ["f5_thread", "team__docs"]);
+      assert.equal(payload["f5_thread"], threadServer);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

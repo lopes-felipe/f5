@@ -4,6 +4,7 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   EventId,
   MessageId,
+  ProviderInstanceId,
   ProjectId,
   ThreadId,
   type OrchestrationCommand,
@@ -12,14 +13,38 @@ import {
   type NativeOperationRecord,
 } from "@t3tools/contracts";
 import { afterEach, describe, expect, it } from "vitest";
-import { Deferred, Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
+import {
+  Deferred,
+  type Duration,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Option,
+  PubSub,
+  Scope,
+  Stream,
+} from "effect";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ProviderValidationError, ProviderSessionNotFoundError } from "../../provider/Errors.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
-import { CompactionService } from "../Services/CompactionService.ts";
+import {
+  CompactionService,
+  type WorkflowCompactionRequest,
+} from "../Services/CompactionService.ts";
+import {
+  ProviderSessionDirectory,
+  type ProviderSessionDirectoryShape,
+} from "../../provider/Services/ProviderSessionDirectory.ts";
+import {
+  ProviderTurnDeliveryRepository,
+  type ProviderTurnDeliveryRepositoryShape,
+} from "../Services/ProviderTurnDeliveryRepository.ts";
+import { workflowArchiveFixture } from "../workflowArchive.testUtils.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -128,6 +153,7 @@ async function createHarness(input?: {
   readonly compactConversation?: ProviderServiceShape["compactConversation"];
   readonly runOneOffPrompt?: ProviderServiceShape["runOneOffPrompt"];
   readonly stopSession?: ProviderServiceShape["stopSession"];
+  readonly testClock?: boolean;
 }) {
   const domainEventPubSub = Effect.runSync(PubSub.unbounded<OrchestrationEvent>());
   let readModel = makeReadModel();
@@ -186,6 +212,11 @@ async function createHarness(input?: {
     respondToElicitation: () => unsupported(),
     stopSession:
       input?.stopSession ?? (() => Effect.void as ReturnType<ProviderServiceShape["stopSession"]>),
+    withStoppedSessionForCompaction: ({ validate, commit, threadId }) =>
+      validate.pipe(
+        Effect.andThen(input?.stopSession?.({ threadId }) ?? Effect.void),
+        Effect.andThen(commit),
+      ),
     listStartingWorkspaces: () => Effect.succeed([]),
     listSessions: () => Effect.succeed([]),
     ...(input?.nativeOperations ? { nativeOperations: input.nativeOperations } : {}),
@@ -214,6 +245,27 @@ async function createHarness(input?: {
     CompactionServiceLive.pipe(
       Layer.provideMerge(Layer.succeed(OrchestrationEngineService, orchestrationEngine)),
       Layer.provideMerge(Layer.succeed(ProviderService, providerService)),
+      Layer.provideMerge(
+        Layer.succeed(ProviderSessionDirectory, {
+          getBinding: (threadId: ThreadId) =>
+            Effect.succeed(
+              Option.some({
+                threadId,
+                provider: "claudeAgent",
+                providerInstanceId: ProviderInstanceId.makeUnsafe("claudeAgent"),
+                status: "stopped",
+                lastSeenAt: NOW,
+                runtimePayload: { sessionGeneration: 7 },
+              }),
+            ),
+        } as unknown as ProviderSessionDirectoryShape),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(ProviderTurnDeliveryRepository, {
+          getUnresolvedByThread: () => Effect.succeed(null),
+        } as unknown as ProviderTurnDeliveryRepositoryShape),
+      ),
+      Layer.provideMerge(input?.testClock ? TestClock.layer() : Layer.empty),
     ),
   );
   const service = await runtime.runPromise(Effect.service(CompactionService));
@@ -224,6 +276,10 @@ async function createHarness(input?: {
   return {
     service,
     dispatched,
+    requestSummary: (request: WorkflowCompactionRequest) =>
+      runtime.runPromise(service.requestSummary(request)),
+    adjustClock: (duration: Duration.Input) =>
+      runtime.runPromise(TestClock.adjust(duration).pipe(Scope.provide(scope))),
     emit: (event: OrchestrationEvent) => Effect.runSync(PubSub.publish(domainEventPubSub, event)),
     mutateReadModel: (mutator: (current: OrchestrationReadModel) => OrchestrationReadModel) => {
       readModel = mutator(readModel);
@@ -235,11 +291,130 @@ async function createHarness(input?: {
   };
 }
 
+function installApplyReviewsAttempt(
+  harness: Awaited<ReturnType<typeof createHarness>>,
+): WorkflowCompactionRequest {
+  const { entry } = workflowArchiveFixture("planning");
+  if (entry.kind !== "planning") throw new Error("Expected a planning workflow");
+  const requestId = CommandId.makeUnsafe("summary-request");
+  const recordCommandId = CommandId.makeUnsafe("summary-record");
+  const dispatchCommandId = CommandId.makeUnsafe("apply-reviews-dispatch");
+  const targetSlot = { provider: "claudeAgent", model: "claude-sonnet-4-6" } as const;
+  const workflow = {
+    ...entry.workflow,
+    projectId: PROJECT_ID,
+    implementation: {
+      threadId: THREAD_ID,
+      implementationSlot: targetSlot,
+      implementationTurnId: "implementation-turn",
+      revisionTurnId: null,
+      revisionAttempt: 1,
+      revisionDispatchCommandId: dispatchCommandId,
+      revisionCompaction: { requestId, recordCommandId },
+      codeReviewEnabled: true,
+      codeReviews: [],
+      status: "applying_reviews" as const,
+      error: null,
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: NOW,
+    },
+  };
+  harness.mutateReadModel((model) => ({ ...model, planningWorkflows: [workflow] }));
+  return {
+    workflowId: workflow.id,
+    threadId: THREAD_ID,
+    attempt: 1,
+    requestId,
+    recordCommandId,
+    dispatchCommandId,
+    targetSlot,
+    contextWindowTokens: 200_000,
+    interactionMode: "default",
+    checkFit: () => null,
+  };
+}
+
 describe("CompactionService", () => {
   const disposers: Array<() => Promise<void>> = [];
 
   afterEach(async () => {
     await Promise.all(disposers.splice(0).map((dispose) => dispose()));
+  });
+
+  it("allows a Claude summary beyond 150 seconds and measures the actual restore", async () => {
+    const started = Effect.runSync(Deferred.make<number>());
+    const harness = await createHarness({
+      testClock: true,
+      runOneOffPrompt: (input) =>
+        Deferred.succeed(started, input.timeoutMs ?? 0).pipe(
+          Effect.andThen(Effect.sleep("160 seconds")),
+          Effect.as({ text: "<summary>Synthetic implementation summary</summary>" }),
+        ),
+    });
+    disposers.push(harness.dispose);
+    const request = installApplyReviewsAttempt(harness);
+    let estimatedTokens = 0;
+    const outcome = harness.requestSummary({
+      ...request,
+      checkFit: (usage) => {
+        estimatedTokens = usage;
+        return null;
+      },
+    });
+    expect(await Effect.runPromise(Deferred.await(started))).toBe(180_000);
+    await harness.adjustClock("160 seconds");
+    expect(await outcome).toEqual({ kind: "committed" });
+    expect(harness.dispatched).toContainEqual(
+      expect.objectContaining({
+        type: "thread.compacted.record",
+        commandId: request.recordCommandId,
+        compaction: expect.objectContaining({
+          summary: expect.stringContaining("Synthetic implementation summary"),
+          estimatedTokens,
+          freshSessionRecordId: request.recordCommandId,
+          retiredSessionGeneration: 7,
+        }),
+      }),
+    );
+    expect(estimatedTokens).toBeGreaterThan(100);
+  });
+
+  it("expires queued recovery before invoking its provider", async () => {
+    const blockerId = ThreadId.makeUnsafe("compaction-blocker");
+    const started = Effect.runSync(Deferred.make<void>());
+    const release = Effect.runSync(Deferred.make<void>());
+    const invocations: ThreadId[] = [];
+    const harness = await createHarness({
+      testClock: true,
+      runOneOffPrompt: (input) =>
+        Effect.sync(() => {
+          invocations.push(input.threadId);
+        }).pipe(
+          Effect.andThen(Deferred.succeed(started, undefined)),
+          Effect.andThen(Deferred.await(release)),
+          Effect.as({ text: "<summary>Unrelated summary</summary>" }),
+        ),
+    });
+    disposers.push(harness.dispose);
+    const request = installApplyReviewsAttempt(harness);
+    harness.mutateReadModel((model) => ({
+      ...model,
+      threads: [...model.threads, { ...model.threads[0]!, id: blockerId }],
+    }));
+    const event = makeCompactRequestedEvent("queue-blocker");
+    harness.emit({
+      ...event,
+      aggregateId: blockerId,
+      payload: { ...event.payload, threadId: blockerId },
+    });
+    await Effect.runPromise(Deferred.await(started));
+    const outcome = harness.requestSummary(request);
+    await harness.adjustClock("4 minutes");
+    expect(await outcome).toMatchObject({ kind: "expired" });
+    await Effect.runPromise(Deferred.succeed(release, undefined));
+    await Effect.runPromise(harness.service.drain);
+    expect(invocations).toEqual([blockerId]);
   });
 
   it("reports a workflow admission refusal and uses the safe F5 summary path", async () => {

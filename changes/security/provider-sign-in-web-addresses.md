@@ -1,1 +1,0 @@
-- Sign-in links and browser fallback link opening reject addresses outside HTTP and HTTPS.

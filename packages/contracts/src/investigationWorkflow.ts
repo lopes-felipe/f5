@@ -7,7 +7,7 @@ import {
   TrimmedNonEmptyString,
   makeEntityId,
 } from "./baseSchemas";
-import { WorkflowStageDispatchCommandId } from "./codeReviewWorkflow";
+import { WorkflowStageDispatchCommandId } from "./workflowStageDispatch";
 import { WorkflowModelSlot, WorkflowStepStatus } from "./planningWorkflow";
 import { WorkflowArchiveRestorations } from "./workflowArchive";
 

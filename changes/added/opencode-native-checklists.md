@@ -1,1 +1,0 @@
-- OpenCode native todo updates now appear in the task checklist, including progress, cancellations, clears, and updates recovered from the native todo inventory.

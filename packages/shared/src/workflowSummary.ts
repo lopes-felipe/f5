@@ -5,12 +5,37 @@ export function summarizePlanningWorkflow<
     requirementPrompt: string;
     plansDirectory: string;
     archiveRestorations?: unknown;
-    implementation?: { reviewArtifact?: unknown } | null | undefined;
+    implementation?:
+      | {
+          reviewArtifact?: unknown;
+          revisionAttempt?: unknown;
+          revisionDispatchCommandId?: unknown;
+          revisionCompaction?: unknown;
+          codeReviews: ReadonlyArray<object>;
+        }
+      | null
+      | undefined;
   },
 >(
   workflow: T,
 ): Omit<T, "requirementPrompt" | "plansDirectory" | "implementation" | "archiveRestorations"> & {
-  implementation: Omit<NonNullable<T["implementation"]>, "reviewArtifact"> | null;
+  implementation:
+    | (Omit<
+        NonNullable<T["implementation"]>,
+        | "reviewArtifact"
+        | "revisionAttempt"
+        | "revisionDispatchCommandId"
+        | "revisionCompaction"
+        | "codeReviews"
+      > & {
+        codeReviews: ReadonlyArray<
+          Omit<
+            NonNullable<T["implementation"]>["codeReviews"][number],
+            "pinnedTurnId" | "pinnedAssistantMessageId"
+          >
+        >;
+      })
+    | null;
 } {
   const {
     requirementPrompt: _prompt,
@@ -20,10 +45,29 @@ export function summarizePlanningWorkflow<
     ...summary
   } = workflow;
   if (!implementation) return { ...summary, implementation: null };
-  const { reviewArtifact: _artifact, ...stage } = implementation;
+  const {
+    reviewArtifact: _artifact,
+    revisionAttempt: _attempt,
+    revisionDispatchCommandId: _dispatch,
+    revisionCompaction: _compaction,
+    codeReviews,
+    ...stage
+  } = implementation;
   return {
     ...summary,
-    implementation: stage as Omit<NonNullable<T["implementation"]>, "reviewArtifact">,
+    implementation: {
+      ...stage,
+      codeReviews: codeReviews.map(
+        ({
+          pinnedTurnId: _turn,
+          pinnedAssistantMessageId: _message,
+          ...review
+        }: NonNullable<T["implementation"]>["codeReviews"][number] & {
+          pinnedTurnId?: unknown;
+          pinnedAssistantMessageId?: unknown;
+        }) => review,
+      ),
+    } as NonNullable<ReturnType<typeof summarizePlanningWorkflow<T>>["implementation"]>,
   };
 }
 export function summarizeCodeReviewWorkflow<
