@@ -1182,6 +1182,7 @@ export function codexOneOffPoolKey(
     resolveCodexCommand(options?.binaryPath),
     resolveCodexHome({ homePath: options?.homePath }) ?? "",
     options?.launchArgs ?? [],
+    options?.modelProvider ?? "",
   ]);
 }
 
@@ -1353,6 +1354,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadId,
       );
       const appServerCommand = buildCodexAppServerCommand({
+        ...(codexOptions.modelProvider ? { modelProvider: codexOptions.modelProvider } : {}),
         ...(codexOptions.launchArgs ? { providerLaunchArgs: codexOptions.launchArgs } : {}),
         environment: childEnvironment,
         mcpServers: input.mcpServers ?? {},
@@ -1753,8 +1755,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         context.reportedModelCapabilities?.get(model)?.inputModalities?.includes("audio")
       ) {
         const config = asObject(
-          asObject(await this.sendRequest(context, "config/read", { includeLayers: false }))
-            ?.config,
+          asObject(
+            await this.sendRequest(context, "config/read", { includeLayers: false }).catch(
+              () => undefined,
+            ),
+          )?.config,
         );
         if (asObject(config?.desktop)?.f5_audio_attachments === true) {
           for (const path of new Set(input.audioFiles))
@@ -1901,7 +1906,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       worker?.threadId ?? ThreadId.makeUnsafe(`${CODEX_ONE_OFF_THREAD_PREFIX}${randomUUID()}`);
     let succeeded = false;
     const timeoutMs = input.timeoutMs ?? CODEX_ONE_OFF_PROMPT_TIMEOUT_MS;
-    let capturedText = "";
+    // One-off output is the ordered contribution of every assistant item.
+    const capturedItems = new Map<string, string>();
+    const replacedItems = new Set<string>();
     const followUpPromises = new Set<Promise<unknown>>();
 
     let resolveCompletion: (() => void) | undefined;
@@ -1933,7 +1940,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
 
       if (event.method === "item/agentMessage/delta" && typeof event.textDelta === "string") {
-        capturedText += event.textDelta;
+        const itemId = event.itemId ?? asString(asObject(event.payload)?.itemId) ?? "anonymous";
+        if (!replacedItems.has(itemId))
+          capturedItems.set(itemId, (capturedItems.get(itemId) ?? "") + event.textDelta);
         return;
       }
 
@@ -1941,11 +1950,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         const payload = asObject(event.payload);
         const item = asObject(payload?.item) ?? payload;
         const completedText = asString(item?.text);
+        const itemId = event.itemId ?? asString(item?.id) ?? "anonymous";
         const presentation = codexMessagePresentation(item);
         if (presentation.replace) {
-          capturedText = presentation.text ?? "";
-        } else if (completedText && capturedText.length === 0) {
-          capturedText = completedText;
+          capturedItems.set(itemId, presentation.text ?? "");
+          replacedItems.add(itemId);
+        } else if (completedText && !capturedItems.get(itemId)) {
+          capturedItems.set(itemId, completedText);
         }
       }
 
@@ -2022,7 +2033,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
       });
       await completion;
-      const text = capturedText.trim();
+      const text = [...capturedItems.values()].join("").trim();
       if (text.length === 0) {
         throw new Error("Codex one-off prompt completed without returning any assistant text.");
       }
@@ -2294,7 +2305,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           if (size > 64 * 1024 || bytes + size > 256 * 1024)
             return { omitted: true, reason: "Native output exceeds the page limit." };
           bytes += size;
-          return entry;
+          const value = asObject(entry);
+          return value?.item
+            ? { ...value, item: presentCodexMessageItem(value.item) }
+            : presentCodexMessageItem(entry);
         })
       : [];
     return {
@@ -5234,6 +5248,7 @@ function normalizeProviderThreadId(value: string | undefined): string | undefine
 }
 
 function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
+  readonly modelProvider?: string;
   readonly binaryPath?: string;
   readonly homePath?: string;
   readonly launchArgs?: ReadonlyArray<string>;
@@ -5243,6 +5258,7 @@ function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
     return {};
   }
   return {
+    ...(options.modelProvider ? { modelProvider: options.modelProvider } : {}),
     ...(options.binaryPath ? { binaryPath: options.binaryPath } : {}),
     ...(options.homePath ? { homePath: options.homePath } : {}),
     ...(options.launchArgs ? { launchArgs: options.launchArgs } : {}),

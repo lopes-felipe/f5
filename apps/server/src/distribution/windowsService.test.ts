@@ -99,18 +99,31 @@ describe("Windows service task", () => {
       service: true,
       pid: process.pid,
     });
-    const restarting = manageWindowsService("restart", root, state, host);
-    await expect
-      .poll(
-        async () =>
-          JSON.parse(await fs.readFile(path.join(root, "service-stop.json"), "utf8")).token,
-      )
-      .toBe("current");
-    expect(calls.at(-1)).toContain("/DISABLE");
-    await fs.unlink(path.join(root, "launcher.json"));
-    await restarting;
-    expect(calls.at(-2)).toContain("/ENABLE");
-    expect(calls.at(-1)).toEqual(["/Run", "/TN", task.taskName]);
+    const launcherPath = path.join(root, "launcher.json");
+    // Observe rejection immediately, and join shutdown even if polling fails.
+    // Otherwise a retried test can remove the directory under the pending write.
+    const restarting = manageWindowsService("restart", root, state, host).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    try {
+      await expect
+        .poll(
+          async () =>
+            JSON.parse(await fs.readFile(path.join(root, "service-stop.json"), "utf8")).token,
+          { timeout: 10_000 },
+        )
+        .toBe("current");
+      expect(calls.at(-1)).toContain("/DISABLE");
+      await fs.unlink(launcherPath);
+      const outcome = await restarting;
+      if (!outcome.ok) throw outcome.error;
+      expect(calls.at(-2)).toContain("/ENABLE");
+      expect(calls.at(-1)).toEqual(["/Run", "/TN", task.taskName]);
+    } finally {
+      await fs.rm(launcherPath, { force: true });
+      await restarting;
+    }
     await atomicJson(path.join(root, "launcher.json"), { token: "foreground" });
     await expect(manageWindowsService("stop", root, state, host)).rejects.toThrow(
       "not this Windows service",

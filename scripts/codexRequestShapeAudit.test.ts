@@ -23,7 +23,10 @@ describe("Codex request shape audit", () => {
     expect(fixtureErrors("positive.ts")).toEqual([]);
     expect(fixtureErrors("negative.fixture")).toContain(2741);
     expect(fixtureErrors("extra-field.fixture")).toContain(2345);
-    expect(fixtureErrors("nested-extra-field.fixture")).toContain(2345);
+    expect(
+      fixtureErrors("nested-extra-field.fixture").filter((code) => code === 2345),
+    ).toHaveLength(2);
+    expect(fixtureErrors("nested-positive.fixture")).toEqual([]);
   });
   it("checks real builders for every present request and omits absent fallbacks", () => {
     const probe = codexRequestShapeProbe(

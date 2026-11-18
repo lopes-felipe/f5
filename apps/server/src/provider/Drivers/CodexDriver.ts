@@ -90,16 +90,8 @@ export function providerOptionsFromCodexSettings(settings: CodexSettings): Provi
     codex: {
       ...(settings.binaryPath.trim().length > 0 ? { binaryPath: settings.binaryPath } : {}),
       ...(settings.homePath.trim().length > 0 ? { homePath: settings.homePath } : {}),
-      ...(launchArgs.argv.length > 0 || settings.modelProvider
-        ? {
-            launchArgs: [
-              ...launchArgs.argv,
-              ...(settings.modelProvider
-                ? ["-c", "model_provider=" + JSON.stringify(settings.modelProvider)]
-                : []),
-            ],
-          }
-        : {}),
+      ...(launchArgs.argv.length > 0 ? { launchArgs: launchArgs.argv } : {}),
+      ...(settings.modelProvider ? { modelProvider: settings.modelProvider } : {}),
     },
   };
 }

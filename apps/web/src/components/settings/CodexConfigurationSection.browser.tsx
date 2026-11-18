@@ -140,6 +140,62 @@ it("allows resetting an unavailable saved provider when configuration fails", as
     client.clear();
   }
 });
+it("starts fresh polling for a second login to the same gateway", async () => {
+  const configuration = await mock.request.getMockImplementation()!();
+  let attempt = 0;
+  let secondReads = 0;
+  mock.request.mockImplementation(async ({ action }) => {
+    if (action.type === "read") return configuration;
+    const gateway = {
+      providerId: "team",
+      providerName: "Team",
+      required: true,
+      supportsDeviceAuth: false,
+      status: "notReady",
+      error: null,
+    };
+    if (action.type === "gatewayLogin") attempt++;
+    if (action.type === "gatewayRead" && attempt === 2) secondReads++;
+    return {
+      gateway,
+      ...(attempt
+        ? {
+            login: {
+              loginId: "attempt-" + attempt,
+              providerId: "team",
+              status: action.type === "gatewayRead" && attempt === 1 ? "succeeded" : "started",
+              authUrl: null,
+              verificationUrl: null,
+              userCode: null,
+              error: null,
+            },
+          }
+        : {}),
+    };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <CodexConfigurationSection
+        instanceId={ProviderInstanceId.make("codex")}
+        accountIdentity="retry"
+        onSelectProvider={() => undefined}
+      />
+    </QueryClientProvider>,
+  );
+  try {
+    await page.getByRole("button", { name: "Codex model providers", exact: true }).click();
+    await page.getByRole("button", { name: "Check Team sign-in" }).click();
+    await page.getByRole("button", { name: "Sign in to gateway", exact: true }).click();
+    await expect.element(page.getByText("succeeded", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Sign in to gateway", exact: true }).click();
+    await expect.poll(() => secondReads, { timeout: 4000 }).toBeGreaterThan(1);
+    await expect.element(page.getByRole("button", { name: "Cancel gateway login" })).toBeVisible();
+  } finally {
+    await screen.unmount();
+    client.clear();
+  }
+});
 
 it("saves only edited provider fields and keeps media opt-ins off", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

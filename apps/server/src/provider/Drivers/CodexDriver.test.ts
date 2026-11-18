@@ -21,6 +21,16 @@ it("preserves a configured Codex home through settings, wire decoding, and proce
 });
 
 describe("codexModels", () => {
+  it("keeps native provider selection in structured process options", () => {
+    const settings = Schema.decodeSync(CodexSettings)({
+      modelProvider: "team",
+      launchArgs: "--strict-config",
+    });
+    expect(providerOptionsFromCodexSettings(settings).codex).toMatchObject({
+      modelProvider: "team",
+      launchArgs: ["--strict-config"],
+    });
+  });
   it("keeps the shared Codex default as the first model", () => {
     const settings = Schema.decodeSync(CodexSettings)({});
 

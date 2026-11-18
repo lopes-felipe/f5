@@ -5,6 +5,8 @@ import { expect, it } from "vitest";
 import { CodexConfigurationService } from "../src/codex/CodexConfigurationService";
 import { CodexControlClient } from "../src/codex/CodexControlClient";
 import { resolveBundledCodexExecutable } from "../src/provider/codexExecutable";
+import { CodexAppServerManager } from "../src/codexAppServerManager";
+import { ThreadId } from "@t3tools/contracts";
 
 // No credentials, model calls, or changes to existing provider homes.
 it.skipIf(process.env.F5_CODEX_CONFIG_LIVE_TEST !== "1")(
@@ -86,7 +88,7 @@ it.skipIf(process.env.F5_CODEX_CONFIG_LIVE_TEST !== "1")(
       client = await CodexControlClient.create(
         {
           ...environment,
-          launchArgs: ["-c", 'model_provider="openai"'],
+          modelProvider: provider!.id,
         },
         undefined,
         { probeConfigRead: true },
@@ -97,6 +99,29 @@ it.skipIf(process.env.F5_CODEX_CONFIG_LIVE_TEST !== "1")(
         thread: { modelProvider: string };
       };
       expect(resumed.thread.modelProvider).toBe(provider!.id);
+      const selected = (await client.configurationRequest("thread/start", { cwd: root })) as {
+        thread: { modelProvider: string };
+      };
+      expect(selected.thread.modelProvider).toBe(provider!.id);
+      const manager = new CodexAppServerManager();
+      try {
+        const bound = await manager.startSession({
+          threadId: ThreadId.makeUnsafe("provider-routing-fixture"),
+          cwd: root,
+          runtimeMode: "full-access",
+          disablePlugins: true,
+          providerOptions: {
+            codex: {
+              binaryPath: environment.binaryPath,
+              homePath: root,
+              modelProvider: provider!.id,
+            },
+          },
+        });
+        expect(bound.resumeCursor).toMatchObject({ f5ModelProvider: provider!.id });
+      } finally {
+        await manager.shutdown();
+      }
       await service.execute({
         type: "write",
         settings: {

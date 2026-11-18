@@ -11,6 +11,7 @@ import {
   ApprovalRequestId,
   DEFAULT_MODEL_BY_PROVIDER,
   EventId,
+  ProviderItemId,
   type ProviderEvent,
   type ProviderSession,
   ThreadId,
@@ -261,6 +262,26 @@ function createPendingApprovalHarness(
 }
 
 describe("Codex audio delivery", () => {
+  it("keeps the ordinary file when optional native audio configuration fails", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    Object.assign(context, {
+      cliVersion: "0.170.0",
+      reportedModelCapabilities: new Map([["gpt-5.3-codex", { inputModalities: ["audio"] }]]),
+    });
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "config/read") throw new Error("configuration timeout");
+      return { turn: { id: "turn" } };
+    });
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Use /tmp/audio.wav",
+      audioFiles: ["/tmp/audio.wav"],
+    });
+    const turn = sendRequest.mock.calls.find((call) => call[1] === "turn/start")?.[2] as {
+      input: Array<{ type: string }>;
+    };
+    expect(turn.input).toEqual([{ type: "text", text: "Use /tmp/audio.wav", text_elements: [] }]);
+  });
   it.each([
     ["0.170.0", false, ["audio"]],
     ["0.170.0", true, ["text"]],
@@ -2535,6 +2556,16 @@ describe("runOneOffPrompt", () => {
       vi.spyOn(manager, "sendTurn").mockImplementation(async (input) => {
         queueMicrotask(() => {
           manager.emit("event", {
+            id: asEventId(randomUUID()),
+            kind: "notification",
+            provider: "codex",
+            threadId: input.threadId,
+            itemId: ProviderItemId.makeUnsafe("earlier-item"),
+            createdAt: "2026-04-08T10:00:01.000Z",
+            method: "item/agentMessage/delta",
+            textDelta: "earlier contribution\n",
+          });
+          manager.emit("event", {
             id: asEventId(`evt-${randomUUID()}`),
             kind: "notification",
             provider: "codex",
@@ -2542,6 +2573,7 @@ describe("runOneOffPrompt", () => {
             createdAt: "2026-04-08T10:00:01.000Z",
             method: "item/agentMessage/delta",
             textDelta: "hello world",
+            itemId: ProviderItemId.makeUnsafe("moderated-item"),
             payload: {
               delta: "hello world",
             },
@@ -2554,6 +2586,7 @@ describe("runOneOffPrompt", () => {
               threadId: input.threadId,
               createdAt: "2026-04-08T10:00:02.000Z",
               method: "item/completed",
+              itemId: ProviderItemId.makeUnsafe("moderated-item"),
               payload: {
                 item: {
                   type: "agentMessage",
@@ -2595,13 +2628,14 @@ describe("runOneOffPrompt", () => {
       });
 
       expect(text).toBe(
-        mode === undefined
-          ? "hello world"
-          : mode === "show"
-            ? "final response"
-            : mode === "hide"
-              ? "Codex has replaced this response with a wellbeing support notice."
-              : "Codex blocked this response.",
+        "earlier contribution\n" +
+          (mode === undefined
+            ? "hello world"
+            : mode === "show"
+              ? "final response"
+              : mode === "hide"
+                ? "Codex has replaced this response with a wellbeing support notice."
+                : "Codex blocked this response."),
       );
       expect(manager.startSession).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2928,6 +2962,9 @@ describe("runOneOffPrompt warm app-server reuse", () => {
     expect(startSession).toHaveBeenCalledTimes(2);
     expect(codexOneOffPoolKey({ codex: { homePath: "/homes/work" } })).not.toBe(
       codexOneOffPoolKey({ codex: { homePath: "/homes/personal" } }),
+    );
+    expect(codexOneOffPoolKey({ codex: { modelProvider: "team" } })).not.toBe(
+      codexOneOffPoolKey({ codex: { modelProvider: "personal" } }),
     );
     manager.stopAll();
   });
@@ -5171,39 +5208,55 @@ it("keeps the review/start identity when Codex starts a transport control turn w
   expect(manager.listenerCount("event")).toBe(0);
 });
 
-it("reads one bounded native item page for an owned child thread", async () => {
-  const { manager, context, sendRequest } = createThreadControlHarness();
-  Object.assign(context, { childThreadIds: new Set(["native-child"]) });
-  sendRequest.mockResolvedValue({
-    data: [
-      { item: { type: "agentMessage", text: "first page" } },
-      { item: { text: "x".repeat(70_000) } },
-    ],
-    nextCursor: "next-native-page",
-  });
-  const page = await manager.inspectNativeOperation({
-    threadId: asThreadId("thread_1"),
-    generation: 1,
-    kind: "task",
-    nativeId: "native-child",
-    cursor: "current-native-page",
-    limit: 2,
-  });
-  expect(sendRequest).toHaveBeenCalledWith(context, "thread/items/list", {
-    threadId: "native-child",
-    cursor: "current-native-page",
-    limit: 2,
-    sortDirection: "asc",
-  });
-  expect(page).toEqual({
-    data: [
-      { item: { type: "agentMessage", text: "first page" } },
-      { omitted: true, reason: "Native output exceeds the page limit." },
-    ],
-    nextCursor: "next-native-page",
-  });
-  expect(sendRequest).toHaveBeenCalledTimes(1);
-});
+it.each([false, true])(
+  "reads a bounded, presented native child page (moderated: %s)",
+  async (moderated) => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, { childThreadIds: new Set(["native-child"]) });
+    sendRequest.mockResolvedValue({
+      data: [
+        {
+          item: {
+            type: "agentMessage",
+            text: "first page",
+            ...(moderated
+              ? { moderation: { moderated: true, display: { mode: "block", version: 1 } } }
+              : {}),
+          },
+        },
+        { item: { text: "x".repeat(70_000) } },
+      ],
+      nextCursor: "next-native-page",
+    });
+    const page = await manager.inspectNativeOperation({
+      threadId: asThreadId("thread_1"),
+      generation: 1,
+      kind: "task",
+      nativeId: "native-child",
+      cursor: "current-native-page",
+      limit: 2,
+    });
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/items/list", {
+      threadId: "native-child",
+      cursor: "current-native-page",
+      limit: 2,
+      sortDirection: "asc",
+    });
+    expect(page).toMatchObject({
+      data: [
+        {
+          item: {
+            type: "agentMessage",
+            text: moderated ? "Codex blocked this response." : "first page",
+          },
+        },
+        { omitted: true, reason: "Native output exceeds the page limit." },
+      ],
+      nextCursor: "next-native-page",
+    });
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+  },
+);
 
 it.each(
   ["started", "interacted", "completed", "interrupted"].flatMap((kind) => [

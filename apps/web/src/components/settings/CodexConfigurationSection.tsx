@@ -173,7 +173,7 @@ export function CodexConfigurationSection({
   });
   const gatewayId = activeLogin?.providerId;
   const loginQuery = useQuery({
-    queryKey: ["codex-gateway", instanceId, accountIdentity, gatewayId],
+    queryKey: ["codex-gateway", instanceId, accountIdentity, gatewayId, activeLogin?.loginId],
     queryFn: () => request({ type: "gatewayRead", providerId: gatewayId! }),
     enabled: expanded && !!gatewayId && activeLogin?.status === "started",
     refetchInterval: (query) => (query.state.data?.login?.status === "started" ? 1000 : false),

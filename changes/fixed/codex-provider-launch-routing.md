@@ -1,0 +1,1 @@
+- Apply the selected native Codex provider through managed process options for conversations and auxiliary title, branch, commit and PR generation.

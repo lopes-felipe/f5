@@ -261,6 +261,7 @@ export class CodexControlClient extends EventEmitter<{
       codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
     );
     const appServerCommand = buildCodexAppServerCommand({
+      ...(environment.modelProvider ? { modelProvider: environment.modelProvider } : {}),
       ...(environment.launchArgs ? { providerLaunchArgs: environment.launchArgs } : {}),
       environment: childEnvironment,
       mcpServers: environment.mcpServers ?? {},

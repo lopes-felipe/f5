@@ -26,6 +26,8 @@ export interface RpcMethodPolicy {
   readonly requiresRuntime: boolean;
   /** Lane `long` only: the client's execution deadline. `null` means no deadline. */
   readonly longRunningTimeoutMs?: number | null;
+  /** Bound waiting for admission independently of the execution deadline. */
+  readonly queueTimeoutMs?: number;
 }
 
 const READ: RpcMethodPolicy = { kind: "read", lane: "ordinary", requiresRuntime: false };
@@ -362,7 +364,7 @@ export const RPC_METHOD_POLICY = {
   "server.getProviderInventory": READ,
   // Native calls are individually bounded. A cold connection plus queued work
   // must not time out after a gateway write committed and invite a duplicate.
-  "server.codexConfiguration": long(false, null),
+  "server.codexConfiguration": { ...long(false, null), queueTimeoutMs: 60_000 },
   "server.saveProviderFeedback": long(false, 130_000),
   "server.migrateClientSetting": MUTATION,
   "server.probe": HEALTH,
