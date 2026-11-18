@@ -11,6 +11,11 @@ import { parseGenericCliVersion } from "./providerSnapshot.ts";
 
 /** First Claude Code release that honors `onFailure` on SDK hook matchers. */
 export const CLAUDE_HOOK_ON_FAILURE_MIN_VERSION = "2.1.317";
+/**
+ * The SDK sends `mcpServers` in initialize only to a Claude Code at least as new as the one
+ * it bundles (0.3.326 bundles 2.1.326); an older one exits or has its session ended.
+ */
+export const CLAUDE_MCP_INITIALIZE_DELIVERY_MIN_VERSION = "2.1.326";
 const VERSION_TIMEOUT_MS = 10_000;
 /** A wrapper can start another binary without changing itself, so answers expire. */
 const VERSION_TTL_MS = 10 * 60_000;
@@ -109,4 +114,21 @@ export function claudeHookOnFailureSupported(
     executableVersion !== undefined &&
     compareCliVersions(executableVersion, CLAUDE_HOOK_ON_FAILURE_MIN_VERSION) >= 0
   );
+}
+
+/**
+ * How the SDK hands launch MCP servers to Claude Code. `initialize` keeps server `env` and
+ * `headers` off the command line; only the bundled runtime or a custom executable reporting
+ * 2.1.326+ accepts it. Others (unknown versions included) get an explicit `argv`, which also
+ * silences the SDK's deprecation warning, and keep F5's private startup path.
+ */
+export function claudeMcpServersDelivery(
+  binaryPath: string | null | undefined,
+  executableVersion: string | undefined,
+): "initialize" | "argv" {
+  if (isDefaultClaudeBinary(binaryPath)) return "initialize";
+  return executableVersion !== undefined &&
+    compareCliVersions(executableVersion, CLAUDE_MCP_INITIALIZE_DELIVERY_MIN_VERSION) >= 0
+    ? "initialize"
+    : "argv";
 }

@@ -7,6 +7,32 @@ let queue: Promise<unknown> = Promise.resolve();
 let pending = 0;
 let nextId = 0;
 
+/** Percentage-sized SVGs can collapse inside an auto-sized image button. */
+function withIntrinsicDimensions(svg: string): string {
+  const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+  const root = parsed.documentElement;
+  if (root.localName !== "svg" || parsed.querySelector("parsererror")) {
+    throw new Error("Unable to read the rendered diagram.");
+  }
+  const viewBox = root.getAttribute("viewBox");
+  if (viewBox === null) return svg;
+  const dimensions = viewBox
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (
+    dimensions.length !== 4 ||
+    !dimensions.every(Number.isFinite) ||
+    dimensions[2]! <= 0 ||
+    dimensions[3]! <= 0
+  ) {
+    throw new Error("Rendered diagram has invalid dimensions.");
+  }
+  root.setAttribute("width", String(dimensions[2]));
+  root.setAttribute("height", String(dimensions[3]));
+  return new XMLSerializer().serializeToString(root);
+}
+
 /** A previously rendered SVG, so a remounted diagram can show it without a loading state. */
 export function peekRenderedMermaid(source: string, theme: "light" | "dark"): string | null {
   return cache.get(`${theme}\u0000${source}`);
@@ -69,8 +95,10 @@ export async function renderMermaid(
       signal.throwIfAborted();
       if (svg.length > 2 * 1024 * 1024) throw new Error("Rendered diagram is too large.");
       // Consumers display this as an image, never insert it into the application DOM.
-      cache.set(key, svg, (key.length + svg.length) * 2);
-      return svg;
+      const sizedSvg = withIntrinsicDimensions(svg);
+      if (sizedSvg.length > 2 * 1024 * 1024) throw new Error("Rendered diagram is too large.");
+      cache.set(key, sizedSvg, (key.length + sizedSvg.length) * 2);
+      return sizedSvg;
     } finally {
       host.remove();
     }

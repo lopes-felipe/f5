@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, type HTMLAttributes, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
+import { CHAT_CONTENT_COLUMN_CLASS_NAME } from "../chatLayout";
 
 export const COMPOSER_DOCK_HEIGHT_VAR = "--composer-dock-height";
 
@@ -116,7 +117,8 @@ export function ComposerDockColumn(props: {
       data-slot="composer-dock-column"
       data-composer-redesign={props.redesign || undefined}
       className={cn(
-        "pointer-events-auto mx-auto flex w-full max-w-[calc(var(--chat-content-max-width)+2.5rem)] flex-col px-3 sm:px-5",
+        CHAT_CONTENT_COLUMN_CLASS_NAME,
+        "pointer-events-auto flex flex-col",
         !props.redesign && "min-h-0",
         props.className,
       )}

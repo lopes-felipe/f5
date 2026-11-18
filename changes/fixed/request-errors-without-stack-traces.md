@@ -1,1 +1,0 @@
-- Error messages from a failed request no longer include a server stack trace. A terminal that could not be written to, for example, printed the error followed by a list of internal file paths; it now prints the error alone. The trace is kept in the server log.

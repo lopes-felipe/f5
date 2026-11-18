@@ -237,6 +237,8 @@ it.each([1200, 420])(
       api!.setEntries(entries);
       await expect.poll(() => distance()).toBeLessThan(8);
       await expect.poll(() => host.textContent!.includes("streamed suffix")).toBe(true);
+      // The reader's wheel input is what pauses following before the scroll.
+      container.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
       await list!.scrollToOffset({ offset: container.scrollHeight / 2, animated: false });
       container.dispatchEvent(new Event("scroll"));
       await expect.poll(() => isAtEnd).toBe(false);
@@ -318,6 +320,8 @@ it.each(["restore", "pending layout", "wheel", "abort", "replacement", "tail"] a
       // Wait for measured end settling before setting up the history-reading
       // position; two frames can still overlap the initial end correction.
       await waitForTimelineLayout(() => node);
+      // The reader's wheel input is what pauses following before the scroll.
+      node.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
       await list!.scrollToOffset({ offset: 0, animated: false });
       node.dispatchEvent(new Event("scroll"));
       await expect.poll(() => readTimelineScrollAnchor(node).atEnd).toBe(false);

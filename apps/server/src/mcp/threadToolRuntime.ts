@@ -38,6 +38,10 @@ export function makeThreadToolHandler(input: {
   readonly messages: ThreadReadDependencies["messages"];
   readonly plans: ThreadReadDependencies["plans"];
   readonly sql: SqlClient.SqlClient;
+  readonly publishImage?: (
+    threadId: ThreadId,
+    path: string,
+  ) => Effect.Effect<unknown, ThreadToolError>;
 }): ThreadToolHandler {
   return (threadId, request) =>
     Effect.gen(function* () {
@@ -47,6 +51,11 @@ export function makeThreadToolHandler(input: {
         return yield* new ThreadToolError({ message: "This thread is no longer available." });
       if (request.name === "thread_read")
         return yield* readReferencedThread(input, threadId, request.input);
+      if (request.name === "image_publish") {
+        if (!input.publishImage)
+          return yield* new ThreadToolError({ message: "Image publication is unavailable." });
+        return yield* input.publishImage(threadId, request.path);
+      }
       if (request.name === "thread_settle")
         return yield* input.settlement.settleFromAgent(threadId);
       if (request.name === "thread_status")

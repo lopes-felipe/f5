@@ -2235,7 +2235,8 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(event?.type, "session.exited");
       assert.equal(event?.turnId, turnId);
       assert.equal(event?.eventId, `provider:orphaned-session-exit:${threadId}:${turnId}`);
-      assert.equal(typeof event?.sessionGeneration, "number");
+      // Like recovery, ingestion gates it on the projected turn, not a generation.
+      assert.equal(event?.sessionGeneration, undefined);
     }),
   );
 
@@ -2254,26 +2255,33 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect("does not settle a stopped session without a matching turn", () =>
+  // Each thread's runtime events stay ordered, so a later settlement on the
+  // same thread proves no earlier one was queued (no timing-based "absence").
+  it.effect("does not settle a stopped session for a conflicting turn", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
-      const conflicting = asThreadId("thread-stopped-conflict");
-      yield* startStoppedTurn(conflicting, { sendTurn: true });
-      const conflictSettlement = yield* nextOrphanedSettlement(conflicting);
+      const threadId = asThreadId("thread-stopped-conflict");
+      const persisted = yield* startStoppedTurn(threadId, { sendTurn: true });
+      const settlement = yield* nextOrphanedSettlement(threadId);
       yield* sleep(20);
-      yield* provider.interruptTurn({
-        threadId: conflicting,
-        turnId: asTurnId("turn-from-elsewhere"),
-      });
-      assert.equal(Option.isNone(yield* Fiber.join(conflictSettlement)), true);
+      yield* provider.interruptTurn({ threadId, turnId: asTurnId("turn-from-elsewhere") });
+      yield* provider.stopSession({ threadId });
+      assert.equal(Option.getOrUndefined(yield* Fiber.join(settlement))?.turnId, persisted);
+    }),
+  );
 
-      const idle = asThreadId("thread-stopped-idle");
-      yield* startStoppedTurn(idle, { sendTurn: false });
-      const idleSettlement = yield* nextOrphanedSettlement(idle);
+  it.effect("does not settle a stopped session when no turn is named or persisted", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-stopped-idle");
+      yield* startStoppedTurn(threadId, { sendTurn: false });
+      const settlement = yield* nextOrphanedSettlement(threadId);
       yield* sleep(20);
-      yield* provider.interruptTurn({ threadId: idle });
-      yield* provider.stopSession({ threadId: idle });
-      assert.equal(Option.isNone(yield* Fiber.join(idleSettlement)), true);
+      yield* provider.interruptTurn({ threadId });
+      yield* provider.stopSession({ threadId });
+      const marker = asTurnId("turn-named-by-projection");
+      yield* provider.interruptTurn({ threadId, turnId: marker });
+      assert.equal(Option.getOrUndefined(yield* Fiber.join(settlement))?.turnId, marker);
     }),
   );
 

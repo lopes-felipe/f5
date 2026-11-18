@@ -21,6 +21,7 @@ import type { Effect, Scope, Stream } from "effect";
 
 import type { OrchestrationDispatchError, OrchestrationOverloadError } from "../Errors.ts";
 import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
+import type { ReadFromSequenceOptions } from "../../persistence/Services/OrchestrationEventStore.ts";
 
 /**
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
@@ -65,14 +66,15 @@ export interface OrchestrationEngineShape {
 
   /**
    * Read a bounded page of persisted events after an exclusive sequence cursor.
-   * Returns at most 1,000 events; continue from the last returned sequence.
-   * Internal startup and recovery replay use the event store without this cap.
+   * Unscoped reads return at most 1,000 events. Reads scoped to a thread
+   * paginate through its indexed stream.
    *
    * @param fromSequenceExclusive - Sequence cursor (exclusive).
    * @returns Stream containing ordered events.
    */
   readonly readEvents: (
     fromSequenceExclusive: number,
+    options?: ReadFromSequenceOptions & { readonly threadId: ThreadId },
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError, never>;
 
   /**

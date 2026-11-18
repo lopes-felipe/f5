@@ -8,6 +8,10 @@
       "types": "./src/codexMessagePresentation.ts",
       "import": "./src/codexMessagePresentation.ts"
     },
+    "./savedAttachmentPath": {
+      "types": "./src/savedAttachmentPath.ts",
+      "import": "./src/savedAttachmentPath.ts"
+    },
     "./assistantResponseContext": {
       "types": "./src/assistantResponseContext.ts",
       "import": "./src/assistantResponseContext.ts"

@@ -1,1 +1,0 @@
-- Save a search and its filters as a tab above the queue with **Save view**, up to 12. Each tab shows how many of its pull requests need you, and can be renamed or deleted from the **⋯** at the end of the tabs.

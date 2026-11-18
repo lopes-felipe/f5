@@ -1,0 +1,1 @@
+- The composer's usage limits popover shows the same pace marker as the Usage page: each limit bar marks how much of the window has elapsed, and the reset line says whether usage is on pace, ahead of it or under it.

@@ -190,6 +190,54 @@ describe("computer event queue admission", () => {
       ),
     ).toBe(true);
   });
+  it("marks a timed-out target wait as a computer step with its outcome", async () => {
+    automationEventSanitizer.register(threadId, {
+      serverName: "f5_computer",
+      verified: true,
+      kind: "f5-computer",
+    });
+    // The shape the desktop controller returns when the user stays active until the deadline.
+    const structuredContent = {
+      available: false,
+      timedOut: true,
+      reason: "user-active",
+      detail: "keyboard",
+      requiresFreshObservation: true,
+    };
+    const event: ProviderRuntimeEvent = {
+      type: "item.completed",
+      eventId: EventId.makeUnsafe("wait-target"),
+      threadId,
+      itemId: RuntimeItemId.makeUnsafe("wait-target"),
+      provider: "claudeAgent",
+      createdAt: new Date().toISOString(),
+      payload: {
+        itemType: "mcp_tool_call",
+        data: {
+          toolName: "mcp__f5_computer__computer_wait_for_target",
+          input: { app: "com.google.Chrome", timeoutMs: 5000 },
+          result: {
+            structuredContent,
+            content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+          },
+        },
+      },
+    };
+    const queued = await Effect.runPromise(
+      createAutomationRuntimeEventPreparer(() => Effect.succeed(null))(event),
+    );
+    if (queued.type !== "item.completed") throw new Error("Unexpected event type");
+    const expected = { outcome: "timed-out-user-active" };
+    expect(queued.payload).toMatchObject({ computerTool: true, computerStep: expected });
+    const logged = automationEventSanitizer.sanitize(threadId, queued) as typeof queued;
+    expect(
+      compactThreadActivityPayload({ kind: "tool.completed", payload: logged.payload }),
+    ).toMatchObject({
+      computerTool: true,
+      mcpToolName: "computer_wait_for_target",
+      computerStep: expected,
+    });
+  });
   it("does not treat look-alike project servers as F5 computer tools", async () => {
     automationEventSanitizer.register(threadId, {
       serverName: "f5_computer",

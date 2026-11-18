@@ -11,20 +11,27 @@ interface PrivateMcpRuntime {
 }
 
 /**
- * SDK startup configs become --mcp-config JSON in argv. Send header/env-bearing
- * servers over the existing control channel instead, before admitting a prompt.
- * Keep the original options intact so every recovery launch takes this path too.
+ * With `mcpServersDelivery: "argv"`, SDK startup configs become --mcp-config JSON in argv.
+ * Send header/env-bearing servers over the existing control channel instead, before
+ * admitting a prompt. `"initialize"` already keeps them off argv, so the SDK delivers them
+ * at launch; the servers are then named once in `setMcpServers` (no reconnect on 2.1.326),
+ * because Claude only removes a launch server in place once a call has named it.
+ * Keep the original options intact so every recovery launch takes the same path.
  */
 export async function createClaudeQueryWithPrivateMcp<Q extends PrivateMcpRuntime>(
   input: QueryInput,
   createQuery: (input: QueryInput) => Q,
   options: { readonly signal?: AbortSignal; readonly timeoutMs?: number } = {},
 ): Promise<Q> {
+  const initialize = input.options.mcpServersDelivery === "initialize";
   const servers = input.options.mcpServers;
   const hasPrivateValues = (server: McpServerConfig) =>
     ("headers" in server && Object.values(server.headers ?? {}).some(Boolean)) ||
     ("env" in server && Object.values(server.env ?? {}).some(Boolean));
-  if (!servers || !Object.values(servers).some(hasPrivateValues)) return createQuery(input);
+  const needsControl = initialize
+    ? (server: McpServerConfig) => server.type !== "sdk"
+    : hasPrivateValues;
+  if (!servers || !Object.values(servers).some(needsControl)) return createQuery(input);
   if (options.signal?.aborted) throw new Error("Claude MCP startup was canceled.");
 
   const startup = Object.fromEntries(
@@ -41,7 +48,10 @@ export async function createClaudeQueryWithPrivateMcp<Q extends PrivateMcpRuntim
   })();
   const runtime = createQuery({
     prompt,
-    options: { ...otherOptions, ...(Object.keys(startup).length ? { mcpServers: startup } : {}) },
+    // Initialize mode launches with every server, so the caller's options pass through as is.
+    options: initialize
+      ? input.options
+      : { ...otherOptions, ...(Object.keys(startup).length ? { mcpServers: startup } : {}) },
   });
   let stopped = false;
   const close = () => {
@@ -68,6 +78,14 @@ export async function createClaudeQueryWithPrivateMcp<Q extends PrivateMcpRuntim
     });
     await Promise.race([
       (async () => {
+        if (initialize) {
+          // The servers are already installed; a failed claim only means removal waits for
+          // a restart, so it never blocks the session.
+          await runtime.initializationResult?.();
+          if (stopped) return;
+          await runtime.setMcpServers?.(servers).catch(() => undefined);
+          return;
+        }
         if (!runtime.setMcpServers) throw new Error("The runtime has no private MCP transport");
         await runtime.initializationResult?.();
         if (stopped) return;

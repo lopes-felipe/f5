@@ -16,8 +16,11 @@ import {
   getAvailableThemePalettes,
   getThemeContrastWarnings,
   parseCustomThemeLibrary,
+  parseSafeThemeColor,
   parseThemeDefinitionV1,
+  pickerHsvToThemeColor,
   resolveThemePalette,
+  themeColorToPickerHsv,
 } from "./themePalette";
 
 const toOklch = converter("oklch");
@@ -256,5 +259,38 @@ describe("theme palette registry", () => {
     expect(properties.get("--faint-foreground")).toBe(palette.dark["faint-foreground"]);
     expect(root.dataset.themeId).toBe(DEFAULT_THEME_ID);
     expect(root.style.colorScheme).toBe("dark");
+  });
+});
+
+describe("visual color picker conversion", () => {
+  it("reads theme colors as HSV", () => {
+    expect(themeColorToPickerHsv("#FF0000")).toEqual({ h: 0, s: 1, v: 1 });
+    expect(themeColorToPickerHsv(" #0000ff ")).toEqual({ h: 240, s: 1, v: 1 });
+    expect(themeColorToPickerHsv("#808080")).toMatchObject({ h: 0, s: 0 });
+    expect(themeColorToPickerHsv("not a color")).toBeNull();
+  });
+
+  it("starts out-of-gamut colors from the color the theme stores", () => {
+    for (const color of ["oklch(0.7 0.4 150)", "oklch(0.5 0.185 150)", "color(display-p3 1 0 0)"]) {
+      const hsv = themeColorToPickerHsv(color);
+      expect(hsv).not.toBeNull();
+      expect(pickerHsvToThemeColor(hsv!, color)).toBe(parseSafeThemeColor(color));
+    }
+  });
+
+  it("round-trips picks in the safe theme color format", () => {
+    const hsv = themeColorToPickerHsv("#3366cc")!;
+    expect(pickerHsvToThemeColor(hsv, "oklch(0.5 0.185 264)")).toBe("#3366cc");
+    expect(pickerHsvToThemeColor({ h: 120, s: 1, v: 1 }, "#000")).toBe("#00ff00");
+  });
+
+  it("keeps the previous color's alpha", () => {
+    expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "#11223380")).toBe("#ff000080");
+    expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "#112233")).toBe("#ff0000");
+  });
+
+  it("makes picks from a fully transparent color opaque", () => {
+    expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "transparent")).toBe("#ff0000");
+    expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "#11223300")).toBe("#ff0000");
   });
 });

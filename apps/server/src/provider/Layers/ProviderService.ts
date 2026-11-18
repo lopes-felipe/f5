@@ -2679,6 +2679,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
      * ordered, durable path recovery uses, so stop/interrupt cannot leave a
      * phantom active turn that blocks the queue forever. The event id is
      * deterministic per turn, so repeated stops settle it once.
+     *
+     * Like the recovery settlement, the event carries no session generation:
+     * ingestion then applies it only while the projection still holds this
+     * exact turn. That keeps it correct when a replacement session bumps the
+     * binding generation before ingestion runs, and means a turn id that names
+     * a different projected turn can never settle it.
      */
     const queueOrphanedTurnSettlement = (input: {
       readonly operation: string;
@@ -2689,16 +2695,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       Effect.gen(function* () {
         if (startingSessions.has(input.binding.threadId) || input.binding.status === "starting")
           return;
-        const event: ProviderRuntimeEvent = {
-          ...makeOrphanedSessionExitedEvent({
-            threadId: input.binding.threadId,
-            turnId: input.turnId,
-            provider: input.binding.provider,
-            providerInstanceId: input.instanceId,
-            createdAt: new Date().toISOString(),
-          }),
-          sessionGeneration: readPersistedSessionGeneration(input.binding.runtimePayload),
-        };
+        const event = makeOrphanedSessionExitedEvent({
+          threadId: input.binding.threadId,
+          turnId: input.turnId,
+          provider: input.binding.provider,
+          providerInstanceId: input.instanceId,
+          createdAt: new Date().toISOString(),
+        });
         yield* Queue.offer(runtimeEventQueue, {
           source: { instanceId: input.instanceId, provider: input.binding.provider },
           event,
@@ -3040,6 +3043,43 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
     const stopSession: ProviderServiceShape["stopSession"] = (input) =>
       withSessionOperation(input.threadId, stopSessionUnlocked(input));
+
+    const withStoppedSessionForCompaction: NonNullable<
+      ProviderServiceShape["withStoppedSessionForCompaction"]
+    > = (input) =>
+      withProviderThreadAccess(
+        input.threadId,
+        withSessionOperation(
+          input.threadId,
+          Effect.gen(function* () {
+            const binding = Option.getOrNull(yield* directory.getBinding(input.threadId));
+            const expected = input.expected;
+            if (
+              startingSessions.has(input.threadId) ||
+              (binding && expected
+                ? binding.provider !== expected.provider ||
+                  resolveBindingInstanceId(binding) !== expected.instanceId ||
+                  readPersistedSessionGeneration(binding.runtimePayload) !== expected.generation
+                : binding !== expected) ||
+              (binding?.status !== "stopped" &&
+                binding?.runtimePayload &&
+                typeof binding.runtimePayload === "object" &&
+                "activeTurnId" in binding.runtimePayload &&
+                binding.runtimePayload.activeTurnId)
+            ) {
+              return yield* toValidationError(
+                "ProviderService.withStoppedSessionForCompaction",
+                "The provider session changed or became active during compaction.",
+              );
+            }
+            yield* input.validate;
+            if (binding) {
+              yield* stopSessionUnlocked({ threadId: input.threadId });
+            }
+            yield* input.commit;
+          }),
+        ),
+      );
 
     const replaceSession: ProviderServiceShape["replaceSession"] = (threadId, input, expected) =>
       withProviderThreadAccess(
@@ -4282,6 +4322,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             : withProviderThreadAccess(input.threadId, respondToElicitation(input));
         }),
       stopSession: (input) => withControlTarget(input.threadId, stopSession(input)),
+      withStoppedSessionForCompaction,
       listStartingWorkspaces: () =>
         Effect.sync(() =>
           Array.from(startingSessions, ([threadId, { session }]) => ({

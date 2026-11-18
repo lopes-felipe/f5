@@ -1,1 +1,0 @@
-- Project favicon discovery scans only the first 128 KiB of each metadata file, keeping lookups bounded while still finding icons declared near the start of large files.

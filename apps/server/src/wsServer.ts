@@ -23,6 +23,7 @@ import { makeHtmlPreviewBroker } from "./htmlRender/HtmlPreviewBroker.ts";
 import { makeHtmlRenderRuntime } from "./htmlRender/HtmlRenderRuntime.ts";
 import { ThreadMcpBroker } from "./mcp/threadMcpTools.ts";
 import { makeThreadToolHandler } from "./mcp/threadToolRuntime.ts";
+import { makeThreadImagePublisher } from "./mcp/publishThreadImage.ts";
 import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlanRepositoryLive } from "./persistence/Layers/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadMessageRepository } from "./persistence/Services/ProjectionThreadMessages.ts";
@@ -2666,6 +2667,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 : contentType,
               "Cache-Control": fingerprinted ? "public, max-age=31536000, immutable" : "no-cache",
               "X-Content-Type-Options": "nosniff",
+              ...(contentType === "text/html"
+                ? {
+                    "Content-Security-Policy": "frame-ancestors 'none'",
+                    "X-Frame-Options": "DENY",
+                  }
+                : {}),
             });
           } catch {
             if (res.headersSent) res.destroy();
@@ -3048,6 +3055,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           attachmentsDir: serverConfig.attachmentsDir,
           preview: htmlPreviewBroker,
         });
+        const publishImage = yield* makeThreadImagePublisher({
+          engine: orchestrationEngine,
+          attachmentsDir: serverConfig.attachmentsDir,
+        });
         const threadContextRepositories = yield* Effect.gen(function* () {
           return {
             messages: yield* ProjectionThreadMessageRepository,
@@ -3073,6 +3084,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               settlement: threadSettlement,
               links: prHubExtensions.value,
               html,
+              publishImage,
             }),
           )
           .pipe(Effect.provideService(Scope.Scope, subscriptionsScope), Effect.orDie);

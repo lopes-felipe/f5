@@ -1,6 +1,48 @@
 import type { UsageAccount, AccountUsageSection } from "@t3tools/contracts";
 import { expect, it } from "vitest";
-import { sidebarUsageWindows } from "./sidebarUsageWindows";
+import type { QuotaWindow } from "@t3tools/shared/usageLimit";
+import { sidebarUsageWindows, sidebarWeeklyUsageWindow } from "./sidebarUsageWindows";
+
+const window = (
+  windowKey: string,
+  usedPercent: number | null,
+  durationMinutes = 10_080,
+): QuotaWindow => ({
+  windowKey,
+  label: windowKey,
+  usedPercent,
+  durationMinutes,
+  resetsAt: null,
+});
+
+it("uses Claude's all-model weekly consumption instead of the session or model quota", () => {
+  const weekly = window("seven_day", 25);
+  expect(
+    sidebarWeeklyUsageWindow([window("five_hour", 99, 300), window("seven_day_fable", 80), weekly]),
+  ).toBe(weekly);
+});
+
+it("uses Codex's main weekly quota ahead of model-specific weekly limits", () => {
+  const weekly = window("codex:secondary", 40);
+  expect(
+    sidebarWeeklyUsageWindow([
+      window("codex:primary", 95, 300),
+      window("codex_spark:secondary", 90),
+      weekly,
+    ]),
+  ).toBe(weekly);
+});
+
+it("retains unknown weekly consumption and does not substitute a short-term quota", () => {
+  expect(sidebarWeeklyUsageWindow([window("seven_day", null)])?.usedPercent).toBeNull();
+  expect(sidebarWeeklyUsageWindow([window("five_hour", 80, 300)])).toBeUndefined();
+  expect(sidebarWeeklyUsageWindow([])).toBeUndefined();
+});
+
+it("uses a reported weekly quota when the provider has no account-wide window", () => {
+  const weekly = window("seven_day_fable", 60);
+  expect(sidebarWeeklyUsageWindow([weekly])).toBe(weekly);
+});
 
 const section = (percent: number, fetchedAt: string): AccountUsageSection => ({
   kind: "provider-limits",

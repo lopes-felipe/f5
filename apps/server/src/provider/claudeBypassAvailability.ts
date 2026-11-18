@@ -58,6 +58,10 @@ export async function resolveClaudeBypassAvailability(
     }).catch(() => {
       throw new Error("Claude's effective settings resolver failed.");
     });
+    // A policy source that may exist but did not load reads as absent in `effective`.
+    const didNotLoad = resolved.machinePolicy?.didNotLoad;
+    if (Array.isArray(didNotLoad) && didNotLoad.length > 0)
+      throw new Error(`Managed policy source(s) ${didNotLoad.join(", ")} did not load.`);
     const sources = [remote, home, resolved.effective].map(claudeBypassAvailability);
     return {
       bypassDisabled: sources.some((source) => source.bypassDisabled),

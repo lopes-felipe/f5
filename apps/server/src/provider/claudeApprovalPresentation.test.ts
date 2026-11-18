@@ -28,6 +28,19 @@ describe("Claude approval presentation", () => {
     expect(claudeApprovalPresentation({})).toBeUndefined();
   });
 
+  it("suppresses the session accept when it would grant nothing", () => {
+    expect(claudeApprovalPresentation({}, { sessionGrantAvailable: false })).toEqual({
+      suppressAlwaysAllowRule: true,
+    });
+    expect(claudeApprovalPresentation({}, { sessionGrantAvailable: true })).toBeUndefined();
+    expect(
+      claudeApprovalPresentation(
+        { suppressAlwaysAllowRule: true },
+        { sessionGrantAvailable: true },
+      ),
+    ).toEqual({ suppressAlwaysAllowRule: true });
+  });
+
   it("downgrades persistent accepts when the ask suppresses always-allow rules", () => {
     const presentation = { suppressAlwaysAllowRule: true };
     expect(effectiveClaudeApprovalDecision("acceptForSession", presentation)).toBe("accept");

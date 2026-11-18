@@ -1,1 +1,0 @@
-- Claude Fable resets are identified separately from weekly resets, with a confirmation that explains which allowance the selected grant refills.

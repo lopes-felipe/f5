@@ -1,1 +1,0 @@
-- Updated F5 icons, sidebar/header controls, model ordering, Find closing and composer readiness.

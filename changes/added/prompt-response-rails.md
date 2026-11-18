@@ -1,1 +1,0 @@
-- Separate prompt and response navigation rails, optional follow controls, and visible earlier-history loading.

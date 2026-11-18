@@ -14,7 +14,13 @@ function text(value: unknown): string | undefined {
     : trimmed;
 }
 
-/** Copies the SDK's permission prompt metadata into F5's display-only presentation. */
+/**
+ * Copies the SDK's permission prompt metadata into F5's display-only presentation.
+ *
+ * `sessionGrantAvailable: false` says that "Always allow this session" would grant nothing:
+ * Claude Code 2.1.325+ sends `suggestions` only when saving a rule would allow the call
+ * again, and F5 has no grant of its own for the tool. The ask is then shown without it.
+ */
 export function claudeApprovalPresentation(
   options: Pick<
     ClaudePermissionCallbackOptions,
@@ -27,7 +33,10 @@ export function claudeApprovalPresentation(
     | "defaultToNo"
     | "suppressAlwaysAllowRule"
   >,
+  context: { readonly sessionGrantAvailable?: boolean } = {},
 ): ProviderApprovalPresentation | undefined {
+  const suppressAlwaysAllowRule =
+    options.suppressAlwaysAllowRule === true || context.sessionGrantAvailable === false;
   const title = text(options.title);
   const description = text(options.description);
   const displayName = text(options.displayName);
@@ -42,7 +51,7 @@ export function claudeApprovalPresentation(
     ...(blockedPath ? { blockedPath } : {}),
     ...(agentId ? { agentId } : {}),
     ...(options.defaultToNo === true ? { defaultToNo: true } : {}),
-    ...(options.suppressAlwaysAllowRule === true ? { suppressAlwaysAllowRule: true } : {}),
+    ...(suppressAlwaysAllowRule ? { suppressAlwaysAllowRule: true } : {}),
   };
   return Object.keys(presentation).length > 0 ? presentation : undefined;
 }

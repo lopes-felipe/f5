@@ -124,6 +124,7 @@ it.effect(
         assert.deepStrictEqual(
           tools.body.result?.tools?.map((tool) => tool.name),
           [
+            "image_publish",
             "thread_read",
             "thread_settle",
             "thread_status",
