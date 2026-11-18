@@ -35,9 +35,14 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
-import type { ProviderTurnDelivery } from "../Services/ProviderTurnDeliveryRepository.ts";
+import {
+  ProviderTurnDeliveryRepository,
+  type ProviderTurnDelivery,
+  type ProviderTurnDeliveryRepositoryShape,
+} from "../Services/ProviderTurnDeliveryRepository.ts";
 import {
   ProviderTurnDeliveryWorker,
+  type ProviderTurnDeliveryOutcome,
   type ProviderTurnDeliveryWorkerShape,
 } from "../Services/ProviderTurnDeliveryWorker.ts";
 import { WorkflowService } from "../Services/WorkflowService.ts";
@@ -556,6 +561,7 @@ async function createHarness(
     readonly getProviders?: () => ReadonlyArray<ServerProvider>;
     readonly recheckDelivery?: ProviderTurnDeliveryWorkerShape["recheck"];
     readonly retryDelivery?: ProviderTurnDeliveryWorkerShape["retry"];
+    readonly getRevisionDelivery?: ProviderTurnDeliveryRepositoryShape["getByCommandId"];
     readonly dispatchDefect?: (command: OrchestrationCommand) => Error | null;
   },
 ) {
@@ -565,6 +571,7 @@ async function createHarness(
   const dispatched: OrchestrationCommand[] = [];
   const acceptedCommandIds = new Set<string>();
   const queue = await Effect.runPromise(Queue.unbounded<OrchestrationEvent>());
+  const outcomes = await Effect.runPromise(Queue.unbounded<ProviderTurnDeliveryOutcome>());
   const generateThreadTitle = vi.fn<TextGenerationShape["generateThreadTitle"]>(() =>
     Effect.fail(
       new TextGenerationError({
@@ -730,10 +737,17 @@ async function createHarness(
         } satisfies ProviderRegistryShape),
       ),
       Layer.provideMerge(
+        Layer.succeed(ProviderTurnDeliveryRepository, {
+          getByCommandId: options?.getRevisionDelivery ?? (() => Effect.succeed(null)),
+          getLatestByThread: () => Effect.succeed(null),
+          getUnresolvedByThread: () => Effect.succeed(null),
+        } as unknown as ProviderTurnDeliveryRepositoryShape),
+      ),
+      Layer.provideMerge(
         Layer.succeed(ProviderTurnDeliveryWorker, {
           start: Effect.void,
           drain: Effect.void,
-          outcomes: Stream.empty,
+          outcomes: Stream.fromQueue(outcomes),
           acknowledgeOutcome: () => Effect.void,
           recheck: options?.recheckDelivery ?? (() => Effect.succeed(null)),
           recheckWithReason: () => Effect.die(new Error("Unexpected recheck with reason in test.")),
@@ -775,6 +789,9 @@ async function createHarness(
     async emit(event: OrchestrationEvent) {
       snapshot = applyWorkflowEventToSnapshot(snapshot, event);
       await Effect.runPromise(Queue.offer(queue, event));
+    },
+    async emitOutcome(outcome: ProviderTurnDeliveryOutcome) {
+      await Effect.runPromise(Queue.offer(outcomes, outcome));
     },
     async drain() {
       await runtime.runPromise(service.drain);
@@ -4471,6 +4488,7 @@ describe("WorkflowService", () => {
       makeReadModel({
         workflow,
         threads: [
+          makeThread({ id: ThreadId.makeUnsafe("implementation-thread") }),
           makeThread({
             id: ThreadId.makeUnsafe("code-review-a"),
             latestTurn: {
@@ -4523,6 +4541,7 @@ describe("WorkflowService", () => {
       makeReadModel({
         workflow,
         threads: [
+          makeThread({ id: ThreadId.makeUnsafe("implementation-thread") }),
           makeThread({
             id: ThreadId.makeUnsafe("code-review-a"),
             latestTurn: {
@@ -4657,6 +4676,7 @@ describe("WorkflowService", () => {
       makeReadModel({
         workflow,
         threads: [
+          makeThread({ id: ThreadId.makeUnsafe("implementation-thread") }),
           makeThread({
             id: ThreadId.makeUnsafe("code-review-a"),
             latestTurn: {
@@ -4709,6 +4729,7 @@ describe("WorkflowService", () => {
       makeReadModel({
         workflow,
         threads: [
+          makeThread({ id: ThreadId.makeUnsafe("implementation-thread") }),
           makeThread({
             id: ThreadId.makeUnsafe("code-review-a"),
             latestTurn: {
@@ -4883,6 +4904,126 @@ describe("WorkflowService", () => {
       "applying_reviews",
     );
   });
+
+  it.each(["acceptance", "completion"] as const)(
+    "waits for the exact Apply Reviews turn when %s arrives first",
+    async (first) => {
+      const threadId = ThreadId.makeUnsafe("implementation-thread");
+      const originalTurnId = TurnId.makeUnsafe("original-implementation");
+      const revisionTurnId = TurnId.makeUnsafe("apply-reviews-turn");
+      const commandId = CommandId.makeUnsafe("apply-reviews-dispatch");
+      const deliveryId = CommandId.makeUnsafe("exact-delivery-id");
+      let delivery: ProviderTurnDelivery = {
+        ...makeProviderTurnDelivery(threadId, "pending"),
+        commandId,
+        deliveryId,
+      };
+      const workflow = makeWorkflow({
+        implementation: {
+          ...makeImplementation(),
+          threadId,
+          implementationTurnId: originalTurnId,
+          revisionAttempt: 1,
+          revisionDispatchCommandId: commandId,
+          status: "applying_reviews",
+        },
+      });
+      const session = {
+        threadId,
+        status: "ready" as const,
+        providerName: "codex" as const,
+        runtimeMode: "full-access" as const,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: NOW,
+      };
+      const completedThread = (turnId: TurnId) => {
+        const messageId = MessageId.makeUnsafe(`assistant-${turnId}`);
+        return makeThread({
+          id: threadId,
+          session,
+          latestTurn: {
+            turnId,
+            assistantMessageId: messageId,
+            state: "completed",
+            requestedAt: NOW,
+            startedAt: NOW,
+            completedAt: NOW,
+          },
+          messages: [
+            {
+              id: messageId,
+              role: "assistant",
+              turnId,
+              text: "Completed successfully.",
+              streaming: false,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ],
+        });
+      };
+      harness = await createHarness(
+        makeReadModel({
+          workflow,
+          threads: [completedThread(originalTurnId)],
+        }),
+        {
+          getRevisionDelivery: (requestedId) =>
+            Effect.sync(() => (requestedId === commandId ? delivery : null)),
+        },
+      );
+      await harness.start();
+      await harness.emit(
+        makeEvent("thread.session-set", {
+          threadId,
+          session: { ...session, turnCostUsd: 0.01 },
+        }),
+      );
+      await waitFor(() => harness!.getSnapshot().planningWorkflows[0]?.totalCostUsd === 0.01);
+      const current = () => harness!.getSnapshot().planningWorkflows[0]?.implementation;
+      expect(current()?.status).toBe("applying_reviews");
+      expect(current()?.revisionTurnId).toBeNull();
+
+      const accept = async () => {
+        delivery = { ...delivery, state: "accepted", providerTurnId: revisionTurnId };
+        await harness!.emitOutcome({
+          commandId,
+          deliveryId,
+          threadId,
+          state: "accepted",
+          detail: null,
+        });
+      };
+      const complete = async () => {
+        harness!.setSnapshot({
+          ...harness!.getSnapshot(),
+          threads: [completedThread(revisionTurnId)],
+        });
+        await harness!.emit(
+          makeEvent("thread.turn-processing-quiesced", {
+            threadId,
+            turnId: revisionTurnId,
+            processingQuiescedAt: NOW,
+          }),
+        );
+      };
+      const [before, after] = first === "acceptance" ? [accept, complete] : [complete, accept];
+      await before();
+      await harness.emit(
+        makeEvent("thread.turn-processing-quiesced", {
+          threadId,
+          turnId: originalTurnId,
+          processingQuiescedAt: NOW,
+        }),
+      );
+      expect(current()?.revisionTurnId).toBeNull();
+      await after();
+      await waitFor(() => current()?.status === "completed");
+      expect(current()?.revisionTurnId).toBe(revisionTurnId);
+      expect(turnStartsForThread(harness.dispatched, threadId)).toHaveLength(0);
+    },
+  );
 
   it("marks implementation and code review failures on session errors", async () => {
     const workflow = makeWorkflow({
@@ -11607,7 +11748,7 @@ describe("WorkflowService", () => {
     );
 
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.implementation?.error).toBe(
-      "Implementation revision session was not running during reconciliation.",
+      "Could not identify the previous Apply Reviews delivery. Wait for outstanding work to settle, then retry.",
     );
   });
 

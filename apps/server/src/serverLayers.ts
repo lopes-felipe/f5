@@ -433,6 +433,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     ProviderTurnDeliveryRepositoryLive,
     ProviderHandoffStateRepositoryLive,
     ProjectionTurnRepositoryLive,
+    OrchestrationCommandReceiptRepositoryLive,
     threadBackgroundWorkLayer,
     StorageMaintenanceLive.pipe(
       Layer.provideMerge(orchestrationLayer),
