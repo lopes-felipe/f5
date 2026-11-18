@@ -20,7 +20,7 @@ import {
   XIcon,
   type LucideIcon,
 } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { TimestampFormat } from "../../appSettings";
@@ -37,7 +37,12 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
 import { useNowIso } from "../../lib/nowTicker";
 import { toastManager } from "../ui/toast";
+import { SurfaceErrorBoundary } from "../ui/SurfaceErrorBoundary";
 import { CopyIconButton } from "./CopyIconButton";
+
+const ShellCommandBlock = lazy(() =>
+  import("./ShellCommandBlock").then((module) => ({ default: module.ShellCommandBlock })),
+);
 
 interface CommandTranscriptCardProps {
   threadId?: ThreadId | null;
@@ -144,6 +149,17 @@ const HighlightedCommandText = memo(function HighlightedCommandText(props: { com
     </>
   );
 });
+
+function ExpandedCommandText({ command }: { command: string }) {
+  const fallback = <HighlightedCommandText command={command} />;
+  return (
+    <SurfaceErrorBoundary name="Command highlighting" fallback={fallback} resetKeys={[command]}>
+      <Suspense fallback={fallback}>
+        <ShellCommandBlock command={command} />
+      </Suspense>
+    </SurfaceErrorBoundary>
+  );
+}
 
 function resolveExecutionOutput(
   execution: OrchestrationCommandExecutionSummary | OrchestrationCommandExecution,
@@ -501,7 +517,11 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
               title={expanded ? undefined : displayCommand}
             >
               {summaryText === displayCommand ? (
-                <HighlightedCommandText command={displayCommand} />
+                expanded ? (
+                  <ExpandedCommandText command={displayCommand} />
+                ) : (
+                  <HighlightedCommandText command={displayCommand} />
+                )
               ) : (
                 summaryText
               )}
@@ -549,7 +569,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
               <div>
                 <p className={SECTION_LABEL_CLASS_NAME}>Command</p>
                 <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-background/70 p-2 font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
-                  <HighlightedCommandText command={displayCommand} />
+                  <ExpandedCommandText command={displayCommand} />
                 </pre>
               </div>
             )}
