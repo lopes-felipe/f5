@@ -343,6 +343,11 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
         writeJson(response, 403, { error: "invalid_host" });
         return;
       }
+      // MCP admits native clients only; reject browser requests before auth or method handling.
+      if (request.headers.origin !== undefined) {
+        writeJson(response, 403, { error: "origin_not_allowed" });
+        return;
+      }
       const catalog = (Object.keys(CATALOG_PATHS) as McpCatalog[]).find(
         (entry) => CATALOG_PATHS[entry] === request.url,
       );

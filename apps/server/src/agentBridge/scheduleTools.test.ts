@@ -74,6 +74,31 @@ const setupTools = Effect.gen(function* () {
   return { ...fixture, bridge, tools, caller, grant, call, tick, createTask: create };
 });
 const savedTask = (result: unknown) => (result as { task: ScheduledTask }).task;
+it.effect("filters scheduled task IDs without widening project visibility", () =>
+  Effect.gen(function* () {
+    const f = yield* setupTools;
+    yield* f.grant(true);
+    const first = savedTask(yield* f.createTask("first"));
+    yield* f.tick;
+    const second = savedTask(yield* f.createTask("second"));
+    const ids = (input: unknown) =>
+      f
+        .call("list_scheduled_tasks", input)
+        .pipe(
+          Effect.map((result) =>
+            (result as { tasks: { task: ScheduledTask }[] }).tasks.map(({ task }) => task.id),
+          ),
+        );
+    expect(yield* ids({})).toHaveLength(2);
+    expect(yield* ids({ scheduledTaskId: second.id })).toEqual([second.id]);
+    expect(yield* ids({ projectId: "project", scheduledTaskId: first.id })).toEqual([first.id]);
+    expect(yield* ids({ scheduledTaskId: "missing" })).toEqual([]);
+    expect(yield* ids({ projectId: "unshared", scheduledTaskId: first.id })).toEqual([]);
+    yield* f.settings.updateSettings({ agentBridge: { exposedProjectIds: [] } });
+    f.host.settings = yield* f.settings.getSettings;
+    expect(yield* ids({ scheduledTaskId: first.id })).toEqual([]);
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
 it.effect(
   "does not implicitly grant scheduling and echoes validated cron on an explicitly granted create",
   () =>
