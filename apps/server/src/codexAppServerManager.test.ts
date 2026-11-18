@@ -5413,6 +5413,8 @@ describe("session catalog paging and effective fallback", () => {
         "assertSupportedCodexCliVersion",
       ).mockReturnValue("0.170.0");
       const openedProvider = scenario === "same provider" ? "old" : "new";
+      const events: ProviderEvent[] = [];
+      manager.on("event", (event) => events.push(event));
       const requests = vi
         .spyOn(
           manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
@@ -5422,7 +5424,7 @@ describe("session catalog paging and effective fallback", () => {
           if (method === "thread/resume" && scenario === "fresh recovery")
             throw new Error("thread/resume failed: thread not found");
           if (method === "thread/start" || method === "thread/resume")
-            return { thread: { id: "opened", modelProvider: openedProvider } };
+            return { thread: { id: "opened", modelProvider: openedProvider }, serviceTier: null };
           if (method === "model/list") {
             const selected = (params as { modelProvider?: string }).modelProvider;
             if (selected === "new" && scenario === "refresh failure")
@@ -5433,7 +5435,7 @@ describe("session catalog paging and effective fallback", () => {
                   model: "gpt-fresh",
                   limits: { contextWindowTokens: selected === "new" ? 872_000 : 100_000 },
                   supportedReasoningEfforts: [],
-                  serviceTiers: [],
+                  serviceTiers: selected === "old" ? [{ id: "priority" }] : [],
                 },
               ],
               nextCursor: null,
@@ -5451,6 +5453,7 @@ describe("session catalog paging and effective fallback", () => {
         const session = await manager.startSession({
           threadId: asThreadId("provider-refresh"),
           model: "gpt-fresh",
+          serviceTier: "fast",
           cwd: directory,
           runtimeMode: "full-access",
           resumeCursor: { threadId: "saved", f5ModelProvider: "old" },
@@ -5458,6 +5461,13 @@ describe("session catalog paging and effective fallback", () => {
           effectiveModelCapabilities: new Map([["gpt-fresh", fallback]]),
         });
         expect(session.resumeCursor).toMatchObject({ f5ModelProvider: openedProvider });
+        for (const call of requests.mock.calls.filter(
+          (call) => call[1] === "thread/start" || call[1] === "thread/resume",
+        ))
+          expect(call[2]).not.toHaveProperty("serviceTier");
+        expect(
+          events.find((event) => event.method === "session/configured")?.payload,
+        ).toMatchObject({ config: { serviceTier: null } });
         const catalogs = requests.mock.calls.filter((call) => call[1] === "model/list");
         expect(
           catalogs.map((call) => (call[2] as { modelProvider: string }).modelProvider),
@@ -5466,11 +5476,14 @@ describe("session catalog paging and effective fallback", () => {
           threadId: asThreadId("provider-refresh"),
           input: "hello",
           effort: "high",
-          serviceTier: "fast",
         });
         const turn = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2];
         if (scenario === "refresh failure")
           expect(turn).toMatchObject({ effort: "high", serviceTier: "priority" });
+        else
+          expect(turn).toMatchObject({
+            serviceTier: scenario === "same provider" ? "priority" : null,
+          });
       } finally {
         await cleanupCodexFixture(manager, directory);
       }

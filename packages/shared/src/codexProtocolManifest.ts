@@ -348,11 +348,11 @@ export const CODEX_DECODED_RESPONSE_FIELDS = {
   },
   "thread/start": {
     schema: "v2/ThreadStartResponse.json",
-    fields: ["thread.id", "modelProvider", "thread.modelProvider"],
+    fields: ["thread.id", "modelProvider", "thread.modelProvider", "serviceTier"],
   },
   "thread/resume": {
     schema: "v2/ThreadResumeResponse.json",
-    fields: ["thread.id", "modelProvider", "thread.modelProvider"],
+    fields: ["thread.id", "modelProvider", "thread.modelProvider", "serviceTier"],
   },
   "thread/fork": { schema: "v2/ThreadForkResponse.json", fields: ["thread.id"] },
   "thread/revert": { schema: "v2/ThreadRevertResponse.json", fields: ["thread.id"] },

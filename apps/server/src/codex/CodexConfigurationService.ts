@@ -24,6 +24,9 @@ export class CodexConfigurationService {
   private acquisition: Promise<CodexControlClient> | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private login: Login | undefined;
+  // Account updates may clear the prompt, but cannot make this connection safe
+  // for another anonymous browser OAuth attempt.
+  private gatewayAttempted = false;
   private chain: Promise<unknown> = Promise.resolve();
   private closed = false;
   private pending = 0;
@@ -90,6 +93,7 @@ export class CodexConfigurationService {
         throw new Error("Codex model provider settings require Codex 0.170.0 or later.");
       }
       this.client = client;
+      this.gatewayAttempted = false;
       client.on("notification", ({ method, params }) => {
         if (this.client !== client) return;
         if (method === "account/updated") this.login = undefined;
@@ -122,7 +126,11 @@ export class CodexConfigurationService {
   }
 
   private async run(action: CodexConfigurationAction): Promise<CodexConfigurationResult> {
-    if (action.type === "gatewayLogin" && this.login && this.login.status !== "started") {
+    if (
+      action.type === "gatewayLogin" &&
+      this.gatewayAttempted &&
+      this.login?.status !== "started"
+    ) {
       const previous = this.client;
       this.client = undefined;
       this.login = undefined;
@@ -168,7 +176,7 @@ export class CodexConfigurationService {
       if (action.type === "gatewayLogin") {
         if (this.login?.status === "started")
           throw new Error("Cancel the current gateway login first.");
-        if (this.login) {
+        if (this.gatewayAttempted) {
           // Completion may arrive while the readiness request above is pending.
           this.client = undefined;
           this.login = undefined;
@@ -177,6 +185,7 @@ export class CodexConfigurationService {
         }
         if (action.deviceAuth && gateway.supportsDeviceAuth !== true)
           throw new Error("This gateway does not support device authorization.");
+        this.gatewayAttempted = true;
         this.login = {
           loginId: randomUUID(),
           providerId: action.providerId,

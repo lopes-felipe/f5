@@ -293,6 +293,8 @@ interface CodexSessionContext {
    * tier only then, so a tier from the user's `config.toml` is left alone.
    */
   serviceTierApplied?: boolean;
+  /** Resolve a startup selection only after the opened thread's catalog is known. */
+  deferredServiceTier?: string | undefined;
   childThreadIds?: Set<string>;
   forkNotifications?: JsonRpcNotification[] | undefined;
   forkNotificationOverflow?: boolean;
@@ -377,7 +379,7 @@ export interface CodexAppServerSendTurnInput {
     | { type: "localAudio"; path: string }
   >;
   readonly model?: string;
-  readonly serviceTier?: "fast" | "default" | null;
+  readonly serviceTier?: string | null;
   readonly effort?: string;
   readonly interactionMode?: ProviderInteractionMode;
 }
@@ -1484,10 +1486,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
 
       const normalizedModel = resolveCodexModelForAccount(fallbackModel, context.account);
-      const launchServiceTier = resolveCodexServiceTier(
-        input.serviceTier,
-        context.reportedModelCapabilities?.get(normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
-      );
+      const launchServiceTier = supportsCodexRelease6(cliVersion)
+        ? undefined
+        : resolveCodexServiceTier(
+            input.serviceTier,
+            context.reportedModelCapabilities?.get(
+              normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex,
+            ),
+          );
       context.workflowExecutionProfile = input.workflowExecutionProfile;
       const threadOpenParams = buildCodexThreadOpenRequestParams({
         cliVersion,
@@ -1666,12 +1672,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           : [],
       );
       context.requestedRuntime = { model: input.model, serviceTier: input.serviceTier };
+      context.deferredServiceTier = supportsCodexRelease6(cliVersion)
+        ? input.serviceTier
+        : undefined;
       context.serviceTierApplied = typeof launchServiceTier === "string";
+      const nativeTier = asObject(threadOpenResponse)?.serviceTier;
+      const openedServiceTier =
+        supportsCodexRelease6(cliVersion) && (nativeTier === null || typeof nativeTier === "string")
+          ? nativeTier
+          : launchServiceTier;
       this.emitSessionConfigured(context, {
         ...(normalizedModel ? { model: normalizedModel } : {}),
         ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
         ...(resolvedCwd ? { cwd: resolvedCwd } : {}),
-        ...(launchServiceTier !== undefined ? { serviceTier: launchServiceTier } : {}),
+        ...(openedServiceTier !== undefined ? { serviceTier: openedServiceTier } : {}),
         [INSTRUCTION_PROFILE_CONFIG_KEY]: buildInstructionProfile({ provider: "codex" }),
       });
       this.emitLifecycleEvent(
@@ -1717,6 +1731,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   async sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
     const context = this.requireSession(input.threadId);
+    if (input.serviceTier === undefined && context.deferredServiceTier !== undefined)
+      input = { ...input, serviceTier: context.deferredServiceTier };
     const providerThreadId = readResumeCursorThreadId(context.session.resumeCursor);
     if (!providerThreadId) throw new Error("Session is missing provider resume thread id.");
     const { serviceTier: _requestedTier, ...inputWithoutTier } = input;
@@ -1795,6 +1811,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return { threadId: input.threadId, turnId: input.expectedTurnId };
     }
     const response = await this.sendRequest(context, "turn/start", turnStartParams);
+    context.deferredServiceTier = undefined;
     context.lastAdditionalContext = turnStartParams.additionalContext;
 
     const turn = this.readObject(this.readObject(response), "turn");

@@ -81,34 +81,38 @@ describe("Codex native configuration", () => {
     expect(disposed).toBe(true);
   });
 
-  it("fences anonymous terminal notifications before another login starts", async () => {
-    const { service, client } = setup();
-    await service.execute({ type: "gatewayLogin", providerId: "team", deviceAuth: false });
-    client.emit("notification", {
-      method: "account/gatewayOAuth/changed",
-      params: { providerId: "team", loginId: null, status: "succeeded" },
-    });
-    const next = setup();
-    try {
+  it.each([false, true])(
+    "fences anonymous terminal notifications before another login starts (account update: %s)",
+    async (accountUpdated) => {
+      const { service, client } = setup();
       await service.execute({ type: "gatewayLogin", providerId: "team", deviceAuth: false });
-      expect(client.closeAndWait).toHaveBeenCalledOnce();
       client.emit("notification", {
         method: "account/gatewayOAuth/changed",
-        params: {
-          providerId: "team",
-          loginId: null,
-          status: "failed",
-          authUrl: "https://stale.test",
-        },
+        params: { providerId: "team", loginId: null, status: "succeeded" },
       });
-      expect(
-        (await service.execute({ type: "gatewayRead", providerId: "team" })).login,
-      ).toMatchObject({ status: "started", authUrl: null });
-    } finally {
-      await service.close();
-      await next.service.close();
-    }
-  });
+      if (accountUpdated) client.emit("notification", { method: "account/updated", params: {} });
+      const next = setup();
+      try {
+        await service.execute({ type: "gatewayLogin", providerId: "team", deviceAuth: false });
+        expect(client.closeAndWait).toHaveBeenCalledOnce();
+        client.emit("notification", {
+          method: "account/gatewayOAuth/changed",
+          params: {
+            providerId: "team",
+            loginId: null,
+            status: "failed",
+            authUrl: "https://stale.test",
+          },
+        });
+        expect(
+          (await service.execute({ type: "gatewayRead", providerId: "team" })).login,
+        ).toMatchObject({ status: "started", authUrl: null });
+      } finally {
+        await service.close();
+        await next.service.close();
+      }
+    },
+  );
 
   it("skips unknown provider rows and isolates invalid security notices", async () => {
     const { service, client } = setup();

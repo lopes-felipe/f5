@@ -4400,6 +4400,16 @@ describe("ProviderRuntimeIngestion", () => {
       );
       if (late) {
         harness.emit({
+          type: "turn.completed",
+          eventId: asEventId("moderated-settled"),
+          provider: "codex",
+          createdAt: now,
+          threadId,
+          turnId,
+          payload: { state: "completed" },
+        });
+        await harness.drain();
+        harness.emit({
           type: "turn.started",
           eventId: asEventId("later-start"),
           provider: "codex",
@@ -4409,6 +4419,11 @@ describe("ProviderRuntimeIngestion", () => {
           payload: {},
         });
         await harness.drain();
+        const later = await waitForThread(
+          harness.engine,
+          (thread) => thread.latestTurn?.turnId === "later-turn",
+        );
+        expect(later.latestTurn?.turnId).toBe("later-turn");
       }
       harness.emit({
         type: "item.completed",
