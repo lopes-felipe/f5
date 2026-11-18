@@ -1,0 +1,1 @@
+- Add opt-in Codex audio attachments for models reporting audio input support and opt-in animated image generation; preserve generated GIF files.

@@ -56,6 +56,10 @@ try {
       "v2/ThreadGoalSetParams.ts",
       "v2/ThreadGoalClearParams.ts",
       "v2/GetAccountTokenUsageParams.ts",
+      "v2/ModelProviderConfigWriteParams.ts",
+      "v2/GatewayOAuthReadParams.ts",
+      "v2/GatewayOAuthLoginParams.ts",
+      "v2/McpResourceReadParams.ts",
     ];
     const sha256 = Object.fromEntries(
       await Promise.all(

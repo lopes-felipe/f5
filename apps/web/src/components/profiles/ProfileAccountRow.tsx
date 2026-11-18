@@ -3,6 +3,7 @@ import { isProviderDriverKind, type ProfileSummary } from "@t3tools/contracts";
 import { Badge } from "../ui/badge";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { ProviderAccountPanel } from "../settings/ProviderAccountPanel";
+import { CodexAccountSecurityNotice } from "../settings/CodexAccountSecurityNotice";
 import { profileAccountPresentation } from "./profileStatus";
 
 type ProfileAccount = ProfileSummary["providerAccounts"][number];
@@ -39,6 +40,12 @@ export function ProfileAccountRow({ account }: { readonly account: ProfileAccoun
       {account.message && account.message !== presentation.detail ? (
         <p className="mt-1.5 text-xs text-muted-foreground">{account.message}</p>
       ) : null}
+      {driverKind === "codex" && account.status === "authenticated" && (
+        <CodexAccountSecurityNotice
+          instanceId={account.instanceId}
+          identity={account.identity ?? ""}
+        />
+      )}
       {presentation.canSignIn ? (
         <ProviderAccountPanel
           className="mt-2.5"

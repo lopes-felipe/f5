@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./codexMessagePresentation": {
+      "types": "./src/codexMessagePresentation.ts",
+      "import": "./src/codexMessagePresentation.ts"
+    },
     "./assistantResponseContext": {
       "types": "./src/assistantResponseContext.ts",
       "import": "./src/assistantResponseContext.ts"

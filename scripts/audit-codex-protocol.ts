@@ -88,6 +88,11 @@ async function main(): Promise<void> {
     const schemaDirectory = await mkdtemp(path.join(tmpdir(), "f5-codex-protocol-schema-"));
     temporaryDirectories.push(schemaDirectory);
     const installedVersion = await runCommand(binary, ["--version"]);
+    const stableTypes = await mkdtemp(path.join(tmpdir(), "f5-codex-stable-types-"));
+    const stableSchemas = await mkdtemp(path.join(tmpdir(), "f5-codex-stable-schemas-"));
+    temporaryDirectories.push(stableTypes, stableSchemas);
+    await runCommand(binary, ["app-server", "generate-ts", "--out", stableTypes]);
+    await runCommand(binary, ["app-server", "generate-json-schema", "--out", stableSchemas]);
     await runCommand(binary, [
       "app-server",
       "generate-ts",
@@ -142,6 +147,14 @@ async function main(): Promise<void> {
         .map(([file, source]) => [file, sha256(source)] as const)
         .toSorted(([left], [right]) => left.localeCompare(right)),
     );
+    for (const file of SURFACE_FILES)
+      checksums["stable/" + file] = sha256(await readFile(path.join(stableTypes, file), "utf8"));
+    for (const { schema } of Object.values(CODEX_DECODED_RESPONSE_FIELDS)) {
+      const source = await readFile(path.join(stableSchemas, schema), "utf8").catch(
+        () => undefined,
+      );
+      if (source !== undefined) checksums["stable/" + schema] = sha256(source);
+    }
     const installedProtocolVersion = parseCodexCliVersion(installedVersion);
     const hasVersionMismatch = !isExpectedCodexProtocolVersion(
       installedVersion,

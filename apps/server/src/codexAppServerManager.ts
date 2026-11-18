@@ -3,6 +3,8 @@ import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
 import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
 import { probeCodexCliVersion } from "./codex/cliVersionProbe.ts";
+import { presentCodexMessageItem } from "@t3tools/shared/codexMessagePresentation";
+import { buildCodexResourceReadParams } from "./codex/codexConfigurationRequests";
 import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
 import { Utf8Lines } from "@t3tools/shared/utf8Lines";
 import { CODEX_MAX_INCOMING_MESSAGE_BYTES, ProviderLineReader } from "./codex/lineReader.ts";
@@ -24,6 +26,7 @@ import type { CodexControlMcpServerStatus } from "./codex/CodexControlClient.ts"
 import {
   supportsCodexNativeOperations,
   supportsCodexRelease5,
+  supportsCodexRelease6,
 } from "@t3tools/shared/providerRuntimeCapabilities";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import type {
@@ -363,7 +366,7 @@ export interface CodexAppServerSendTurnInput {
   readonly threadId: ThreadId;
   readonly input?: string;
   readonly attachments?: ReadonlyArray<
-    { type: "image"; url: string } | { type: "localImage"; path: string }
+    { type: "image"; url: string } | { type: "localImage" | "localAudio"; path: string }
   >;
   readonly model?: string;
   readonly serviceTier?: "fast" | "default" | null;
@@ -767,9 +770,6 @@ export function buildCodexThreadOpenRequestParams(input: {
             ...overrides,
             threadId: input.resumeThreadId,
             excludeTurns: true,
-            ...(supportsCodexNativeOperations(input.cliVersion)
-              ? { deferGoalContinuation: true }
-              : {}),
           },
         }
       : {}),
@@ -895,7 +895,7 @@ export function buildCodexTurnStartParams(
   const turnInput: Array<
     | { type: "text"; text: string; text_elements: [] }
     | { type: "image"; url: string }
-    | { type: "localImage"; path: string }
+    | { type: "localImage" | "localAudio"; path: string }
   > = [];
   if (input.input) {
     turnInput.push({
@@ -905,7 +905,7 @@ export function buildCodexTurnStartParams(
     });
   }
   for (const attachment of input.attachments ?? []) {
-    if (attachment.type === "localImage") {
+    if (attachment.type === "localImage" || attachment.type === "localAudio") {
       turnInput.push(attachment);
     }
     if (attachment.type === "image") {
@@ -924,7 +924,7 @@ export function buildCodexTurnStartParams(
     input: Array<
       | { type: "text"; text: string; text_elements: [] }
       | { type: "image"; url: string }
-      | { type: "localImage"; path: string }
+      | { type: "localImage" | "localAudio"; path: string }
     >;
     model?: string;
     serviceTier?: string | null;
@@ -999,7 +999,7 @@ export function buildCodexTurnSteerParams(
   return { threadId, input, expectedTurnId };
 }
 
-export function buildCodexInitializeParams() {
+export function buildCodexInitializeParams(cliVersion?: string | null) {
   return {
     clientInfo: {
       name: "t3code_desktop",
@@ -1008,6 +1008,7 @@ export function buildCodexInitializeParams() {
     },
     capabilities: {
       experimentalApi: true,
+      ...(supportsCodexRelease6(cliVersion) ? { requiredHumanApproval: true } : {}),
       requestAttestation: false,
       // Legacy opt-in, still accepted by 0.160.1. Its replacement is declaring
       // `openai/form` in `capabilities.extensions`. Standard MCP `form`/`url`
@@ -1428,12 +1429,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       this.emitLifecycleEvent(context, "session/connecting", "Starting codex app-server");
 
-      await this.sendRequest(context, "initialize", buildCodexInitializeParams());
+      await this.sendRequest(context, "initialize", buildCodexInitializeParams(cliVersion));
 
       await this.writeMessage(context, { method: "initialized" });
+      const savedModelProvider = supportsCodexRelease6(cliVersion)
+        ? asString(asObject(input.resumeCursor)?.f5ModelProvider)
+        : undefined;
       try {
-        const pages = await readCodexModelPages((params) =>
-          this.sendRequest(context!, "model/list", params),
+        const pages = await readCodexModelPages(
+          (params) => this.sendRequest(context!, "model/list", params),
+          savedModelProvider ? { modelProvider: savedModelProvider } : {},
         );
         const modelListResponse = { data: pages.entries };
         context.modelContextWindowCatalog = readCodexModelContextWindowCatalog(modelListResponse);
@@ -1572,11 +1577,42 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadOpenMethod === "thread/start"
           ? !!threadOpenParams.start.dynamicTools
           : asObject(input.resumeCursor)?.f5BrowserResume === true;
+      const nativeModelProvider = supportsCodexRelease6(cliVersion)
+        ? (asString(asObject(threadOpenResponse)?.modelProvider) ??
+          asString(asObject(asObject(threadOpenResponse)?.thread)?.modelProvider))
+        : undefined;
+      if (
+        nativeModelProvider &&
+        threadOpenMethod === "thread/resume" &&
+        nativeModelProvider !== savedModelProvider
+      ) {
+        // Older F5 cursors predate native-provider bindings. Refresh from the
+        // resumed thread's provider, never from a newly selected default.
+        context.modelContextWindowCatalog = new Map();
+        context.reportedModelCapabilities = new Map();
+        try {
+          const pages = await readCodexModelPages(
+            (params) => this.sendRequest(context!, "model/list", params),
+            { modelProvider: nativeModelProvider },
+          );
+          const response = { data: pages.entries };
+          context.modelContextWindowCatalog = readCodexModelContextWindowCatalog(response);
+          context.reportedModelCapabilities = readCodexReportedModelCapabilities(response);
+        } catch (error) {
+          await Effect.logWarning("Codex native-provider model catalog unavailable", {
+            threadId,
+            cause: error instanceof Error ? error.message : String(error),
+          }).pipe(this.runPromise);
+        }
+      }
 
       this.updateSession(context, {
         status: "ready",
         resumeCursor: codexBrowserResumeCursor(
-          asObject(input.resumeCursor),
+          {
+            ...asObject(input.resumeCursor),
+            ...(nativeModelProvider ? { f5ModelProvider: nativeModelProvider } : {}),
+          },
           providerThreadId,
           context.browserResumeRegistered,
         ),
@@ -1664,6 +1700,33 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   async sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
     const context = this.requireSession(input.threadId);
+    if (input.attachments?.some((attachment) => attachment.type === "localAudio")) {
+      const model = normalizeCodexModelSlug(input.model ?? context.session.model);
+      const capabilities = model ? context.reportedModelCapabilities?.get(model) : undefined;
+      try {
+        if (
+          !supportsCodexRelease6(context.cliVersion) ||
+          !capabilities?.inputModalities?.includes("audio")
+        )
+          throw new Error(
+            "Enable experimental audio attachments and select a Codex model that reports audio input support.",
+          );
+        const config = asObject(
+          asObject(await this.sendRequest(context, "config/read", { includeLayers: false }))
+            ?.config,
+        );
+        if (asObject(config?.desktop)?.f5_audio_attachments !== true)
+          throw new Error("Enable experimental audio attachments in Codex provider settings.");
+      } catch (cause) {
+        throw Object.assign(
+          new Error(
+            cause instanceof Error ? cause.message : "Audio attachment validation failed.",
+            { cause },
+          ),
+          { deliveryCertainty: "not_sent", deliveryRetryable: false },
+        );
+      }
+    }
 
     const providerThreadId = readResumeCursorThreadId(context.session.resumeCursor);
     if (!providerThreadId) throw new Error("Session is missing provider resume thread id.");
@@ -2783,7 +2846,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           throw new Error("thread/turns/list returned an invalid or incomplete turn.");
         }
         turnIds.add(turn.id);
-        turns.push({ id: TurnId.makeUnsafe(turn.id), items: turn.items });
+        turns.push({
+          id: TurnId.makeUnsafe(turn.id),
+          items: turn.items.map(presentCodexMessageItem),
+        });
       }
       if (page.nextCursor === null) break;
       if (cursors.has(page.nextCursor)) {
@@ -3433,8 +3499,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     server: string,
     uri: string,
     expectedIdentity?: string,
+    routing?: import("@t3tools/contracts").McpResourceRouting,
   ): Promise<unknown> {
     const context = this.requireSession(threadId);
+    if (routing?.target && !supportsCodexRelease6(context.cliVersion))
+      throw new Error("Account-targeted MCP resources require Codex 0.170.0 or later.");
     if (!this.isLiveContext(context) || !["ready", "running"].includes(context.session.status))
       throw new Error("Send a message to reconnect.");
     if (!server.trim() || server.length > 256 || !uri.trim() || uri.length > 4096)
@@ -3448,7 +3517,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const result = await this.sendRequest(
       context,
       "mcpServer/resource/read",
-      { threadId: this.nativeThreadId(context), server, uri },
+      buildCodexResourceReadParams(
+        this.nativeThreadId(context),
+        server,
+        uri,
+        supportsCodexRelease6(context.cliVersion) ? routing : undefined,
+      ),
       10000,
     );
     if (!this.isLiveContext(context) || generation !== this.getMcpObservationContext(threadId))
@@ -4158,7 +4232,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             }
           : notification.method === "mcpServer/startupStatus/updated"
             ? { ...asObject(notification.params), ...context.mcpEventIdentity }
-            : notification.params,
+            : notification.method === "item/completed" || notification.method === "item/started"
+              ? {
+                  ...asObject(notification.params),
+                  item: presentCodexMessageItem(asObject(notification.params)?.item),
+                }
+              : notification.params,
     });
 
     if (notification.method === "thread/started") {
@@ -4326,7 +4405,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const approvalRequest = this.approvalRequestForMethod(request.method);
     const requestKind = approvalRequest?.requestKind;
     const sessionAllowance =
-      requestKind === "command" || requestKind === "file-change"
+      (requestKind === "command" || requestKind === "file-change") &&
+      asObject(request.params)?.kind !== "humanCommand"
         ? this.sessionAllowance(context)
         : undefined;
     if (approvalRequest && requestKind && sessionAllowance?.has(requestKind)) {
@@ -4976,7 +5056,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const items = this.readArray(turn, "items") ?? [];
       return {
         id: turnId,
-        items,
+        items: items.map(presentCodexMessageItem),
       };
     });
 

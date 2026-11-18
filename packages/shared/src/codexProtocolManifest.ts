@@ -3,10 +3,10 @@
  * audited. Keep this list exhaustive: a new method or item must receive an
  * explicit disposition before it can be treated as understood.
  */
-export const CODEX_PROTOCOL_BASELINE_VERSION = "0.166.0" as const;
+export const CODEX_PROTOCOL_BASELINE_VERSION = "0.170.0" as const;
 
 /**
- * Oldest release whose full surface F5 audited before 0.166.0. Older CLIs are
+ * Oldest release whose full surface F5 audited before 0.170.0. Older CLIs are
  * still permitted (the runtime minimum lives in codexCliVersion.ts) but their
  * behavior is unverified. Runtime handlers for methods removed after this
  * release stay in place for those CLIs.
@@ -36,6 +36,7 @@ export const CODEX_NOTIFICATION_METHODS = [
   "thread/reverted",
   "skills/changed",
   "thread/name/updated",
+  "thread/section/changed",
   "thread/attachment/updated",
   "thread/goal/updated",
   "thread/goal/cleared",
@@ -130,6 +131,7 @@ export const CODEX_NOTIFICATION_DISPOSITIONS = {
   "thread/reverted": "state-only",
   "skills/changed": "state-only",
   "thread/name/updated": "state-only",
+  "thread/section/changed": "state-only",
   "thread/attachment/updated": "canonical",
   "thread/goal/updated": "canonical",
   "thread/goal/cleared": "canonical",
@@ -256,6 +258,12 @@ export const CODEX_SERVER_REQUEST_DISPOSITIONS = {
  * so a renamed or removed method is caught before users hit it.
  */
 export const CODEX_CLIENT_REQUEST_METHODS = [
+  ["modelProvider/list"],
+  ["modelProvider/config/write"],
+  ["account/securitySetup/read"],
+  ["account/gatewayOAuth/read"],
+  ["account/gatewayOAuth/login"],
+  ["account/gatewayOAuth/cancel"],
   ["thread/sample"],
   ["thread/sample/cancel"],
   ["thread/memory/read"],
@@ -310,8 +318,42 @@ export const CODEX_CLIENT_REQUEST_METHODS = [
  * 0.147) are skipped and reported by the client-request check instead.
  */
 export const CODEX_DECODED_RESPONSE_FIELDS = {
-  "thread/start": { schema: "v2/ThreadStartResponse.json", fields: ["thread.id"] },
-  "thread/resume": { schema: "v2/ThreadResumeResponse.json", fields: ["thread.id"] },
+  "modelProvider/list": {
+    schema: "v2/ModelProviderListResponse.json",
+    fields: [
+      "data[].id",
+      "data[].name",
+      "data[].canEdit",
+      "data[].baseUrl",
+      "data[].settings",
+      "defaultProviderId",
+      "canChangeDefault",
+    ],
+  },
+  "modelProvider/config/write": {
+    schema: "v2/ModelProviderConfigWriteResponse.json",
+    fields: ["provider"],
+  },
+  "account/securitySetup/read": {
+    schema: "v2/GetAccountSecuritySetupResponse.json",
+    fields: ["notice"],
+  },
+  "account/gatewayOAuth/read": {
+    schema: "v2/GatewayOAuthReadResponse.json",
+    fields: ["providerId", "providerName", "required", "supportsDeviceAuth", "status", "error"],
+  },
+  "account/gatewayOAuth/login": {
+    schema: "v2/GatewayOAuthLoginResponse.json",
+    fields: ["prompt"],
+  },
+  "thread/start": {
+    schema: "v2/ThreadStartResponse.json",
+    fields: ["thread.id", "modelProvider", "thread.modelProvider"],
+  },
+  "thread/resume": {
+    schema: "v2/ThreadResumeResponse.json",
+    fields: ["thread.id", "modelProvider", "thread.modelProvider"],
+  },
   "thread/fork": { schema: "v2/ThreadForkResponse.json", fields: ["thread.id"] },
   "thread/revert": { schema: "v2/ThreadRevertResponse.json", fields: ["thread.id"] },
   "thread/read": {
@@ -338,6 +380,7 @@ export const CODEX_DECODED_RESPONSE_FIELDS = {
       "data[].serviceTiers[].description",
       "data[].defaultServiceTier",
       "data[].upgrade",
+      "data[].inputModalities",
       "nextCursor",
     ],
   },

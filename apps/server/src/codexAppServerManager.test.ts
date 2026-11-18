@@ -260,6 +260,53 @@ function createPendingApprovalHarness(
   return { manager, context, requestId, requireSession, writeMessage, emitEvent };
 }
 
+describe("Codex audio delivery", () => {
+  it.each([
+    ["0.170.0", false, ["audio"]],
+    ["0.170.0", true, ["text", "image"]],
+    ["0.166.0", true, ["audio"]],
+  ])(
+    "rejects unsupported audio before turn dispatch (%s, enabled %s)",
+    async (version, enabled, modalities) => {
+      const { manager, context, sendRequest } = createSendTurnHarness();
+      Object.assign(context, {
+        cliVersion: version,
+        reportedModelCapabilities: new Map([["gpt-5.3-codex", { inputModalities: modalities }]]),
+      });
+      sendRequest.mockResolvedValue({ config: { desktop: { f5_audio_attachments: enabled } } });
+      await expect(
+        manager.sendTurn({
+          threadId: ThreadId.makeUnsafe("thread_1"),
+          attachments: [{ type: "localAudio", path: "/tmp/audio.wav" }],
+        }),
+      ).rejects.toThrow("audio attachments");
+      expect(sendRequest.mock.calls.some((call) => call[1] === "turn/start")).toBe(false);
+    },
+  );
+
+  it("sends an opted-in recording once as native localAudio", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    Object.assign(context, {
+      cliVersion: "0.170.0",
+      reportedModelCapabilities: new Map([["gpt-5.3-codex", { inputModalities: ["audio"] }]]),
+    });
+    sendRequest.mockImplementation(async (_context, method) =>
+      method === "config/read"
+        ? { config: { desktop: { f5_audio_attachments: true } } }
+        : { turn: { id: "turn_1" } },
+    );
+    await manager.sendTurn({
+      threadId: ThreadId.makeUnsafe("thread_1"),
+      attachments: [{ type: "localAudio", path: "/tmp/audio.wav" }],
+    });
+    const turns = sendRequest.mock.calls.filter((call) => call[1] === "turn/start");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.[2]).toMatchObject({
+      input: [{ type: "localAudio", path: "/tmp/audio.wav" }],
+    });
+  });
+});
+
 describe("CodexAppServerManager protocol diagnostics", () => {
   it.each(["Method not found", undefined])(
     "retains JSON-RPC codes even without a message: %s",
@@ -3580,6 +3627,45 @@ describe("Codex server requests", () => {
     expect(context.pendingApprovals.size).toBe(1);
   });
 
+  it("never lets a session allowance satisfy a human checkpoint", async () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext(manager);
+    const internals = manager as unknown as {
+      handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      requireSession: (threadId: string) => unknown;
+      writeMessage: (...args: unknown[]) => Promise<void>;
+    };
+    vi.spyOn(internals, "requireSession").mockReturnValue(context);
+    const writeMessage = vi.spyOn(internals, "writeMessage").mockResolvedValue();
+    const ask = (id: number, kind: string) =>
+      internals.handleServerRequest(context, {
+        id,
+        method: "item/commandExecution/requestApproval",
+        params: {
+          kind,
+          threadId: "thread_1",
+          turnId: "turn_1",
+          itemId: "item-" + id,
+          command: "ls",
+        },
+      });
+    ask(190, "command");
+    await manager.respondToRequest(
+      asThreadId("thread_1"),
+      [...context.pendingApprovals.keys()][0]!,
+      "acceptForSession",
+    );
+    writeMessage.mockClear();
+    ask(191, "humanCommand");
+    expect(writeMessage).not.toHaveBeenCalled();
+    const requestId = [...context.pendingApprovals.keys()][0]!;
+    await expect(
+      manager.respondToRequest(asThreadId("thread_1"), requestId, "acceptForSession"),
+    ).rejects.toThrow();
+    await manager.respondToRequest(asThreadId("thread_1"), requestId, "accept");
+    expect(writeMessage).toHaveBeenCalledWith(context, { id: 191, result: { decision: "accept" } });
+  });
+
   it("answers a session-allowed request only with a decision the request offers", () => {
     expect(codexSessionAllowedResponse("legacy-decision", undefined)).toEqual({
       decision: "approved_for_session",
@@ -5184,15 +5270,15 @@ it("reads raw child transcript pages with ownership and envelope checks", async 
   );
 });
 
-it.each(["0.144.3", "0.147.0", "0.160.1", "0.162.0"])(
-  "gates goal deferral on resume for %s",
+it.each(["0.144.3", "0.147.0", "0.160.1", "0.162.0", "0.170.0"])(
+  "never sends fork-only goal deferral fields on resume for %s",
   (cliVersion) => {
     const params = buildCodexThreadOpenRequestParams({
       resumeThreadId: "thread",
       runtimeMode: "full-access",
       cliVersion,
     });
-    expect("deferGoalContinuation" in params.resume!).toBe(cliVersion === "0.162.0");
+    expect("deferGoalContinuation" in params.resume!).toBe(false);
   },
 );
 

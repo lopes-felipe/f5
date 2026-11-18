@@ -4220,6 +4220,66 @@ describe("ProviderRuntimeIngestion", () => {
     },
   );
 
+  it.each(["hide", "block"])(
+    "replaces streamed Codex text when its final presentation is %s",
+    async (mode) => {
+      const harness = await createHarness({ settings: { enableAssistantStreaming: true } });
+      const threadId = asThreadId("thread-1");
+      const turnId = asTurnId("moderated-turn");
+      const now = new Date().toISOString();
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("moderated-start"),
+        provider: "codex",
+        createdAt: now,
+        threadId,
+        turnId,
+        payload: {},
+      });
+      await harness.drain();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.makeUnsafe("moderated-prefix"),
+          threadId,
+          turnId,
+          messageId: asMessageId("assistant:moderated-message"),
+          delta: "provisional answer",
+          createdAt: now,
+        }),
+      );
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId("moderated-finalize"),
+        provider: "codex",
+        createdAt: now,
+        threadId,
+        turnId,
+        itemId: asItemId("moderated-message"),
+        payload: {
+          itemType: "assistant_message",
+          status: "completed",
+          data: {
+            item: {
+              type: "agentMessage",
+              text: "provisional answer",
+              moderation: { moderated: true, display: { mode, version: 1 } },
+            },
+          },
+        },
+      });
+      await harness.drain();
+      const thread = await waitForThread(harness.engine, (thread) =>
+        thread.messages.some(
+          (message) => message.id === "assistant:moderated-message" && !message.streaming,
+        ),
+      );
+      expect(
+        thread.messages.find((message) => message.id === "assistant:moderated-message")?.text,
+      ).not.toContain("provisional answer");
+    },
+  );
+
   it("maps canonical content delta/item completed into finalized assistant messages", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

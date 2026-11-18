@@ -43,6 +43,7 @@ export function parseCodexModelList(entries: ReadonlyArray<unknown>): {
       slug,
       name: formatModelDisplayName("codex", slug) ?? nonEmpty(entry.displayName) ?? slug,
       capabilities: createReportedCodexModelCapabilities({
+        inputModalities: entry.inputModalities,
         model: slug,
         ...(Array.isArray(entry.supportedReasoningEfforts)
           ? { supportedReasoningEfforts: entry.supportedReasoningEfforts.filter(isRecord) }

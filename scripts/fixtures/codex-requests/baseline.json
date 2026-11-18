@@ -1,6 +1,6 @@
 {
-  "cliVersion": "0.166.0",
-  "sourceRevision": "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856",
+  "cliVersion": "0.170.0",
+  "sourceRevision": "29eb79e9866b3262a777fdf8195c1b9e63684c91",
   "experimental": true,
   "sha256": {
     "InitializeParams.ts": "bfc13b4fc9e37f629ee67b42d6e7f342ba38668ff528e738a911de5ebcfd545f",
@@ -10,11 +10,15 @@
     "v2/ThreadRevertParams.ts": "524ca156c2bcb47f2f0b62250299f4c01aefb1155d49c3ec82047991cd25f87f",
     "v2/TurnStartParams.ts": "64583b9d553a89984453ed0de44651728b57dd4fd51dfad0f6ceedccee823b9a",
     "v2/TurnSteerParams.ts": "602fc51f70643ab684d360f50d31284d26367bbe6af21517d2cb88cd4b6637fd",
-    "v2/ThreadSampleParams.ts": "823261bd657c1eddc7c2dcfb07c9b9815a527011809fc221f8a4bbedc99a5c07",
+    "v2/ThreadSampleParams.ts": "30d928a343d2ab83c2a130b9b738614baf03bd8ff9a3a230490539996adf9a7f",
     "v2/ThreadReadStateUpdateParams.ts": "5376152464eb7cc86663216524458794c9eeff9b54f97816ce6e4c098796fcd0",
     "v2/ThreadMemoryReadParams.ts": "1c7f1bf8978b084e421b418218703fee282999c44f4f4c1c7fdb946f344bcaef",
     "v2/ThreadGoalSetParams.ts": "0f6628f08fbe8b2adc0b4cab51d3e4728b41cccfeb2a4b005214efa71c6bc08e",
     "v2/ThreadGoalClearParams.ts": "46d060d7e6674db1aa4637c2084f35199e8e653a0a9a40e4fcdc56b1b324e079",
-    "v2/GetAccountTokenUsageParams.ts": "1a7a313f8a64fb038abfff5360e61f7e27019d708c37190840e1689633363892"
+    "v2/GetAccountTokenUsageParams.ts": "1a7a313f8a64fb038abfff5360e61f7e27019d708c37190840e1689633363892",
+    "v2/ModelProviderConfigWriteParams.ts": "94d55af58586702dc62f99ceecb041f791f17257665266232d013ea431e1853e",
+    "v2/GatewayOAuthReadParams.ts": "6aa27f1729e6bdfac6501699f465ca97983629beebb81e96f9cd2cf707989063",
+    "v2/GatewayOAuthLoginParams.ts": "8ae575e50785522aa4840d9d1d34a04f26cd3a9c03e88dbdf1cd6455409d3b6c",
+    "v2/McpResourceReadParams.ts": "d86c2e30e267a873a0967a542e37af6222b4d45d3c337a59ac4dc6f16406727d"
   }
 }

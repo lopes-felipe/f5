@@ -3,6 +3,11 @@
 Contributor reference for the Codex adapter: rewind compatibility, protocol baselines and
 Release 0–5 behavior. The user guide is [providers/codex.md](../providers/codex.md).
 
+## Release 6: codex-cli 0.170.0
+
+See [the 0.170.0 integration matrix](codex-0.170.0.md) for the current baseline,
+native configuration controls, compatibility decisions and certification limits.
+
 ## Release 5: codex-cli 0.166.0
 
 Baseline: `rust-v0.166.0`, source revision

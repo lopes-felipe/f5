@@ -360,6 +360,7 @@ export const RPC_METHOD_POLICY = {
   "server.getHealth": READ,
   "server.getProjectSettings": READ,
   "server.getProviderInventory": READ,
+  "server.codexConfiguration": long(false, 30_000),
   "server.saveProviderFeedback": long(false, 130_000),
   "server.migrateClientSetting": MUTATION,
   "server.probe": HEALTH,

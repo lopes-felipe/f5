@@ -1,4 +1,5 @@
 import { makeCodexCatalogCache } from "../codexCatalogCache";
+import { CodexConfigurationService } from "../../codex/CodexConfigurationService";
 import { saveCodexFeedback } from "../codexFeedback";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { createHash } from "node:crypto";
@@ -89,7 +90,16 @@ export function providerOptionsFromCodexSettings(settings: CodexSettings): Provi
     codex: {
       ...(settings.binaryPath.trim().length > 0 ? { binaryPath: settings.binaryPath } : {}),
       ...(settings.homePath.trim().length > 0 ? { homePath: settings.homePath } : {}),
-      ...(launchArgs.argv.length > 0 ? { launchArgs: [...launchArgs.argv] } : {}),
+      ...(launchArgs.argv.length > 0 || settings.modelProvider
+        ? {
+            launchArgs: [
+              ...launchArgs.argv,
+              ...(settings.modelProvider
+                ? ["-c", "model_provider=" + JSON.stringify(settings.modelProvider)]
+                : []),
+            ],
+          }
+        : {}),
     },
   };
 }
@@ -380,6 +390,9 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
           try: (signal) =>
             probeCodexInstanceCatalog(
               {
+                ...(effectiveConfig.modelProvider
+                  ? { modelProvider: effectiveConfig.modelProvider }
+                  : {}),
                 binaryPath: effectiveConfig.binaryPath,
                 homePath: effectiveConfig.homePath,
                 ...(defaultProviderOptions.codex?.launchArgs
@@ -475,9 +488,22 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         cwd: serverConfig.cwd,
         processEnvironment,
       };
+      const configurationService = new CodexConfigurationService(controlEnvironment);
+      yield* Effect.addFinalizer(() => Effect.sync(() => configurationService.close()));
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        codexConfiguration: (action) =>
+          Effect.tryPromise({
+            try: () => configurationService.execute(action),
+            catch: (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: cause instanceof Error ? cause.message : String(cause),
+                cause,
+              }),
+          }),
         resolveInstallTarget: makeInstanceInstallTargetResolver({
           driver: DRIVER_KIND,
           binaryPath: effectiveConfig.binaryPath,

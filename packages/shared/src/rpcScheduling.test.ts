@@ -153,6 +153,7 @@ describe("RPC method policy", () => {
         "mcp.startLogin",
         "mcp.startOAuthLogin",
         "prHub.analyzeAdvisories",
+        "server.codexConfiguration",
         "server.runProviderUpdate",
         "server.saveProviderFeedback",
         "usage.analyzeClaudeUsage",

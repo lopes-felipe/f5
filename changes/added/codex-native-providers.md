@@ -1,0 +1,2 @@
+- Configure Codex gateways, Bedrock and Vertex AI from provider settings, choose a native provider for new conversations, and sign in to gateways with browser or device authorization.
+- Display Codex account security setup notices without changing account security.

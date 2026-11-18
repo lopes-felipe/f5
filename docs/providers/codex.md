@@ -14,11 +14,39 @@ Codex history.
    with an empty **Shadow home path**.
 3. Pick a Codex model in the composer and start a thread.
 
-The bundled and audited version is **0.166.0**. An empty **Binary path** or `codex`
+The bundled and audited version is **0.170.0**. An empty **Binary path** or `codex`
 selects the bundled copy. Set another command or an absolute executable path to use
 your own version; **Use bundled** resets the override. Isolated profiles also allow
 custom Codex versions at or above **0.144.3**, with an advisory when the version
 differs from the audited baseline. Bundled Codex updates with F5.
+
+## Native model providers and experimental media
+
+Expand **Settings → Providers → Codex model providers** to list and edit native
+Codex gateways, AWS Bedrock profiles/regions, and Google Vertex AI project,
+location and credential-file paths. Credential paths refer to the server host.
+Managed settings remain read-only. Gateway authentication can use browser or
+device-code sign-in when the gateway supports it; environment variable inputs
+contain variable names, while secrets belong in the provider's sensitive environment.
+
+Choose a native provider for new conversations or change the Codex default.
+Existing native conversations retain their saved provider. These controls require
+Codex 0.170.0 or later and do not replace a custom executable.
+
+Audio attachments and animated image generation are experimental opt-ins, disabled
+by default. F5 stores the audio opt-in at `desktop.f5_audio_attachments` in native Codex
+configuration and sends recordings only to models reporting audio input support.
+Unsupported recordings fail before turn dispatch. Animation uses Codex's native
+`features.image_generation_animation` flag; generated GIF bytes are preserved.
+Voice calls, remote execution transports and environment-scoped MCP names are not
+enabled by these settings.
+
+Human-required command approvals always need a fresh one-time decision, even when
+other commands are allowed for the session. Codex's final hidden/blocked message
+presentation replaces provisional text in F5's conversation projections.
+
+See the [0.170.0 integration matrix](../reviews/codex-0.170.0.md) for release coverage
+and verification limits.
 
 ## Side questions and diagnostics
 

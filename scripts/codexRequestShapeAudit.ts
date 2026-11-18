@@ -19,7 +19,28 @@ export function codexRequestShapeProbe(
       'buildCodexReadMarkParams("thread", "revision")',
     ],
     ["thread/memory/read", "v2/ThreadMemoryReadParams", 'buildCodexMemoryReadParams("thread")'],
-    ["initialize", "InitializeParams", "buildCodexInitializeParams()"],
+    ["initialize", "InitializeParams", 'buildCodexInitializeParams("0.170.0")'],
+    ["modelProvider/list", "v2/ModelProviderListParams", "{}"],
+    [
+      "modelProvider/config/write",
+      "v2/ModelProviderConfigWriteParams",
+      'buildCodexProviderWriteParams({ type: "customGateway", name: "Gateway", baseUrl: "https://example.test" })',
+    ],
+    [
+      "account/gatewayOAuth/read",
+      "v2/GatewayOAuthReadParams",
+      'buildCodexGatewayReadParams("gateway")',
+    ],
+    [
+      "account/gatewayOAuth/login",
+      "v2/GatewayOAuthLoginParams",
+      'buildCodexGatewayLoginParams("gateway", true)',
+    ],
+    [
+      "mcpServer/resource/read",
+      "v2/McpResourceReadParams",
+      'buildCodexResourceReadParams("thread", "server", "ui://app", { originCallId: "call", target: { connectorId: "app", linkId: null } })',
+    ],
     [
       "thread/start",
       "v2/ThreadStartParams",
@@ -48,6 +69,9 @@ export function codexRequestShapeProbe(
     ],
   ] as const;
   const lines = [
+    `import { buildCodexGatewayLoginParams, buildCodexGatewayReadParams, buildCodexProviderWriteParams, buildCodexResourceReadParams } from ${JSON.stringify(builderPath.replace(/codexAppServerManager\.ts$/, "codex/codexConfigurationRequests.ts"))};`,
+    "type ExtraKeys<Actual, Expected> = Exclude<keyof Actual, keyof Expected>;",
+    "const exact = <Expected>() => <Actual extends Expected>(value: Actual & Record<ExtraKeys<Actual, Expected>, never>): Expected => value;",
     `import { buildCodexInitializeParams, buildCodexThreadOpenRequestParams, buildCodexThreadRevertParams, buildCodexThreadForkParams, buildCodexTurnStartParams, buildCodexTurnSteerParams } from ${JSON.stringify(builderPath)};`,
     'import { ThreadId } from "@t3tools/contracts";',
     `import { buildCodexSampleParams, buildCodexReadMarkParams, buildCodexMemoryReadParams, buildCodexUsageReadParams, buildCodexGoalPauseParams, buildCodexGoalClearParams } from ${JSON.stringify(builderPath)};`,
@@ -56,7 +80,7 @@ export function codexRequestShapeProbe(
     if (!available.has(method)) continue;
     const type = file.split("/").at(-1)!;
     lines.push(`import type { ${type} } from ${JSON.stringify(`${schemaPath}/${file}.ts`)};`);
-    lines.push(`const ${type}Check: ${type} = ${expression}; void ${type}Check;`);
+    lines.push(`const ${type}Check = exact<${type}>()(${expression}); void ${type}Check;`);
   }
   return lines.join("\n");
 }

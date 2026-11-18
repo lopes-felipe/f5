@@ -20,6 +20,7 @@ describe("Codex request shape audit", () => {
   it("accepts the positive request and rejects a renamed required field", () => {
     expect(fixtureErrors("positive.ts")).toEqual([]);
     expect(fixtureErrors("negative.fixture")).toContain(2741);
+    expect(fixtureErrors("extra-field.fixture")).toContain(2345);
   });
   it("checks real builders for every present request and omits absent fallbacks", () => {
     const probe = codexRequestShapeProbe(
