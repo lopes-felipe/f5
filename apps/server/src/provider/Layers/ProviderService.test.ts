@@ -2213,11 +2213,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
             event.threadId === threadId &&
             event.eventId.startsWith("provider:orphaned-session-exit:"),
         ),
-      ).pipe(
-        // it.effect runs on the test clock; bound the wait in real time.
-        Effect.raceFirst(sleep(300).pipe(Effect.as(Option.none()))),
-        Effect.forkChild,
-      );
+      ).pipe(Effect.forkChild);
     });
 
   it.effect("settles the persisted active turn when interrupting a stopped session", () =>
@@ -2267,6 +2263,60 @@ routing.layer("ProviderServiceLive routing", (it) => {
       yield* provider.interruptTurn({ threadId, turnId: asTurnId("turn-from-elsewhere") });
       yield* provider.stopSession({ threadId });
       assert.equal(Option.getOrUndefined(yield* Fiber.join(settlement))?.turnId, persisted);
+    }),
+  );
+
+  it.effect("lets a control-origin stop settle the captured turn of a stopped session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-stopped-control-stop");
+      const session = yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* provider.sendTurn({ threadId, input: "keep working", attachments: [] });
+      yield* provider.stopSession({ threadId });
+      const settlement = yield* nextOrphanedSettlement(threadId);
+      yield* sleep(20);
+      const origin = {
+        threadId,
+        provider: "codex",
+        instanceId: "codex",
+        generation: session.capabilities!.generation,
+        activeTurnId: turn.turnId,
+      };
+
+      yield* provider
+        .stopSession({ threadId })
+        .pipe(Effect.provideService(ProviderControlTarget, origin));
+      assert.equal(Option.getOrUndefined(yield* Fiber.join(settlement))?.turnId, turn.turnId);
+    }),
+  );
+
+  it.effect("still refuses a control-origin interrupt when a live session holds another turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-live-control-interrupt");
+      const session = yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({ threadId, input: "keep working", attachments: [] });
+      routing.codex.interruptTurn.mockClear();
+      const error = yield* provider.interruptTurn({ threadId }).pipe(
+        Effect.provideService(ProviderControlTarget, {
+          threadId,
+          provider: "codex",
+          instanceId: "codex",
+          generation: session.capabilities!.generation,
+          activeTurnId: "turn-no-longer-running",
+        }),
+        Effect.flip,
+      );
+      assert.equal(error._tag, "ProviderValidationError");
+      assert.equal(routing.codex.interruptTurn.mock.calls.length, 0);
     }),
   );
 

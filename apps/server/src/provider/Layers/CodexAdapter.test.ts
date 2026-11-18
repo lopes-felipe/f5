@@ -4350,8 +4350,14 @@ it.effect("still interrupts on genuine overload of distinct items", () => {
 it.effect("admits the next item's lifecycle while an oversized item/completed prepares", () => {
   const manager = new FakeCodexManager();
   return Effect.gen(function* () {
-    // Default limits: a command's item/completed carries its whole output.
-    const gate = yield* makeGatedAdapter(manager, ["big-completed"]);
+    // A command's item/completed carries its whole output. The byte ceiling is
+    // below that completion but above the later lifecycle events, and there are
+    // enough control slots, so only the small-control byte bypass admits them.
+    const gate = yield* makeGatedAdapter(manager, ["big-completed"], {
+      entries: 16,
+      bytes: 512 * 1024,
+      controls: 8,
+    });
     yield* Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
       const collected = yield* collectUntilCompleted(adapter, 1);
@@ -4381,9 +4387,12 @@ it.effect("admits the next item's lifecycle while an oversized item/completed pr
       yield* Deferred.succeed(gate.release, undefined);
       const events = yield* Fiber.join(collected);
       assert.equal(events.filter((event) => event.type === "runtime.error").length, 0);
-      assert.ok(
-        events.some((event) => event.type === "item.started" && event.itemId === "exec-next"),
+      const next = events.filter((event) => event.itemId === "exec-next");
+      assert.deepEqual(
+        next.map((event) => event.type),
+        ["item.started", "content.delta", "item.completed"],
       );
+      assert.equal(deltaText(next[1]!), "next output");
       assert.equal(events.at(-1)?.type, "turn.completed");
     }).pipe(Effect.provide(gate.layer));
   }).pipe(Effect.scoped);
