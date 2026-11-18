@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./codexMessagePresentation": {
+      "types": "./src/codexMessagePresentation.ts",
+      "import": "./src/codexMessagePresentation.ts"
+    },
     "./savedAttachmentPath": {
       "types": "./src/savedAttachmentPath.ts",
       "import": "./src/savedAttachmentPath.ts"

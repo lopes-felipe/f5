@@ -42,6 +42,7 @@ import { decodeDriverConfigField, readDriverConfigField } from "./providerConfig
 import type { DriverFieldDef, DriverOption } from "./providerDriverMeta";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInventorySection } from "./ProviderInventorySection";
+import { CodexConfigurationSection } from "./CodexConfigurationSection";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import {
@@ -1066,6 +1067,27 @@ export function ProviderInstanceCard({
                   Manage in Accounts
                 </Button>
               </div>
+            )}
+            {driverKind === "codex" && (
+              <CodexConfigurationSection
+                instanceId={instanceId}
+                accountIdentity={(authEmail ?? "") + ":" + liveProvider?.auth.status}
+                key={instanceId + ":" + (authEmail ?? "") + ":" + liveProvider?.auth.status}
+                selectedProvider={
+                  instance.config &&
+                  typeof instance.config === "object" &&
+                  "modelProvider" in instance.config &&
+                  typeof instance.config.modelProvider === "string"
+                    ? instance.config.modelProvider
+                    : undefined
+                }
+                onSelectProvider={(id) => {
+                  onUpdate({
+                    ...instance,
+                    config: nextConfigBlobWithString(instance.config, "modelProvider", id),
+                  });
+                }}
+              />
             )}
             {providerRuntimeCapabilities(String(instance.driver)).instanceInventory && (
               <ProviderInventorySection instanceId={instanceId} />

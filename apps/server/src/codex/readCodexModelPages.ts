@@ -8,7 +8,7 @@ export interface CodexModelPages {
 /** Keep legacy includeHidden negotiation and model-list completeness unchanged. */
 export async function readCodexModelPages(
   request: (params: Record<string, unknown>) => Promise<unknown>,
-  { maxPages = 10 }: { maxPages?: number } = {},
+  { maxPages = 10, modelProvider }: { maxPages?: number; modelProvider?: string } = {},
 ): Promise<CodexModelPages> {
   let compatible = true;
   const result = await readBoundedPages({
@@ -17,12 +17,14 @@ export async function readCodexModelPages(
     request: async (cursor) => {
       try {
         return await request({
+          ...(modelProvider ? { modelProvider } : {}),
           ...(compatible ? { includeHidden: true } : {}),
           ...(cursor ? { cursor } : {}),
         });
       } catch (error) {
         const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-        if (cursor || !compatible || (code !== -32601 && code !== -32602)) throw error;
+        if (modelProvider || cursor || !compatible || (code !== -32601 && code !== -32602))
+          throw error;
         compatible = false;
         return request({});
       }

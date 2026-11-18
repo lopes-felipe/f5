@@ -27,6 +27,7 @@ import { ServerConfig } from "../../config.ts";
 import { prependCodexCliTelemetryDisabledConfig } from "../../provider/codexCliConfig.ts";
 import {
   CODEX_PLUGINS_DISABLED_CONFIG_ARGS,
+  codexModelProviderConfigArgs,
   resolveCodexLaunchArgv,
 } from "../../provider/codexLaunchArgs.ts";
 import { buildProviderChildProcessEnv } from "../../providerProcessEnv.ts";
@@ -199,7 +200,7 @@ function sanitizePrTitle(raw: string): string {
 }
 
 export const makeCodexTextGeneration = (
-  codexSettings?: Pick<CodexSettings, "binaryPath" | "homePath" | "launchArgs">,
+  codexSettings?: Pick<CodexSettings, "binaryPath" | "homePath" | "launchArgs" | "modelProvider">,
   processEnvironment: NodeJS.ProcessEnv = process.env,
   resolveCapabilities?: (model: string) => Effect.Effect<ModelCapabilities | null | undefined>,
 ) =>
@@ -432,6 +433,7 @@ export const makeCodexTextGeneration = (
               // the process ends before it finishes.
               ...CODEX_PLUGINS_DISABLED_CONFIG_ARGS,
               ...launchArgs.argv,
+              ...codexModelProviderConfigArgs(codexSettings?.modelProvider),
               ...(mcpServersOff ? ["--config", mcpServersOff] : []),
               "exec",
               "--ephemeral",

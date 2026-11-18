@@ -194,6 +194,7 @@ export const ModelCapabilitiesSource = Schema.Literals(["built-in", "reported"])
 export type ModelCapabilitiesSource = typeof ModelCapabilitiesSource.Type;
 
 export const ModelCapabilities = Schema.Struct({
+  inputModalities: Schema.optional(Schema.Array(Schema.Literals(["text", "image", "audio"]))),
   optionDescriptors: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
   /**
    * `reported` when the executable (Claude SDK initialization, Codex

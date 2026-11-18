@@ -1071,7 +1071,9 @@ interface OrchestrationRuntimeServices {
   readonly defaultBranchAutoPull: DefaultBranchAutoPullShape;
 }
 
-export const createServer = Effect.fn(function* (): Effect.fn.Return<
+export const createServer = Effect.fn(function* (
+  options: { readonly orchestrationStartupGate?: Effect.Effect<void> } = {},
+): Effect.fn.Return<
   http.Server,
   ServerLifecycleError,
   | Scope.Scope
@@ -2968,6 +2970,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const startOrchestrationRuntime = withStartupPhaseTiming(
     "orchestration.runtime.start",
     Effect.gen(function* () {
+      // An explicit gate keeps startup/readiness fixtures independent of module caches.
+      yield* options.orchestrationStartupGate ?? Effect.void;
       const orchestrationRuntimeServices = yield* Layer.buildWithScope(
         orchestrationRuntimeLayer,
         subscriptionsScope,
@@ -6537,6 +6541,23 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return { ...result, providers: yield* providerAdvisoryProjection.getProviders };
       }
 
+      case WS_METHODS.serverCodexConfiguration: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance?.codexConfiguration)
+          return yield* new RouteRequestError({ message: "Select a configured Codex provider." });
+        const result = yield* instance.codexConfiguration(body.action).pipe(
+          Effect.ensuring(
+            body.action.type === "write" || body.action.type === "setDefault"
+              ? (instance.invalidateModelCatalog ?? Effect.void)
+              : Effect.void,
+          ),
+          Effect.mapError(
+            (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+          ),
+        );
+        return result;
+      }
       case WS_METHODS.serverSaveProviderFeedback: {
         const body = stripRequestTag(request.body);
         const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);

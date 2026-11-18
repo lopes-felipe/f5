@@ -172,6 +172,43 @@ function makeEvent<TType extends OrchestrationEvent["type"]>(
 }
 
 describe("applyDomainEvent", () => {
+  it("clears moderated text and reasoning in both live state and batch estimates", () => {
+    const at = "2026-04-01T09:05:00.000Z";
+    const state = makeState({
+      threads: [
+        makeThread({
+          messages: [
+            {
+              id: MessageId.makeUnsafe("moderated"),
+              role: "assistant",
+              text: "provisional",
+              reasoningText: "suppressed reasoning",
+              createdAt: at,
+              streaming: true,
+            },
+          ],
+        }),
+      ],
+    });
+    const event = makeEvent("thread.message-sent", {
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      messageId: MessageId.makeUnsafe("moderated"),
+      role: "assistant",
+      text: "",
+      reasoningText: "",
+      replace: true,
+      turnId: null,
+      streaming: false,
+      createdAt: at,
+      updatedAt: at,
+    });
+    const next = applyDomainEvent(state, event);
+    expect(next.threads[0]?.messages[0]).toMatchObject({
+      text: "",
+      reasoningText: "",
+      streaming: false,
+    });
+  });
   it("applies revisioned pin ordering and snooze lifecycle events", () => {
     const threadOne = makeThread({ id: ThreadId.makeUnsafe("thread-1") });
     const threadTwo = makeThread({ id: ThreadId.makeUnsafe("thread-2") });

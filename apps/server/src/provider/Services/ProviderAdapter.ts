@@ -135,6 +135,8 @@ export interface ProviderMcpApps<TError> {
     readonly approved: boolean;
   }) => Effect.Effect<unknown, TError>;
   readonly readResource: (input: {
+    readonly originCallId?: string;
+    readonly target?: import("@t3tools/contracts").McpResourceRouting["target"];
     readonly threadId: ThreadId;
     readonly server: string;
     readonly uri: string;

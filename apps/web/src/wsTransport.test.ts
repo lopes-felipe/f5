@@ -1037,6 +1037,22 @@ describe("admission-aware scheduling", () => {
     transport.dispose();
     await Promise.all(blockers);
   });
+  it("bounds queued Codex configuration reads without adding an execution timeout", async () => {
+    const { transport, socket } = connectSynchronized();
+    const blockers = Array.from({ length: 8 }, () =>
+      transport.request("projects.writeFile", {}, { timeoutMs: null }).catch(() => undefined),
+    );
+    const read = transport.request("server.codexConfiguration", {
+      instanceId: "codex",
+      action: { type: "read" },
+    });
+    const rejected = expect(read).rejects.toMatchObject({ code: "QueueExpired" });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await rejected;
+    expect(socket.sent).toHaveLength(8);
+    transport.dispose();
+    await Promise.all(blockers);
+  });
 
   it("never sends a queued mutation that expired before its timer ran", async () => {
     const { transport, socket } = connectSynchronized();

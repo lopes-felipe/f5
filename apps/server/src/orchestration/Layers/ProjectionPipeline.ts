@@ -306,14 +306,16 @@ function resolveProjectedMessageState(
   readonly skillCall?: ProjectionThreadMessage["skillCall"] | undefined;
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
 } {
-  const text =
-    existingMessage && payload.streaming
+  const text = payload.replace
+    ? payload.text
+    : existingMessage && payload.streaming
       ? `${existingMessage.text}${payload.text}`
       : existingMessage && payload.text.length === 0
         ? existingMessage.text
         : payload.text;
-  const reasoningText =
-    payload.reasoningText !== undefined
+  const reasoningText = payload.replace
+    ? payload.reasoningText
+    : payload.reasoningText !== undefined
       ? existingMessage && payload.streaming
         ? `${existingMessage.reasoningText ?? ""}${payload.reasoningText}`
         : existingMessage && payload.reasoningText.length === 0

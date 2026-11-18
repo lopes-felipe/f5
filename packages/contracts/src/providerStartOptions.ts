@@ -4,6 +4,7 @@ import { FilesystemPath, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } fr
 import { McpProjectServersConfig } from "./mcpServer";
 
 const CodexProviderStartOptions = Schema.Struct({
+  modelProvider: Schema.optional(TrimmedNonEmptyString),
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(FilesystemPath.check(Schema.isPattern(/\S/))),
   launchArgs: Schema.optional(Schema.Array(TrimmedNonEmptyString)),

@@ -1,0 +1,5 @@
+- Preserve ordinary audio-file attachments when native audio is disabled or unsupported, and validate the exact model sent with a recording.
+- Replace moderated text and reasoning in current and earlier turns, including one-off summaries and persisted conversation views.
+- Keep gateway sign-in polling and cancellation available while inspecting other providers, and isolate successive OAuth attempts.
+- Keep native provider settings recoverable after an unavailable provider selection and avoid duplicate gateway creation after refresh errors.
+- Reject invalid MCP account targets and refresh provider catalogs after configuration changes.

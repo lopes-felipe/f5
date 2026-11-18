@@ -116,10 +116,10 @@ describe("bundled provider runtimes", () => {
   });
   afterEach(() => useProfileState.setState({ active: null }));
   it("shows the bundled Codex version", async () => {
-    const screen = await renderCard({ liveProvider: makeLiveProvider({ version: "0.166.0" }) });
+    const screen = await renderCard({ liveProvider: makeLiveProvider({ version: "0.170.0" }) });
     try {
       await expect
-        .element(page.getByText("Bundled · Codex 0.166.0", { exact: true }))
+        .element(page.getByText("Bundled · Codex 0.170.0", { exact: true }))
         .toBeVisible();
     } finally {
       await screen.unmount();

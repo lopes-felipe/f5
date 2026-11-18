@@ -4,6 +4,11 @@ import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
 import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
 import { probeCodexCliVersion } from "./codex/cliVersionProbe.ts";
+import {
+  codexMessagePresentation,
+  presentCodexMessageItem,
+} from "@t3tools/shared/codexMessagePresentation";
+import { buildCodexResourceReadParams } from "./codex/codexConfigurationRequests";
 import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
 import { Utf8Lines } from "@t3tools/shared/utf8Lines";
 import { CODEX_MAX_INCOMING_MESSAGE_BYTES, ProviderLineReader } from "./codex/lineReader.ts";
@@ -25,6 +30,7 @@ import type { CodexControlMcpServerStatus } from "./codex/CodexControlClient.ts"
 import {
   supportsCodexNativeOperations,
   supportsCodexRelease5,
+  supportsCodexRelease6,
 } from "@t3tools/shared/providerRuntimeCapabilities";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import type {
@@ -287,6 +293,8 @@ interface CodexSessionContext {
    * tier only then, so a tier from the user's `config.toml` is left alone.
    */
   serviceTierApplied?: boolean;
+  /** Resolve a startup selection only after the opened thread's catalog is known. */
+  deferredServiceTier?: string | undefined;
   childThreadIds?: Set<string>;
   forkNotifications?: JsonRpcNotification[] | undefined;
   forkNotificationOverflow?: boolean;
@@ -360,14 +368,18 @@ interface CodexAccountSnapshot {
 }
 
 export interface CodexAppServerSendTurnInput {
+  /** Ordinary files remain in attachment context; native audio is an optional extra. */
+  audioFiles?: ReadonlyArray<string>;
   readonly expectedTurnId?: TurnId;
   readonly threadId: ThreadId;
   readonly input?: string;
   readonly attachments?: ReadonlyArray<
-    { type: "image"; url: string } | { type: "localImage"; path: string }
+    | { type: "image"; url: string }
+    | { type: "localImage"; path: string }
+    | { type: "localAudio"; path: string }
   >;
   readonly model?: string;
-  readonly serviceTier?: "fast" | "default" | null;
+  readonly serviceTier?: string | null;
   readonly effort?: string;
   readonly interactionMode?: ProviderInteractionMode;
 }
@@ -767,9 +779,6 @@ export function buildCodexThreadOpenRequestParams(input: {
             ...overrides,
             threadId: input.resumeThreadId,
             excludeTurns: true,
-            ...(supportsCodexNativeOperations(input.cliVersion)
-              ? { deferGoalContinuation: true }
-              : {}),
           },
         }
       : {}),
@@ -896,6 +905,7 @@ export function buildCodexTurnStartParams(
     | { type: "text"; text: string; text_elements: [] }
     | { type: "image"; url: string }
     | { type: "localImage"; path: string }
+    | { type: "localAudio"; path: string }
   > = [];
   if (input.input) {
     turnInput.push({
@@ -905,7 +915,7 @@ export function buildCodexTurnStartParams(
     });
   }
   for (const attachment of input.attachments ?? []) {
-    if (attachment.type === "localImage") {
+    if (attachment.type === "localImage" || attachment.type === "localAudio") {
       turnInput.push(attachment);
     }
     if (attachment.type === "image") {
@@ -925,6 +935,7 @@ export function buildCodexTurnStartParams(
       | { type: "text"; text: string; text_elements: [] }
       | { type: "image"; url: string }
       | { type: "localImage"; path: string }
+      | { type: "localAudio"; path: string }
     >;
     model?: string;
     serviceTier?: string | null;
@@ -999,7 +1010,7 @@ export function buildCodexTurnSteerParams(
   return { threadId, input, expectedTurnId };
 }
 
-export function buildCodexInitializeParams() {
+export function buildCodexInitializeParams(cliVersion?: string | null) {
   return {
     clientInfo: {
       name: "t3code_desktop",
@@ -1008,6 +1019,12 @@ export function buildCodexInitializeParams() {
     },
     capabilities: {
       experimentalApi: true,
+      ...(supportsCodexRelease6(cliVersion)
+        ? {
+            requiredHumanApproval: true,
+            explicitGatewayOauth: true,
+          }
+        : {}),
       requestAttestation: false,
       // Legacy opt-in, still accepted by 0.160.1. Its replacement is declaring
       // `openai/form` in `capabilities.extensions`. Standard MCP `form`/`url`
@@ -1165,6 +1182,7 @@ export function codexOneOffPoolKey(
     resolveCodexCommand(options?.binaryPath),
     resolveCodexHome({ homePath: options?.homePath }) ?? "",
     options?.launchArgs ?? [],
+    options?.modelProvider ?? "",
   ]);
 }
 
@@ -1336,6 +1354,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadId,
       );
       const appServerCommand = buildCodexAppServerCommand({
+        ...(codexOptions.modelProvider ? { modelProvider: codexOptions.modelProvider } : {}),
         ...(codexOptions.launchArgs ? { providerLaunchArgs: codexOptions.launchArgs } : {}),
         environment: childEnvironment,
         mcpServers: input.mcpServers ?? {},
@@ -1428,12 +1447,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       this.emitLifecycleEvent(context, "session/connecting", "Starting codex app-server");
 
-      await this.sendRequest(context, "initialize", buildCodexInitializeParams());
+      await this.sendRequest(context, "initialize", buildCodexInitializeParams(cliVersion));
 
       await this.writeMessage(context, { method: "initialized" });
+      const savedModelProvider = supportsCodexRelease6(cliVersion)
+        ? asString(asObject(input.resumeCursor)?.f5ModelProvider)
+        : undefined;
       try {
-        const pages = await readCodexModelPages((params) =>
-          this.sendRequest(context!, "model/list", params),
+        const pages = await readCodexModelPages(
+          (params) => this.sendRequest(context!, "model/list", params),
+          savedModelProvider ? { modelProvider: savedModelProvider } : {},
         );
         const modelListResponse = { data: pages.entries };
         context.modelContextWindowCatalog = readCodexModelContextWindowCatalog(modelListResponse);
@@ -1465,10 +1488,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
 
       const normalizedModel = resolveCodexModelForAccount(fallbackModel, context.account);
-      const launchServiceTier = resolveCodexServiceTier(
-        input.serviceTier,
-        context.reportedModelCapabilities?.get(normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
-      );
+      const launchServiceTier = supportsCodexRelease6(cliVersion)
+        ? undefined
+        : resolveCodexServiceTier(
+            input.serviceTier,
+            context.reportedModelCapabilities?.get(
+              normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex,
+            ),
+          );
       context.workflowExecutionProfile = input.workflowExecutionProfile;
       const threadOpenParams = buildCodexThreadOpenRequestParams({
         cliVersion,
@@ -1572,13 +1599,45 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadOpenMethod === "thread/start"
           ? !!threadOpenParams.start.dynamicTools
           : asObject(input.resumeCursor)?.f5BrowserResume === true;
+      const nativeModelProvider = supportsCodexRelease6(cliVersion)
+        ? (asString(asObject(threadOpenResponse)?.modelProvider) ??
+          asString(asObject(asObject(threadOpenResponse)?.thread)?.modelProvider))
+        : undefined;
+      if (nativeModelProvider && nativeModelProvider !== savedModelProvider) {
+        // Older F5 cursors predate native-provider bindings. Refresh from the
+        // resumed thread's provider, never from a newly selected default.
+        context.modelContextWindowCatalog = new Map();
+        context.reportedModelCapabilities = new Map(
+          [...(input.effectiveModelCapabilities ?? [])].filter(
+            ([, caps]) => caps.source === "reported",
+          ),
+        );
+        try {
+          const pages = await readCodexModelPages(
+            (params) => this.sendRequest(context!, "model/list", params),
+            { modelProvider: nativeModelProvider },
+          );
+          const response = { data: pages.entries };
+          context.modelContextWindowCatalog = readCodexModelContextWindowCatalog(response);
+          context.reportedModelCapabilities = readCodexReportedModelCapabilities(response);
+        } catch (error) {
+          await Effect.logWarning("Codex native-provider model catalog unavailable", {
+            threadId,
+            cause: error instanceof Error ? error.message : String(error),
+          }).pipe(this.runPromise);
+        }
+      }
 
       this.updateSession(context, {
         status: "ready",
         resumeCursor: codexBrowserResumeCursor(
-          threadOpenMethod === "thread/start" && input.priorWorkSummary
-            ? { ...asObject(input.resumeCursor), f5ResumedContextPending: true }
-            : asObject(input.resumeCursor),
+          {
+            ...asObject(input.resumeCursor),
+            ...(nativeModelProvider ? { f5ModelProvider: nativeModelProvider } : {}),
+            ...(threadOpenMethod === "thread/start" && input.priorWorkSummary
+              ? { f5ResumedContextPending: true }
+              : {}),
+          },
           providerThreadId,
           context.browserResumeRegistered,
         ),
@@ -1615,12 +1674,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           : [],
       );
       context.requestedRuntime = { model: input.model, serviceTier: input.serviceTier };
+      context.deferredServiceTier = supportsCodexRelease6(cliVersion)
+        ? input.serviceTier
+        : undefined;
       context.serviceTierApplied = typeof launchServiceTier === "string";
+      const nativeTier = asObject(threadOpenResponse)?.serviceTier;
+      const openedServiceTier =
+        supportsCodexRelease6(cliVersion) && (nativeTier === null || typeof nativeTier === "string")
+          ? nativeTier
+          : launchServiceTier;
       this.emitSessionConfigured(context, {
         ...(normalizedModel ? { model: normalizedModel } : {}),
         ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
         ...(resolvedCwd ? { cwd: resolvedCwd } : {}),
-        ...(launchServiceTier !== undefined ? { serviceTier: launchServiceTier } : {}),
+        ...(openedServiceTier !== undefined ? { serviceTier: openedServiceTier } : {}),
         [INSTRUCTION_PROFILE_CONFIG_KEY]: buildInstructionProfile({ provider: "codex" }),
       });
       this.emitLifecycleEvent(
@@ -1666,11 +1733,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   async sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
     const context = this.requireSession(input.threadId);
-
+    if (input.serviceTier === undefined && context.deferredServiceTier !== undefined)
+      input = { ...input, serviceTier: context.deferredServiceTier };
     const providerThreadId = readResumeCursorThreadId(context.session.resumeCursor);
     if (!providerThreadId) throw new Error("Session is missing provider resume thread id.");
-    // `null` only undoes a tier F5 applied; otherwise the thread keeps
-    // whatever tier the user's config chose.
     const { serviceTier: _requestedTier, ...inputWithoutTier } = input;
     const turnInput =
       input.serviceTier === null && !context.serviceTierApplied ? inputWithoutTier : input;
@@ -1682,6 +1748,52 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       resumedContextSent: context.resumedContextSent,
       reportedModelCapabilities: context.reportedModelCapabilities,
     });
+    if (input.audioFiles?.length && supportsCodexRelease6(context.cliVersion)) {
+      const model = normalizeCodexModelSlug(turnStartParams.model);
+      if (
+        model &&
+        context.reportedModelCapabilities?.get(model)?.inputModalities?.includes("audio")
+      ) {
+        const config = asObject(
+          asObject(
+            await this.sendRequest(context, "config/read", { includeLayers: false }).catch(
+              () => undefined,
+            ),
+          )?.config,
+        );
+        if (asObject(config?.desktop)?.f5_audio_attachments === true) {
+          for (const path of new Set(input.audioFiles))
+            turnStartParams.input.push({ type: "localAudio", path });
+        }
+      }
+    }
+    if (input.attachments?.some((attachment) => attachment.type === "localAudio")) {
+      const model = normalizeCodexModelSlug(turnStartParams.model ?? context.session.model);
+      const capabilities = model ? context.reportedModelCapabilities?.get(model) : undefined;
+      try {
+        if (
+          !supportsCodexRelease6(context.cliVersion) ||
+          !capabilities?.inputModalities?.includes("audio")
+        )
+          throw new Error(
+            "Enable experimental audio attachments and select a Codex model that reports audio input support.",
+          );
+        const config = asObject(
+          asObject(await this.sendRequest(context, "config/read", { includeLayers: false }))
+            ?.config,
+        );
+        if (asObject(config?.desktop)?.f5_audio_attachments !== true)
+          throw new Error("Enable experimental audio attachments in Codex provider settings.");
+      } catch (cause) {
+        throw Object.assign(
+          new Error(
+            cause instanceof Error ? cause.message : "Audio attachment validation failed.",
+            { cause },
+          ),
+          { deliveryCertainty: "not_sent", deliveryRetryable: false },
+        );
+      }
+    }
 
     if (input.expectedTurnId !== undefined) {
       if (context.session.activeTurnId !== input.expectedTurnId) {
@@ -1704,6 +1816,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return { threadId: input.threadId, turnId: input.expectedTurnId };
     }
     const response = await this.sendRequest(context, "turn/start", turnStartParams);
+    context.deferredServiceTier = undefined;
     context.lastAdditionalContext = turnStartParams.additionalContext;
 
     const turn = this.readObject(this.readObject(response), "turn");
@@ -1793,7 +1906,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       worker?.threadId ?? ThreadId.makeUnsafe(`${CODEX_ONE_OFF_THREAD_PREFIX}${randomUUID()}`);
     let succeeded = false;
     const timeoutMs = input.timeoutMs ?? CODEX_ONE_OFF_PROMPT_TIMEOUT_MS;
-    let capturedText = "";
+    // One-off output is the ordered contribution of every assistant item.
+    const capturedItems = new Map<string, string>();
+    const replacedItems = new Set<string>();
     const followUpPromises = new Set<Promise<unknown>>();
 
     let resolveCompletion: (() => void) | undefined;
@@ -1825,16 +1940,23 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
 
       if (event.method === "item/agentMessage/delta" && typeof event.textDelta === "string") {
-        capturedText += event.textDelta;
+        const itemId = event.itemId ?? asString(asObject(event.payload)?.itemId) ?? "anonymous";
+        if (!replacedItems.has(itemId))
+          capturedItems.set(itemId, (capturedItems.get(itemId) ?? "") + event.textDelta);
         return;
       }
 
-      if (event.method === "item/completed" && capturedText.length === 0) {
+      if (event.method === "item/completed") {
         const payload = asObject(event.payload);
         const item = asObject(payload?.item) ?? payload;
         const completedText = asString(item?.text);
-        if (completedText) {
-          capturedText = completedText;
+        const itemId = event.itemId ?? asString(item?.id) ?? "anonymous";
+        const presentation = codexMessagePresentation(item);
+        if (presentation.replace) {
+          capturedItems.set(itemId, presentation.text ?? "");
+          replacedItems.add(itemId);
+        } else if (completedText && !capturedItems.get(itemId)) {
+          capturedItems.set(itemId, completedText);
         }
       }
 
@@ -1911,7 +2033,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
       });
       await completion;
-      const text = capturedText.trim();
+      const text = [...capturedItems.values()].join("").trim();
       if (text.length === 0) {
         throw new Error("Codex one-off prompt completed without returning any assistant text.");
       }
@@ -2183,7 +2305,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           if (size > 64 * 1024 || bytes + size > 256 * 1024)
             return { omitted: true, reason: "Native output exceeds the page limit." };
           bytes += size;
-          return entry;
+          const value = asObject(entry);
+          return value?.item
+            ? { ...value, item: presentCodexMessageItem(value.item) }
+            : presentCodexMessageItem(entry);
         })
       : [];
     return {
@@ -2785,7 +2910,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           throw new Error("thread/turns/list returned an invalid or incomplete turn.");
         }
         turnIds.add(turn.id);
-        turns.push({ id: TurnId.makeUnsafe(turn.id), items: turn.items });
+        turns.push({
+          id: TurnId.makeUnsafe(turn.id),
+          items: turn.items.map(presentCodexMessageItem),
+        });
       }
       if (page.nextCursor === null) break;
       if (cursors.has(page.nextCursor)) {
@@ -3435,8 +3563,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     server: string,
     uri: string,
     expectedIdentity?: string,
+    routing?: import("@t3tools/contracts").McpResourceRouting,
   ): Promise<unknown> {
     const context = this.requireSession(threadId);
+    if (routing?.target && !supportsCodexRelease6(context.cliVersion))
+      throw new Error("Account-targeted MCP resources require Codex 0.170.0 or later.");
     if (!this.isLiveContext(context) || !["ready", "running"].includes(context.session.status))
       throw new Error("Send a message to reconnect.");
     if (!server.trim() || server.length > 256 || !uri.trim() || uri.length > 4096)
@@ -3450,7 +3581,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const result = await this.sendRequest(
       context,
       "mcpServer/resource/read",
-      { threadId: this.nativeThreadId(context), server, uri },
+      buildCodexResourceReadParams(
+        this.nativeThreadId(context),
+        server,
+        uri,
+        supportsCodexRelease6(context.cliVersion) ? routing : undefined,
+      ),
       10000,
     );
     if (!this.isLiveContext(context) || generation !== this.getMcpObservationContext(threadId))
@@ -4160,7 +4296,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             }
           : notification.method === "mcpServer/startupStatus/updated"
             ? { ...asObject(notification.params), ...context.mcpEventIdentity }
-            : notification.params,
+            : notification.method === "item/completed" || notification.method === "item/started"
+              ? {
+                  ...asObject(notification.params),
+                  item: presentCodexMessageItem(asObject(notification.params)?.item),
+                }
+              : notification.params,
     });
 
     if (notification.method === "thread/started") {
@@ -4328,7 +4469,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const approvalRequest = this.approvalRequestForMethod(request.method);
     const requestKind = approvalRequest?.requestKind;
     const sessionAllowance =
-      requestKind === "command" || requestKind === "file-change"
+      (requestKind === "command" || requestKind === "file-change") &&
+      asObject(request.params)?.kind !== "humanCommand"
         ? this.sessionAllowance(context)
         : undefined;
     if (approvalRequest && requestKind && sessionAllowance?.has(requestKind)) {
@@ -4978,7 +5120,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const items = this.readArray(turn, "items") ?? [];
       return {
         id: turnId,
-        items,
+        items: items.map(presentCodexMessageItem),
       };
     });
 
@@ -5106,6 +5248,7 @@ function normalizeProviderThreadId(value: string | undefined): string | undefine
 }
 
 function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
+  readonly modelProvider?: string;
   readonly binaryPath?: string;
   readonly homePath?: string;
   readonly launchArgs?: ReadonlyArray<string>;
@@ -5115,6 +5258,7 @@ function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
     return {};
   }
   return {
+    ...(options.modelProvider ? { modelProvider: options.modelProvider } : {}),
     ...(options.binaryPath ? { binaryPath: options.binaryPath } : {}),
     ...(options.homePath ? { homePath: options.homePath } : {}),
     ...(options.launchArgs ? { launchArgs: options.launchArgs } : {}),

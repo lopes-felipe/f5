@@ -1,0 +1,1 @@
+- Require a fresh one-time decision for Codex human-required commands, regardless of session allowances.

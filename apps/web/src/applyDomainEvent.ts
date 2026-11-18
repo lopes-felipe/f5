@@ -239,14 +239,16 @@ function upsertMessage(
     payload.attachments,
     existing?.attachments,
   );
-  const nextText =
-    existing && payload.streaming
+  const nextText = payload.replace
+    ? payload.text
+    : existing && payload.streaming
       ? `${existing.text}${payload.text}`
       : existing && payload.text.length === 0
         ? existing.text
         : payload.text;
-  const nextReasoningText =
-    payload.reasoningText !== undefined
+  const nextReasoningText = payload.replace
+    ? payload.reasoningText
+    : payload.reasoningText !== undefined
       ? existing && payload.streaming
         ? `${existing.reasoningText ?? ""}${payload.reasoningText}`
         : existing && payload.reasoningText.length === 0
@@ -1277,16 +1279,18 @@ function reduceDomainEvent(
         const nextMessageForEstimate: ChatMessage = {
           id: event.payload.messageId,
           role: event.payload.role,
-          text:
-            existingMessage && event.payload.streaming
+          text: event.payload.replace
+            ? event.payload.text
+            : existingMessage && event.payload.streaming
               ? `${existingMessage.text}${event.payload.text}`
               : existingMessage && event.payload.text.length === 0
                 ? existingMessage.text
                 : event.payload.text,
           ...(event.payload.reasoningText !== undefined
             ? {
-                reasoningText:
-                  existingMessage && event.payload.streaming
+                reasoningText: event.payload.replace
+                  ? event.payload.reasoningText
+                  : existingMessage && event.payload.streaming
                     ? `${existingMessage.reasoningText ?? ""}${event.payload.reasoningText}`
                     : existingMessage && event.payload.reasoningText.length === 0
                       ? existingMessage.reasoningText

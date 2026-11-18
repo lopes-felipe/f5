@@ -2,6 +2,11 @@ import { Schema } from "effect";
 import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 
 const Name = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
+export const McpResourceRouting = Schema.Struct({
+  originCallId: Schema.optionalKey(Name),
+  target: Schema.optionalKey(Schema.Struct({ connectorId: Name, linkId: Schema.NullOr(Name) })),
+});
+export type McpResourceRouting = typeof McpResourceRouting.Type;
 const AppFields = { threadId: ThreadId, attachmentId: Name };
 export const McpAppToolInfoInput = Schema.Struct({ ...AppFields, name: Name });
 export type McpAppToolInfoInput = typeof McpAppToolInfoInput.Type;

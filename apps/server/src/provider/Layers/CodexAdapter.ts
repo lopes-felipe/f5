@@ -1,5 +1,6 @@
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
 import { resolveCodexCommand } from "../codexExecutable.ts";
+import { presentCodexMessageItem } from "@t3tools/shared/codexMessagePresentation";
 import {
   normalizeCodexThreadItemType,
   itemTitle,
@@ -936,7 +937,7 @@ function mapItemLifecycle(
   lifecycle: "item.started" | "item.updated" | "item.completed",
 ): ProviderRuntimeEvent | undefined {
   const payload = asObject(event.payload);
-  const item = asObject(payload?.item);
+  const item = asObject(presentCodexMessageItem(payload?.item));
   const source = item ?? payload;
   if (!source) {
     return protocolWarningEvent(
@@ -974,7 +975,7 @@ function mapItemLifecycle(
       ...(status ? { status } : {}),
       ...(itemTitle(itemType) ? { title: itemTitle(itemType) } : {}),
       ...(detail ? { detail } : {}),
-      ...(event.payload !== undefined ? { data: event.payload } : {}),
+      ...(event.payload !== undefined ? { data: item ? { ...payload, item } : event.payload } : {}),
     },
   };
 }
@@ -3026,6 +3027,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             }),
           { concurrency: 1 },
         );
+        const audioAttachments = (input.resolvedAttachments ?? []).filter((attachment) =>
+          attachment.mimeType.toLowerCase().startsWith("audio/"),
+        );
+        const nativeAttachments = [...codexAttachments];
         const providerInput = appendProviderAttachmentRuntimeContext(
           input.mcpAppContext ? `${input.input ?? ""}${input.mcpAppContext}` : input.input,
           input.resolvedAttachments ?? [],
@@ -3078,7 +3083,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               ...(input.interactionMode !== undefined
                 ? { interactionMode: input.interactionMode }
                 : {}),
-              ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+              ...(nativeAttachments.length > 0 ? { attachments: nativeAttachments } : {}),
+              ...(audioAttachments.length > 0
+                ? { audioFiles: audioAttachments.map((attachment) => attachment.localPath) }
+                : {}),
             };
             try {
               return await manager.sendTurn(managerInput);
@@ -3861,7 +3869,20 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                     .withPermits(1)(
                       Effect.tryPromise({
                         try: () =>
-                          manager.readMcpAppResource(event.threadId, server, appUri, appIdentity),
+                          manager.readMcpAppResource(event.threadId, server, appUri, appIdentity, {
+                            originCallId: String(nativeItem.id),
+                            ...(asString(asObject(nativeItem.appContext)?.connectorId)
+                              ? {
+                                  target: {
+                                    connectorId: asString(
+                                      asObject(nativeItem.appContext)?.connectorId,
+                                    )!,
+                                    linkId:
+                                      asString(asObject(nativeItem.appContext)?.linkId) ?? null,
+                                  },
+                                }
+                              : {}),
+                          }),
                         catch: (cause) =>
                           toRequestError(event.threadId, "mcpServer/resource/read", cause),
                       }).pipe(
@@ -3874,6 +3895,18 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                             server,
                             tool,
                             resourceUri: appUri,
+                            originCallId: String(nativeItem.id),
+                            ...(asString(asObject(nativeItem.appContext)?.connectorId)
+                              ? {
+                                  target: {
+                                    connectorId: asString(
+                                      asObject(nativeItem.appContext)?.connectorId,
+                                    )!,
+                                    linkId:
+                                      asString(asObject(nativeItem.appContext)?.linkId) ?? null,
+                                  },
+                                }
+                              : {}),
                             response,
                             provider: "codex",
                           }),
@@ -4203,9 +4236,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               manager.callMcpAppTool(threadId, server, tool, args, sessionIdentity, approved),
             catch: (cause) => toRequestError(threadId, "mcpServer/tool/call", cause),
           }),
-        readResource: ({ threadId, server, uri }) =>
+        readResource: ({ threadId, server, uri, originCallId, target }) =>
           Effect.tryPromise({
-            try: () => manager.readMcpAppResource(threadId, server, uri),
+            try: () =>
+              manager.readMcpAppResource(threadId, server, uri, undefined, {
+                ...(originCallId ? { originCallId } : {}),
+                ...(target ? { target } : {}),
+              }),
             catch: (cause) => toRequestError(threadId, "mcpServer/resource/read", cause),
           }),
       },

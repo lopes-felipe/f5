@@ -68,6 +68,88 @@ const runWithProjectionPipelineLayer = <A, E>(
 const projectionLayer = it.layer(makeProjectionPipelineTestLayer(process.cwd()));
 
 projectionLayer("OrchestrationProjectionPipeline", (it) => {
+  it.effect("clears moderated content in persisted messages and bootstrap replay", () =>
+    runWithProjectionPipelineLayer(
+      process.cwd(),
+      Effect.gen(function* () {
+        const pipeline = yield* OrchestrationProjectionPipeline;
+        const store = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.makeUnsafe("moderation-projection");
+        const at = "2026-11-18T10:00:00.000Z";
+        const common = {
+          aggregateKind: "thread" as const,
+          aggregateId: threadId,
+          occurredAt: at,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+        };
+        const created = yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("moderation-created"),
+          type: "thread.created",
+          payload: {
+            threadId,
+            projectId: ProjectId.makeUnsafe("project"),
+            title: "Moderation",
+            model: "model",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: at,
+            updatedAt: at,
+          },
+        });
+        yield* pipeline.projectEvent(created);
+        const payload = {
+          threadId,
+          messageId: MessageId.makeUnsafe("moderated"),
+          role: "assistant" as const,
+          text: "provisional answer",
+          reasoningText: "suppressed reasoning",
+          turnId: TurnId.makeUnsafe("old-turn"),
+          streaming: true,
+          createdAt: at,
+          updatedAt: at,
+        };
+        const streamed = yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("moderation-stream"),
+          type: "thread.message-sent",
+          payload,
+        });
+        yield* pipeline.projectEvent(streamed);
+        const moderated = yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("moderation-final"),
+          type: "thread.message-sent",
+          payload: { ...payload, text: "", reasoningText: "", streaming: false, replace: true },
+        });
+        yield* pipeline.projectEvent(moderated);
+        const rows = yield* sql<{
+          text: string;
+          reasoningText: string | null;
+        }>`SELECT text, reasoning_text AS "reasoningText"
+        FROM projection_thread_messages WHERE thread_id = ${threadId}`;
+        assert.deepEqual(
+          rows.map((row) => ({ ...row })),
+          [{ text: "", reasoningText: "" }],
+        );
+        yield* pipeline.bootstrap;
+        const replay = yield* sql<{
+          text: string;
+          reasoningText: string | null;
+        }>`SELECT text, reasoning_text AS "reasoningText"
+        FROM projection_thread_messages WHERE thread_id = ${threadId}`;
+        assert.deepEqual(
+          replay.map((row) => ({ ...row })),
+          [{ text: "", reasoningText: "" }],
+        );
+      }),
+    ),
+  );
   it.effect(
     "preserves the actual reply through late synthetic checkpoints in live projection and replay",
     () =>

@@ -872,6 +872,7 @@ export function createWsNativeApi(): NativeApi {
       checkProviderUpdates: (input = {}) =>
         transport.request(WS_METHODS.serverCheckProviderUpdates, input),
       runProviderUpdate: requestMethod(WS_METHODS.serverRunProviderUpdate),
+      codexConfiguration: (input) => transport.request(WS_METHODS.serverCodexConfiguration, input),
       getProviderInventory: (input) =>
         transport.request(WS_METHODS.serverGetProviderInventory, input),
       saveProviderFeedback: (input) =>

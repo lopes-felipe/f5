@@ -33,6 +33,8 @@ export interface McpAppPermissions {
 }
 
 export interface McpAppReference {
+  readonly originCallId?: string;
+  readonly target?: { readonly connectorId: string; readonly linkId: string | null };
   readonly attachmentId: string;
   readonly server: string;
   readonly tool: string;
@@ -123,11 +125,23 @@ export function readMcpAppReference(value: unknown): McpAppReference | undefined
   }
   const csp = readMcpAppCsp(value.csp);
   const permissions = readMcpAppPermissions(value.permissions);
+  const target =
+    Predicate.isObject(value.target) &&
+    boundedName(value.target.connectorId) &&
+    (value.target.linkId === null || boundedName(value.target.linkId))
+      ? {
+          connectorId: value.target.connectorId as string,
+          linkId: value.target.linkId as string | null,
+        }
+      : undefined;
+  if (value.target !== undefined && target === undefined) return undefined;
   return {
     attachmentId,
     server,
     tool,
     resourceUri,
+    ...(boundedName(value.originCallId) ? { originCallId: value.originCallId as string } : {}),
+    ...(target ? { target } : {}),
     ...(csp === undefined ? {} : { csp }),
     ...(permissions === undefined ? {} : { permissions }),
     ...(typeof value.prefersBorder === "boolean" ? { prefersBorder: value.prefersBorder } : {}),
@@ -140,7 +154,10 @@ export function mcpAppReferencesEqual(left: McpAppReference, right: McpAppRefere
     left.attachmentId === right.attachmentId &&
     left.server === right.server &&
     left.tool === right.tool &&
-    left.resourceUri === right.resourceUri
+    left.resourceUri === right.resourceUri &&
+    left.originCallId === right.originCallId &&
+    left.target?.connectorId === right.target?.connectorId &&
+    left.target?.linkId === right.target?.linkId
   );
 }
 

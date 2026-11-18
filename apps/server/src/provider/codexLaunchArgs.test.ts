@@ -8,6 +8,20 @@ import {
 } from "./codexLaunchArgs.ts";
 
 describe("Codex launch arguments", () => {
+  it("applies server-owned provider selection after filtering user config overrides", () => {
+    const command = buildCodexAppServerCommand({
+      environment: {},
+      modelProvider: "team",
+      providerLaunchArgs: ["-c", 'model_provider="wrong"'],
+    });
+    expect(command.dropped).toEqual(["-c", 'model_provider="wrong"']);
+    expect(command.argv.slice(-2)).toEqual(["-c", 'model_provider="team"']);
+    expect(
+      buildCodexAppServerCommand({ environment: {} }).argv.some((arg) =>
+        arg.startsWith("model_provider="),
+      ),
+    ).toBe(false);
+  });
   it("forces managed file credentials after filtering conflicting user configuration", () => {
     const result = buildCodexAppServerCommand({
       environment: { F5_PROFILE_ISOLATED: "1" },

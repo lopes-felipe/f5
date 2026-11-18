@@ -1,4 +1,5 @@
 import "../../index.css";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { Schema } from "effect";
 import type { NativeApi, ProfileSummary } from "@t3tools/contracts";
@@ -76,9 +77,13 @@ afterEach(() => {
 
 const mount = () =>
   render(
-    <TooltipProvider delay={0}>
-      <ProfilesSettings />
-    </TooltipProvider>,
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <TooltipProvider delay={0}>
+        <ProfilesSettings />
+      </TooltipProvider>
+    </QueryClientProvider>,
   );
 
 describe("load states", () => {
