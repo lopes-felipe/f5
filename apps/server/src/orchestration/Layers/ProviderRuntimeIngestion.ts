@@ -94,6 +94,7 @@ import { isSyntheticClaudeThreadId, isUuid } from "../../provider/claudeResumeSt
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { ThreadCommandExecutionQuery } from "../Services/ThreadCommandExecutionQuery.ts";
 import {
+  isOrphanedSessionExitEvent,
   makeOrphanedSessionExitedEvent,
   PROVIDER_SHUTDOWN_RUNTIME_EVENTS,
   readPersistedActiveTurnId,
@@ -4400,10 +4401,25 @@ const make = Effect.gen(function* () {
     }
 
     if (isProviderTerminalRuntimeEvent(event)) {
+      // A settlement for a retired turn has no generation of its own. Update
+      // the binding only while it is still inactive and names that turn (or,
+      // after a legacy shutdown, no turn); a live replacement or a binding
+      // naming another turn is never touched.
+      const orphaned = isOrphanedSessionExitEvent(event);
+      const persistedTurnId = readPersistedActiveTurnId(binding.runtimePayload);
+      if (
+        orphaned &&
+        (binding.status !== "stopped" ||
+          event.turnId === undefined ||
+          (persistedTurnId !== undefined && persistedTurnId !== event.turnId))
+      )
+        return;
       yield* providerSessionDirectory.updateTerminalLifecycleIfCurrent({
         threadId: event.threadId,
         instanceId: binding.providerInstanceId ?? ProviderInstanceId.makeUnsafe(binding.provider),
-        generation: event.sessionGeneration ?? 0,
+        generation: orphaned
+          ? readPersistedSessionGeneration(binding.runtimePayload)
+          : (event.sessionGeneration ?? 0),
         turnId: event.turnId ?? null,
         eventType: event.type,
         createdAt: event.createdAt,
@@ -4627,13 +4643,18 @@ const make = Effect.gen(function* () {
           event.turnId !== undefined &&
           (thread.session?.activeTurnId === event.turnId ||
             (thread.session?.activeTurnId == null && thread.latestTurn?.turnId === event.turnId));
-        const staleOrigin =
-          (event.sessionGeneration === undefined
-            ? !legacyTurnMatches
-            : event.sessionGeneration !== generation) ||
-          (event.providerInstanceId !== undefined &&
-            currentInstance != null &&
-            currentInstance !== event.providerInstanceId);
+        // F5's settlement for a turn whose provider is gone belongs to that
+        // turn, not to a session: it applies only while the projection still
+        // holds exactly that turn, whatever generation or instance replaced it,
+        // and never to a later session whose latest (settled) turn it names.
+        const staleOrigin = isOrphanedSessionExitEvent(event)
+          ? event.turnId === undefined || thread.session?.activeTurnId !== event.turnId
+          : (event.sessionGeneration === undefined
+              ? !legacyTurnMatches
+              : event.sessionGeneration !== generation) ||
+            (event.providerInstanceId !== undefined &&
+              currentInstance != null &&
+              currentInstance !== event.providerInstanceId);
         if (staleOrigin) {
           // Retired output remains authoritative for its own turn. Finalize it
           // before acknowledging the receipt, without touching replacement state.
@@ -7076,9 +7097,23 @@ const make = Effect.gen(function* () {
           ...orphanedEvent,
           sessionGeneration: readPersistedSessionGeneration(binding.runtimePayload),
         };
-        yield* providerTerminalEventRepository.record(event);
-        yield* enqueueRuntimeEvent(event);
-        recoveredCount += 1;
+        // One thread's failure must not abandon the rest of the scan. A
+        // committed receipt is replayed by receipt retries; an uncommitted one
+        // is found again by the next scan under the same deterministic id.
+        const repaired = yield* providerTerminalEventRepository.record(event).pipe(
+          Effect.andThen(enqueueRuntimeEvent(event)),
+          Effect.as(true),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("startup orphaned turn repair failed for thread", {
+                  threadId: thread.id,
+                  turnId: activeTurnId,
+                  cause: Cause.pretty(cause),
+                }).pipe(Effect.as(false)),
+          ),
+        );
+        if (repaired) recoveredCount += 1;
       }
 
       if (recoveredCount > 0) {

@@ -176,6 +176,7 @@ import {
   type ProviderTerminalRuntimeEvent,
 } from "../../persistence/Services/ProviderTerminalEvents.ts";
 import {
+  isOrphanedSessionExitEvent,
   makeOrphanedSessionExitedEvent,
   readPersistedActiveTurnId,
 } from "../orphanedTurnRecovery.ts";
@@ -1005,12 +1006,18 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           }
         }
         if (event.type === "session.exited") {
+          // A settlement for a turn whose provider is gone resolves only that
+          // turn's handle; its generation is the current one, which may already
+          // belong to a replacement session running another turn.
+          const orphanedTurnId = isOrphanedSessionExitEvent(event) ? event.turnId : undefined;
           for (const [id, completion] of submissionCompletions) {
             if (
               completion.threadId !== event.threadId ||
               completion.instanceId !== item.source.instanceId ||
               completion.instanceId !== event.providerInstanceId ||
-              completion.generation !== terminalGeneration
+              (orphanedTurnId !== undefined
+                ? completion.turnId !== orphanedTurnId
+                : completion.generation !== terminalGeneration)
             )
               continue;
             yield* Deferred.succeed(completion.done, undefined);
@@ -1087,6 +1094,18 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             yield* processRuntimeEvent(next).pipe(
               Effect.catchCause((cause) => {
                 if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+                // F5's own settlement for a retired turn carries no provider
+                // output, so failing to persist it loses no native history. It
+                // has no generation of its own: fencing would block whichever
+                // session is current now. The persisted turn stays, so the next
+                // stop, interrupt, recovery or startup scan settles it again.
+                if (isOrphanedSessionExitEvent(next.event))
+                  return Effect.logError("orphaned turn settlement failed; will retry later", {
+                    threadId,
+                    eventId: next.event.eventId,
+                    turnId: next.event.turnId,
+                    cause: Cause.pretty(cause),
+                  });
                 return Effect.gen(function* () {
                   const generation =
                     next.event.sessionGeneration ??
@@ -1200,7 +1219,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     // Lock order: reactor turn gate, then this service gate. Never enter the reactor here.
     const withSessionOperation = makeOperationGate<ThreadId>();
 
-    const assertControlTarget = (threadId: ThreadId) =>
+    /**
+     * `settlesInactiveTurn`: Stop/Interrupt may proceed when no provider
+     * session is live for the thread, so they can settle the captured turn
+     * that nothing else will ever end. A live session must still hold it.
+     */
+    const assertControlTarget = (threadId: ThreadId, settlesInactiveTurn = false) =>
       Effect.gen(function* () {
         const expected = yield* ProviderControlTarget;
         if (!expected) return;
@@ -1214,10 +1238,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         if (matches && binding && expected.activeTurnId !== null) {
           const adapter = yield* registry.getByInstance(resolveBindingInstanceId(binding));
           const sessions = yield* adapter.listSessions();
-          matches = sessions.some(
-            (session) =>
-              session.threadId === threadId && session.activeTurnId === expected.activeTurnId,
-          );
+          const live = sessions.find((session) => session.threadId === threadId);
+          matches = live
+            ? live.activeTurnId === expected.activeTurnId
+            : settlesInactiveTurn && !(yield* adapter.hasSession(threadId));
         }
         if (!matches)
           return yield* toValidationError(
@@ -1225,10 +1249,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "The provider session or turn changed before this action ran. The action was not sent.",
           );
       });
-    const withControlTarget = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
+    const withControlTarget = <A, E, R>(
+      threadId: ThreadId,
+      effect: Effect.Effect<A, E, R>,
+      settlesInactiveTurn = false,
+    ) =>
       withProviderThreadAccess(
         threadId,
-        assertControlTarget(threadId).pipe(Effect.andThen(effect)),
+        assertControlTarget(threadId, settlesInactiveTurn).pipe(Effect.andThen(effect)),
       );
 
     const recoverSessionForThread = (input: {
@@ -2702,10 +2730,17 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           providerInstanceId: input.instanceId,
           createdAt: new Date().toISOString(),
         });
-        yield* Queue.offer(runtimeEventQueue, {
+        const queued = {
           source: { instanceId: input.instanceId, provider: input.binding.provider },
           event,
-        });
+        };
+        // Callers hold the thread gate, and a full queue drains only through
+        // lanes that may need that gate, so never wait for capacity here. The
+        // usual immediate offer keeps it ahead of a replacement's events; if
+        // the queue is full, the forked offer may land later, which is still
+        // safe because ingestion applies it only to its exact projected turn.
+        if (!Queue.offerUnsafe(runtimeEventQueue, queued))
+          yield* Queue.offer(runtimeEventQueue, queued).pipe(Effect.forkIn(nativeScope));
         yield* Effect.logInfo("provider service queued orphaned turn settlement", {
           operation: input.operation,
           threadId: input.binding.threadId,
@@ -4309,7 +4344,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         ),
       submitTurn,
       sendTurn: (input) => submitTurn(input).pipe(Effect.flatMap((handle) => handle.acceptance)),
-      interruptTurn: (input) => withControlTarget(input.threadId, interruptTurn(input)),
+      interruptTurn: (input) => withControlTarget(input.threadId, interruptTurn(input), true),
       respondToRequest: (input) => withControlTarget(input.threadId, respondToRequest(input)),
       respondToUserInput: (input) => withControlTarget(input.threadId, respondToUserInput(input)),
       respondToElicitation: (input) =>
@@ -4321,7 +4356,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ? respondToStartingElicitation(input, starting.adapter)
             : withProviderThreadAccess(input.threadId, respondToElicitation(input));
         }),
-      stopSession: (input) => withControlTarget(input.threadId, stopSession(input)),
+      stopSession: (input) => withControlTarget(input.threadId, stopSession(input), true),
       withStoppedSessionForCompaction,
       listStartingWorkspaces: () =>
         Effect.sync(() =>

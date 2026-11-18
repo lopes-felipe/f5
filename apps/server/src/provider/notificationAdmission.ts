@@ -14,10 +14,16 @@ export interface NotificationAdmissionLimits {
   /** Data entries one context (thread, instance, generation) may hold. */
   readonly entries: number;
   /**
-   * Byte ceiling, applied separately to data and to control notifications, so
-   * a transcript flood cannot starve lifecycle events. With the defaults the
-   * worst case is 32 MiB data + 32 MiB control + 1 MiB diagnostics, plus
-   * terminals and one oversized frame admitted alone (up to the Codex frame limit).
+   * Byte ceiling, applied separately to data and to large control
+   * notifications, so a transcript flood cannot starve lifecycle events.
+   *
+   * Each of the data and control lanes also admits its first frame of any size
+   * when it is empty (up to the 128 MiB Codex frame limit), and controls up to
+   * `SMALL_CONTROL_BYTES` skip the byte check. Retained bytes are therefore at
+   * most: data `max(bytes, first frame)`, control `max(bytes, first frame)` +
+   * `controls` x 64 KiB, diagnostics `diagnosticBytes`, plus terminal leases
+   * (see `NotificationAdmissionLane`). With the defaults and no oversized
+   * frame that is 32 + 32 + 4 + 1 = 69 MiB before terminals.
    */
   readonly bytes: number;
   /**
@@ -50,6 +56,13 @@ const DEFAULT_LIMITS = {
  * `data` is transcript output, `control` is item lifecycle (bounded by count
  * and bytes), and `terminal` is turn/session lifecycle that is always admitted:
  * dropping a turn or session terminal leaves the conversation running forever.
+ *
+ * Terminal retention is deliberately unbounded: a lease is held until its
+ * preparation hands the event downstream, so a stalled consumer keeps every
+ * terminal from the stall window. Refusing one instead would wedge its turn.
+ * Only `turn/completed` and `session/exited|closed` use this lane, which a
+ * provider sends once per turn or session, so retention grows with the turns
+ * and sessions that finish during a stall, not with their output.
  */
 export type NotificationAdmissionLane = "data" | "control" | "terminal";
 
