@@ -10,6 +10,7 @@ export function summarizePlanningWorkflow<
           reviewArtifact?: unknown;
           revisionAttempt?: unknown;
           revisionDispatchCommandId?: unknown;
+          revisionCompaction?: unknown;
           codeReviews: ReadonlyArray<object>;
         }
       | null
@@ -21,7 +22,11 @@ export function summarizePlanningWorkflow<
   implementation:
     | (Omit<
         NonNullable<T["implementation"]>,
-        "reviewArtifact" | "revisionAttempt" | "revisionDispatchCommandId" | "codeReviews"
+        | "reviewArtifact"
+        | "revisionAttempt"
+        | "revisionDispatchCommandId"
+        | "revisionCompaction"
+        | "codeReviews"
       > & {
         codeReviews: ReadonlyArray<
           Omit<
@@ -44,6 +49,7 @@ export function summarizePlanningWorkflow<
     reviewArtifact: _artifact,
     revisionAttempt: _attempt,
     revisionDispatchCommandId: _dispatch,
+    revisionCompaction: _compaction,
     codeReviews,
     ...stage
   } = implementation;

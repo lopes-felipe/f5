@@ -18,6 +18,7 @@ export const PlanningWorkflowSummary = Schema.Struct({
         "reviewArtifact",
         "revisionAttempt",
         "revisionDispatchCommandId",
+        "revisionCompaction",
       ]),
       codeReviews: Schema.Array(
         Schema.Struct(

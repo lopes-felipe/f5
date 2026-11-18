@@ -2,6 +2,7 @@ import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 
 import {
+  CommandId,
   IsoDateTime,
   MessageId,
   NonNegativeInt,
@@ -185,6 +186,14 @@ export const WorkflowImplementation = Schema.Struct({
   revisionTurnId: Schema.NullOr(TrimmedNonEmptyString),
   revisionAttempt: Schema.optional(NonNegativeInt),
   revisionDispatchCommandId: WorkflowStageDispatchCommandId,
+  revisionCompaction: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        requestId: CommandId,
+        recordCommandId: CommandId,
+      }),
+    ),
+  ),
   codeReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   codeReviews: Schema.Array(WorkflowCodeReview),
   status: WorkflowImplementationStatus,

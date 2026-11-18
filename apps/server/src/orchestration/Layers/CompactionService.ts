@@ -1,13 +1,29 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
 import { hasNativeOperationReservation } from "../../provider/nativeOperations.ts";
-import { CommandId, EventId, type OrchestrationEvent, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  type OrchestrationEvent,
+  type OrchestrationThread,
+  type ThreadCompaction,
+  ThreadId,
+} from "@t3tools/contracts";
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
-import { Cause, Effect, Layer, Scope, Stream } from "effect";
+import { Cause, Clock, Deferred, Effect, Layer, Option, Scope, Stream } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { ProviderValidationError } from "../../provider/Errors.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
+import { resolveBindingInstanceId } from "../../provider/bindingIdentity.ts";
+import { readPersistedSessionGeneration } from "../../provider/sessionCapabilities.ts";
+import { estimateProviderInstructionTokens } from "../../provider/contextTokenEstimate.ts";
+import {
+  CLAUDE_ONE_OFF_PROMPT_TIMEOUT_MS,
+  CODEX_ONE_OFF_PROMPT_TIMEOUT_MS,
+} from "../../provider/oneOffPromptTimeouts.ts";
+import { buildThreadInstructionContext } from "../threadSessionInstructions.ts";
 import { buildThreadCompactionTranscript } from "../compactionService.ts";
 import {
   formatCompactSummary,
@@ -16,7 +32,32 @@ import {
 } from "../compactionPrompts.ts";
 import { resolveOneOffPromptRoute } from "../oneOffPromptRouting.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { CompactionService, type CompactionServiceShape } from "../Services/CompactionService.ts";
+import {
+  CompactionService,
+  type CompactionServiceShape,
+  type WorkflowCompactionRequest,
+  type WorkflowCompactionOutcome,
+} from "../Services/CompactionService.ts";
+import { ProviderTurnDeliveryRepository } from "../Services/ProviderTurnDeliveryRepository.ts";
+
+interface WorkflowCompactionJob {
+  readonly request: WorkflowCompactionRequest;
+  readonly queueDeadline: number;
+  readonly started: Deferred.Deferred<void>;
+  readonly outcome: Deferred.Deferred<WorkflowCompactionOutcome>;
+  cancelled: boolean;
+  running: boolean;
+}
+
+const QUEUE_TIMEOUT_MS = 240_000;
+const EXPIRED = {
+  kind: "expired",
+  detail: "The summary did not start within four minutes.",
+} as const;
+const SHUTDOWN = {
+  kind: "shutdown",
+  detail: "Context recovery was interrupted by shutdown.",
+} as const;
 
 type ThreadCompactRequestedEvent = Extract<
   OrchestrationEvent,
@@ -48,7 +89,33 @@ const make = Effect.gen(function* () {
   const sources = yield* makeShutdownSourceScope("conversation-compaction-sources");
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const directory = yield* Effect.serviceOption(ProviderSessionDirectory);
+  const deliveries = yield* Effect.serviceOption(ProviderTurnDeliveryRepository);
   const pendingThreadIds = new Set<ThreadId>();
+  const workflowJobs = new Set<WorkflowCompactionJob>();
+
+  const runSummary = (input: {
+    readonly thread: OrchestrationThread;
+    readonly transcript: ReturnType<typeof buildThreadCompactionTranscript>;
+    readonly direction: ThreadCompaction["direction"];
+    readonly route: ReturnType<typeof resolveOneOffPromptRoute>;
+    readonly cwd?: string | undefined;
+    readonly timeoutMs?: number | undefined;
+  }) => {
+    const promptBody =
+      input.direction === null ? getCompactPrompt() : getPartialCompactPrompt(input.direction);
+    return providerService
+      .runOneOffPrompt({
+        threadId: input.thread.id,
+        provider: input.route.provider,
+        model: input.route.model,
+        prompt: `${promptBody}\n\n## Conversation Context\n${input.transcript.transcript}`,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+        runtimeMode: input.thread.runtimeMode,
+      })
+      .pipe(Effect.map((result) => formatCompactSummary(result.text)));
+  };
 
   const appendActivity = (input: {
     readonly threadId: ThreadId;
@@ -227,11 +294,6 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const promptBody =
-        event.payload.direction === null
-          ? getCompactPrompt()
-          : getPartialCompactPrompt(event.payload.direction);
-      const prompt = `${promptBody}\n\n## Conversation Context\n${transcript.transcript}`;
       const cwd = resolveThreadWorkspaceCwd({
         thread,
         projects: readModel.projects,
@@ -239,21 +301,18 @@ const make = Effect.gen(function* () {
       const completedAt = new Date().toISOString();
       const baselineLastInteractionAt = laterIsoString(thread.lastInteractionAt, event.occurredAt);
 
-      const summaryResult = yield* providerService
-        .runOneOffPrompt({
-          threadId: thread.id,
-          provider: oneOffRoute.provider,
-          prompt,
-          ...(cwd ? { cwd } : {}),
-          model: oneOffRoute.model,
-          runtimeMode: thread.runtimeMode,
-        })
-        .pipe(
-          Effect.match({
-            onFailure: (error) => ({ ok: false as const, error }),
-            onSuccess: (result) => ({ ok: true as const, result }),
-          }),
-        );
+      const summaryResult = yield* runSummary({
+        thread,
+        route: oneOffRoute,
+        cwd,
+        transcript,
+        direction: event.payload.direction,
+      }).pipe(
+        Effect.match({
+          onFailure: (error) => ({ ok: false as const, error }),
+          onSuccess: (result) => ({ ok: true as const, result }),
+        }),
+      );
 
       if (!summaryResult.ok) {
         yield* appendActivity({
@@ -269,7 +328,7 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const formattedSummary = formatCompactSummary(summaryResult.result.text);
+      const formattedSummary = summaryResult.result;
       if (formattedSummary.length === 0) {
         yield* appendActivity({
           threadId: thread.id,
@@ -369,9 +428,248 @@ const make = Effect.gen(function* () {
       });
     });
 
+  const processWorkflowJob = (
+    job: WorkflowCompactionJob,
+  ): Effect.Effect<WorkflowCompactionOutcome, Error> =>
+    Effect.gen(function* () {
+      const { request } = job;
+      const { threadId } = request;
+      if (job.cancelled || (yield* Clock.currentTimeMillis) >= job.queueDeadline) return EXPIRED;
+      const stoppedSession = providerService.withStoppedSessionForCompaction;
+      if (directory._tag === "None" || deliveries._tag === "None" || !stoppedSession) {
+        return { kind: "failed", detail: "Fresh provider context recovery is unavailable." };
+      }
+      const readContext = Effect.gen(function* () {
+        const snapshot = yield* orchestrationEngine.getReadModel();
+        const thread = snapshot.threads.find(
+          (entry) => entry.id === threadId && !entry.deletedAt && !entry.archivedAt,
+        );
+        const project = snapshot.projects.find(
+          (entry) => entry.id === thread?.projectId && !entry.deletedAt,
+        );
+        const workflow = snapshot.planningWorkflows.find(
+          (entry) => entry.id === request.workflowId,
+        );
+        const implementation = workflow?.implementation;
+        if (
+          job.cancelled ||
+          !thread ||
+          !project ||
+          !workflow ||
+          workflow.archivedAt ||
+          workflow.deletedAt ||
+          implementation?.status !== "applying_reviews" ||
+          implementation.revisionAttempt !== request.attempt ||
+          implementation.revisionDispatchCommandId !== request.dispatchCommandId ||
+          implementation.revisionCompaction?.requestId !== request.requestId ||
+          implementation.threadId !== threadId ||
+          (workflow.maxCostUsd != null && workflow.totalCostUsd >= workflow.maxCostUsd)
+        ) {
+          return yield* Effect.fail(
+            new Error(
+              "The workflow, cost limit, or implementation thread changed during compaction.",
+            ),
+          );
+        }
+        return {
+          thread,
+          project,
+          cwd: resolveThreadWorkspaceCwd({ thread, projects: snapshot.projects }),
+        };
+      });
+
+      const start = yield* readContext;
+      const binding = Option.getOrNull(yield* directory.value.getBinding(threadId));
+      const capturedBinding = binding
+        ? {
+            provider: binding.provider,
+            instanceId: resolveBindingInstanceId(binding),
+            generation: readPersistedSessionGeneration(binding.runtimePayload),
+          }
+        : null;
+      const deliveryRepository = deliveries.value;
+      const checkIdle = (thread: OrchestrationThread) =>
+        Effect.gen(function* () {
+          const delivery = yield* deliveryRepository.getUnresolvedByThread(threadId);
+          if (
+            hasNativeOperationReservation(threadId) ||
+            (thread.session && threadSessionIsBusy(thread.session)) ||
+            thread.latestTurn?.state === "running" ||
+            (delivery &&
+              !(
+                delivery.commandId === request.dispatchCommandId &&
+                delivery.state === "rejected" &&
+                delivery.certainty === "not_sent"
+              ))
+          ) {
+            return yield* Effect.fail(
+              new Error(
+                "The implementation thread has an active turn or competing provider delivery.",
+              ),
+            );
+          }
+        });
+      const idle = yield* checkIdle(start.thread).pipe(Effect.result);
+      if (idle._tag === "Failure") return { kind: "busy", detail: idle.failure.message };
+
+      const route = resolveOneOffPromptRoute({
+        model: start.thread.model,
+        sessionProviderName:
+          capturedBinding?.provider ?? start.thread.session?.providerName ?? null,
+      });
+      if (
+        capturedBinding &&
+        (capturedBinding.provider !== request.targetSlot.provider ||
+          (start.thread.modelSelection &&
+            start.thread.modelSelection.instanceId !== capturedBinding.instanceId))
+      ) {
+        return {
+          kind: "skipped",
+          detail: "The implementation thread is bound to a different provider instance.",
+        };
+      }
+      const timeoutMs =
+        route.provider === "claudeAgent"
+          ? CLAUDE_ONE_OFF_PROMPT_TIMEOUT_MS
+          : CODEX_ONE_OFF_PROMPT_TIMEOUT_MS;
+      const transcript = buildThreadCompactionTranscript({
+        thread: start.thread,
+        direction: null,
+        pivotMessageId: null,
+      });
+      if (!transcript.transcript.trim()) {
+        return { kind: "skipped", detail: "There is no conversation history to summarize." };
+      }
+      if (job.cancelled || (yield* Clock.currentTimeMillis) >= job.queueDeadline) return EXPIRED;
+      job.running = true;
+      yield* Deferred.succeed(job.started, undefined);
+      if (job.cancelled) return EXPIRED;
+      const deadline = (yield* Clock.currentTimeMillis) + timeoutMs + 30_000;
+      const summary = yield* runSummary({
+        thread: start.thread,
+        route,
+        cwd: start.cwd,
+        transcript,
+        direction: null,
+        timeoutMs,
+      }).pipe(Effect.timeout(timeoutMs + 30_000));
+      if (!summary)
+        return { kind: "failed", detail: "The provider returned an empty compaction summary." };
+
+      const validate = Effect.gen(function* () {
+        const current = yield* readContext;
+        const { thread } = current;
+        if (
+          thread.lastInteractionAt !== start.thread.lastInteractionAt ||
+          thread.worktreePath !== start.thread.worktreePath ||
+          thread.branch !== start.thread.branch ||
+          thread.model !== start.thread.model ||
+          thread.modelSelection?.instanceId !== start.thread.modelSelection?.instanceId ||
+          thread.interactionMode !== start.thread.interactionMode ||
+          thread.runtimeMode !== start.thread.runtimeMode ||
+          thread.compaction !== start.thread.compaction ||
+          current.project.workspaceRoot !== start.project.workspaceRoot ||
+          current.cwd !== start.cwd
+        ) {
+          return yield* Effect.fail(
+            new Error("The implementation thread changed while its summary was running."),
+          );
+        }
+        yield* checkIdle(thread);
+        return current;
+      });
+
+      let record: ThreadCompaction | undefined;
+      yield* stoppedSession({
+        threadId,
+        expected: capturedBinding,
+        validate: Effect.gen(function* () {
+          const current = yield* validate;
+          const createdAt = new Date().toISOString();
+          const compaction: ThreadCompaction = {
+            summary,
+            kind: "summary",
+            trigger: "automatic",
+            estimatedTokens: 0,
+            modelContextWindowTokens: request.contextWindowTokens,
+            direction: null,
+            pivotMessageId: null,
+            fromTurnCount: transcript.fromTurnCount,
+            toTurnCount: transcript.toTurnCount,
+            freshSessionRecordId: request.recordCommandId,
+            ...(capturedBinding ? { retiredSessionGeneration: capturedBinding.generation } : {}),
+            createdAt,
+          };
+          const estimatedTokens = yield* Effect.promise(() =>
+            estimateProviderInstructionTokens({
+              provider: request.targetSlot.provider,
+              model: request.targetSlot.model,
+              interactionMode: request.interactionMode,
+              instructionContext: buildThreadInstructionContext({
+                ...current,
+                thread: { ...current.thread, compaction, interactionMode: request.interactionMode },
+                workflowExecutionProfile: request.workflowExecutionProfile,
+              }),
+            }),
+          );
+          const error = request.checkFit(estimatedTokens);
+          if (error) return yield* Effect.fail(new Error(error));
+          record = { ...compaction, estimatedTokens };
+        }),
+        commit: Effect.gen(function* () {
+          yield* validate;
+          if (!record)
+            return yield* Effect.fail(new Error("The fresh provider context estimate is missing."));
+          yield* orchestrationEngine.dispatch({
+            type: "thread.compacted.record",
+            commandId: request.recordCommandId,
+            threadId,
+            compaction: record,
+            freshSessionGuard: {
+              workflowId: request.workflowId,
+              requestId: request.requestId,
+              attempt: request.attempt,
+              dispatchCommandId: request.dispatchCommandId,
+              lastInteractionAt: start.thread.lastInteractionAt,
+              branch: start.thread.branch,
+              worktreePath: start.thread.worktreePath,
+              workspaceRoot: start.project.workspaceRoot,
+              model: start.thread.model,
+              binding: capturedBinding,
+            },
+            createdAt: record.createdAt,
+          });
+        }),
+      }).pipe(Effect.timeout(Math.max(0, deadline - (yield* Clock.currentTimeMillis))));
+      return { kind: "committed" };
+    });
+
   const worker = yield* makeBackgroundWorker(
-    (event: ThreadCompactRequestedEvent) =>
-      processEvent(event).pipe(
+    (item: ThreadCompactRequestedEvent | WorkflowCompactionJob) => {
+      if ("request" in item) {
+        return processWorkflowJob(item).pipe(
+          Effect.onExit((exit) =>
+            Effect.gen(function* () {
+              if (workflowJobs.delete(item)) pendingThreadIds.delete(item.request.threadId);
+              const error = exit._tag === "Failure" ? Cause.squash(exit.cause) : null;
+              yield* Deferred.succeed(
+                item.outcome,
+                exit._tag === "Success"
+                  ? exit.value
+                  : Cause.hasInterruptsOnly(exit.cause)
+                    ? SHUTDOWN
+                    : {
+                        kind: "failed" as const,
+                        detail: error instanceof Error ? error.message : Cause.pretty(exit.cause),
+                      },
+              );
+            }),
+          ),
+          Effect.ignoreCause,
+        );
+      }
+      const event = item;
+      return processEvent(event).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             pendingThreadIds.delete(event.payload.threadId);
@@ -387,9 +685,61 @@ const make = Effect.gen(function* () {
             cause: Cause.pretty(cause),
           });
         }),
-      ),
+      );
+    },
     { name: "CompactionService" },
   );
+
+  const requestSummary: CompactionServiceShape["requestSummary"] = (request) =>
+    Effect.gen(function* () {
+      if (sources.stopped) return SHUTDOWN;
+      if (pendingThreadIds.has(request.threadId)) {
+        return { kind: "busy", detail: "Another compaction is already reserved for this thread." };
+      }
+      const job: WorkflowCompactionJob = {
+        request,
+        queueDeadline: (yield* Clock.currentTimeMillis) + QUEUE_TIMEOUT_MS,
+        started: yield* Deferred.make<void>(),
+        outcome: yield* Deferred.make<WorkflowCompactionOutcome>(),
+        cancelled: false,
+        running: false,
+      };
+      // Check again after allocating the deferreds so no concurrent request can
+      // share this thread reservation.
+      if (pendingThreadIds.has(request.threadId)) {
+        return { kind: "busy", detail: "Another compaction is already reserved for this thread." };
+      }
+      pendingThreadIds.add(request.threadId);
+      workflowJobs.add(job);
+      const cancelJob = () => {
+        job.cancelled = true;
+        if (!job.running && workflowJobs.delete(job)) pendingThreadIds.delete(request.threadId);
+      };
+      return yield* Effect.raceFirst(
+        worker.enqueue(job).pipe(Effect.andThen(Deferred.await(job.started)), Effect.as(null)),
+        Deferred.await(job.outcome),
+      ).pipe(
+        Effect.timeoutOption(QUEUE_TIMEOUT_MS),
+        Effect.flatMap((started) => {
+          if (Option.isNone(started)) {
+            cancelJob();
+            return Deferred.succeed(job.outcome, EXPIRED).pipe(Effect.as(EXPIRED));
+          }
+          return started.value === null
+            ? Deferred.await(job.outcome)
+            : Effect.succeed(started.value);
+        }),
+        Effect.catchCause((cause) => {
+          cancelJob();
+          return Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.succeed(SHUTDOWN);
+        }),
+        Effect.onInterrupt(() =>
+          Effect.sync(cancelJob).pipe(Effect.andThen(Deferred.succeed(job.outcome, SHUTDOWN))),
+        ),
+      );
+    });
 
   const start: CompactionServiceShape["start"] = Effect.gen(function* () {
     if (sources.stopped) return;
@@ -417,10 +767,21 @@ const make = Effect.gen(function* () {
     "provider-ingestion",
   ]);
   yield* Effect.addFinalizer(() => sources.stop);
+  yield* Effect.addFinalizer(() =>
+    Effect.forEach(
+      workflowJobs,
+      (job) => {
+        job.cancelled = true;
+        return Deferred.succeed(job.outcome, SHUTDOWN);
+      },
+      { discard: true },
+    ),
+  );
 
   return {
     start,
     drain: worker.drain,
+    requestSummary,
   } satisfies CompactionServiceShape;
 });
 

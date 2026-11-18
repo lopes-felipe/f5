@@ -419,6 +419,157 @@ describe("OrchestrationEngine", () => {
     }
   });
 
+  it.each(["commits", "binding changed", "competing delivery"] as const)(
+    "%s the fresh-context record and resume cursor together",
+    async (scenario) => {
+      const system = await createOrchestrationSystem();
+      const fixture = workflowArchiveFixture("planning");
+      const { entry } = fixture;
+      if (entry.kind !== "planning") throw new Error("Expected a planning workflow");
+      const { projectId } = entry.workflow;
+      const threadId = entry.workflow.branchA.authorThreadId;
+      const at = entry.workflow.createdAt;
+      const workspaceRoot = process.cwd();
+      const dispatchCommandId = CommandId.makeUnsafe("apply-reviews-dispatch");
+      const requestId = CommandId.makeUnsafe("apply-reviews-summary");
+      const recordCommandId = CommandId.makeUnsafe("apply-reviews-record");
+      const instanceId = ProviderInstanceId.makeUnsafe("codex");
+      const oldCursor = JSON.stringify({ threadId: "old-native-conversation" });
+      try {
+        const dispatch = (command: Parameters<typeof system.engine.dispatch>[0]) =>
+          system.run(system.engine.dispatch(command));
+        await dispatch({
+          type: "project.create",
+          commandId: CommandId.makeUnsafe("recovery-project"),
+          projectId,
+          title: "Recovery",
+          workspaceRoot,
+          createdAt: at,
+        });
+        await dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe("recovery-thread"),
+          projectId,
+          threadId,
+          title: "Implementation",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: at,
+        });
+        await dispatch({
+          type: "project.workflow.upsert",
+          commandId: CommandId.makeUnsafe("recovery-workflow"),
+          projectId,
+          createdAt: at,
+          workflow: {
+            ...entry.workflow,
+            implementation: {
+              threadId,
+              implementationSlot: { provider: "codex", model: "gpt-5-codex" },
+              implementationTurnId: "implementation-turn",
+              revisionTurnId: null,
+              revisionAttempt: 1,
+              revisionDispatchCommandId: dispatchCommandId,
+              revisionCompaction: { requestId, recordCommandId },
+              codeReviewEnabled: true,
+              codeReviews: [],
+              status: "applying_reviews",
+              error: null,
+              retryCount: 0,
+              lastRetryAt: null,
+              updatedAt: at,
+            },
+          },
+        });
+        await system.run(system.sql`
+          INSERT INTO provider_session_runtime (thread_id, provider_name, provider_instance_id, adapter_key,
+            status, last_seen_at, resume_cursor_json, runtime_payload_json)
+          VALUES (${threadId}, 'codex', ${instanceId}, 'codex', 'stopped', ${at},
+            ${oldCursor}, '{"sessionGeneration":3}')
+        `);
+        if (scenario === "competing delivery") {
+          await dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.makeUnsafe("competing-delivery"),
+            threadId,
+            message: {
+              messageId: MessageId.makeUnsafe("competing-message"),
+              role: "user",
+              text: "Other work",
+              attachments: [],
+            },
+            provider: "codex",
+            model: "gpt-5-codex",
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: at,
+          });
+        }
+        const commit = dispatch({
+          type: "thread.compacted.record",
+          commandId: recordCommandId,
+          threadId,
+          createdAt: at,
+          freshSessionGuard: {
+            workflowId: entry.workflow.id,
+            requestId,
+            dispatchCommandId,
+            attempt: 1,
+            lastInteractionAt: at,
+            branch: null,
+            worktreePath: null,
+            workspaceRoot,
+            model: "gpt-5-codex",
+            binding: {
+              provider: "codex",
+              instanceId,
+              generation: scenario === "binding changed" ? 2 : 3,
+            },
+          },
+          compaction: {
+            summary: "Work already finished",
+            estimatedTokens: 11_567,
+            modelContextWindowTokens: 200_000,
+            trigger: "automatic",
+            createdAt: at,
+            direction: null,
+            pivotMessageId: null,
+            fromTurnCount: 1,
+            toTurnCount: 1,
+            freshSessionRecordId: recordCommandId,
+            retiredSessionGeneration: 3,
+          },
+        });
+        if (scenario === "commits") await commit;
+        else await expect(commit).rejects.toThrow("changed during context recovery");
+        const [binding] = await system.run(system.sql<{
+          cursor: string | null;
+          generation: number;
+        }>`
+          SELECT resume_cursor_json AS cursor,
+            json_extract(runtime_payload_json, '$.sessionGeneration') AS generation
+          FROM provider_session_runtime WHERE thread_id = ${threadId}
+        `);
+        const thread = (await system.run(system.engine.getReadModel())).threads.find(
+          (entry) => entry.id === threadId,
+        );
+        if (scenario === "commits") {
+          expect(binding).toMatchObject({ cursor: null, generation: 4 });
+          expect(thread?.compaction?.freshSessionRecordId).toBe(recordCommandId);
+          expect(thread?.estimatedContextTokens).toBe(11_567);
+        } else {
+          expect(binding).toMatchObject({ cursor: oldCursor, generation: 3 });
+          expect(thread?.compaction).toBeNull();
+        }
+      } finally {
+        await system.dispose();
+      }
+    },
+  );
+
   it.each(["planning", "codeReview", "investigation"] as const)(
     "persists and replays atomic %s workflow archive, restore and deletion",
     async (kind) => {

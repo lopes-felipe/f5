@@ -174,11 +174,15 @@ function latestTurnAssistantMessage(
       "turnId" | "assistantMessageId"
     >;
   },
+  requireMatchingTurn: boolean,
 ): WorkflowConsumableThread["messages"][number] | null {
   const preferredAssistantMessageId = thread.latestTurn.assistantMessageId;
   if (preferredAssistantMessageId) {
     const preferred = thread.messages.find((message) => message.id === preferredAssistantMessageId);
-    if (isConsumableAssistantMessage(preferred) && preferred.turnId === thread.latestTurn.turnId) {
+    if (
+      isConsumableAssistantMessage(preferred) &&
+      (!requireMatchingTurn || preferred.turnId === thread.latestTurn.turnId)
+    ) {
       return preferred;
     }
   }
@@ -223,7 +227,7 @@ export function latestAssistantText(thread: {
 export function getFinishedConsumableLatestTurn(
   thread: WorkflowConsumableThread | null | undefined,
 ): ReturnType<typeof getFinishedConsumableTurn> {
-  return getFinishedConsumableTurn(thread, thread?.latestTurn);
+  return getFinishedConsumableTurn(thread, thread?.latestTurn, false);
 }
 
 export function getFinishedConsumableTurn(
@@ -235,6 +239,7 @@ export function getFinishedConsumableTurn(
       > & { readonly state: string })
     | null
     | undefined,
+  requireMatchingTurn = true,
 ): {
   readonly turnId: NonNullable<WorkflowConsumableThread["latestTurn"]>["turnId"];
   readonly assistantMessageId: WorkflowConsumableThread["messages"][number]["id"];
@@ -247,10 +252,10 @@ export function getFinishedConsumableTurn(
     return null;
   }
 
-  const assistantMessage = latestTurnAssistantMessage({
-    ...thread,
-    latestTurn: turn,
-  });
+  const assistantMessage = latestTurnAssistantMessage(
+    { messages: thread.messages, latestTurn: turn },
+    requireMatchingTurn,
+  );
   if (!assistantMessage) {
     return null;
   }
@@ -330,16 +335,19 @@ export function formatAssistantFeedback(
     readonly reasoningText?: string | undefined;
   },
   combinedReasoningHeading = "Reviewer reasoning",
+  preserveWhitespace = false,
 ): AssistantFeedback | null {
-  const text = message.text.trim();
-  const reasoning = (message.reasoningText ?? "").trim();
-  if (text.length === 0 && reasoning.length === 0) {
+  const trimmedText = message.text.trim();
+  const trimmedReasoning = (message.reasoningText ?? "").trim();
+  const text = preserveWhitespace ? message.text : trimmedText;
+  const reasoning = preserveWhitespace ? (message.reasoningText ?? "") : trimmedReasoning;
+  if (!trimmedText && !trimmedReasoning) {
     return null;
   }
-  if (text.length === 0) {
+  if (!trimmedText) {
     return { text: reasoning, source: "reasoning-only" };
   }
-  if (reasoning.length === 0) {
+  if (!trimmedReasoning) {
     return { text, source: "text-only" };
   }
   return {

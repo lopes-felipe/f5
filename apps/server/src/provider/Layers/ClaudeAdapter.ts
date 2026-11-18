@@ -1,4 +1,5 @@
 import { normalizeUserInputOptions } from "../userInputOptions.ts";
+import { CLAUDE_ONE_OFF_PROMPT_TIMEOUT_MS } from "../oneOffPromptTimeouts.ts";
 import {
   resolveClaudeBypassAvailability,
   type ClaudeBypassResolution,
@@ -360,7 +361,6 @@ import { nextClaudeGoal, readClaudeGoal, type ClaudeNativeGoal } from "../claude
 const PROVIDER = "claudeAgent" as const;
 /** Upper bound for one MCP App tool call, below the client's 60 s request deadline. */
 const CLAUDE_MCP_APP_CALL_TIMEOUT_MS = 55_000;
-const COMPACTION_QUERY_TIMEOUT = Duration.minutes(3);
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
@@ -7404,7 +7404,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           Effect.timeoutOption(
             input.timeoutMs !== undefined
               ? Duration.millis(input.timeoutMs)
-              : COMPACTION_QUERY_TIMEOUT,
+              : Duration.millis(CLAUDE_ONE_OFF_PROMPT_TIMEOUT_MS),
           ),
           Effect.flatMap(
             Option.match({

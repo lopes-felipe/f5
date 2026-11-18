@@ -609,6 +609,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             command.type === "thread.checkpoint.revert" ||
             command.type === "thread.conversation.revert" ||
             command.type === "thread.compact.request" ||
+            (command.type === "thread.compacted.record" &&
+              command.freshSessionGuard !== undefined) ||
             command.type === "thread.approval.respond" ||
             command.type === "thread.user-input.respond";
           if (!changingWorkspace && !executing) return;
@@ -725,6 +727,93 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           .withTransaction(
             Effect.gen(function* () {
               yield* checkWorkspaceBarrier;
+              if (
+                envelope.command.type === "thread.compacted.record" &&
+                envelope.command.freshSessionGuard
+              ) {
+                const command = envelope.command;
+                const guard = envelope.command.freshSessionGuard;
+                const thread = commandReadModel.threads.find(
+                  (entry) => entry.id === command.threadId,
+                );
+                const workflow = commandReadModel.planningWorkflows.find(
+                  (entry) => entry.id === guard.workflowId,
+                );
+                const implementation = workflow?.implementation;
+                const project = commandReadModel.projects.find(
+                  (entry) => entry.id === thread?.projectId,
+                );
+                const changed = new OrchestrationCommandInvariantError({
+                  commandType: command.type,
+                  detail:
+                    "Apply Reviews or its implementation thread changed during context recovery.",
+                });
+                if (
+                  !workflow ||
+                  workflow.deletedAt ||
+                  workflow.archivedAt ||
+                  (workflow.maxCostUsd != null && workflow.totalCostUsd >= workflow.maxCostUsd) ||
+                  implementation?.threadId !== command.threadId ||
+                  implementation.status !== "applying_reviews" ||
+                  implementation.revisionAttempt !== guard.attempt ||
+                  implementation.revisionDispatchCommandId !== guard.dispatchCommandId ||
+                  implementation.revisionCompaction?.requestId !== guard.requestId ||
+                  implementation.revisionCompaction.recordCommandId !== command.commandId ||
+                  command.compaction.freshSessionRecordId !== command.commandId ||
+                  !thread ||
+                  thread.deletedAt ||
+                  thread.archivedAt ||
+                  thread.lastInteractionAt !== guard.lastInteractionAt ||
+                  thread.branch !== guard.branch ||
+                  thread.worktreePath !== guard.worktreePath ||
+                  thread.model !== guard.model ||
+                  thread.projectId !== workflow.projectId ||
+                  project?.deletedAt !== null ||
+                  project.workspaceRoot !== guard.workspaceRoot ||
+                  thread.session?.status === "starting" ||
+                  thread.session?.status === "running" ||
+                  thread.session?.activeTurnId != null ||
+                  thread.latestTurn?.state === "running"
+                )
+                  return yield* changed;
+                const competing = yield* sql<{ id: string }>`
+                  SELECT delivery.delivery_id AS id FROM provider_turn_deliveries AS delivery
+                  WHERE delivery.thread_id = ${command.threadId}
+                    AND (delivery.state IN ('pending', 'sending', 'ambiguous')
+                      OR (delivery.state = 'accepted' AND delivery.reservation_released_at IS NULL
+                        AND NOT EXISTS (
+                          SELECT 1 FROM projection_turns AS turn WHERE turn.thread_id = delivery.thread_id
+                            AND turn.turn_id = delivery.provider_turn_id AND turn.completed_at IS NOT NULL
+                        )))
+                  UNION ALL
+                  SELECT thread_id AS id FROM provider_handoff_state
+                  WHERE thread_id = ${command.threadId} AND pending_json IS NOT NULL
+                  LIMIT 1
+                `;
+                if (competing.length > 0) return yield* changed;
+                if (guard.binding) {
+                  const reset = yield* sql`
+                    UPDATE provider_session_runtime
+                    SET resume_cursor_json = NULL,
+                        runtime_payload_json = json_set(COALESCE(runtime_payload_json, '{}'),
+                          '$.sessionGeneration', ${guard.binding.generation + 1},
+                          '$.compactionRetiredGeneration', ${guard.binding.generation},
+                          '$.activeTurnId', NULL)
+                    WHERE thread_id = ${command.threadId}
+                      AND provider_name = ${guard.binding.provider}
+                      AND COALESCE(provider_instance_id, provider_name) = ${guard.binding.instanceId}
+                      AND status = 'stopped'
+                      AND COALESCE(json_extract(runtime_payload_json, '$.sessionGeneration'), 0) = ${guard.binding.generation}
+                    RETURNING thread_id
+                  `;
+                  if (reset.length !== 1) return yield* changed;
+                } else {
+                  const bindings = yield* sql`
+                    SELECT thread_id FROM provider_session_runtime WHERE thread_id = ${command.threadId}
+                  `;
+                  if (bindings.length > 0) return yield* changed;
+                }
+              }
               if (envelope.command.type === "thread.settle") {
                 const command = envelope.command;
                 const [blocked] = yield* sql<{

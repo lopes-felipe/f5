@@ -4596,12 +4596,33 @@ const make = Effect.gen(function* () {
           yield* providerTerminalEventRepository.markApplied(incomingEvent.eventId);
         return;
       }
+      if (
+        event.sessionGeneration !== undefined &&
+        thread.compaction?.retiredSessionGeneration !== undefined &&
+        event.sessionGeneration <= thread.compaction.retiredSessionGeneration
+      ) {
+        if (isProviderTerminalRuntimeEvent(event))
+          yield* providerTerminalEventRepository.markApplied(event.eventId);
+        return;
+      }
       if (isProviderTerminalRuntimeEvent(event)) {
         const binding = Option.getOrUndefined(
           yield* providerSessionDirectory.getBinding(event.threadId),
         );
         const generation = readPersistedSessionGeneration(binding?.runtimePayload);
         const currentInstance = binding?.providerInstanceId ?? thread.session?.providerInstanceId;
+        const runtimePayload = binding?.runtimePayload;
+        if (
+          event.sessionGeneration !== undefined &&
+          runtimePayload &&
+          typeof runtimePayload === "object" &&
+          "compactionRetiredGeneration" in runtimePayload &&
+          typeof runtimePayload.compactionRetiredGeneration === "number" &&
+          event.sessionGeneration <= runtimePayload.compactionRetiredGeneration
+        ) {
+          yield* providerTerminalEventRepository.markApplied(event.eventId);
+          return;
+        }
         const legacyTurnMatches =
           event.turnId !== undefined &&
           (thread.session?.activeTurnId === event.turnId ||

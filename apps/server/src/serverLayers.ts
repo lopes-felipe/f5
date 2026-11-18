@@ -496,8 +496,12 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(runtimeServicesLayer),
     Layer.provideMerge(providerCommandReactorLayer),
   );
+  const compactionServiceLayer = CompactionServiceLive.pipe(
+    Layer.provideMerge(runtimeServicesLayer),
+  );
   const workflowServiceLayer = workflowServiceBaseLayer.pipe(
     Layer.provideMerge(providerTurnDeliveryWorkerLayer),
+    Layer.provideMerge(compactionServiceLayer),
   );
   const codeReviewWorkflowServiceLayer = codeReviewWorkflowServiceBaseLayer.pipe(
     Layer.provideMerge(providerTurnDeliveryWorkerLayer),
@@ -506,9 +510,6 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(providerTurnDeliveryWorkerLayer),
   );
   const checkpointReactorLayer = CheckpointReactorLive.pipe(
-    Layer.provideMerge(runtimeServicesLayer),
-  );
-  const compactionServiceLayer = CompactionServiceLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
   );
   const projectSkillSyncServiceLayer = ProjectSkillSyncServiceLive.pipe(
