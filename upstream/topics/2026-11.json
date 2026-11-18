@@ -55540,6 +55540,29 @@
       ]
     },
     {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-35006",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "terminal"
+        ],
+        "confidence": 0.75,
+        "f5Coverage": "none",
+        "kind": "feat",
+        "model": "claude-opus-5-5",
+        "reason": "A small terminal capability that matches what agent sessions already get.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Integrated terminal shells receive T3CODE_THREAD_ID, so scripts, t3 CLI calls and port discovery can tell which thread a terminal belongs to.",
+      "title": "Integrated terminals get T3CODE_THREAD_ID like agent sessions",
+      "upstreamPrs": [
+        35006
+      ]
+    },
+    {
       "createdAt": "2026-11-12T11:14:04.510Z",
       "epoch": 1,
       "id": "pr-35008",
@@ -62268,6 +62291,52 @@
       ]
     },
     {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-36035",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.75,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "f5 has Antigravity. Without this, other instances keep a stale model list after an update.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "After a managed Antigravity install succeeds, every enabled instance on the managed runtime refreshes its model list, not only the instance that started the install.",
+      "title": "An Antigravity update refreshes every instance's model list",
+      "upstreamPrs": [
+        36035
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-36037",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.8,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "f5 has Antigravity, and on headless hosts this replaces a generic failure with sign-in guidance.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The -32603 'No browser is available here' error counts as sign-in required. On headless hosts, model refresh, instance status and new sessions now report that sign-in is needed.",
+      "title": "Antigravity 1.5 asks for sign-in when it cannot open a browser",
+      "upstreamPrs": [
+        36037
+      ]
+    },
+    {
       "createdAt": "2026-11-13T14:39:02.847Z",
       "decidedAt": "2026-11-13T14:39:02.847Z",
       "decidedBy": "rule",
@@ -64686,6 +64755,30 @@
       ]
     },
     {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-36439",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "mcp",
+          "providers"
+        ],
+        "confidence": 0.8,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "f5 has Antigravity and the T3 MCP server. Without this, Antigravity turns fail outright.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "The MCP HTTP server accepts notifications that the sessionless protocol doesn't define, such as roots/list_changed, instead of answering 400. That 400 made Antigravity's Go client close its connection and fail the turn.",
+      "title": "Antigravity turns no longer fail on a roots notification to the T3 MCP server",
+      "upstreamPrs": [
+        36439
+      ]
+    },
+    {
       "createdAt": "2026-11-14T11:13:10.842Z",
       "decidedAt": "2026-11-14T11:13:10.842Z",
       "decidedBy": "llm",
@@ -64969,6 +65062,33 @@
       "title": "t3 browser setup reloads an AppArmor profile that is on disk but not loaded",
       "upstreamPrs": [
         36490
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-36495",
+      "relatedTopics": [
+        "pr-26652"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "mcp"
+        ],
+        "confidence": 0.75,
+        "f5Coverage": "partial",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "f5 has Antigravity, and the driver file exists in f5. Without this, the MCP fallback fails when an organization's policy strips native MCP.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The Antigravity driver passes the adapter's process environment (T3CODE_THREAD_ID and the T3_ACP_MCP_* variables) to the spawned agent, so the terminal MCP fallback works.",
+      "title": "Antigravity thread sessions spawn with their T3 thread and MCP environment",
+      "upstreamPrs": [
+        36495
       ]
     },
     {
@@ -70226,6 +70346,30 @@
       ]
     },
     {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-37266",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "agents"
+        ],
+        "confidence": 0.55,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Helps agents resume cut subagents after a restart. Port it if f5 shows the restart background note.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "After a restart, the note on a cut Claude subagent adds 'resume it with SendMessage to <id>'. An id of null is no longer printed.",
+      "title": "Restart note says how to resume a cut Claude subagent",
+      "upstreamPrs": [
+        37266
+      ]
+    },
+    {
       "createdAt": "2026-11-16T12:08:36.298Z",
       "decidedAt": "2026-11-16T12:08:36.298Z",
       "decidedBy": "rule",
@@ -70809,6 +70953,37 @@
       "title": "fix(server): a delegated child's turn end re-offers only its own parent run's wake (#37399)",
       "upstreamPrs": [
         37399
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "decidedAt": "2026-11-18T14:10:14.969Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-37406",
+      "reason": "f5 keeps its desktop-hosted html_preview, and upstream's server headless-Chrome preview does not apply.",
+      "reasonKey": "declined-by-policy",
+      "relatedTopics": [
+        "pr-30946"
+      ],
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "preview-browser"
+        ],
+        "confidence": 0.9,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "f5 keeps its desktop-hosted html_preview, and upstream's server headless-Chrome preview does not apply.",
+        "reasonKey": "declined-by-policy",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "ServerBrowser subscribes to manager events before forking the mirror stream, so an 'opened' event published early isn't lost.",
+      "title": "Server preview tabs opened at startup no longer stay loading",
+      "upstreamPrs": [
+        37406
       ]
     },
     {
@@ -72625,6 +72800,30 @@
       "title": "Theme CSS can hold 100,000 characters",
       "upstreamPrs": [
         37781
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-37787",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "timeline"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Improves how Claude background work is shown, if f5 has the Background work dialog.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Entries from background_tasks_changed look up the launching tool call, so a foreground Bash command moved to the background shows a Command label, a code block and live output.",
+      "title": "A Claude command moved to the background keeps its command in Background work",
+      "upstreamPrs": [
+        37787
       ]
     },
     {
@@ -76040,6 +76239,21 @@
       ]
     },
     {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "decidedAt": "2026-11-18T14:10:14.969Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-38491",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): use the shared rounded frame for issue details (#38491)",
+      "upstreamPrs": [
+        38491
+      ]
+    },
+    {
       "createdAt": "2026-11-18T11:12:10.405Z",
       "epoch": 1,
       "id": "pr-38494",
@@ -76234,6 +76448,34 @@
       ]
     },
     {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "decidedAt": "2026-11-18T14:10:14.969Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-38553",
+      "reason": "The fix is in the mobile composer and in client-runtime upload state, and f5 has neither.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.95,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "The fix is in the mobile composer and in client-runtime upload state, and f5 has neither.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The mobile composer keeps a failed document's tile visible while its retry uploads, and removes it once the upload succeeds.",
+      "title": "Mobile: a retried document upload keeps its tile and shows progress",
+      "upstreamPrs": [
+        38553
+      ]
+    },
+    {
       "createdAt": "2026-11-18T11:12:10.405Z",
       "epoch": 1,
       "id": "pr-38554",
@@ -76259,6 +76501,29 @@
       ]
     },
     {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-38556",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.5,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Fixes reasoning-level options for ACP agents. It reaches f5 only if f5's ACP layer handles registry agents such as Vibe.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "ACP config options with the category 'thinking' are treated as per-model thought levels. Each Vibe model then offers its own reasoning levels instead of the levels from the last session.",
+      "title": "Each Mistral Vibe model shows its own thinking levels",
+      "upstreamPrs": [
+        38556
+      ]
+    },
+    {
       "createdAt": "2026-11-18T11:12:10.405Z",
       "epoch": 1,
       "id": "pr-38558",
@@ -76279,6 +76544,188 @@
       "title": "Very wide or tall lone images in user messages show the whole image",
       "upstreamPrs": [
         38558
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-38567",
+      "relatedTopics": [
+        "pr-28111"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "usage",
+          "providers"
+        ],
+        "confidence": 0.75,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Usage is an f5 surface, and Cursor history on large accounts otherwise fails to load or loses what it read.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Cursor usage refreshes read history in ranges, newest first, and save each range as it arrives. A failed read halves the range and a successful one doubles it, so large accounts and post-outage catch-up both complete.",
+      "title": "Cursor usage history on large accounts loads in pieces and keeps what was read",
+      "upstreamPrs": [
+        38567
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-38575",
+      "relatedTopics": [
+        "pr-33403"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "threads",
+          "orchestration"
+        ],
+        "confidence": 0.6,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "f5 imports sessions, so the symptom (history sent twice, or a missing session opened empty) can occur. Reimplement in f5's orchestration.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The legacy import handoff is prepared only for a provider thread without a native session. The Claude resume path no longer opens a missing imported session as an empty one, so the history isn't sent twice.",
+      "title": "The first message on an imported conversation sends its history once",
+      "upstreamPrs": [
+        38575
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-38582",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "worktrees",
+          "threads"
+        ],
+        "confidence": 0.75,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "f5 has the Pi provider and worktrees, and a thread stuck on Waiting is a visible bug.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The Pi session runtime declares that background tasks end with the process, so a released session's open worktree-handoff row closes and the thread goes idle.",
+      "title": "Worktree handoff no longer leaves Pi threads Waiting",
+      "upstreamPrs": [
+        38582
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "decidedAt": "2026-11-18T14:10:14.969Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-38592",
+      "reason": "Only changes the upstream release smoke test.",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "release"
+        ],
+        "confidence": 0.95,
+        "f5Coverage": "all",
+        "kind": "maintenance",
+        "model": "claude-opus-5-5",
+        "reason": "Only changes the upstream release smoke test.",
+        "reasonKey": "release-ci",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The release smoke script no longer deletes pnpm-lock.yaml before installing, which avoids flaky failures caused by what the registry served at the time.",
+      "title": "Release smoke refreshes the committed lockfile",
+      "upstreamPrs": [
+        38592
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-38598",
+      "relatedTopics": [
+        "pr-38347"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "files",
+          "providers"
+        ],
+        "confidence": 0.7,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Small fixes to the document text worker that improve the text sent to agents.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "RTF section, page and column breaks become newlines in extracted text. Jupyter raw cells are labelled raw instead of markdown.",
+      "title": "Attachment text: RTF section, page and column breaks, and raw notebook cells",
+      "upstreamPrs": [
+        38598,
+        38612
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-38615",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.5,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Fixes the local Hermes ACP agent. It reaches f5 only if f5 supports local ACP registry agents.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "For a local hermes command, the ACP registry adapter enables post-settle continuation and deferred finalize, so Hermes' reply after a background process exits opens a continuation run.",
+      "title": "Hermes Agent's reply after a background process finishes reaches the thread",
+      "upstreamPrs": [
+        38615
+      ]
+    },
+    {
+      "createdAt": "2026-11-18T14:10:14.969Z",
+      "epoch": 1,
+      "id": "pr-38619",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.7,
+        "f5Coverage": "none",
+        "kind": "fix",
+        "model": "claude-opus-5-5",
+        "reason": "Claude text generation ignored attached images, so generated text missed image context.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "ClaudeTextGeneration sends image attachments to claude -p as base64 image blocks in a stream-json user message and reads the final result line. Requests without images are unchanged.",
+      "title": "Claude text generation sends attached images",
+      "upstreamPrs": [
+        38619
       ]
     },
     {
