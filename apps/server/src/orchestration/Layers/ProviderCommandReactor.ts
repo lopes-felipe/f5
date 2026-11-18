@@ -47,7 +47,6 @@ import {
   ProjectId,
   ProviderDriverKind,
   type ProviderInstanceId,
-  type ProjectMemory,
   type OrchestrationThread,
   type ProviderModelOptions,
   type ProviderKind,
@@ -136,7 +135,11 @@ import { estimateProviderInstructionTokens } from "../../provider/contextTokenEs
 import { resolveModelContextWindowTokens } from "../../provider/modelContextWindowMetadata.ts";
 import type { ProviderRuntimeBinding } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { buildThreadResumeContext, buildThreadCompactionTranscript } from "../compactionService.ts";
+import { buildThreadCompactionTranscript } from "../compactionService.ts";
+import {
+  buildThreadInstructionContext,
+  deriveThreadTurnCount,
+} from "../threadSessionInstructions.ts";
 import { formatCompactSummary, getCompactPrompt } from "../compactionPrompts.ts";
 import { resolveOneOffPromptRoute } from "../oneOffPromptRouting.ts";
 import {
@@ -264,55 +267,11 @@ function hasEligibleFirstUserMessage(thread: OrchestrationThread, messageId: str
   );
 }
 
-function deriveThreadTurnCount(thread: OrchestrationThread): number {
-  const turnIds = new Set<string>();
-  if (thread.latestTurn) {
-    turnIds.add(thread.latestTurn.turnId);
-  }
-  for (const message of thread.messages) {
-    if (message.turnId) {
-      turnIds.add(message.turnId);
-    }
-  }
-  for (const activity of thread.activities) {
-    if (activity.turnId) {
-      turnIds.add(activity.turnId);
-    }
-  }
-  const checkpointTurnCount = thread.checkpoints.reduce(
-    (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
-    0,
-  );
-  return Math.max(turnIds.size, checkpointTurnCount);
-}
-
 function hasPriorConversationContext(thread: OrchestrationThread): boolean {
   return (
     thread.messages.some((message) => message.role === "assistant") ||
     deriveThreadTurnCount(thread) > 1
   );
-}
-
-function buildThreadInstructionContext(input: {
-  readonly thread: OrchestrationThread;
-  readonly projectTitle?: string;
-  readonly projectMemories: ReadonlyArray<ProjectMemory>;
-  readonly cwd?: string;
-  readonly turnCount: number;
-  readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
-}): Partial<SharedInstructionInput> {
-  return {
-    ...(input.projectTitle ? { projectTitle: input.projectTitle } : {}),
-    ...(input.projectMemories.length > 0 ? { projectMemories: input.projectMemories } : {}),
-    threadTitle: input.thread.title,
-    turnCount: input.turnCount,
-    ...(input.cwd ? { cwd: input.cwd } : {}),
-    runtimeMode: input.thread.runtimeMode,
-    ...(input.workflowExecutionProfile
-      ? { workflowExecutionProfile: input.workflowExecutionProfile }
-      : {}),
-    ...buildThreadResumeContext(input.thread),
-  };
 }
 
 function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
@@ -1017,7 +976,7 @@ const make = Effect.gen(function* () {
     workflowExecutionProfile?: WorkflowTurnExecutionProfile,
     reportWorkspaceFailure = true,
   ) {
-    const { thread, project, effectiveCwd, scratch } = yield* resolveThreadWorkspaceContext(
+    const { thread, project, effectiveCwd } = yield* resolveThreadWorkspaceContext(
       threadId,
       "start",
       reportWorkspaceFailure,
@@ -1028,16 +987,11 @@ const make = Effect.gen(function* () {
       projectWorkspaceRoot: project?.workspaceRoot ?? null,
       effectiveCwd: effectiveCwd ?? null,
     });
-    const activeProjectMemories = (scratch ? [] : (project?.memories ?? [])).filter(
-      (memory) => memory.deletedAt === null,
-    );
     const instructionContext = buildThreadInstructionContext({
       thread,
-      ...(!scratch && project?.title ? { projectTitle: project.title } : {}),
-      projectMemories: activeProjectMemories,
-      ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
-      turnCount: deriveThreadTurnCount(thread),
-      ...(workflowExecutionProfile ? { workflowExecutionProfile } : {}),
+      project,
+      cwd: effectiveCwd,
+      workflowExecutionProfile,
     });
     return { thread, instructionContext, effectiveCwd };
   });
@@ -1068,6 +1022,7 @@ const make = Effect.gen(function* () {
     readonly desiredRuntimeMode: RuntimeMode;
     readonly desiredModel?: string;
     readonly instructionContext: Partial<SharedInstructionInput>;
+    readonly freshCompactionLaunch?: boolean;
   }) =>
     Effect.promise(() =>
       estimateProviderInstructionTokens({
@@ -1079,12 +1034,20 @@ const make = Effect.gen(function* () {
     ).pipe(
       Effect.flatMap((instructionTokens) =>
         Effect.sync(() => {
-          const estimatedContextTokens =
-            instructionTokens + threadMessageContextCharacters(input.thread);
-          const modelContextWindowTokens = resolveModelContextWindowTokens({
-            provider: input.session.provider,
-            model: input.session.model ?? input.desiredModel ?? input.thread.model,
-          });
+          const estimatedContextTokens = input.freshCompactionLaunch
+            ? instructionTokens
+            : input.thread.compaction?.freshSessionRecordId &&
+                input.thread.estimatedContextTokens != null
+              ? input.thread.estimatedContextTokens
+              : instructionTokens + threadMessageContextCharacters(input.thread);
+          const modelContextWindowTokens =
+            (input.freshCompactionLaunch
+              ? input.thread.compaction?.modelContextWindowTokens
+              : undefined) ||
+            resolveModelContextWindowTokens({
+              provider: input.session.provider,
+              model: input.session.model ?? input.desiredModel ?? input.thread.model,
+            });
           const providerContextTokens =
             input.thread.session?.estimatedContextTokens ??
             input.thread.estimatedContextTokens ??
@@ -1094,6 +1057,7 @@ const make = Effect.gen(function* () {
             input.thread.modelContextWindowTokens ??
             undefined;
           const shouldPreserveProviderTokenUsage =
+            !input.freshCompactionLaunch &&
             input.thread.session?.tokenUsageSource === "provider" &&
             input.thread.session.providerName === input.session.provider &&
             providerContextTokens !== undefined;
@@ -1529,12 +1493,13 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.withSpan("provider.start-session"));
       };
 
-      const bindSessionToThread = (session: ProviderSession) =>
+      const bindSessionToThread = (session: ProviderSession, freshCompactionLaunch = false) =>
         bindSessionToThreadWithContext({
           thread,
           session,
           createdAt,
           desiredRuntimeMode,
+          freshCompactionLaunch,
           ...(desiredModel ? { desiredModel } : {}),
           instructionContext: {
             ...instructionContext,
@@ -2067,6 +2032,20 @@ const make = Effect.gen(function* () {
         persistedBinding.resumeCursor !== null
           ? persistedBinding.resumeCursor
           : undefined;
+      const retiredGeneration = thread.compaction?.retiredSessionGeneration;
+      const freshCompactionLaunch = Boolean(
+        thread.compaction?.freshSessionRecordId &&
+        resumeCursorForStoppedSession === undefined &&
+        !startCarriesHandoff &&
+        (retiredGeneration === undefined
+          ? persistedBinding === undefined
+          : persistedProviderMatches &&
+            persistedInstanceMatches &&
+            persistedCwdMatches &&
+            persistedBinding?.status === "stopped" &&
+            readPersistedSessionGeneration(persistedBinding.runtimePayload) ===
+              retiredGeneration + 1),
+      );
       yield* Effect.annotateCurrentSpan({
         "provider.session_decision":
           resumeCursorForStoppedSession !== undefined ? "resume-stopped" : "start",
@@ -2083,10 +2062,11 @@ const make = Effect.gen(function* () {
           : {}),
         ...(startCarriesHandoff ? { carriesHandoff: true } : {}),
       });
-      yield* bindSessionToThread(startedSession);
+      yield* bindSessionToThread(startedSession, freshCompactionLaunch);
       yield* recordEffectiveStartConfig();
       if (
         resumeCursorForStoppedSession === undefined &&
+        !freshCompactionLaunch &&
         !startCarriesHandoff &&
         persistedBinding !== undefined &&
         hasPriorConversationContext(thread)

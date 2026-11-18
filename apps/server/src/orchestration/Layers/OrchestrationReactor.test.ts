@@ -186,6 +186,7 @@ describe("OrchestrationReactor", () => {
                 started.push("compaction-service");
               }),
               drain: Effect.void,
+              requestSummary: () => Effect.die("unexpected workflow compaction"),
             }),
           ),
           Layer.provideMerge(

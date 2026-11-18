@@ -10,16 +10,23 @@ import {
   MessageId,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OrchestrationRetryWorkflowResult,
+  type OrchestrationThread,
   OrchestrationProposedPlanId,
   PlanningWorkflowId,
   type PlanningWorkflow,
   type ProviderInteractionMode,
   ThreadId,
-  type TurnId,
+  TurnId,
   type WorkflowReviewSlot,
 } from "@t3tools/contracts";
 import { createHash } from "node:crypto";
-import { Cause, Clock, Duration, Effect, Layer, Scope, Stream } from "effect";
+import { Cause, Clock, Duration, Effect, Layer, Option, Scope, Stream } from "effect";
+import {
+  estimateModelContextWindowTokens,
+  normalizeModelSlug,
+  roughTokenEstimateFromCharacters,
+} from "@t3tools/shared/model";
 import {
   defaultDocumentReaderSlot,
   documentWorkflowForThread,
@@ -37,7 +44,10 @@ import {
   validateProposedPlanOutput,
 } from "@t3tools/shared/proposedPlan";
 import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowArchive";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
+import {
+  buildTemporaryWorktreeBranchName,
+  isTemporaryWorktreeBranch,
+} from "@t3tools/shared/worktree";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckpointDiffQuery } from "../../checkpointing/Services/CheckpointDiffQuery.ts";
@@ -81,11 +91,13 @@ import {
 } from "../workflowPrompts.ts";
 import {
   getFinishedConsumableLatestTurn,
-  latestAssistantFeedback,
+  getFinishedConsumableTurn,
+  formatAssistantFeedback,
   nextWorkflowSlug,
   reviewFeedbackForPinnedTurn,
   slotLabel,
   workflowPromptFitError,
+  workflowPromptFit,
 } from "../workflowSharedUtils.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 import {
@@ -96,7 +108,18 @@ import {
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { OrchestrationCommandInvariantError, type OrchestrationDispatchError } from "../Errors.ts";
 import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWorker.ts";
+import {
+  CompactionService,
+  type WorkflowCompactionOutcome,
+} from "../Services/CompactionService.ts";
 import { ProviderTurnDeliveryRepository } from "../Services/ProviderTurnDeliveryRepository.ts";
+import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
+import { makeOperationGate } from "../../provider/operationGate.ts";
+import {
+  makeWorkflowStageDispatchResolver,
+  STARTUP_DISPATCH_RECHECK_TIMEOUT,
+} from "../workflowStageDispatch.ts";
 import { isProviderResumeFailureText } from "../../provider/resumeFailure.ts";
 import {
   assertWorkflowStageProviderSupported,
@@ -866,6 +889,7 @@ function markCodeReviewsRunning(workflow: PlanningWorkflow, updatedAt: string): 
 function markCodeReviewCompleted(
   workflow: PlanningWorkflow,
   threadId: ThreadId,
+  turn: NonNullable<ReturnType<typeof getFinishedConsumableLatestTurn>>,
   updatedAt: string,
 ): PlanningWorkflow {
   if (!workflow.implementation) {
@@ -878,6 +902,8 @@ function markCodeReviewCompleted(
           ...review,
           status: "completed" as const,
           error: null,
+          pinnedTurnId: turn.turnId,
+          pinnedAssistantMessageId: turn.assistantMessageId,
           updatedAt,
         }
       : review,
@@ -915,6 +941,31 @@ function markImplementationApplyingReviews(
       : workflow.implementation,
     updatedAt,
   };
+}
+
+function hasMisattributedRevision(workflow: PlanningWorkflow): boolean {
+  const implementation = workflow.implementation;
+  return (
+    implementation?.status === "completed" &&
+    implementation.revisionTurnId !== null &&
+    implementation.revisionTurnId === implementation.implementationTurnId
+  );
+}
+
+function isApplyReviewsLifecycle(workflow: PlanningWorkflow): boolean {
+  const implementation = workflow.implementation;
+  return Boolean(
+    implementation &&
+    (hasMisattributedRevision(workflow) ||
+      implementation.status === "code_reviews_saved" ||
+      implementation.status === "applying_reviews" ||
+      implementation.revisionDispatchCommandId ||
+      implementation.revisionAttempt !== undefined ||
+      (implementation.status === "error" &&
+        (implementation.errorStage === "apply-feedback" ||
+          (implementation.codeReviews.length > 0 &&
+            implementation.codeReviews.every((review) => review.status === "completed"))))),
+  );
 }
 
 function markImplementationCompleted(
@@ -1317,6 +1368,12 @@ export const makeWorkflowService = Effect.gen(function* () {
     ProviderTurnDeliveryRepository,
   );
   const checkpointDiffQuery = yield* Effect.serviceOption(CheckpointDiffQuery);
+  const commandReceipts = yield* Effect.serviceOption(OrchestrationCommandReceiptRepository);
+  const turnRepository = yield* Effect.serviceOption(ProjectionTurnRepository);
+  const resolveStageDispatch = yield* makeWorkflowStageDispatchResolver;
+  const withWorkflowGate = makeOperationGate<PlanningWorkflowId>();
+  const compactionService = yield* Effect.serviceOption(CompactionService);
+  const activeRevisionCompactions = new Set<CommandId>();
 
   const getWorkflowProviders =
     providerRegistry._tag === "Some" ? providerRegistry.value.getProviders : Effect.succeed([]);
@@ -1325,7 +1382,7 @@ export const makeWorkflowService = Effect.gen(function* () {
     getWorkflowProviders,
   );
 
-  const upsertWorkflow = (workflow: PlanningWorkflow) =>
+  const writeWorkflow = (workflow: PlanningWorkflow) =>
     orchestrationEngine.dispatch({
       type: "project.workflow.upsert",
       commandId: CommandId.makeUnsafe(timeOrderedUuid()),
@@ -1333,6 +1390,55 @@ export const makeWorkflowService = Effect.gen(function* () {
       workflow,
       createdAt: workflow.updatedAt,
     });
+
+  const upsertWorkflow = (workflow: PlanningWorkflow) =>
+    withWorkflowGate(
+      workflow.id,
+      Effect.gen(function* () {
+        const current = yield* readWorkflow(orchestrationEngine, workflow.id);
+        if (!current) return yield* writeWorkflow(workflow);
+        const applying = current.implementation && isApplyReviewsLifecycle(current);
+        // Stale writers must not reopen a finished revision or replace its pin.
+        // A writer that has observed the finished revision may update it.
+        const preserveImplementation =
+          applying &&
+          (current.implementation?.status !== "completed" ||
+            workflow.implementation?.status !== "completed" ||
+            workflow.implementation.revisionTurnId !== current.implementation.revisionTurnId);
+        return yield* writeWorkflow({
+          ...workflow,
+          ...(preserveImplementation ? { implementation: current.implementation } : {}),
+          ...(applying
+            ? { archivedAt: current.archivedAt, archiveRestorations: current.archiveRestorations }
+            : {}),
+          totalCostUsd: Math.max(workflow.totalCostUsd, current.totalCostUsd),
+          updatedAt:
+            current.updatedAt > workflow.updatedAt ? current.updatedAt : workflow.updatedAt,
+        });
+      }),
+    );
+
+  const recordWorkflowTurnCost = (
+    workflow: PlanningWorkflow,
+    turnCostUsd: number | undefined,
+    occurredAt: string,
+  ) =>
+    turnCostUsd === undefined || !Number.isFinite(turnCostUsd) || turnCostUsd <= 0
+      ? Effect.succeed(workflow)
+      : withWorkflowGate(
+          workflow.id,
+          Effect.gen(function* () {
+            const current = yield* readWorkflow(orchestrationEngine, workflow.id);
+            if (!current || isDeletedWorkflow(current)) return workflow;
+            const costed = applyWorkflowTurnCost(
+              current,
+              turnCostUsd,
+              current.updatedAt > occurredAt ? current.updatedAt : occurredAt,
+            );
+            yield* writeWorkflow(costed);
+            return costed;
+          }),
+        );
 
   const deliveryForStage = (threadId: ThreadId, intentPersistedAt: string) =>
     providerTurnDeliveryWorker._tag === "Some"
@@ -3497,145 +3603,807 @@ export const makeWorkflowService = Effect.gen(function* () {
       yield* upsertWorkflow(markCodeReviewsRunning(pendingWorkflow, updatedAt));
     });
 
-  const maybeStartImplementationRevision = (
+  const readRevisionTurn = (thread: OrchestrationThread, turnId: TurnId) => {
+    if (thread.latestTurn?.turnId === turnId) return Effect.succeed(thread.latestTurn);
+    return turnRepository._tag === "Some"
+      ? turnRepository.value
+          .getByTurnId({ threadId: thread.id, turnId })
+          .pipe(Effect.map(Option.getOrNull))
+      : Effect.succeed(null);
+  };
+
+  const prepareImplementationRevision = (
     workflow: PlanningWorkflow,
+    implementation: NonNullable<PlanningWorkflow["implementation"]>,
     snapshot: OrchestrationReadModel,
-    updatedAt: string,
+    legacyFormatting = false,
   ) =>
     Effect.gen(function* () {
-      if (!workflow.implementation || workflow.implementation.status !== "code_reviews_saved") {
-        return;
-      }
-      if (!workflow.implementation.threadId) {
-        return;
-      }
-
-      const reviewTexts = (yield* Effect.forEach(workflow.implementation.codeReviews, (review) =>
-        Effect.gen(function* () {
-          const thread = snapshot.threads.find((entry) => entry.id === review.threadId);
-          const feedback = thread ? latestAssistantFeedback(thread) : null;
-          if (!feedback) {
-            yield* Effect.logWarning("review yielded empty feedback text", {
-              threadId: review.threadId,
-              reviewerLabel: review.reviewerLabel,
-              reviewStatus: review.status,
-            });
-            return null;
-          }
-          if (feedback.source !== "text-only") {
-            yield* Effect.logDebug("reviewer feedback included reasoning-channel content", {
-              threadId: review.threadId,
-              reviewerLabel: review.reviewerLabel,
-              source: feedback.source,
-            });
-          }
-          return {
-            reviewerLabel: review.reviewerLabel,
-            reviewMarkdown: feedback.text,
-            source: {
-              workflowId: workflow.id,
-              stage: review.reviewerLabel,
-              ...(thread?.latestTurn?.turnId ? { turnId: thread.latestTurn.turnId } : {}),
-              ...(thread?.latestTurn?.assistantMessageId
-                ? { messageId: thread.latestTurn.assistantMessageId }
-                : {}),
-            },
-          };
-        }),
-      )).filter((review): review is NonNullable<typeof review> => review !== null);
-
-      if (reviewTexts.length === 0) {
-        return;
-      }
-
-      const budgetError = workflowBudgetError(workflow);
-      if (budgetError) {
-        yield* upsertWorkflow(markImplementationError(workflow, budgetError.message, updatedAt));
-        return;
-      }
-
-      const prompt = buildImplementationRevisionPrompt({
-        reviews: reviewTexts,
-      });
-      const implementationThread = snapshot.threads.find(
-        (entry) => entry.id === workflow.implementation?.threadId,
-      );
-      const promptError = workflowPromptInvariant({
-        workflow,
-        prompt,
-        artifacts: reviewTexts.map((review) => review.reviewMarkdown),
-        targetSlot: workflow.implementation.implementationSlot,
-        artifactLabel: "Implementation review feedback",
-        ...(implementationThread ? { thread: implementationThread } : {}),
-      });
-      if (promptError) {
-        yield* upsertWorkflow(
-          markImplementationError(workflow, promptError.message, updatedAt, "apply-feedback"),
-        );
-        return;
-      }
-
-      const applyingWorkflow = markImplementationApplyingReviews(workflow, updatedAt);
-      const behavior = resolveWorkflowBehavior({
-        runKind: "planning",
-        templateId: workflow.templateId,
-        templateVersion: workflow.templateVersion,
-      });
-      const existingDelivery = behavior.idempotentStageSetup
-        ? yield* deliveryForStage(
-            workflow.implementation.threadId,
-            workflow.implementation.updatedAt,
-          )
-        : null;
-      const deliveryError = ensureDeliveryCanResume(existingDelivery, "Apply-feedback");
-      if (deliveryError) {
-        yield* upsertWorkflow(
-          markImplementationError(workflow, deliveryError.message, updatedAt, "apply-feedback"),
-        );
-        return;
-      }
-      if (!existingDelivery) {
-        const dispatchResult = yield* orchestrationEngine
-          .dispatch({
-            type: "thread.turn.start",
-            commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-            threadId: workflow.implementation.threadId,
-            message: {
-              messageId: MessageId.makeUnsafe(crypto.randomUUID()),
-              role: "user",
-              text: prompt,
-              attachments: [],
-            },
-            ...workflowTurnProviderFields(workflow.implementation.implementationSlot),
-            titleSourceText: workflow.title,
-            runtimeMode: workflow.implementation.runtimeMode ?? DEFAULT_RUNTIME_MODE,
-            ...workflowTurnBehaviorFields({
-              runKind: "planning",
-              templateId: workflow.templateId,
-              templateVersion: workflow.templateVersion,
-              stage: "apply-feedback",
-            }),
-            createdAt: updatedAt,
-          })
-          .pipe(
-            Effect.map(() => ({ ok: true as const })),
-            Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+      const reviews = [];
+      const pinnedReviews = [];
+      for (const review of implementation.codeReviews) {
+        const thread = snapshot.threads.find((entry) => entry.id === review.threadId);
+        let turnId = review.pinnedTurnId;
+        let messageId = review.pinnedAssistantMessageId;
+        if (thread && !turnId && !messageId) {
+          // Legacy saves have only their completion boundary. Use the unique
+          // completed output at that boundary, even if a later turn is latest.
+          const turns =
+            turnRepository._tag === "Some"
+              ? yield* turnRepository.value.listByThreadId({ threadId: thread.id })
+              : thread.latestTurn
+                ? [thread.latestTurn]
+                : [];
+          const atBoundary = turns.filter((turn) => turn.requestedAt <= review.updatedAt);
+          const lastRequestedAt = atBoundary.reduce(
+            (latest, turn) => (latest > turn.requestedAt ? latest : turn.requestedAt),
+            "",
           );
-        if (!dispatchResult.ok) {
-          yield* upsertWorkflow(
-            markImplementationError(
-              workflow,
-              `Apply-feedback setup failed: ${String(dispatchResult.error)}`,
-              updatedAt,
-              "apply-feedback",
+          const candidates = atBoundary.filter((turn) => turn.requestedAt === lastRequestedAt);
+          const candidate =
+            candidates.length === 1 &&
+            candidates[0]?.state === "completed" &&
+            candidates[0].completedAt &&
+            candidates[0].completedAt <= review.updatedAt
+              ? candidates[0]
+              : undefined;
+          const completed = candidate?.turnId
+            ? getFinishedConsumableTurn(thread, { ...candidate, turnId: candidate.turnId })
+            : null;
+          turnId = completed?.turnId;
+          messageId = completed?.assistantMessageId;
+        }
+        const message = thread?.messages.find(
+          (entry) =>
+            entry.id === messageId &&
+            entry.turnId === turnId &&
+            entry.role === "assistant" &&
+            !entry.streaming,
+        );
+        const feedback = message
+          ? formatAssistantFeedback(message, "Reviewer reasoning", !legacyFormatting)
+          : null;
+        if (review.status !== "completed" || !turnId || !messageId || !feedback) {
+          return yield* Effect.fail(
+            new Error(
+              `Apply Reviews could not identify the saved output from ${review.reviewerLabel}. Restore the completed review output and retry.`,
             ),
           );
-          return;
+        }
+        pinnedReviews.push({
+          ...review,
+          pinnedTurnId: turnId,
+          pinnedAssistantMessageId: messageId,
+        });
+        reviews.push({
+          reviewerLabel: review.reviewerLabel,
+          reviewMarkdown: feedback.text,
+          source: { workflowId: workflow.id, stage: review.reviewerLabel, turnId, messageId },
+        });
+      }
+      if (reviews.length === 0) {
+        return yield* Effect.fail(new Error("Apply Reviews has no saved reviews to send."));
+      }
+      return {
+        pinnedReviews,
+        prompt: buildImplementationRevisionPrompt({ reviews }),
+        artifacts: reviews.map((review) => review.reviewMarkdown),
+      };
+    });
+
+  const getRevisionDelivery = (commandId: CommandId) =>
+    providerTurnDeliveryRepository._tag === "Some"
+      ? providerTurnDeliveryRepository.value.getByCommandId(commandId)
+      : Effect.succeed(null);
+
+  const revisionContext = (
+    thread: OrchestrationThread,
+    slot: NonNullable<PlanningWorkflow["implementation"]>["implementationSlot"],
+  ) => {
+    const matchingModel =
+      normalizeModelSlug(thread.model, slot.provider) ===
+      normalizeModelSlug(slot.model, slot.provider);
+    const matchingInstance =
+      !thread.modelSelection ||
+      thread.session?.providerInstanceId == null ||
+      thread.session.providerInstanceId === thread.modelSelection.instanceId;
+    const session =
+      matchingModel && matchingInstance && thread.session?.providerName === slot.provider
+        ? thread.session
+        : null;
+    const matchingThread =
+      matchingModel && (thread.session?.providerName == null || session !== null);
+    const contextWindowTokens =
+      (session?.modelContextWindowTokens || undefined) ??
+      (matchingThread ? thread.modelContextWindowTokens || undefined : undefined) ??
+      estimateModelContextWindowTokens(slot.model, slot.provider);
+    const compactionEstimateOnly =
+      matchingThread &&
+      thread.compaction &&
+      !thread.compaction.freshSessionRecordId &&
+      session?.tokenUsageSource !== "provider" &&
+      (thread.compaction.kind === "native" ||
+        session?.status === "stopped" ||
+        thread.lastInteractionAt <= thread.compaction.createdAt);
+    return {
+      contextWindowTokens,
+      contextUsageTokens: compactionEstimateOnly
+        ? contextWindowTokens
+        : (session?.estimatedContextTokens ??
+          (matchingThread ? thread.estimatedContextTokens : null) ??
+          0),
+    };
+  };
+
+  const reconcileApplyReviews = (
+    workflowId: PlanningWorkflowId,
+    options: {
+      readonly retry?: "manual" | "automatic";
+      readonly allowPossibleDuplicate?: boolean;
+      readonly recheck?: boolean;
+      readonly expectedTurnId?: TurnId | null;
+      readonly expectedCommandId?: CommandId;
+      readonly preflightOnly?: boolean;
+      readonly compactionOutcome?: {
+        readonly requestId: CommandId;
+        readonly outcome: WorkflowCompactionOutcome;
+      };
+      readonly session?: Extract<
+        OrchestrationEvent,
+        { type: "thread.session-set" }
+      >["payload"]["session"];
+    } = {},
+  ): Effect.Effect<OrchestrationRetryWorkflowResult, Error> =>
+    Effect.gen(function* () {
+      // A provider history read can block. Its result is consumed from the
+      // durable delivery only after reacquiring the workflow gate.
+      if (
+        (options.recheck || options.retry === "manual") &&
+        providerTurnDeliveryWorker._tag === "Some"
+      ) {
+        const current = yield* readWorkflow(orchestrationEngine, workflowId);
+        const implementation = current?.implementation;
+        if (implementation?.threadId && implementation.revisionDispatchCommandId) {
+          const delivery = yield* getRevisionDelivery(implementation.revisionDispatchCommandId);
+          if (
+            delivery?.state === "sending" ||
+            (options.retry === "manual" && delivery?.state === "ambiguous")
+          ) {
+            yield* providerTurnDeliveryWorker.value
+              .recheck(implementation.threadId, delivery.deliveryId)
+              .pipe(Effect.timeout(STARTUP_DISPATCH_RECHECK_TIMEOUT), Effect.ignore);
+          }
         }
       }
 
-      yield* upsertWorkflow(applyingWorkflow);
-    });
+      return yield* withWorkflowGate(
+        workflowId,
+        Effect.gen(function* () {
+          const result = { status: "started" as const };
+          const snapshot = yield* orchestrationEngine.getReadModel();
+          const current = snapshot.planningWorkflows.find((entry) => entry.id === workflowId);
+          if (!current || isDeletedWorkflow(current) || isArchivedWorkflow(current)) return result;
+          let workflow = current;
+          let implementation = workflow.implementation;
+          if (!implementation?.threadId || !isApplyReviewsLifecycle(workflow)) return result;
+          if (
+            options.expectedCommandId &&
+            implementation.revisionDispatchCommandId !== options.expectedCommandId
+          )
+            return result;
+          const threadId = implementation.threadId;
+          const thread = snapshot.threads.find(
+            (entry) => entry.id === threadId && !entry.deletedAt,
+          );
+          const updatedAt = new Date().toISOString();
+
+          if (options.session) {
+            const withCost = applyWorkflowTurnCost(
+              workflow,
+              options.session.turnCostUsd,
+              updatedAt,
+            );
+            if (withCost !== workflow) {
+              yield* writeWorkflow(withCost);
+              workflow = withCost;
+            }
+            // Only a current error can prompt a look at the exact failed turn.
+            if (
+              options.session.status !== "error" ||
+              thread?.session?.status !== "error" ||
+              thread.session.updatedAt !== options.session.updatedAt
+            )
+              return result;
+          }
+          const repairOnly = hasMisattributedRevision(workflow);
+          if (implementation.status === "completed" && !repairOnly) return result;
+
+          const fail = (detail: string) =>
+            writeWorkflow(
+              markImplementationError(workflow, detail, updatedAt, "apply-feedback"),
+            ).pipe(Effect.as(result));
+          if (!thread)
+            return yield* fail("The Apply Reviews implementation thread is unavailable.");
+
+          let commandId = implementation.revisionDispatchCommandId;
+          let delivery = commandId ? yield* getRevisionDelivery(commandId) : null;
+          if (options.preflightOnly && (delivery?.state === "accepted" || repairOnly))
+            return result;
+          if (!commandId && implementation.revisionAttempt === undefined) {
+            let latest =
+              providerTurnDeliveryRepository._tag === "Some"
+                ? yield* providerTurnDeliveryRepository.value.getLatestByThread(threadId)
+                : null;
+            const boundary = repairOnly
+              ? implementation.codeReviews.reduce(
+                  (at, review) => (at > review.updatedAt ? at : review.updatedAt),
+                  implementation.codeReviews[0]?.updatedAt ?? implementation.updatedAt,
+                )
+              : implementation.updatedAt;
+            const legacyPrepared = thread.messages.some(
+              (entry) => entry.role === "user" && entry.createdAt >= boundary,
+            )
+              ? yield* prepareImplementationRevision(workflow, implementation, snapshot, true).pipe(
+                  Effect.option,
+                )
+              : Option.none();
+            const matchingMessages = Option.isSome(legacyPrepared)
+              ? thread.messages.filter(
+                  (entry) =>
+                    entry.role === "user" &&
+                    entry.createdAt >= boundary &&
+                    entry.text === legacyPrepared.value.prompt,
+                )
+              : [];
+            const [matchingMessage] = matchingMessages;
+            if (
+              matchingMessages.length === 1 &&
+              matchingMessage &&
+              latest?.messageId !== matchingMessage.id
+            ) {
+              const evidence = yield* orchestrationEngine
+                .readEvents(0, { threadId, eventTypes: ["thread.turn-start-requested"] })
+                .pipe(
+                  Stream.filter(
+                    (event) =>
+                      event.type === "thread.turn-start-requested" &&
+                      event.payload.threadId === threadId &&
+                      event.payload.messageId === matchingMessage.id &&
+                      event.commandId !== null,
+                  ),
+                  Stream.take(2),
+                  Stream.runCollect,
+                );
+              const [intent] = evidence;
+              if (evidence.length === 1 && intent?.commandId)
+                latest = yield* getRevisionDelivery(intent.commandId);
+            }
+            // The legacy dispatcher used the same timestamp for the durable
+            // turn-start event and the applying state. Require the exact outbox
+            // event and, when accepted, the turn's projected input association.
+            let possibleLegacyDelivery = false;
+            if (
+              matchingMessages.length <= 1 &&
+              latest &&
+              (latest.createdAt === boundary ||
+                ((repairOnly || implementation.status === "code_reviews_saved") &&
+                  latest.createdAt >= boundary)) &&
+              latest.event.type === "thread.turn-start-requested" &&
+              latest.event.commandId === latest.commandId &&
+              latest.event.payload.messageId === latest.messageId &&
+              latest.providerTurnId !== implementation.implementationTurnId
+            ) {
+              const projected =
+                latest.providerTurnId && turnRepository._tag === "Some"
+                  ? yield* turnRepository.value.getByTurnId({
+                      threadId,
+                      turnId: latest.providerTurnId,
+                    })
+                  : Option.none();
+              const prepared = legacyPrepared;
+              const message = thread.messages.find((entry) => entry.id === latest.messageId);
+              possibleLegacyDelivery =
+                !message || Option.isNone(prepared) || message.text === prepared.value.prompt;
+              if (
+                Option.isSome(prepared) &&
+                message?.role === "user" &&
+                message.text === prepared.value.prompt &&
+                (!repairOnly ||
+                  (latest.state === "accepted" &&
+                    Option.isSome(projected) &&
+                    getFinishedConsumableTurn(thread, projected.value) !== null)) &&
+                (latest.state !== "accepted" ||
+                  (Option.isSome(projected) &&
+                    projected.value.pendingMessageId === latest.messageId))
+              ) {
+                commandId = latest.commandId;
+                delivery = latest;
+                implementation = {
+                  ...implementation,
+                  status: "applying_reviews",
+                  revisionTurnId: null,
+                  revisionAttempt: 0,
+                  revisionDispatchCommandId: commandId,
+                };
+                workflow = { ...workflow, implementation, updatedAt };
+                yield* writeWorkflow(workflow);
+              }
+            }
+            if (!commandId && repairOnly) {
+              if (options.retry !== "manual") {
+                if (options.recheck)
+                  yield* Effect.logWarning("Could not verify the legacy Apply Reviews completion", {
+                    workflowId,
+                    threadId,
+                  });
+                return result;
+              }
+              if (!options.allowPossibleDuplicate)
+                return { status: "confirmation_required" as const, threadIds: [threadId] };
+            }
+            if (
+              !commandId &&
+              !repairOnly &&
+              (matchingMessages.length > 0 ||
+                (possibleLegacyDelivery &&
+                  implementation.status === "code_reviews_saved" &&
+                  latest &&
+                  latest.createdAt >= boundary &&
+                  (latest.state === "accepted" ||
+                    latest.state === "sending" ||
+                    latest.state === "ambiguous") &&
+                  latest.providerTurnId !== implementation.implementationTurnId))
+            ) {
+              yield* writeWorkflow({
+                ...workflow,
+                implementation: {
+                  ...implementation,
+                  status: "error",
+                  revisionTurnId: null,
+                  errorStage: "apply-feedback",
+                  error:
+                    "Could not verify the previous Apply Reviews delivery. Check the implementation conversation before retrying.",
+                },
+                updatedAt,
+              });
+              return result;
+            }
+            if (!commandId && implementation.status === "applying_reviews") {
+              yield* writeWorkflow({
+                ...markImplementationError(
+                  workflow,
+                  "Could not identify the previous Apply Reviews delivery. Wait for outstanding work to settle, then retry.",
+                  updatedAt,
+                  "apply-feedback",
+                ),
+                // Keep the legacy evidence boundary across retries.
+                implementation: {
+                  ...implementation,
+                  status: "error",
+                  errorStage: "apply-feedback",
+                  error:
+                    "Could not identify the previous Apply Reviews delivery. Wait for outstanding work to settle, then retry.",
+                },
+              });
+              return result;
+            }
+            if (
+              !commandId &&
+              options.retry &&
+              latest &&
+              (latest.state === "pending" ||
+                latest.state === "sending" ||
+                latest.state === "ambiguous")
+            ) {
+              return yield* Effect.fail(
+                new Error(
+                  "Resolve the outstanding provider delivery before retrying Apply Reviews.",
+                ),
+              );
+            }
+          }
+
+          if (options.preflightOnly && delivery?.state === "accepted") return result;
+          let settledFailure = false;
+          if (delivery?.state === "accepted") {
+            const dispatch = yield* resolveStageDispatch(commandId);
+            if (
+              dispatch.kind !== "turn" ||
+              dispatch.turnId === implementation.implementationTurnId ||
+              (options.expectedTurnId && dispatch.turnId !== options.expectedTurnId)
+            )
+              return result;
+            const turn = yield* readRevisionTurn(thread, dispatch.turnId);
+            if (!turn?.completedAt) return result;
+            const hasStreamingOutput = thread.messages.some(
+              (message) =>
+                message.turnId === turn.turnId && message.role === "assistant" && message.streaming,
+            );
+            if (!hasStreamingOutput && getFinishedConsumableTurn(thread, turn)) {
+              if (!options.session)
+                yield* writeWorkflow(markImplementationCompleted(workflow, turn.turnId, updatedAt));
+              return result;
+            }
+            settledFailure = Boolean(
+              turn.state === "error" ||
+              turn.state === "interrupted" ||
+              (turn.state === "completed" &&
+                turn.processingQuiescedAt &&
+                !hasStreamingOutput &&
+                isSessionSettledForAutoRetry(thread)),
+            );
+            if (!settledFailure) return result;
+            if (!options.retry) {
+              const errorSession =
+                thread.latestTurn?.turnId === dispatch.turnId && thread.session?.status === "error"
+                  ? thread.session
+                  : null;
+              const failed = markImplementationError(
+                workflow,
+                errorSession?.lastError ??
+                  (turn.state === "completed"
+                    ? "The Apply Reviews turn finished without a finalized response."
+                    : "The Apply Reviews turn failed or was interrupted."),
+                updatedAt,
+                "apply-feedback",
+              );
+              if (
+                commandId &&
+                errorSession &&
+                isRetryableSessionError(errorSession) &&
+                (implementation.lastRetryAt == null ||
+                  implementation.lastRetryAt < turn.requestedAt) &&
+                implementation.retryCount < MAX_AUTO_RETRY_ATTEMPTS
+              ) {
+                const expectedCommandId = commandId;
+                yield* writeWorkflow(incrementImplementationRetryCount(failed, updatedAt));
+                yield* awaitAutoRetrySettled(threadId).pipe(
+                  Effect.andThen(
+                    Effect.suspend(() =>
+                      reconcileApplyReviews(workflowId, {
+                        retry: "automatic",
+                        expectedCommandId,
+                      }),
+                    ),
+                  ),
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Apply Reviews automatic retry did not start", {
+                      workflowId,
+                      cause,
+                    }),
+                  ),
+                  Effect.forkIn(sources.scope),
+                );
+                return result;
+              }
+              if (implementation.status !== "error") yield* writeWorkflow(failed);
+              return result;
+            }
+          }
+
+          if (options.session) return result;
+          if (repairOnly && options.retry !== "manual") return result;
+          if (options.expectedTurnId && !settledFailure && delivery) return result;
+          if (delivery?.state === "pending" || delivery?.state === "sending") return result;
+          if (implementation.status === "error" && !options.retry) return result;
+
+          const marker = implementation.revisionCompaction;
+          const outcome = options.compactionOutcome;
+          if (outcome && outcome.requestId !== marker?.requestId) return result;
+          if (marker && activeRevisionCompactions.has(marker.requestId) && !outcome) return result;
+          const compactionReceipt =
+            marker && commandReceipts._tag === "Some"
+              ? yield* commandReceipts.value.getByCommandId({ commandId: marker.recordCommandId })
+              : Option.none();
+          const recoveredContext = Boolean(
+            marker &&
+            thread.compaction?.freshSessionRecordId === marker.recordCommandId &&
+            (commandReceipts._tag === "None" ||
+              (Option.isSome(compactionReceipt) && compactionReceipt.value.status === "accepted")),
+          );
+          if (
+            marker &&
+            !options.retry &&
+            !recoveredContext &&
+            outcome?.outcome.kind !== "busy" &&
+            outcome?.outcome.kind !== "skipped"
+          ) {
+            return yield* fail(
+              outcome && outcome.outcome.kind !== "committed"
+                ? `Apply Reviews context recovery failed. ${outcome.outcome.detail}`
+                : "Apply Reviews context recovery was interrupted before its result could be verified. Retry the step.",
+            );
+          }
+
+          const terminal = delivery?.state === "rejected" || delivery?.state === "ambiguous";
+          if (delivery?.state === "abandoned" && !options.retry)
+            return yield* fail(
+              "The Apply Reviews delivery was discarded. Retry the step to start a new turn.",
+            );
+          const ambiguous =
+            delivery?.state === "ambiguous" ||
+            (delivery?.state === "rejected" && delivery.certainty !== "not_sent");
+          if (terminal) {
+            if (!options.retry && !(marker && !ambiguous && (recoveredContext || outcome))) {
+              return yield* fail(
+                delivery?.errorDetail ?? "The provider could not accept the Apply Reviews turn.",
+              );
+            }
+            if (ambiguous && !options.allowPossibleDuplicate) {
+              return { status: "confirmation_required" as const, threadIds: [threadId] };
+            }
+          }
+
+          let rejectedReceipt = false;
+          if (commandId && !delivery && commandReceipts._tag === "Some") {
+            const receipt = yield* commandReceipts.value.getByCommandId({ commandId });
+            if (Option.isSome(receipt)) {
+              rejectedReceipt = receipt.value.status === "rejected";
+              if (rejectedReceipt && !options.retry) {
+                return yield* fail(
+                  receipt.value.error ?? "The Apply Reviews command was rejected.",
+                );
+              }
+              // An accepted receipt with an unreadable/missing outbox is not a
+              // license to create another turn.
+              if (!rejectedReceipt) return result;
+            }
+          }
+
+          if (!isSessionSettledForAutoRetry(thread) || thread.latestTurn?.state === "running") {
+            if (options.retry) {
+              return yield* Effect.fail(
+                new Error("Wait for the active turn to settle before retrying Apply Reviews."),
+              );
+            }
+            return result;
+          }
+          const branchChanged =
+            implementation.branch !== undefined && implementation.branch !== thread.branch;
+          const sameWorktreeRename =
+            branchChanged &&
+            implementation.worktreePath != null &&
+            implementation.worktreePath === thread.worktreePath &&
+            implementation.branch != null &&
+            isTemporaryWorktreeBranch(implementation.branch) &&
+            thread.branch != null &&
+            (yield* orchestrationEngine
+              .readEvents(0, { threadId, eventTypes: ["thread.meta-updated"] })
+              .pipe(
+                Stream.filter(
+                  (event) =>
+                    event.type === "thread.meta-updated" &&
+                    event.payload.threadId === threadId &&
+                    (event.payload.branch !== undefined ||
+                      event.payload.worktreePath !== undefined),
+                ),
+                Stream.runLast,
+                Effect.map(Option.getOrNull),
+              ));
+          const verifiedRename =
+            sameWorktreeRename &&
+            sameWorktreeRename.type === "thread.meta-updated" &&
+            sameWorktreeRename.commandId?.startsWith("server:worktree-branch-rename:") &&
+            sameWorktreeRename.payload.branch === thread.branch &&
+            sameWorktreeRename.payload.worktreePath === thread.worktreePath;
+          if (
+            (implementation.worktreePath !== undefined &&
+              implementation.worktreePath !== thread.worktreePath) ||
+            (branchChanged && !verifiedRename)
+          ) {
+            return yield* fail(
+              "The implementation checkout changed. Restore it before applying the saved reviews.",
+            );
+          }
+          if (verifiedRename) {
+            implementation = { ...implementation, branch: thread.branch };
+            workflow = { ...workflow, implementation, updatedAt };
+            yield* writeWorkflow(workflow);
+          }
+          const unresolved =
+            providerTurnDeliveryRepository._tag === "Some"
+              ? yield* providerTurnDeliveryRepository.value.getUnresolvedByThread(threadId)
+              : null;
+          if (unresolved && unresolved.deliveryId !== delivery?.deliveryId) {
+            return yield* fail(
+              "Resolve the competing provider delivery before retrying Apply Reviews.",
+            );
+          }
+
+          const budgetError = workflowBudgetError(workflow);
+          if (budgetError) return yield* fail(budgetError.message);
+          const prepared = yield* prepareImplementationRevision(
+            workflow,
+            implementation,
+            snapshot,
+          ).pipe(
+            Effect.match({ onSuccess: (value) => ({ value }), onFailure: (error) => ({ error }) }),
+          );
+          if ("error" in prepared) return yield* fail(prepared.error.message);
+          const targetSlot = resolveAvailableWorkflowModelSlot(
+            implementation.implementationSlot,
+            yield* getWorkflowProviders,
+          );
+          const context = revisionContext(thread, targetSlot);
+          const behavior = resolveWorkflowBehavior({
+            runKind: "planning",
+            templateId: workflow.templateId,
+            templateVersion: workflow.templateVersion,
+          });
+          const artifactTokens = prepared.value.artifacts.reduce(
+            (total, artifact) => total + roughTokenEstimateFromCharacters(artifact.length),
+            0,
+          );
+          const fit = (contextUsageTokens: number) =>
+            workflowPromptFit({
+              ...prepared.value,
+              ...context,
+              contextUsageTokens,
+              promptFramingTokens: Math.max(
+                0,
+                roughTokenEstimateFromCharacters(prepared.value.prompt.length) - artifactTokens,
+              ),
+              targetSlot,
+              artifactLabel: "Implementation review feedback",
+              enforceArtifactBudget: behavior.loudAuthoritativeArtifactLimit,
+            });
+          const freshFit = fit(0);
+          if (freshFit.kind !== "fits") return yield* fail(freshFit.detail);
+          const liveFit = fit(context.contextUsageTokens);
+
+          const newAttempt =
+            !commandId ||
+            settledFailure ||
+            rejectedReceipt ||
+            delivery?.state === "abandoned" ||
+            (options.retry === "manual" &&
+              implementation.status === "error" &&
+              marker != null &&
+              !delivery &&
+              !recoveredContext);
+          const attempt = (implementation.revisionAttempt ?? 0) + (newAttempt ? 1 : 0);
+          const dispatchId = newAttempt
+            ? stableWorkflowCommandId("apply-reviews", workflow.id, attempt)
+            : commandId!;
+          const applyingWorkflow = markImplementationApplyingReviews(
+            {
+              ...workflow,
+              implementation: {
+                ...implementation,
+                codeReviews: prepared.value.pinnedReviews,
+                ...(repairOnly ? { revisionTurnId: null } : {}),
+                revisionAttempt: attempt,
+                revisionDispatchCommandId: dispatchId,
+                ...(newAttempt ? { revisionCompaction: null } : {}),
+                ...(options.retry === "manual" ? { retryCount: 0, lastRetryAt: null } : {}),
+              },
+            },
+            updatedAt,
+          );
+          if (liveFit.kind !== "fits") {
+            if (outcome && outcome.outcome.kind !== "committed") {
+              return yield* fail(`${liveFit.detail} ${outcome.outcome.detail}`);
+            }
+            const retryRecovery = options.retry === "manual" && implementation.status === "error";
+            if (
+              compactionService._tag === "None" ||
+              ambiguous ||
+              (marker && !newAttempt && !retryRecovery)
+            ) {
+              return yield* fail(liveFit.detail);
+            }
+            const requestId = CommandId.makeUnsafe(timeOrderedUuid());
+            const recordCommandId = stableWorkflowCommandId(
+              "apply-reviews-compaction-record",
+              workflow.id,
+              requestId,
+            );
+            yield* writeWorkflow({
+              ...applyingWorkflow,
+              implementation: {
+                ...applyingWorkflow.implementation!,
+                revisionCompaction: { requestId, recordCommandId },
+              },
+            });
+            activeRevisionCompactions.add(requestId);
+            yield* compactionService.value
+              .requestSummary({
+                threadId,
+                workflowId,
+                attempt,
+                dispatchCommandId: dispatchId,
+                requestId,
+                recordCommandId,
+                targetSlot,
+                contextWindowTokens: context.contextWindowTokens,
+                interactionMode: behavior.interactionModeForStage("apply-feedback"),
+                workflowExecutionProfile: behavior.executionProfileForStage("apply-feedback"),
+                checkFit: (usage) => {
+                  const restored = fit(usage);
+                  return restored.kind === "fits" ? null : restored.detail;
+                },
+              })
+              .pipe(
+                Effect.flatMap((outcome) =>
+                  reconcileApplyReviews(workflowId, {
+                    expectedCommandId: dispatchId,
+                    compactionOutcome: { requestId, outcome },
+                  }),
+                ),
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    activeRevisionCompactions.delete(requestId);
+                  }),
+                ),
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Could not reconcile Apply Reviews context recovery", {
+                    workflowId,
+                    requestId,
+                    cause,
+                  }),
+                ),
+                Effect.forkIn(sources.scope),
+              );
+            return result;
+          }
+          if (newAttempt || implementation.status !== "applying_reviews") {
+            yield* writeWorkflow(applyingWorkflow);
+          }
+
+          const dispatch: Effect.Effect<void, Error> =
+            terminal && delivery
+              ? providerTurnDeliveryWorker._tag === "Some"
+                ? providerTurnDeliveryWorker.value
+                    .retry({
+                      threadId,
+                      deliveryId: delivery.deliveryId,
+                      allowPossibleDuplicate: options.allowPossibleDuplicate ?? false,
+                    })
+                    .pipe(Effect.asVoid)
+                : Effect.fail(new Error("The provider delivery worker is unavailable."))
+              : orchestrationEngine
+                  .dispatch({
+                    type: "thread.turn.start",
+                    commandId: dispatchId,
+                    threadId,
+                    message: {
+                      messageId: MessageId.makeUnsafe(
+                        stableWorkflowUuid("apply-reviews-message", workflow.id, attempt),
+                      ),
+                      role: "user",
+                      text: prepared.value.prompt,
+                      attachments: [],
+                    },
+                    ...workflowTurnProviderFields(targetSlot),
+                    titleSourceText: workflow.title,
+                    runtimeMode: implementation.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+                    ...workflowTurnBehaviorFields({
+                      runKind: "planning",
+                      templateId: workflow.templateId,
+                      templateVersion: workflow.templateVersion,
+                      stage: "apply-feedback",
+                    }),
+                    createdAt: newAttempt ? updatedAt : implementation.updatedAt,
+                  })
+                  .pipe(Effect.asVoid);
+          yield* dispatch.pipe(
+            Effect.catch((error) =>
+              writeWorkflow(
+                markImplementationError(
+                  applyingWorkflow,
+                  `Apply Reviews dispatch failed: ${error.message}`,
+                  updatedAt,
+                  "apply-feedback",
+                ),
+              ).pipe(Effect.asVoid),
+            ),
+          );
+          return result;
+        }),
+      );
+    }).pipe(
+      Effect.mapError((error) => (error instanceof Error ? error : new Error(String(error)))),
+    );
 
   const maybeAdvanceImplementationLifecycle = (
     workflow: PlanningWorkflow,
@@ -3648,8 +4416,14 @@ export const makeWorkflowService = Effect.gen(function* () {
         return workflow;
       }
 
+      if (threadId === workflow.implementation.threadId && isApplyReviewsLifecycle(workflow)) {
+        return workflow;
+      }
       const thread = snapshot.threads.find((entry) => entry.id === threadId);
-      const completedTurn = getFinishedConsumableLatestTurn(thread);
+      const completedTurn =
+        threadId === workflow.implementation.threadId
+          ? getFinishedConsumableLatestTurn(thread)
+          : getFinishedConsumableTurn(thread, thread?.latestTurn);
       if (!completedTurn) {
         return workflow;
       }
@@ -3666,17 +4440,12 @@ export const makeWorkflowService = Effect.gen(function* () {
           !failedCodeReviews &&
           completionEvidenceAt &&
           completionEvidenceAt >= workflow.implementation.updatedAt
-            ? workflow.implementation.codeReviews.length > 0 &&
-              workflow.implementation.codeReviews.every((review) => review.status === "completed")
-              ? "applying_reviews"
-              : "implementing"
+            ? "implementing"
             : workflow.implementation.status;
         nextWorkflow =
           recoveredStatus === "implementing"
             ? markImplementationDone(workflow, completedTurn.turnId, updatedAt)
-            : recoveredStatus === "applying_reviews"
-              ? markImplementationCompleted(workflow, completedTurn.turnId, updatedAt)
-              : workflow;
+            : workflow;
       } else {
         const review = workflow.implementation.codeReviews.find(
           (entry) => entry.threadId === threadId,
@@ -3688,7 +4457,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           (review?.status === "error" &&
             completionEvidenceAt !== null &&
             completionEvidenceAt >= review.updatedAt)
-            ? markCodeReviewCompleted(workflow, threadId, updatedAt)
+            ? markCodeReviewCompleted(workflow, threadId, completedTurn, updatedAt)
             : workflow;
       }
 
@@ -3749,32 +4518,13 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
-      if (
-        workflow.implementation.status === "error" &&
-        workflow.implementation.errorStage === "apply-feedback"
-      ) {
-        const resumableWorkflow: PlanningWorkflow = {
-          ...workflow,
-          implementation: {
-            ...workflow.implementation,
-            status: "code_reviews_saved",
-            error: null,
-            errorStage: null,
-            updatedAt,
-          },
-          updatedAt,
-        };
-        yield* maybeStartImplementationRevision(resumableWorkflow, snapshot, updatedAt);
-        return;
-      }
-
       if (workflow.implementation.status === "implemented") {
         yield* maybeStartCodeReviews(workflow, snapshot, updatedAt);
         return;
       }
 
       if (workflow.implementation.status === "code_reviews_saved") {
-        yield* maybeStartImplementationRevision(workflow, snapshot, updatedAt);
+        yield* reconcileApplyReviews(workflow.id);
       }
     });
 
@@ -3958,6 +4708,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   const reconcileWorkflowImplementationLifecycle = (
     workflow: PlanningWorkflow,
     snapshot: OrchestrationReadModel,
+    deferApplyReviews = false,
   ) =>
     Effect.gen(function* () {
       if (isDeletedWorkflow(workflow) || !workflow.implementation) {
@@ -3986,13 +4737,15 @@ export const makeWorkflowService = Effect.gen(function* () {
         );
       }
 
-      yield* maybeContinueImplementationLifecycle(reconciledWorkflow, snapshot, updatedAt);
+      if (!deferApplyReviews || !isApplyReviewsLifecycle(reconciledWorkflow)) {
+        yield* maybeContinueImplementationLifecycle(reconciledWorkflow, snapshot, updatedAt);
+      }
     });
 
   const reconcileWorkflowImplementationLifecycles = Effect.gen(function* () {
     const snapshot = yield* orchestrationEngine.getReadModel();
     yield* Effect.forEach(snapshot.planningWorkflows, (workflow) =>
-      reconcileWorkflowImplementationLifecycle(workflow, snapshot).pipe(
+      reconcileWorkflowImplementationLifecycle(workflow, snapshot, true).pipe(
         Effect.catchCause((cause) =>
           Effect.logError("WorkflowService.reconcileWorkflowImplementationLifecycle failed", {
             workflowId: workflow.id,
@@ -4317,10 +5070,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
       }
 
-      if (
-        reconciledWorkflow.implementation?.status === "implementing" ||
-        reconciledWorkflow.implementation?.status === "applying_reviews"
-      ) {
+      if (reconciledWorkflow.implementation?.status === "implementing") {
         const implementationThread = reconciledWorkflow.implementation.threadId
           ? latestSnapshot.threads.find(
               (thread) => thread.id === reconciledWorkflow.implementation?.threadId,
@@ -4333,9 +5083,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         ) {
           reconciledWorkflow = markImplementationError(
             reconciledWorkflow,
-            reconciledWorkflow.implementation.status === "applying_reviews"
-              ? "Implementation revision session was not running during reconciliation."
-              : "Implementation session was not running during reconciliation.",
+            "Implementation session was not running during reconciliation.",
             updatedAt,
           );
           yield* upsertWorkflow(reconciledWorkflow);
@@ -4402,6 +5150,29 @@ export const makeWorkflowService = Effect.gen(function* () {
       ) {
         const snapshot = yield* orchestrationEngine.getReadModel();
         const threadId = event.payload.threadId as ThreadId;
+        const applying = workflowForImplementationThread(
+          snapshot.planningWorkflows,
+          threadId,
+        )?.workflow;
+        if (applying && isApplyReviewsLifecycle(applying)) {
+          if (event.type === "thread.session-set") {
+            yield* reconcileApplyReviews(applying.id, { session: event.payload.session });
+            if (
+              event.payload.session.status === "ready" ||
+              event.payload.session.status === "stopped"
+            )
+              yield* reconcileApplyReviews(applying.id, { preflightOnly: true });
+          } else if (
+            event.type === "thread.turn-diff-completed" ||
+            event.type === "thread.turn-processing-quiesced" ||
+            event.type === "thread.message-sent"
+          ) {
+            if (event.payload.turnId) {
+              yield* reconcileApplyReviews(applying.id, { expectedTurnId: event.payload.turnId });
+            }
+          }
+          return;
+        }
         const document = documentWorkflowForThread(snapshot.planningWorkflows, threadId);
         if (
           document &&
@@ -4414,12 +5185,11 @@ export const makeWorkflowService = Effect.gen(function* () {
               current.readerPass?.readerThreadId === threadId ||
               (current.merge.status === "manual_review" && event.payload.session.status === "error")
             ) {
-              current = applyWorkflowTurnCost(
+              current = yield* recordWorkflowTurnCost(
                 current,
                 event.payload.session.turnCostUsd,
                 event.occurredAt,
               );
-              if (current !== document) yield* upsertWorkflow(current);
             }
             if (
               event.payload.session.status === "error" &&
@@ -4868,7 +5638,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         case "thread.session-set": {
           const readModel = yield* orchestrationEngine.getReadModel();
           const applyTurnCost = (workflow: PlanningWorkflow) =>
-            applyWorkflowTurnCost(workflow, event.payload.session.turnCostUsd, event.occurredAt);
+            recordWorkflowTurnCost(workflow, event.payload.session.turnCostUsd, event.occurredAt);
           const reviewMatch = workflowForReviewThread(
             readModel.planningWorkflows,
             event.payload.threadId,
@@ -4895,19 +5665,13 @@ export const makeWorkflowService = Effect.gen(function* () {
               implementationMatch?.workflow.implementation &&
               event.payload.session.status === "ready"
             ) {
-              const workflowWithCost = applyTurnCost(implementationMatch.workflow);
+              const workflowWithCost = yield* applyTurnCost(implementationMatch.workflow);
               const nextWorkflow = yield* maybeAdvanceImplementationLifecycle(
                 workflowWithCost,
                 readModel,
                 event.payload.threadId,
                 event.occurredAt,
               );
-              if (
-                nextWorkflow === workflowWithCost &&
-                workflowWithCost !== implementationMatch.workflow
-              ) {
-                yield* upsertWorkflow(workflowWithCost);
-              }
               yield* maybeContinueImplementationLifecycle(
                 nextWorkflow,
                 readModel,
@@ -4920,19 +5684,13 @@ export const makeWorkflowService = Effect.gen(function* () {
               codeReviewMatch?.workflow.implementation &&
               event.payload.session.status === "ready"
             ) {
-              const workflowWithCost = applyTurnCost(codeReviewMatch.workflow);
+              const workflowWithCost = yield* applyTurnCost(codeReviewMatch.workflow);
               const nextWorkflow = yield* maybeAdvanceImplementationLifecycle(
                 workflowWithCost,
                 readModel,
                 event.payload.threadId,
                 event.occurredAt,
               );
-              if (
-                nextWorkflow === workflowWithCost &&
-                workflowWithCost !== codeReviewMatch.workflow
-              ) {
-                yield* upsertWorkflow(workflowWithCost);
-              }
               yield* maybeContinueImplementationLifecycle(
                 nextWorkflow,
                 readModel,
@@ -4944,7 +5702,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             const planningWorkflow =
               reviewMatch?.workflow ?? authorMatch?.workflow ?? mergeMatch?.workflow;
             if (planningWorkflow) {
-              const workflowWithCost = applyTurnCost(planningWorkflow);
+              const workflowWithCost = yield* applyTurnCost(planningWorkflow);
               const nextWorkflow =
                 event.payload.session.status === "ready"
                   ? yield* maybeAdvancePlanningWorkflowFromCompletedThread(
@@ -4954,9 +5712,6 @@ export const makeWorkflowService = Effect.gen(function* () {
                       event.occurredAt,
                     )
                   : workflowWithCost;
-              if (nextWorkflow === workflowWithCost && workflowWithCost !== planningWorkflow) {
-                yield* upsertWorkflow(workflowWithCost);
-              }
               if (event.payload.session.status === "ready") {
                 const lifecycleSnapshot =
                   nextWorkflow !== workflowWithCost
@@ -4974,7 +5729,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             return;
           }
           if (reviewMatch) {
-            const baseWorkflow = applyTurnCost(reviewMatch.workflow);
+            const baseWorkflow = yield* applyTurnCost(reviewMatch.workflow);
             const reviewedBranch =
               reviewMatch.branchId === "a" ? baseWorkflow.branchA : baseWorkflow.branchB;
             const review = reviewedBranch.reviews.find(
@@ -5029,13 +5784,10 @@ export const makeWorkflowService = Effect.gen(function* () {
           }
 
           if (authorMatch) {
-            const baseWorkflow = applyTurnCost(authorMatch.workflow);
+            const baseWorkflow = yield* applyTurnCost(authorMatch.workflow);
             const branch =
               authorMatch.branchId === "a" ? baseWorkflow.branchA : baseWorkflow.branchB;
             if (branch.status !== "authoring" && branch.status !== "revising") {
-              if (baseWorkflow !== authorMatch.workflow) {
-                yield* upsertWorkflow(baseWorkflow);
-              }
               return;
             }
             if (
@@ -5116,11 +5868,10 @@ export const makeWorkflowService = Effect.gen(function* () {
           }
 
           if (implementationMatch) {
-            const baseWorkflow = applyTurnCost(implementationMatch.workflow);
+            const baseWorkflow = yield* applyTurnCost(implementationMatch.workflow);
             if (
               baseWorkflow.implementation &&
-              (baseWorkflow.implementation.status === "implementing" ||
-                baseWorkflow.implementation.status === "applying_reviews") &&
+              baseWorkflow.implementation.status === "implementing" &&
               isRetryableSessionError(event.payload.session) &&
               baseWorkflow.implementation.retryCount < MAX_AUTO_RETRY_ATTEMPTS
             ) {
@@ -5154,8 +5905,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                     );
                     if (
                       !retryThread ||
-                      (workflow.implementation.status !== "implementing" &&
-                        workflow.implementation.status !== "applying_reviews") ||
+                      workflow.implementation.status !== "implementing" ||
                       workflow.implementation.retryCount !== expectedRetryCount ||
                       hasActiveRunningTurn(retryThread)
                     ) {
@@ -5184,7 +5934,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           }
 
           if (codeReviewMatch) {
-            const baseWorkflow = applyTurnCost(codeReviewMatch.workflow);
+            const baseWorkflow = yield* applyTurnCost(codeReviewMatch.workflow);
             const review = baseWorkflow.implementation?.codeReviews.find(
               (entry) => entry.threadId === event.payload.threadId,
             );
@@ -5280,7 +6030,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           if (mergeMatch) {
             yield* upsertWorkflow(
               markMergeError(
-                applyTurnCost(mergeMatch.workflow),
+                yield* applyTurnCost(mergeMatch.workflow),
                 formatSessionError(event.payload.session, "Merge failed."),
                 event.occurredAt,
               ),
@@ -5324,6 +6074,45 @@ export const makeWorkflowService = Effect.gen(function* () {
       Scope.provide(sources.scope),
       Effect.forkIn(sources.scope, { startImmediately: true }),
       Effect.asVoid,
+    );
+    if (providerTurnDeliveryWorker._tag === "Some") {
+      yield* Stream.runForEach(providerTurnDeliveryWorker.value.outcomes, (outcome) =>
+        Effect.gen(function* () {
+          const snapshot = yield* orchestrationEngine.getReadModel();
+          const workflow = workflowForImplementationThread(
+            snapshot.planningWorkflows,
+            outcome.threadId,
+          )?.workflow;
+          if (workflow?.implementation?.revisionDispatchCommandId === outcome.commandId) {
+            yield* reconcileApplyReviews(workflow.id, { expectedCommandId: outcome.commandId });
+          }
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not reconcile Apply Reviews delivery outcome", {
+              commandId: outcome.commandId,
+              cause,
+            }),
+          ),
+        ),
+      ).pipe(Effect.forkIn(sources.scope, { startImmediately: true }));
+    }
+    const latest = yield* orchestrationEngine.getReadModel();
+    yield* Effect.forEach(
+      latest.planningWorkflows.filter(
+        (workflow) =>
+          isApplyReviewsLifecycle(workflow) &&
+          (workflow.implementation?.status !== "completed" || hasMisattributedRevision(workflow)),
+      ),
+      (workflow) =>
+        reconcileApplyReviews(workflow.id, { recheck: true }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not reconcile Apply Reviews at startup", {
+              workflowId: workflow.id,
+              cause,
+            }),
+          ),
+        ),
+      { discard: true },
     );
   }).pipe(
     Effect.catchCause((cause) =>
@@ -5762,7 +6551,11 @@ export const makeWorkflowService = Effect.gen(function* () {
         if (workflow) yield* reconcileStuckWorkflow(workflow, snapshot);
         const latest = yield* orchestrationEngine.getReadModel();
         const current = latest.planningWorkflows.find((entry) => entry.id === workflowId);
-        if (current) yield* reconcileWorkflowImplementationLifecycle(current, latest);
+        if (current && isApplyReviewsLifecycle(current)) {
+          yield* reconcileApplyReviews(current.id, { recheck: true });
+        } else if (current) {
+          yield* reconcileWorkflowImplementationLifecycle(current, latest);
+        }
       }),
     );
 
@@ -5778,6 +6571,16 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
       if (isArchivedWorkflow(workflow))
         return yield* Effect.fail(new Error("Restore the workflow before retrying it."));
+
+      if (
+        isApplyReviewsLifecycle(workflow) &&
+        (workflow.implementation?.status !== "completed" || hasMisattributedRevision(workflow))
+      ) {
+        return yield* reconcileApplyReviews(workflow.id, {
+          retry: "manual",
+          allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
+        });
+      }
 
       const updatedAt = new Date().toISOString();
       const failedThreadIds = new Set<ThreadId>();
@@ -6721,24 +7524,6 @@ export const makeWorkflowService = Effect.gen(function* () {
           };
           yield* upsertWorkflow(resumedWorkflow);
           yield* maybeStartCodeReviews(resumedWorkflow, snapshot, updatedAt);
-          const refreshed = yield* orchestrationEngine.getReadModel();
-          retriedWorkflow =
-            refreshed.planningWorkflows.find((entry) => entry.id === resumedWorkflow.id) ??
-            resumedWorkflow;
-        } else if (retriedWorkflow.implementation.errorStage === "apply-feedback") {
-          const resumedWorkflow: PlanningWorkflow = {
-            ...retriedWorkflow,
-            implementation: {
-              ...retriedWorkflow.implementation,
-              status: "code_reviews_saved",
-              error: null,
-              errorStage: null,
-              updatedAt,
-            },
-            updatedAt,
-          };
-          yield* upsertWorkflow(resumedWorkflow);
-          yield* maybeStartImplementationRevision(resumedWorkflow, snapshot, updatedAt);
           const refreshed = yield* orchestrationEngine.getReadModel();
           retriedWorkflow =
             refreshed.planningWorkflows.find((entry) => entry.id === resumedWorkflow.id) ??

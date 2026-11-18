@@ -19,6 +19,8 @@ import type { OrchestrationEventStoreError } from "../Errors.ts";
  * Optional filters for {@link OrchestrationEventStoreShape.readFromSequence}.
  */
 export interface ReadFromSequenceOptions {
+  /** Restrict the replay to the indexed event stream of one thread. */
+  readonly threadId?: ThreadId;
   /**
    * Only emit events of these types. Non-matching rows are skipped in SQL, so
    * their payloads are never decoded. An empty list emits nothing.

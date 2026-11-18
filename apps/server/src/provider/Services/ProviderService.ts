@@ -179,6 +179,17 @@ export interface ProviderServiceShape {
   readonly stopSession: (
     input: ProviderStopSessionInput,
   ) => Effect.Effect<void, ProviderServiceError>;
+  /** Serialize a fresh-context record with stopping the exact idle binding. */
+  readonly withStoppedSessionForCompaction?: (input: {
+    readonly threadId: ThreadId;
+    readonly expected: {
+      readonly provider: ProviderKind;
+      readonly instanceId: ProviderInstanceId;
+      readonly generation: number;
+    } | null;
+    readonly validate: Effect.Effect<void, Error>;
+    readonly commit: Effect.Effect<void, Error>;
+  }) => Effect.Effect<void, ProviderServiceError | Error>;
 
   /**
    * List active provider sessions.

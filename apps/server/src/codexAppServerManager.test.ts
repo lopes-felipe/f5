@@ -902,41 +902,55 @@ describe("startSession", () => {
       await cleanupCodexFixture(manager, directory);
     }
   });
-  it("sends recovered context on the first real turn/start after resuming a replacement thread", async () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-recovery-context-"));
-    const binaryPath = path.join(directory, "codex.cjs");
-    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
-    const manager = new CodexAppServerManager();
-    vi.spyOn(
-      manager as unknown as { assertSupportedCodexCliVersion: () => string },
-      "assertSupportedCodexCliVersion",
-    ).mockReturnValue("0.162.0");
-    const requests = vi
-      .spyOn(
-        manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
-        "sendRequest",
-      )
-      .mockImplementation(async (_context, method) => {
-        if (method === "thread/resume") return { thread: { id: "replacement" } };
-        if (method === "turn/start") return { turn: { id: "turn" } };
-        return {};
-      });
-    try {
-      await manager.startSession({
-        threadId: asThreadId("recovery"),
-        cwd: directory,
-        runtimeMode: "full-access",
-        providerOptions: { codex: { binaryPath } },
-        resumeCursor: { threadId: "replacement", f5ResumedContextPending: true },
-        priorWorkSummary: "Recovered requirement: preserve the user's API",
-      });
-      await manager.sendTurn({ threadId: asThreadId("recovery"), input: "Continue" });
-      const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2];
-      expect(additionalContextText(first)).toContain("Recovered requirement");
-    } finally {
-      await cleanupCodexFixture(manager, directory);
-    }
-  });
+  it.each(["resume pending context", "fall back to a fresh thread"] as const)(
+    "sends recovered context when Codex must %s",
+    async (scenario) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "codex-recovery-context-"));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+      const manager = new CodexAppServerManager();
+      vi.spyOn(
+        manager as unknown as { assertSupportedCodexCliVersion: () => string },
+        "assertSupportedCodexCliVersion",
+      ).mockReturnValue("0.162.0");
+      const requests = vi
+        .spyOn(
+          manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method) => {
+          if (method === "thread/resume") {
+            if (scenario === "fall back to a fresh thread")
+              throw new Error("thread/resume failed: thread not found");
+            return { thread: { id: "replacement" } };
+          }
+          if (method === "thread/start") return { thread: { id: "replacement" } };
+          if (method === "turn/start") return { turn: { id: "turn" } };
+          return {};
+        });
+      try {
+        await manager.startSession({
+          threadId: asThreadId("recovery"),
+          cwd: directory,
+          runtimeMode: "full-access",
+          providerOptions: { codex: { binaryPath } },
+          resumeCursor:
+            scenario === "resume pending context"
+              ? { threadId: "replacement", f5ResumedContextPending: true }
+              : { threadId: "missing" },
+          priorWorkSummary: "Recovered requirement: preserve the user's API",
+        });
+        await manager.sendTurn({ threadId: asThreadId("recovery"), input: "Continue" });
+        const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2];
+        expect(additionalContextText(first)).toContain("Recovered requirement");
+        if (scenario === "fall back to a fresh thread") {
+          expect(requests.mock.calls.map((call) => call[1])).toContain("thread/start");
+        }
+      } finally {
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
 
   it("unarchives an archived Codex session and resumes it instead of starting fresh", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "codex-archived-resume-"));
@@ -2893,6 +2907,24 @@ describe("runOneOffPrompt warm app-server reuse", () => {
     expect(threadStarts).toHaveLength(1);
     expect(threadStarts[0]?.[2]).toEqual(expect.objectContaining({ cwd: process.cwd() }));
     manager.stopAll();
+  });
+
+  it("opens read-only one-off threads on cold and warm workers", async () => {
+    const { manager, startSession, sendRequest } = createOneOffPoolHarness();
+    try {
+      await manager.runOneOffPrompt({ prompt: "cold", runtimeMode: "approval-required" });
+      await manager.runOneOffPrompt({ prompt: "warm", runtimeMode: "approval-required" });
+      expect(startSession).toHaveBeenCalledTimes(1);
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({ runtimeMode: "approval-required" }),
+      );
+      expect(sendRequest.mock.calls.find((call) => call[1] === "thread/start")?.[2]).toMatchObject({
+        sandbox: "read-only",
+        approvalPolicy: "untrusted",
+      });
+    } finally {
+      manager.stopAll();
+    }
   });
 
   it("replaces a warm app-server that exited while idle", async () => {
