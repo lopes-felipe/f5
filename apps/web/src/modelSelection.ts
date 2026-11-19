@@ -131,11 +131,13 @@ export interface AppModelOption {
   subProvider?: string;
   isCustom: boolean;
   isUnlisted?: boolean;
+  isLegacy?: boolean;
 }
 
 function toAppModelOption(model: ServerProvider["models"][number]): AppModelOption {
   const option: AppModelOption = {
     ...(model.isUnlisted !== undefined ? { isUnlisted: model.isUnlisted } : {}),
+    ...(model.isLegacy !== undefined ? { isLegacy: model.isLegacy } : {}),
     slug: model.slug,
     name: model.name,
     isCustom: model.isCustom,

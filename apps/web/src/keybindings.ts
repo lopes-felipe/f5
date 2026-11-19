@@ -1,4 +1,5 @@
 import { isElectron } from "./env";
+import { isDiffSearchEditingKey } from "./lib/keyboardFocus";
 import {
   type KeybindingCommand,
   MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS,
@@ -164,7 +165,8 @@ export function resolveShortcutBinding(
   keybindings: ResolvedKeybindingsConfig,
   options?: ShortcutMatchOptions,
 ): ResolvedKeybindingRule | null {
-  if (isWorkingRibbonKey(event) || isExpandedComposerEscape(event)) return null;
+  if (isWorkingRibbonKey(event) || isExpandedComposerEscape(event) || isDiffSearchEditingKey(event))
+    return null;
   const platform = resolvePlatform(options);
   const context = resolveContext(options);
 

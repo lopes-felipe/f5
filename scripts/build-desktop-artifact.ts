@@ -21,6 +21,10 @@ import {
 import { RELEASE_UPDATE_REPOSITORY, verifyAppUpdateConfig } from "./lib/app-update-config.ts";
 import { BRAND_ASSET_PATHS, PUBLISH_ICON_OVERRIDES } from "./lib/brand-assets.ts";
 import { stagedDesktopDependencies } from "./lib/desktop-stage.ts";
+import {
+  readMacProvisioningProfile,
+  renderWebAuthnSigningPlist,
+} from "./lib/mac-webauthn-signing.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -31,6 +35,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
 export const DESKTOP_ASAR_UNPACK = [
+  "node_modules/objc-js/**/*",
+  "node_modules/@electron-webauthn/macos/**/*",
   "node_modules/@ff-labs/fff-bin-*/**/*",
   "node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
   "node_modules/@openai/codex-*/**/*",
@@ -478,6 +484,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   signed: boolean,
   release: boolean,
   arch?: typeof BuildArch.Type,
+  webAuthnSigning?: { readonly provisioningProfile: string; readonly entitlements: string },
 ) {
   const repositoryOverride = process.env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim();
   if (release && repositoryOverride && repositoryOverride !== RELEASE_UPDATE_REPOSITORY) {
@@ -551,7 +558,11 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
             gatekeeperAssess: false,
             // notarize-mac.cjs notarizes in afterSign with longer retries than electron-builder.
             notarize: false,
-            entitlements: "apps/desktop/resources/entitlements.mac.plist",
+            entitlements:
+              webAuthnSigning?.entitlements ?? "apps/desktop/resources/entitlements.mac.plist",
+            ...(webAuthnSigning
+              ? { provisioningProfile: webAuthnSigning.provisioningProfile }
+              : {}),
             entitlementsInherit: "apps/desktop/resources/entitlements.electron-inherit.plist",
             sign: join(import.meta.dirname, "sign-mac.cjs"),
           }
@@ -769,6 +780,34 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
 
+  const provisioningProfile = process.env.F5_MAC_PROVISIONING_PROFILE?.trim();
+  let webAuthnSigning: { provisioningProfile: string; entitlements: string } | undefined;
+  if (provisioningProfile) {
+    if (options.platform !== "mac" || !options.signed)
+      return yield* new BuildScriptError({
+        message: "F5_MAC_PROVISIONING_PROFILE requires a signed macOS build.",
+      });
+    const resolvedProfile = path.resolve(provisioningProfile);
+    const base = yield* fs.readFileString(
+      path.join(repoRoot, "apps/desktop/resources/entitlements.mac.plist"),
+    );
+    const entitlements = yield* Effect.try({
+      try: () =>
+        renderWebAuthnSigningPlist(
+          base,
+          readMacProvisioningProfile(resolvedProfile),
+          "io.github.lopesfelipe.f5",
+        ),
+      catch: () =>
+        new BuildScriptError({
+          message: "Could not authorize passkey entitlements from the macOS provisioning profile.",
+        }),
+    });
+    const relative = "apps/desktop/resources/entitlements.webauthn.plist";
+    yield* fs.writeFileString(path.join(stageAppDir, relative), entitlements);
+    webAuthnSigning = { provisioningProfile: resolvedProfile, entitlements: relative };
+  }
+
   const stagePackageJson: StagePackageJson = {
     name: "f5-desktop",
     version: appVersion,
@@ -786,6 +825,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.signed,
       options.version !== undefined,
       options.arch,
+      webAuthnSigning,
     ),
     dependencies: stagedDependencies,
     devDependencies: {

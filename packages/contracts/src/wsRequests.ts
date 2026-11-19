@@ -1,4 +1,5 @@
 import * as Scheduled from "./scheduledTasks";
+import { AgentSessionImportInput } from "./agentSessions";
 import { ServerCodexConfigurationInput } from "./codexConfiguration";
 import { ThreadSearchInput } from "./threadSearch";
 import {
@@ -537,6 +538,8 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.projectsCloneList, Schema.Struct({})),
   tagRequestBody(WS_METHODS.projectsEnsureScratch, Schema.Struct({})),
   tagRequestBody(WS_METHODS.projectsCreateNew, ProjectCreateNewInput),
+  tagRequestBody(WS_METHODS.projectsScanAgentSessions, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.projectsImportAgentSessions, AgentSessionImportInput),
   tagRequestBody(WS_METHODS.projectsFindByRepository, ProjectFindByRepositoryInput),
   tagRequestBody(WS_METHODS.projectsListDirectory, ProjectListDirectoryInput),
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),

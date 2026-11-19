@@ -29,6 +29,10 @@ Each harness release bumps the version once: Release 1 is 16, and Release 2 is 1
 (session capability snapshots, reported model capabilities, catalog sources and the
 provider inventory RPC).
 
+Version 46 adds the explicit onboarding project discovery and history import RPCs.
+Discovery uses the current server profile's configured Codex and Claude homes.
+History import is optional, never starts a turn, and uses the normal approval defaults.
+
 Worktree safety Release 1 uses version 23 (the preceding version was 22). It adds
 `worktrees.inspect`, `worktrees.remove`, `worktrees.threadState`, and `worktrees.recover`,
 removes public force removal, and preserves filesystem paths without trimming. Thread state

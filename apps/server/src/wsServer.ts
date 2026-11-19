@@ -1,4 +1,9 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { AgentSessionScanner } from "./project/AgentSessionScanner";
+import {
+  importAgentSessionProject,
+  resolveAgentSessionHomes,
+} from "./project/AgentSessionImporter";
 import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
 import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
@@ -1097,6 +1102,7 @@ export const createServer = Effect.fn(function* (
     autoBootstrapProjectFromCwd,
   } = serverConfig;
   const serverAuth = makeServerAuth(authToken, {
+    rotateDesktopBootstrapToken: mode === "desktop",
     ...(serverConfig.profile ? { profileId: serverConfig.profile.id } : {}),
     allowedWebSocketOrigins: [
       ...(mode === "desktop" ? [DESKTOP_RENDERER_ORIGIN] : []),
@@ -1189,6 +1195,8 @@ export const createServer = Effect.fn(function* (
 
   const clients = yield* Ref.make(new Set<WebSocket>());
   const scratchProjectSemaphore = yield* Semaphore.make(1);
+  const agentSessionSemaphore = yield* Semaphore.make(1);
+  const agentSessionScanner = new AgentSessionScanner();
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
   const shouldLogThreadOpenTimings =
@@ -5173,6 +5181,54 @@ export const createServer = Effect.fn(function* (
       }
       case WS_METHODS.projectsCloneList:
         return projectClones.list();
+      case WS_METHODS.projectsScanAgentSessions: {
+        return yield* agentSessionSemaphore.withPermits(1)(
+          Effect.gen(function* () {
+            const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+            const settings = yield* serverSettings.getSettings;
+            const homes = yield* resolveAgentSessionHomes(settings, serverConfig);
+            const model = yield* orchestrationEngine.getReadModel();
+            return yield* Effect.tryPromise({
+              try: (signal) =>
+                agentSessionScanner.scan(
+                  homes,
+                  model.projects
+                    .filter((project) => project.deletedAt === null)
+                    .map((project) => project.workspaceRoot),
+                  serverConfig.worktreesDir,
+                  signal,
+                ),
+              catch: () =>
+                new RouteRequestError({ message: "Could not scan agent history. Try again." }),
+            });
+          }),
+        );
+      }
+      case WS_METHODS.projectsImportAgentSessions: {
+        const body = stripRequestTag(request.body);
+        return yield* agentSessionSemaphore.withPermits(1)(
+          Effect.gen(function* () {
+            const { orchestrationEngine, providerSessionDirectory } =
+              yield* awaitOrchestrationRuntimeForRoute;
+            const settings = yield* serverSettings.getSettings;
+            const homes = yield* resolveAgentSessionHomes(settings, serverConfig);
+            return yield* importAgentSessionProject({
+              request: body,
+              scanner: agentSessionScanner,
+              homes,
+              engine: orchestrationEngine,
+              directory: providerSessionDirectory,
+            }).pipe(
+              Effect.mapError(
+                () =>
+                  new RouteRequestError({
+                    message: "Could not import agent history. Scan for projects again and retry.",
+                  }),
+              ),
+            );
+          }),
+        );
+      }
       case WS_METHODS.projectsEnsureScratch: {
         return yield* scratchProjectSemaphore.withPermits(1)(
           Effect.gen(function* () {

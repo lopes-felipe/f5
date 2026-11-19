@@ -2,6 +2,7 @@ export * from "./nativeOperation";
 export * from "./threadTools";
 export * from "./pullRequestWatch";
 export * from "./baseSchemas";
+export * from "./agentSessions";
 export { PendingUserInput } from "./userInput";
 export * from "./elicitation";
 export * from "./assistantResponseContext";

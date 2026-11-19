@@ -1,0 +1,1 @@
+- Model lists ignore caches from a different manifest source. Expanding another command can retry a failed highlighting download, and large commands use bounded coloring without loading the full renderer.

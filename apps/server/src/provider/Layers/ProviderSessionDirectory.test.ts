@@ -29,6 +29,48 @@ function makeDirectoryLayer<E, R>(persistenceLayer: Layer.Layer<SqlClient.SqlCli
 }
 
 it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryLive", (it) => {
+  it("removes only the import's unclaimed staging binding", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.makeUnsafe("pending-import");
+      const pending = {
+        threadId,
+        provider: "codex" as const,
+        status: "stopped" as const,
+        runtimePayload: { cwd: "/project", historyImportId: "original" },
+      };
+      yield* directory.upsert(pending);
+      assert.isFalse(yield* directory.removePendingImport(threadId, "other"));
+      assert.isTrue(yield* directory.removePendingImport(threadId, "original"));
+      yield* directory.upsert(pending);
+      yield* directory.upsert({ ...pending, runtimePayload: { sessionGeneration: 1 } });
+      assert.isFalse(yield* directory.removePendingImport(threadId, "original"));
+      assert.isTrue(Option.isSome(yield* directory.getBinding(threadId)));
+    }));
+  it("keeps a live binding when a history-import retry inserts the same thread", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.makeUnsafe("import-retry");
+      const binding = {
+        threadId,
+        provider: "codex" as const,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimePayload: { sessionGeneration: 4, activeTurnId: "live-turn" },
+        resumeCursor: { threadId: "native-session" },
+      };
+      yield* directory.upsert(binding);
+      yield* directory.upsert(
+        {
+          ...binding,
+          runtimePayload: { cwd: "/import" },
+          resumeCursor: { threadId: "replacement" },
+        },
+        { onConflict: "ignore" },
+      );
+      const retained = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.deepEqual(retained.runtimePayload, binding.runtimePayload);
+      assert.deepEqual(retained.resumeCursor, binding.resumeCursor);
+    }));
   it("fences incomplete-history markers and retains them through replacement until exact recovery", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;

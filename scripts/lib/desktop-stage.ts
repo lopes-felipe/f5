@@ -17,7 +17,8 @@ function resolveDesktopRuntimeDependencies(
       ([dependencyName]) =>
         dependencyName !== "electron" &&
         // The settings portal transport includes a Unix-only native addon.
-        (dependencyName !== "dbus-next" || platform === "linux"),
+        (dependencyName !== "dbus-next" || platform === "linux") &&
+        (dependencyName !== "electron-webauthn" || platform === "mac"),
     ),
   );
 

@@ -1,4 +1,5 @@
 import { ThreadFindBar } from "./chat/ThreadFindBar";
+import { isDiffSearchEditingKey, isEventInFindScope } from "../lib/keyboardFocus";
 import { ThreadTokenUsageProvider } from "./chat/MessageTokenUsage";
 import { usePublishComposerSelection } from "../activeComposerSelection";
 import { useComposerTypingGuard } from "./chat/useComposerTypingGuard";
@@ -4350,6 +4351,7 @@ export default memo(function ChatView({
         event.stopPropagation();
         return;
       }
+      if (isDiffSearchEditingKey(event)) return;
       if (!activeThreadId || event.defaultPrevented || isKeyboardEventComposing(event)) return;
       const eventTarget = event.target instanceof Node ? event.target : null;
       const dialogFocus = isEventInDialogKeybindingContext(event);
@@ -4375,7 +4377,8 @@ export default memo(function ChatView({
         isServerThread &&
         !dialogFocus &&
         !isTerminalFocused() &&
-        !(activeElement instanceof Element && activeElement.closest('[data-find-scope="preview"]'))
+        !isEventInFindScope(event, "preview") &&
+        !isEventInFindScope(event, "diff")
       ) {
         event.preventDefault();
         event.stopPropagation();

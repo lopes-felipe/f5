@@ -1,0 +1,1 @@
+- Signed macOS builds with the required entitlements support Touch ID and system passkeys in preview tabs, with an account picker when a site offers multiple credentials.

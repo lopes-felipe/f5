@@ -320,6 +320,7 @@ export class WsTransport {
   /** Frames received on the authoritative socket; any frame proves it alive. */
   private inboundFrames = 0;
   private readonly url: string;
+  private readonly usesDesktopBridge: boolean;
   private readonly browserSessionAuth: boolean;
   private readonly handleWindowFocus = () => this.handleForegroundSignal();
   private readonly handleWindowOnline = () => this.handleForegroundSignal();
@@ -339,6 +340,7 @@ export class WsTransport {
       connecting: Number(this.authConnectInFlight),
     }));
     const bridgeUrl = window.desktopBridge?.getWsUrl();
+    this.usesDesktopBridge = url === undefined && !!bridgeUrl;
     const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
     this.url =
       url ??
@@ -819,7 +821,10 @@ export class WsTransport {
 
     noteWsConnectionAttempt();
 
-    const url = new URL(this.url, window.location.href);
+    const url = new URL(
+      (this.usesDesktopBridge ? window.desktopBridge?.getWsUrl() : undefined) || this.url,
+      window.location.href,
+    );
     url.searchParams.set(F5_PROTOCOL_QUERY, String(F5_PROTOCOL_VERSION));
     const ws = new WebSocket(url.toString());
     const generation = ++this.socketGeneration;

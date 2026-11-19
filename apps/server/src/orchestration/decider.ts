@@ -128,6 +128,52 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   OrchestrationCommandInvariantError | ThreadTurnAlreadyActiveError | ThreadSettingsChangedError
 > {
   switch (command.type) {
+    case "thread.import": {
+      const project = yield* requireProject({ readModel, command, projectId: command.projectId });
+      if (project.workspaceRoot !== command.expectedWorkspaceRoot)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The project directory changed before history import.",
+        });
+      if (command.worktreePath !== null || command.branch !== null)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Imported history cannot create a worktree or change branches.",
+        });
+      const created = yield* decideCommand({
+        command: { ...command, type: "thread.create" },
+        readModel,
+        providerInstances,
+        nativeRemovedMessageIds,
+      });
+      return [
+        ...(Array.isArray(created) ? created : [created]).map((event) =>
+          event.type === "thread.created" && command.modelSelection
+            ? { ...event, payload: { ...event.payload, modelSelection: command.modelSelection } }
+            : event,
+        ),
+        ...command.messages.map((message, index) => ({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: message.createdAt,
+            commandId: command.commandId,
+            metadata: { source: "agent-history-import" },
+          }),
+          type: "thread.message-sent" as const,
+          payload: {
+            threadId: command.threadId,
+            messageId: MessageId.make("import:" + command.threadId + ":" + index),
+            role: message.role,
+            text: message.text,
+            turnId: null,
+            streaming: false,
+            createdAt: message.createdAt,
+            updatedAt: message.createdAt,
+          },
+        })),
+      ];
+    }
     case "project.create": {
       yield* requireProjectAbsent({
         readModel,

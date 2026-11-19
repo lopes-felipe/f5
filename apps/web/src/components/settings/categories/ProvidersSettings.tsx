@@ -376,6 +376,24 @@ export function ProvidersSettings() {
             />
           </div>
         </div>
+        <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-3">
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              Refresh model classification online
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Fetch the current and legacy model lists from the hosted manifest. Cached lists work
+              offline. Turn this off to use the bundled lists.
+            </p>
+          </div>
+          <Switch
+            checked={unifiedSettings.enableRemoteModelManifest}
+            onCheckedChange={(checked) =>
+              updateUnifiedSettings({ enableRemoteModelManifest: Boolean(checked) })
+            }
+            aria-label="Refresh model classification online"
+          />
+        </div>
         {updateCheckError ? (
           <p role="alert" className="px-5 py-2 text-xs text-destructive">
             {updateCheckError}

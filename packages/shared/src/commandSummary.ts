@@ -374,6 +374,25 @@ export function displayCommandExecutionCommand(command: string): string {
   if (powerShellCommand !== null) {
     return powerShellCommand;
   }
+  const windows = /^(?:"([^"]+)"|'([^']+)'|(\S+))\s+(.+)$/s.exec(command.trim());
+  const executable = windows?.[1] ?? windows?.[2] ?? windows?.[3];
+  if (executable && /^cmd(?:\.exe)?$/i.test(shellBasename(executable))) {
+    const tokens = lexShellCommand(windows![4]!).filter((token) => token.trim().length > 0);
+    for (let index = 0; index < tokens.length; index++) {
+      const token = tokens[index]!;
+      if (token.toLowerCase() === "/c") {
+        // Keep launchers with positional arguments or shell operators intact.
+        if (index === tokens.length - 2) {
+          const script = tokens[index + 1]!;
+          if (isShellOperatorToken(script)) break;
+          return isQuotedToken(script) ? script.slice(1, -1) || command : script;
+        }
+        break;
+      }
+      if (!token.startsWith("/")) break;
+    }
+    return command;
+  }
   const match = /^(?<shell>\S+)\s+(?<flag>-(?:ilc|lc|ic|c))\s+(?<rest>.+)$/s.exec(command.trim());
   const shell = match?.groups?.shell;
   const rest = match?.groups?.rest;

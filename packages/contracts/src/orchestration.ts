@@ -1,4 +1,5 @@
 import { ScheduledOrigin } from "./baseSchemas";
+import { ImportedSessionMessages } from "./agentSessions";
 import { OrchestrationProposedPlanId, OrchestrationProposedPlan } from "./proposedPlan";
 import { FilesystemPath } from "./baseSchemas";
 import { ThreadSearchInput, ThreadSearchResult } from "./threadSearch";
@@ -2060,6 +2061,12 @@ export const ProjectScratchCreateCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  Schema.Struct({
+    ...ThreadCreateCommand.fields,
+    type: Schema.Literal("thread.import"),
+    expectedWorkspaceRoot: FilesystemPath,
+    messages: ImportedSessionMessages,
+  }),
   ProjectScratchCreateCommand,
   Schema.Struct({
     type: Schema.Literals(["project.workflow.archive", "project.workflow.unarchive"]),
@@ -2655,6 +2662,8 @@ export const ThreadFileChangeRecordedPayload = Schema.Struct({
 });
 
 export const OrchestrationEventMetadata = Schema.Struct({
+  /** Historical messages do not represent a new turn or checkpoint request. */
+  source: Schema.optional(Schema.Literal("agent-history-import")),
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
   providerItemId: Schema.optional(ProviderItemId),
   adapterKey: Schema.optional(TrimmedNonEmptyString),

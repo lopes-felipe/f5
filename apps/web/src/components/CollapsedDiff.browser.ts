@@ -141,23 +141,22 @@ describe("collapsed diff highlighting", () => {
       container
         .querySelector("diffs-container")
         ?.shadowRoot?.querySelector<HTMLElement>("[data-diffs-header]");
+    const host = () => container.querySelector("diffs-container")!;
+    // 1.5 themes the shadow host with CSS instead of inline header styles.
+    const scheme = () => getComputedStyle(host()).colorScheme;
     viewer.render({ fileDiff, containerWrapper: container });
     // These assertions must precede the asynchronous theme load.
-    expect(header()?.style.color).toBe("");
-    expect(header()?.dataset.themeType).toBeUndefined();
+    expect(scheme()).not.toBe("dark");
     await vi.waitFor(() => {
-      expect(header()?.dataset.themeType).toBe("dark");
-      expect(header()?.style.color).not.toBe("");
-      expect(header()?.style.backgroundColor).not.toBe("");
+      expect(scheme()).toBe("dark");
+      expect(getComputedStyle(header()!).color).toBe(getComputedStyle(host()).color);
     });
-    const darkColor = header()!.style.color;
+    const darkColor = getComputedStyle(header()!).color;
     viewer.setOptions({ ...options, theme: "pierre-light" });
     viewer.render({ fileDiff, forceRender: true });
-    expect(header()?.style.color).toBe("");
     await vi.waitFor(() => {
-      expect(header()?.dataset.themeType).toBe("light");
-      expect(header()?.style.color).not.toBe("");
-      expect(header()?.style.color).not.toBe(darkColor);
+      expect(scheme()).toBe("light");
+      expect(getComputedStyle(header()!).color).not.toBe(darkColor);
     });
   });
 

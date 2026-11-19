@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
 
 import {
   authorizeDesktopBackendRequestHeaders,
@@ -29,8 +30,11 @@ function authorize(url: string, requestHeaders: Record<string, string> = {}) {
 describe("authorizeDesktopBackendRequestHeaders", () => {
   it("derives all desktop backend endpoints from the canonical loopback origin", () => {
     expect(getDesktopBackendHttpOrigin(backendPort)).toBe(`http://127.0.0.1:${backendPort}`);
-    expect(getDesktopBackendWebSocketUrl(backendPort, "token with spaces")).toBe(
-      `ws://127.0.0.1:${backendPort}/?token=token+with+spaces`,
+    expect(getDesktopBackendWebSocketUrl(backendPort, "token with spaces", 0)).toBe(
+      "ws://127.0.0.1:" +
+        backendPort +
+        "/?token=" +
+        currentDesktopBootstrapToken("token with spaces", 0),
     );
     expect(DESKTOP_BACKEND_REQUEST_FILTER).toBe("http://127.0.0.1/*");
   });

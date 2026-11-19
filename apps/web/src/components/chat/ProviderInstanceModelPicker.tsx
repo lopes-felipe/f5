@@ -256,13 +256,14 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       )) {
         const item = { ...model, instance } satisfies InstanceModelItem;
         if (!matchesSearch(item, search)) continue;
-        const company = getModelCompanyLabel({
+        const companyName = getModelCompanyLabel({
           driverKind: instance.driverKind,
           instanceDisplayName: instance.displayName,
           name: model.name,
           slug: model.slug,
           subProvider: model.subProvider,
         });
+        const company = model.isLegacy ? companyName + " · Legacy" : companyName;
         const group = byCompany.get(company);
         if (group) group.push(item);
         else byCompany.set(company, [item]);
@@ -280,7 +281,10 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
         // Stable sorting groups favorites without replacing that order with names.
         return 0;
       }),
-    }));
+    })).toSorted(
+      (left, right) =>
+        Number(left.items[0]?.isLegacy === true) - Number(right.items[0]?.isLegacy === true),
+    );
   }, [
     favoriteItems,
     favoriteKeys,

@@ -70,6 +70,31 @@ vi.mock("@pierre/diffs", () => ({
 }));
 
 vi.mock("@pierre/diffs/react", () => ({
+  CodeView: ({
+    items,
+    options,
+    className,
+    renderCustomHeader,
+  }: {
+    items: Array<{ id: string; collapsed?: boolean; fileDiff: { cacheKey?: string } }>;
+    options: { diffStyle?: string; overflow?: string };
+    className?: string;
+    renderCustomHeader: (item: unknown) => ReactNode;
+  }) => (
+    <div className={className} data-testid="diff-virtualizer">
+      {items.map((item) => (
+        <div
+          key={item.id}
+          data-testid={"file-diff-" + item.fileDiff.cacheKey}
+          data-collapsed={String(item.collapsed ?? false)}
+          data-diff-style={options.diffStyle ?? "unified"}
+          data-overflow={options.overflow ?? "scroll"}
+        >
+          {renderCustomHeader(item)}
+        </div>
+      ))}
+    </div>
+  ),
   WorkerPoolContextProvider: ({ children }: { children?: ReactNode }) => children ?? null,
   useWorkerPool: () => null,
   Virtualizer: ({ children, className }: { children?: ReactNode; className?: string }) => (

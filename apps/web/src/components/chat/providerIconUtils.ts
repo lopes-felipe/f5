@@ -20,6 +20,7 @@ import {
 import { PROVIDER_OPTIONS, type ProviderPickerKind } from "../../session-logic";
 
 export type ModelEsque = {
+  isLegacy?: boolean;
   isUnlisted?: boolean | undefined;
   slug: string;
   name: string;
