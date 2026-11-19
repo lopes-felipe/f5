@@ -33,6 +33,7 @@ afterEach(async () => {
   active = undefined;
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  useStore.setState({ threads: [] });
 });
 const project = (id: string, cwd: string) => ({
   id: ProjectId.makeUnsafe(id),
@@ -54,6 +55,15 @@ function seedConversation(overrides: Record<string, unknown> = {}) {
         id: conversation,
         projectId: ProjectId.makeUnsafe("project"),
         title: "Release notes",
+        activities: [],
+        messages: [],
+        proposedPlans: [],
+        session: null,
+        latestTurn: null,
+        error: null,
+        archivedAt: null,
+        createdAt: "2026-01-01T00:00:00Z",
+        lastInteractionAt: "2026-01-01T00:00:00Z",
         modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
         runtimeMode: "full-access",
         interactionMode: "plan",

@@ -27,6 +27,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { buildSlashComposerMenuItems } from "@t3tools/shared/slashCommands";
 import { useStore } from "../../store";
+import { useThreadSummaries } from "../../threadSelectors";
 import { useSettings } from "../../hooks/useSettings";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { gitBranchesQueryOptions } from "../../lib/gitReactQuery";
@@ -154,7 +155,7 @@ export function ScheduledTaskDialog(props: {
   const [boundThreadId, setBoundThreadId] = useState(
     task?.workspace.kind === "thread" ? task.workspace.threadId : props.boundThreadId,
   );
-  const threads = useStore((s) => s.threads);
+  const threads = useThreadSummaries();
   const boundThread = useStore((s) =>
     boundThreadId ? s.threads.find((t) => t.id === boundThreadId) : undefined,
   );
