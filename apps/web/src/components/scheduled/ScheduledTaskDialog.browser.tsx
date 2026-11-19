@@ -667,6 +667,49 @@ it("blocks thread mode until the conversation has a model", async () => {
   await expect.element(page.getByRole("button", { name: "Save task" })).toBeDisabled();
 });
 
+it("moves an existing task to another conversation using its live settings", async () => {
+  mocks.update.mockResolvedValue({ warnings: [] });
+  seedConversation();
+  const destination = ThreadId.makeUnsafe("destination");
+  const source = useStore.getState().threads[0]!;
+  useStore.setState({
+    threads: [
+      source,
+      { ...source, id: destination, title: "Next release", interactionMode: "default" },
+      {
+        ...source,
+        id: ThreadId.makeUnsafe("archived"),
+        title: "Archived",
+        archivedAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        ...source,
+        id: ThreadId.makeUnsafe("foreign"),
+        title: "Foreign",
+        projectId: ProjectId.makeUnsafe("other"),
+      },
+    ],
+  });
+  await setup(storedTask({ workspace: { kind: "thread", threadId: conversation } }));
+  const picker = page.getByRole("combobox", { name: "Destination conversation" });
+  await expect
+    .element(page.getByRole("option", { name: "Archived", exact: true }))
+    .not.toBeInTheDocument();
+  await expect
+    .element(page.getByRole("option", { name: "Foreign", exact: true }))
+    .not.toBeInTheDocument();
+  await picker.selectOptions(destination);
+  await page.getByRole("button", { name: "Save task" }).click();
+  expect(mocks.update).toHaveBeenCalledWith(
+    expect.objectContaining({
+      configuration: expect.objectContaining({
+        workspace: { kind: "thread", threadId: destination },
+        interactionMode: "default",
+      }),
+    }),
+  );
+});
+
 it("keeps the draft across project changes and blocks Save while settings fail to load", async () => {
   await setup(undefined, {
     allowProjectChange: true,

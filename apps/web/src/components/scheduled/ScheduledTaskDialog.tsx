@@ -21,7 +21,7 @@ import {
   type ScheduledTaskConfiguration,
   type ScheduledWorkspace,
   type ProjectId,
-  type ThreadId,
+  ThreadId,
   isKnownProviderKind,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -151,8 +151,10 @@ export function ScheduledTaskDialog(props: {
   onSaved: (projectId: ProjectId) => void;
 }) {
   const { task } = props;
-  const boundThreadId =
-    task?.workspace.kind === "thread" ? task.workspace.threadId : props.boundThreadId;
+  const [boundThreadId, setBoundThreadId] = useState(
+    task?.workspace.kind === "thread" ? task.workspace.threadId : props.boundThreadId,
+  );
+  const threads = useStore((s) => s.threads);
   const boundThread = useStore((s) =>
     boundThreadId ? s.threads.find((t) => t.id === boundThreadId) : undefined,
   );
@@ -165,6 +167,11 @@ export function ScheduledTaskDialog(props: {
   const threadMode = draft.workspaceKind === "thread";
   const projectId =
     task?.projectId ?? (threadMode && boundThread ? boundThread.projectId : creationProjectId);
+  const destinationThreads = threads.filter(
+    (thread) =>
+      thread.id === boundThreadId ||
+      (thread.projectId === projectId && !thread.archivedAt && !thread.scheduledOrigin),
+  );
   const project = useStore((s) => s.projects.find((p) => p.id === projectId));
   const config = useQuery(serverConfigQueryOptions());
   const settings = useSettings(undefined, projectId);
@@ -277,7 +284,7 @@ export function ScheduledTaskDialog(props: {
       : boundThread;
   const threadError = !threadMode
     ? null
-    : !boundThreadId || (!boundThread && !task)
+    : !boundThreadId || !boundSource
       ? "This conversation is no longer available."
       : !boundSource?.modelSelection
         ? "Send a message in this conversation before scheduling into it."
@@ -604,13 +611,37 @@ export function ScheduledTaskDialog(props: {
               >
                 <option value="projectRoot">Project root (shared filesystem)</option>
                 <option value="worktree">New worktree for every run</option>
-                {boundThreadId && (
+                {(boundThreadId || destinationThreads.length > 0) && (
                   <option value="thread">
                     {boundThread ? `Conversation: ${boundThread.title}` : "This conversation"}
                   </option>
                 )}
               </NativeSelect>
             </label>
+            {threadMode && (
+              <label className="block">
+                Destination conversation
+                <NativeSelect
+                  aria-label="Destination conversation"
+                  value={boundThreadId ?? ""}
+                  onChange={(event) =>
+                    setBoundThreadId(
+                      event.target.value ? ThreadId.makeUnsafe(event.target.value) : undefined,
+                    )
+                  }
+                >
+                  <option value="">Select a conversation</option>
+                  {boundThreadId && !threads.some((thread) => thread.id === boundThreadId) && (
+                    <option value={boundThreadId}>Current conversation (unavailable)</option>
+                  )}
+                  {destinationThreads.map((thread) => (
+                    <option key={thread.id} value={thread.id}>
+                      {thread.title}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </label>
+            )}
             {draft.workspaceKind === "worktree" && (
               <label className="block">
                 Base branch

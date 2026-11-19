@@ -1,0 +1,1 @@
+- Scheduled tasks can be moved to another conversation in the same project from the task editor.

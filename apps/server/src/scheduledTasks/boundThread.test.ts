@@ -162,6 +162,43 @@ it.effect("rejects legacy, scheduled-origin, archived and foreign conversations 
   }).pipe(Effect.provide(testLayer), Effect.scoped),
 );
 
+it.effect("moving a task validates the destination and adopts its live execution settings", () =>
+  Effect.gen(function* () {
+    const f = yield* bound;
+    const { task } = yield* f.createBound();
+    const destination = ThreadId.makeUnsafe("destination");
+    const move = () =>
+      f.service.update(
+        {
+          id: task.id,
+          expectedVersion: task.version,
+          configuration: { ...task, workspace: { kind: "thread", threadId: destination } },
+        },
+        actor,
+      );
+    expect((yield* Effect.result(move()))._tag).toBe("Failure");
+    for (const overrides of [
+      { archivedAt: new Date(0).toISOString() },
+      { projectId: "elsewhere" },
+      { deletedAt: new Date(0).toISOString() },
+    ]) {
+      yield* seedBoundThread(f.host, f.store, destination, overrides as never);
+      expect((yield* Effect.result(move()))._tag).toBe("Failure");
+      expect((yield* f.store.task(task.id))!.task.workspace).toEqual(task.workspace);
+    }
+    yield* seedBoundThread(f.host, f.store, destination, {
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "model-b" },
+      interactionMode: "plan",
+    });
+    const moved = (yield* move()).task;
+    expect(moved.workspace).toEqual({ kind: "thread", threadId: destination });
+    expect(moved.modelSelection.model).toBe("model-b");
+    expect(moved.interactionMode).toBe("plan");
+    const run = yield* f.fire(moved);
+    expect(run.run.threadId).toBe(destination);
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+
 it.effect("an edit after a provider switch validates and stores the conversation's settings", () =>
   Effect.gen(function* () {
     const f = yield* bound;
