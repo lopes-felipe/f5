@@ -7,6 +7,7 @@ import { parsePatchFiles } from "@pierre/diffs";
 import { SearchableDiffView } from "./SearchableDiffView";
 import { PREFERRED_HIGHLIGHTER } from "../lib/diffRendering";
 import type { CodeViewHandle } from "@pierre/diffs/react";
+import { isDiffSearchEditingKey } from "../lib/keyboardFocus";
 
 const patch =
   "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-before\n+needle\n";
@@ -45,6 +46,14 @@ it("opens find with the keyboard and unfolds a matching file", async () => {
       }),
     );
     await page.getByPlaceholder("Search", { exact: true }).fill("needle");
+    const shortcut = (key: string, modifiers: Partial<KeyboardEventInit> = {}) =>
+      isDiffSearchEditingKey(new KeyboardEvent("keydown", { key, ...modifiers }));
+    expect(shortcut("a")).toBe(true);
+    expect(shortcut("c", { ctrlKey: true })).toBe(true);
+    expect(shortcut("f", { metaKey: true })).toBe(true);
+    expect(shortcut("d", { metaKey: true })).toBe(false);
+    expect(shortcut("Tab", { ctrlKey: true })).toBe(false);
+    expect(shortcut("ArrowRight", { metaKey: true, altKey: true })).toBe(false);
     await userEvent.keyboard("{Enter}");
     await expect.poll(() => reveal.mock.calls.some(([value]) => value === false)).toBe(true);
     await expect.element(page.getByRole("button", { name: "Collapse example.ts" })).toBeVisible();
@@ -81,5 +90,36 @@ it("keeps item versions stable across parent renders and changes only the folded
     expect(version("second")).toBe(second);
   } finally {
     await screen.unmount();
+  }
+});
+
+it("shows both renamed paths in a styled card and folds from the header without hijacking buttons", async () => {
+  const renamed = parsePatchFiles(
+    "diff --git a/old.ts b/new.ts\nsimilarity index 50%\nrename from old.ts\nrename to new.ts\n--- a/old.ts\n+++ b/new.ts\n@@ -1 +1 @@\n-before\n+after\n",
+  )[0]!.files[0]!;
+  const collapse = vi.fn(),
+    open = vi.fn();
+  const view = await render(
+    <SearchableDiffView
+      className="diff-render-surface h-96 overflow-auto"
+      files={[{ id: "rename", fileDiff: renamed, collapsed: false }]}
+      options={{ theme: "pierre-dark", preferredHighlighter: PREFERRED_HIGHLIGHTER }}
+      onCollapse={collapse}
+      onOpenFile={open}
+    />,
+  );
+  try {
+    await expect.element(page.getByText("old.ts →", { exact: true })).toBeVisible();
+    const header = document.querySelector<HTMLElement>('[data-diff-file-path="new.ts"]')!;
+    const card = header.closest("diffs-container")!;
+    expect(card.classList.contains("diff-render-file")).toBe(true);
+    expect(getComputedStyle(card).borderTopStyle).toBe("solid");
+    await page.getByRole("button", { name: "new.ts", exact: true }).click();
+    expect(open).toHaveBeenCalledExactlyOnceWith("new.ts");
+    expect(collapse).not.toHaveBeenCalled();
+    header.click();
+    expect(collapse).toHaveBeenCalledExactlyOnceWith("rename", true);
+  } finally {
+    await view.unmount();
   }
 });

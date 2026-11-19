@@ -18,7 +18,7 @@ it("preserves the exact command while shell and embedded grammars load", async (
   expect(element.textContent).toBe(command);
 });
 
-it("leaves very large commands plain rather than blocking the renderer", async () => {
+it("uses bounded lightweight coloring for large commands without losing their text", async () => {
   const command = "echo x\n".repeat(5000);
   const screen = await render(
     <pre data-testid="command">
@@ -28,4 +28,6 @@ it("leaves very large commands plain rather than blocking the renderer", async (
   const element = screen.getByTestId("command").element();
   expect(element.textContent).toBe(command);
   expect(element.querySelectorAll("span[style]").length).toBe(0);
+  expect(element.querySelector(".text-info-foreground")).not.toBeNull();
+  expect(element.querySelectorAll("span").length).toBeLessThan(10_000);
 });

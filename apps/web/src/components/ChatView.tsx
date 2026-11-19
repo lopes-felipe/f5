@@ -1,5 +1,5 @@
 import { ThreadFindBar } from "./chat/ThreadFindBar";
-import { isDiffSearchInputFocused, isEventInFindScope } from "../lib/keyboardFocus";
+import { isDiffSearchEditingKey, isEventInFindScope } from "../lib/keyboardFocus";
 import { ThreadTokenUsageProvider } from "./chat/MessageTokenUsage";
 import { usePublishComposerSelection } from "../activeComposerSelection";
 import { useComposerTypingGuard } from "./chat/useComposerTypingGuard";
@@ -4345,13 +4345,13 @@ export default memo(function ChatView({
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (isDiffSearchInputFocused(event)) return;
       // Capture phase, so a held close-terminal shortcut stops here before it
       // reaches the next terminal, a right-panel tab or the browser tab.
       if (terminalCloseRepeatGuard.preventRepeat(event, keybindings)) {
         event.stopPropagation();
         return;
       }
+      if (isDiffSearchEditingKey(event)) return;
       if (!activeThreadId || event.defaultPrevented || isKeyboardEventComposing(event)) return;
       const eventTarget = event.target instanceof Node ? event.target : null;
       const dialogFocus = isEventInDialogKeybindingContext(event);

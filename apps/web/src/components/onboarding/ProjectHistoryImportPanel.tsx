@@ -1,6 +1,6 @@
 import type { AgentSessionScanResult } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ensureNativeApi } from "../../nativeApi";
 import { readAppSettingsSnapshot, updateAppSettings } from "../../appSettings";
 import { Button } from "../ui/button";
@@ -13,6 +13,16 @@ export function ProjectHistoryImportPanel() {
   const [includeHistory, setIncludeHistory] = useState(false);
   const [busy, setBusy] = useState<"scan" | "import" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const heldStatus = useRef<
+    ReturnType<typeof readAppSettingsSnapshot>["onboardingLiteStatus"] | null
+  >(null);
+  const releaseOnboarding = useCallback(() => {
+    const previousStatus = heldStatus.current;
+    heldStatus.current = null;
+    if (previousStatus !== null && readAppSettingsSnapshot().onboardingLiteStatus === "reopened")
+      updateAppSettings({ onboardingLiteStatus: previousStatus });
+  }, []);
+  useEffect(() => releaseOnboarding, [releaseOnboarding]);
   const discover = async () => {
     setBusy("scan");
     setError(null);
@@ -30,7 +40,7 @@ export function ProjectHistoryImportPanel() {
   const importSelected = async () => {
     if (!scan) return;
     const candidates = scan.candidates.filter((candidate) => selected.has(candidate.id));
-    const previousStatus = readAppSettingsSnapshot().onboardingLiteStatus;
+    heldStatus.current ??= readAppSettingsSnapshot().onboardingLiteStatus;
     // Importing the first thread normally finishes onboarding. Hold this screen
     // until the whole explicit selection is imported, including after a retry.
     updateAppSettings({ onboardingLiteStatus: "reopened" });
@@ -62,8 +72,7 @@ export function ProjectHistoryImportPanel() {
             (truncated ? " Import limits were reached; some history was not imported." : "")
           : "Your agent settings and credentials have not changed.",
       });
-      if (previousStatus !== "reopened")
-        updateAppSettings({ onboardingLiteStatus: previousStatus });
+      releaseOnboarding();
       setScan((current) =>
         current
           ? {
@@ -175,8 +184,8 @@ export function ProjectHistoryImportPanel() {
           </label>
           <p className="text-xs text-muted-foreground">
             History import retains the first prompt and up to 199 recent messages per thread from
-            the last 30 days. Continuing a thread resumes its original CLI session with F5’s current
-            approval settings.
+            the last 30 days. Large messages and histories are shortened. Continuing a thread
+            resumes its original CLI session with F5’s current approval settings.
           </p>
           <Button
             size="sm"

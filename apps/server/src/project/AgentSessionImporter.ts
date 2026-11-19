@@ -145,6 +145,7 @@ export const importAgentSessionProject = Effect.fn("importAgentSessionProject")(
             }),
         });
         if (!history || history.messages.length === 0) return null;
+        truncated ||= history.truncated;
         const threadId = ThreadId.makeUnsafe(
           "import:" + digest(projectId + ":" + home.instanceId + ":" + history.providerSessionId),
         );

@@ -374,6 +374,16 @@ export const ProviderRegistryLive = Layer.effect(
       ),
     );
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
+    // Publish through the same channel as probes. Register for the layer's
+    // lifetime so accepting a fetch never depends on a consumer pulling a stream.
+    yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        manifest.subscribe(() => {
+          PubSub.publishUnsafe(changesPubSub, Ref.getUnsafe(providersRef));
+        }),
+      ),
+      (unsubscribe) => Effect.sync(unsubscribe),
+    );
 
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`

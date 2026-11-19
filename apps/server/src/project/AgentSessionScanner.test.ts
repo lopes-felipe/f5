@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm, symlink, open, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  ImportedSessionMessages,
+  IMPORTED_SESSION_MESSAGE_MAX_CHARS,
+  IMPORTED_SESSION_THREAD_MAX_CHARS,
+} from "@t3tools/contracts";
+import { Schema } from "effect";
 import { AgentSessionScanner } from "./AgentSessionScanner";
 import { parseAgentSessionTranscript } from "./agentSessionTranscript";
 
@@ -40,6 +46,97 @@ async function fixture() {
   return { root, cwd, home, file, source: { provider: "codex" as const, instanceId, home } };
 }
 describe("agent project discovery", () => {
+  it("uses a Claude filename UUID for both discovery and import of mixed-session history", async () => {
+    const f = await fixture();
+    const directory = join(f.root, "claude", "projects", "repository");
+    await mkdir(directory, { recursive: true });
+    const otherId = "22222222-2222-4222-8222-222222222222";
+    await writeFile(
+      join(directory, sessionId + ".jsonl"),
+      jsonl(
+        { type: "user", sessionId: otherId, cwd: f.cwd, message: { content: "Forked prompt" } },
+        { type: "assistant", sessionId, message: { content: "Reply" } },
+        { type: "assistant", sessionId: otherId, message: { content: "Later reply" } },
+      ),
+    );
+    const scanner = new AgentSessionScanner();
+    const scan = await scanner.scan(
+      [{ provider: "claudeAgent", instanceId, home: join(f.root, "claude") }],
+      [],
+      join(f.root, "worktrees"),
+      new AbortController().signal,
+    );
+    const candidate = scanner.get(scan.candidates[0]!.id, f.cwd);
+    expect(candidate.transcripts[0]?.sessionId).toBe(sessionId);
+    const history = await scanner.read(
+      candidate.transcripts[0]!,
+      f.cwd,
+      new AbortController().signal,
+    );
+    expect(history?.providerSessionId).toBe(sessionId);
+    expect(history?.messages.map((message) => message.text)).toEqual([
+      "Forked prompt",
+      "Reply",
+      "Later reply",
+    ]);
+  });
+
+  it("bounds imported text, preserves the first prompt and newest reply, and validates the budget", () => {
+    const text = "x".repeat(IMPORTED_SESSION_MESSAGE_MAX_CHARS + 1000);
+    const history = parseAgentSessionTranscript({
+      contents: jsonl(
+        { type: "session_meta", payload: { id: sessionId } },
+        { type: "event_msg", payload: { type: "user_message", message: "Original prompt" } },
+        ...Array.from({ length: 20 }, (_, index) => ({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: index + text }],
+          },
+        })),
+        {
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Newest reply" }],
+          },
+        },
+      ),
+      source: "codex",
+      providerInstanceId: instanceId,
+      fallbackSessionId: "rollout",
+      lastActiveAtMs: Date.now(),
+    })!;
+    expect(history.truncated).toBe(true);
+    expect(history.messages[0]?.text).toBe("Original prompt");
+    expect(history.messages.at(-1)?.text).toBe("Newest reply");
+    expect(
+      history.messages.some((message) =>
+        message.text.endsWith("[History shortened during import]"),
+      ),
+    ).toBe(true);
+    expect(
+      history.messages.every(
+        (message) => message.text.length <= IMPORTED_SESSION_MESSAGE_MAX_CHARS,
+      ),
+    ).toBe(true);
+    expect(
+      history.messages.reduce((total, message) => total + message.text.length, 0),
+    ).toBeLessThanOrEqual(IMPORTED_SESSION_THREAD_MAX_CHARS);
+    expect(Schema.is(ImportedSessionMessages)(history.messages)).toBe(true);
+    expect(Schema.is(ImportedSessionMessages)([{ ...history.messages[0], text }])).toBe(false);
+    expect(
+      Schema.is(ImportedSessionMessages)(
+        Array.from({ length: 9 }, () => ({
+          ...history.messages[0],
+          text: text.slice(0, IMPORTED_SESSION_MESSAGE_MAX_CHARS),
+        })),
+      ),
+    ).toBe(false);
+  });
+
   it("discovers configured histories, marks existing projects, and reads resumable messages", async () => {
     const f = await fixture();
     const scanner = new AgentSessionScanner();

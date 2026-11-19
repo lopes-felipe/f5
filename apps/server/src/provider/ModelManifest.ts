@@ -1,6 +1,6 @@
 import { readFile, writeFile, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import type { ServerProvider } from "@t3tools/contracts";
+import { MODEL_OPTIONS_BY_PROVIDER, type ServerProvider } from "@t3tools/contracts";
 import { Schema } from "effect";
 import bundled from "./model-manifest.json" with { type: "json" };
 
@@ -13,7 +13,7 @@ export type ModelManifestData = typeof Manifest.Type;
 const decode = Schema.decodeUnknownSync(Manifest);
 export const BUNDLED_MODEL_MANIFEST = decode(bundled);
 const URL =
-  "https://raw.githubusercontent.com/pingdotgg/t3code/main/apps/server/src/provider/model-manifest.json";
+  "https://raw.githubusercontent.com/lopes-felipe/f5/main/apps/server/src/provider/model-manifest.json";
 const TTL = 60 * 60_000;
 const RETRY = 5 * 60_000;
 
@@ -24,6 +24,11 @@ export function classifyModelManifest(
   if (provider.driver !== "codex" && provider.driver !== "claudeAgent") return provider;
   const current = manifest.currentModels[provider.driver];
   if (!current) return provider;
+  const catalog =
+    provider.driver === "codex"
+      ? MODEL_OPTIONS_BY_PROVIDER.codex
+      : MODEL_OPTIONS_BY_PROVIDER.claudeAgent;
+  const known = new Set<string>(catalog.map((model) => model.slug));
   return {
     ...provider,
     models: provider.models.map((model) =>
@@ -31,7 +36,11 @@ export function classifyModelManifest(
         ? model
         : {
             ...model,
-            isLegacy: !current.includes(model.slug.replace(/^openai[./]/, "")),
+            isLegacy: current.includes(model.slug.replace(/^openai[./]/, ""))
+              ? false
+              : known.has(model.slug.replace(/^openai[./]/, ""))
+                ? true
+                : undefined,
           },
     ),
   };
@@ -51,6 +60,7 @@ export async function makeModelManifest(input: {
   let lastAttempt: number | null = null;
   let pending: Promise<void> | undefined;
   const controller = new AbortController();
+  const listeners = new Set<() => void>();
   const publishedAt = (data: ModelManifestData) => Date.parse(data.updatedAt ?? "") || 0;
   try {
     const cached = JSON.parse(await (input.readCache?.() ?? readFile(input.cachePath, "utf8"))) as {
@@ -90,8 +100,10 @@ export async function makeModelManifest(input: {
       if (!response.ok) return;
       const next = decode(await response.json());
       if (controller.signal.aborted || publishedAt(next) < publishedAt(manifest)) return;
+      const changed = JSON.stringify(manifest) !== JSON.stringify(next);
       manifest = next;
       fetchedAt = now();
+      if (changed) for (const listener of listeners) listener();
       try {
         await save(JSON.stringify({ fetchedAtMs: fetchedAt, manifest }));
       } catch {
@@ -103,6 +115,10 @@ export async function makeModelManifest(input: {
   };
   return {
     current: () => manifest,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     refreshInBackground: (enabled: boolean) => {
       if (!enabled || pending || controller.signal.aborted) return;
       const at = now();
@@ -117,6 +133,9 @@ export async function makeModelManifest(input: {
     settled: async () => {
       await pending;
     },
-    close: () => controller.abort(),
+    close: () => {
+      listeners.clear();
+      controller.abort();
+    },
   };
 }

@@ -21,13 +21,15 @@ describe("model manifest", () => {
       driver: "codex",
       models: [
         { slug: "future", isCustom: false },
-        { slug: "old", isCustom: false },
+        { slug: "openai/gpt-5.2", isCustom: false },
+        { slug: "newly-released", isCustom: false },
         { slug: "mine", isCustom: true },
       ],
     } as unknown as ServerProvider;
     expect(classifyModelManifest(provider, remote).models.map((model) => model.isLegacy)).toEqual([
       false,
       true,
+      undefined,
       undefined,
     ]);
     const other = { ...provider, driver: "cursor" } as ServerProvider;

@@ -39,9 +39,19 @@ export const AgentSessionImportResult = Schema.Struct({
   truncated: Schema.Boolean,
 });
 export type AgentSessionImportResult = typeof AgentSessionImportResult.Type;
+export const IMPORTED_SESSION_MESSAGE_MAX_CHARS = 64 * 1024;
+export const IMPORTED_SESSION_THREAD_MAX_CHARS = 512 * 1024;
 export const ImportedSessionMessage = Schema.Struct({
   role: Schema.Literals(["user", "assistant"]),
-  text: Schema.String,
+  text: Schema.String.check(Schema.isMaxLength(IMPORTED_SESSION_MESSAGE_MAX_CHARS)),
   createdAt: IsoDateTime,
 });
 export type ImportedSessionMessage = typeof ImportedSessionMessage.Type;
+export const ImportedSessionMessages = Schema.Array(ImportedSessionMessage).check(
+  Schema.isMaxLength(200),
+  Schema.makeFilter(
+    (messages) =>
+      messages.reduce((total, message) => total + message.text.length, 0) <=
+        IMPORTED_SESSION_THREAD_MAX_CHARS || "Imported thread history exceeds the text limit.",
+  ),
+);

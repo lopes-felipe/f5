@@ -5312,7 +5312,7 @@ describe("ChatView timeline (full app)", () => {
       return mounted;
     }
 
-    it("routes Cmd+F to the real diff search and leaves its shadow input shortcuts alone", async () => {
+    it("keeps text editing in real diff search while allowing app navigation shortcuts", async () => {
       const mounted = await mountWithBranchRangeDiff((fixture) => {
         fixture.serverConfig = {
           ...fixture.serverConfig,
@@ -5359,10 +5359,12 @@ describe("ChatView timeline (full app)", () => {
         const search = page.getByPlaceholder("Search", { exact: true });
         await search.fill("needle");
         expect(document.querySelector('input[aria-label="Find in thread"]')).toBeNull();
-        search.element().dispatchEvent(shortcut("k"));
-        expect(useCommandPaletteStore.getState().open).toBe(false);
         search.element().dispatchEvent(shortcut("f"));
         await expect.poll(() => search.element().matches(":focus")).toBe(true);
+        search.element().dispatchEvent(shortcut("k"));
+        await expect.poll(() => useCommandPaletteStore.getState().open).toBe(true);
+        useCommandPaletteStore.getState().setOpen(false);
+        await search.fill("needle");
         await userEvent.keyboard("{Escape}");
         const composer = await waitForComposerEditor();
         await page.getByTestId("composer-editor").click();

@@ -2,7 +2,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { Deferred, Effect, Fiber, Layer, PubSub, Ref, Stream } from "effect";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
+import { ServerSettingsService } from "../../serverSettings";
 import { ServerConfig } from "../../config";
 import type { ProviderInstance } from "../ProviderDriver";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry";
@@ -11,6 +12,91 @@ import { ProviderRegistryLive } from "./ProviderRegistry";
 
 const infra = ServerConfig.layerTest(process.cwd(), { prefix: "catalog-publication-" }).pipe(
   Layer.provideMerge(NodeServices.layer),
+);
+
+it.live("publishes a late manifest refresh without a provider or settings change", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let complete!: (response: Response) => void;
+      const request = new Promise<Response>((resolve) => {
+        complete = resolve;
+      });
+      const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(() => request);
+      yield* Effect.addFinalizer(() => Effect.sync(() => fetch.mockRestore()));
+      const id = ProviderInstanceId.make("codex");
+      const snapshot: ServerProvider = {
+        instanceId: id,
+        driver: ProviderDriverKind.make("codex"),
+        enabled: true,
+        installed: true,
+        version: "1",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-11-19T00:00:00Z",
+        models: [
+          {
+            slug: "gpt-6.1-sol",
+            name: "Sol",
+            isCustom: false,
+            isUnlisted: false,
+            capabilities: null,
+          },
+        ],
+        skills: [],
+        slashCommands: [],
+      };
+      const instance: ProviderInstance = {
+        instanceId: id,
+        driverKind: snapshot.driver,
+        displayName: undefined,
+        enabled: true,
+        continuationIdentity: { driverKind: snapshot.driver, continuationKey: "test" },
+        snapshot: {
+          getSnapshot: Effect.succeed(snapshot),
+          refresh: Effect.succeed(snapshot),
+          streamChanges: Stream.empty,
+        },
+        adapter: {} as ProviderInstance["adapter"],
+        textGeneration: {} as ProviderInstance["textGeneration"],
+      };
+      yield* Effect.gen(function* () {
+        const registry = yield* ProviderRegistry;
+        expect((yield* registry.getProviders)[0]?.models[0]?.isLegacy).toBe(false);
+        const changed = yield* Stream.toPull(
+          registry.streamChanges.pipe(
+            Stream.filter((providers) => providers[0]?.models[0]?.isLegacy === true),
+          ),
+        );
+        const listening = yield* changed.pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        complete(
+          new Response(
+            JSON.stringify({
+              version: 1,
+              updatedAt: "2099-01-01T00:00:00Z",
+              currentModels: { codex: [] },
+            }),
+          ),
+        );
+        expect((yield* Fiber.join(listening))[0]?.[0]?.models[0]?.isLegacy).toBe(true);
+      }).pipe(
+        Effect.provide(
+          ProviderRegistryLive.pipe(
+            Layer.provide(ServerSettingsService.layerTest({ enableRemoteModelManifest: true })),
+          ),
+        ),
+        Effect.provideService(ProviderInstanceRegistry, {
+          listInstances: Effect.succeed([instance]),
+          getInstance: () => Effect.succeed(instance),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+            Effect.flatMap(PubSub.subscribe),
+          ),
+        }),
+      );
+    }),
+  ).pipe(Effect.provide(infra)),
 );
 
 it.effect("ignores a retired instance's late probe result or failure", () =>

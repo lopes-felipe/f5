@@ -1,0 +1,5 @@
+- Newly reported models keep their normal picker placement instead of being labelled legacy merely because they are absent from the bundled catalog. Optional manifest updates come from F5 and update connected pickers immediately.
+- Diff cards show both paths for renamed files and fold when their header is clicked. App navigation shortcuts remain available while diff search has focus.
+- Importing CLI history limits message and thread text, reports shortened history, and consistently resumes Claude sessions by their transcript filename. Leaving a failed import restores the previous onboarding state.
+- Expanded commands retain lightweight coloring while full highlighting loads or fails, including a bounded preview for large commands. Failed embedded-script downloads can be retried.
+- Desktop startup no longer waits for macOS passkey entitlement inspection; passkeys become available once the signed entitlement check finishes.

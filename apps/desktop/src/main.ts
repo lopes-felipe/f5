@@ -4871,17 +4871,22 @@ async function initializeKeepAwake(): Promise<void> {
 
 let desktopTheme: ReturnType<typeof createDesktopTheme> | undefined;
 let previewPasskeys = createPreviewPasskeys({ browserPasskeys: false });
+// Signing tools can take seconds. Start probing in parallel with Electron's
+// initialization; windows and backends never wait for this optional feature.
+const previewEntitlements = signedWebAuthnEntitlements();
 
 app
   .whenReady()
   .then(async () => {
     writeDesktopLogHeader("app ready");
-    previewPasskeys = createPreviewPasskeys(await signedWebAuthnEntitlements());
-    try {
-      previewPasskeys.configure();
-    } catch {
-      writeDesktopLogHeader("Touch ID passkeys could not be configured for this signed build.");
-    }
+    void previewEntitlements
+      .then((entitlements) => {
+        previewPasskeys = createPreviewPasskeys(entitlements);
+        previewPasskeys.configure();
+      })
+      .catch(() => {
+        writeDesktopLogHeader("Touch ID passkeys could not be configured for this signed build.");
+      });
     // Non-Linux artifacts omit dbus-next and its Unix-only native transport.
     const watchLinuxColorScheme =
       process.platform === "linux"

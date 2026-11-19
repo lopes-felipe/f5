@@ -55,8 +55,15 @@ export function SearchableDiffView({
         onRevealSearchMatch={(item) => onCollapse?.(item.id, false)}
         renderCustomHeader={(item) => (
           <div
+            ref={(header) => {
+              header?.closest("diffs-container")?.classList.add("diff-render-file");
+            }}
             data-diff-file-path={pathOf(item)}
-            className="flex items-center gap-2 border-b border-border bg-card px-2 py-2 text-xs"
+            className="flex cursor-pointer items-center gap-2 border-b border-border bg-card px-2 py-2 text-xs"
+            onClick={(event) => {
+              if (!(event.target instanceof Element) || event.target.closest("button, a")) return;
+              onCollapse?.(item.id, !item.collapsed);
+            }}
             onContextMenu={(event) => onFileContextMenu?.(event, pathOf(item))}
           >
             {onCollapse ? (
@@ -73,6 +80,16 @@ export function SearchableDiffView({
                   <ChevronDownIcon className="size-3" />
                 )}
               </button>
+            ) : null}
+            {item.type === "diff" &&
+            item.fileDiff.prevName &&
+            item.fileDiff.prevName !== item.fileDiff.name ? (
+              <span
+                className="min-w-0 truncate text-muted-foreground"
+                title={item.fileDiff.prevName}
+              >
+                {item.fileDiff.prevName} →
+              </span>
             ) : null}
             {onOpenFile ? (
               <button

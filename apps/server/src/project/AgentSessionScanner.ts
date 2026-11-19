@@ -50,7 +50,11 @@ function metadata(text: string, provider: AgentSessionSource, fallback: string) 
       const payload = record(raw.payload);
       const cwd = typeof raw.cwd === "string" ? raw.cwd : payload?.cwd;
       const sessionId =
-        provider === "codex" ? (payload?.id ?? payload?.session_id) : (raw.sessionId ?? fallback);
+        provider === "codex"
+          ? (payload?.id ?? payload?.session_id)
+          : isUuid(fallback)
+            ? fallback
+            : raw.sessionId;
       if (
         typeof cwd === "string" &&
         path.isAbsolute(cwd) &&

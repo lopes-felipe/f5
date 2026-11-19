@@ -147,7 +147,11 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         nativeRemovedMessageIds,
       });
       return [
-        ...(Array.isArray(created) ? created : [created]),
+        ...(Array.isArray(created) ? created : [created]).map((event) =>
+          event.type === "thread.created" && command.modelSelection
+            ? { ...event, payload: { ...event.payload, modelSelection: command.modelSelection } }
+            : event,
+        ),
         ...command.messages.map((message, index) => ({
           ...withEventBase({
             aggregateKind: "thread",
@@ -783,7 +787,6 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           titleRevision: 0,
           titleUpdatedAt: command.createdAt,
           model: command.model,
-          ...(command.modelSelection ? { modelSelection: command.modelSelection } : {}),
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
           branch: command.branch,

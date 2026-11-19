@@ -25,8 +25,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { TimestampFormat } from "../../appSettings";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
-import type { DisplayCommandTokenKind } from "../../lib/commandExecutions";
-import { tokenizeDisplayCommand } from "../../lib/commandExecutions";
+import { HighlightedCommandText } from "./HighlightedCommandText";
 import {
   scheduleThreadCommandExecutionRefreshIfMissing,
   threadCommandExecutionQueryOptions,
@@ -103,21 +102,6 @@ const STATUS_PRESENTATION: Record<
   },
 };
 
-// Shell syntax colours from the semantic set so themes recolour them too.
-const COMMAND_TOKEN_CLASS_NAME: Record<DisplayCommandTokenKind, string> = {
-  command: "text-info-foreground",
-  env: "text-attention-foreground",
-  flag: "text-warning-foreground",
-  number: "text-warning-foreground",
-  operator: "text-muted-foreground",
-  path: "text-success-foreground",
-  string: "text-success-foreground",
-  substitution: "text-attention-foreground",
-  text: "text-foreground",
-  variable: "text-destructive-foreground",
-  whitespace: "text-inherit",
-};
-
 // Matches the MCP card's section headers.
 const SECTION_LABEL_CLASS_NAME =
   "text-2xs font-semibold tracking-widest text-muted-foreground uppercase";
@@ -128,27 +112,6 @@ const INLINE_OUTPUT_PREVIEW_MARKER = "\n\n[... output preview shortened ...]\n\n
 const FAILED_OUTPUT_TAIL_LINES = 4;
 const FAILED_OUTPUT_TAIL_CHAR_LIMIT = 600;
 const FAILED_OUTPUT_TAIL_SCAN_CHARS = 8_000;
-
-const HighlightedCommandText = memo(function HighlightedCommandText(props: { command: string }) {
-  const tokens = tokenizeDisplayCommand(props.command);
-  let offset = 0;
-  return (
-    <>
-      {tokens.map((token) => {
-        const tokenOffset = offset;
-        offset += token.text.length;
-        return (
-          <span
-            key={`command-token:${tokenOffset}:${token.kind}`}
-            className={COMMAND_TOKEN_CLASS_NAME[token.kind]}
-          >
-            {token.text}
-          </span>
-        );
-      })}
-    </>
-  );
-});
 
 function ExpandedCommandText({ command }: { command: string }) {
   const fallback = <HighlightedCommandText command={command} />;

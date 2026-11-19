@@ -5,6 +5,7 @@ import { useTheme } from "../../hooks/useTheme";
 import { SurfaceErrorBoundary } from "../ui/SurfaceErrorBoundary";
 import { classifyCodeHighlight } from "../../lib/codeHighlightPolicy";
 import { HighlightedTokens } from "./HighlightedTokens";
+import { HighlightedCommandText } from "./HighlightedCommandText";
 
 // Shell words wrap as a unit, so `--exclude` or a quoted string is not split
 // at a hyphen; a word longer than the line still breaks anywhere.
@@ -13,23 +14,11 @@ const WORD_CLASS_NAME = "inline-block max-w-full [overflow-wrap:anywhere]";
 // The shell parser loads with the first expanded command, not with the timeline.
 let embeddedScriptsModule: Promise<typeof import("../../lib/embeddedScripts")> | undefined;
 function loadEmbeddedScripts() {
-  embeddedScriptsModule ??= import("../../lib/embeddedScripts");
+  embeddedScriptsModule ??= import("../../lib/embeddedScripts").catch((error: unknown) => {
+    embeddedScriptsModule = undefined;
+    throw error;
+  });
   return embeddedScriptsModule;
-}
-
-/** Same layout as the highlighted version, so the grammar arriving never reflows the block. */
-function PlainWords({ code }: { code: string }) {
-  // split with a capture group alternates words (even) and whitespace (odd).
-  return code.split(/(\s+)/u).map((part, index) =>
-    index % 2 === 1 || part === "" ? (
-      part
-    ) : (
-      // Positions are stable for a given string, which is all this renders.
-      <span key={index} className={WORD_CLASS_NAME}>
-        {part}
-      </span>
-    ),
-  );
 }
 
 function HighlightedCommand({ code, theme }: { code: string; theme: "light" | "dark" }) {
@@ -59,8 +48,8 @@ export function ShellCommandBlock({ command }: { command: string }) {
   const { resolvedTheme } = useTheme();
   const code = command;
   if (!code) return null;
-  if (classifyCodeHighlight(code) !== "inline") return <>{code}</>;
-  const plain = <PlainWords code={code} />;
+  const plain = <HighlightedCommandText command={code} />;
+  if (classifyCodeHighlight(code) !== "inline") return plain;
   return (
     // The tool body sets the monospace, pre-wrapped text this sits in.
     <span className="text-foreground">

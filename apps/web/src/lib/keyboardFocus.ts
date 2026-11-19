@@ -24,3 +24,27 @@ export function isDiffSearchInputFocused(event: ShortcutEventLike): boolean {
     (active.matches("input, textarea, select") || active.isContentEditable)
   );
 }
+
+/** Keep typing, editing and find navigation in CodeView; modified app
+ * navigation (panel toggles, thread switching, palette) still belongs to F5. */
+export function isDiffSearchEditingKey(event: ShortcutEventLike): boolean {
+  if (!isDiffSearchInputFocused(event)) return false;
+  if (!event.metaKey && !event.ctrlKey && !event.altKey) return true;
+  if (event.altKey && (event.metaKey || event.ctrlKey)) return false;
+  const key = event.key.toLowerCase();
+  return (
+    [
+      "arrowleft",
+      "arrowright",
+      "arrowup",
+      "arrowdown",
+      "home",
+      "end",
+      "backspace",
+      "delete",
+    ].includes(key) ||
+    (!event.altKey &&
+      (event.metaKey || event.ctrlKey) &&
+      ["a", "c", "v", "x", "z", "y", "f", "g"].includes(key))
+  );
+}

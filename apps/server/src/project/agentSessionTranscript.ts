@@ -1,8 +1,11 @@
 import { DateTime, Option, Schema } from "effect";
-import type {
-  AgentSessionSource,
-  ProviderInstanceId,
-  ImportedSessionMessage,
+import { isUuid } from "../provider/claudeResumeState";
+import {
+  IMPORTED_SESSION_MESSAGE_MAX_CHARS,
+  IMPORTED_SESSION_THREAD_MAX_CHARS,
+  type AgentSessionSource,
+  type ProviderInstanceId,
+  type ImportedSessionMessage,
 } from "@t3tools/contracts";
 
 const MAX_IMPORT_RECORDS = 100_000;
@@ -16,8 +19,41 @@ export interface AgentSessionThread {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly messages: ReadonlyArray<ImportedSessionMessage>;
+  readonly truncated: boolean;
 }
 type AgentSessionThreadMessage = ImportedSessionMessage;
+
+const SHORTENED = "\n\n[History shortened during import]";
+
+/** Reserve room for the first prompt, then retain the newest messages within
+ * a single transaction's text budget. The native CLI session stays intact. */
+function limitHistory(messages: ReadonlyArray<ImportedSessionMessage>) {
+  let remaining = IMPORTED_SESSION_THREAD_MAX_CHARS;
+  let truncated = false;
+  const retain = (message: ImportedSessionMessage) => {
+    const maximum = Math.min(remaining, IMPORTED_SESSION_MESSAGE_MAX_CHARS);
+    const text =
+      message.text.length > maximum
+        ? message.text.slice(0, maximum - SHORTENED.length).replace(/[\uD800-\uDBFF]$/u, "") +
+          SHORTENED
+        : message.text;
+    truncated ||= text !== message.text;
+    remaining -= text.length;
+    return { ...message, text };
+  };
+  const first = messages[0];
+  if (!first) return { messages: [], truncated };
+  const firstRetained = retain(first);
+  const tail: ImportedSessionMessage[] = [];
+  for (let index = messages.length - 1; index > 0; index--) {
+    if (remaining < SHORTENED.length) {
+      truncated = true;
+      break;
+    }
+    tail.push(retain(messages[index]!));
+  }
+  return { messages: [firstRetained, ...tail.reverse()], truncated };
+}
 
 function claudeUserText(text: string): { text: string; titleText: string } {
   if (
@@ -143,6 +179,7 @@ export function parseAgentSessionTranscript(
   let hasAssistantMessage = false;
   let model: string | null = null;
   let hasCodexSessionId = false;
+  let droppedMessages = false;
   const messages: Array<AgentSessionThreadMessage & { readonly codexResponseUser: boolean }> = [];
   let firstUserMessage:
     | (AgentSessionThreadMessage & { readonly codexResponseUser: boolean })
@@ -223,7 +260,10 @@ export function parseAgentSessionTranscript(
     }
     hasAssistantMessage ||= message.role === "assistant";
     messages.push(message);
-    if (messages.length > MAX_IMPORTED_MESSAGES) messages.shift();
+    if (messages.length > MAX_IMPORTED_MESSAGES) {
+      messages.shift();
+      droppedMessages = true;
+    }
   };
 
   const hasMatchingCodexEventInTurn = (text: string) => {
@@ -253,7 +293,10 @@ export function parseAgentSessionTranscript(
       ) {
         continue;
       }
-      if (record.sessionId?.trim()) providerSessionId = record.sessionId.trim();
+      // Claude resumes the file's UUID, even when forked history contains rows
+      // from another session. Keep the scanner's identity authoritative.
+      if (!isUuid(providerSessionId) && record.sessionId && isUuid(record.sessionId))
+        providerSessionId = record.sessionId;
       title = claudeTitle(record.aiTitle) ?? title;
       if (record.customTitle !== undefined) customTitle = claudeTitle(record.customTitle) ?? null;
       const messageModel = record.message?.model?.trim();
@@ -358,6 +401,7 @@ export function parseAgentSessionTranscript(
       ? (claudeDerivedTitle ?? bareCommandTitle)
       : visibleFirstUserMessage.text.trim().split("\n")[0]?.slice(0, 100).trim();
 
+  const limited = limitHistory(retainedMessages);
   return {
     source: input.source,
     providerInstanceId: input.providerInstanceId,
@@ -369,6 +413,7 @@ export function parseAgentSessionTranscript(
     model,
     createdAt: retainedMessages[0]?.createdAt ?? fallbackTimestamp,
     updatedAt: fallbackTimestamp,
-    messages: retainedMessages,
+    messages: limited.messages,
+    truncated: droppedMessages || limited.truncated,
   };
 }
