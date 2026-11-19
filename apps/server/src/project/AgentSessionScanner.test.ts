@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm, symlink, open, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ const instanceId = ProviderInstanceId.make("codex");
 const jsonl = (...records: unknown[]) =>
   records.map((record) => JSON.stringify(record)).join("\n") + "\n";
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 async function fixture() {
@@ -46,6 +47,54 @@ async function fixture() {
   return { root, cwd, home, file, source: { provider: "codex" as const, instanceId, home } };
 }
 describe("agent project discovery", () => {
+  it("discovers projects with large first metadata records and flags records beyond the cap", async () => {
+    const f = await fixture();
+    const contents = (length: number) =>
+      jsonl({
+        type: "session_meta",
+        payload: { id: sessionId, cwd: f.cwd, instructions: "x".repeat(length) },
+      });
+    await writeFile(f.file, contents(300 * 1024));
+    const scanner = new AgentSessionScanner();
+    const scan = () =>
+      scanner.scan([f.source], [], join(f.root, "worktrees"), new AbortController().signal);
+    expect((await scan()).candidates).toHaveLength(1);
+    await writeFile(f.file, contents(1100 * 1024));
+    const oversized = await scan();
+    expect(oversized.candidates).toHaveLength(0);
+    expect(oversized.truncated).toBe(true);
+  });
+
+  it("renews an active scan for later selected projects but still expires abandoned scans", async () => {
+    const f = await fixture();
+    const secondRoot = join(f.root, "second");
+    await mkdir(secondRoot);
+    await writeFile(
+      join(f.home, "sessions", "second.jsonl"),
+      jsonl({
+        type: "session_meta",
+        payload: { id: "22222222-2222-4222-8222-222222222222", cwd: secondRoot },
+      }),
+    );
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const scanner = new AgentSessionScanner();
+    const result = await scanner.scan(
+      [f.source],
+      [],
+      join(f.root, "worktrees"),
+      new AbortController().signal,
+    );
+    const first = result.candidates.find((candidate) => candidate.path === f.cwd)!;
+    const second = result.candidates.find((candidate) => candidate.path === secondRoot)!;
+    now += 9 * 60_000;
+    scanner.keepAlive(scanner.get(first.id, first.path));
+    now += 9 * 60_000;
+    expect(scanner.get(second.id, second.path).summary.path).toBe(secondRoot);
+    now += 11 * 60_000;
+    expect(() => scanner.get(second.id, second.path)).toThrow("Scan for projects again");
+  });
+
   it("uses a Claude filename UUID for both discovery and import of mixed-session history", async () => {
     const f = await fixture();
     const directory = join(f.root, "claude", "projects", "repository");

@@ -79,13 +79,34 @@ export const importAgentSessionProject = Effect.fn("importAgentSessionProject")(
   engine: Pick<OrchestrationEngineShape, "getReadModel" | "dispatch">;
   directory: Pick<ProviderSessionDirectoryShape, "upsert" | "listBindings" | "removePendingImport">;
 }) {
-  const candidate = yield* Effect.try({
-    try: () => input.scanner.get(input.request.candidateId, input.request.expectedWorkspaceRoot),
+  const { candidate, offset } = yield* Effect.try({
+    try: () => {
+      const candidate = input.scanner.get(
+        input.request.candidateId,
+        input.request.expectedWorkspaceRoot,
+      );
+      return { candidate, offset: input.scanner.offset(candidate, input.request.continuation) };
+    },
     catch: () =>
       new AgentSessionImportError({
         message: "Scan for projects again before importing this history.",
       }),
   });
+  let bytes = 0;
+  let truncated = false;
+  const sources: typeof candidate.transcripts = [];
+  for (const source of candidate.transcripts) {
+    if (sources.length >= 100 || bytes + source.size > 64 * 1024 * 1024) {
+      truncated = true;
+      break;
+    }
+    sources.push(source);
+    bytes += source.size;
+  }
+  if (offset > sources.length)
+    return yield* new AgentSessionImportError({
+      message: "The history continuation is outside the import limit.",
+    });
   const cwd = candidate.summary.path;
   yield* Effect.tryPromise({
     try: async () => {
@@ -116,16 +137,11 @@ export const importAgentSessionProject = Effect.fn("importAgentSessionProject")(
     });
   const threadIds: ThreadId[] = [];
   let skippedCount = 0;
-  let bytes = 0;
-  let truncated = false;
   if (input.request.includeHistory) {
     const knownBindings = yield* input.directory.listBindings();
-    for (const source of candidate.transcripts) {
-      if (threadIds.length + skippedCount >= 100 || bytes + source.size > 64 * 1024 * 1024) {
-        truncated = true;
-        break;
-      }
-      bytes += source.size;
+    // Each RPC dispatches at most one thread. A busy project cannot outlive
+    // the client deadline while importing dozens more threads in the background.
+    for (const source of sources.slice(offset, offset + 1)) {
       const home = input.homes.find(
         (home) =>
           home.provider === source.source.provider &&
@@ -225,5 +241,14 @@ export const importAgentSessionProject = Effect.fn("importAgentSessionProject")(
       else skippedCount++;
     }
   }
-  return { projectId, threadIds, skippedCount, truncated } satisfies AgentSessionImportResult;
+  input.scanner.keepAlive(candidate);
+  return {
+    projectId,
+    threadIds,
+    skippedCount,
+    truncated,
+    ...(input.request.includeHistory && offset + 1 < sources.length
+      ? { continuation: input.scanner.continuation(candidate, offset + 1) }
+      : {}),
+  } satisfies AgentSessionImportResult;
 });

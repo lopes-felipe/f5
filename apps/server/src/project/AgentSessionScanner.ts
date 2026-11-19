@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentSessionProjectCandidate,
   AgentSessionScanResult,
@@ -97,6 +97,29 @@ async function readBounded(file: string, maximum: number, expected?: Transcript)
 export class AgentSessionScanner {
   private candidates = new Map<string, SessionCandidate>();
   private scannedAt = 0;
+  private generation = randomUUID();
+
+  continuation(candidate: SessionCandidate, offset: number): string {
+    return this.generation + ":" + candidate.summary.id + ":" + offset;
+  }
+
+  offset(candidate: SessionCandidate, continuation?: string): number {
+    if (!continuation) return 0;
+    const prefix = this.generation + ":" + candidate.summary.id + ":";
+    const value = continuation.slice(prefix.length);
+    if (
+      !continuation.startsWith(prefix) ||
+      !/^\d{1,3}$/.test(value) ||
+      Number(value) > candidate.transcripts.length
+    )
+      throw new Error("Scan for projects again before continuing this import.");
+    return Number(value);
+  }
+
+  /** Only a successfully admitted import may renew this snapshot. */
+  keepAlive(candidate: SessionCandidate): void {
+    if (this.candidates.get(candidate.summary.id) === candidate) this.scannedAt = Date.now();
+  }
 
   get(candidateId: string, expectedRoot: string): SessionCandidate {
     const candidate = this.candidates.get(candidateId);
@@ -200,10 +223,16 @@ export class AgentSessionScanner {
         break;
       }
       try {
-        const { text } = await readBounded(file.file, 128 * 1024);
+        const { text, info } = await readBounded(
+          file.file,
+          Math.min(1024 * 1024, 64 * 1024 * 1024 - bytes),
+        );
         bytes += Buffer.byteLength(text);
         const meta = metadata(text, file.source.provider, path.basename(file.file, ".jsonl"));
-        if (!meta) continue;
+        if (!meta) {
+          if (Buffer.byteLength(text) < info.size) truncated = true;
+          continue;
+        }
         const cwd = await realpath(meta.cwd);
         if (
           !(await stat(cwd)).isDirectory() ||
@@ -249,6 +278,7 @@ export class AgentSessionScanner {
     if (files.length > 5000) truncated = true;
     signal.throwIfAborted();
     this.candidates = candidates;
+    this.generation = randomUUID();
     this.scannedAt = Date.now();
     return {
       candidates: [...candidates.values()].map((entry) => entry.summary),

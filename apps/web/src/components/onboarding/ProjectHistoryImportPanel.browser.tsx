@@ -79,6 +79,48 @@ it("waits for explicit scanning, selection, and history opt-in", async () => {
   await vi.waitFor(() =>
     expect(fixtures.update).toHaveBeenLastCalledWith({ onboardingLiteStatus: "eligible" }),
   );
+  expect(fixtures.toast.mock.lastCall?.[0].title).toBe("1 project ready");
+});
+
+it("continues the selected project one thread at a time before advancing to the next project", async () => {
+  fixtures.import
+    .mockResolvedValueOnce({
+      projectId: "first",
+      threadIds: ["one"],
+      skippedCount: 0,
+      truncated: false,
+      continuation: "next-page",
+    })
+    .mockResolvedValueOnce({
+      projectId: "first",
+      threadIds: ["two"],
+      skippedCount: 0,
+      truncated: false,
+    })
+    .mockResolvedValueOnce({
+      projectId: "second",
+      threadIds: ["three"],
+      skippedCount: 0,
+      truncated: false,
+    });
+  const view = await render(<ProjectHistoryImportPanel />);
+  await view.getByRole("button", { name: "Discover projects from agent history" }).click();
+  await view.getByRole("checkbox", { name: /First/ }).click();
+  await view.getByRole("checkbox", { name: /Second/ }).click();
+  await view.getByRole("checkbox", { name: "Also import recent thread history" }).click();
+  await view.getByRole("button", { name: "Import selected projects" }).click();
+  await vi.waitFor(() => expect(fixtures.toast).toHaveBeenCalled());
+  expect(
+    fixtures.import.mock.calls.map(([request]) => [request.candidateId, request.continuation]),
+  ).toEqual([
+    ["First", undefined],
+    ["First", "next-page"],
+    ["Second", undefined],
+  ]);
+  expect(fixtures.toast.mock.lastCall?.[0]).toMatchObject({
+    title: "2 projects ready",
+    description: "3 threads available; 0 skipped.",
+  });
 });
 it("keeps onboarding open through a batch failure and preserves completed imports", async () => {
   fixtures.import

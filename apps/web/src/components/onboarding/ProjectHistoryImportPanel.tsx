@@ -7,12 +7,16 @@ import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { toastManager } from "../ui/toast";
 
+const threadsAvailable = (count: number) =>
+  count + (count === 1 ? " thread available" : " threads available");
+
 export function ProjectHistoryImportPanel() {
   const [scan, setScan] = useState<AgentSessionScanResult | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [includeHistory, setIncludeHistory] = useState(false);
   const [busy, setBusy] = useState<"scan" | "import" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState("");
   const heldStatus = useRef<
     ReturnType<typeof readAppSettingsSnapshot>["onboardingLiteStatus"] | null
   >(null);
@@ -51,22 +55,32 @@ export function ProjectHistoryImportPanel() {
     let truncated = false;
     try {
       for (const candidate of candidates) {
-        const result = await ensureNativeApi().projects.importAgentSessions({
-          candidateId: candidate.id,
-          expectedWorkspaceRoot: candidate.path,
-          includeHistory,
-        });
-        ready += result.threadIds.length;
-        skipped += result.skippedCount;
-        truncated ||= result.truncated;
+        let continuation: string | undefined;
+        let projectReady = 0;
+        do {
+          const result = await ensureNativeApi().projects.importAgentSessions({
+            candidateId: candidate.id,
+            expectedWorkspaceRoot: candidate.path,
+            includeHistory,
+            ...(continuation ? { continuation } : {}),
+          });
+          ready += result.threadIds.length;
+          projectReady += result.threadIds.length;
+          skipped += result.skippedCount;
+          truncated ||= result.truncated;
+          if (result.continuation && result.continuation === continuation)
+            throw new Error("History import made no progress.");
+          continuation = result.continuation;
+          setProgress(candidate.title + ": " + threadsAvailable(projectReady));
+        } while (continuation);
         setSelected((current) => new Set([...current].filter((id) => id !== candidate.id)));
       }
       toastManager.add({
         type: "info",
-        title: candidates.length + " projects ready",
+        title: candidates.length + (candidates.length === 1 ? " project ready" : " projects ready"),
         description: includeHistory
-          ? ready +
-            " threads available; " +
+          ? threadsAvailable(ready) +
+            "; " +
             skipped +
             " skipped." +
             (truncated ? " Import limits were reached; some history was not imported." : "")
@@ -91,6 +105,7 @@ export function ProjectHistoryImportPanel() {
       );
     } finally {
       setBusy(null);
+      setProgress("");
     }
   };
   return (
@@ -126,11 +141,16 @@ export function ProjectHistoryImportPanel() {
           {error}
         </p>
       ) : null}
+      {progress ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          {progress}
+        </p>
+      ) : null}
       {scan ? (
         <>
           {scan.truncated ? (
             <p className="text-xs text-muted-foreground">
-              Discovery reached its scan limit. Some older projects may be missing.
+              Discovery reached its scan limit. Some projects may be missing.
             </p>
           ) : null}
           {scan.candidates.length === 0 ? (

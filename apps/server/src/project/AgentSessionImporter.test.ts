@@ -10,6 +10,7 @@ import {
   ThreadId,
   ProviderInstanceId,
   type OrchestrationEvent,
+  type AgentSessionImportInput,
 } from "@t3tools/contracts";
 import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
 import { createEmptyReadModel, projectEvent } from "../orchestration/projector";
@@ -99,7 +100,7 @@ async function fixture() {
         return { sequence: events.length };
       }),
   };
-  const request = {
+  const request: AgentSessionImportInput = {
     candidateId: candidate.id,
     expectedWorkspaceRoot: candidate.path,
     includeHistory: true,
@@ -117,6 +118,50 @@ async function fixture() {
   return { run, request, scanner, homes, engine, directory, bindings, events, model: () => model };
 }
 describe("onboarding history import", () => {
+  it("imports one thread per RPC and resumes through a snapshot-bound continuation", async () => {
+    const f = await fixture();
+    await writeFile(
+      join(f.homes[0]!.home, "sessions", "second.jsonl"),
+      [
+        {
+          type: "session_meta",
+          payload: {
+            id: "22222222-2222-4222-8222-222222222222",
+            cwd: f.request.expectedWorkspaceRoot,
+          },
+        },
+        { type: "event_msg", payload: { type: "user_message", message: "Another prompt" } },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n") + "\n",
+    );
+    await f.scanner.scan(
+      f.homes,
+      [],
+      join(f.request.expectedWorkspaceRoot, "worktrees"),
+      new AbortController().signal,
+    );
+    const first = await f.run();
+    expect(first.threadIds).toHaveLength(1);
+    expect(first.continuation).toBeDefined();
+    expect(f.model().threads).toHaveLength(1);
+    const second = await f.run({ continuation: first.continuation! });
+    expect(second.threadIds).toHaveLength(1);
+    expect(second.continuation).toBeUndefined();
+    expect(f.model().threads).toHaveLength(2);
+    expect(await f.run({ continuation: first.continuation! })).toEqual(second);
+    expect(f.model().threads).toHaveLength(2);
+    await f.scanner.scan(
+      f.homes,
+      [],
+      join(f.request.expectedWorkspaceRoot, "worktrees"),
+      new AbortController().signal,
+    );
+    await expect(f.run({ continuation: first.continuation! })).rejects.toThrow(
+      "Scan for projects again",
+    );
+  });
+
   it("cleans its staging binding when dispatch rejects the imported thread", async () => {
     const f = await fixture();
     const dispatch = f.engine.dispatch;

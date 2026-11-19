@@ -30,6 +30,7 @@ export const AgentSessionImportInput = Schema.Struct({
   candidateId: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
   expectedWorkspaceRoot: FilesystemPath,
   includeHistory: Schema.Boolean,
+  continuation: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(160))),
 });
 export type AgentSessionImportInput = typeof AgentSessionImportInput.Type;
 export const AgentSessionImportResult = Schema.Struct({
@@ -37,6 +38,7 @@ export const AgentSessionImportResult = Schema.Struct({
   threadIds: Schema.Array(ThreadId),
   skippedCount: NonNegativeInt,
   truncated: Schema.Boolean,
+  continuation: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(160))),
 });
 export type AgentSessionImportResult = typeof AgentSessionImportResult.Type;
 export const IMPORTED_SESSION_MESSAGE_MAX_CHARS = 64 * 1024;
