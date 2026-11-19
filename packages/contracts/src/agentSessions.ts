@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import {
   IsoDateTime,
+  FilesystemPath,
   NonNegativeInt,
   ProjectId,
   ThreadId,
@@ -11,7 +12,7 @@ export const AgentSessionSource = Schema.Literals(["codex", "claudeAgent"]);
 export type AgentSessionSource = typeof AgentSessionSource.Type;
 export const AgentSessionProjectCandidate = Schema.Struct({
   id: TrimmedNonEmptyString,
-  path: TrimmedNonEmptyString,
+  path: FilesystemPath,
   title: TrimmedNonEmptyString,
   sources: Schema.Array(AgentSessionSource),
   threadCount: NonNegativeInt,
@@ -27,7 +28,7 @@ export const AgentSessionScanResult = Schema.Struct({
 export type AgentSessionScanResult = typeof AgentSessionScanResult.Type;
 export const AgentSessionImportInput = Schema.Struct({
   candidateId: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
-  expectedWorkspaceRoot: TrimmedNonEmptyString,
+  expectedWorkspaceRoot: FilesystemPath,
   includeHistory: Schema.Boolean,
 });
 export type AgentSessionImportInput = typeof AgentSessionImportInput.Type;

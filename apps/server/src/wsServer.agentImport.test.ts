@@ -19,8 +19,10 @@ describe("onboarding agent history RPCs", () => {
   it("discovers configured homes and persists an idle resumable thread without duplicating a retry", async () => {
     const root = fs.realpathSync(h.makeTempDir("f5-agent-import-rpc-"));
     const stateDir = path.join(root, "state");
-    const home = path.join(root, "codex");
-    const cwd = path.join(root, "project");
+    // Win32 normalizes trailing spaces in actual directory names.
+    const suffix = process.platform === "win32" ? "" : " ";
+    const home = path.join(root, "codex" + suffix);
+    const cwd = path.join(root, "project" + suffix);
     for (const folder of [stateDir, path.join(home, "sessions"), cwd])
       fs.mkdirSync(folder, { recursive: true });
     fs.writeFileSync(
@@ -49,7 +51,11 @@ describe("onboarding agent history RPCs", () => {
         .map((row) => JSON.stringify(row))
         .join("\n") + "\n",
     );
-    h.server = await h.createTestServer({ stateDir, cwd, autoBootstrapProjectFromCwd: false });
+    h.server = await h.createTestServer({
+      stateDir,
+      cwd: root,
+      autoBootstrapProjectFromCwd: false,
+    });
     const address = h.server.address();
     const [ws] = await connectAndAwaitWelcome(
       typeof address === "object" && address ? address.port : 0,
@@ -60,6 +66,7 @@ describe("onboarding agent history RPCs", () => {
     const scan = discovery.result as AgentSessionScanResult;
     expect(scan.candidates).toHaveLength(1);
     const candidate = scan.candidates[0]!;
+    expect(candidate.path).toBe(cwd);
     const input = {
       candidateId: candidate.id,
       expectedWorkspaceRoot: candidate.path,

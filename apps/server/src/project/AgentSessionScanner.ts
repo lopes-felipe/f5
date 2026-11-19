@@ -218,7 +218,7 @@ export class AgentSessionScanner {
             summary: {
               id: candidateId,
               path: cwd,
-              title: path.basename(cwd) || cwd,
+              title: path.basename(cwd).trim() || "Imported project",
               sources: [],
               threadCount: 0,
               lastActiveAt: new Date(file.mtimeMs).toISOString(),
