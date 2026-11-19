@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname, relative } from "node:path";
+import { createRequire } from "node:module";
 import ts from "typescript";
 import { expect, it } from "vitest";
 import rootPackageJson from "../package.json" with { type: "json" };
@@ -116,5 +117,35 @@ it("keys every repository patch to a locked package and an existing patch file",
   for (const [specifier, file] of patched) {
     expect(locked.has(specifier), specifier).toBe(true);
     expect(existsSync(join(root, file)), file).toBe(true);
+  }
+});
+
+it("keeps both diff consumers pinned to the patched version and verifies every installed hunk", () => {
+  const root = join(import.meta.dirname, "..");
+  const packageName = "@pierre/diffs";
+  const patches = Object.entries(rootPackageJson.patchedDependencies).filter(([specifier]) =>
+    specifier.startsWith(packageName + "@"),
+  );
+  expect(patches).toHaveLength(1);
+  const [specifier, patch] = patches[0]!;
+  const version = specifier.slice(packageName.length + 1);
+  for (const workspace of ["apps/web", "apps/server"]) {
+    const manifestPath = join(root, workspace, "package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    expect(manifest.dependencies[packageName], workspace).toBe(version);
+    const packageJson = createRequire(manifestPath)
+      .resolve.paths(packageName)!
+      .map((directory) => join(directory, packageName, "package.json"))
+      .find(existsSync);
+    expect(packageJson, workspace).toBeDefined();
+    const actual = dirname(packageJson!);
+    expect(JSON.parse(readFileSync(join(actual, "package.json"), "utf8")).version).toBe(version);
+    const virtual = join(root, "node_modules", packageName);
+    verifyAppliedPatches(root, { [specifier]: patch }, (path) =>
+      readFileSync(
+        path.startsWith(virtual) ? join(actual, relative(virtual, path)) : path,
+        "utf8",
+      ).replaceAll("\r\n", "\n"),
+    );
   }
 });
