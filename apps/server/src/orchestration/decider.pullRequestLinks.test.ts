@@ -2,6 +2,7 @@ import {
   CommandId,
   EventId,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -85,6 +86,35 @@ const linksOf = (model: OrchestrationReadModel) =>
   model.threads.find((thread) => thread.id === THREAD_ID)?.pullRequests?.map((link) => link.number);
 
 describe("thread pull request links", () => {
+  it("preserves ordinary create semantics for PR Hub and prompt links carrying model selections", async () => {
+    const base = await withThread();
+    for (const pullRequest of [pr(3), undefined]) {
+      const threadId = ThreadId.makeUnsafe(pullRequest ? "hub-thread" : "prompt-link-thread");
+      const model = await apply(base, {
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe(threadId),
+        threadId,
+        projectId: PROJECT_ID,
+        title: "New thread",
+        model: "gpt-5.5",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("removed-provider"),
+          model: "gpt-5.5",
+        },
+        ...(pullRequest ? { pullRequest } : {}),
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt: NOW,
+      });
+      const thread = model.threads.find((entry) => entry.id === threadId);
+      expect(thread?.model).toBe("gpt-5.5");
+      expect(thread?.modelSelection).toBeUndefined();
+      if (pullRequest) expect(thread?.pullRequests?.[0]).toMatchObject(pullRequest);
+    }
+  });
+
   it("keeps links newest first and removes an unlinked one", async () => {
     let model = await withThread();
     model = await apply(model, meta("link-1", { pullRequest: pr(1) }));

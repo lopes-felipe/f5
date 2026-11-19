@@ -42,15 +42,16 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
     ? (value as Record<string, unknown>)
     : undefined;
 
-function metadata(text: string, provider: AgentSessionSource, fallback: string) {
+function metadata(text: string, provider: AgentSessionSource, filenameStem: string) {
+  if (provider === "claudeAgent" && !isUuid(filenameStem)) return undefined;
   for (const line of text.split("\n", 1000)) {
     try {
       const raw = record(JSON.parse(line));
       if (!raw || raw.isSidechain === true) continue;
       const payload = record(raw.payload);
       const cwd = typeof raw.cwd === "string" ? raw.cwd : payload?.cwd;
-      const sessionId =
-        provider === "codex" ? (payload?.id ?? payload?.session_id) : (raw.sessionId ?? fallback);
+      if (provider === "codex" && raw.type !== "session_meta") continue;
+      const sessionId = provider === "codex" ? (payload?.id ?? payload?.session_id) : filenameStem;
       if (
         typeof cwd === "string" &&
         path.isAbsolute(cwd) &&
@@ -263,7 +264,11 @@ export class AgentSessionScanner {
     )
       throw new Error("The agent home changed. Scan for projects again.");
     const { text } = await readBounded(transcript.file, 16 * 1024 * 1024, transcript);
-    const meta = metadata(text, transcript.source.provider, transcript.sessionId);
+    const meta = metadata(
+      text,
+      transcript.source.provider,
+      path.basename(transcript.file, ".jsonl"),
+    );
     if (
       !meta ||
       (await realpath(meta.cwd)) !== expectedRoot ||
@@ -271,12 +276,15 @@ export class AgentSessionScanner {
     )
       throw new Error("The session's project changed. Scan for projects again.");
     signal.throwIfAborted();
-    return parseAgentSessionTranscript({
+    const history = parseAgentSessionTranscript({
       contents: text,
       source: transcript.source.provider,
       providerInstanceId: transcript.source.instanceId,
       fallbackSessionId: transcript.sessionId,
       lastActiveAtMs: transcript.mtimeMs,
     });
+    if (history && history.providerSessionId !== transcript.sessionId)
+      throw new Error("The session identity changed. Scan for projects again.");
+    return history;
   }
 }

@@ -131,6 +131,13 @@ export function resolveFileDiffPath(fileDiff: FileDiffMetadata): string {
   return normalizeParsedGitPath(previous, "a/");
 }
 
+export function resolvePreviousFileDiffPath(fileDiff: FileDiffMetadata): string | undefined {
+  const previous = normalizeParsedGitPath(fileDiff.prevName ?? "", "a/");
+  return previous && previous !== "/dev/null" && previous !== resolveFileDiffPath(fileDiff)
+    ? previous
+    : undefined;
+}
+
 export function buildFileDiffLogicalIdentity(fileDiff: FileDiffMetadata): string {
   const previous = normalizeParsedGitPath(fileDiff.prevName ?? "", "a/");
   const next = normalizeParsedGitPath(fileDiff.name ?? "", "b/");

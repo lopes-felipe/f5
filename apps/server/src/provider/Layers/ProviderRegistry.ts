@@ -1,6 +1,10 @@
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { withUpdateRequiredModels } from "../updateRequiredModels.ts";
-import { classifyModelManifest, makeModelManifest } from "../ModelManifest.ts";
+import {
+  BUNDLED_MODEL_MANIFEST,
+  classifyModelManifest,
+  makeModelManifest,
+} from "../ModelManifest.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 /**
  * ProviderRegistryLive — aggregates per-instance snapshot streams into a
@@ -285,9 +289,19 @@ export const ProviderRegistryLive = Layer.effect(
     const instanceRegistry = yield* ProviderInstanceRegistry;
     const config = yield* ServerConfig;
     const path = yield* Path.Path;
+    // Keep the latest wake-up for a stream subscription that races the fetch.
+    const manifestChanges = yield* Effect.acquireRelease(
+      PubSub.sliding<void>({ capacity: 1, replay: 1 }),
+      PubSub.shutdown,
+    );
     const manifest = yield* Effect.acquireRelease(
       Effect.promise(() =>
-        makeModelManifest({ cachePath: path.join(config.stateDir, "model-manifest.json") }),
+        makeModelManifest({
+          cachePath: path.join(config.stateDir, "model-manifest.json"),
+          onChange: () => {
+            PubSub.publishUnsafe(manifestChanges, undefined);
+          },
+        }),
       ),
       (service) => Effect.sync(service.close),
     );
@@ -296,9 +310,11 @@ export const ProviderRegistryLive = Layer.effect(
       Option.isSome(settingsService)
         ? settingsService.value.getSettings.pipe(
             Effect.map((settings) => {
-              manifest.refreshInBackground(settings.enableRemoteModelManifest);
+              const enabled = settings.enableRemoteModelManifest;
+              manifest.refreshInBackground(enabled);
+              const active = enabled ? manifest.current() : BUNDLED_MODEL_MANIFEST;
               return projectProviderSnapshots(
-                snapshots.map((provider) => classifyModelManifest(provider, manifest.current())),
+                snapshots.map((provider) => classifyModelManifest(provider, active)),
                 settings,
               );
             }),
@@ -307,7 +323,7 @@ export const ProviderRegistryLive = Layer.effect(
             ),
           )
         : Effect.succeed(
-            snapshots.map((provider) => classifyModelManifest(provider, manifest.current())),
+            snapshots.map((provider) => classifyModelManifest(provider, BUNDLED_MODEL_MANIFEST)),
           );
     const fileSystem = yield* FileSystem.FileSystem;
     const providerStatusCacheDir =
@@ -729,7 +745,10 @@ export const ProviderRegistryLive = Layer.effect(
           Effect.flatMap(globalSnapshots),
         ),
       get streamChanges() {
-        const changes = Stream.fromPubSub(changesPubSub);
+        const changes = Stream.merge(
+          Stream.fromPubSub(changesPubSub),
+          Stream.fromPubSub(manifestChanges).pipe(Stream.mapEffect(() => Ref.get(providersRef))),
+        );
         return (
           Option.isSome(settingsService)
             ? Stream.merge(
@@ -739,7 +758,7 @@ export const ProviderRegistryLive = Layer.effect(
                 ),
               )
             : changes
-        ).pipe(Stream.mapEffect(globalSnapshots));
+        ).pipe(Stream.mapEffect(globalSnapshots), Stream.changesWith(Equal.equals));
       },
     } satisfies ProviderRegistryShape;
   }),

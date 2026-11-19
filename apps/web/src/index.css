@@ -1120,8 +1120,10 @@ label:has(> select#reasoning-effort) select {
   background: color-mix(in srgb, var(--background) 94%, var(--card));
 }
 
-.diff-render-file {
-  border: 1px solid var(--border);
+[data-find-scope="diff"] diffs-container:has([data-diff-file-path]) {
+  /* Keep the card stroke inside CodeView's measured item size. */
+  outline: 1px solid var(--border);
+  outline-offset: -1px;
   border-radius: 0.5rem;
   overflow: clip;
   background: color-mix(in srgb, var(--card) 92%, var(--background));

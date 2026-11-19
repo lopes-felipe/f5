@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm, symlink, open, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import {
+  ImportedSessionMessages,
+  MAX_IMPORTED_SESSION_MESSAGE_CHARS,
+  MAX_IMPORTED_SESSION_TEXT_CHARS,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
+import { Schema } from "effect";
 import { AgentSessionScanner } from "./AgentSessionScanner";
 import { parseAgentSessionTranscript } from "./agentSessionTranscript";
 
@@ -109,9 +115,81 @@ describe("agent project discovery", () => {
     controller.abort();
     await expect(scanner.scan([f.source], [], f.root, controller.signal)).rejects.toThrow();
   });
+
+  it("uses the Claude transcript filename throughout discovery and import when record IDs differ", async () => {
+    const f = await fixture();
+    const home = join(f.root, "claude");
+    const directory = join(home, "projects", "repository");
+    const secondId = "22222222-2222-4222-8222-222222222222";
+    const recordId = "33333333-3333-4333-8333-333333333333";
+    await mkdir(directory, { recursive: true });
+    for (const filename of [sessionId, secondId, "not-a-session-id"]) {
+      await writeFile(
+        join(directory, filename + ".jsonl"),
+        jsonl(
+          {
+            type: "user",
+            cwd: f.cwd,
+            sessionId: recordId,
+            message: { content: "Opening request" },
+          },
+          { type: "assistant", cwd: f.cwd, sessionId: secondId, message: { content: "Answer" } },
+        ),
+      );
+    }
+    const scanner = new AgentSessionScanner();
+    const signal = new AbortController().signal;
+    const scan = await scanner.scan(
+      [{ provider: "claudeAgent", instanceId: ProviderInstanceId.make("claudeAgent"), home }],
+      [],
+      join(f.root, "worktrees"),
+      signal,
+    );
+    const candidate = scan.candidates[0]!;
+    expect(candidate.threadCount).toBe(2);
+    const transcripts = scanner.get(candidate.id, candidate.path).transcripts;
+    const histories = await Promise.all(
+      transcripts.map((transcript) => scanner.read(transcript, candidate.path, signal)),
+    );
+    expect(histories.map((history) => history?.providerSessionId).sort()).toEqual([
+      sessionId,
+      secondId,
+    ]);
+  });
 });
 
 describe("imported transcript text", () => {
+  it("limits individual messages and the total text while preserving the opening and latest messages", () => {
+    const oversized = "x".repeat(MAX_IMPORTED_SESSION_MESSAGE_CHARS + 100);
+    const history = parseAgentSessionTranscript({
+      contents: jsonl(
+        { type: "user", message: { content: "Opening request" } },
+        ...Array.from({ length: 12 }, (_, index) => ({
+          type: "assistant",
+          message: { content: "Reply " + index + "\n" + oversized + "\nEnd of reply " + index },
+        })),
+      ),
+      source: "claudeAgent",
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      fallbackSessionId: sessionId,
+      lastActiveAtMs: Date.now(),
+    })!;
+    const validate = Schema.decodeUnknownSync(ImportedSessionMessages);
+    expect(history.truncated).toBe(true);
+    expect(history.messages[0]?.text).toBe("Opening request");
+    expect(history.messages.at(-1)?.text).toMatch(
+      /^Reply 11\n[\s\S]*imported message truncated[\s\S]*End of reply 11$/,
+    );
+    expect(history.messages.some(({ text }) => text.startsWith("Reply 0\n"))).toBe(false);
+    expect(validate(history.messages)).toEqual(history.messages);
+
+    const message = { ...history.messages[0]!, text: oversized };
+    expect(() => validate([message])).toThrow();
+    const atLimit = { ...message, text: "x".repeat(MAX_IMPORTED_SESSION_MESSAGE_CHARS) };
+    const tooManyBytes = Math.floor(MAX_IMPORTED_SESSION_TEXT_CHARS / atLimit.text.length) + 1;
+    expect(() => validate(Array.from({ length: tooManyBytes }, () => atLimit))).toThrow();
+  });
+
   it("removes Claude CLI markup and ignores tool/meta/sidechain rows", () => {
     const history = parseAgentSessionTranscript({
       contents: jsonl(

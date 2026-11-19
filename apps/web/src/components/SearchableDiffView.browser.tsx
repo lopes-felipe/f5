@@ -83,3 +83,37 @@ it("keeps item versions stable across parent renders and changes only the folded
     await screen.unmount();
   }
 });
+
+it("shows both rename paths and folds from the file header while preserving open and copy controls", async () => {
+  const renamedFile = parsePatchFiles(
+    "diff --git a/old.ts b/new.ts\nsimilarity index 100%\nrename from old.ts\nrename to new.ts\n",
+  )[0]!.files[0]!;
+  const collapse = vi.fn();
+  const open = vi.fn();
+  const screen = await render(
+    <SearchableDiffView
+      className="diff-render-surface h-96 overflow-auto"
+      files={[{ id: "renamed", fileDiff: renamedFile, collapsed: false }]}
+      options={{ theme: "pierre-dark", preferredHighlighter: PREFERRED_HIGHLIGHTER }}
+      onCollapse={collapse}
+      onOpenFile={open}
+    />,
+  );
+  try {
+    const path = page.getByRole("button", { name: "old.ts → new.ts" });
+    await expect.element(path).toBeVisible();
+    const card = path.element().closest("diffs-container");
+    expect(card).not.toBeNull();
+    expect(getComputedStyle(card!).outlineStyle).toBe("solid");
+    await path.click();
+    expect(open).toHaveBeenCalledWith("new.ts");
+    expect(collapse).not.toHaveBeenCalled();
+    await expect.element(page.getByRole("button", { name: "Copy path: new.ts" })).toBeVisible();
+    await page.getByRole("button", { name: "Collapse new.ts" }).click({
+      position: { x: 4, y: 4 },
+    });
+    expect(collapse).toHaveBeenCalledExactlyOnceWith("renamed", true);
+  } finally {
+    await screen.unmount();
+  }
+});

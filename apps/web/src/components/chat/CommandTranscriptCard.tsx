@@ -20,7 +20,7 @@ import {
   XIcon,
   type LucideIcon,
 } from "lucide-react";
-import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { memo, Suspense, use, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { TimestampFormat } from "../../appSettings";
@@ -36,13 +36,13 @@ import { formatTimestamp } from "../../timestampFormat";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
 import { useNowIso } from "../../lib/nowTicker";
+import { classifyCodeHighlight } from "../../lib/codeHighlightPolicy";
+import { retryableImport } from "../../lib/retryableImport";
 import { toastManager } from "../ui/toast";
 import { SurfaceErrorBoundary } from "../ui/SurfaceErrorBoundary";
 import { CopyIconButton } from "./CopyIconButton";
 
-const ShellCommandBlock = lazy(() =>
-  import("./ShellCommandBlock").then((module) => ({ default: module.ShellCommandBlock })),
-);
+const loadShellCommandBlock = retryableImport(() => import("./ShellCommandBlock"));
 
 interface CommandTranscriptCardProps {
   threadId?: ThreadId | null;
@@ -150,12 +150,18 @@ const HighlightedCommandText = memo(function HighlightedCommandText(props: { com
   );
 });
 
+function LoadedShellCommand({ command }: { command: string }) {
+  const { ShellCommandBlock } = use(loadShellCommandBlock());
+  return <ShellCommandBlock command={command} />;
+}
+
 function ExpandedCommandText({ command }: { command: string }) {
+  if (classifyCodeHighlight(command) !== "inline") return <>{command}</>;
   const fallback = <HighlightedCommandText command={command} />;
   return (
     <SurfaceErrorBoundary name="Command highlighting" fallback={fallback} resetKeys={[command]}>
       <Suspense fallback={fallback}>
-        <ShellCommandBlock command={command} />
+        <LoadedShellCommand command={command} />
       </Suspense>
     </SurfaceErrorBoundary>
   );

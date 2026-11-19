@@ -11,6 +11,8 @@ const remote = {
   updatedAt: "2099-01-01T00:00:00Z",
   currentModels: { codex: ["future"] },
 };
+const source =
+  "https://raw.githubusercontent.com/lopes-felipe/f5/main/apps/server/src/provider/model-manifest.json";
 const noCache = async (): Promise<string> => {
   throw new Error("missing");
 };
@@ -21,13 +23,15 @@ describe("model manifest", () => {
       driver: "codex",
       models: [
         { slug: "future", isCustom: false },
-        { slug: "old", isCustom: false },
+        { slug: "openai/gpt-5.4", isCustom: false },
+        { slug: "unknown-new-model", isCustom: false },
         { slug: "mine", isCustom: true },
       ],
     } as unknown as ServerProvider;
     expect(classifyModelManifest(provider, remote).models.map((model) => model.isLegacy)).toEqual([
       false,
       true,
+      undefined,
       undefined,
     ]);
     const other = { ...provider, driver: "cursor" } as ServerProvider;
@@ -51,6 +55,7 @@ describe("model manifest", () => {
     service.refreshInBackground(true);
     await service.settled();
     expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(source, expect.objectContaining({ redirect: "error" }));
     expect(service.current()).toEqual(remote);
     expect(JSON.parse(writeCache.mock.calls[0]![0]!)).toMatchObject({ manifest: remote });
     service.refreshInBackground(true);
@@ -69,7 +74,7 @@ describe("model manifest", () => {
       cachePath: "/unused",
       fetch,
       now: () => now,
-      readCache: async () => JSON.stringify({ fetchedAtMs: 1, manifest: remote }),
+      readCache: async () => JSON.stringify({ source, fetchedAtMs: 1, manifest: remote }),
     });
     service.refreshInBackground(true);
     await service.settled();
@@ -87,12 +92,24 @@ describe("model manifest", () => {
     const service = await makeModelManifest({
       cachePath: "/unused",
       readCache: async () =>
-        JSON.stringify({ fetchedAtMs: 1, manifest: { ...remote, updatedAt: "2000-01-01" } }),
+        JSON.stringify({
+          source,
+          fetchedAtMs: 1,
+          manifest: { ...remote, updatedAt: "2000-01-01" },
+        }),
       fetch: async () => new Response(JSON.stringify({ ...remote, version: 2 })),
     });
     expect(service.current()).toEqual(BUNDLED_MODEL_MANIFEST);
     service.refreshInBackground(true);
     await service.settled();
+    expect(service.current()).toEqual(BUNDLED_MODEL_MANIFEST);
+    service.close();
+  });
+  it("discards a cache without F5 provenance", async () => {
+    const service = await makeModelManifest({
+      cachePath: "/unused",
+      readCache: async () => JSON.stringify({ fetchedAtMs: 1, manifest: remote }),
+    });
     expect(service.current()).toEqual(BUNDLED_MODEL_MANIFEST);
     service.close();
   });

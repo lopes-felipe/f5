@@ -8,6 +8,7 @@ const fixtures = vi.hoisted(() => ({
   scan: vi.fn(),
   import: vi.fn(),
   update: vi.fn(),
+  status: "eligible",
   toast: vi.fn(),
 }));
 vi.mock("../../nativeApi", () => ({
@@ -16,7 +17,7 @@ vi.mock("../../nativeApi", () => ({
   }),
 }));
 vi.mock("../../appSettings", () => ({
-  readAppSettingsSnapshot: () => ({ onboardingLiteStatus: "eligible" }),
+  readAppSettingsSnapshot: () => ({ onboardingLiteStatus: fixtures.status }),
   updateAppSettings: fixtures.update,
 }));
 vi.mock("../ui/toast", () => ({ toastManager: { add: fixtures.toast } }));
@@ -27,6 +28,10 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 beforeEach(() => {
   vi.resetAllMocks();
+  fixtures.status = "eligible";
+  fixtures.update.mockImplementation((settings: { onboardingLiteStatus: string }) => {
+    fixtures.status = settings.onboardingLiteStatus;
+  });
   fixtures.scan.mockResolvedValue({
     candidates: ["First", "Second"].map((title) => ({
       id: title,
@@ -100,4 +105,21 @@ it("keeps onboarding open through a batch failure and preserves completed import
   await view.getByRole("button", { name: "Import selected projects" }).click();
   await vi.waitFor(() => expect(fixtures.import).toHaveBeenCalledTimes(3));
   expect(fixtures.import.mock.lastCall?.[0].candidateId).toBe("Second");
+  await vi.waitFor(() => expect(fixtures.status).toBe("eligible"));
 });
+
+it.each(["eligible", "dismissed", "completed", "reopened"])(
+  "restores %s when leaving the panel after an import fails",
+  async (previous) => {
+    fixtures.status = previous;
+    fixtures.import.mockRejectedValueOnce(new Error("unavailable"));
+    const view = await render(<ProjectHistoryImportPanel />);
+    await view.getByRole("button", { name: "Discover projects from agent history" }).click();
+    await view.getByRole("checkbox", { name: /First/ }).click();
+    await view.getByRole("button", { name: "Import selected projects" }).click();
+    await expect.element(view.getByRole("alert")).toBeVisible();
+    expect(fixtures.status).toBe("reopened");
+    await view.unmount();
+    expect(fixtures.status).toBe(previous);
+  },
+);

@@ -1,7 +1,8 @@
 import { readFile, writeFile, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import type { ServerProvider } from "@t3tools/contracts";
-import { Schema } from "effect";
+import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
+import { Equal, Schema } from "effect";
 import bundled from "./model-manifest.json" with { type: "json" };
 
 const Manifest = Schema.Struct({
@@ -13,7 +14,7 @@ export type ModelManifestData = typeof Manifest.Type;
 const decode = Schema.decodeUnknownSync(Manifest);
 export const BUNDLED_MODEL_MANIFEST = decode(bundled);
 const URL =
-  "https://raw.githubusercontent.com/pingdotgg/t3code/main/apps/server/src/provider/model-manifest.json";
+  "https://raw.githubusercontent.com/lopes-felipe/f5/main/apps/server/src/provider/model-manifest.json";
 const TTL = 60 * 60_000;
 const RETRY = 5 * 60_000;
 
@@ -22,18 +23,23 @@ export function classifyModelManifest(
   manifest: ModelManifestData,
 ): ServerProvider {
   if (provider.driver !== "codex" && provider.driver !== "claudeAgent") return provider;
-  const current = manifest.currentModels[provider.driver];
+  const driver = provider.driver;
+  const current = manifest.currentModels[driver];
   if (!current) return provider;
+  const normalize = (slug: string) =>
+    normalizeModelSlug(driver === "codex" ? slug.replace(/^openai[./]/, "") : slug, driver);
+  const currentSlugs = new Set(current.map(normalize));
+  const knownSlugs = new Set(getModelOptions(driver).map(({ slug }) => normalize(slug)));
   return {
     ...provider,
-    models: provider.models.map((model) =>
-      model.isCustom
-        ? model
-        : {
-            ...model,
-            isLegacy: !current.includes(model.slug.replace(/^openai[./]/, "")),
-          },
-    ),
+    models: provider.models.map((model) => {
+      if (model.isCustom) return model;
+      const slug = normalize(model.slug);
+      if (currentSlugs.has(slug)) return { ...model, isLegacy: false };
+      if (knownSlugs.has(slug)) return { ...model, isLegacy: true };
+      const { isLegacy: _previous, ...unclassified } = model;
+      return unclassified;
+    }),
   };
 }
 
@@ -44,6 +50,7 @@ export async function makeModelManifest(input: {
   readCache?: () => Promise<string>;
   writeCache?: (text: string) => Promise<void>;
   now?: () => number;
+  onChange?: () => void;
 }) {
   const now = input.now ?? Date.now;
   let manifest = BUNDLED_MODEL_MANIFEST;
@@ -54,11 +61,13 @@ export async function makeModelManifest(input: {
   const publishedAt = (data: ModelManifestData) => Date.parse(data.updatedAt ?? "") || 0;
   try {
     const cached = JSON.parse(await (input.readCache?.() ?? readFile(input.cachePath, "utf8"))) as {
+      source?: unknown;
       fetchedAtMs?: unknown;
       manifest?: unknown;
     };
     const decoded = decode(cached.manifest);
     if (
+      cached.source === URL &&
       typeof cached.fetchedAtMs === "number" &&
       Number.isFinite(cached.fetchedAtMs) &&
       publishedAt(decoded) >= publishedAt(manifest)
@@ -90,10 +99,12 @@ export async function makeModelManifest(input: {
       if (!response.ok) return;
       const next = decode(await response.json());
       if (controller.signal.aborted || publishedAt(next) < publishedAt(manifest)) return;
+      const changed = !Equal.equals(manifest.currentModels, next.currentModels);
       manifest = next;
       fetchedAt = now();
+      if (changed) input.onChange?.();
       try {
-        await save(JSON.stringify({ fetchedAtMs: fetchedAt, manifest }));
+        await save(JSON.stringify({ source: URL, fetchedAtMs: fetchedAt, manifest }));
       } catch {
         /* Memory remains usable. */
       }

@@ -1,0 +1,5 @@
+- Newly reported Codex and Claude models stay unlabeled until F5 classifies them. Opt-in manifest refreshes now use F5's catalog and update connected clients when classifications change.
+- Searchable diffs show both paths for renames, restore file card borders and header folding, and keep unrelated app shortcuts available while the search field is focused.
+- History import caps saved transcript text and uses the Claude transcript filename to preserve resumable session identity. Leaving onboarding after a failed import restores the previous welcome-screen setting.
+- Expanding another command can retry a failed shell-highlighting load.
+- Packaged macOS startup continues while F5 checks signed entitlements for preview passkeys.

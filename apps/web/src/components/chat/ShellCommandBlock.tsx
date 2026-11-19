@@ -4,6 +4,7 @@ import { Suspense, use, useMemo } from "react";
 import { useTheme } from "../../hooks/useTheme";
 import { SurfaceErrorBoundary } from "../ui/SurfaceErrorBoundary";
 import { classifyCodeHighlight } from "../../lib/codeHighlightPolicy";
+import { retryableImport } from "../../lib/retryableImport";
 import { HighlightedTokens } from "./HighlightedTokens";
 
 // Shell words wrap as a unit, so `--exclude` or a quoted string is not split
@@ -11,11 +12,7 @@ import { HighlightedTokens } from "./HighlightedTokens";
 const WORD_CLASS_NAME = "inline-block max-w-full [overflow-wrap:anywhere]";
 
 // The shell parser loads with the first expanded command, not with the timeline.
-let embeddedScriptsModule: Promise<typeof import("../../lib/embeddedScripts")> | undefined;
-function loadEmbeddedScripts() {
-  embeddedScriptsModule ??= import("../../lib/embeddedScripts");
-  return embeddedScriptsModule;
-}
+const loadEmbeddedScripts = retryableImport(() => import("../../lib/embeddedScripts"));
 
 /** Same layout as the highlighted version, so the grammar arriving never reflows the block. */
 function PlainWords({ code }: { code: string }) {

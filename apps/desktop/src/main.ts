@@ -4876,12 +4876,15 @@ app
   .whenReady()
   .then(async () => {
     writeDesktopLogHeader("app ready");
-    previewPasskeys = createPreviewPasskeys(await signedWebAuthnEntitlements());
-    try {
-      previewPasskeys.configure();
-    } catch {
-      writeDesktopLogHeader("Touch ID passkeys could not be configured for this signed build.");
-    }
+    void signedWebAuthnEntitlements()
+      .then((entitlements) => {
+        const passkeys = createPreviewPasskeys(entitlements);
+        passkeys.configure();
+        previewPasskeys = passkeys;
+      })
+      .catch(() => {
+        writeDesktopLogHeader("Touch ID passkeys could not be configured for this signed build.");
+      });
     // Non-Linux artifacts omit dbus-next and its Unix-only native transport.
     const watchLinuxColorScheme =
       process.platform === "linux"

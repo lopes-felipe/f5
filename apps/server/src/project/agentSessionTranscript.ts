@@ -1,12 +1,16 @@
 import { DateTime, Option, Schema } from "effect";
-import type {
-  AgentSessionSource,
-  ProviderInstanceId,
-  ImportedSessionMessage,
+import {
+  MAX_IMPORTED_SESSION_MESSAGES,
+  MAX_IMPORTED_SESSION_MESSAGE_CHARS,
+  MAX_IMPORTED_SESSION_TEXT_CHARS,
+  type AgentSessionSource,
+  type ProviderInstanceId,
+  type ImportedSessionMessage,
 } from "@t3tools/contracts";
+import { truncateMiddleByCharacters } from "../orchestration/outputTruncation.ts";
 
 const MAX_IMPORT_RECORDS = 100_000;
-const MAX_IMPORTED_MESSAGES = 200;
+const IMPORTED_MESSAGE_TRUNCATION = "\n\n[... imported message truncated ...]\n\n";
 export interface AgentSessionThread {
   readonly source: AgentSessionSource;
   readonly providerInstanceId: ProviderInstanceId;
@@ -16,6 +20,7 @@ export interface AgentSessionThread {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly messages: ReadonlyArray<ImportedSessionMessage>;
+  readonly truncated: boolean;
 }
 type AgentSessionThreadMessage = ImportedSessionMessage;
 
@@ -143,6 +148,7 @@ export function parseAgentSessionTranscript(
   let hasAssistantMessage = false;
   let model: string | null = null;
   let hasCodexSessionId = false;
+  let truncated = false;
   const messages: Array<AgentSessionThreadMessage & { readonly codexResponseUser: boolean }> = [];
   let firstUserMessage:
     | (AgentSessionThreadMessage & { readonly codexResponseUser: boolean })
@@ -223,7 +229,10 @@ export function parseAgentSessionTranscript(
     }
     hasAssistantMessage ||= message.role === "assistant";
     messages.push(message);
-    if (messages.length > MAX_IMPORTED_MESSAGES) messages.shift();
+    if (messages.length > MAX_IMPORTED_SESSION_MESSAGES) {
+      messages.shift();
+      truncated = true;
+    }
   };
 
   const hasMatchingCodexEventInTurn = (text: string) => {
@@ -253,7 +262,6 @@ export function parseAgentSessionTranscript(
       ) {
         continue;
       }
-      if (record.sessionId?.trim()) providerSessionId = record.sessionId.trim();
       title = claudeTitle(record.aiTitle) ?? title;
       if (record.customTitle !== undefined) customTitle = claudeTitle(record.customTitle) ?? null;
       const messageModel = record.message?.model?.trim();
@@ -352,12 +360,45 @@ export function parseAgentSessionTranscript(
   const { codexResponseUser: _codexResponseUser, ...visibleFirstUserMessage } = firstUserMessage;
   const retainedMessages = firstUserMessageRetained
     ? visibleMessages
-    : [visibleFirstUserMessage, ...visibleMessages.slice(-(MAX_IMPORTED_MESSAGES - 1))];
+    : [visibleFirstUserMessage, ...visibleMessages.slice(-(MAX_IMPORTED_SESSION_MESSAGES - 1))];
   const derivedTitle =
     input.source === "claudeAgent"
       ? (claudeDerivedTitle ?? bareCommandTitle)
       : visibleFirstUserMessage.text.trim().split("\n")[0]?.slice(0, 100).trim();
 
+  const boundedMessages = retainedMessages.map((message) => {
+    if (message.text.length <= MAX_IMPORTED_SESSION_MESSAGE_CHARS) return message;
+    truncated = true;
+    return {
+      ...message,
+      text: truncateMiddleByCharacters(message.text, {
+        maxCharacters: MAX_IMPORTED_SESSION_MESSAGE_CHARS,
+        headCharacters: Math.floor(
+          (MAX_IMPORTED_SESSION_MESSAGE_CHARS - IMPORTED_MESSAGE_TRUNCATION.length) / 2,
+        ),
+        marker: IMPORTED_MESSAGE_TRUNCATION,
+      }).output,
+    };
+  });
+  if (
+    boundedMessages.reduce((length, message) => length + message.text.length, 0) >
+    MAX_IMPORTED_SESSION_TEXT_CHARS
+  ) {
+    truncated = true;
+    // Keep the opening request and the newest messages that fit as a continuous suffix.
+    const firstIndex = firstUserMessageRetained ? messages.indexOf(firstUserMessage) : 0;
+    const first = boundedMessages[firstIndex]!;
+    let remaining = MAX_IMPORTED_SESSION_TEXT_CHARS - first.text.length;
+    let suffixStart = boundedMessages.length;
+    while (suffixStart > firstIndex + 1) {
+      const message = boundedMessages[suffixStart - 1]!;
+      if (message.text.length > remaining) break;
+      remaining -= message.text.length;
+      suffixStart--;
+    }
+    boundedMessages.splice(firstIndex + 1, suffixStart - firstIndex - 1);
+    boundedMessages.splice(0, firstIndex);
+  }
   return {
     source: input.source,
     providerInstanceId: input.providerInstanceId,
@@ -367,8 +408,9 @@ export function parseAgentSessionTranscript(
       title ??
       (derivedTitle && derivedTitle.length > 0 ? derivedTitle : "Imported thread"),
     model,
-    createdAt: retainedMessages[0]?.createdAt ?? fallbackTimestamp,
+    createdAt: boundedMessages[0]?.createdAt ?? fallbackTimestamp,
     updatedAt: fallbackTimestamp,
-    messages: retainedMessages,
+    messages: boundedMessages,
+    truncated,
   };
 }

@@ -1,8 +1,8 @@
 import type { AgentSessionScanResult } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ensureNativeApi } from "../../nativeApi";
-import { readAppSettingsSnapshot, updateAppSettings } from "../../appSettings";
+import { type AppSettings, readAppSettingsSnapshot, updateAppSettings } from "../../appSettings";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { toastManager } from "../ui/toast";
@@ -13,6 +13,15 @@ export function ProjectHistoryImportPanel() {
   const [includeHistory, setIncludeHistory] = useState(false);
   const [busy, setBusy] = useState<"scan" | "import" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const statusBeforeImport = useRef<AppSettings["onboardingLiteStatus"] | null>(null);
+  const restoreStatus = useCallback(() => {
+    const previous = statusBeforeImport.current;
+    statusBeforeImport.current = null;
+    if (previous !== null && readAppSettingsSnapshot().onboardingLiteStatus === "reopened") {
+      updateAppSettings({ onboardingLiteStatus: previous });
+    }
+  }, []);
+  useEffect(() => restoreStatus, [restoreStatus]);
   const discover = async () => {
     setBusy("scan");
     setError(null);
@@ -30,10 +39,13 @@ export function ProjectHistoryImportPanel() {
   const importSelected = async () => {
     if (!scan) return;
     const candidates = scan.candidates.filter((candidate) => selected.has(candidate.id));
-    const previousStatus = readAppSettingsSnapshot().onboardingLiteStatus;
     // Importing the first thread normally finishes onboarding. Hold this screen
     // until the whole explicit selection is imported, including after a retry.
-    updateAppSettings({ onboardingLiteStatus: "reopened" });
+    const previous = readAppSettingsSnapshot().onboardingLiteStatus;
+    if (previous !== "reopened") {
+      statusBeforeImport.current = previous;
+      updateAppSettings({ onboardingLiteStatus: "reopened" });
+    }
     setBusy("import");
     setError(null);
     let ready = 0;
@@ -62,8 +74,7 @@ export function ProjectHistoryImportPanel() {
             (truncated ? " Import limits were reached; some history was not imported." : "")
           : "Your agent settings and credentials have not changed.",
       });
-      if (previousStatus !== "reopened")
-        updateAppSettings({ onboardingLiteStatus: previousStatus });
+      restoreStatus();
       setScan((current) =>
         current
           ? {

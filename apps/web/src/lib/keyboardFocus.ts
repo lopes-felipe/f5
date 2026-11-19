@@ -15,7 +15,7 @@ export function isEventInFindScope(event: ShortcutEventLike, scope: "diff" | "pr
 }
 
 /** Shadow inputs retarget keyboard events to their host at the window listener. */
-export function isDiffSearchInputFocused(event: ShortcutEventLike): boolean {
+function isDiffSearchInputFocused(event: ShortcutEventLike): boolean {
   if (!isEventInFindScope(event, "diff")) return false;
   let active = document.activeElement;
   while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
@@ -23,4 +23,33 @@ export function isDiffSearchInputFocused(event: ShortcutEventLike): boolean {
     active instanceof HTMLElement &&
     (active.matches("input, textarea, select") || active.isContentEditable)
   );
+}
+
+const FIELD_NAVIGATION_KEYS = new Set([
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "Backspace",
+  "Delete",
+  "End",
+  "Home",
+]);
+
+export function isDiffSearchEditingKey(event: ShortcutEventLike): boolean {
+  if (!isDiffSearchInputFocused(event)) return false;
+  if (FIELD_NAVIGATION_KEYS.has(event.key)) return true;
+  if (event.key === "Enter" || event.key === "Escape" || event.key === "F3") {
+    return !event.ctrlKey && !event.metaKey && !event.altKey;
+  }
+  if (event.ctrlKey || event.metaKey) {
+    if (
+      "getModifierState" in event &&
+      typeof event.getModifierState === "function" &&
+      event.getModifierState("AltGraph")
+    )
+      return event.key.length === 1;
+    return !event.altKey && /^[acfvxyz]$/i.test(event.key);
+  }
+  return !event.altKey && ([...event.key].length === 1 || event.key === "Dead");
 }
