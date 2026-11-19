@@ -961,7 +961,7 @@ const makeServerSettings = Effect.gen(function* () {
                 ...patch,
                 textGenerators: Object.fromEntries(
                   Object.entries(patch.textGenerators).map(([id, generator]) => {
-                    const old = current.textGenerators[id];
+                    const old = current.textGenerators[ProviderInstanceId.make(id)];
                     const moved =
                       old &&
                       (old.kind !== generator.kind ||

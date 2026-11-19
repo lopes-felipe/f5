@@ -1,5 +1,6 @@
 import { normalizeUserInputOptions } from "../userInputOptions.ts";
 import { CLAUDE_ONE_OFF_PROMPT_TIMEOUT_MS } from "../oneOffPromptTimeouts.ts";
+import { createClaudeModelCapabilities } from "@t3tools/shared/model";
 import {
   resolveClaudeBypassAvailability,
   type ClaudeBypassResolution,
@@ -1634,7 +1635,9 @@ function resolveClaudeRuntimeTraits(
   const legacyUltracode =
     getProviderOptionStringSelectionValue(selection.options, "effort") === "ultracode";
   const ultracode =
-    capabilities.optionDescriptors?.some((descriptor) => descriptor.id === "ultracode") === true &&
+    (reported ?? createClaudeModelCapabilities(selectedModel)).optionDescriptors?.some(
+      (descriptor) => descriptor.id === "ultracode",
+    ) === true &&
     (getProviderOptionBooleanSelectionValue(selection.options, "ultracode") ?? legacyUltracode);
   const requestedEffort = resolveReasoningEffortForProvider(
     "claudeAgent",

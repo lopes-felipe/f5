@@ -6371,7 +6371,7 @@ describe("ProviderCommandReactor", () => {
 
     it("retries an incomplete fresh start on an ordinary send without restoring old history", async () => {
       const harness = await claudeConversation();
-      harness.startSession.mockImplementationOnce(() => Effect.fail(new Error("Start failed")));
+      harness.startSession.mockImplementationOnce(() => Effect.die(new Error("Start failed")));
       expect(
         (
           await turn(harness, {
