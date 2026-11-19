@@ -1,5 +1,7 @@
 import {
   MCP_APPS_WS_METHODS,
+  AgentSessionImportResult,
+  AgentSessionScanResult,
   McpAppToolInfo,
   McpAppToolResult,
   McpLoginStatusResult,
@@ -745,6 +747,14 @@ export function createWsNativeApi(): NativeApi {
       ensureScratch: async () =>
         Schema.decodeUnknownSync(ProjectEnsureScratchResult)(
           await transport.request(WS_METHODS.projectsEnsureScratch, {}),
+        ),
+      scanAgentSessions: async () =>
+        Schema.decodeUnknownSync(AgentSessionScanResult)(
+          await transport.request(WS_METHODS.projectsScanAgentSessions, {}),
+        ),
+      importAgentSessions: async (input) =>
+        Schema.decodeUnknownSync(AgentSessionImportResult)(
+          await transport.request(WS_METHODS.projectsImportAgentSessions, input),
         ),
       createNew: async (input) =>
         Schema.decodeUnknownSync(ProjectCreateNewResult)(

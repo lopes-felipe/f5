@@ -71,10 +71,19 @@ describe("commandSummary", () => {
     'pwsh -Command "unterminated',
     '"C:\\Program Files\\pwsh.exe -Command echo hello',
     "my-pwsh.exe -Command 'echo hello'",
-    "cmd.exe /d /s /c dir",
     "bun run typecheck",
   ])("preserves unsupported or malformed invocations: %s", (command) => {
     expect(displayCommandExecutionCommand(command)).toBe(command);
+  });
+
+  it.each([
+    ['cmd.exe /c "npm test"', "npm test"],
+    ["cmd.exe /d /s /c dir", "dir"],
+    ['"C:\\Windows\\System32\\cmd.exe" /C "echo hello"', "echo hello"],
+    ["cmd.exe /c npm test", "cmd.exe /c npm test"],
+    ["cmd.exe /c dir && echo other", "cmd.exe /c dir && echo other"],
+  ])("displays Windows command wrappers without losing arguments: %s", (command, expected) => {
+    expect(displayCommandExecutionCommand(command)).toBe(expected);
   });
 
   it("normalizes resolved provider command and detail payloads", () => {

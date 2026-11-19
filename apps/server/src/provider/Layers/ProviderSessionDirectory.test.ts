@@ -29,6 +29,30 @@ function makeDirectoryLayer<E, R>(persistenceLayer: Layer.Layer<SqlClient.SqlCli
 }
 
 it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryLive", (it) => {
+  it("keeps a live binding when a history-import retry inserts the same thread", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.makeUnsafe("import-retry");
+      const binding = {
+        threadId,
+        provider: "codex" as const,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimePayload: { sessionGeneration: 4, activeTurnId: "live-turn" },
+        resumeCursor: { threadId: "native-session" },
+      };
+      yield* directory.upsert(binding);
+      yield* directory.upsert(
+        {
+          ...binding,
+          runtimePayload: { cwd: "/import" },
+          resumeCursor: { threadId: "replacement" },
+        },
+        { onConflict: "ignore" },
+      );
+      const retained = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.deepEqual(retained.runtimePayload, binding.runtimePayload);
+      assert.deepEqual(retained.resumeCursor, binding.resumeCursor);
+    }));
   it("fences incomplete-history markers and retains them through replacement until exact recovery", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;

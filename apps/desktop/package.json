@@ -19,7 +19,9 @@
     "dbus-next": "0.10.2",
     "effect": "catalog:",
     "electron": "44.10.1",
-    "electron-updater": "6.8.3"
+    "electron-updater": "6.8.3",
+    "electron-webauthn": "1.3.1",
+    "tldts": "7.4.2"
   },
   "devDependencies": {
     "@t3tools/contracts": "workspace:*",

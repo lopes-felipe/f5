@@ -1,5 +1,10 @@
 import type { ThreadSearchInput, ThreadSearchResult } from "./threadSearch";
 import type {
+  AgentSessionImportInput,
+  AgentSessionImportResult,
+  AgentSessionScanResult,
+} from "./agentSessions";
+import type {
   McpAppCallToolInput,
   McpAppReadResourceInput,
   McpAppToolInfoInput,
@@ -1154,6 +1159,8 @@ export interface NativeApi {
     onLocalServersUpdated: (callback: (event: DiscoveredLocalServerList) => void) => () => void;
   };
   projects: {
+    scanAgentSessions: () => Promise<AgentSessionScanResult>;
+    importAgentSessions: (input: AgentSessionImportInput) => Promise<AgentSessionImportResult>;
     getCheckedInConfig: (input: ProjectGetCheckedInConfigInput) => Promise<ProjectCheckedInConfig>;
     authorizeEntry: (input: ProjectAuthorizeEntryInput) => Promise<ProjectAuthorizeEntryResult>;
     clone: (input: ProjectCloneInput) => Promise<ProjectCloneJob>;

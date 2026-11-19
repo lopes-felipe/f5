@@ -1,4 +1,5 @@
 import { ScheduledOrigin } from "./baseSchemas";
+import { ImportedSessionMessage } from "./agentSessions";
 import { OrchestrationProposedPlanId, OrchestrationProposedPlan } from "./proposedPlan";
 import { FilesystemPath } from "./baseSchemas";
 import { ThreadSearchInput, ThreadSearchResult } from "./threadSearch";
@@ -2024,6 +2025,12 @@ export const ProjectScratchCreateCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  Schema.Struct({
+    ...ThreadCreateCommand.fields,
+    type: Schema.Literal("thread.import"),
+    expectedWorkspaceRoot: FilesystemPath,
+    messages: Schema.Array(ImportedSessionMessage).check(Schema.isMaxLength(200)),
+  }),
   ProjectScratchCreateCommand,
   Schema.Struct({
     type: Schema.Literals(["project.workflow.archive", "project.workflow.unarchive"]),

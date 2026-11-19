@@ -51,6 +51,7 @@ export interface ProviderSessionDirectoryShape {
 
   readonly upsert: (
     binding: ProviderRuntimeBinding,
+    options?: { readonly onConflict: "ignore" },
   ) => Effect.Effect<void, ProviderSessionDirectoryWriteError>;
 
   readonly getProvider: (

@@ -7,6 +7,11 @@ import { createDeferredNavigationStopper, gateMainFrameRequests } from "./previe
  * are bound to it for their whole lifetime; popups the user opens stay with the user.
  */
 export interface PreviewPopupPolicy {
+  readonly passkeys?: {
+    readonly preload: string;
+    readonly additionalArguments: string[];
+    readonly onCreated: (child: BrowserWindow) => void;
+  };
   /** True for a navigation the agent caused (during an action or its grace window). */
   readonly isAgentNavigation: () => boolean;
   /** Checks the parent tab's current allowed-sites list. */
@@ -65,11 +70,18 @@ export function registerPreviewWindowOpen(
           sandbox: true,
           nodeIntegration: false,
           contextIsolation: true,
+          ...(policy?.passkeys
+            ? {
+                preload: policy.passkeys.preload,
+                additionalArguments: policy.passkeys.additionalArguments,
+              }
+            : {}),
         },
       },
     };
   });
   guest.on("did-create-window", (child) => {
+    policy?.passkeys?.onCreated(child);
     const agent = nextPopupIsAgent && policy !== undefined;
     nextPopupIsAgent = false;
     if (agent) agentPopups.add(child);

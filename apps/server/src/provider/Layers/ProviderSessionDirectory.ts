@@ -97,62 +97,68 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       ),
     );
 
-  const upsertUnlocked: ProviderSessionDirectoryShape["upsert"] = Effect.fn(function* (binding) {
-    const existing = yield* repository
-      .getByThreadId({ threadId: binding.threadId })
-      .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:getByThreadId")));
+  const upsertUnlocked: ProviderSessionDirectoryShape["upsert"] = Effect.fn(
+    function* (binding, options) {
+      const existing = yield* repository
+        .getByThreadId({ threadId: binding.threadId })
+        .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:getByThreadId")));
 
-    const existingRuntime = Option.getOrUndefined(existing);
-    const resolvedThreadId = binding.threadId ?? existingRuntime?.threadId;
-    if (!resolvedThreadId) {
-      return yield* new ProviderValidationError({
-        operation: "ProviderSessionDirectory.upsert",
-        issue: "threadId must be a non-empty string.",
-      });
-    }
+      const existingRuntime = Option.getOrUndefined(existing);
+      if (existingRuntime !== undefined && options?.onConflict === "ignore") return;
+      const resolvedThreadId = binding.threadId ?? existingRuntime?.threadId;
+      if (!resolvedThreadId) {
+        return yield* new ProviderValidationError({
+          operation: "ProviderSessionDirectory.upsert",
+          issue: "threadId must be a non-empty string.",
+        });
+      }
 
-    const now = new Date().toISOString();
-    const providerChanged =
-      existingRuntime !== undefined && existingRuntime.providerName !== binding.provider;
-    yield* repository
-      .upsert({
-        threadId: resolvedThreadId,
-        projectId:
-          binding.projectId !== undefined
-            ? binding.projectId
-            : (existingRuntime?.projectId ?? null),
-        providerName: binding.provider,
-        providerInstanceId: binding.providerInstanceId ?? ProviderInstanceId.make(binding.provider),
-        adapterKey:
-          binding.adapterKey ??
-          (providerChanged ? binding.provider : (existingRuntime?.adapterKey ?? binding.provider)),
-        runtimeMode: binding.runtimeMode ?? existingRuntime?.runtimeMode ?? "full-access",
-        status: binding.status ?? existingRuntime?.status ?? "running",
-        lastSeenAt: now,
-        mcpEffectiveConfigVersion:
-          binding.mcpEffectiveConfigVersion !== undefined
-            ? binding.mcpEffectiveConfigVersion
-            : (existingRuntime?.mcpEffectiveConfigVersion ?? null),
-        launchFingerprint:
-          binding.launchFingerprint !== undefined
-            ? binding.launchFingerprint
-            : providerChanged
-              ? null
-              : (existingRuntime?.launchFingerprint ?? null),
-        resumeCursor:
-          binding.resumeCursor !== undefined
-            ? binding.resumeCursor
-            : (existingRuntime?.resumeCursor ?? null),
-        runtimePayload: mergeRuntimePayload(
-          existingRuntime?.runtimePayload ?? null,
-          binding.runtimePayload,
-        ),
-      })
-      .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:upsert")));
-  });
+      const now = new Date().toISOString();
+      const providerChanged =
+        existingRuntime !== undefined && existingRuntime.providerName !== binding.provider;
+      yield* repository
+        .upsert({
+          threadId: resolvedThreadId,
+          projectId:
+            binding.projectId !== undefined
+              ? binding.projectId
+              : (existingRuntime?.projectId ?? null),
+          providerName: binding.provider,
+          providerInstanceId:
+            binding.providerInstanceId ?? ProviderInstanceId.make(binding.provider),
+          adapterKey:
+            binding.adapterKey ??
+            (providerChanged
+              ? binding.provider
+              : (existingRuntime?.adapterKey ?? binding.provider)),
+          runtimeMode: binding.runtimeMode ?? existingRuntime?.runtimeMode ?? "full-access",
+          status: binding.status ?? existingRuntime?.status ?? "running",
+          lastSeenAt: now,
+          mcpEffectiveConfigVersion:
+            binding.mcpEffectiveConfigVersion !== undefined
+              ? binding.mcpEffectiveConfigVersion
+              : (existingRuntime?.mcpEffectiveConfigVersion ?? null),
+          launchFingerprint:
+            binding.launchFingerprint !== undefined
+              ? binding.launchFingerprint
+              : providerChanged
+                ? null
+                : (existingRuntime?.launchFingerprint ?? null),
+          resumeCursor:
+            binding.resumeCursor !== undefined
+              ? binding.resumeCursor
+              : (existingRuntime?.resumeCursor ?? null),
+          runtimePayload: mergeRuntimePayload(
+            existingRuntime?.runtimePayload ?? null,
+            binding.runtimePayload,
+          ),
+        })
+        .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:upsert")));
+    },
+  );
 
-  const upsert: ProviderSessionDirectoryShape["upsert"] = (binding) =>
-    withWrite(binding.threadId, upsertUnlocked(binding));
+  const upsert: ProviderSessionDirectoryShape["upsert"] = (binding, options) =>
+    withWrite(binding.threadId, upsertUnlocked(binding, options));
 
   const getProvider: ProviderSessionDirectoryShape["getProvider"] = (threadId) =>
     getBinding(threadId).pipe(

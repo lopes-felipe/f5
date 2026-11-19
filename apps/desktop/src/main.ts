@@ -79,6 +79,8 @@ import {
 import { registerPreviewWindowOpen } from "./preview/previewWindowOpen";
 import { installAgentDownloadHandler } from "./preview/agentDownloads";
 import { installPreviewPermissionPolicy } from "./preview/previewPermissions";
+import { createPreviewPasskeys, signedWebAuthnEntitlements } from "./preview/Passkeys";
+import { PASSKEY_BRIDGE_ARGUMENT } from "./preview/GuestProtocol";
 import { captureMacWindow } from "./snapShot/MacSnapShot";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
@@ -1242,6 +1244,8 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   entry.removeListeners = [];
   entry.ownerWebContentsId = guest.hostWebContents?.id ?? null;
   entry.webContentsId = webContentsId;
+  entry.removeListeners.push(previewPasskeys.attachGuest(guest));
+  previewPasskeys.installSessionHandlers(guest.session);
   installAgentDownloadHandler(guest.session, {
     // Each profile keeps its own downloads; sessions can outlive the guest that installed this.
     directoryFor: (sourceId) => {
@@ -1280,6 +1284,19 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
         isAgentNavigation: () => isAgentPreviewNavigation(tabId),
         isAllowedUrl: (url) => getSafePreviewUrl(url, previewTabExternalHosts(tabId)) !== null,
         onBlocked: (url) => recordBlockedAgentNavigation(tabId, url),
+        ...(previewPasskeys.bridgeEnabled
+          ? {
+              passkeys: {
+                preload: Path.join(__dirname, "preview", "guestPreload.js"),
+                additionalArguments: [PASSKEY_BRIDGE_ARGUMENT],
+                onCreated: (child: BrowserWindow) => {
+                  const detach = previewPasskeys.attachGuest(child.webContents);
+                  previewPasskeys.installSessionHandlers(child.webContents.session);
+                  child.once("closed", detach);
+                },
+              },
+            }
+          : {}),
       },
     );
     entry.enforcePopupPolicy = popups.enforcePolicy;
@@ -4472,6 +4489,12 @@ function createWindow(
     webPreferences.nodeIntegration = false;
     webPreferences.nodeIntegrationInSubFrames = false;
     webPreferences.contextIsolation = true;
+    webPreferences.additionalArguments = [
+      ...(webPreferences.additionalArguments ?? []).filter(
+        (argument) => argument !== PASSKEY_BRIDGE_ARGUMENT,
+      ),
+      ...(previewPasskeys.bridgeEnabled ? [PASSKEY_BRIDGE_ARGUMENT] : []),
+    ];
     webPreferences.preload = Path.join(__dirname, "preview", "guestPreload.js");
   });
 
@@ -4847,11 +4870,18 @@ async function initializeKeepAwake(): Promise<void> {
 }
 
 let desktopTheme: ReturnType<typeof createDesktopTheme> | undefined;
+let previewPasskeys = createPreviewPasskeys({ browserPasskeys: false });
 
 app
   .whenReady()
   .then(async () => {
     writeDesktopLogHeader("app ready");
+    previewPasskeys = createPreviewPasskeys(await signedWebAuthnEntitlements());
+    try {
+      previewPasskeys.configure();
+    } catch {
+      writeDesktopLogHeader("Touch ID passkeys could not be configured for this signed build.");
+    }
     // Non-Linux artifacts omit dbus-next and its Unix-only native transport.
     const watchLinuxColorScheme =
       process.platform === "linux"

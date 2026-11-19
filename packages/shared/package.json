@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./macWebAuthn": {
+      "types": "./src/macWebAuthn.ts",
+      "import": "./src/macWebAuthn.ts"
+    },
     "./desktopBootstrapToken": {
       "types": "./src/desktopBootstrapToken.ts",
       "import": "./src/desktopBootstrapToken.ts"

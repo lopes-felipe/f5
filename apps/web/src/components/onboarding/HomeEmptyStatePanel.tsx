@@ -32,6 +32,7 @@ import { Kbd } from "../ui/kbd";
 import { SectionLabel } from "../ui/section-label";
 import { Skeleton } from "../ui/skeleton";
 import { HarnessValidationPanel } from "./HarnessValidationPanel";
+import { ProjectHistoryImportPanel } from "./ProjectHistoryImportPanel";
 
 type AccentToken = "info" | "success" | "warning" | "attention";
 
@@ -266,6 +267,7 @@ export function HomeEmptyStatePanel() {
           </div>
 
           <HarnessValidationPanel />
+          <ProjectHistoryImportPanel />
 
           {/* Display profile */}
           <div className="border-t border-border pt-6">

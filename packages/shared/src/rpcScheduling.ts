@@ -314,6 +314,8 @@ export const RPC_METHOD_POLICY = {
   "projects.cloneCancel": STOP,
   "projects.cloneList": READ,
   "projects.createNew": MUTATION_RT,
+  "projects.scanAgentSessions": READ_RT,
+  "projects.importAgentSessions": long(true, 120_000),
   "projects.ensureScratch": MUTATION_RT,
   "projects.findByRepository": MUTATION_RT,
   "projects.getCheckedInConfig": READ,
