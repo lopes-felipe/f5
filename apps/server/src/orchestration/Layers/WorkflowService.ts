@@ -2051,8 +2051,8 @@ export const makeWorkflowService = Effect.gen(function* () {
       const beforeRejection = { workflow, branch };
       // A repair turn that cannot be dispatched fails its stage visibly (with Retry) instead
       // of leaving it running with no turn. Returns whether the turn was dispatched.
-      const dispatchRepair = <E, R>(
-        start: Effect.Effect<unknown, E, R>,
+      const dispatchRepair = <A, E, R>(
+        start: Effect.Effect<A, E, R>,
         failed: (message: string) => PlanningWorkflow,
       ) =>
         start.pipe(
