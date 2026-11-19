@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import { CommandId, EventId, MessageId } from "@t3tools/contracts";
 import { answerMessageIdFor } from "@t3tools/shared/answerDelivery";
 import {
+  ImportedSessionMessages,
   MAX_PINNED_THREADS,
   SCRIPT_RUN_COMMAND_PATTERN,
   ProjectId,
@@ -56,6 +57,7 @@ import {
 
 const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
+const isImportedSessionMessages = Schema.is(ImportedSessionMessages);
 export const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
 
 /** The scratch project is server-owned: its folder, actions, memories and skills stay fixed. */
@@ -711,6 +713,11 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
             detail: "Imported history cannot create a worktree or change branches.",
+          });
+        if (!isImportedSessionMessages(command.messages))
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Imported messages are invalid or exceed the size limits.",
           });
       }
       yield* requireThreadAbsent({

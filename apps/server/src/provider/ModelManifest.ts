@@ -22,8 +22,13 @@ export function classifyModelManifest(
   provider: ServerProvider,
   manifest: ModelManifestData,
 ): ServerProvider {
-  if (provider.driver !== "codex" && provider.driver !== "claudeAgent") return provider;
-  const driver = provider.driver;
+  const driver =
+    provider.driver === "codex"
+      ? "codex"
+      : provider.driver === "claudeAgent"
+        ? "claudeAgent"
+        : null;
+  if (driver === null) return provider;
   const current = manifest.currentModels[driver];
   if (!current) return provider;
   const normalize = (slug: string) =>

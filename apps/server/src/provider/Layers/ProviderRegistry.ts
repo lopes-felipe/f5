@@ -758,7 +758,10 @@ export const ProviderRegistryLive = Layer.effect(
                 ),
               )
             : changes
-        ).pipe(Stream.mapEffect(globalSnapshots), Stream.changesWith(Equal.equals));
+        ).pipe(
+          Stream.mapEffect(globalSnapshots),
+          Stream.changesWith<ReadonlyArray<ServerProvider>>(Equal.equals),
+        );
       },
     } satisfies ProviderRegistryShape;
   }),

@@ -75,8 +75,11 @@ it.live("publishes model classification when a delayed manifest arrives", () =>
         const [providers] = yield* Fiber.join(update);
         expect(providers[0]?.models[0]?.isLegacy).toBe(true);
       }).pipe(
-        Effect.provide(ProviderRegistryLive),
-        Effect.provide(ServerSettingsService.layerTest({ enableRemoteModelManifest: true })),
+        Effect.provide(
+          ProviderRegistryLive.pipe(
+            Layer.provide(ServerSettingsService.layerTest({ enableRemoteModelManifest: true })),
+          ),
+        ),
         Effect.provideService(ProviderInstanceRegistry, {
           getInstance: () => Effect.succeed(instance),
           listInstances: Effect.succeed([instance]),

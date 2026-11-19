@@ -1,6 +1,8 @@
 import {
   CommandId,
   EventId,
+  MAX_IMPORTED_SESSION_MESSAGE_CHARS,
+  MAX_IMPORTED_SESSION_TEXT_CHARS,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -84,6 +86,44 @@ async function withThread() {
 
 const linksOf = (model: OrchestrationReadModel) =>
   model.threads.find((thread) => thread.id === THREAD_ID)?.pullRequests?.map((link) => link.number);
+
+describe("internal thread import limits", () => {
+  it.each([
+    { count: 1, length: MAX_IMPORTED_SESSION_MESSAGE_CHARS + 1 },
+    {
+      count: Math.floor(MAX_IMPORTED_SESSION_TEXT_CHARS / MAX_IMPORTED_SESSION_MESSAGE_CHARS) + 1,
+      length: MAX_IMPORTED_SESSION_MESSAGE_CHARS,
+    },
+  ])("rejects $count import message(s) of $length code units", async ({ count, length }) => {
+    const readModel = await withThread();
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.import",
+            commandId: CommandId.makeUnsafe("import-command"),
+            threadId: ThreadId.makeUnsafe("imported"),
+            projectId: PROJECT_ID,
+            title: "Imported thread",
+            model: "gpt-5.5",
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: NOW,
+            expectedWorkspaceRoot: "/repo",
+            messages: Array.from({ length: count }, () => ({
+              role: "user",
+              text: "x".repeat(length),
+              createdAt: NOW,
+            })),
+          },
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow("Imported messages are invalid or exceed the size limits");
+  });
+});
 
 describe("thread pull request links", () => {
   it("preserves ordinary create semantics for PR Hub and prompt links carrying model selections", async () => {
