@@ -5291,9 +5291,10 @@ describe("ChatView timeline (full app)", () => {
     const rightPanel = () =>
       selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_ID);
 
-    async function mountWithBranchRangeDiff() {
+    async function mountWithBranchRangeDiff(configureFixture?: (fixture: TestFixture) => void) {
       const mounted = await mountChatView({
         viewport: WIDE_VIEWPORT,
+        configureFixture: (fixture) => configureFixture?.(fixture),
         snapshot: createSnapshotForTargetUser({
           targetMessageId: "msg-user-diff-toggle" as MessageId,
           targetText: "diff toggle",
@@ -5310,6 +5311,67 @@ describe("ChatView timeline (full app)", () => {
       });
       return mounted;
     }
+
+    it("routes Cmd+F to the real diff search and leaves its shadow input shortcuts alone", async () => {
+      const mounted = await mountWithBranchRangeDiff((fixture) => {
+        fixture.serverConfig = {
+          ...fixture.serverConfig,
+          keybindings: [
+            createModKeybinding("chat.find", "f"),
+            createModKeybinding("commandPalette.toggle", "k"),
+          ],
+        };
+        fixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.reviewPreviewDiff
+            ? {
+                type: "result",
+                result: {
+                  kind: "success",
+                  source: { kind: "branch-range" },
+                  baseRef: "main",
+                  baseCommit: null,
+                  headCommit: null,
+                  diffHash: "find-regression",
+                  truncated: false,
+                  truncationReason: null,
+                  patch:
+                    "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-before\n+needle\n",
+                },
+              }
+            : null;
+      });
+      try {
+        const root = await waitForElement(
+          () => document.querySelector<HTMLElement>(".diff-render-surface"),
+          "The actual diff viewer should mount beside ChatView.",
+        );
+        const shortcut = (key: string) =>
+          new KeyboardEvent("keydown", {
+            key,
+            metaKey: /Mac/.test(navigator.platform),
+            ctrlKey: !/Mac/.test(navigator.platform),
+            bubbles: true,
+            composed: true,
+            cancelable: true,
+          });
+        root.focus();
+        root.dispatchEvent(shortcut("f"));
+        const search = page.getByPlaceholder("Search", { exact: true });
+        await search.fill("needle");
+        expect(document.querySelector('input[aria-label="Find in thread"]')).toBeNull();
+        search.element().dispatchEvent(shortcut("k"));
+        expect(useCommandPaletteStore.getState().open).toBe(false);
+        search.element().dispatchEvent(shortcut("f"));
+        await expect.poll(() => search.element().matches(":focus")).toBe(true);
+        await userEvent.keyboard("{Escape}");
+        const composer = await waitForComposerEditor();
+        await page.getByTestId("composer-editor").click();
+        composer.dispatchEvent(shortcut("f"));
+        await expect.element(page.getByRole("textbox", { name: "Find in thread" })).toBeVisible();
+      } finally {
+        await mounted.cleanup();
+      }
+    });
 
     it("brings a background Diff to front without resetting its scope", async () => {
       const mounted = await mountWithBranchRangeDiff();

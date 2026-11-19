@@ -207,6 +207,26 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
     );
 
   return {
+    removePendingImport: (threadId, importId) =>
+      withWrite(
+        threadId,
+        Effect.gen(function* () {
+          const existing = yield* repository.getByThreadId({ threadId });
+          if (Option.isNone(existing)) return false;
+          const row = existing.value;
+          const payload = row.runtimePayload;
+          if (
+            row.status !== "stopped" ||
+            row.launchFingerprint !== null ||
+            !isRecord(payload) ||
+            payload.historyImportId !== importId ||
+            Object.keys(payload).some((key) => key !== "cwd" && key !== "historyImportId")
+          )
+            return false;
+          yield* repository.deleteByThreadId({ threadId });
+          return true;
+        }),
+      ).pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.removePendingImport"))),
     updateHistoryReconciliationIfCurrent: (input) =>
       withWrite(input.threadId, repository.updateHistoryReconciliationIfCurrent(input)).pipe(
         Effect.mapError(

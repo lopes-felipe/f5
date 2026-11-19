@@ -39,6 +39,11 @@ export type ProviderSessionDirectoryWriteError =
   | ProviderSessionDirectoryPersistenceError;
 
 export interface ProviderSessionDirectoryShape {
+  /** Compensate a rejected import without deleting a binding claimed by a runtime. */
+  readonly removePendingImport: (
+    threadId: ThreadId,
+    importId: string,
+  ) => Effect.Effect<boolean, ProviderSessionDirectoryWriteError>;
   readonly updateHistoryReconciliationIfCurrent: (
     input: import("../../persistence/Services/ProviderSessionRuntime.ts").ProviderHistoryReconciliationUpdate,
   ) => Effect.Effect<boolean, ProviderSessionDirectoryWriteError>;

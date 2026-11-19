@@ -2662,6 +2662,8 @@ export const ThreadFileChangeRecordedPayload = Schema.Struct({
 });
 
 export const OrchestrationEventMetadata = Schema.Struct({
+  /** Historical messages do not represent a new turn or checkpoint request. */
+  source: Schema.optional(Schema.Literal("agent-history-import")),
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
   providerItemId: Schema.optional(ProviderItemId),
   adapterKey: Schema.optional(TrimmedNonEmptyString),

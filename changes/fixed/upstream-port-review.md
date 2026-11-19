@@ -1,0 +1,3 @@
+- Find in workspace diffs now receives Cmd+F/Ctrl+F beside the chat, and typing in diff search keeps app shortcuts from interrupting it. Unchanged files retain their render versions, and collapsed headers keep their theme without highlighting file contents.
+- Antigravity usage preserves partial quotas when an endpoint stalls and returns within the usage refresh deadline.
+- Project history imports avoid checkpoint snapshots and clean up unclaimed bindings after a rejected import. Syntax highlighting can retry a failed grammar download.

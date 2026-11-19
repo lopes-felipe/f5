@@ -154,6 +154,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
             aggregateId: command.threadId,
             occurredAt: message.createdAt,
             commandId: command.commandId,
+            metadata: { source: "agent-history-import" },
           }),
           type: "thread.message-sent" as const,
           payload: {

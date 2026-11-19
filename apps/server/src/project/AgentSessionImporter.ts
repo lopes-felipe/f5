@@ -77,7 +77,7 @@ export const importAgentSessionProject = Effect.fn("importAgentSessionProject")(
   scanner: AgentSessionScanner;
   homes: ReadonlyArray<AgentSessionHome>;
   engine: Pick<OrchestrationEngineShape, "getReadModel" | "dispatch">;
-  directory: Pick<ProviderSessionDirectoryShape, "upsert" | "listBindings">;
+  directory: Pick<ProviderSessionDirectoryShape, "upsert" | "listBindings" | "removePendingImport">;
 }) {
   const candidate = yield* Effect.try({
     try: () => input.scanner.get(input.request.candidateId, input.request.expectedWorkspaceRoot),
@@ -167,6 +167,7 @@ export const importAgentSessionProject = Effect.fn("importAgentSessionProject")(
           history.source === "codex"
             ? { threadId: history.providerSessionId }
             : { threadId, resume: history.providerSessionId };
+        const historyImportId = randomUUID();
         // Publish the binding first. The directory's shared thread lock and
         // insert-if-absent rule prevent a retry from replacing a live session.
         yield* input.directory.upsert(
@@ -178,27 +179,45 @@ export const importAgentSessionProject = Effect.fn("importAgentSessionProject")(
             status: "stopped",
             runtimeMode: "approval-required",
             resumeCursor,
-            runtimePayload: { cwd },
+            runtimePayload: { cwd, historyImportId },
           },
           { onConflict: "ignore" },
         );
         const selectedModel = history.model ?? DEFAULT_MODEL_BY_PROVIDER[history.source];
-        yield* input.engine.dispatch({
-          type: "thread.import",
-          commandId: CommandId.make(randomUUID()),
-          threadId,
-          projectId,
-          title: history.title,
-          model: selectedModel,
-          modelSelection: { instanceId: home.instanceId, model: selectedModel },
-          runtimeMode: "approval-required",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-          createdAt: history.createdAt,
-          expectedWorkspaceRoot: existing?.workspaceRoot ?? cwd,
-          messages: history.messages,
-        });
+        yield* input.engine
+          .dispatch({
+            type: "thread.import",
+            commandId: CommandId.make(randomUUID()),
+            threadId,
+            projectId,
+            title: history.title,
+            model: selectedModel,
+            modelSelection: { instanceId: home.instanceId, model: selectedModel },
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: history.createdAt,
+            expectedWorkspaceRoot: existing?.workspaceRoot ?? cwd,
+            messages: history.messages,
+          })
+          .pipe(
+            Effect.tapError((error) => {
+              // These errors prove the command was rejected before persistence.
+              // Retain the staging binding when delivery/persistence is uncertain.
+              if (
+                error._tag !== "OrchestrationCommandInvariantError" &&
+                error._tag !== "OrchestrationCommandPreviouslyRejectedError" &&
+                error._tag !== "OrchestrationOverloadError"
+              )
+                return Effect.void;
+              return Effect.gen(function* () {
+                const latest = yield* input.engine.getReadModel();
+                if (!latest.threads.some((thread) => thread.id === threadId))
+                  yield* input.directory.removePendingImport(threadId, historyImportId);
+              }).pipe(Effect.ignore);
+            }),
+          );
         return threadId;
       }).pipe(Effect.catch(() => Effect.succeed(null)));
       if (result) threadIds.push(result);

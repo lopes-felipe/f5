@@ -66,7 +66,7 @@ describe("onboarding agent history RPCs", () => {
     const scan = discovery.result as AgentSessionScanResult;
     expect(scan.candidates).toHaveLength(1);
     const candidate = scan.candidates[0]!;
-    expect(candidate.path).toBe(cwd);
+    expect(candidate.path).toBe(fs.realpathSync(cwd));
     const input = {
       candidateId: candidate.id,
       expectedWorkspaceRoot: candidate.path,

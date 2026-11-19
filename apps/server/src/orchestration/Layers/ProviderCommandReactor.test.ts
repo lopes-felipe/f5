@@ -613,6 +613,7 @@ describe("ProviderCommandReactor", () => {
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     };
     const providerSessionDirectory = {
+      removePendingImport: () => Effect.succeed(false),
       upsert: (binding: ProviderRuntimeBinding) =>
         Effect.sync(() => {
           upsertPersistedBinding(binding);

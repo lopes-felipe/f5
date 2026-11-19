@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,7 @@ import type {
 } from "../provider/Services/ProviderSessionDirectory";
 import { AgentSessionScanner } from "./AgentSessionScanner";
 import { importAgentSessionProject, resolveAgentSessionHomes } from "./AgentSessionImporter";
+import { OrchestrationCommandInvariantError } from "../orchestration/Errors";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -65,7 +66,17 @@ async function fixture() {
   let model = createEmptyReadModel(now);
   const events: OrchestrationEvent[] = [];
   const bindings = new Map<string, ProviderRuntimeBinding>();
-  const directory: Pick<ProviderSessionDirectoryShape, "upsert" | "listBindings"> = {
+  const directory: Pick<
+    ProviderSessionDirectoryShape,
+    "upsert" | "listBindings" | "removePendingImport"
+  > = {
+    removePendingImport: (threadId, importId) =>
+      Effect.sync(() => {
+        const payload = bindings.get(threadId)?.runtimePayload as
+          | { historyImportId?: string }
+          | undefined;
+        return payload?.historyImportId === importId ? bindings.delete(threadId) : false;
+      }),
     listBindings: () =>
       Effect.sync(() => [...bindings.values()].map((binding) => ({ ...binding, lastSeenAt: now }))),
     upsert: (binding, options) =>
@@ -106,6 +117,22 @@ async function fixture() {
   return { run, request, scanner, homes, engine, directory, bindings, events, model: () => model };
 }
 describe("onboarding history import", () => {
+  it("cleans its staging binding when dispatch rejects the imported thread", async () => {
+    const f = await fixture();
+    const dispatch = f.engine.dispatch;
+    vi.spyOn(f.engine, "dispatch").mockImplementation((command) =>
+      command.type === "thread.import"
+        ? Effect.fail(
+            new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "The project directory changed.",
+            }),
+          )
+        : dispatch(command),
+    );
+    expect(await f.run()).toMatchObject({ threadIds: [], skippedCount: 1 });
+    expect(f.bindings.size).toBe(0);
+  });
   it("does not discover the ambient Codex home for an unconfigured isolated profile", async () => {
     const stateDir = join(tmpdir(), "f5-import-profile");
     const sources = await Effect.runPromise(

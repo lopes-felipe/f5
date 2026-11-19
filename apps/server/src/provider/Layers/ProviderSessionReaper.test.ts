@@ -93,6 +93,7 @@ function makeLayer(input: {
   const listedBindings = input.listedBindings ?? [idleBinding];
   const currentBinding = input.currentBinding ?? Option.some(idleBinding);
   const directory: ProviderSessionDirectoryShape = {
+    removePendingImport: () => Effect.succeed(false),
     upsert: () => Effect.void,
     getProvider: () => Effect.succeed("codex"),
     getBinding: () => Effect.succeed(currentBinding),

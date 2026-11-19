@@ -18,6 +18,9 @@ export function getSyntaxHighlighterPromise(language: string): Promise<DiffsHigh
     preferredHighlighter: PREFERRED_HIGHLIGHTER,
   });
   promises.set(language, promise);
+  void promise.catch(() => {
+    if (promises.get(language) === promise) promises.delete(language);
+  });
   if (promises.size > 64) promises.delete(promises.keys().next().value!);
   return promise;
 }

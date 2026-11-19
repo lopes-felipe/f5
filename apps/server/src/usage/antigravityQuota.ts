@@ -20,7 +20,8 @@ export function makeAntigravityQuotaReader(input: {
   const now = input.now ?? Date.now;
   let cached: { fingerprint: string; accessToken: string; expiresAt: number } | undefined;
 
-  return async (signal: AbortSignal) => {
+  return async (signal: AbortSignal, deadline = performance.now() + 7_000) => {
+    const remainingMs = () => Math.max(0, deadline - performance.now());
     let text: string;
     try {
       text = await read(join(input.profileDirectory, "antigravity-acp", "acp_token.json"));
@@ -42,17 +43,41 @@ export function makeAntigravityQuotaReader(input: {
     const fingerprint = createHash("sha256")
       .update([clientId, refreshToken, project ?? ""].join("\0"))
       .digest("hex");
-    const json = async (url: string, init: RequestInit) => {
-      const response = await request(url, {
-        ...init,
-        signal: AbortSignal.any([signal, AbortSignal.timeout(6000)]),
-        redirect: "error",
+    const json = async (url: string, init: RequestInit, maximumMs = 6_000) => {
+      const timeoutMs = Math.min(maximumMs, remainingMs());
+      if (timeoutMs <= 0) throw new Error("Antigravity quota deadline reached.");
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(new Error("Antigravity quota deadline reached.")),
+        timeoutMs,
+      );
+      const requestSignal = AbortSignal.any([signal, controller.signal]);
+      let onAbort = () => {};
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(requestSignal.reason);
+        if (requestSignal.aborted) onAbort();
+        else requestSignal.addEventListener("abort", onAbort, { once: true });
       });
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) cached = undefined;
-        throw new Error("Antigravity quota request failed.");
+      try {
+        return await Promise.race([
+          aborted,
+          (async () => {
+            const response = await request(url, {
+              ...init,
+              signal: requestSignal,
+              redirect: "error",
+            });
+            if (!response.ok) {
+              if (response.status === 401 || response.status === 403) cached = undefined;
+              throw new Error("Antigravity quota request failed.");
+            }
+            return response.json() as Promise<unknown>;
+          })(),
+        ]);
+      } finally {
+        clearTimeout(timer);
+        requestSignal.removeEventListener("abort", onAbort);
       }
-      return response.json() as Promise<unknown>;
     };
     if (cached?.fingerprint !== fingerprint || cached.expiresAt <= now() + 60_000) {
       cached = undefined;
@@ -85,20 +110,24 @@ export function makeAntigravityQuotaReader(input: {
         for (const operation of ["retrieveUserQuotaSummary", "fetchAvailableModels"]) {
           try {
             const requestedAt = now();
-            const body = await json("https://" + host + "/v1internal:" + operation, {
-              method: "POST",
-              headers: {
-                Authorization: "Bearer " + accessToken,
-                "Content-Type": "application/json",
-                "User-Agent":
-                  "antigravity/hub/2.24.0 (aidev_client; os_type=" +
-                  process.platform +
-                  "; arch=" +
-                  process.arch +
-                  "; cl=963137146)",
+            const body = await json(
+              "https://" + host + "/v1internal:" + operation,
+              {
+                method: "POST",
+                headers: {
+                  Authorization: "Bearer " + accessToken,
+                  "Content-Type": "application/json",
+                  "User-Agent":
+                    "antigravity/hub/2.24.0 (aidev_client; os_type=" +
+                    process.platform +
+                    "; arch=" +
+                    process.arch +
+                    "; cl=963137146)",
+                },
+                body: JSON.stringify(project ? { project } : {}),
               },
-              body: JSON.stringify(project ? { project } : {}),
-            });
+              operation === "retrieveUserQuotaSummary" ? Math.min(3_000, remainingMs() / 2) : 6_000,
+            );
             const windows = input.normalize(body, requestedAt);
             if (windows.length) return { windows, failed };
           } catch {

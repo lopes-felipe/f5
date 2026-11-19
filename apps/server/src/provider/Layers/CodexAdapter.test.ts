@@ -315,6 +315,7 @@ it.effect(
 );
 
 const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory, {
+  removePendingImport: () => Effect.succeed(false),
   upsert: () => Effect.void,
   getProvider: () =>
     Effect.die(new Error("ProviderSessionDirectory.getProvider is not used in test")),

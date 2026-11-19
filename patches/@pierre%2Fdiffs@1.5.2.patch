@@ -987,6 +987,7 @@ index d9dc7b5..3c37bae 100644
    },
    "publishConfig": {
 diff --git a/dist/components/FileDiff.js b/dist/components/FileDiff.js
+index 6f66bd3..d099a91 100644
 --- a/dist/components/FileDiff.js
 +++ b/dist/components/FileDiff.js
 @@ -1,3 +1,4 @@
@@ -994,27 +995,35 @@ diff --git a/dist/components/FileDiff.js b/dist/components/FileDiff.js
  import { getThemes } from "../utils/getThemes.js";
 +import { getHighlighterThemeStyles } from "../utils/getHighlighterThemeStyles.js";
  import { getHighlighterIfLoaded, getSharedHighlighter } from "../highlighter/shared_highlighter.js";
-@@ -694,5 +695,18 @@
+@@ -691,11 +692,26 @@
+ 			this.removeRenderedCode();
+ 			this.clearAuxiliaryNodes();
+ 			try {
 -				const hunksResult = this.hunksRenderer.renderDiff(latestDiff, EMPTY_RENDER_RANGE);
 -				if (hunksResult != null) this.applyThemeState(fileContainer, hunksResult.themeStyles, themeType, hunksResult.baseThemeType);
 -				if (hunksResult?.headerElement != null) this.applyHeaderToDOM(hunksResult.headerElement, fileContainer, hunksResult.fileDiff);
 -				this.renderSeparators([]);
 -				this.renderedDiff = hunksResult?.fileDiff ?? latestDiff;
-+				// Collapsed files only need a header and theme, never tokenization.
-+				const theme = this.getTheme();
-+				const highlighter = getHighlighterIfLoaded({ theme, lang: "text" });
-+				if (highlighter != null) {
-+					const styles = getHighlighterThemeStyles({ theme, highlighter });
-+					const baseType = typeof theme === "string" ? highlighter.getTheme(theme).type : void 0;
-+					this.applyThemeState(fileContainer, styles, themeType, baseType);
-+				} else {
-+					getSharedHighlighter({
-+						themes: getThemes(theme), langs: ["text"],
-+						preferredHighlighter: this.options.preferredHighlighter
-+					}).then(() => {
-+						if (this.enabled && this.fileContainer === fileContainer && this.options.collapsed && areThemesEqual(theme, this.getTheme())) this.rerender();
-+					}).catch((error) => console.error(error));
++				if (!this.options.disableFileHeader) {
++					// Collapsed files only need a header and theme, never tokenization.
++					const theme = this.getTheme();
++					const highlighter = getHighlighterIfLoaded({ theme, lang: "text" });
++					if (highlighter != null) {
++						const styles = getHighlighterThemeStyles({ theme, highlighter });
++						const baseType = typeof theme === "string" ? highlighter.getTheme(theme).type : void 0;
++						this.applyThemeState(fileContainer, styles, themeType, baseType);
++					} else {
++						getSharedHighlighter({
++							themes: getThemes(theme), langs: ["text"],
++							preferredHighlighter: this.options.preferredHighlighter
++						}).then(() => {
++							if (this.enabled && this.fileContainer === fileContainer && this.options.collapsed && areThemesEqual(theme, this.getTheme())) this.rerender();
++						}).catch((error) => console.error(error));
++					}
++					this.applyHeaderToDOM(this.hunksRenderer.renderHeader(latestDiff), fileContainer, latestDiff);
 +				}
-+				if (!this.options.disableFileHeader) this.applyHeaderToDOM(this.hunksRenderer.renderHeader(latestDiff), fileContainer, latestDiff);
 +				this.renderSeparators([]);
 +				this.renderedDiff = latestDiff;
+ 				this.injectUnsafeCSS();
+ 			} catch (error) {
+ 				if (disableErrorHandling) throw error;

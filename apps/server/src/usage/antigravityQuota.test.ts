@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
 import { makeAntigravityQuotaReader } from "./antigravityQuota.ts";
 import { normalizeProviderLimits } from "./providerLimits.ts";
 
@@ -17,6 +18,31 @@ const response = (value: unknown) =>
 const normalize = (value: unknown, at: number) => normalizeProviderLimits("antigravity", value, at);
 
 describe("Antigravity native quota", () => {
+  it("publishes good quotas as partial within the shared budget when another host hangs", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const read = makeAntigravityQuotaReader({
+        profileDirectory: "/instance",
+        readFile: async () => credentials(),
+        normalize,
+        fetch: async (url) => {
+          if (String(url).includes("/token")) {
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
+            return response({ access_token: "access", expires_in: 3600 });
+          }
+          if (String(url).includes("daily-")) return new Promise<Response>(() => {});
+          return response(quota);
+        },
+      });
+      const result = read(new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(await result).toMatchObject({ partial: true, windows: [{ usedPercent: 25 }] });
+      expect(performance.now()).toBe(7_000);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("reads only this instance's token file and caches access tokens without writing credentials", async () => {
     const readFile = vi.fn(async () => credentials());
     const fetch = vi.fn<(...args: Parameters<typeof globalThis.fetch>) => Promise<Response>>(
@@ -35,7 +61,7 @@ describe("Antigravity native quota", () => {
     expect(first?.windows[0]?.usedPercent).toBe(25);
     expect(first?.partial).toBe(false);
     await read(new AbortController().signal);
-    expect(readFile).toHaveBeenCalledWith("/instance/antigravity-acp/acp_token.json");
+    expect(readFile).toHaveBeenCalledWith(join("/instance", "antigravity-acp", "acp_token.json"));
     expect(fetch.mock.calls.filter(([url]) => String(url).includes("/token"))).toHaveLength(1);
     const request = fetch.mock.calls.find(([url]) =>
       String(url).includes("retrieveUserQuotaSummary"),

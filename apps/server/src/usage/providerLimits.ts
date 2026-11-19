@@ -635,7 +635,10 @@ export function makeProviderLimits(input: {
           ];
         value = await fetchJson("https://opencode.ai/zen/go/v1/usage", token, signal);
       } else if (readNativeAntigravity && !env.F5_CLIPROXY_HUB_URL && !env.F5_CLIPROXY_USAGE_URL) {
-        const result = await readNativeAntigravity(signal);
+        const result = await readNativeAntigravity(
+          signal,
+          performance.now() + ANTIGRAVITY_READ_BUDGET_MS,
+        );
         if (!result)
           return [
             {
