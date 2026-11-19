@@ -383,7 +383,7 @@ export function ProvidersSettings() {
             </p>
             <p className="text-xs text-muted-foreground">
               Fetch the current and legacy model lists from the hosted manifest. Cached lists work
-              offline.
+              offline. Turn this off to use the bundled lists.
             </p>
           </div>
           <Switch

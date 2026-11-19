@@ -79,10 +79,15 @@ it.live("publishes a late manifest refresh without a provider or settings change
           ),
         );
         expect((yield* Fiber.join(listening))[0]?.[0]?.models[0]?.isLegacy).toBe(true);
+        const settings = yield* ServerSettingsService;
+        yield* settings.updateSettings({ enableRemoteModelManifest: false });
+        expect((yield* registry.getProviders)[0]?.models[0]?.isLegacy).toBe(false);
       }).pipe(
         Effect.provide(
           ProviderRegistryLive.pipe(
-            Layer.provide(ServerSettingsService.layerTest({ enableRemoteModelManifest: true })),
+            Layer.provideMerge(
+              ServerSettingsService.layerTest({ enableRemoteModelManifest: true }),
+            ),
           ),
         ),
         Effect.provideService(ProviderInstanceRegistry, {

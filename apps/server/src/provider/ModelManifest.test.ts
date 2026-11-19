@@ -136,4 +136,33 @@ describe("model manifest", () => {
     expect(signal?.aborted).toBe(true);
     await service.settled();
   });
+  it("waits for a cache write to settle before releasing its state directory", async () => {
+    let release!: () => void, started!: () => void;
+    const writing = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const finish = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const service = await makeModelManifest({
+      cachePath: "/unused",
+      readCache: noCache,
+      fetch: async () => new Response(JSON.stringify(remote)),
+      writeCache: async () => {
+        started();
+        await finish;
+      },
+    });
+    service.refreshInBackground(true);
+    await writing;
+    let closed = false;
+    const closing = service.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    release();
+    await closing;
+    expect(closed).toBe(true);
+  });
 });

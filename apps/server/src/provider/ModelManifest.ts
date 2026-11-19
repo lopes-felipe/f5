@@ -137,9 +137,10 @@ export async function makeModelManifest(input: {
     settled: async () => {
       await pending;
     },
-    close: () => {
+    close: async () => {
       listeners.clear();
       controller.abort();
+      await pending;
     },
   };
 }

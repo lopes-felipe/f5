@@ -1,6 +1,10 @@
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { withUpdateRequiredModels } from "../updateRequiredModels.ts";
-import { classifyModelManifest, makeModelManifest } from "../ModelManifest.ts";
+import {
+  BUNDLED_MODEL_MANIFEST,
+  classifyModelManifest,
+  makeModelManifest,
+} from "../ModelManifest.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 /**
  * ProviderRegistryLive — aggregates per-instance snapshot streams into a
@@ -289,7 +293,7 @@ export const ProviderRegistryLive = Layer.effect(
       Effect.promise(() =>
         makeModelManifest({ cachePath: path.join(config.stateDir, "model-manifest.json") }),
       ),
-      (service) => Effect.sync(service.close),
+      (service) => Effect.promise(service.close),
     );
     const settingsService = yield* Effect.serviceOption(ServerSettingsService);
     const globalSnapshots = (snapshots: ReadonlyArray<ServerProvider>) =>
@@ -298,7 +302,14 @@ export const ProviderRegistryLive = Layer.effect(
             Effect.map((settings) => {
               manifest.refreshInBackground(settings.enableRemoteModelManifest);
               return projectProviderSnapshots(
-                snapshots.map((provider) => classifyModelManifest(provider, manifest.current())),
+                snapshots.map((provider) =>
+                  classifyModelManifest(
+                    provider,
+                    settings.enableRemoteModelManifest
+                      ? manifest.current()
+                      : BUNDLED_MODEL_MANIFEST,
+                  ),
+                ),
                 settings,
               );
             }),
@@ -307,7 +318,7 @@ export const ProviderRegistryLive = Layer.effect(
             ),
           )
         : Effect.succeed(
-            snapshots.map((provider) => classifyModelManifest(provider, manifest.current())),
+            snapshots.map((provider) => classifyModelManifest(provider, BUNDLED_MODEL_MANIFEST)),
           );
     const fileSystem = yield* FileSystem.FileSystem;
     const providerStatusCacheDir =
