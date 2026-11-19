@@ -3,10 +3,14 @@ import {
   PASSKEY_BRIDGE_ARGUMENT,
   PASSKEY_CREATE_CHANNEL,
   PASSKEY_GET_CHANNEL,
+  PASSKEY_ENABLE_CHANNEL,
+  PASSKEY_STATUS_CHANNEL,
 } from "./GuestProtocol";
 import { installPasskeyBridge } from "./PasskeyBridge";
 
-if (process.argv.includes(PASSKEY_BRIDGE_ARGUMENT)) {
+let passkeysInstalled = false;
+function enablePasskeys() {
+  if (passkeysInstalled) return;
   // Only these two ceremonies cross the isolated world. The main process
   // validates the actual guest frame and origin, not these untrusted inputs.
   contextBridge.exposeInMainWorld("__f5Passkeys", {
@@ -17,7 +21,20 @@ if (process.argv.includes(PASSKEY_BRIDGE_ARGUMENT)) {
     },
   });
   contextBridge.executeInMainWorld({ func: installPasskeyBridge, args: [] });
+  passkeysInstalled = true;
 }
+// A notice alone grants nothing: confirm through the entitled guest's handler.
+// The embedder can send webview messages too, so it cannot authorize the bridge.
+ipcRenderer.on(PASSKEY_ENABLE_CHANNEL, () => {
+  if (passkeysInstalled) return;
+  void ipcRenderer
+    .invoke(PASSKEY_STATUS_CHANNEL)
+    .then((enabled) => {
+      if (enabled === true) enablePasskeys();
+    })
+    .catch(() => undefined);
+});
+if (process.argv.includes(PASSKEY_BRIDGE_ARGUMENT)) enablePasskeys();
 // No Node API or general app API is exposed to guest pages.
 window.addEventListener(
   "mouseup",

@@ -4,7 +4,12 @@ import type { IpcMainInvokeEvent, Session, WebContents, WebFrameMain } from "ele
 import type { PasskeyBackend, PasskeyCeremonyContext } from "./PasskeyBackend";
 import { macPasskeyBackend } from "./PasskeyBackendMac";
 import type { PasskeyCeremonyResult } from "./PasskeyBridge";
-import { PASSKEY_CREATE_CHANNEL, PASSKEY_GET_CHANNEL } from "./GuestProtocol";
+import {
+  PASSKEY_CREATE_CHANNEL,
+  PASSKEY_GET_CHANNEL,
+  PASSKEY_ENABLE_CHANNEL,
+  PASSKEY_STATUS_CHANNEL,
+} from "./GuestProtocol";
 import {
   resolveWebAuthnEntitlements,
   type WebAuthnEntitlements,
@@ -100,20 +105,21 @@ export function createPreviewPasskeys(
   backend: PasskeyBackend | undefined = process.platform === "darwin"
     ? macPasskeyBackend
     : undefined,
+  disabled = process.env.F5_DISABLE_PREVIEW_PASSKEYS === "1",
 ) {
-  const activeBackend = entitlements.browserPasskeys ? backend : undefined;
+  const allowed: WebAuthnEntitlements = disabled ? { browserPasskeys: false } : entitlements;
+  const activeBackend = allowed.browserPasskeys ? backend : undefined;
   const installed = new WeakSet<Session>();
   return {
     bridgeEnabled: activeBackend !== undefined,
     configure: () => {
-      if (entitlements.touchIdKeychainAccessGroup)
+      if (allowed.touchIdKeychainAccessGroup)
         app.configureWebAuthn({
-          touchID: { keychainAccessGroup: entitlements.touchIdKeychainAccessGroup },
+          touchID: { keychainAccessGroup: allowed.touchIdKeychainAccessGroup },
         });
     },
     installSessionHandlers: (session: Session) => {
-      if ((!activeBackend && !entitlements.touchIdKeychainAccessGroup) || installed.has(session))
-        return;
+      if ((!activeBackend && !allowed.touchIdKeychainAccessGroup) || installed.has(session)) return;
       installed.add(session);
       session.on("select-webauthn-account", (_event, details, callback) => {
         void chooseAccount(details).then(
@@ -183,8 +189,13 @@ export function createPreviewPasskeys(
       const removeHandlers = () => {
         guest.ipc.removeHandler(PASSKEY_CREATE_CHANNEL);
         guest.ipc.removeHandler(PASSKEY_GET_CHANNEL);
+        guest.ipc.removeHandler(PASSKEY_STATUS_CHANNEL);
       };
       removeHandlers();
+      guest.ipc.handle(
+        PASSKEY_STATUS_CHANNEL,
+        (event) => !detached && !guest.isDestroyed() && event.senderFrame === guest.mainFrame,
+      );
       // Option shapes are the page's to get wrong: the native layer validates
       // them and answers with a TypeError.
       guest.ipc.handle(
@@ -195,9 +206,15 @@ export function createPreviewPasskeys(
       guest.ipc.handle(PASSKEY_GET_CHANNEL, (event, publicKey: PublicKeyCredentialRequestOptions) =>
         serve(event, publicKey, (context) => activeBackend.get(publicKey, context)),
       );
+      const enable = () => {
+        if (!detached && !guest.isDestroyed()) guest.send(PASSKEY_ENABLE_CHANNEL);
+      };
+      guest.on("dom-ready", enable);
+      enable();
       return () => {
         detached = true;
         guest.removeListener("did-start-navigation", onNavigation);
+        guest.removeListener("dom-ready", enable);
         removeHandlers();
       };
     },

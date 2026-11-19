@@ -7,11 +7,13 @@ import { createDeferredNavigationStopper, gateMainFrameRequests } from "./previe
  * are bound to it for their whole lifetime; popups the user opens stay with the user.
  */
 export interface PreviewPopupPolicy {
-  readonly passkeys?: {
-    readonly preload: string;
-    readonly additionalArguments: string[];
-    readonly onCreated: (child: BrowserWindow) => void;
-  };
+  readonly passkeys?:
+    | {
+        readonly preload: string;
+        readonly additionalArguments: string[];
+        readonly onCreated: (child: BrowserWindow) => void;
+      }
+    | undefined;
   /** True for a navigation the agent caused (during an action or its grace window). */
   readonly isAgentNavigation: () => boolean;
   /** Checks the parent tab's current allowed-sites list. */

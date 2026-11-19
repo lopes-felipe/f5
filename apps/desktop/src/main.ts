@@ -1284,9 +1284,9 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
         isAgentNavigation: () => isAgentPreviewNavigation(tabId),
         isAllowedUrl: (url) => getSafePreviewUrl(url, previewTabExternalHosts(tabId)) !== null,
         onBlocked: (url) => recordBlockedAgentNavigation(tabId, url),
-        ...(previewPasskeys.bridgeEnabled
-          ? {
-              passkeys: {
+        get passkeys() {
+          return previewPasskeys.bridgeEnabled
+            ? {
                 preload: Path.join(__dirname, "preview", "guestPreload.js"),
                 additionalArguments: [PASSKEY_BRIDGE_ARGUMENT],
                 onCreated: (child: BrowserWindow) => {
@@ -1294,9 +1294,9 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
                   previewPasskeys.installSessionHandlers(child.webContents.session);
                   child.once("closed", detach);
                 },
-              },
-            }
-          : {}),
+              }
+            : undefined;
+        },
       },
     );
     entry.enforcePopupPolicy = popups.enforcePolicy;
@@ -4883,6 +4883,17 @@ app
       .then((entitlements) => {
         previewPasskeys = createPreviewPasskeys(entitlements);
         previewPasskeys.configure();
+        // Restored tabs may have attached while signing tools were running.
+        // Bind the main-process checks and enable their existing preload too.
+        for (const entry of previewTabs.values()) {
+          const guest =
+            entry.webContentsId === null
+              ? undefined
+              : electronWebContents.fromId(entry.webContentsId);
+          if (!guest || guest.isDestroyed()) continue;
+          entry.removeListeners.push(previewPasskeys.attachGuest(guest));
+          previewPasskeys.installSessionHandlers(guest.session);
+        }
       })
       .catch(() => {
         writeDesktopLogHeader("Touch ID passkeys could not be configured for this signed build.");

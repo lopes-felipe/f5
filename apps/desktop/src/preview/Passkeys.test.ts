@@ -16,7 +16,11 @@ vi.mock("electron", () => ({
   webContents: { fromFrame: () => undefined },
 }));
 import { createPreviewPasskeys, resolveWebAuthnEntitlements } from "./Passkeys";
-import { PASSKEY_GET_CHANNEL } from "./GuestProtocol";
+import {
+  PASSKEY_GET_CHANNEL,
+  PASSKEY_ENABLE_CHANNEL,
+  PASSKEY_STATUS_CHANNEL,
+} from "./GuestProtocol";
 
 describe("signed WebAuthn entitlements", () => {
   it("requires separately authorized Touch ID and browser capabilities", () => {
@@ -51,6 +55,8 @@ it("pins origin and document, rejects background/child frames, and serializes ce
   const frame = { origin: "https://example.com", isDestroyed: () => false };
   let focused = true;
   const guest = {
+    send: vi.fn(),
+    isDestroyed: () => false,
     on: events.on.bind(events),
     removeListener: events.removeListener.bind(events),
     mainFrame: frame,
@@ -70,8 +76,16 @@ it("pins origin and document, rejects background/child frames, and serializes ce
       }),
   );
   const service = createPreviewPasskeys({ browserPasskeys: true }, { get, create: get });
+  createPreviewPasskeys({ browserPasskeys: false }).attachGuest(guest);
+  expect(handlers.size).toBe(0);
+  expect(guest.send).not.toHaveBeenCalled();
   const detach = service.attachGuest(guest);
+  expect(guest.send).toHaveBeenCalledWith(PASSKEY_ENABLE_CHANNEL);
+  events.emit("dom-ready");
+  expect(guest.send).toHaveBeenCalledTimes(2);
   const handler = handlers.get(PASSKEY_GET_CHANNEL)!;
+  expect(await handlers.get(PASSKEY_STATUS_CHANNEL)!({ senderFrame: frame })).toBe(true);
+  expect(await handlers.get(PASSKEY_STATUS_CHANNEL)!({ senderFrame: {} })).toBe(false);
   expect(await handler({ senderFrame: {} }, {})).toMatchObject({ success: false });
   focused = false;
   expect(await handler({ senderFrame: frame }, {})).toMatchObject({ success: false });
@@ -87,6 +101,26 @@ it("pins origin and document, rejects background/child frames, and serializes ce
   detach();
   expect(handlers.size).toBe(0);
   expect(events.listenerCount("did-start-navigation")).toBe(0);
+  expect(events.listenerCount("dom-ready")).toBe(0);
+});
+
+it("disables both custom passkey paths independently of signed entitlements", () => {
+  configure.mockClear();
+  const backend = { get: vi.fn(), create: vi.fn() };
+  const service = createPreviewPasskeys(
+    {
+      browserPasskeys: true,
+      touchIdKeychainAccessGroup: "TEAM.io.f5.webauthn",
+    },
+    backend,
+    true,
+  );
+  service.configure();
+  const session = new EventEmitter();
+  service.installSessionHandlers(session as any);
+  expect(service.bridgeEnabled).toBe(false);
+  expect(configure).not.toHaveBeenCalled();
+  expect(session.listenerCount("select-webauthn-account")).toBe(0);
 });
 
 it("installs an account picker only once per entitled session", async () => {

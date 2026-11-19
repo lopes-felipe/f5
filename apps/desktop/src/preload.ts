@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { DesktopBridge } from "@t3tools/contracts";
 import { createFileActionGesture } from "./fileActionGesture";
+import { createDesktopWsUrlReader } from "./desktopWsUrlReader";
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
@@ -56,18 +57,7 @@ const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const argument = (name: string) =>
   process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3) ?? null;
 // Keep the synchronous bridge contract; credentials are obtained only by the owning preload.
-let cachedWsUrl: string | null = null;
-let wsUrlReadAt = 0;
-function getWsUrl(): string | null {
-  const now = Date.now();
-  // HTTP helpers read this frequently. A minute bounds staleness well inside
-  // the backend's adjacent-window allowance without IPC on every request.
-  if (cachedWsUrl === null || now < wsUrlReadAt || now - wsUrlReadAt >= 60_000) {
-    cachedWsUrl = ipcRenderer.sendSync("desktop:get-ws-url") ?? null;
-    wsUrlReadAt = now;
-  }
-  return cachedWsUrl;
-}
+const getWsUrl = createDesktopWsUrlReader(() => ipcRenderer.sendSync("desktop:get-ws-url") ?? null);
 const profileId = argument("f5-profile-id");
 const systemLocale = argument("f5-system-locale");
 
