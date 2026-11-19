@@ -55,6 +55,14 @@ describe("sanitizeThreadTitle", () => {
 });
 
 describe("buildFallbackThreadTitle", () => {
+  it("names mentioned models without their reference syntax", () => {
+    expect(
+      buildFallbackThreadTitle({
+        titleSourceText: "Ask model:codex/gpt-6.1-sol for help",
+        attachments: [],
+      }),
+    ).toBe("Ask gpt-6.1-sol for help");
+  });
   it("uses the sanitized text when present", () => {
     expect(
       buildFallbackThreadTitle({

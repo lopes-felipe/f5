@@ -134,6 +134,16 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
   );
   return {
     ...settings,
+    textGenerators: Object.fromEntries(
+      Object.entries(settings.textGenerators).map(([id, generator]) => [
+        id,
+        {
+          ...generator,
+          apiKey: "",
+          apiKeyRedacted: Boolean(generator.apiKey || generator.apiKeyRedacted),
+        },
+      ]),
+    ),
     observability: {
       ...settings.observability,
       ...(settings.observability.otlpHeaders

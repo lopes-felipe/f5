@@ -22,6 +22,24 @@ export function prepareSettingsSecrets(
   changes: SettingsSecretChange[];
 } {
   const changes: SettingsSecretChange[] = [];
+  const textGenerators = Object.fromEntries(
+    Object.entries(settings.textGenerators).map(([id, generator]) => {
+      const name = "text-generator-" + Buffer.from(id).toString("base64url");
+      if (generator.apiKey) {
+        changes.push({ name, value: encoder.encode(generator.apiKey) });
+        return [id, { ...generator, apiKey: "", apiKeyRedacted: true }];
+      }
+      if (!generator.apiKeyRedacted) changes.push({ name, value: null });
+      return [id, generator];
+    }),
+  );
+  for (const id of Object.keys(previous.textGenerators)) {
+    if (!Object.hasOwn(settings.textGenerators, id))
+      changes.push({
+        name: "text-generator-" + Buffer.from(id).toString("base64url"),
+        value: null,
+      });
+  }
   const protect = (config: Record<string, unknown>, name: string) => {
     const value = config.serverPassword;
     if (typeof value !== "string" || !value.trim()) return config;
@@ -55,6 +73,7 @@ export function prepareSettingsSecrets(
   return {
     settings: {
       ...settings,
+      textGenerators,
       ...(headers ? { observability: { ...settings.observability, otlpHeaders: headers } } : {}),
       providers: {
         ...settings.providers,
@@ -96,6 +115,22 @@ export const materializeSettingsSecrets = (
   store: ServerSecretStoreShape,
 ) =>
   Effect.gen(function* () {
+    const textGenerators = Object.fromEntries(
+      yield* Effect.forEach(Object.entries(settings.textGenerators), ([id, generator]) =>
+        Effect.gen(function* () {
+          if (!generator.apiKeyRedacted || generator.apiKey) return [id, generator] as const;
+          const secret = yield* store.get(
+            "text-generator-" + Buffer.from(id).toString("base64url"),
+          );
+          return [
+            id,
+            secret
+              ? { ...generator, apiKey: decoder.decode(secret), apiKeyRedacted: false }
+              : generator,
+          ] as const;
+        }),
+      ),
+    );
     const hydrate = (config: Record<string, unknown>, name: string) =>
       Effect.gen(function* () {
         if (config.serverPasswordRedacted !== true || config.serverPassword) return config;
@@ -137,6 +172,7 @@ export const materializeSettingsSecrets = (
     );
     return {
       ...settings,
+      textGenerators,
       observability: {
         ...settings.observability,
         ...(settings.observability.otlpHeaders ? { otlpHeaders: headers } : {}),

@@ -19,7 +19,8 @@ const HtmlSource = Schema.String.check(
   Schema.isMaxLength(HTML_RENDER_MAX_SOURCE_BYTES),
 );
 export const HtmlRenderInput = Schema.Struct({
-  html: HtmlSource,
+  html: Schema.optional(HtmlSource),
+  path: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096))),
   title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
   /** The preview's contentHeight; publishing clamps it for the stored reference. */
   height: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100_000 })),
@@ -40,7 +41,8 @@ export const HtmlRenderReference = Schema.Struct({
 });
 export type HtmlRenderReference = typeof HtmlRenderReference.Type;
 export const HtmlPreviewInput = Schema.Struct({
-  html: HtmlSource,
+  html: Schema.optional(HtmlSource),
+  path: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096))),
   width: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 200, maximum: 2000 }))),
   appearance: Schema.optional(Schema.Literals(["light", "dark"])),
 });

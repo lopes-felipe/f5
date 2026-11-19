@@ -2,6 +2,7 @@ import {
   PI_THINKING_LEVELS,
   type ModelCapabilities,
   type ProviderOptionChoice,
+  type ProviderOptionDescriptor,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { piRecordField as recordField } from "./PiProtocol.ts";
@@ -33,7 +34,11 @@ export function thinkingCapabilitiesForPiModel(
   defaultThinkingLevel: unknown,
 ): ModelCapabilities {
   const levels = supportedPiThinkingLevelsFromModel(model);
-  if (levels.length === 0) return EMPTY_PI_MODEL_CAPABILITIES;
+  const speed = piServiceTierDescriptor(model);
+  if (levels.length === 0)
+    return speed
+      ? createModelCapabilities({ optionDescriptors: [speed] })
+      : EMPTY_PI_MODEL_CAPABILITIES;
   const defaultLevel = clampPiThinkingLevel(defaultThinkingLevel, levels);
   return createModelCapabilities({
     optionDescriptors: [
@@ -49,8 +54,31 @@ export function thinkingCapabilitiesForPiModel(
           }),
         ),
       },
+      ...(speed ? [speed] : []),
     ],
   });
+}
+
+export function piServiceTierDescriptor(model: unknown): ProviderOptionDescriptor | undefined {
+  const tiers = recordField(model, "serviceTiers");
+  if (!Array.isArray(tiers)) return undefined;
+  const seen = new Set(["default"]);
+  const choices: ProviderOptionChoice[] = [];
+  for (const tier of tiers) {
+    const id = recordField(tier, "id");
+    if (typeof id !== "string" || !id.trim() || /[\r\n]/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    const name = recordField(tier, "name");
+    choices.push({ id, label: typeof name === "string" && name.trim() ? name : id });
+  }
+  return choices.length
+    ? {
+        id: "serviceTier",
+        label: "Speed",
+        type: "select",
+        options: [{ id: "default", label: "Standard", isDefault: true }, ...choices],
+      }
+    : undefined;
 }
 
 function clampPiThinkingLevel(

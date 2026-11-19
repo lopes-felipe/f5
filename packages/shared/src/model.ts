@@ -309,6 +309,8 @@ export function claudeModelOptionsToProviderOptionSelections(
     return undefined;
   }
   const selections: ProviderOptionSelection[] = [];
+  if (typeof options.ultracode === "boolean")
+    selections.push({ id: "ultracode", value: options.ultracode });
   if (options.effort) {
     selections.push({ id: "effort", value: options.effort });
   }
@@ -332,7 +334,34 @@ export function createModelCapabilities(input: {
   optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
 }): ModelCapabilities {
   return {
-    optionDescriptors: input.optionDescriptors.map(cloneProviderOptionDescriptor),
+    optionDescriptors: input.optionDescriptors.flatMap((descriptor): ProviderOptionDescriptor[] => {
+      if (
+        descriptor.type !== "select" ||
+        descriptor.id !== "effort" ||
+        !descriptor.options.some((option) => option.id === "ultracode")
+      )
+        return [cloneProviderOptionDescriptor(descriptor)];
+      const hasXhigh = descriptor.options.some((option) => option.id === "xhigh");
+      return [
+        {
+          ...descriptor,
+          ...(descriptor.currentValue === "ultracode" ? { currentValue: "xhigh" } : {}),
+          options: descriptor.options.flatMap((option) =>
+            option.id !== "ultracode"
+              ? [option]
+              : hasXhigh
+                ? []
+                : [{ ...option, id: "xhigh", label: "Extra High" }],
+          ),
+        },
+        {
+          id: "ultracode",
+          label: "Ultracode",
+          type: "boolean",
+          currentValue: descriptor.currentValue === "ultracode",
+        },
+      ];
+    }),
   };
 }
 
@@ -380,6 +409,8 @@ export function createClaudeModelCapabilities(model: string | null | undefined):
       type: "boolean",
     });
   }
+  if (metadata.effortOptions?.includes("xhigh"))
+    optionDescriptors.push({ id: "ultracode", label: "Ultracode", type: "boolean" });
   if (metadata.supportsContextWindow) {
     optionDescriptors.push({
       id: "contextWindow",
@@ -488,6 +519,22 @@ export function getProviderOptionDescriptors(input: {
   caps: ModelCapabilities | null | undefined;
   selections?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
 }): ReadonlyArray<ProviderOptionDescriptor> {
+  if (
+    input.selections?.some((entry) => entry.id === "effort" && entry.value === "ultracode") &&
+    input.caps?.optionDescriptors?.some((entry) => entry.id === "ultracode")
+  ) {
+    input = {
+      ...input,
+      selections: [
+        ...input.selections.map((entry) =>
+          entry.id === "effort" ? { ...entry, value: "xhigh" } : entry,
+        ),
+        ...(input.selections.some((entry) => entry.id === "ultracode")
+          ? []
+          : [{ id: "ultracode", value: true }]),
+      ],
+    };
+  }
   return (input.caps?.optionDescriptors ?? []).map((descriptor) => {
     if (descriptor.type === "boolean") {
       const selected = getProviderOptionBooleanSelectionValue(input.selections, descriptor.id);
@@ -1241,6 +1288,8 @@ export function createReportedClaudeModelCapabilities(
       currentValue: true,
     });
   }
+  const ultracode = builtIn.optionDescriptors?.find((entry) => entry.id === "ultracode");
+  if (ultracode) optionDescriptors.push(ultracode);
   return {
     optionDescriptors,
     source: "reported",

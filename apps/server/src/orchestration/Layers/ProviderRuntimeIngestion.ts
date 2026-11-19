@@ -39,6 +39,7 @@ import {
   type AssistantDeliveryMode,
   CommandId,
   ProviderInstanceId,
+  ProviderExtensionStatuses,
   EventId,
   MessageId,
   OrchestrationCommandExecutionId,
@@ -73,6 +74,7 @@ import {
   Path,
   Schedule,
   Stream,
+  Schema,
 } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { enqueueBackgroundWork, makeBackgroundWorker } from "../../backgroundWorker.ts";
@@ -1564,6 +1566,7 @@ export function runtimeEventToActivities(
   switch (event.type) {
     case "session.configured": {
       const config = event.payload.config;
+      if ("extensionStatuses" in config && Object.keys(config).length === 1) return [];
       const model =
         typeof config.model === "string" && config.model.trim().length > 0
           ? config.model.trim()
@@ -6413,6 +6416,23 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "session.configured") {
+        if (
+          event.provider === "pi" &&
+          thread.session &&
+          Schema.is(ProviderExtensionStatuses)(event.payload.config.extensionStatuses)
+        ) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: providerCommandId(event, "extension-status-set"),
+            createdAt: now,
+            threadId: thread.id,
+            session: {
+              ...thread.session,
+              extensionStatuses: event.payload.config.extensionStatuses,
+              updatedAt: now,
+            },
+          });
+        }
         const configuredConfig =
           typeof event.payload.config === "object" && event.payload.config !== null
             ? event.payload.config

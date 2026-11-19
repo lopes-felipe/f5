@@ -17,7 +17,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ingestActivityAttachment } from "../activityAttachments.ts";
 import { ThreadToolError } from "../mcp/threadMcpTools.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
-import { HtmlRenderPrepareError, prepareHtmlRender } from "./prepareHtmlRender.ts";
+import { prepareHtmlRender } from "./prepareHtmlRender.ts";
+import { readHtmlSource } from "./readHtmlSource.ts";
 import type { makeHtmlPreviewBroker } from "./HtmlPreviewBroker.ts";
 
 /**
@@ -61,12 +62,13 @@ export const makeHtmlRenderRuntime = (input: {
   readonly engine: Pick<OrchestrationEngineShape, "getReadModel" | "dispatch">;
   readonly attachmentsDir: string;
   readonly preview: ReturnType<typeof makeHtmlPreviewBroker>;
+  readonly internalPaths?: readonly string[];
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const prepare = (threadId: ThreadId, html: string) =>
+    const prepare = (threadId: ThreadId, source: HtmlPreviewInput) =>
       Effect.gen(function* () {
         const model = yield* input.engine.getReadModel();
         const thread = model.threads.find((thread) => thread.id === threadId && !thread.deletedAt);
@@ -76,12 +78,15 @@ export const makeHtmlRenderRuntime = (input: {
         if (!thread || !project)
           return yield* new ThreadToolError({ message: "This thread's project is unavailable." });
         return yield* Effect.tryPromise({
-          try: () =>
-            prepareHtmlRender(html, htmlRenderImageRoots(thread, project, input.attachmentsDir)),
+          try: async () =>
+            prepareHtmlRender(
+              await readHtmlSource(source, thread.runtimeMode, input.internalPaths ?? []),
+              htmlRenderImageRoots(thread, project, input.attachmentsDir),
+            ),
           catch: (error) =>
             new ThreadToolError({
               message:
-                error instanceof HtmlRenderPrepareError
+                error instanceof Error
                   ? error.message
                   : "Could not prepare HTML. Keep images inside the project, worktree or attachments, with at most 512 KiB of HTML and 25 MiB after image inlining.",
             }),
@@ -89,7 +94,7 @@ export const makeHtmlRenderRuntime = (input: {
       });
     const publish = (threadId: ThreadId, value: HtmlRenderInput) =>
       Effect.gen(function* () {
-        const { html, missing } = yield* prepare(threadId, value.html);
+        const { html, missing } = yield* prepare(threadId, value);
         if (missing.paths.length)
           return yield* new ThreadToolError({
             message: `These local images could not be read: ${missing.paths.join(", ")}${missing.omitted ? `, and ${missing.omitted} more` : ""}. Use absolute paths to existing image files inside the project, worktree or attachments, or remove them.`,
@@ -161,7 +166,7 @@ export const makeHtmlRenderRuntime = (input: {
         ),
       );
     const preview = (threadId: ThreadId, value: HtmlPreviewInput) =>
-      prepare(threadId, value.html).pipe(
+      prepare(threadId, value).pipe(
         Effect.flatMap(({ html, missing }) =>
           input.preview
             .render(threadId, {

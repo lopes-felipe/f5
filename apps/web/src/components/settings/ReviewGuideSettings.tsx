@@ -44,6 +44,7 @@ export function ReviewGuideSettings() {
         }
       />
       <GenerationModelPicker
+        allowTextGenerators={false}
         value={selection}
         providers={config.data?.providers ?? []}
         disabled={saving || settings.reviewGuideModelSelection === null}

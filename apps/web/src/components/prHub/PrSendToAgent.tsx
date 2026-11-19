@@ -7,17 +7,22 @@ import { useComposerDraftStore } from "../../composerDraftStore";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import { buildPrCommentComposerPrompt, createPrF5Thread } from "./prF5Thread";
 import { Button } from "../ui/button";
+import { buildPrCommentContext } from "./prCommentContext";
 
 export function PrSendToAgent({
   pr,
   body,
   path,
   line,
+  contextOnly = false,
+  preferredThreadId,
 }: {
   pr: TrackedPullRequest;
   body: string;
   path?: string | null | undefined;
   line?: number | null | undefined;
+  contextOnly?: boolean;
+  preferredThreadId?: ThreadId | undefined;
 }) {
   const router = useRouter({ warn: false });
   const operationId = useRef(crypto.randomUUID());
@@ -32,53 +37,58 @@ export function PrSendToAgent({
     setBusy(true);
     setError(null);
     try {
-      const api = ensureNativeApi();
-      const available = threads ?? (await api.prHub.getThreadsForPr({ key: pr.key }));
-      setThreads(available);
-      let threadId =
-        available.length === 1
-          ? available[0]!.threadId
-          : available.find((t) => t.threadId === selection)?.threadId;
+      let threadId = preferredThreadId;
       if (!threadId) {
-        if (available.length > 1) return;
-        const projects =
-          candidates ??
-          (await api.prHub.listLocalCheckoutCandidates({
-            key: pr.key,
-            accountGeneration: getPrHubAccountGeneration(),
-          }));
-        setCandidates(projects);
-        const candidate =
-          projects.length === 1 ? projects[0] : projects.find((v) => v.projectId === selection);
-        if (!candidate) {
-          if (projects.length === 0)
-            throw new Error(
-              "Add a local project for this pull request before preparing an agent prompt.",
-            );
-          return;
+        const api = ensureNativeApi();
+        const available = threads ?? (await api.prHub.getThreadsForPr({ key: pr.key }));
+        setThreads(available);
+        threadId =
+          available.length === 1
+            ? available[0]!.threadId
+            : available.find((t) => t.threadId === selection)?.threadId;
+        if (!threadId) {
+          if (available.length > 1) return;
+          const projects =
+            candidates ??
+            (await api.prHub.listLocalCheckoutCandidates({
+              key: pr.key,
+              accountGeneration: getPrHubAccountGeneration(),
+            }));
+          setCandidates(projects);
+          const candidate =
+            projects.length === 1 ? projects[0] : projects.find((v) => v.projectId === selection);
+          if (!candidate) {
+            if (projects.length === 0)
+              throw new Error(
+                "Add a local project for this pull request before preparing an agent prompt.",
+              );
+            return;
+          }
+          const project = useStore.getState().projects.find((v) => v.id === candidate.projectId);
+          const config = await api.server.getConfig();
+          threadId = (
+            await createPrF5Thread({
+              api,
+              candidate,
+              pr,
+              intent: "open",
+              preferredModel: project?.model ?? "",
+              providers: config.providers,
+            })
+          ).threadId;
         }
-        const project = useStore.getState().projects.find((v) => v.id === candidate.projectId);
-        const config = await api.server.getConfig();
-        threadId = (
-          await createPrF5Thread({
-            api,
-            candidate,
-            pr,
-            intent: "open",
-            preferredModel: project?.model ?? "",
-            providers: config.providers,
-          })
-        ).threadId;
       }
       useComposerDraftStore
         .getState()
         .placeRecoveredPrompt(
           threadId,
           operationId.current,
-          buildPrCommentComposerPrompt({ pr, body, path, line }),
+          contextOnly
+            ? buildPrCommentContext(pr, body, path, line)
+            : buildPrCommentComposerPrompt({ pr, body, path, line }),
           "append",
         );
-      await router?.navigate({ to: "/$threadId", params: { threadId } });
+      if (!preferredThreadId) await router?.navigate({ to: "/$threadId", params: { threadId } });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not prepare the agent prompt.");
     } finally {
@@ -121,7 +131,7 @@ export function PrSendToAgent({
         disabled={busy || !body.trim()}
         onClick={() => void send()}
       >
-        {busy ? "Preparing prompt…" : "Send to agent"}
+        {busy ? "Preparing prompt…" : contextOnly ? "Add to chat" : "Send to agent"}
       </Button>
       {error ? (
         <p role="alert" className="text-xs">

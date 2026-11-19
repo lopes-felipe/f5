@@ -76,6 +76,28 @@ const associate = (
     yield* sql`UPDATE scheduled_run_submissions SET turn_id=${turnId} WHERE run_id=${runId}`;
   });
 
+it.effect("fresh context is opt-in for bound runs and can be disabled again", () =>
+  Effect.gen(function* () {
+    const f = yield* bound;
+    const { task } = yield* f.createBound({ freshContext: true });
+    const first = yield* f.fire(task);
+    expect(f.host.submissions[0]?.command.freshContext).toBe(true);
+    yield* f.store.transition(first.run.id, "succeeded", null, new Date(0).toISOString());
+    const current = (yield* f.store.task(task.id))?.task;
+    expect(current).not.toBeNull();
+    const { task: updated } = yield* f.service.update(
+      {
+        id: task.id,
+        expectedVersion: current!.version,
+        configuration: { ...current!, freshContext: false },
+      },
+      actor,
+    );
+    yield* f.fire(updated);
+    expect(f.host.submissions[1]?.command.freshContext).toBeUndefined();
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+
 it.effect("a busy conversation keeps the run pending without taking capacity", () =>
   Effect.gen(function* () {
     const f = yield* bound;

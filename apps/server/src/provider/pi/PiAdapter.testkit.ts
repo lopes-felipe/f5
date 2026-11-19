@@ -19,6 +19,10 @@ case 'get_state':if(process.env.F5_PI_CASE==='fork-state-failure'&&sessionFile.e
 case 'get_available_models':reply(record,{models:[{...model,reasoning:true}]});break;
 case 'get_commands':
  if(process.env.F5_PI_CASE!=='hang-start')reply(record,{commands:[{name:'reload',source:'extension'}]});
+ if(process.env.F5_PI_CASE==='extension-status') {
+  emit({type:'extension_ui_request',method:'setStatus',statusKey:'branch',statusText:'Checking'});
+  emit({type:'extension_ui_request',method:'setStatus',statusKey:'branch',statusText:'Ready'});
+ }
  if(process.env.F5_PI_CASE==='compaction-hold'){
   emit({type:'compaction_start'});
   const timer=setInterval(()=>{if(fs.existsSync(process.env.F5_PI_SESSION+'.compact-end')){
@@ -45,7 +49,9 @@ case 'set_model':
  else reply(record,{});break;
 case 'extension_ui_response':if(awaitingModel){reply(awaitingModel,{});awaitingModel=null;}break;
 case 'prompt':{
+ if(record.message.startsWith('/f5-service-tier')){reply(record,{});break;}
  const mode=process.env.F5_PI_CASE;
+ if(mode==='extension-status') emit({type:'extension_ui_request',method:'setStatus',statusKey:'branch'});
  if(mode==='compaction-race'&&!compactionRaced){
   compactionRaced=true;
   emit({type:'compaction_start'});

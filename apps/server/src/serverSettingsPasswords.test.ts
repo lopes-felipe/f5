@@ -17,6 +17,38 @@ const layer = ServerSettingsLive.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "f5-password-migration-" })),
   Layer.provideMerge(NodeServices.layer),
 );
+it.effect("stores and preserves text generator keys outside settings", () =>
+  Effect.gen(function* () {
+    const settings = yield* ServerSettingsService;
+    const config = yield* ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    yield* settings.start;
+    const id = ProviderInstanceId.make("textgen_test");
+    yield* settings.updateSettings({
+      textGenerators: {
+        [id]: {
+          kind: "openaiCompatible",
+          label: "Test",
+          baseUrl: "https://example.test/v1",
+          apiKey: "text-secret",
+          models: ["model"],
+          enabled: true,
+        },
+      },
+    });
+    assert.notInclude(yield* fs.readFileString(config.settingsPath!), "text-secret");
+    const current = yield* settings.getSettings;
+    assert.equal(current.textGenerators[id]?.apiKey, "text-secret");
+    const client = redactServerSettingsForClient(current);
+    assert.equal(client.textGenerators[id]?.apiKey, "");
+    yield* settings.updateSettings({
+      textGenerators: { [id]: { ...client.textGenerators[id]!, label: "Renamed" } },
+    });
+    assert.equal((yield* settings.getSettings).textGenerators[id]?.apiKey, "text-secret");
+    yield* settings.updateSettings({ textGenerators: {} });
+    assert.deepEqual((yield* settings.getSettings).textGenerators, {});
+  }).pipe(Effect.provide(Layer.fresh(layer))),
+);
 it.layer(layer)("OpenCode password persistence", (it) => {
   it.effect("migrates legacy global and instance passwords before startup is ready", () =>
     Effect.gen(function* () {

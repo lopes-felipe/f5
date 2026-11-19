@@ -3,6 +3,30 @@ import { assert, describe, it } from "@effect/vitest";
 import { thinkingCapabilitiesForPiModel } from "./thinkingCapabilities.ts";
 
 describe("thinkingCapabilitiesForPiModel", () => {
+  it("offers service tiers without requiring thinking support", () => {
+    const caps = thinkingCapabilitiesForPiModel(
+      {
+        serviceTiers: [
+          { id: "priority", name: "Fast" },
+          { id: "ultra", name: "Ultrafast" },
+          { id: "priority", name: "Duplicate" },
+        ],
+      },
+      undefined,
+    );
+    assert.deepEqual(caps.optionDescriptors, [
+      {
+        id: "serviceTier",
+        label: "Speed",
+        type: "select",
+        options: [
+          { id: "default", label: "Standard", isDefault: true },
+          { id: "priority", label: "Fast" },
+          { id: "ultra", label: "Ultrafast" },
+        ],
+      },
+    ]);
+  });
   it("gives every choice its real level id and tags Pi's default", () => {
     const capabilities = thinkingCapabilitiesForPiModel(
       {

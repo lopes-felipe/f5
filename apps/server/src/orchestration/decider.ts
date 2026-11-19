@@ -1543,6 +1543,11 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         threadId: command.threadId,
       });
       const steering = command.type === "thread.turn.steer";
+      if (steering && command.freshContext)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A fresh session cannot steer an active turn.",
+        });
       if (
         steering &&
         (targetThread.session?.activeTurnId !== command.expectedTurnId ||
@@ -1755,6 +1760,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
             ? { expectedSessionGeneration: command.expectedSessionGeneration }
             : {}),
           ...(command.presentation ? { presentation: command.presentation } : {}),
+          ...(command.freshContext ? { freshContext: true } : {}),
           ...(command.continuationRequestId
             ? { continuationRequestId: command.continuationRequestId }
             : {}),

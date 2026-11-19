@@ -1,0 +1,2 @@
+- /clear arms a fresh provider session for the next message in the same conversation. Earlier messages stay visible, with a New session divider.
+- Conversation-bound scheduled tasks can start each run with fresh context; this option is off by default.

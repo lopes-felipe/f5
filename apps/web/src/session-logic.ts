@@ -2662,6 +2662,10 @@ function compareTimelineEntries(left: TimelineEntry, right: TimelineEntry): numb
   if (createdAtOrder !== 0) {
     return createdAtOrder;
   }
+  const leftBoundary = left.kind === "work" && left.entry.activityKind === "session.context-reset";
+  const rightBoundary =
+    right.kind === "work" && right.entry.activityKind === "session.context-reset";
+  if (leftBoundary !== rightBoundary) return leftBoundary ? -1 : 1;
   if (left.kind === "command" && right.kind === "command") {
     return (
       left.commandExecution.startedSequence - right.commandExecution.startedSequence ||

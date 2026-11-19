@@ -4,7 +4,7 @@ import { ComputerBackendSelection } from "./computerAutomation";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderModelOptions } from "./model";
 import { ProviderInstanceId } from "./providerInstance";
-import { ProviderSessionCapabilities } from "./sessionCapabilities";
+import { ProviderSessionCapabilities, ProviderExtensionStatuses } from "./sessionCapabilities";
 import {
   ApprovalRequestId,
   CommandId,
@@ -44,6 +44,7 @@ const ProviderSessionStatus = Schema.Literals([
 ]);
 
 export const ProviderSession = Schema.Struct({
+  extensionStatuses: Schema.optional(ProviderExtensionStatuses),
   provider: ProviderKind,
   providerInstanceId: Schema.optional(ProviderInstanceId),
   status: ProviderSessionStatus,

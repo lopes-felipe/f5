@@ -507,7 +507,36 @@ export const keepUnknownOverrideKeys = <Entry extends Schema.Struct<Schema.Struc
   Entry["EncodingServices"]
 > => Schema.StructWithRest(entry, [UnknownOverrideKeys]);
 
+export const TextGeneratorConfig = Schema.Struct({
+  kind: Schema.Literals(["openaiCompatible", "anthropic"]),
+  label: TrimmedNonEmptyString,
+  baseUrl: TrimmedNonEmptyString.check(
+    Schema.makeFilter((value) => {
+      try {
+        const url = new URL(value);
+        return (
+          ["http:", "https:"].includes(url.protocol) &&
+          !url.username &&
+          !url.password &&
+          !url.hash &&
+          !url.search
+        );
+      } catch {
+        return false;
+      }
+    }),
+  ),
+  apiKey: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
+  apiKeyRedacted: Schema.optional(Schema.Boolean),
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  models: Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(100)),
+});
+export type TextGeneratorConfig = typeof TextGeneratorConfig.Type;
+
 export const ServerSettings = Schema.Struct({
+  textGenerators: Schema.Record(ProviderInstanceId, TextGeneratorConfig).pipe(
+    Schema.withDecodingDefault(() => ({})),
+  ),
   removeAgentCreditsOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   autoSettleOnPullRequestMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   autoSettleAfterDays: AutoSettleAfterDays.pipe(Schema.withDecodingDefault(() => null)),
@@ -743,6 +772,7 @@ const PrHubSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  textGenerators: Schema.optionalKey(Schema.Record(ProviderInstanceId, TextGeneratorConfig)),
   removeAgentCreditsOnMerge: Schema.optionalKey(Schema.Boolean),
   autoSettleOnPullRequestMerge: Schema.optionalKey(Schema.Boolean),
   autoSettleAfterDays: Schema.optionalKey(AutoSettleAfterDays),

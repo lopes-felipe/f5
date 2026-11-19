@@ -1,0 +1,1 @@
+- Configure OpenAI-compatible or Anthropic text generators in Providers settings to write titles, commit messages, pull request text, and structured text without launching an agent. API keys stay in the server secret store.

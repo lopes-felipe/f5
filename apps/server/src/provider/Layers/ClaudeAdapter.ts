@@ -368,6 +368,7 @@ type ClaudeToolResultStreamKind = Extract<
 >;
 type ClaudeSdkEffort = Exclude<ClaudeCodeEffort, "ultrathink">;
 type ClaudeRuntimeFlagSettings = {
+  readonly ultracode?: boolean | null;
   readonly effortLevel?: ClaudeSdkEffort | null;
   readonly fastMode?: boolean | null;
   readonly alwaysThinkingEnabled?: boolean | null;
@@ -1618,6 +1619,7 @@ function resolveClaudeRuntimeTraits(
   readonly selectedModel?: string;
   readonly effectiveEffort?: ClaudeSdkEffort;
   readonly fastMode: boolean;
+  readonly ultracode?: boolean;
   readonly thinking?: boolean;
 } {
   const selectedModel = selection.baseModel ?? fallbackModel;
@@ -1629,9 +1631,15 @@ function resolveClaudeRuntimeTraits(
 
   // Shared with the composer so the UI never offers what execution drops.
   const capabilities = resolveModelCapabilities("claudeAgent", selectedModel, reported);
+  const legacyUltracode =
+    getProviderOptionStringSelectionValue(selection.options, "effort") === "ultracode";
+  const ultracode =
+    getProviderOptionBooleanSelectionValue(selection.options, "ultracode") ?? legacyUltracode;
   const requestedEffort = resolveReasoningEffortForProvider(
     "claudeAgent",
-    getProviderOptionStringSelectionValue(selection.options, "effort") ?? null,
+    legacyUltracode
+      ? "xhigh"
+      : (getProviderOptionStringSelectionValue(selection.options, "effort") ?? null),
   );
   // An unsupported explicit effort is dropped rather than replaced by the default.
   const effort = requestedEffort
@@ -1651,6 +1659,7 @@ function resolveClaudeRuntimeTraits(
     selectedModel,
     ...(effectiveEffort ? { effectiveEffort } : {}),
     fastMode,
+    ultracode,
     ...(typeof thinking === "boolean" ? { thinking } : {}),
   };
 }
@@ -1672,9 +1681,11 @@ function withClaudeRuntimeSelectionConfig(
 
 function claudeRuntimeSettings(traits: {
   readonly fastMode: boolean;
+  readonly ultracode?: boolean | undefined;
   readonly thinking?: boolean;
 }) {
   return {
+    ...(traits.ultracode ? { ultracode: true } : {}),
     ...(traits.fastMode ? { fastMode: true } : {}),
     ...(typeof traits.thinking === "boolean" ? { alwaysThinkingEnabled: traits.thinking } : {}),
   };
@@ -1732,6 +1743,7 @@ function withClaudeRuntimeTraitsConfig(
   const {
     effort: _discardedEffort,
     fastMode: _discardedFastMode,
+    ultracode: _discardedUltracode,
     alwaysThinkingEnabled: _discardedThinking,
     ...rest
   } = config;
@@ -8462,11 +8474,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const launchReported = yield* reportedCapabilitiesFor(
           runtimeModelSelection.baseModel ?? input.model,
         );
-        const { selectedModel, effectiveEffort, fastMode, thinking } = resolveClaudeRuntimeTraits(
-          runtimeModelSelection,
-          input.model,
-          launchReported,
-        );
+        const { selectedModel, effectiveEffort, fastMode, thinking, ultracode } =
+          resolveClaudeRuntimeTraits(runtimeModelSelection, input.model, launchReported);
         const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
         const launchBypass =
           runtimeMode === "full-access" && !input.workflowExecutionProfile
@@ -8616,6 +8625,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           }),
           ...claudeRuntimeSettings({
             fastMode,
+            ultracode,
             ...(typeof thinking === "boolean" ? { thinking } : {}),
           }),
           ...(showThinkingSummaries !== undefined ? { showThinkingSummaries } : {}),
@@ -9087,6 +9097,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(computerServer?.endTurn ? { computerEndTurn: computerServer.endTurn } : {}),
           startInput: input,
           requestedRuntime: {
+            ultracode,
             model: input.model,
             effort: input.modelOptions?.claudeAgent?.effort,
             thinking: input.modelOptions?.claudeAgent?.thinking,
@@ -9492,6 +9503,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         // A turn without model options keeps the session's applied fast mode.
         let appliedFastMode = context.requestedRuntime?.fastMode;
+        let appliedUltracode = context.requestedRuntime?.ultracode;
         if (input.model || input.modelSelection || input.modelOptions) {
           const runtimeModelSelection = resolveClaudeRuntimeModelSelection({
             providerInstanceId: context.providerInstanceId,
@@ -9540,11 +9552,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               context.query.applyFlagSettings({
                 effortLevel: runtimeTraits.effectiveEffort ?? null,
                 fastMode: runtimeTraits.fastMode,
+                ...(runtimeTraits.ultracode || appliedUltracode
+                  ? { ultracode: runtimeTraits.ultracode ?? false }
+                  : {}),
                 alwaysThinkingEnabled: runtimeTraits.thinking ?? null,
               }),
             );
             yield* ensureLive;
             appliedFastMode = runtimeTraits.fastMode;
+            appliedUltracode = runtimeTraits.ultracode;
             context.modelSelectionUnknown = false;
             context.session = {
               ...context.session,
@@ -9615,6 +9631,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         context.requestedRuntime = {
+          ...(appliedUltracode !== undefined ? { ultracode: appliedUltracode } : {}),
           model: input.model ?? context.startInput.model,
           ...input.modelOptions?.claudeAgent,
           ...(appliedFastMode !== undefined ? { fastMode: appliedFastMode } : {}),

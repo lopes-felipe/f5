@@ -1,0 +1,1 @@
+- GitLab merge request reviews can request changes, with server refusals reported instead of claiming success.

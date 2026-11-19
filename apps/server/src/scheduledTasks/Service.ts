@@ -514,6 +514,7 @@ export const makeScheduledTaskService = (deps: {
             const value: ScheduledTask = {
               ...current,
               ...config,
+              freshContext: config.freshContext === true,
               runsConsumed: current.runsConsumed,
               lastRunAt: current.lastRunAt,
               ...(adopting ? { disabledReason: null } : {}),
@@ -1173,6 +1174,7 @@ export const makeScheduledTaskService = (deps: {
                 });
             const command = {
               ...built,
+              ...(boundWorkspace && current.snapshot.freshContext ? { freshContext: true } : {}),
               message: {
                 ...built.message,
                 ...(rewritten.skillCall ? { skillCall: rewritten.skillCall } : {}),

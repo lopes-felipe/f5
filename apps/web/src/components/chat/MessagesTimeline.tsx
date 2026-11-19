@@ -2088,6 +2088,7 @@ function shouldRenderWorkEntryAsStandaloneRow(
 ): boolean {
   return (
     entry.usageLimited === true ||
+    entry.activityKind === "session.context-reset" ||
     entry.activityKind === "user-input.resolved" ||
     !!entry.userInput ||
     !!entry.htmlRender ||
@@ -4286,6 +4287,19 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
 }) {
   const { workEntry } = props;
   const { threadId } = useTimelineRowContext();
+  if (workEntry.activityKind === "session.context-reset") {
+    return (
+      <div
+        role="separator"
+        aria-label="New session"
+        className="my-4 flex items-center gap-3 text-xs text-muted-foreground"
+      >
+        <div className="h-px flex-1 bg-border" />
+        <span>New session</span>
+        <div className="h-px flex-1 bg-border" />
+      </div>
+    );
+  }
   if (workEntry.activityKind === "native.aside") {
     return (
       <details className="my-2 rounded-lg border p-3">
@@ -4638,6 +4652,7 @@ function WorkGroupRowContent(props: {
     (row.groupedEntries[0]?.usageLimited ||
       row.groupedEntries[0]?.htmlRender ||
       row.groupedEntries[0]?.mcpApp ||
+      row.groupedEntries[0]?.activityKind === "session.context-reset" ||
       row.groupedEntries[0]?.activityKind === "user-input.resolved" ||
       row.groupedEntries[0]?.userInput)
       ? row.groupedEntries[0]

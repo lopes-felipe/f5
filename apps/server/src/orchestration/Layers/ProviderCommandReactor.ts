@@ -1,4 +1,5 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { readThreadAfterContextBoundary } from "../contextBoundary.ts";
 import { assertScheduledDeliveryAllowed } from "../../scheduledTasks/deliveryGate.ts";
 import { readMcpAppModelContext } from "../../mcpApps/McpAppContext.ts";
 import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
@@ -913,7 +914,10 @@ const make = Effect.gen(function* () {
 
   const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
-    return readModel.threads.find((entry) => entry.id === threadId);
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    return thread
+      ? yield* readThreadAfterContextBoundary(thread, Option.getOrUndefined(sqlOption))
+      : thread;
   });
 
   const resolveActiveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
@@ -927,7 +931,7 @@ const make = Effect.gen(function* () {
     reportFailure = true,
   ) {
     const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    const thread = yield* resolveThread(threadId);
     if (!thread) {
       return yield* new ProviderTurnDeliveryError({
         certainty: "not_sent",
@@ -1132,6 +1136,7 @@ const make = Effect.gen(function* () {
       readonly reportWorkspaceFailure?: boolean;
       /** For an automation's turn: a new session asks no consent, and none restarts for one. */
       readonly unattended?: boolean;
+      readonly freshContext?: boolean;
       /**
        * Set only for an ordinary turn. A switch to another provider instance then
        * hands this conversation off instead of resetting the agent's context.
@@ -1508,6 +1513,52 @@ const make = Effect.gen(function* () {
         });
 
       const activeSession = yield* resolveActiveSession(threadId);
+      if (options?.freshContext && Option.isSome(sqlOption)) {
+        const boundary = yield* sqlOption.value.unsafe<{ prepared: number }>(
+          "SELECT prepared FROM thread_context_boundaries WHERE thread_id = ?",
+          [threadId],
+        );
+        if (boundary[0]?.prepared === 0) {
+          if (activeSession) yield* providerService.stopSession({ threadId });
+          if (Option.isSome(handoffStates)) {
+            const state = yield* handoffStates.value.get(threadId);
+            if (state) {
+              const updated = yield* handoffStates.value.compareAndSet({
+                threadId,
+                expectedRevision: state.revision,
+                pending: null,
+                parked: {},
+              });
+              if (!updated)
+                return yield* Effect.fail(
+                  new Error("Session context changed. Retry the fresh send."),
+                );
+            }
+          }
+          const started = yield* startProviderSession({ carriesHandoff: true });
+          yield* bindSessionToThread(started);
+          yield* sqlOption.value.unsafe(
+            "UPDATE thread_context_boundaries SET prepared = 1 WHERE thread_id = ?",
+            [threadId],
+          );
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: serverCommandId("fresh-context"),
+            threadId,
+            createdAt,
+            activity: {
+              id: EventId.makeUnsafe("fresh-context:" + threadId + ":" + createdAt),
+              kind: "session.context-reset",
+              tone: "info",
+              summary: "New session",
+              payload: { freshContext: true },
+              turnId: null,
+              createdAt,
+            },
+          });
+          return threadId;
+        }
+      }
       const computerPolicy = yield* resolveAgentBrowserPolicy(threadId);
       const supportsComputer = preferredProvider === "claudeAgent" || preferredProvider === "codex";
       const computerSelection = (yield* resolveProviderComputerBackendSelection(preferredProvider, {
@@ -2090,6 +2141,7 @@ const make = Effect.gen(function* () {
   });
 
   interface SendTurnForThreadInput {
+    readonly freshContext?: boolean;
     readonly threadId: ThreadId;
     /** The user message being delivered; required for a context handoff. */
     readonly messageId?: string;
@@ -2395,6 +2447,9 @@ const make = Effect.gen(function* () {
           createdAt: string;
         }>`SELECT message_id AS "id", role, text, is_streaming AS "streaming", created_at AS "createdAt"
           FROM projection_thread_messages WHERE thread_id = ${threadId} AND role = 'user'
+          AND created_at >= COALESCE(
+            (SELECT created_at FROM thread_context_boundaries WHERE thread_id = ${threadId}), ''
+          )
           ORDER BY created_at, message_id LIMIT 1`.pipe(
           Effect.map((rows) => {
             const row = rows[0];
@@ -2420,6 +2475,15 @@ const make = Effect.gen(function* () {
     input: SendTurnForThreadInput,
     thread: OrchestrationThread,
   ) {
+    if (input.freshContext) {
+      if (Option.isNone(sqlOption) || !input.messageId)
+        return yield* Effect.fail(new Error("Fresh sessions require durable context boundaries."));
+      yield* sqlOption.value.unsafe(
+        "INSERT INTO thread_context_boundaries(thread_id,message_id,created_at,prepared) VALUES(?,?,?,0) ON CONFLICT(thread_id) DO UPDATE SET message_id=excluded.message_id,created_at=excluded.created_at,prepared=0 WHERE thread_context_boundaries.message_id != excluded.message_id",
+        [input.threadId, input.messageId, input.createdAt],
+      );
+      thread = (yield* resolveThread(input.threadId)) ?? thread;
+    }
     const resolvedContext = yield* resolveThreadInstructionContext(
       thread.id,
       input.workflowExecutionProfile,
@@ -2448,6 +2512,7 @@ const make = Effect.gen(function* () {
     if (workspace) yield* ensureWorkspaceDirectory(workspace);
     yield* requireDeliverableThread(input.threadId);
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
+      ...(input.freshContext ? { freshContext: true } : {}),
       resolvedContext,
       ...(input.provider !== undefined ? { provider: input.provider } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
@@ -3057,6 +3122,7 @@ const make = Effect.gen(function* () {
     );
 
     return yield* sendTurnForThread({
+      ...(event.payload.freshContext ? { freshContext: true } : {}),
       ...(event.payload.continuationRequestId
         ? { continuationRequestId: event.payload.continuationRequestId }
         : {}),

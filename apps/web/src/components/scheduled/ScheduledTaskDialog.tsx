@@ -92,6 +92,7 @@ const sameFixed = (a: FixedTimeCronDraft, b: FixedTimeCronDraft) =>
  * project, so switching project never carries the previous project's defaults.
  */
 interface Draft {
+  freshContext: boolean;
   name: string;
   prompt: string;
   timezone: string;
@@ -108,6 +109,7 @@ interface Draft {
 function initialDraft(task: ScheduledTask | undefined, boundThreadId: ThreadId | undefined): Draft {
   if (!task)
     return {
+      freshContext: false,
       name: "",
       prompt: "",
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -124,6 +126,7 @@ function initialDraft(task: ScheduledTask | undefined, boundThreadId: ThreadId |
   // A bound task's stored settings mirror its conversation, so they are not explicit choices.
   const explicit = task.workspace.kind !== "thread";
   return {
+    freshContext: task.freshContext === true,
     name: task.name,
     prompt: task.prompt,
     timezone: task.timezone,
@@ -346,6 +349,7 @@ export function ScheduledTaskDialog(props: {
           runtimeMode,
           interactionMode,
           workspace,
+          freshContext: threadMode && draft.freshContext,
           cron: effective.cron,
           timezone: draft.timezone,
           scheduleSource: task?.scheduleSource ?? "",
@@ -645,6 +649,16 @@ export function ScheduledTaskDialog(props: {
                     <DestinationConversationOption key={id} threadId={id} />
                   ))}
                 </NativeSelect>
+              </label>
+            )}
+            {threadMode && (
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={draft.freshContext}
+                  onChange={(event) => update({ freshContext: event.target.checked })}
+                />
+                Start a fresh provider session for each run
               </label>
             )}
             {draft.workspaceKind === "worktree" && (

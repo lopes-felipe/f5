@@ -1,6 +1,6 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { Effect, Layer, Schema, Struct } from "effect";
+import { Effect, Layer, Schema, Struct, Option } from "effect";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 
@@ -35,6 +35,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           model_context_window_tokens,
           token_usage_source,
           capabilities_json,
+          extension_statuses_json,
           updated_at
         )
         VALUES (
@@ -53,6 +54,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.modelContextWindowTokens},
           ${row.tokenUsageSource},
           ${row.capabilities ? JSON.stringify(row.capabilities) : null},
+          ${JSON.stringify(row.extensionStatuses ?? [])},
           ${row.updatedAt}
         )
         ON CONFLICT (thread_id)
@@ -71,6 +73,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           model_context_window_tokens = excluded.model_context_window_tokens,
           token_usage_source = excluded.token_usage_source,
           capabilities_json = excluded.capabilities_json,
+          extension_statuses_json = excluded.extension_statuses_json,
           updated_at = excluded.updated_at
       `,
   });
@@ -79,6 +82,9 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
     Request: GetProjectionThreadSessionInput,
     Result: ProjectionThreadSession.mapFields(
       Struct.assign({
+        extensionStatuses: Schema.NullOr(
+          Schema.fromJsonString(ProjectionThreadSession.fields.extensionStatuses),
+        ),
         usageLimit: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.usageLimit)),
         capabilities: Schema.NullOr(
           Schema.fromJsonString(ProjectionThreadSession.fields.capabilities),
@@ -103,6 +109,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           model_context_window_tokens AS "modelContextWindowTokens",
           token_usage_source AS "tokenUsageSource",
           capabilities_json AS "capabilities",
+          extension_statuses_json AS "extensionStatuses",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -125,6 +132,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
 
   const getByThreadId: ProjectionThreadSessionRepositoryShape["getByThreadId"] = (input) =>
     getProjectionThreadSessionRow(input).pipe(
+      Effect.map(Option.map((row) => ({ ...row, extensionStatuses: row.extensionStatuses ?? [] }))),
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadSessionRepository.getByThreadId:query"),
       ),

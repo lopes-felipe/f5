@@ -36,6 +36,38 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("appends the GitLab viewer before requesting changes and surfaces refused mutations", async () => {
+    const { provider, ref, calls } = fixture(
+      "gitlab",
+      [
+        { data: { mergeRequestSetReviewers: { errors: [] } } },
+        { data: { mergeRequestRequestChanges: { errors: ["Merge request is locked"] } } },
+      ],
+      "reviewer",
+    );
+    const result = await Effect.runPromise(
+      Effect.result(provider.submitReview({ ref, body: "", verdict: "request-changes" })),
+    );
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure")
+      expect(result.failure.detail).toContain("Merge request is locked");
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.url === "https://gitlab.com/api/graphql")).toBe(true);
+    const first = JSON.parse(String(calls[0]!.init.body));
+    expect(first.query).toContain("operationMode: APPEND");
+    expect(first.variables.reviewers).toEqual(["reviewer"]);
+    expect(JSON.parse(String(calls[1]!.init.body)).query).toContain("mergeRequestRequestChanges");
+  });
+  it("reports successful GitLab change requests without approving the merge request", async () => {
+    const { provider, ref, calls } = fixture("gitlab", [
+      { data: { mergeRequestSetReviewers: { errors: [] } } },
+      { data: { mergeRequestRequestChanges: { errors: [] } } },
+    ]);
+    expect(
+      await Effect.runPromise(provider.submitReview({ ref, body: "", verdict: "request-changes" })),
+    ).toEqual({ state: "changes_requested" });
+    expect(calls).toHaveLength(2);
+  });
   it("starts the branch policy and first status page together", async () => {
     const bothStarted = Promise.withResolvers<void>();
     let starts = 0;

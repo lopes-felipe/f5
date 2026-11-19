@@ -9,6 +9,105 @@ import { fixture, threadId } from "../pi/PiAdapter.testkit.ts";
 import { PiRpcError } from "../pi/PiRpc.ts";
 import { makePiAdapter, parsePiResumeCursor } from "./PiAdapter.ts";
 
+it("applies service tiers before prompts and resets Standard without a model turn", async () =>
+  fixture(async ({ settings, options, trace }) => {
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const adapter = yield* makePiAdapter(settings, options);
+          yield* adapter.startSession({
+            threadId,
+            cwd: tmpdir(),
+            runtimeMode: "approval-required",
+            modelSelection: {
+              instanceId: options.instanceId,
+              model: "one/shared",
+              options: [{ id: "serviceTier", value: "priority" }],
+            },
+          });
+          for (const tier of ["ultra", "default"]) {
+            yield* adapter.sendTurn({
+              threadId,
+              input: "Continue",
+              modelSelection: {
+                instanceId: options.instanceId,
+                model: "one/shared",
+                options: [{ id: "serviceTier", value: tier }],
+              },
+            });
+            yield* adapter.readThread!(threadId);
+          }
+          const prompts = (yield* Effect.promise(trace)).filter(
+            (record) => record.type === "prompt",
+          );
+          expect(prompts.map((record) => record.message)).toEqual([
+            "/f5-service-tier priority",
+            "/f5-service-tier ultra",
+            "Continue",
+            "/f5-service-tier",
+            "Continue",
+          ]);
+          yield* adapter.stopSession(threadId);
+        }),
+      ),
+    );
+  }));
+
+it("keeps keyed extension status in the session and publishes replacements and clears", async () =>
+  fixture(async ({ settings, options }) => {
+    options.environment.F5_PI_CASE = "extension-status";
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const adapter = yield* makePiAdapter(settings, options);
+          const events: ProviderRuntimeEvent[] = [];
+          yield* adapter.streamEvents.pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => {
+                events.push(event);
+              }),
+            ),
+            Effect.forkScoped,
+          );
+          yield* adapter.startSession({
+            threadId,
+            cwd: tmpdir(),
+            runtimeMode: "approval-required",
+          });
+          yield* Effect.promise(() =>
+            expect
+              .poll(() =>
+                events.some(
+                  (event) =>
+                    event.type === "session.configured" &&
+                    JSON.stringify(event.payload.config.extensionStatuses) ===
+                      JSON.stringify([{ key: "branch", text: "Ready" }]),
+                ),
+              )
+              .toBe(true),
+          );
+          expect((yield* adapter.listSessions())[0]?.extensionStatuses).toEqual([
+            { key: "branch", text: "Ready" },
+          ]);
+          yield* adapter.sendTurn({ threadId, input: "Continue" });
+          yield* Effect.promise(() =>
+            expect
+              .poll(() =>
+                events.some(
+                  (event) =>
+                    event.type === "session.configured" &&
+                    JSON.stringify(event.payload.config.extensionStatuses) === "[]",
+                ),
+              )
+              .toBe(true),
+          );
+          expect((yield* adapter.listSessions())[0]?.extensionStatuses).toEqual([]);
+          yield* adapter.stopSession(threadId);
+        }),
+      ),
+    );
+  }));
+
 it("keeps idle compaction alive on Stop and holds a new prompt until compaction ends", async () =>
   fixture(async ({ settings, options, trace }) => {
     options.environment.F5_PI_CASE = "compaction-hold";

@@ -26,6 +26,8 @@ import {
 } from "../../provider/oneOffPromptTimeouts.ts";
 import { buildThreadInstructionContext } from "../threadSessionInstructions.ts";
 import { buildThreadCompactionTranscript } from "../compactionService.ts";
+import { readThreadAfterContextBoundary } from "../contextBoundary.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   formatCompactSummary,
   getCompactPrompt,
@@ -91,6 +93,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const directory = yield* Effect.serviceOption(ProviderSessionDirectory);
+  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
   const deliveries = yield* Effect.serviceOption(ProviderTurnDeliveryRepository);
   const pendingThreadIds = new Set<ThreadId>();
   const workflowJobs = new Set<WorkflowCompactionJob>();
@@ -158,12 +161,13 @@ const make = Effect.gen(function* () {
   const processEvent = (event: ThreadCompactRequestedEvent) =>
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
-      const thread = readModel.threads.find(
+      let thread = readModel.threads.find(
         (entry) => entry.id === event.payload.threadId && entry.deletedAt === null,
       );
       if (!thread) {
         return;
       }
+      thread = yield* readThreadAfterContextBoundary(thread, Option.getOrUndefined(sql));
       if (
         thread.compaction &&
         thread.lastInteractionAt.localeCompare(thread.compaction.createdAt) <= 0
@@ -455,9 +459,11 @@ const make = Effect.gen(function* () {
       }
       const readContext = Effect.gen(function* () {
         const snapshot = yield* orchestrationEngine.getReadModel();
-        const thread = snapshot.threads.find(
+        let thread = snapshot.threads.find(
           (entry) => entry.id === threadId && !entry.deletedAt && !entry.archivedAt,
         );
+        if (thread)
+          thread = yield* readThreadAfterContextBoundary(thread, Option.getOrUndefined(sql));
         const project = snapshot.projects.find(
           (entry) => entry.id === thread?.projectId && !entry.deletedAt,
         );

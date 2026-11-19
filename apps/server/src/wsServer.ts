@@ -3064,6 +3064,7 @@ export const createServer = Effect.fn(function* (
       ) {
         const html = yield* makeHtmlRenderRuntime({
           engine: orchestrationEngine,
+          internalPaths: [serverConfig.stateDir],
           attachmentsDir: serverConfig.attachmentsDir,
           preview: htmlPreviewBroker,
         });

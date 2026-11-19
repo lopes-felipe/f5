@@ -1,0 +1,1 @@
+- Agents can preview and publish HTML from a local file path in full-access conversations, without copying the page into tool arguments.

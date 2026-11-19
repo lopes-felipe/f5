@@ -6193,6 +6193,7 @@ describe("ProviderCommandReactor", () => {
         readonly text: string;
         readonly selection: { readonly instanceId: ProviderInstanceId; readonly model: string };
         readonly durable?: boolean;
+        readonly freshContext?: boolean;
         readonly attachments?: ReadonlyArray<ChatAttachment>;
       },
     ) {
@@ -6204,6 +6205,7 @@ describe("ProviderCommandReactor", () => {
       harness: Harness,
       input: {
         readonly id: string;
+        readonly freshContext?: boolean;
         readonly text: string;
         readonly selection: { readonly instanceId: ProviderInstanceId; readonly model: string };
         readonly attachments?: ReadonlyArray<ChatAttachment>;
@@ -6214,6 +6216,7 @@ describe("ProviderCommandReactor", () => {
         harness.engine.dispatch({
           type: "thread.turn.start",
           commandId: CommandId.makeUnsafe(input.id),
+          ...(input.freshContext ? { freshContext: true } : {}),
           threadId,
           message: {
             messageId: asMessageId(`message-${input.id}`),
@@ -6337,6 +6340,34 @@ describe("ProviderCommandReactor", () => {
       await assistant(harness, "c1", "Noted, tabs only.");
       return harness;
     }
+
+    it("starts fresh without handoff and never reintroduces earlier context on a provider switch", async () => {
+      const harness = await claudeConversation();
+      const cleared = await turn(harness, {
+        id: "clear",
+        text: "A new topic",
+        selection: claude,
+        freshContext: true,
+      });
+      expect(cleared._tag).toBe("Success");
+      expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
+      expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("priorWorkSummary");
+      expect(sentInput(harness, 1)).toBe("A new topic");
+      await assistant(harness, "clear", "New response");
+      expect(
+        (await turn(harness, { id: "after-clear", text: "Continue", selection: codex }))._tag,
+      ).toBe("Success");
+      const switched = sentInput(harness, 2);
+      expect(switched).toContain("A new topic");
+      expect(switched).not.toContain("indent with tabs");
+      expect(switched).not.toContain("tabs only");
+      const model = await Effect.runPromise(harness.engine.getReadModel());
+      expect(
+        model.threads
+          .find((thread) => thread.id === threadId)
+          ?.messages.some((message) => message.text.includes("indent with tabs")),
+      ).toBe(true);
+    });
 
     it("hands the full conversation to a fresh target and parks the outgoing session", async () => {
       const harness = await claudeConversation();

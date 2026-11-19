@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./composerModelMentions": {
+      "types": "./src/composerModelMentions.ts",
+      "import": "./src/composerModelMentions.ts"
+    },
     "./macWebAuthn": {
       "types": "./src/macWebAuthn.ts",
       "import": "./src/macWebAuthn.ts"

@@ -30,7 +30,7 @@ import {
   WorkflowModelSlot,
 } from "./planningWorkflow";
 import { ProviderInstanceId } from "./providerInstance";
-import { ProviderSessionCapabilities } from "./sessionCapabilities";
+import { ProviderSessionCapabilities, ProviderExtensionStatuses } from "./sessionCapabilities";
 import { ProviderStartOptions } from "./providerStartOptions";
 import { ProjectIcon } from "./project";
 import { ThreadEnvMode } from "./threadEnvMode";
@@ -667,6 +667,7 @@ export const OrchestrationUsageLimit = Schema.Struct({
 export type OrchestrationUsageLimit = typeof OrchestrationUsageLimit.Type;
 
 export const OrchestrationSession = Schema.Struct({
+  extensionStatuses: Schema.optional(ProviderExtensionStatuses),
   usageLimit: Schema.optional(Schema.NullOr(OrchestrationUsageLimit)),
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
@@ -1502,6 +1503,7 @@ export const ThreadTurnStartBootstrap = Schema.Struct({
 export type ThreadTurnStartBootstrap = typeof ThreadTurnStartBootstrap.Type;
 
 export const ThreadTurnStartCommand = Schema.Struct({
+  freshContext: Schema.optional(Schema.Boolean),
   /** Server-only identity; intentionally absent from ClientThreadTurnStartCommand. */
   continuationRequestId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
 
@@ -1556,6 +1558,7 @@ export const ThreadTurnSteerCommand = Schema.Struct({
 export type ThreadTurnSteerCommand = typeof ThreadTurnSteerCommand.Type;
 
 export const ClientThreadTurnStartCommand = Schema.Struct({
+  freshContext: Schema.optional(Schema.Boolean),
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -2480,6 +2483,7 @@ export const ThreadMessageReasoningTokensAddedPayload = Schema.Struct({
 });
 
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
+  freshContext: Schema.optional(Schema.Boolean),
   continuationRequestId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
 
   expectedTurnId: Schema.optional(TurnId),

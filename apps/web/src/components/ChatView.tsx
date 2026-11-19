@@ -1,4 +1,7 @@
 import { ThreadFindBar } from "./chat/ThreadFindBar";
+import { composerModelMentionItems } from "./chat/composerModelMentions";
+import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
+import { useFreshSessionStore } from "../freshSessionStore";
 import { isDiffSearchEditingKey, isEventInFindScope } from "../lib/keyboardFocus";
 import { ThreadTokenUsageProvider } from "./chat/MessageTokenUsage";
 import { usePublishComposerSelection } from "../activeComposerSelection";
@@ -2841,16 +2844,21 @@ export default memo(function ChatView({
       return [];
     if (composerTrigger.kind === "path") {
       const search = workspaceEntriesQuery.data;
-      if (!search) return [];
-      return search.entries.map((entry) => ({
-        id: `path:${entry.kind}:${entry.path}`,
-        type: "path",
-        path: entry.path,
-        pathKind: entry.kind,
-        searchTarget: search.searchedTarget,
-        label: basenameOfPath(entry.path),
-        description: entry.parentPath ?? "",
-      }));
+      return [
+        ...composerModelMentionItems(providerStatuses, composerTrigger.query),
+        ...(search?.entries ?? []).map(
+          (entry) =>
+            ({
+              id: `path:${entry.kind}:${entry.path}`,
+              type: "path",
+              path: entry.path,
+              pathKind: entry.kind,
+              searchTarget: search!.searchedTarget,
+              label: basenameOfPath(entry.path),
+              description: entry.parentPath ?? "",
+            }) as ComposerCommandItem,
+        ),
+      ];
     }
 
     const items = buildSlashComposerMenuItems({
@@ -2871,6 +2879,7 @@ export default memo(function ChatView({
     composerNativeSlashCommands,
     selectedProvider,
     workspaceEntriesQuery.data,
+    providerStatuses,
   ]);
   const dismissedComposerPromptRef = useRef<string | null>(null);
   const composerMenuOpen =
@@ -4121,9 +4130,10 @@ export default memo(function ChatView({
               running: phase === "running",
               followUpBehavior: settings.followUpBehavior,
               switchesProvider:
-                sessionInstanceId !== null &&
-                input.command.modelSelection !== undefined &&
-                input.command.modelSelection.instanceId !== sessionInstanceId,
+                input.command.freshContext === true ||
+                (sessionInstanceId !== null &&
+                  input.command.modelSelection !== undefined &&
+                  input.command.modelSelection.instanceId !== sessionInstanceId),
             }),
           })
           .then(async (submission) => {
@@ -5299,7 +5309,20 @@ export default memo(function ChatView({
     onAdmittedCallback?: () => void,
   ) => {
     e?.preventDefault();
+    if (
+      promptRef.current.trim().toLowerCase() === "/clear" &&
+      composerImages.length === 0 &&
+      composerFilePaths.length === 0 &&
+      composerTerminalContexts.length === 0
+    ) {
+      useFreshSessionStore.getState().arm(threadId);
+      promptRef.current = "";
+      setPrompt("");
+      return;
+    }
+    const freshArm = useFreshSessionStore.getState().arms[threadId];
     const onAdmitted = () => {
+      if (freshArm) useFreshSessionStore.getState().consume(threadId, freshArm);
       typingGuard.onSend();
       onAdmittedCallback?.();
     };
@@ -5489,7 +5512,7 @@ export default memo(function ChatView({
       filePathCount: composerFilePathsSnapshotBeforePreflight.length,
       terminalContexts: composerTerminalContextsSnapshotBeforePreflight,
     });
-    if (showPlanFollowUpPrompt && activeProposedPlan) {
+    if (!freshArm && showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
@@ -5826,6 +5849,7 @@ export default memo(function ChatView({
       const turnAttachments = await turnAttachmentsPromise;
       const command: PendingTurnStartCommand = {
         type: "thread.turn.start",
+        ...(freshArm ? { freshContext: true } : {}),
         commandId: newCommandId(),
         threadId: threadIdForSend,
         message: {
@@ -7143,6 +7167,18 @@ export default memo(function ChatView({
       window.requestAnimationFrame(() => {
         composerSelectLockRef.current = false;
       });
+      if (item.type === "model") {
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          trigger.rangeEnd,
+          formatComposerModelMention(item.instanceId, item.model) + " ",
+          {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+          },
+        );
+        if (applied) setComposerHighlightedItemId(null);
+        return;
+      }
       if (item.type === "path") {
         const replacement = `@${serializeComposerMentionPath(item.path)} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
@@ -7165,6 +7201,16 @@ export default memo(function ChatView({
         return;
       }
       if (item.type === "slash-command") {
+        if (item.command === "clear") {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+          });
+          if (applied) {
+            useFreshSessionStore.getState().arm(threadId);
+            setComposerHighlightedItemId(null);
+          }
+          return;
+        }
         if (item.command === "model") {
           const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
             expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),

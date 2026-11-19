@@ -1,0 +1,1 @@
+- Pi extension status messages appear above the composer, update by key, and clear when the provider session stops.

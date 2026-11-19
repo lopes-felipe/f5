@@ -119,6 +119,14 @@ export function mapSessionFromReadModel(
 
   const lastError = sanitizeThreadErrorMessage(incoming.lastError);
   const next: Thread["session"] = {
+    ...(incoming.extensionStatuses !== undefined || previous?.extensionStatuses !== undefined
+      ? {
+          extensionStatuses:
+            incoming.status === "stopped"
+              ? []
+              : (incoming.extensionStatuses ?? previous?.extensionStatuses ?? []),
+        }
+      : {}),
     provider: toLegacyProvider(incoming.providerName),
     providerInstanceId: incoming.providerInstanceId ?? null,
     status: toLegacySessionStatus(incoming.status),
@@ -157,6 +165,7 @@ export function mapSessionFromReadModel(
     previous.lastErrorOccurredAt === next.lastErrorOccurredAt &&
     areUnknownEqual(previous.usageLimit ?? null, next.usageLimit ?? null) &&
     previous.tokenUsageSource === next.tokenUsageSource &&
+    areUnknownEqual(previous.extensionStatuses ?? [], next.extensionStatuses ?? []) &&
     areUnknownEqual(previous.capabilities ?? null, next.capabilities ?? null)
   ) {
     return previous;

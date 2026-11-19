@@ -1,0 +1,1 @@
+- Claude models offer an independent Ultracode toggle that preserves the selected effort level.

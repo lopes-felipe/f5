@@ -26,7 +26,7 @@ export const HTML_RENDER_THEME_GUIDE = `Style with the reader's theme variables,
 export const HTML_RENDER_LAYOUT_GUIDE = `The frame follows the reader's chat width: about ${HTML_RENDER_COLUMN_WIDTH}px by default, wider on large screens and about 360px on phones, so use fluid widths. Leave html, body and the outermost element without a background, card or side padding; F5 adds an 8px gutter. A box with its own background gets 16px of padding and var(--radius) corners. Give charts fixed pixel heights. Content sets the page height: no vh units and no height:100% on html or body. Remote content loads only when the reader allows it.`;
 
 export const HTML_RENDER_IMAGE_GUIDE =
-  "Local images use absolute paths inside the project, worktree or attachments; F5 inlines them. JavaScript runs in a sandboxed frame.";
+  "Pass exactly one of inline html or an absolute .html file path. Paths require full-access threads; F5 snapshots the file. Local images use absolute paths inside the project, worktree or attachments; F5 inlines them. JavaScript runs in a sandboxed frame.";
 
 export const HTML_RENDER_DESCRIPTION = [
   `Show a finished HTML page (chart, diagram, mockup) inline in this thread, above your final reply. When an answer shows a trend or comparison in data, prefer showing it as a chart with this tool, unless the user asked for text only or for an exportable image. Check it with html_preview first; if preview is Unavailable, publish anyway; if a page is rejected, fix it and retry. Do not announce or restate the page. The frame fits the page height up to ${HTML_RENDER_MAX_FIT_HEIGHT}px.`,

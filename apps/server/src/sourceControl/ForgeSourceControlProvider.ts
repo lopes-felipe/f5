@@ -238,6 +238,7 @@ export function makeForgeSourceControlProvider(options: {
     body?: unknown,
     raw = false,
     repositoryOverride?: string,
+    graphql = false,
   ) =>
     Effect.gen(function* () {
       const a = yield* account(ref, cwd);
@@ -263,7 +264,10 @@ export function makeForgeSourceControlProvider(options: {
           "Bitbucket repositories must be specified as workspace/repository.",
           "forbidden",
         );
-      const url = `${root(repositoryOverride ? { ...a, repository: repositoryOverride } : a)}${suffix}${kind === "azure-devops" ? `${suffix.includes("?") ? "&" : "?"}api-version=7.1` : ""}`;
+      const url =
+        graphql && kind === "gitlab"
+          ? "https://" + a.host + "/api/graphql"
+          : `${root(repositoryOverride ? { ...a, repository: repositoryOverride } : a)}${suffix}${kind === "azure-devops" ? `${suffix.includes("?") ? "&" : "?"}api-version=7.1` : ""}`;
       const budget = forgeRequestBudget(a);
       if (!budget)
         return yield* error(method, "The bounded account request budget is full.", "rate_limited");
@@ -738,6 +742,62 @@ export function makeForgeSourceControlProvider(options: {
     if (input.verdict === "comment") return writeComment(input);
     if ((kind === "gitlab" || kind === "bitbucket") && input.body.trim())
       return unsupported("review body requires a separate durable comment step");
+    if (kind === "gitlab" && input.verdict === "request-changes")
+      return Effect.gen(function* () {
+        const viewer = yield* account(input.ref);
+        if (!viewer.login.trim())
+          return yield* error(
+            "request-changes",
+            "The current GitLab reviewer is unavailable.",
+            "unauthenticated",
+          );
+        const target = { projectPath: input.ref.repository, iid: String(input.ref.number) };
+        const mutations = [
+          {
+            name: "mergeRequestSetReviewers",
+            query:
+              "mutation($projectPath: ID!, $iid: String!, $reviewers: [String!]!) { mergeRequestSetReviewers(input: { projectPath: $projectPath, iid: $iid, reviewerUsernames: $reviewers, operationMode: APPEND }) { errors } }",
+            variables: { ...target, reviewers: [viewer.login] },
+          },
+          {
+            name: "mergeRequestRequestChanges",
+            query:
+              "mutation($projectPath: ID!, $iid: String!) { mergeRequestRequestChanges(input: { projectPath: $projectPath, iid: $iid }) { errors } }",
+            variables: target,
+          },
+        ];
+        for (const mutation of mutations) {
+          const result = object(
+            yield* request(
+              input.ref,
+              undefined,
+              "",
+              "POST",
+              { query: mutation.query, variables: mutation.variables },
+              false,
+              undefined,
+              true,
+            ),
+          );
+          const payload = object(object(result.data)[mutation.name]);
+          const errors = payload.errors;
+          if ((Array.isArray(result.errors) && result.errors.length) || !Array.isArray(errors))
+            return yield* error(
+              "request-changes",
+              "GitLab refused the review mutation or returned an invalid response.",
+              "invalid_response",
+              true,
+            );
+          if (errors.length)
+            return yield* error(
+              "request-changes",
+              "GitLab refused it: " + errors.map(String).join("; "),
+              "generic",
+              true,
+            );
+        }
+        return { state: "changes_requested" };
+      });
     if (kind === "gitlab")
       return request(input.ref, undefined, `${pull(input.ref)}/approve`, "POST", {
         sha: input.headSha,
