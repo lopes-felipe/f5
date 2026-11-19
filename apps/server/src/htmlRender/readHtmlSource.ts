@@ -24,7 +24,13 @@ export async function readHtmlSource(
       "Pass an absolute path to a regular .html file that starts with <!doctype html> or <html>.",
     );
   if (!path.isAbsolute(filePath) || isNetworkPath(filePath)) throw invalid();
-  const resolved = await realpath(filePath);
+  const unreadable = () =>
+    new HtmlSourceError(
+      "The HTML file was not found or is unreadable. Check the absolute file path and permissions.",
+    );
+  const resolved = await realpath(filePath).catch(() => {
+    throw unreadable();
+  });
   if (isNetworkPath(resolved) || !/\.html?$/i.test(resolved)) throw invalid();
   for (const internal of internalPaths) {
     const root = await realpath(internal).catch(() => path.resolve(internal));
@@ -35,7 +41,11 @@ export async function readHtmlSource(
     )
       throw invalid();
   }
-  const file = await openContainedFile(path.dirname(resolved), path.basename(resolved));
+  const file = await openContainedFile(path.dirname(resolved), path.basename(resolved)).catch(
+    () => {
+      throw unreadable();
+    },
+  );
   try {
     const stat = await file.stat();
     if (stat.nlink !== 1 || stat.size > HTML_RENDER_MAX_SOURCE_BYTES) throw invalid();

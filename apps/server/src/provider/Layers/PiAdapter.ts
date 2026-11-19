@@ -98,6 +98,7 @@ interface PiContext {
   baselineThinking: string | undefined;
   appliedThinking: string | undefined;
   appliedServiceTier?: string;
+  statusPublishScheduled?: boolean;
   readonly output: PiAssistantOutput;
   readonly usage: PiTurnUsage;
   readonly tools: Map<string, { name: string; args: unknown; done: boolean }>;
@@ -704,10 +705,18 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
           const statuses = updatePiExtensionStatuses(previous, event);
           if (statuses !== previous) {
             ctx.session = { ...ctx.session, extensionStatuses: statuses };
-            yield* emit(ctx, {
-              type: "session.configured",
-              payload: { config: { extensionStatuses: statuses } },
-            });
+            if (!ctx.statusPublishScheduled) {
+              ctx.statusPublishScheduled = true;
+              yield* Effect.gen(function* () {
+                yield* Effect.sleep("500 millis");
+                ctx.statusPublishScheduled = false;
+                if (!ctx.closed)
+                  yield* emit(ctx, {
+                    type: "session.configured",
+                    payload: { config: { extensionStatuses: ctx.session.extensionStatuses ?? [] } },
+                  });
+              }).pipe(Effect.forkIn(ctx.scope));
+            }
           }
           return;
         }

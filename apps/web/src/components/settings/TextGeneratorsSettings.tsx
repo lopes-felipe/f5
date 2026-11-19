@@ -144,7 +144,7 @@ export function TextGeneratorsSettings() {
           aria-label="Text generator API key"
           placeholder={draft.apiKeyRedacted ? "Stored key (leave blank to keep)" : ""}
           value={draft.apiKey}
-          onChange={(event) => patch({ apiKey: event.target.value, apiKeyRedacted: false })}
+          onChange={(event) => patch({ apiKey: event.target.value })}
         />
       </label>
       <label className="block">

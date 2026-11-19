@@ -6343,6 +6343,26 @@ describe("ProviderCommandReactor", () => {
 
     it("starts fresh without handoff and never reintroduces earlier context on a provider switch", async () => {
       const harness = await claudeConversation();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.compacted.record",
+          commandId: CommandId.makeUnsafe("before-fresh-summary"),
+          threadId,
+          compaction: {
+            kind: "summary",
+            summary: "PRE_CLEAR_SUMMARY",
+            trigger: "manual",
+            estimatedTokens: 100000,
+            modelContextWindowTokens: 200000,
+            createdAt: nextAt(),
+            direction: "up_to",
+            pivotMessageId: asMessageId("message-c1"),
+            fromTurnCount: null,
+            toTurnCount: null,
+          },
+          createdAt: nextAt(),
+        }),
+      );
       const cleared = await turn(harness, {
         id: "clear",
         text: "A new topic",
@@ -6352,6 +6372,18 @@ describe("ProviderCommandReactor", () => {
       expect(cleared._tag).toBe("Success");
       expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
       expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("priorWorkSummary");
+      const recoveryContext = harness.getBinding(threadId)?.runtimePayload as
+        | { instructionContext?: Record<string, unknown> }
+        | undefined;
+      expect(recoveryContext?.instructionContext).not.toHaveProperty("priorWorkSummary");
+      expect(recoveryContext?.instructionContext).not.toHaveProperty("preservedTranscriptBefore");
+      expect(recoveryContext?.instructionContext).not.toHaveProperty("restoredActivePlan");
+      const freshModel = await Effect.runPromise(harness.engine.getReadModel());
+      expect(
+        freshModel.threads.find((thread) => thread.id === threadId)?.session
+          ?.estimatedContextTokens,
+      ).toBeLessThan(100000);
+      expect(JSON.stringify(recoveryContext)).not.toContain("PRE_CLEAR_SUMMARY");
       expect(sentInput(harness, 1)).toBe("A new topic");
       await assistant(harness, "clear", "New response");
       expect(

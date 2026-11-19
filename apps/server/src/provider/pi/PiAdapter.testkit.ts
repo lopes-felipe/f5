@@ -20,6 +20,7 @@ case 'get_available_models':reply(record,{models:[{...model,reasoning:true}]});b
 case 'get_commands':
  if(process.env.F5_PI_CASE!=='hang-start')reply(record,{commands:[{name:'reload',source:'extension'}]});
  if(process.env.F5_PI_CASE==='extension-status') {
+  for(let tick=0;tick<30;tick++) emit({type:'extension_ui_request',method:'setStatus',statusKey:'branch',statusText:'Checking '+tick});
   emit({type:'extension_ui_request',method:'setStatus',statusKey:'branch',statusText:'Checking'});
   emit({type:'extension_ui_request',method:'setStatus',statusKey:'branch',statusText:'Ready'});
  }

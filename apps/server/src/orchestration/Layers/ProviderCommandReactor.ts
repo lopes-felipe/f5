@@ -919,7 +919,7 @@ const make = Effect.gen(function* () {
   const resolveProviderThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     const thread = yield* resolveThread(threadId);
     return thread
-      ? yield* readThreadAfterContextBoundary(thread, Option.getOrUndefined(sqlOption))
+      ? yield* readThreadAfterContextBoundary(thread, Option.getOrUndefined(sqlOption), true)
       : thread;
   });
 
@@ -1544,7 +1544,7 @@ const make = Effect.gen(function* () {
             carriesHandoff: true,
             discardResumeCursor: true,
           });
-          yield* bindSessionToThread(started);
+          yield* bindSessionToThread(started, true);
           yield* sqlOption.value.unsafe(
             "UPDATE thread_context_boundaries SET prepared = 1 WHERE thread_id = ?",
             [threadId],

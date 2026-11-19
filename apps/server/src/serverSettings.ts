@@ -909,6 +909,19 @@ const makeServerSettings = Effect.gen(function* () {
             });
           }
           const current = yield* reloadSettingsForWrite;
+          const providerIds = new Set([
+            ...Object.keys(current.providerInstances),
+            ...Object.keys(patch.providerInstances ?? {}),
+          ]);
+          if (
+            Object.keys(patch.textGenerators ?? current.textGenerators).some((id) =>
+              providerIds.has(id),
+            )
+          )
+            return yield* new ServerSettingsError({
+              settingsPath: serverConfig.settingsPath ?? "<memory>",
+              detail: "A text generator id must not match a provider instance id.",
+            });
           const previousLocations =
             patch.worktreesDirectory !== undefined &&
             current.worktreesDirectory &&

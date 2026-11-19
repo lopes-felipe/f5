@@ -5,11 +5,12 @@ import type * as SqlClient from "effect/unstable/sql/SqlClient";
 export const readThreadAfterContextBoundary = Effect.fnUntraced(function* (
   thread: OrchestrationThread,
   sql: SqlClient.SqlClient | undefined,
+  includePending = false,
 ) {
   const rows = sql
     ? yield* sql.unsafe<{ messageId: string; createdAt: string }>(
-        "SELECT message_id AS messageId, created_at AS createdAt FROM thread_context_boundaries WHERE thread_id = ? AND prepared = 1",
-        [thread.id],
+        "SELECT message_id AS messageId, created_at AS createdAt FROM thread_context_boundaries WHERE thread_id = ? AND (prepared = 1 OR ? = 1)",
+        [thread.id, includePending ? 1 : 0],
       )
     : [];
   // The timeline event also carries the committed boundary: projection rebuilds and
@@ -43,6 +44,24 @@ export function threadAfterContextBoundary(
   const index = thread.messages.findIndex((message) => message.id === boundary.messageId);
   return {
     ...thread,
+    proposedPlans: thread.proposedPlans.filter((plan) => plan.createdAt >= boundary.createdAt),
+    activities: thread.activities.filter((activity) => activity.createdAt >= boundary.createdAt),
+    checkpoints: thread.checkpoints.filter(
+      (checkpoint) => checkpoint.completedAt >= boundary.createdAt,
+    ),
+    tasks: thread.tasksUpdatedAt && thread.tasksUpdatedAt >= boundary.createdAt ? thread.tasks : [],
+    tasksUpdatedAt:
+      thread.tasksUpdatedAt && thread.tasksUpdatedAt >= boundary.createdAt
+        ? thread.tasksUpdatedAt
+        : null,
+    tasksTurnId:
+      thread.tasksUpdatedAt && thread.tasksUpdatedAt >= boundary.createdAt
+        ? thread.tasksTurnId
+        : null,
+    sessionNotes:
+      thread.sessionNotes && thread.sessionNotes.sourceLastInteractionAt >= boundary.createdAt
+        ? thread.sessionNotes
+        : null,
     messages:
       index >= 0
         ? thread.messages.slice(index)

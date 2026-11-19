@@ -39,6 +39,12 @@ it.effect("stores and preserves text generator keys outside settings", () =>
     assert.notInclude(yield* fs.readFileString(config.settingsPath!), "text-secret");
     const current = yield* settings.getSettings;
     assert.equal(current.textGenerators[id]?.apiKey, "text-secret");
+    const collision = yield* Effect.exit(
+      settings.updateSettings({
+        providerInstances: { [id]: { driver: ProviderDriverKind.make("codex"), config: {} } },
+      }),
+    );
+    assert.isTrue(Exit.isFailure(collision));
     const client = redactServerSettingsForClient(current);
     assert.equal(client.textGenerators[id]?.apiKey, "");
     yield* settings.updateSettings({

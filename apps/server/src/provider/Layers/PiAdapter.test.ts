@@ -89,6 +89,15 @@ it("keeps keyed extension status in the session and publishes replacements and c
           expect((yield* adapter.listSessions())[0]?.extensionStatuses).toEqual([
             { key: "branch", text: "Ready" },
           ]);
+          yield* Effect.sleep("600 millis");
+          expect(
+            events.filter(
+              (event) =>
+                event.type === "session.configured" &&
+                Array.isArray(event.payload.config.extensionStatuses) &&
+                event.payload.config.extensionStatuses.length > 0,
+            ).length,
+          ).toBeLessThanOrEqual(2);
           yield* adapter.sendTurn({ threadId, input: "Continue" });
           yield* Effect.promise(() =>
             expect

@@ -534,9 +534,10 @@ export const TextGeneratorConfig = Schema.Struct({
   models: Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(100)),
 });
 export type TextGeneratorConfig = typeof TextGeneratorConfig.Type;
+const TextGeneratorId = ProviderInstanceId.check(Schema.isPattern(/^textgen_/));
 
 export const ServerSettings = Schema.Struct({
-  textGenerators: Schema.Record(ProviderInstanceId, TextGeneratorConfig).pipe(
+  textGenerators: Schema.Record(TextGeneratorId, TextGeneratorConfig).pipe(
     Schema.withDecodingDefault(() => ({})),
   ),
   removeAgentCreditsOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
@@ -774,7 +775,7 @@ const PrHubSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
-  textGenerators: Schema.optionalKey(Schema.Record(ProviderInstanceId, TextGeneratorConfig)),
+  textGenerators: Schema.optionalKey(Schema.Record(TextGeneratorId, TextGeneratorConfig)),
   removeAgentCreditsOnMerge: Schema.optionalKey(Schema.Boolean),
   autoSettleOnPullRequestMerge: Schema.optionalKey(Schema.Boolean),
   autoSettleAfterDays: Schema.optionalKey(AutoSettleAfterDays),
