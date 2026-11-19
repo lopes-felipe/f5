@@ -1,5 +1,6 @@
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { withUpdateRequiredModels } from "../updateRequiredModels.ts";
+import { classifyModelManifest, makeModelManifest } from "../ModelManifest.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 /**
  * ProviderRegistryLive — aggregates per-instance snapshot streams into a
@@ -282,19 +283,33 @@ export const ProviderRegistryLive = Layer.effect(
   ProviderRegistry,
   Effect.gen(function* () {
     const instanceRegistry = yield* ProviderInstanceRegistry;
+    const config = yield* ServerConfig;
+    const path = yield* Path.Path;
+    const manifest = yield* Effect.acquireRelease(
+      Effect.promise(() =>
+        makeModelManifest({ cachePath: path.join(config.stateDir, "model-manifest.json") }),
+      ),
+      (service) => Effect.sync(service.close),
+    );
     const settingsService = yield* Effect.serviceOption(ServerSettingsService);
     const globalSnapshots = (snapshots: ReadonlyArray<ServerProvider>) =>
       Option.isSome(settingsService)
         ? settingsService.value.getSettings.pipe(
-            Effect.map((settings) => projectProviderSnapshots(snapshots, settings)),
+            Effect.map((settings) => {
+              manifest.refreshInBackground(settings.enableRemoteModelManifest);
+              return projectProviderSnapshots(
+                snapshots.map((provider) => classifyModelManifest(provider, manifest.current())),
+                settings,
+              );
+            }),
             Effect.catch(() =>
               Effect.succeed(snapshots.map((provider) => ({ ...provider, enabled: false }))),
             ),
           )
-        : Effect.succeed(snapshots);
-    const config = yield* ServerConfig;
+        : Effect.succeed(
+            snapshots.map((provider) => classifyModelManifest(provider, manifest.current())),
+          );
     const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
     const providerStatusCacheDir =
       config.providerStatusCacheDir ?? path.join(config.stateDir, "provider-status-cache");
 

@@ -536,6 +536,7 @@ export const ServerSettings = Schema.Struct({
   enableClaudePromptSuggestions: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  enableRemoteModelManifest: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(() => "local" as const satisfies ThreadEnvModeType),
   ),
@@ -762,6 +763,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableClaudePromptSuggestions: Schema.optionalKey(Schema.Boolean),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
+  enableRemoteModelManifest: Schema.optionalKey(Schema.Boolean),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   projectsRoot: Schema.optionalKey(Schema.String),

@@ -1,4 +1,5 @@
 import { isPrivateHttpPath } from "@t3tools/shared/backendPaths";
+import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
 
 export const DESKTOP_BACKEND_HOST = "127.0.0.1";
 export const DESKTOP_BACKEND_REQUEST_FILTER = `http://${DESKTOP_BACKEND_HOST}/*`;
@@ -36,11 +37,15 @@ export function getDesktopBackendHttpOrigin(backendPort: number): string {
   return `http://${DESKTOP_BACKEND_HOST}:${backendPort}`;
 }
 
-export function getDesktopBackendWebSocketUrl(backendPort: number, authToken: string): string {
+export function getDesktopBackendWebSocketUrl(
+  backendPort: number,
+  authToken: string,
+  nowMs = Date.now(),
+): string {
   const url = new URL(getDesktopBackendHttpOrigin(backendPort));
   url.protocol = "ws:";
   url.pathname = "/";
-  url.searchParams.set("token", authToken);
+  url.searchParams.set("token", currentDesktopBootstrapToken(authToken, nowMs));
   return url.toString();
 }
 

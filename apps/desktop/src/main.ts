@@ -3791,7 +3791,11 @@ function registerIpcHandlers(): void {
     try {
       if (event.senderFrame !== event.sender.mainFrame)
         throw new Error("Only the owning main frame may bootstrap.");
-      event.returnValue = runtimeForRenderer(event.sender.id).backendWsUrl;
+      const runtime = runtimeForRenderer(event.sender.id);
+      event.returnValue = getDesktopBackendWebSocketUrl(
+        runtime.backendPort,
+        runtime.backendAuthToken,
+      );
     } catch {
       event.returnValue = null;
     }

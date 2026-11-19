@@ -56,7 +56,18 @@ const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const argument = (name: string) =>
   process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3) ?? null;
 // Keep the synchronous bridge contract; credentials are obtained only by the owning preload.
-const wsUrl: string | null = ipcRenderer.sendSync("desktop:get-ws-url") ?? null;
+let cachedWsUrl: string | null = null;
+let wsUrlReadAt = 0;
+function getWsUrl(): string | null {
+  const now = Date.now();
+  // HTTP helpers read this frequently. A minute bounds staleness well inside
+  // the backend's adjacent-window allowance without IPC on every request.
+  if (cachedWsUrl === null || now < wsUrlReadAt || now - wsUrlReadAt >= 60_000) {
+    cachedWsUrl = ipcRenderer.sendSync("desktop:get-ws-url") ?? null;
+    wsUrlReadAt = now;
+  }
+  return cachedWsUrl;
+}
 const profileId = argument("f5-profile-id");
 const systemLocale = argument("f5-system-locale");
 
@@ -173,7 +184,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.on("desktop:quit-hint", wrapped);
     return () => ipcRenderer.removeListener("desktop:quit-hint", wrapped);
   },
-  getWsUrl: () => wsUrl,
+  getWsUrl,
   getProfileId: () => profileId,
   switchProfile: (id) => ipcRenderer.invoke("desktop:switch-profile", id),
   stopProfile: (id) => ipcRenderer.invoke("desktop:stop-profile", id),

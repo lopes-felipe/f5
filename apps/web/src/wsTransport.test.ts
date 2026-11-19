@@ -821,6 +821,25 @@ it.each([
   transport.dispose();
 });
 
+it("obtains a fresh desktop bootstrap URL for each reconnect without overriding explicit URLs", () => {
+  let token = "first";
+  window.desktopBridge = {
+    getWsUrl: () => "ws://127.0.0.1:3773/?token=" + token,
+  } as never;
+  const transport = new WsTransport();
+  expect(new URL(getSocket().url).searchParams.get("token")).toBe("first");
+  token = "rotated";
+  transport.reconnect();
+  expect(new URL(getSocket().url).searchParams.get("token")).toBe("rotated");
+  transport.dispose();
+  const explicit = new WsTransport("wss://remote.example/?token=explicit");
+  token = "another";
+  explicit.reconnect();
+  expect(new URL(getSocket().url).hostname).toBe("remote.example");
+  expect(new URL(getSocket().url).searchParams.get("token")).toBe("explicit");
+  explicit.dispose();
+});
+
 it("rejects timeout-free websocket requests when HTTP reports an upgrade, without waiting for socket traffic", async () => {
   const transport = new WsTransport("ws://localhost:3020/");
   const socket = getSocket();

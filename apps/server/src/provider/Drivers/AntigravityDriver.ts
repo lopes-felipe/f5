@@ -23,7 +23,10 @@ import {
 } from "../Layers/AntigravityProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { findModelConfigOption } from "../acp/AcpRuntimeModel.ts";
-import { makeAntigravityAcpRuntime } from "../acp/AntigravityAcpSupport.ts";
+import {
+  makeAntigravityAcpRuntime,
+  antigravityProfileDirectory,
+} from "../acp/AntigravityAcpSupport.ts";
 import type { GrokAcpRuntimeInput } from "../acp/GrokAcpSupport.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { scanInstanceHomeSkills } from "../../orchestration/projectSkills.ts";
@@ -103,6 +106,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         },
       );
       const accountUsage = yield* makeProviderLimits({
+        antigravityProfileDirectory: antigravityProfileDirectory(server.stateDir, instanceId),
         provider: "antigravity",
         instanceId,
         displayName: displayName || "Antigravity",

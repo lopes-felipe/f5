@@ -162,7 +162,7 @@ it.live("publishes merged models in order and refreshes rebuilt instances once",
         );
         const failed = yield* registry.refreshInstance(id);
         expect((yield* Fiber.join(published))[0]).toEqual(failed);
-        expect(failed[0]?.models).toEqual([model]);
+        expect(failed[0]?.models).toEqual([{ ...model, isLegacy: false }]);
         expect(failed[0]?.probeOutcome).toBe("success");
         expect(updates).toEqual([[model], [model]]);
         yield* Ref.set(raw, {

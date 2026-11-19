@@ -1094,6 +1094,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     autoBootstrapProjectFromCwd,
   } = serverConfig;
   const serverAuth = makeServerAuth(authToken, {
+    rotateDesktopBootstrapToken: mode === "desktop",
     ...(serverConfig.profile ? { profileId: serverConfig.profile.id } : {}),
     allowedWebSocketOrigins: [
       ...(mode === "desktop" ? [DESKTOP_RENDERER_ORIGIN] : []),

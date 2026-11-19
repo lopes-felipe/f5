@@ -3,6 +3,10 @@ import * as Http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeServerAuth, makeTrustedProxyCheck, requestUsesTls } from "./serverAuth.ts";
+import {
+  currentDesktopBootstrapToken,
+  DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS,
+} from "@t3tools/shared/desktopBootstrapToken";
 
 const servers: Http.Server[] = [];
 
@@ -36,6 +40,35 @@ afterEach(async () => {
 });
 
 describe("server authentication", () => {
+  it("accepts rotating desktop tokens across restart and rejects expired tokens", () => {
+    const secret = "desktop-process-secret";
+    let now = DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS * 10;
+    const options = { rotateDesktopBootstrapToken: true, now: () => now };
+    const token = currentDesktopBootstrapToken(secret, now);
+    const request = {
+      headers: { host: "127.0.0.1" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as unknown as Http.IncomingMessage;
+    const url = new URL("ws://127.0.0.1/?token=" + token);
+    expect(makeServerAuth(secret, options).isWebSocketRequestAuthenticated(request, url)).toBe(
+      true,
+    );
+    now += DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS;
+    expect(makeServerAuth(secret, options).isWebSocketRequestAuthenticated(request, url)).toBe(
+      true,
+    );
+    now += DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS;
+    expect(makeServerAuth(secret, options).isWebSocketRequestAuthenticated(request, url)).toBe(
+      false,
+    );
+    expect(makeServerAuth(secret).isWebSocketRequestAuthenticated(request, url)).toBe(false);
+    expect(
+      makeServerAuth(secret, options).isWebSocketRequestAuthenticated(
+        request,
+        new URL("ws://127.0.0.1/?token=" + secret),
+      ),
+    ).toBe(false);
+  });
   it("rate limits repeated failures and recovers after the lockout", async () => {
     let now = 1_000;
     const auth = makeServerAuth("correct-token", {

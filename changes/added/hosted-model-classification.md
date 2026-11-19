@@ -1,0 +1,1 @@
+- The model picker separates current and legacy models using a bundled manifest. An opt-in remote refresh keeps classification current, with an on-disk fallback when offline.
