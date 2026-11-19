@@ -681,7 +681,13 @@ export const ServerSettings = Schema.Struct({
     ),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   agentBridge: AgentBridgeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
-});
+}).check(
+  Schema.makeFilter((settings) =>
+    Object.keys(settings.textGenerators).every(
+      (id) => !Object.hasOwn(settings.providerInstances, id),
+    ),
+  ),
+);
 export type ServerSettings = typeof ServerSettings.Type;
 
 export const DEFAULT_SERVER_SETTINGS: ServerSettings = Schema.decodeSync(ServerSettings)({});
