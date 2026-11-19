@@ -1569,6 +1569,7 @@ function mapToRuntimeEvents(
         type: "turn.completed",
         payload: {
           state: toTurnStatus(turn?.status),
+          ...(asString(turn?.model) ? { model: asString(turn?.model) } : {}),
           ...(asString(turn?.stopReason) ? { stopReason: asString(turn?.stopReason) } : {}),
           ...(turn?.usage !== undefined ? { usage: turn.usage } : {}),
           ...(asObject(turn?.modelUsage) ? { modelUsage: asObject(turn?.modelUsage) } : {}),

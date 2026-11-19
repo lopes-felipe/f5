@@ -17,6 +17,7 @@ export function buildTurnDiffSearch<T extends Record<string, unknown>>(
 export interface DiffRouteSearch {
   timelineEntryId?: string | undefined;
   timelineEntryKind?: "message" | "activity" | undefined;
+  planId?: string | undefined;
   diff?: "1" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFileChangeId?: OrchestrationFileChangeId | undefined;
@@ -203,6 +204,7 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
   const diffBaseRef =
     diffScope === "branch-range" ? normalizeSearchString(search.diffBaseRef) : undefined;
   const fileViewPath = normalizeSearchString(search.fileViewPath);
+  const planId = normalizeSearchString(search.planId);
   const fileLine = fileViewPath ? normalizeSearchPositiveInt(search.fileLine) : undefined;
   const normalizedFileEndLine = fileLine
     ? normalizeSearchPositiveInt(search.fileEndLine)
@@ -216,6 +218,7 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
   return {
     ...(timelineEntryId ? { timelineEntryId } : {}),
     ...(timelineEntryKind ? { timelineEntryKind } : {}),
+    ...(planId ? { planId } : {}),
     ...(diff ? { diff } : {}),
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFileChangeId ? { diffFileChangeId } : {}),

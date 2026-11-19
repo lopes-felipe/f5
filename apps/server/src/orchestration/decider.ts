@@ -1709,6 +1709,9 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
             ? { expectedSessionGeneration: command.expectedSessionGeneration }
             : {}),
           ...(command.presentation ? { presentation: command.presentation } : {}),
+          ...(command.workflowAttribution
+            ? { workflowAttribution: command.workflowAttribution }
+            : {}),
           ...(command.continuationRequestId
             ? { continuationRequestId: command.continuationRequestId }
             : {}),

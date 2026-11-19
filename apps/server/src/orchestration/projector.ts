@@ -1052,13 +1052,14 @@ export function projectEvent(
               entry.id === message.id
                 ? {
                     ...entry,
-                    text: payload.replace
-                      ? message.text
-                      : message.streaming
-                        ? `${entry.text}${message.text}`
-                        : message.text.length > 0
-                          ? message.text
-                          : entry.text,
+                    text:
+                      payload.replace || payload.replaceText
+                        ? message.text
+                        : message.streaming
+                          ? `${entry.text}${message.text}`
+                          : message.text.length > 0
+                            ? message.text
+                            : entry.text,
                     reasoningText: payload.replace
                       ? message.reasoningText
                       : message.streaming

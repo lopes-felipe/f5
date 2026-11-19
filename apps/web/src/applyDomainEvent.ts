@@ -243,7 +243,7 @@ function upsertMessage(
     ? payload.text
     : existing && payload.streaming
       ? `${existing.text}${payload.text}`
-      : existing && payload.text.length === 0
+      : existing && payload.text.length === 0 && !payload.replaceText
         ? existing.text
         : payload.text;
   const nextReasoningText = payload.replace
@@ -1283,7 +1283,7 @@ function reduceDomainEvent(
             ? event.payload.text
             : existingMessage && event.payload.streaming
               ? `${existingMessage.text}${event.payload.text}`
-              : existingMessage && event.payload.text.length === 0
+              : existingMessage && event.payload.text.length === 0 && !event.payload.replaceText
                 ? existingMessage.text
                 : event.payload.text,
           ...(event.payload.reasoningText !== undefined

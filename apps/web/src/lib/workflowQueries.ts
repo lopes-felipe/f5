@@ -3,6 +3,8 @@ import type { QueryClient } from "@tanstack/react-query";
 
 export const workflowDetailsQueryKey = (kind: WorkflowRunKind, id: string) =>
   ["workflow-platform", "details", kind, id] as const;
+export const workflowBenchmarkQueryKey = (kind: WorkflowRunKind, id: string) =>
+  ["workflow-platform", "benchmark", kind, id] as const;
 
 function identity(event: OrchestrationEvent): { kind: WorkflowRunKind; id: string } | null {
   switch (event.type) {
@@ -38,9 +40,19 @@ export function invalidateWorkflowQueries(
   if (!events) keys.set("all", ["workflow-platform"]);
   else
     for (const event of events) {
+      if (
+        event.type === "thread.turn-start-requested" ||
+        event.type === "thread.turn-steer-requested"
+      ) {
+        const attribution = event.payload.workflowAttribution;
+        if (attribution) {
+          const key = workflowBenchmarkQueryKey(attribution.runKind, attribution.workflowId);
+          keys.set(JSON.stringify(key), key);
+        }
+      }
       const run = identity(event);
       if (!run) continue;
-      for (const detail of ["details", "inspection"]) {
+      for (const detail of ["details", "inspection", "benchmark"]) {
         const key = ["workflow-platform", detail, run.kind, run.id];
         keys.set(JSON.stringify(key), key);
       }

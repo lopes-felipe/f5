@@ -1121,6 +1121,11 @@ export function createWsNativeApi(): NativeApi {
       listTemplates: () => transport.request(WS_METHODS.workflowPlatformListTemplates),
       createRun: requestMethod(WS_METHODS.workflowPlatformCreateRun),
       inspectRun: requestMethod(WS_METHODS.workflowPlatformInspectRun),
+      getBenchmark: requestMethod(WS_METHODS.workflowPlatformGetBenchmark),
+      onBenchmarkChanged: (callback) =>
+        transport.subscribe(WS_CHANNELS.workflowBenchmarkChanged, (message) =>
+          callback(message.data),
+        ),
     },
     prHub: {
       listAccounts: () => transport.request(PR_HUB_WS_METHODS.listAccounts, {}),

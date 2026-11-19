@@ -383,6 +383,7 @@ const TurnStartedPayload = Schema.Struct({
 export type TurnStartedPayload = typeof TurnStartedPayload.Type;
 
 const TurnCompletedPayload = Schema.Struct({
+  model: Schema.optional(TrimmedNonEmptyStringSchema),
   usageLimit: Schema.optional(RuntimeUsageLimit),
   state: RuntimeTurnState,
   stopReason: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),

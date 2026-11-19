@@ -1,7 +1,7 @@
 import type { ProjectId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { CheckIcon, CircleAlertIcon, CircleIcon, LoaderIcon, type LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { formatUsd } from "../../lib/formatUsd";
@@ -19,6 +19,7 @@ import { AppTitlebar } from "../AppTitlebar";
 import { ProjectIcon } from "../ProjectIcon";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { WorkflowBoard } from "./WorkflowBoard";
+import { WorkflowBenchmark } from "./WorkflowBenchmark";
 import { WorkflowTimelinePhaseList } from "./WorkflowTimelinePhaseList";
 import type { WorkflowOverallState, WorkflowTimelinePhase } from "./workflowTimelineTypes";
 
@@ -103,6 +104,7 @@ export function WorkflowPageNotFound() {
  */
 export function WorkflowPageLayout(props: {
   readonly projectId: ProjectId;
+  readonly workflowId: string;
   readonly workflowType: WorkflowTypeValue;
   /** Type crumb text, e.g. "Feature", "Code Review" or "Document · RFC". */
   readonly typeLabel: string;
@@ -120,6 +122,8 @@ export function WorkflowPageLayout(props: {
   readonly children: ReactNode;
 }) {
   const navigate = useNavigate();
+  const [benchmarkRun, setBenchmarkRun] = useState<string | null>(null);
+  const benchmarkTrigger = useRef<HTMLButtonElement>(null);
   const project = useWorkflowProject(props.projectId);
   const isWide = useMediaQuery("lg");
   const view = props.view ?? (isWide ? "board" : "list");
@@ -130,9 +134,21 @@ export function WorkflowPageLayout(props: {
     updatedAt: props.updatedAt,
   });
   const cost =
-    props.totalCostUsd !== null && props.totalCostUsd !== undefined && props.totalCostUsd > 0
+    props.totalCostUsd !== null && props.totalCostUsd !== undefined
       ? formatUsd(props.totalCostUsd)
       : null;
+  const runKind = props.workflowType === "document" ? "planning" : props.workflowType;
+  const runKey = `${runKind}:${props.workflowId}`;
+  const benchmark = (
+    <WorkflowBenchmark
+      key={runKey}
+      runKind={runKind}
+      workflowId={props.workflowId}
+      open={benchmarkRun === runKey}
+      onOpenChange={(open) => setBenchmarkRun(open ? runKey : null)}
+      triggerRef={benchmarkTrigger}
+    />
+  );
 
   return (
     <div
@@ -185,12 +201,24 @@ export function WorkflowPageLayout(props: {
                 className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-ui text-muted-foreground"
               >
                 <span>{props.statusLabel}</span>
-                {cost ? (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span className="tabular-nums">{cost}</span>
-                  </>
-                ) : null}
+                <span aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  className="tabular-nums underline-offset-2 hover:underline"
+                  aria-label={
+                    cost
+                      ? `Budget spend ${cost}, open workflow benchmark`
+                      : "Open workflow benchmark"
+                  }
+                  title={cost ? "Budget spend" : undefined}
+                  onClick={() => {
+                    setBenchmarkRun(runKey);
+                    benchmarkTrigger.current?.scrollIntoView({ block: "nearest" });
+                    benchmarkTrigger.current?.focus({ preventScroll: true });
+                  }}
+                >
+                  {cost ?? "Workflow benchmark"}
+                </button>
                 {elapsed ? (
                   <>
                     <span aria-hidden="true">·</span>
@@ -214,14 +242,20 @@ export function WorkflowPageLayout(props: {
           {view === "board" ? (
             <>
               <WorkflowBoard phases={props.phases} threadById={props.threadById} />
-              <main className="flex min-w-0 flex-col gap-6">{props.children}</main>
+              <main className="flex min-w-0 flex-col gap-6">
+                {benchmark}
+                {props.children}
+              </main>
             </>
           ) : (
             <div className="grid min-w-0 gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
               <aside className="min-w-0 rounded-xl border border-border bg-card p-2">
                 <WorkflowTimelinePhaseList phases={props.phases} threadById={props.threadById} />
               </aside>
-              <main className="flex min-w-0 flex-col gap-6">{props.children}</main>
+              <main className="flex min-w-0 flex-col gap-6">
+                {benchmark}
+                {props.children}
+              </main>
             </div>
           )}
         </div>

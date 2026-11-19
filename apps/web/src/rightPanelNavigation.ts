@@ -21,6 +21,7 @@ export function clearSearchParamsForSurface<T extends Record<string, unknown>>(
   if (surface.kind === "file" && parsed.fileViewPath === surface.relativePath) {
     return clearFileViewSearchParams(params);
   }
+  if (surface.kind === "plan" && parsed.planId) return { ...params, planId: undefined };
   return params;
 }
 

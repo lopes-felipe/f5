@@ -198,6 +198,7 @@ export const WS_METHODS = {
   workflowPlatformListTemplates: "workflowPlatform.listTemplates",
   workflowPlatformCreateRun: "workflowPlatform.createRun",
   workflowPlatformInspectRun: "workflowPlatform.inspectRun",
+  workflowPlatformGetBenchmark: "workflowPlatform.getBenchmark",
 
   mcpGetCommonConfig: "mcp.getCommonConfig",
   mcpReplaceCommonConfig: "mcp.replaceCommonConfig",

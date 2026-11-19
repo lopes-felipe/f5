@@ -1,5 +1,7 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
+import { dispatchWorkflowTurn, structuredReviewPrompt } from "../workflowBenchmarkDispatch.ts";
+import { benchmarkTasks } from "../workflowBenchmarkTasks.ts";
 import {
   CommandId,
   InvestigationWorkflowId,
@@ -35,9 +37,10 @@ import {
 } from "../Services/OrchestrationEngine.ts";
 import {
   getFinishedConsumableLatestTurn,
+  getFinishedWorkflowReport,
+  reviewFeedbackForPinnedTurn,
   hasPriorThreadWork,
   isLatestTurnFinishedAndConsumable,
-  latestAssistantFeedback,
   nextWorkflowSlug,
   WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
 } from "../workflowSharedUtils.ts";
@@ -65,8 +68,11 @@ import {
 } from "../Services/ProviderTurnDeliveryWorker.ts";
 import {
   makeWorkflowStageDispatchResolver,
+  makeWorkflowStageThreadResolver,
+  makeWorkflowPinnedOutputHydrator,
   STARTUP_DISPATCH_RECHECK_TIMEOUT,
   stageDispatchAllowsTurn,
+  makeWorkflowDeliveryOriginResolver,
 } from "../workflowStageDispatch.ts";
 
 type InvestigatorKey = "investigatorA" | "investigatorB";
@@ -817,27 +823,33 @@ function startInvestigationTurn(input: {
   });
   const promptError = investigationPromptInvariant(prompt, "Investigation");
   if (promptError) return Effect.fail(promptError);
-  return input.orchestrationEngine.dispatch({
-    type: "thread.turn.start",
-    commandId: input.commandId,
-    threadId: input.investigator.investigationThreadId,
-    message: {
-      messageId: MessageId.makeUnsafe(crypto.randomUUID()),
-      role: "user",
-      text: prompt,
-      attachments: [],
+  return dispatchWorkflowTurn(
+    input.orchestrationEngine,
+    "investigation",
+    input.workflow.id,
+    `investigator-${input.lensBranch}`,
+    {
+      type: "thread.turn.start",
+      commandId: input.commandId,
+      threadId: input.investigator.investigationThreadId,
+      message: {
+        messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+        role: "user",
+        text: prompt,
+        attachments: [],
+      },
+      ...workflowTurnProviderFields(input.investigator.slot),
+      titleSourceText: input.workflow.title,
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      ...workflowTurnBehaviorFields({
+        runKind: "investigation",
+        templateId: input.workflow.templateId,
+        templateVersion: input.workflow.templateVersion,
+        stage: "investigation",
+      }),
+      createdAt: input.createdAt,
     },
-    ...workflowTurnProviderFields(input.investigator.slot),
-    titleSourceText: input.workflow.title,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    ...workflowTurnBehaviorFields({
-      runKind: "investigation",
-      templateId: input.workflow.templateId,
-      templateVersion: input.workflow.templateVersion,
-      stage: "investigation",
-    }),
-    createdAt: input.createdAt,
-  });
+  );
 }
 
 function createCrossReviewThread(input: {
@@ -875,37 +887,53 @@ function startCrossReviewTurn(input: {
 }) {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const prompt = buildInvestigationCrossReviewPrompt({
-    workflowId: input.workflow.id,
-    problemPrompt: input.workflow.problemPrompt,
-    peerLabel: input.peerLabel,
-    peerReport: input.peerReport,
-    targetSlot: input.investigator.slot,
-    retry: input.retry,
-  });
+  const ownIsA =
+    input.investigator.investigationThreadId === input.workflow.investigatorA.investigationThreadId;
+  const peer = ownIsA ? input.workflow.investigatorB : input.workflow.investigatorA;
+  const prompt = structuredReviewPrompt(
+    buildInvestigationCrossReviewPrompt({
+      workflowId: input.workflow.id,
+      problemPrompt: input.workflow.problemPrompt,
+      peerLabel: input.peerLabel,
+      peerReport: input.peerReport,
+      targetSlot: input.investigator.slot,
+      retry: input.retry,
+    }),
+  );
   const promptError = investigationPromptInvariant(prompt, "Investigation cross-review");
   if (promptError) return Effect.fail(promptError);
-  return input.orchestrationEngine.dispatch({
-    type: "thread.turn.start",
-    commandId: input.commandId,
-    threadId: input.investigator.crossReviewThreadId!,
-    message: {
-      messageId: MessageId.makeUnsafe(crypto.randomUUID()),
-      role: "user",
-      text: prompt,
-      attachments: [],
+  return dispatchWorkflowTurn(
+    input.orchestrationEngine,
+    "investigation",
+    input.workflow.id,
+    `cross-review-${ownIsA ? "a" : "b"}`,
+    {
+      type: "thread.turn.start",
+      commandId: input.commandId,
+      threadId: input.investigator.crossReviewThreadId!,
+      message: {
+        messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+        role: "user",
+        text: prompt,
+        attachments: [],
+      },
+      ...workflowTurnProviderFields(input.investigator.slot),
+      titleSourceText: input.workflow.title,
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      ...workflowTurnBehaviorFields({
+        runKind: "investigation",
+        templateId: input.workflow.templateId,
+        templateVersion: input.workflow.templateVersion,
+        stage: "investigation-review",
+      }),
+      createdAt: input.createdAt,
     },
-    ...workflowTurnProviderFields(input.investigator.slot),
-    titleSourceText: input.workflow.title,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    ...workflowTurnBehaviorFields({
-      runKind: "investigation",
-      templateId: input.workflow.templateId,
-      templateVersion: input.workflow.templateVersion,
-      stage: "investigation-review",
-    }),
-    createdAt: input.createdAt,
-  });
+    {
+      label: peer.label,
+      threadId: peer.investigationThreadId,
+      ...(peer.investigationTurnId ? { turnId: peer.investigationTurnId } : {}),
+    },
+  );
 }
 
 function createSelfReviewThread(input: {
@@ -942,39 +970,56 @@ function startSelfReviewTurn(input: {
 }) {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const prompt = buildInvestigationSelfReviewPrompt({
-    workflowId: input.workflow.id,
-    problemPrompt: input.workflow.problemPrompt,
-    investigatorLabel: input.investigator.label,
-    investigationReport: input.investigationReport,
-    investigationTurnId: input.investigator.investigationTurnId ?? undefined,
-    investigationMessageId: input.investigator.investigationMessageId ?? undefined,
-    targetSlot: input.investigator.slot,
-    retry: input.retry,
-  });
+  const ownIsA =
+    input.investigator.investigationThreadId === input.workflow.investigatorA.investigationThreadId;
+  const prompt = structuredReviewPrompt(
+    buildInvestigationSelfReviewPrompt({
+      workflowId: input.workflow.id,
+      problemPrompt: input.workflow.problemPrompt,
+      investigatorLabel: input.investigator.label,
+      investigationReport: input.investigationReport,
+      investigationTurnId: input.investigator.investigationTurnId ?? undefined,
+      investigationMessageId: input.investigator.investigationMessageId ?? undefined,
+      targetSlot: input.investigator.slot,
+      retry: input.retry,
+    }),
+  );
   const promptError = investigationPromptInvariant(prompt, "Investigation self-review");
   if (promptError) return Effect.fail(promptError);
-  return input.orchestrationEngine.dispatch({
-    type: "thread.turn.start",
-    commandId: input.commandId,
-    threadId: input.investigator.selfReviewThreadId!,
-    message: {
-      messageId: MessageId.makeUnsafe(crypto.randomUUID()),
-      role: "user",
-      text: prompt,
-      attachments: [],
+  return dispatchWorkflowTurn(
+    input.orchestrationEngine,
+    "investigation",
+    input.workflow.id,
+    `self-review-${ownIsA ? "a" : "b"}`,
+    {
+      type: "thread.turn.start",
+      commandId: input.commandId,
+      threadId: input.investigator.selfReviewThreadId!,
+      message: {
+        messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+        role: "user",
+        text: prompt,
+        attachments: [],
+      },
+      ...workflowTurnProviderFields(input.investigator.slot),
+      titleSourceText: input.workflow.title,
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      ...workflowTurnBehaviorFields({
+        runKind: "investigation",
+        templateId: input.workflow.templateId,
+        templateVersion: input.workflow.templateVersion,
+        stage: "investigation-review",
+      }),
+      createdAt: input.createdAt,
     },
-    ...workflowTurnProviderFields(input.investigator.slot),
-    titleSourceText: input.workflow.title,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    ...workflowTurnBehaviorFields({
-      runKind: "investigation",
-      templateId: input.workflow.templateId,
-      templateVersion: input.workflow.templateVersion,
-      stage: "investigation-review",
-    }),
-    createdAt: input.createdAt,
-  });
+    {
+      label: input.investigator.label,
+      threadId: input.investigator.investigationThreadId,
+      ...(input.investigator.investigationTurnId
+        ? { turnId: input.investigator.investigationTurnId }
+        : {}),
+    },
+  );
 }
 
 function createSynthesisThread(input: {
@@ -1022,27 +1067,33 @@ function startSynthesisTurn(input: {
   });
   const promptError = investigationPromptInvariant(prompt, "Investigation synthesis");
   if (promptError) return Effect.fail(promptError);
-  return input.orchestrationEngine.dispatch({
-    type: "thread.turn.start",
-    commandId: input.commandId,
-    threadId: input.workflow.synthesis.threadId!,
-    message: {
-      messageId: MessageId.makeUnsafe(crypto.randomUUID()),
-      role: "user",
-      text: prompt,
-      attachments: [],
+  return dispatchWorkflowTurn(
+    input.orchestrationEngine,
+    "investigation",
+    input.workflow.id,
+    "synthesis",
+    {
+      type: "thread.turn.start",
+      commandId: input.commandId,
+      threadId: input.workflow.synthesis.threadId!,
+      message: {
+        messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+        role: "user",
+        text: prompt,
+        attachments: [],
+      },
+      ...workflowTurnProviderFields(input.workflow.synthesis.slot),
+      titleSourceText: input.workflow.title,
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      ...workflowTurnBehaviorFields({
+        runKind: "investigation",
+        templateId: input.workflow.templateId,
+        templateVersion: input.workflow.templateVersion,
+        stage: "synthesis",
+      }),
+      createdAt: input.createdAt,
     },
-    ...workflowTurnProviderFields(input.workflow.synthesis.slot),
-    titleSourceText: input.workflow.title,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    ...workflowTurnBehaviorFields({
-      runKind: "investigation",
-      templateId: input.workflow.templateId,
-      templateVersion: input.workflow.templateVersion,
-      stage: "synthesis",
-    }),
-    createdAt: input.createdAt,
-  });
+  );
 }
 
 function investigationReport(
@@ -1051,9 +1102,14 @@ function investigationReport(
 ): string | null {
   const thread = snapshot.threads.find((entry) => entry.id === investigator.investigationThreadId);
   return thread
-    ? (latestAssistantFeedback(thread, investigator.investigationMessageId, {
-        combinedReasoningHeading: "Investigation reasoning",
-      })?.text ?? null)
+    ? (reviewFeedbackForPinnedTurn(
+        thread,
+        investigator.investigationTurnId,
+        investigator.investigationMessageId,
+        {
+          combinedReasoningHeading: "Investigation reasoning",
+        },
+      )?.text ?? null)
     : null;
 }
 
@@ -1066,9 +1122,14 @@ function crossReviewReport(
   }
   const thread = snapshot.threads.find((entry) => entry.id === investigator.crossReviewThreadId);
   return thread
-    ? (latestAssistantFeedback(thread, investigator.crossReviewMessageId, {
-        combinedReasoningHeading: "Cross-review reasoning",
-      })?.text ?? null)
+    ? (reviewFeedbackForPinnedTurn(
+        thread,
+        investigator.crossReviewTurnId,
+        investigator.crossReviewMessageId,
+        {
+          combinedReasoningHeading: "Cross-review reasoning",
+        },
+      )?.text ?? null)
     : null;
 }
 
@@ -1081,9 +1142,14 @@ function selfReviewReport(
   }
   const thread = snapshot.threads.find((entry) => entry.id === investigator.selfReviewThreadId);
   return thread
-    ? (latestAssistantFeedback(thread, investigator.selfReviewMessageId, {
-        combinedReasoningHeading: "Own-model review reasoning",
-      })?.text ?? null)
+    ? (reviewFeedbackForPinnedTurn(
+        thread,
+        investigator.selfReviewTurnId,
+        investigator.selfReviewMessageId,
+        {
+          combinedReasoningHeading: "Own-model review reasoning",
+        },
+      )?.text ?? null)
     : null;
 }
 
@@ -1135,6 +1201,9 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
   );
   const providerTurnDeliveryWorker = yield* Effect.serviceOption(ProviderTurnDeliveryWorker);
   const resolveStageDispatch = yield* makeWorkflowStageDispatchResolver;
+  const resolveDeliveryOrigin = yield* makeWorkflowDeliveryOriginResolver;
+  const resolveStageThread = yield* makeWorkflowStageThreadResolver;
+  const hydratePinnedOutputs = yield* makeWorkflowPinnedOutputHydrator;
 
   const titleGenerationWorker = yield* makeBackgroundWorker(
     (item: InvestigationWorkflowTitleGenerationWorkItem) =>
@@ -1276,8 +1345,15 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
     updatedAt: string,
   ) =>
     Effect.gen(function* () {
-      const thread = snapshot.threads.find((entry) => entry.id === threadId);
-      const completedTurn = getFinishedConsumableLatestTurn(thread);
+      const stage = benchmarkTasks(workflow).find((entry) => entry.threadId === threadId);
+      if (!stage) return workflow;
+      const rawThread = snapshot.threads.find((entry) => entry.id === threadId);
+      const dispatch = yield* resolveStageDispatch(
+        stage.commandId ? CommandId.make(stage.commandId) : null,
+        threadId,
+      );
+      const thread = yield* resolveStageThread(rawThread, dispatch);
+      const completedTurn = getFinishedWorkflowReport(thread);
       if (!completedTurn) {
         return workflow;
       }
@@ -1285,13 +1361,11 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       // Running stages only complete with the turn their own dispatch started.
       const runningDispatchAllows = (
         status: string,
-        dispatchCommandId: CommandId | null | undefined,
+        _dispatchCommandId: CommandId | null | undefined,
       ) =>
-        status === "running"
-          ? resolveStageDispatch(dispatchCommandId).pipe(
-              Effect.map((dispatch) => stageDispatchAllowsTurn(dispatch, completedTurn.turnId)),
-            )
-          : Effect.succeed(false);
+        Effect.succeed(
+          status === "running" && stageDispatchAllowsTurn(dispatch, completedTurn.turnId),
+        );
 
       const investigation = investigationMatch(workflow, threadId);
       if (
@@ -1415,7 +1489,10 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
 
         let pendingInvestigator = pendingWorkflow[investigatorKey];
         const peer = pendingWorkflow[peerKey(investigatorKey)];
-        const snapshot = snapshotAtCall ?? (yield* orchestrationEngine.getReadModel());
+        const snapshot = yield* hydratePinnedOutputs(
+          pendingWorkflow,
+          snapshotAtCall ?? (yield* orchestrationEngine.getReadModel()),
+        );
         const peerReport = investigationReport(snapshot, peer);
         if (!peerReport || peerReport.trim().length === 0) {
           nextWorkflow = withCrossReviewError({
@@ -1541,7 +1618,10 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         }
 
         let pendingInvestigator = pendingWorkflow[investigatorKey];
-        const snapshot = snapshotAtCall ?? (yield* orchestrationEngine.getReadModel());
+        const snapshot = yield* hydratePinnedOutputs(
+          pendingWorkflow,
+          snapshotAtCall ?? (yield* orchestrationEngine.getReadModel()),
+        );
         const ownReport = investigationReport(snapshot, pendingInvestigator);
         if (!ownReport || ownReport.trim().length === 0) {
           nextWorkflow = withSelfReviewError({
@@ -1660,7 +1740,10 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         yield* upsertWorkflow(orchestrationEngine, pendingWorkflow, updatedAt);
       }
 
-      const snapshot = snapshotAtCall ?? (yield* orchestrationEngine.getReadModel());
+      const snapshot = yield* hydratePinnedOutputs(
+        pendingWorkflow,
+        snapshotAtCall ?? (yield* orchestrationEngine.getReadModel()),
+      );
       const contributions = collectSynthesisContributions(pendingWorkflow, snapshot);
       if (
         contributions.some(
@@ -1845,7 +1928,10 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       ) {
         return workflow;
       }
-      const contributions = collectSynthesisContributions(workflow, snapshot);
+      const contributions = collectSynthesisContributions(
+        workflow,
+        yield* hydratePinnedOutputs(workflow, snapshot),
+      );
       if (
         contributions.some(
           (contribution) =>
@@ -2114,8 +2200,13 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
           return;
         }
 
-        case "thread.message-sent": {
-          if (event.payload.role !== "assistant" || event.payload.streaming) {
+        case "thread.message-sent":
+        case "thread.proposed-plan-upserted":
+        case "thread.turn-processing-quiesced": {
+          if (
+            event.type === "thread.message-sent" &&
+            (event.payload.role !== "assistant" || event.payload.streaming)
+          ) {
             return;
           }
 
@@ -2412,13 +2503,18 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       const workflow = readModel.investigationWorkflows.find(
         (entry) =>
           !isDeletedWorkflow(entry) &&
-          runningStageDispatches(entry).some(
-            (stage) => stage.dispatchCommandId === outcome.commandId,
-          ),
+          runningStageDispatches(entry).some((stage) => stage.threadId === outcome.threadId),
       );
       if (!workflow) {
         return;
       }
+      const origin = yield* resolveDeliveryOrigin(outcome);
+      if (
+        !runningStageDispatches(workflow).some(
+          (stage) => stage.threadId === outcome.threadId && stage.dispatchCommandId === origin,
+        )
+      )
+        return;
       const updatedAt = new Date().toISOString();
       let nextWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
         workflow,

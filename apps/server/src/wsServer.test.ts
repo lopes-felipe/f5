@@ -875,7 +875,9 @@ describe("WebSocket Server", () => {
                 : Effect.die(new Error("injected runtime failure")),
           }),
           Layer.succeed(providerCommandReactorModule.ProviderCommandReactor, {} as any),
-          Layer.succeed(providerTurnDeliveryWorkerModule.ProviderTurnDeliveryWorker, {} as any),
+          Layer.succeed(providerTurnDeliveryWorkerModule.ProviderTurnDeliveryWorker, {
+            outcomes: Stream.empty,
+          } as any),
           Layer.succeed(providerSessionReaperModule.ProviderSessionReaper, {
             sweep: () => Effect.void,
             start: () => Effect.void,
@@ -1287,7 +1289,9 @@ describe("WebSocket Server", () => {
           start: Effect.void,
         }),
         Layer.succeed(providerCommandReactorModule.ProviderCommandReactor, {} as any),
-        Layer.succeed(providerTurnDeliveryWorkerModule.ProviderTurnDeliveryWorker, {} as any),
+        Layer.succeed(providerTurnDeliveryWorkerModule.ProviderTurnDeliveryWorker, {
+          outcomes: Stream.empty,
+        } as any),
         Layer.succeed(providerSessionReaperModule.ProviderSessionReaper, {
           sweep: () => Effect.void,
           start: () => Effect.void,

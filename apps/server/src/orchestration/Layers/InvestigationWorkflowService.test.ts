@@ -695,6 +695,7 @@ describe("InvestigationWorkflowService", () => {
           commandId === dispatchA
             ? ({
                 commandId: dispatchA,
+                threadId: workflow.investigatorA.investigationThreadId,
                 state: "accepted",
                 providerTurnId: TurnId.makeUnsafe("turn-investigation-a-own"),
               } as ProviderTurnDelivery)

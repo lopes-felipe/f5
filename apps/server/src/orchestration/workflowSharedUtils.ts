@@ -6,6 +6,7 @@ import {
 
 import { truncateMiddleByCharacters } from "./outputTruncation.ts";
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
+import { parseWorkflowFindingOutput } from "./workflowFindingProtocol.ts";
 
 export const WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE = 0.5;
 export const WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT = 116_000;
@@ -278,6 +279,36 @@ export function isLatestTurnFinishedAndConsumable(
   return getFinishedConsumableLatestTurn(thread) !== null;
 }
 
+export function getFinishedWorkflowReport(
+  thread: (WorkflowConsumableThread & Pick<OrchestrationThread, "proposedPlans">) | undefined,
+) {
+  if (
+    !thread?.latestTurn ||
+    thread.latestTurn.state !== "completed" ||
+    (thread.session?.status === "running" &&
+      thread.session.activeTurnId === thread.latestTurn.turnId)
+  )
+    return null;
+  const report = getFinishedConsumableLatestTurn(thread);
+  const plan = thread.proposedPlans.find((entry) => entry.turnId === thread.latestTurn?.turnId);
+  const message = thread.messages.find((entry) => entry.id === report?.assistantMessageId);
+  const selected = selectWorkflowReport(
+    message && parseWorkflowFindingOutput(message.text, "findings").markdown,
+    plan && parseWorkflowFindingOutput(plan.planMarkdown, "findings").markdown,
+  );
+  return selected === "plan"
+    ? {
+        turnId: thread.latestTurn.turnId,
+        assistantMessageId: null,
+        assistantText: plan!.planMarkdown,
+      }
+    : report;
+}
+
+export function selectWorkflowReport(message?: string | null, plan?: string | null) {
+  return (plan?.trim().length ?? 0) > (message?.trim().length ?? 0) ? "plan" : "message";
+}
+
 export function getThreadAssistantText(
   thread: {
     readonly messages: ReadonlyArray<{
@@ -416,6 +447,7 @@ export function reviewFeedbackForPinnedTurn(
   },
   turnId: string | null,
   messageId: string | null,
+  options?: { readonly combinedReasoningHeading?: string; readonly preserveWhitespace?: boolean },
 ) {
   const pinnedMessageId =
     messageId ??
@@ -424,23 +456,30 @@ export function reviewFeedbackForPinnedTurn(
           (message) => message.turnId === turnId && message.role === "assistant",
         )?.id
       : null);
-  const feedback =
-    turnId && !pinnedMessageId ? null : latestAssistantFeedback(thread, pinnedMessageId);
   const plan = turnId ? thread.proposedPlans?.find((entry) => entry.turnId === turnId) : null;
-  const pinnedMessage = thread.messages.find((message) => message.id === pinnedMessageId);
-  // Compare the plan with the reply alone. Reasoning is attached to whichever
-  // side wins, so counting it here would let a short summary with long
-  // reasoning displace a full report submitted as a plan.
-  const replyLength =
-    pinnedMessage?.role === "assistant"
-      ? pinnedMessage.text.trim().length
-      : (feedback?.text.length ?? 0);
-  return plan && plan.planMarkdown.length > replyLength
-    ? formatAssistantFeedback({
-        text: plan.planMarkdown,
-        reasoningText: pinnedMessage?.reasoningText,
-      })
-    : feedback;
+  if (!turnId && !pinnedMessageId) return latestAssistantFeedback(thread, null, options);
+  const pinnedMessage = thread.messages.find(
+    (message) =>
+      message.id === pinnedMessageId &&
+      message.role === "assistant" &&
+      !message.streaming &&
+      (!turnId || message.turnId == null || message.turnId === turnId),
+  );
+  const publicText = pinnedMessage
+    ? parseWorkflowFindingOutput(pinnedMessage.text, "findings").markdown
+    : "";
+  const planText = plan ? parseWorkflowFindingOutput(plan.planMarkdown, "findings").markdown : "";
+  return formatAssistantFeedback(
+    {
+      text:
+        selectWorkflowReport(messageId || !planText.trim() ? publicText : null, planText) === "plan"
+          ? planText
+          : publicText,
+      reasoningText: pinnedMessage?.reasoningText,
+    },
+    options?.combinedReasoningHeading,
+    options?.preserveWhitespace,
+  );
 }
 
 export function truncateWorkflowPromptArtifact(text: string, maxChars = 60_000): string {

@@ -5,6 +5,7 @@ import type { Thread } from "../../types";
 import "../../index.css";
 
 import { PlanningWorkflowId, ThreadId, TurnId } from "@t3tools/contracts";
+import type { WorkflowBenchmarkChanged, WorkflowBenchmarkInput } from "@t3tools/contracts";
 import type { AnchorHTMLAttributes } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
@@ -30,15 +31,23 @@ import { createPlanningWorkflow, createDocumentReaderPass } from "../../test/wor
 
 const nativeApiMocks = vi.hoisted(() => ({
   inspectRun: vi.fn(),
+  getBenchmark: vi.fn(),
+  onBenchmarkChanged: vi.fn(),
   retryWorkflow: vi.fn(),
   skipDocumentReaderPass: vi.fn(),
 }));
 
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => {
-    return { workflowPlatform: { inspectRun: nativeApiMocks.inspectRun } };
+    return {
+      workflowPlatform: {
+        inspectRun: nativeApiMocks.inspectRun,
+        getBenchmark: nativeApiMocks.getBenchmark,
+      },
+    };
   },
   readNativeApi: () => ({
+    workflowPlatform: { onBenchmarkChanged: nativeApiMocks.onBenchmarkChanged },
     orchestration: {
       retryWorkflow: nativeApiMocks.retryWorkflow,
       skipDocumentReaderPass: nativeApiMocks.skipDocumentReaderPass,
@@ -85,6 +94,27 @@ describe("WorkflowView retry", () => {
     nativeApiMocks.inspectRun.mockReset();
     nativeApiMocks.retryWorkflow.mockReset();
     nativeApiMocks.skipDocumentReaderPass.mockReset();
+    nativeApiMocks.onBenchmarkChanged.mockReset();
+    nativeApiMocks.getBenchmark.mockReset();
+    nativeApiMocks.getBenchmark.mockResolvedValue({
+      kind: "summary",
+      models: [{ id: "gpt", label: "GPT-6.2 Sol" }],
+      total: {
+        tokens: 200,
+        costUsd: 0.01,
+        estimated: false,
+        missingTokens: 0,
+        missingCost: 0,
+        pending: 0,
+      },
+      phases: [],
+      modelTotals: [],
+      findings: 2,
+      historicalPartial: false,
+      ambiguous: 0,
+      evaluationsIncomplete: 0,
+      coverage: [],
+    });
     useStore.setState({
       threads: [],
       planningWorkflows: [
@@ -104,6 +134,178 @@ describe("WorkflowView retry", () => {
     document.body.innerHTML = "";
     vi.restoreAllMocks();
     useStore.setState({ threads: [], planningWorkflows: [] });
+  });
+
+  it("loads the collapsed benchmark and opens it from zero budget spend", async () => {
+    const screen = await renderView(<WorkflowView workflowId={workflowId} />);
+    const trigger = screen.getByRole("button", { name: /Workflow benchmark.*200 tokens/ });
+    await expect.element(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(nativeApiMocks.getBenchmark).toHaveBeenCalledExactlyOnceWith({
+      runKind: "planning",
+      workflowId,
+      select: { kind: "summary" },
+    });
+    await screen
+      .getByRole("button", { name: "Budget spend $0.00, open workflow benchmark" })
+      .click();
+    await expect.element(trigger).toHaveAttribute("aria-expanded", "true");
+    await expect.element(trigger).toHaveFocus();
+    await expect.element(screen.getByRole("columnheader", { name: "GPT-6.2 Sol" })).toBeVisible();
+  });
+
+  it("queries a review phase on demand and combines its finding filters", async () => {
+    const usage = {
+      tokens: 200,
+      costUsd: 0.01,
+      estimated: false,
+      missingTokens: 0,
+      missingCost: 0,
+      pending: 0,
+    };
+    const model = { id: "gpt", label: "GPT-6.2 Sol" };
+    const push: { listener?: ((change: WorkflowBenchmarkChanged) => void) | undefined } = {};
+    nativeApiMocks.onBenchmarkChanged.mockImplementation((callback: typeof push.listener) => {
+      push.listener = callback;
+      return () => {
+        push.listener = undefined;
+      };
+    });
+    let turnStatus = "pending";
+    let modelSource = "configured";
+    let turnModel = { id: "selected", label: "Selected model" };
+    let turnUsage = {
+      ...usage,
+      tokens: null as number | null,
+      costUsd: null as number | null,
+      pending: 1,
+    };
+    nativeApiMocks.getBenchmark.mockImplementation(async ({ select }: WorkflowBenchmarkInput) => {
+      if (select.kind === "turns")
+        return {
+          kind: "turns",
+          count: 1,
+          items: [
+            {
+              id: "delivery",
+              threadId: ThreadId.make("review"),
+              threadTitle: "Review thread",
+              turnId: TurnId.make("turn"),
+              model: turnModel,
+              modelSource,
+              role: "Reviewer A",
+              attempt: 2,
+              durationMs: null,
+              status: turnStatus,
+              target: null,
+              aggregateRerouteUsage: modelSource === "effective",
+              usage: turnUsage,
+            },
+          ],
+        };
+      if (select.kind === "findings")
+        return {
+          kind: "findings",
+          count: 1,
+          counts: {
+            confirmed: 1,
+            checking: 0,
+            dismissed: 0,
+            shared: 0,
+            exclusive: [{ model: "gpt", count: 1 }],
+          },
+          items: [
+            {
+              id: "a",
+              aliases: [],
+              severity: "high",
+              title: "Unexpected data at boundary",
+              description: "The last page contains an extra row",
+              location: "file.ts:18",
+              evidence: ["Last page"],
+              status: "confirmed",
+              resolution: null,
+              test: null,
+              reporters: [
+                {
+                  model,
+                  origin: {
+                    threadId: ThreadId.make("review"),
+                    turnId: TurnId.make("turn"),
+                    messageId: "message",
+                    planId: null,
+                  },
+                },
+              ],
+            },
+          ],
+        };
+      return {
+        kind: "summary",
+        models: [model],
+        phases: [
+          {
+            id: "reviews",
+            label: "Reviews",
+            cells: [{ model: model.id, usage }],
+            total: usage,
+            findings: 1,
+            review: true,
+          },
+        ],
+        total: usage,
+        modelTotals: [{ model: model.id, usage }],
+        findings: 1,
+        historicalPartial: false,
+        ambiguous: 0,
+        coverage: [],
+        evaluationsIncomplete: 0,
+      };
+    });
+    const screen = await renderView(<WorkflowView workflowId={workflowId} />);
+    await screen
+      .getByRole("button", { name: "Budget spend $0.00, open workflow benchmark" })
+      .click();
+    await screen.getByRole("button", { name: "1 findings in Reviews" }).click();
+    await expect
+      .element(screen.getByText("1 confirmed · 0 in verification · 0 dismissed"))
+      .toBeVisible();
+    await screen.getByRole("searchbox", { name: "Search findings" }).fill("Last page");
+    await screen.getByRole("combobox", { name: "Filter by severity" }).selectOptions("high");
+    await screen.getByRole("combobox", { name: "Filter by model" }).selectOptions("gpt");
+    await screen.getByRole("combobox", { name: "Filter by status" }).selectOptions("confirmed");
+    await expect
+      .poll(() => nativeApiMocks.getBenchmark.mock.calls)
+      .toContainEqual([
+        {
+          runKind: "planning",
+          workflowId,
+          select: {
+            kind: "findings",
+            phase: "reviews",
+            search: "Last page",
+            severity: "high",
+            model: "gpt",
+            status: "confirmed",
+            offset: 0,
+          },
+        },
+      ]);
+    await screen.getByRole("button", { name: "Unexpected data at boundary" }).click();
+    await expect.element(screen.getByRole("link", { name: "GPT-6.2 Sol source" })).toBeVisible();
+    await screen.getByRole("button", { name: "Reviews", exact: true }).click();
+    const turnRow = screen.getByRole("row", { name: /^Review thread/ });
+    await expect.element(turnRow).toHaveTextContent("pending");
+    turnStatus = "running";
+    modelSource = "effective";
+    turnModel = { id: "effective", label: "Rerouted model" };
+    push.listener?.({ runKind: "planning", workflowId });
+    await expect.element(turnRow).toHaveTextContent("running");
+    await expect.element(turnRow).toHaveTextContent("Rerouted model");
+    turnStatus = "Reverted";
+    turnUsage = { ...usage, tokens: 398 };
+    push.listener?.({ runKind: "planning", workflowId });
+    await expect.element(turnRow).toHaveTextContent("Reverted");
+    await expect.element(turnRow).toHaveTextContent("398 tokens");
   });
 
   it("opens a startup summary with lazy full details and actionable retry", async () => {

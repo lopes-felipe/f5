@@ -1,5 +1,6 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
+import { dispatchWorkflowTurn, structuredReviewPrompt } from "../workflowBenchmarkDispatch.ts";
 import { userFacingCauseMessage } from "../../causeMessage.ts";
 import { makeWorkflowArchiveLifecycle } from "../workflowArchiveLifecycle.ts";
 import {
@@ -41,6 +42,7 @@ import { makeOperationGate } from "../../provider/operationGate.ts";
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
+import type { WorkflowReviewTarget } from "@t3tools/contracts";
 import { buildFallbackTitle, resolveBestEffortGeneratedTitle } from "../../threadTitle.ts";
 import {
   buildCodeReviewConsolidationPrompt,
@@ -58,10 +60,10 @@ import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowA
 import {
   completedTurnEvidenceAt,
   getFinishedConsumableLatestTurn,
+  getFinishedWorkflowReport,
   hasActiveRunningTurn,
   hasPriorThreadWork,
   isLatestTurnFinishedAndConsumable,
-  latestAssistantFeedback,
   nextWorkflowSlug,
   reviewFeedbackForPinnedTurn,
   workflowArtifactFit,
@@ -92,8 +94,11 @@ import { buildCodeReviewWorkflowRecord } from "../workflowRecordBuilders.ts";
 import type { WorkflowRetryContext } from "../workflowPromptFragments.ts";
 import {
   makeWorkflowStageDispatchResolver,
+  makeWorkflowStageThreadResolver,
+  makeWorkflowPinnedOutputHydrator,
   STARTUP_DISPATCH_RECHECK_TIMEOUT,
   stageDispatchAllowsTurn,
+  makeWorkflowDeliveryOriginResolver,
   type WorkflowStageDispatchTurn,
 } from "../workflowStageDispatch.ts";
 
@@ -109,6 +114,7 @@ const MAX_PROFILE_TIMEOUT_RETRIES = 1;
 
 type CodeReviewStage = {
   readonly status: CodeReviewReviewer["status"] | CodeReviewWorkflow["consolidation"]["status"];
+  readonly threadId: ThreadId | null;
   readonly pinnedTurnId: string | null;
   readonly pinnedAssistantMessageId: string | null;
   readonly dispatchCommandId?: CommandId | null | undefined;
@@ -124,15 +130,18 @@ function canConsumeCompletedStageTurn(
   dispatch: WorkflowStageDispatchTurn,
 ): boolean {
   const completionEvidenceAt = completedTurnEvidenceAt(thread);
-  const completedTurn = getFinishedConsumableLatestTurn(thread);
+  const completedTurn = getFinishedWorkflowReport(thread ?? undefined);
   if (!completionEvidenceAt || !completedTurn) {
     return false;
   }
   return (
     (stage.status === "running" && stageDispatchAllowsTurn(dispatch, completedTurn.turnId)) ||
-    (stage.status === "error" && completionEvidenceAt >= stage.updatedAt) ||
+    (stage.status === "error" &&
+      completionEvidenceAt >= stage.updatedAt &&
+      stageDispatchAllowsTurn(dispatch, completedTurn.turnId)) ||
     (stage.status === "completed" &&
-      (stage.pinnedTurnId === null || stage.pinnedAssistantMessageId === null))
+      stage.pinnedTurnId === null &&
+      stageDispatchAllowsTurn(dispatch, completedTurn.turnId))
   );
 }
 
@@ -502,19 +511,26 @@ function startReviewerTurn(input: {
   commandId: CommandId;
   createdAt: string;
   retry: WorkflowRetryContext;
+  target?: WorkflowReviewTarget | undefined;
 }) {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const prompt = buildCodeReviewReviewerPrompt({
-    workflowId: input.workflow.id,
-    reviewPrompt: input.workflow.reviewPrompt,
-    reviewerLabel: input.reviewer.label,
-    lensBranch: input.reviewer.threadId === input.workflow.reviewerA.threadId ? "a" : "b",
-    branch: input.workflow.branch,
-    reviewerSlot: input.reviewer.slot,
-    pullRequest: input.workflow.pullRequest,
-    retry: input.retry,
-  });
+  const lensBranch = input.reviewer.threadId === input.workflow.reviewerA.threadId ? "a" : "b";
+  const prompt = structuredReviewPrompt(
+    buildCodeReviewReviewerPrompt({
+      workflowId: input.workflow.id,
+      reviewPrompt: input.workflow.reviewPrompt,
+      reviewerLabel: input.reviewer.label,
+      lensBranch,
+      branch: input.workflow.branch,
+      reviewerSlot: input.reviewer.slot,
+      pullRequest: input.workflow.pullRequest,
+      retry: input.retry,
+    }) +
+      (input.target?.baseRevision && input.target.headRevision
+        ? `\n\nF5 resolved the configured local comparison to immutable revisions. Review base ${input.target.baseRevision} and head ${input.target.headRevision} using commit contents, even if the workspace changes during the review.`
+        : ""),
+  );
   if (prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
     return Effect.fail(
       new OrchestrationCommandInvariantError({
@@ -523,27 +539,34 @@ function startReviewerTurn(input: {
       }),
     );
   }
-  return input.orchestrationEngine.dispatch({
-    type: "thread.turn.start",
-    commandId: input.commandId,
-    threadId: input.reviewer.threadId,
-    message: {
-      messageId: MessageId.makeUnsafe(crypto.randomUUID()),
-      role: "user",
-      text: prompt,
-      attachments: [],
+  return dispatchWorkflowTurn(
+    input.orchestrationEngine,
+    "codeReview",
+    input.workflow.id,
+    `reviewer-${lensBranch}`,
+    {
+      type: "thread.turn.start",
+      commandId: input.commandId,
+      threadId: input.reviewer.threadId,
+      message: {
+        messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+        role: "user",
+        text: prompt,
+        attachments: [],
+      },
+      ...workflowTurnProviderFields(input.reviewer.slot),
+      titleSourceText: input.workflow.title,
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      ...workflowTurnBehaviorFields({
+        runKind: "codeReview",
+        templateId: input.workflow.templateId,
+        templateVersion: input.workflow.templateVersion,
+        stage: "standalone-review",
+      }),
+      createdAt: input.createdAt,
     },
-    ...workflowTurnProviderFields(input.reviewer.slot),
-    titleSourceText: input.workflow.title,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    ...workflowTurnBehaviorFields({
-      runKind: "codeReview",
-      templateId: input.workflow.templateId,
-      templateVersion: input.workflow.templateVersion,
-      stage: "standalone-review",
-    }),
-    createdAt: input.createdAt,
-  });
+    input.target ?? { label: input.workflow.branch ?? "Workspace" },
+  );
 }
 
 function createConsolidationThread(input: {
@@ -608,27 +631,33 @@ function startConsolidationTurn(input: {
       }),
     );
   }
-  return input.orchestrationEngine.dispatch({
-    type: "thread.turn.start",
-    commandId: input.commandId,
-    threadId: input.workflow.consolidation.threadId!,
-    message: {
-      messageId: MessageId.makeUnsafe(crypto.randomUUID()),
-      role: "user",
-      text: prompt,
-      attachments: [],
+  return dispatchWorkflowTurn(
+    input.orchestrationEngine,
+    "codeReview",
+    input.workflow.id,
+    "consolidation",
+    {
+      type: "thread.turn.start",
+      commandId: input.commandId,
+      threadId: input.workflow.consolidation.threadId!,
+      message: {
+        messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+        role: "user",
+        text: prompt,
+        attachments: [],
+      },
+      ...workflowTurnProviderFields(input.workflow.consolidation.slot),
+      titleSourceText: input.workflow.title,
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      ...workflowTurnBehaviorFields({
+        runKind: "codeReview",
+        templateId: input.workflow.templateId,
+        templateVersion: input.workflow.templateVersion,
+        stage: "consolidation",
+      }),
+      createdAt: input.createdAt,
     },
-    ...workflowTurnProviderFields(input.workflow.consolidation.slot),
-    titleSourceText: input.workflow.title,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    ...workflowTurnBehaviorFields({
-      runKind: "codeReview",
-      templateId: input.workflow.templateId,
-      templateVersion: input.workflow.templateVersion,
-      stage: "consolidation",
-    }),
-    createdAt: input.createdAt,
-  });
+  );
 }
 
 export const makeCodeReviewWorkflowService = Effect.gen(function* () {
@@ -644,9 +673,43 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
   const workflowWriteLock = yield* Semaphore.make(1);
   const withWorkflowWriteLock = workflowWriteLock.withPermits(1);
   const resolveStageDispatch = yield* makeWorkflowStageDispatchResolver;
-  // Only running stages are gated on their dispatch; skip the lookup otherwise.
+  const resolveDeliveryOrigin = yield* makeWorkflowDeliveryOriginResolver;
+  const resolveStageThread = yield* makeWorkflowStageThreadResolver;
+  const hydratePinnedOutputs = yield* makeWorkflowPinnedOutputHydrator;
+  const frozenReviewTarget = (workflow: CodeReviewWorkflow, snapshot: OrchestrationReadModel) =>
+    Effect.gen(function* () {
+      if (
+        !gitCore ||
+        !workflow.branch ||
+        workflow.pullRequest ||
+        /\b(?:pull request|merge request|PR|MR)\b|\/(?:pull|merge_requests)\/\d+|#\d+/i.test(
+          workflow.reviewPrompt,
+        )
+      )
+        return undefined;
+      const project = snapshot.projects.find((project) => project.id === workflow.projectId);
+      if (!project) return undefined;
+      const checkout = yield* gitCore.inspectCheckout(project.workspaceRoot);
+      if (
+        !checkout.headSha ||
+        checkout.hasTrackedChanges ||
+        checkout.hasUntrackedChanges ||
+        checkout.operation
+      )
+        return undefined;
+      const base = yield* gitCore.resolveCommit(project.workspaceRoot, workflow.branch);
+      if (!base) return undefined;
+      return {
+        label: workflow.branch,
+        baseRevision: base,
+        headRevision: checkout.headSha,
+      } satisfies WorkflowReviewTarget;
+    }).pipe(Effect.orElseSucceed(() => undefined));
   const resolveRunningStageDispatch = (stage: CodeReviewStage) =>
-    resolveStageDispatch(stage.status === "running" ? stage.dispatchCommandId : null);
+    resolveStageDispatch(
+      stage.status !== "completed" || stage.pinnedTurnId === null ? stage.dispatchCommandId : null,
+      stage.threadId,
+    );
   const getWorkflowProviders =
     providerRegistry._tag === "Some" ? providerRegistry.value.getProviders : Effect.succeed([]);
   const orchestrationEngine = withWorkflowModelSelectionGuard(
@@ -909,24 +972,21 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         yield* upsertWorkflow(orchestrationEngine, pendingWorkflow, updatedAt);
       }
 
-      const snapshot = snapshotAtCall ?? (yield* orchestrationEngine.getReadModel());
+      const snapshot = yield* hydratePinnedOutputs(
+        pendingWorkflow,
+        snapshotAtCall ?? (yield* orchestrationEngine.getReadModel()),
+      );
       const reviewerInputs = [pendingWorkflow.reviewerA, pendingWorkflow.reviewerB].map(
         (reviewer) => {
           const thread = snapshot.threads.find((entry) => entry.id === reviewer.threadId);
           // A reviewer that submitted its report as a plan (for example via
           // ExitPlanMode) often ends with only a short summary message, so a
           // longer plan captured for the pinned turn wins over that message.
-          // The latestAssistantFeedback fallback only applies to stages with
-          // no pinned message id and no assistant message on the pinned turn
-          // (legacy or recovered stages). It keeps the previous behavior of
-          // using the thread's latest assistant message from any turn.
           const text = thread
-            ? ((
-                reviewFeedbackForPinnedTurn(
-                  thread,
-                  reviewer.pinnedTurnId,
-                  reviewer.pinnedAssistantMessageId,
-                ) ?? latestAssistantFeedback(thread, reviewer.pinnedAssistantMessageId)
+            ? (reviewFeedbackForPinnedTurn(
+                thread,
+                reviewer.pinnedTurnId,
+                reviewer.pinnedAssistantMessageId,
               )?.text ?? null)
             : null;
           return {
@@ -1032,6 +1092,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         return;
       }
       const snapshot = yield* orchestrationEngine.getReadModel();
+      const target = yield* frozenReviewTarget(workflow, snapshot);
       let nextWorkflow = workflow;
       const dispatchCommandIds = new Map<ThreadId, CommandId>();
       for (const reviewer of pendingReviewers) {
@@ -1043,6 +1104,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
             workflow,
             reviewer,
             commandId,
+            target,
             createdAt: updatedAt,
             retry: hasPriorThreadWork(reviewerThread)
               ? { kind: "retry", reusedThread: true }
@@ -1081,21 +1143,22 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
     updatedAt: string,
   ) =>
     Effect.gen(function* () {
-      const thread = snapshot.threads.find((entry) => entry.id === threadId);
-      const completedTurn = getFinishedConsumableLatestTurn(thread);
+      const reviewer = reviewerMatch(workflow, threadId);
+      const stage =
+        reviewer?.reviewer ??
+        (workflow.consolidation.threadId === threadId ? workflow.consolidation : null);
+      if (!stage) return workflow;
+      const dispatch = yield* resolveRunningStageDispatch(stage);
+      const thread = yield* resolveStageThread(
+        snapshot.threads.find((entry) => entry.id === threadId),
+        dispatch,
+      );
+      const completedTurn = getFinishedWorkflowReport(thread);
       if (!completedTurn) {
         return workflow;
       }
 
-      const reviewer = reviewerMatch(workflow, threadId);
-      if (
-        reviewer &&
-        canConsumeCompletedStageTurn(
-          reviewer.reviewer,
-          thread,
-          yield* resolveRunningStageDispatch(reviewer.reviewer),
-        )
-      ) {
+      if (reviewer && canConsumeCompletedStageTurn(reviewer.reviewer, thread, dispatch)) {
         const nextWorkflow = resetConsolidationAfterReviewerUpdate(
           withCompletedReviewer({
             workflow,
@@ -1114,11 +1177,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
       if (
         workflow.consolidation.threadId === threadId &&
-        canConsumeCompletedStageTurn(
-          workflow.consolidation,
-          thread,
-          yield* resolveRunningStageDispatch(workflow.consolidation),
-        )
+        canConsumeCompletedStageTurn(workflow.consolidation, thread, dispatch)
       ) {
         const nextWorkflow = withConsolidationCompleted({
           workflow,
@@ -1360,8 +1419,13 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           return;
         }
 
-        case "thread.message-sent": {
-          if (event.payload.role !== "assistant" || event.payload.streaming) {
+        case "thread.message-sent":
+        case "thread.proposed-plan-upserted":
+        case "thread.turn-processing-quiesced": {
+          if (
+            event.type === "thread.message-sent" &&
+            (event.payload.role !== "assistant" || event.payload.streaming)
+          ) {
             return;
           }
 
@@ -1553,7 +1617,9 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       }
       const readModel = yield* orchestrationEngine.getReadModel();
       const isRunningDispatch = (stage: CodeReviewStage) =>
-        stage.status === "running" && stage.dispatchCommandId === outcome.commandId;
+        (stage.status === "running" || stage.status === "error") &&
+        stage.threadId === outcome.threadId &&
+        stage.dispatchCommandId !== null;
       const workflow = readModel.codeReviewWorkflows.find(
         (entry) =>
           !isDeletedWorkflow(entry) &&
@@ -1564,6 +1630,13 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       if (!workflow) {
         return;
       }
+      const origin = yield* resolveDeliveryOrigin(outcome);
+      if (
+        ![workflow.reviewerA, workflow.reviewerB, workflow.consolidation].some(
+          (stage) => isRunningDispatch(stage) && stage.dispatchCommandId === origin,
+        )
+      )
+        return;
       const updatedAt = new Date().toISOString();
       const nextWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
         workflow,
@@ -2162,6 +2235,10 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
                 workflow: currentWorkflow,
                 reviewer,
                 commandId: dispatchCommandId,
+                target: yield* frozenReviewTarget(
+                  currentWorkflow,
+                  yield* orchestrationEngine.getReadModel(),
+                ),
                 createdAt: updatedAt,
                 retry: {
                   kind: "retry",

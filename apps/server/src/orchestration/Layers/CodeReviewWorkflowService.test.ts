@@ -3369,6 +3369,37 @@ describe("CodeReviewWorkflowService stage dispatch correlation", () => {
     expect(getDeliveryByCommandId).not.toHaveBeenCalled();
   });
 
+  it("keeps a completed plan-only report pinned when a manual follow-up finishes", async () => {
+    const base = runningReviewerWorkflow(DISPATCH_A);
+    const workflow = {
+      ...base,
+      reviewerA: {
+        ...base.reviewerA,
+        status: "completed" as const,
+        pinnedTurnId: TurnId.make("turn-pinned-plan"),
+        pinnedAssistantMessageId: null,
+      },
+      consolidation: {
+        ...base.consolidation,
+        status: "completed" as const,
+        pinnedTurnId: TurnId.make("turn-pinned-consolidation"),
+      },
+    };
+    harness = await createHarness(snapshotWithReviewerATurn(workflow, "manual"));
+    await harness.start();
+    await harness.emit(readyEvent(workflow.reviewerA.threadId));
+    await settle();
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA.pinnedTurnId).toBe(
+      "turn-pinned-plan",
+    );
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation.pinnedTurnId).toBe(
+      "turn-pinned-consolidation",
+    );
+    expect(harness.dispatched.filter((command) => command.type === "thread.turn.start")).toEqual(
+      [],
+    );
+  });
+
   it("records each reviewer's dispatch command when it starts", async () => {
     const workflow = makeWorkflow();
     harness = await createHarness(

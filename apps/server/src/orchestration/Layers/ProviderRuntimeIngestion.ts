@@ -71,10 +71,12 @@ import {
   Layer,
   Option,
   Path,
+  PubSub,
   Schedule,
   Stream,
 } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { recordEffectiveTurnModel } from "../workflowTurnModel.ts";
 import { enqueueBackgroundWork, makeBackgroundWorker } from "../../backgroundWorker.ts";
 import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
 import { reconcileElicitationsOnStartup } from "../elicitationSubmission.ts";
@@ -2580,6 +2582,7 @@ const make = Effect.gen(function* () {
   const threadBackgroundWork = yield* ThreadBackgroundWork;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
   const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const benchmarkModelChanges = yield* PubSub.sliding<{ threadId: ThreadId; turnId: TurnId }>(256);
   const imageStorage = {
     config: yield* Effect.serviceOption(ServerConfig),
     sql: sqlOption,
@@ -4621,6 +4624,19 @@ const make = Effect.gen(function* () {
         if (isProviderTerminalRuntimeEvent(event))
           yield* providerTerminalEventRepository.markApplied(event.eventId);
         return;
+      }
+      if (Option.isSome(sqlOption) && event.turnId) {
+        const turnId = TurnId.make(event.turnId);
+        yield* recordEffectiveTurnModel(sqlOption.value, event).pipe(
+          Effect.flatMap((changed) =>
+            changed
+              ? PubSub.publish(benchmarkModelChanges, { threadId: event.threadId, turnId })
+              : Effect.void,
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Effective turn model could not be stored", { cause }),
+          ),
+        );
       }
       if (isProviderTerminalRuntimeEvent(event)) {
         const binding = Option.getOrUndefined(
@@ -7290,7 +7306,11 @@ const make = Effect.gen(function* () {
     ["provider-event-delivery"],
   );
 
-  return { start, drain } satisfies ProviderRuntimeIngestionShape;
+  return {
+    start,
+    drain,
+    benchmarkModelChanges: Stream.fromPubSub(benchmarkModelChanges),
+  } satisfies ProviderRuntimeIngestionShape;
 });
 
 export const ProviderRuntimeIngestionLive = Layer.effect(

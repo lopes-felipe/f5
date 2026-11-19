@@ -36,6 +36,7 @@ import { McpStatusUpdatedPayload } from "./mcp";
 import { ScheduledTasksChanged } from "./scheduledTasks";
 import { NextTurnQueueSnapshot, NextTurnQueueSummary } from "./nextTurnQueue";
 import { ORCHESTRATION_WS_CHANNELS, OrchestrationEvent } from "./orchestration";
+import { WorkflowBenchmarkChanged } from "./workflowBenchmark";
 import { DiscoveredLocalServerList, PreviewEvent } from "./preview";
 import {
   PreviewAutomationOwnerReleased,
@@ -57,6 +58,7 @@ export { WS_METHODS } from "./wsMethods";
 export { WebSocketRequest } from "./wsRequests";
 
 export const WS_CHANNELS = {
+  workflowBenchmarkChanged: "workflowPlatform.benchmarkChanged",
   scheduledTasksChanged: "scheduledTasks.changed",
   profilesUpdated: "profiles.updated",
   providerAccountEvent: "providerAccount.event",
@@ -172,6 +174,7 @@ export const WsWelcomePayload = Schema.Struct({
 export type WsWelcomePayload = typeof WsWelcomePayload.Type;
 
 export interface WsPushPayloadByChannel {
+  readonly [WS_CHANNELS.workflowBenchmarkChanged]: typeof WorkflowBenchmarkChanged.Type;
   readonly [PR_WATCH_CHANGED_CHANNEL]: typeof PullRequestWatchChanged.Type;
   readonly [WS_CHANNELS.profilesUpdated]: typeof ProfileListResult.Type;
   readonly [WS_CHANNELS.providerAccountEvent]: typeof ProviderAccountEvent.Type;
@@ -428,6 +431,7 @@ export const WsPushUpstreamPortsChanged = makeWsPushSchema(
 );
 
 export const WsPushChannelSchema = Schema.Literals([
+  WS_CHANNELS.workflowBenchmarkChanged,
   WS_CHANNELS.profilesUpdated,
   WS_CHANNELS.providerAccountEvent,
   AGENTS_WS_CHANNELS.snapshotUpdated,
@@ -471,6 +475,7 @@ export const WsPushChannelSchema = Schema.Literals([
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 
 export const WsPush = Schema.Union([
+  makeWsPushSchema(WS_CHANNELS.workflowBenchmarkChanged, WorkflowBenchmarkChanged),
   WsPushProfilesUpdated,
   WsPushProviderAccountEvent,
   WsPushAgentsSnapshotUpdated,

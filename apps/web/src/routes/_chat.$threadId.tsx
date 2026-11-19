@@ -60,6 +60,7 @@ import { useAgentsPanelStore } from "../agentsPanelStore";
 import { AgentTranscriptPanel } from "../components/AgentTranscriptPanel";
 import { useAgentsPanelModel } from "../lib/agentsReactQuery";
 import { useThreadDetail } from "../lib/orchestrationReactQuery";
+import { useThreadPlansHydrated } from "../lib/useThreadPlansHydrated";
 import { useStartupReady } from "../lib/startupReady";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
@@ -177,6 +178,7 @@ function buildDeepLinkKey(threadId: ThreadId, search: DiffRouteSearch): string {
     threadId,
     search.timelineEntryId ?? "",
     search.timelineEntryKind ?? "",
+    search.planId ?? "",
     search.diff ?? "",
     search.diffTurnId ?? "",
     search.diffFileChangeId ?? "",
@@ -427,12 +429,17 @@ function ChatThreadRouteView() {
   const threadTasks = thread?.tasks ?? EMPTY_TASKS;
   const latestTurn = thread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(latestTurn, thread?.session ?? null);
+  const planSource = useThreadPlansHydrated(search.planId ? threadId : null);
   const activeProposedPlan = useMemo(() => {
+    if (search.planId) {
+      const plan = thread?.proposedPlans.find((entry) => entry.id === search.planId);
+      return plan ? findLatestProposedPlan([plan], plan.turnId) : null;
+    }
     if (!latestTurnSettled) {
       return null;
     }
     return findLatestProposedPlan(thread?.proposedPlans ?? [], latestTurn?.turnId ?? null);
-  }, [latestTurn?.turnId, latestTurnSettled, thread?.proposedPlans]);
+  }, [latestTurn?.turnId, latestTurnSettled, search.planId, thread?.proposedPlans]);
   const activePlan = useMemo(
     () =>
       deriveActivePlanState(threadActivities, latestTurn?.turnId ?? undefined, {
@@ -512,6 +519,7 @@ function ChatThreadRouteView() {
     } else if (activeSurface?.kind === "file") {
       rightPanelStore.closeSurface(threadId, activeSurface.id);
     }
+    if (search.planId) rightPanelStore.open(threadId, "plan");
   }, [
     search.diff,
     search.diffFileChangeId,
@@ -523,6 +531,7 @@ function ChatThreadRouteView() {
     search.fileEndLine,
     search.fileLine,
     search.fileViewPath,
+    search.planId,
     search.timelineEntryId,
     threadId,
   ]);
@@ -760,9 +769,18 @@ function ChatThreadRouteView() {
               />
             );
           case "plan":
+            if (search.planId && !activeProposedPlan) {
+              return (
+                <p className="p-4 text-sm text-muted-foreground" role="status">
+                  {planSource.loading
+                    ? "Loading workflow artifact…"
+                    : "Workflow artifact unavailable"}
+                </p>
+              );
+            }
             return (
               <PlanSidebar
-                activePlan={activePlan}
+                activePlan={search.planId ? null : activePlan}
                 activeProposedPlan={activeProposedPlan}
                 markdownCwd={markdownCwd}
                 workspaceRoot={workspaceRoot}
@@ -828,6 +846,8 @@ function ChatThreadRouteView() {
     [
       activePlan,
       activeProposedPlan,
+      search.planId,
+      planSource.loading,
       agentsLiveCounts,
       agentsPanelModel,
       agentsSnapshotQuery.isError,
@@ -1014,6 +1034,7 @@ export const Route = createFileRoute("/_chat/$threadId")({
       retainSearchParams<DiffRouteSearch>([
         "timelineEntryId",
         "timelineEntryKind",
+        "planId",
         "diff",
         "diffTurnId",
         "diffFileChangeId",

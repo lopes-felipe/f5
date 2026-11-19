@@ -17,6 +17,7 @@ export * from "./nextTurnQueue";
 export * from "./worktreeSetup";
 export * from "./globalSearch";
 export * from "./workflowPlatform";
+export * from "./workflowBenchmark";
 export * from "./providerRuntime";
 export * from "./toolLifecycle";
 export * from "./model";

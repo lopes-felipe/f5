@@ -34,6 +34,7 @@ import { ProviderStartOptions } from "./providerStartOptions";
 import { ProjectIcon } from "./project";
 import { ThreadEnvMode } from "./threadEnvMode";
 import { UsageTurnFact } from "./usage";
+import { WorkflowAttribution } from "./workflowBenchmark";
 export {
   CLAUDE_SUBAGENT_EFFORT_OPTIONS,
   type ClaudeSubagentEffort,
@@ -1503,6 +1504,8 @@ export type ThreadTurnStartBootstrap = typeof ThreadTurnStartBootstrap.Type;
 export const ThreadTurnStartCommand = Schema.Struct({
   /** Server-only identity; intentionally absent from ClientThreadTurnStartCommand. */
   continuationRequestId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  workflowAttribution: Schema.optional(WorkflowAttribution),
+  workflowContinuationTurnId: Schema.optional(TurnId),
 
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
@@ -2452,6 +2455,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   replace: Schema.optional(Schema.Literal(true)),
+  replaceText: Schema.optional(Schema.Literal(true)),
   authorship: OrchestrationMessage.fields.authorship,
   reasoningText: Schema.optional(Schema.String),
   skillCall: Schema.optional(UserMessageSkillCall),
@@ -2474,6 +2478,7 @@ export const ThreadMessageReasoningTokensAddedPayload = Schema.Struct({
 
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
   continuationRequestId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  workflowAttribution: Schema.optional(WorkflowAttribution),
 
   expectedTurnId: Schema.optional(TurnId),
   presentation: Schema.optional(Schema.Literal("continuation")),

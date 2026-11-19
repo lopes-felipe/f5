@@ -193,6 +193,7 @@ export const ProviderContinuationWorkerLive = Layer.effect(
                   ? { workflowExecutionProfile: thread.session.workflowExecutionProfile }
                   : {}),
                 presentation: "continuation",
+                workflowContinuationTurnId: request.previousTurnId,
                 continuationRequestId: request.requestId,
                 createdAt: new Date().toISOString(),
               };

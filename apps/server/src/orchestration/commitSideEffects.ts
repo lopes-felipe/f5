@@ -1,5 +1,5 @@
 import type { OrchestrationCommand, OrchestrationReadModel } from "@t3tools/contracts";
-import { OrchestrationEvent } from "@t3tools/contracts";
+import { OrchestrationEvent, TurnId } from "@t3tools/contracts";
 import { Effect, Option, Schema } from "effect";
 import { scheduledContinuationFor } from "../scheduledTasks/continuations.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -10,6 +10,11 @@ import type { WorkspaceTransitionsShape } from "../persistence/Services/Workspac
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import { stopThreadPullRequestWatches } from "./stopThreadPullRequestWatches.ts";
 import { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
+import {
+  bestEffortBenchmark,
+  findWorkflowRun,
+  materializeWorkflowBenchmark,
+} from "./workflowBenchmarkPersistence.ts";
 
 /** Queue pauses the user or environment chose, which a conversation revert must not undo. */
 const QUEUE_PAUSES_KEPT_ACROSS_REVERT: ReadonlySet<string> = new Set([
@@ -42,6 +47,29 @@ export function makeCommitSideEffects({
     },
   ) =>
     Effect.gen(function* () {
+      const benchmarkRun = findWorkflowRun(savedEvent);
+      if (benchmarkRun && !benchmarkRun.deletedAt) {
+        yield* materializeWorkflowBenchmark(sql, benchmarkRun, savedEvent.occurredAt).pipe(
+          bestEffortBenchmark("materialize pinned outputs", undefined),
+        );
+      }
+      if (
+        savedEvent.type === "project.workflow-deleted" ||
+        savedEvent.type === "project.code-review-workflow-deleted" ||
+        savedEvent.type === "project.investigation-workflow-deleted" ||
+        savedEvent.type === "project.debug-workflow-deleted"
+      ) {
+        const runKind =
+          savedEvent.type === "project.workflow-deleted"
+            ? "planning"
+            : savedEvent.type === "project.code-review-workflow-deleted"
+              ? "codeReview"
+              : "investigation";
+        yield* sql`DELETE FROM workflow_benchmark_outputs WHERE run_kind = ${runKind}
+          AND workflow_id = ${savedEvent.payload.workflowId}`;
+        yield* sql`DELETE FROM workflow_benchmark_artifacts WHERE run_kind = ${runKind}
+          AND workflow_id = ${savedEvent.payload.workflowId}`;
+      }
       if (savedEvent.type === "thread.archived" || savedEvent.type === "thread.deleted") {
         if (Option.isSome(transitions))
           yield* transitions.value.cancel(savedEvent.payload.threadId).pipe(Effect.orDie);
@@ -183,8 +211,8 @@ export function makeCommitSideEffects({
       `;
       }
       if (savedEvent.type === "thread.user-input-resolved") {
-        const command = savedEvent.payload.command;
-        if (command) {
+        const answerCommand = savedEvent.payload.command;
+        if (answerCommand) {
           if (Option.isNone(queueStore))
             return yield* new OrchestrationCommandInvariantError({
               commandType,
@@ -193,6 +221,10 @@ export function makeCommitSideEffects({
           const sourceInput = yield* sql<{
             turn_id: string | null;
           }>`SELECT json_extract(payload_json,'$.turnId') AS turn_id FROM projection_pending_user_inputs WHERE thread_id=${savedEvent.payload.threadId} AND request_id=${savedEvent.payload.requestId}`;
+          const sourceTurnId = sourceInput[0]?.turn_id;
+          const command = sourceTurnId
+            ? { ...answerCommand, workflowContinuationTurnId: TurnId.make(sourceTurnId) }
+            : answerCommand;
           const scheduledRun = yield* scheduledContinuationFor(
             savedEvent.payload.threadId,
             sourceInput[0]?.turn_id,
