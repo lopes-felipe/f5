@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   BUNDLED_MODEL_MANIFEST,
+  MODEL_MANIFEST_URL,
   classifyModelManifest,
   makeModelManifest,
 } from "./ModelManifest.ts";
@@ -54,7 +55,10 @@ describe("model manifest", () => {
     await service.settled();
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(service.current()).toEqual(remote);
-    expect(JSON.parse(writeCache.mock.calls[0]![0]!)).toMatchObject({ manifest: remote });
+    expect(JSON.parse(writeCache.mock.calls[0]![0]!)).toMatchObject({
+      source: MODEL_MANIFEST_URL,
+      manifest: remote,
+    });
     service.refreshInBackground(true);
     await service.settled();
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -71,7 +75,8 @@ describe("model manifest", () => {
       cachePath: "/unused",
       fetch,
       now: () => now,
-      readCache: async () => JSON.stringify({ fetchedAtMs: 1, manifest: remote }),
+      readCache: async () =>
+        JSON.stringify({ source: MODEL_MANIFEST_URL, fetchedAtMs: 1, manifest: remote }),
     });
     service.refreshInBackground(true);
     await service.settled();
@@ -89,12 +94,27 @@ describe("model manifest", () => {
     const service = await makeModelManifest({
       cachePath: "/unused",
       readCache: async () =>
-        JSON.stringify({ fetchedAtMs: 1, manifest: { ...remote, updatedAt: "2000-01-01" } }),
+        JSON.stringify({
+          source: MODEL_MANIFEST_URL,
+          fetchedAtMs: 1,
+          manifest: { ...remote, updatedAt: "2000-01-01" },
+        }),
       fetch: async () => new Response(JSON.stringify({ ...remote, version: 2 })),
     });
     expect(service.current()).toEqual(BUNDLED_MODEL_MANIFEST);
     service.refreshInBackground(true);
     await service.settled();
+    expect(service.current()).toEqual(BUNDLED_MODEL_MANIFEST);
+    service.close();
+  });
+  it.each([
+    undefined,
+    "https://raw.githubusercontent.com/pingdotgg/t3code/main/apps/server/src/provider/model-manifest.json",
+  ])("ignores classifications cached without the current source: %s", async (source) => {
+    const service = await makeModelManifest({
+      cachePath: "/unused",
+      readCache: async () => JSON.stringify({ source, fetchedAtMs: Date.now(), manifest: remote }),
+    });
     expect(service.current()).toEqual(BUNDLED_MODEL_MANIFEST);
     service.close();
   });

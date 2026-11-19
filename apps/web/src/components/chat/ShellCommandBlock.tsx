@@ -6,20 +6,14 @@ import { SurfaceErrorBoundary } from "../ui/SurfaceErrorBoundary";
 import { classifyCodeHighlight } from "../../lib/codeHighlightPolicy";
 import { HighlightedTokens } from "./HighlightedTokens";
 import { HighlightedCommandText } from "./HighlightedCommandText";
+import { retryableImport } from "../../lib/retryableImport";
 
 // Shell words wrap as a unit, so `--exclude` or a quoted string is not split
 // at a hyphen; a word longer than the line still breaks anywhere.
 const WORD_CLASS_NAME = "inline-block max-w-full [overflow-wrap:anywhere]";
 
 // The shell parser loads with the first expanded command, not with the timeline.
-let embeddedScriptsModule: Promise<typeof import("../../lib/embeddedScripts")> | undefined;
-function loadEmbeddedScripts() {
-  embeddedScriptsModule ??= import("../../lib/embeddedScripts").catch((error: unknown) => {
-    embeddedScriptsModule = undefined;
-    throw error;
-  });
-  return embeddedScriptsModule;
-}
+const loadEmbeddedScripts = retryableImport(() => import("../../lib/embeddedScripts"));
 
 function HighlightedCommand({ code, theme }: { code: string; theme: "light" | "dark" }) {
   const { embeddedScripts } = use(loadEmbeddedScripts());

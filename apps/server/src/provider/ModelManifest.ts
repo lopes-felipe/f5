@@ -12,7 +12,7 @@ const Manifest = Schema.Struct({
 export type ModelManifestData = typeof Manifest.Type;
 const decode = Schema.decodeUnknownSync(Manifest);
 export const BUNDLED_MODEL_MANIFEST = decode(bundled);
-const URL =
+export const MODEL_MANIFEST_URL =
   "https://raw.githubusercontent.com/lopes-felipe/f5/main/apps/server/src/provider/model-manifest.json";
 const TTL = 60 * 60_000;
 const RETRY = 5 * 60_000;
@@ -64,11 +64,13 @@ export async function makeModelManifest(input: {
   const publishedAt = (data: ModelManifestData) => Date.parse(data.updatedAt ?? "") || 0;
   try {
     const cached = JSON.parse(await (input.readCache?.() ?? readFile(input.cachePath, "utf8"))) as {
+      source?: unknown;
       fetchedAtMs?: unknown;
       manifest?: unknown;
     };
     const decoded = decode(cached.manifest);
     if (
+      cached.source === MODEL_MANIFEST_URL &&
       typeof cached.fetchedAtMs === "number" &&
       Number.isFinite(cached.fetchedAtMs) &&
       publishedAt(decoded) >= publishedAt(manifest)
@@ -93,7 +95,7 @@ export async function makeModelManifest(input: {
     });
   const refresh = async () => {
     try {
-      const response = await (input.fetch ?? fetch)(URL, {
+      const response = await (input.fetch ?? fetch)(MODEL_MANIFEST_URL, {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
         redirect: "error",
       });
@@ -105,7 +107,9 @@ export async function makeModelManifest(input: {
       fetchedAt = now();
       if (changed) for (const listener of listeners) listener();
       try {
-        await save(JSON.stringify({ fetchedAtMs: fetchedAt, manifest }));
+        await save(
+          JSON.stringify({ source: MODEL_MANIFEST_URL, fetchedAtMs: fetchedAt, manifest }),
+        );
       } catch {
         /* Memory remains usable. */
       }

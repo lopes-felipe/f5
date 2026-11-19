@@ -20,12 +20,14 @@ import {
   XIcon,
   type LucideIcon,
 } from "lucide-react";
-import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { memo, Suspense, use, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { TimestampFormat } from "../../appSettings";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { HighlightedCommandText } from "./HighlightedCommandText";
+import { retryableImport } from "../../lib/retryableImport";
+import { classifyCodeHighlight } from "../../lib/codeHighlightPolicy";
 import {
   scheduleThreadCommandExecutionRefreshIfMissing,
   threadCommandExecutionQueryOptions,
@@ -39,9 +41,7 @@ import { toastManager } from "../ui/toast";
 import { SurfaceErrorBoundary } from "../ui/SurfaceErrorBoundary";
 import { CopyIconButton } from "./CopyIconButton";
 
-const ShellCommandBlock = lazy(() =>
-  import("./ShellCommandBlock").then((module) => ({ default: module.ShellCommandBlock })),
-);
+const loadShellCommandBlock = retryableImport(() => import("./ShellCommandBlock"));
 
 interface CommandTranscriptCardProps {
   threadId?: ThreadId | null;
@@ -113,12 +113,18 @@ const FAILED_OUTPUT_TAIL_LINES = 4;
 const FAILED_OUTPUT_TAIL_CHAR_LIMIT = 600;
 const FAILED_OUTPUT_TAIL_SCAN_CHARS = 8_000;
 
+function LoadedShellCommand({ command }: { command: string }) {
+  const { ShellCommandBlock } = use(loadShellCommandBlock());
+  return <ShellCommandBlock command={command} />;
+}
+
 function ExpandedCommandText({ command }: { command: string }) {
   const fallback = <HighlightedCommandText command={command} />;
+  if (classifyCodeHighlight(command) !== "inline") return fallback;
   return (
     <SurfaceErrorBoundary name="Command highlighting" fallback={fallback} resetKeys={[command]}>
       <Suspense fallback={fallback}>
-        <ShellCommandBlock command={command} />
+        <LoadedShellCommand command={command} />
       </Suspense>
     </SurfaceErrorBoundary>
   );
