@@ -27,7 +27,8 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { buildSlashComposerMenuItems } from "@t3tools/shared/slashCommands";
 import { useStore } from "../../store";
-import { useThreadSummaries } from "../../threadSelectors";
+import { selectThreadById, useOrderedThreadIds, useThreadSummary } from "../../threadSelectors";
+import { useShallow } from "zustand/react/shallow";
 import { useSettings } from "../../hooks/useSettings";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { gitBranchesQueryOptions } from "../../lib/gitReactQuery";
@@ -155,10 +156,7 @@ export function ScheduledTaskDialog(props: {
   const [boundThreadId, setBoundThreadId] = useState(
     task?.workspace.kind === "thread" ? task.workspace.threadId : props.boundThreadId,
   );
-  const threads = useThreadSummaries();
-  const boundThread = useStore((s) =>
-    boundThreadId ? s.threads.find((t) => t.id === boundThreadId) : undefined,
-  );
+  const boundThread = useThreadSummary(boundThreadId);
   const projects = useStore((s) => s.projects);
   const [draft, setDraft] = useState(() => initialDraft(task, props.boundThreadId));
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
@@ -168,10 +166,11 @@ export function ScheduledTaskDialog(props: {
   const threadMode = draft.workspaceKind === "thread";
   const projectId =
     task?.projectId ?? (threadMode && boundThread ? boundThread.projectId : creationProjectId);
-  const destinationThreads = threads.filter(
-    (thread) =>
-      thread.id === boundThreadId ||
-      (thread.projectId === projectId && !thread.archivedAt && !thread.scheduledOrigin),
+  const orderedThreadIds = useOrderedThreadIds({ projectId });
+  const destinationThreadIds = useStore(
+    useShallow((state) =>
+      orderedThreadIds.filter((id) => !selectThreadById(state, id)?.scheduledOrigin),
+    ),
   );
   const project = useStore((s) => s.projects.find((p) => p.id === projectId));
   const config = useQuery(serverConfigQueryOptions());
@@ -285,11 +284,13 @@ export function ScheduledTaskDialog(props: {
       : boundThread;
   const threadError = !threadMode
     ? null
-    : !boundThreadId || !boundSource
-      ? "This conversation is no longer available."
-      : !boundSource?.modelSelection
-        ? "Send a message in this conversation before scheduling into it."
-        : null;
+    : !boundThreadId
+      ? "Select a conversation."
+      : !boundSource
+        ? "This conversation is no longer available."
+        : !boundSource.modelSelection
+          ? "Send a message in this conversation before scheduling into it."
+          : null;
   const modelSelection = threadMode
     ? (boundSource?.modelSelection ?? null)
     : (draft.modelSelection ?? resolvedModel);
@@ -481,7 +482,10 @@ export function ScheduledTaskDialog(props: {
                 <NativeSelect
                   aria-label="Project"
                   value={projectId}
-                  onChange={(e) => setCreationProjectId(e.target.value as ProjectId)}
+                  onChange={(e) => {
+                    setCreationProjectId(e.target.value as ProjectId);
+                    setBoundThreadId(undefined);
+                  }}
                 >
                   {projects.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -612,10 +616,8 @@ export function ScheduledTaskDialog(props: {
               >
                 <option value="projectRoot">Project root (shared filesystem)</option>
                 <option value="worktree">New worktree for every run</option>
-                {(boundThreadId || destinationThreads.length > 0) && (
-                  <option value="thread">
-                    {boundThread ? `Conversation: ${boundThread.title}` : "This conversation"}
-                  </option>
+                {(threadMode || boundThreadId || destinationThreadIds.length > 0) && (
+                  <option value="thread">Existing conversation</option>
                 )}
               </NativeSelect>
             </label>
@@ -632,13 +634,15 @@ export function ScheduledTaskDialog(props: {
                   }
                 >
                   <option value="">Select a conversation</option>
-                  {boundThreadId && !threads.some((thread) => thread.id === boundThreadId) && (
-                    <option value={boundThreadId}>Current conversation (unavailable)</option>
-                  )}
-                  {destinationThreads.map((thread) => (
-                    <option key={thread.id} value={thread.id}>
-                      {thread.title}
+                  {boundThreadId && !destinationThreadIds.includes(boundThreadId) && (
+                    <option value={boundThreadId}>
+                      {boundThread
+                        ? `${boundThread.title} (${boundThread.archivedAt ? "archived" : "unavailable"})`
+                        : "Current conversation (unavailable)"}
                     </option>
+                  )}
+                  {destinationThreadIds.map((id) => (
+                    <DestinationConversationOption key={id} threadId={id} />
                   ))}
                 </NativeSelect>
               </label>
@@ -824,4 +828,9 @@ export function ScheduledTaskDialog(props: {
       </DialogPopup>
     </Dialog>
   );
+}
+
+function DestinationConversationOption({ threadId }: { threadId: ThreadId }) {
+  const title = useStore((state) => selectThreadById(state, threadId)?.title);
+  return <option value={threadId}>{title}</option>;
 }

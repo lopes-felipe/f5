@@ -4,12 +4,14 @@ import { Effect, PubSub } from "effect";
 import { TestClock } from "effect/testing";
 import {
   EventId,
+  ProjectId,
   ProviderInstanceId,
   SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
   ScheduledTaskRunId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
+  type OrchestrationThread,
   type ScheduledTask,
 } from "@t3tools/contracts";
 import { emptyQueue, provider } from "../agentBridge/testing/fakeHost.ts";
@@ -176,14 +178,27 @@ it.effect("moving a task validates the destination and adopts its live execution
         },
         actor,
       );
-    expect((yield* Effect.result(move()))._tag).toBe("Failure");
-    for (const overrides of [
-      { archivedAt: new Date(0).toISOString() },
-      { projectId: "elsewhere" },
-      { deletedAt: new Date(0).toISOString() },
-    ]) {
-      yield* seedBoundThread(f.host, f.store, destination, overrides as never);
-      expect((yield* Effect.result(move()))._tag).toBe("Failure");
+    const missing = yield* Effect.result(move());
+    expect(missing._tag).toBe("Failure");
+    if (missing._tag === "Failure")
+      expect(missing.failure.message).toBe("The conversation no longer exists.");
+    const cases: Array<[Partial<OrchestrationThread>, string]> = [
+      [{ archivedAt: new Date(0).toISOString() }, "The conversation is archived."],
+      [
+        { projectId: ProjectId.makeUnsafe("elsewhere") },
+        "The conversation belongs to another project.",
+      ],
+      [{ deletedAt: new Date(0).toISOString() }, "The conversation no longer exists."],
+      [
+        { scheduledOrigin: { taskId: task.id, runId: ScheduledTaskRunId.makeUnsafe("other-run") } },
+        "Conversations created by another scheduled task cannot receive bound runs.",
+      ],
+    ];
+    for (const [overrides, message] of cases) {
+      yield* seedBoundThread(f.host, f.store, destination, overrides);
+      const result = yield* Effect.result(move());
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure.message).toBe(message);
       expect((yield* f.store.task(task.id))!.task.workspace).toEqual(task.workspace);
     }
     yield* seedBoundThread(f.host, f.store, destination, {
@@ -196,6 +211,39 @@ it.effect("moving a task validates the destination and adopts its live execution
     expect(moved.interactionMode).toBe("plan");
     const run = yield* f.fire(moved);
     expect(run.run.threadId).toBe(destination);
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+
+it.effect("moving a task cancels a run waiting for its previous conversation", () =>
+  Effect.gen(function* () {
+    const f = yield* bound;
+    const { task } = yield* f.createBound();
+    yield* seedBoundThread(f.host, f.store, THREAD, {
+      session: { activeTurnId: TurnId.makeUnsafe("user-turn"), status: "running" } as never,
+    });
+    const waiting = yield* f.fire(task);
+    expect(waiting.run.reason).toBe("conversation_busy");
+    const destination = ThreadId.makeUnsafe("destination");
+    yield* seedBoundThread(f.host, f.store, destination);
+    const moved = (yield* f.service.update(
+      {
+        id: task.id,
+        expectedVersion: task.version,
+        configuration: { ...task, workspace: { kind: "thread", threadId: destination } },
+      },
+      actor,
+    )).task;
+    yield* seedBoundThread(f.host, f.store, THREAD);
+    yield* TestClock.adjust("31 seconds");
+    yield* f.service.dispatch;
+    yield* f.service.drainDispatches;
+    expect(f.host.submissions).toHaveLength(0);
+    const settled = (yield* f.store.run(waiting.run.id))!;
+    expect(settled.run.status).toBe("skipped");
+    expect(settled.run.reason).toBe("canceled");
+    yield* f.fire(moved);
+    expect(f.host.submissions).toHaveLength(1);
+    expect(f.host.submissions[0]!.command.threadId).toBe(destination);
   }).pipe(Effect.provide(testLayer), Effect.scoped),
 );
 
@@ -573,28 +621,30 @@ it.effect("a usage-limit rejection before any turn settles the bound run", () =>
   }).pipe(Effect.provide(testLayer), Effect.scoped),
 );
 
-it.effect("a stale run for a removed conversation does not disable a retargeted task", () =>
-  Effect.gen(function* () {
-    const f = yield* bound;
-    const { task } = yield* f.createBound();
-    const pending = yield* f.runNow(task);
-    const retargeted = (yield* f.service.update(
-      {
-        id: task.id,
-        expectedVersion: task.version,
-        configuration: { ...task, workspace: { kind: "projectRoot" } },
-      },
-      actor,
-    )).task;
-    f.host.threads = [];
-    yield* f.service.dispatch;
-    yield* f.service.drainDispatches;
-    expect((yield* f.store.run(pending.id))!.run.reason).toBe("thread_removed");
-    const live = (yield* f.store.task(task.id))!.task;
-    expect(live.enabled).toBe(true);
-    expect(live.workspace).toEqual({ kind: "projectRoot" });
-    expect(live.version).toBe(retargeted.version);
-  }).pipe(Effect.provide(testLayer), Effect.scoped),
+it.effect(
+  "canceling a stale run preserves the retargeted task when its old conversation is removed",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* bound;
+      const { task } = yield* f.createBound();
+      const pending = yield* f.runNow(task);
+      const retargeted = (yield* f.service.update(
+        {
+          id: task.id,
+          expectedVersion: task.version,
+          configuration: { ...task, workspace: { kind: "projectRoot" } },
+        },
+        actor,
+      )).task;
+      f.host.threads = [];
+      yield* f.service.dispatch;
+      yield* f.service.drainDispatches;
+      expect((yield* f.store.run(pending.id))!.run.reason).toBe("canceled");
+      const live = (yield* f.store.task(task.id))!.task;
+      expect(live.enabled).toBe(true);
+      expect(live.workspace).toEqual({ kind: "projectRoot" });
+      expect(live.version).toBe(retargeted.version);
+    }).pipe(Effect.provide(testLayer), Effect.scoped),
 );
 
 it.effect("findRunForTurn maps a bound turn to its run for the user only", () =>
