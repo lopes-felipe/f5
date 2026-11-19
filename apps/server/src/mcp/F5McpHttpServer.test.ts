@@ -33,6 +33,28 @@ it.effect(
         const computerSession = server.createSessionConfig({ threadId, catalog: "computer" });
         const previewToken = Object.values(previewSession.env)[0]!;
         const computerToken = Object.values(computerSession.env)[0]!;
+        for (const catalog of ["preview", "computer", "thread", "integration"] as const) {
+          for (const origin of ["https://untrusted.invalid", "null", ""]) {
+            for (const method of ["POST", "OPTIONS"]) {
+              for (const token of [undefined, "invalid", previewToken, computerToken]) {
+                const response = yield* Effect.promise(() =>
+                  fetch(server.getUrl(catalog), {
+                    method,
+                    headers: {
+                      origin,
+                      "access-control-request-method": "POST",
+                      ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+                    },
+                  }),
+                );
+                assert.equal(response.status, 403);
+                assert.equal(response.headers.get("access-control-allow-origin"), null);
+                assert.equal(response.headers.get("www-authenticate"), null);
+                yield* Effect.promise(() => response.arrayBuffer());
+              }
+            }
+          }
+        }
         const post = (catalog: "preview" | "computer", token: string) =>
           Effect.promise(async () => {
             const response = await fetch(server.getUrl(catalog), {

@@ -106,3 +106,33 @@ it("creates an image-only reply, skips failed images and clears retired sessions
   images.project(event("session/closed"));
   expect(images.project(event("turn/completed"))).toHaveLength(1);
 });
+
+it("publishes late GIFs once and suppresses GIFs from cancelled turns", () => {
+  const images = new CodexGeneratedImages();
+  images.project(event("item/started", { type: "imageGeneration", id: "animation" }));
+  images.project(event("turn/completed"));
+  const completed = event("item/completed", {
+    type: "imageGeneration",
+    id: "animation",
+    status: "completed",
+    savedPath: "/tmp/result.gif",
+  });
+  expect(images.project(completed)[1]?.payload).toMatchObject({
+    item: { text: "![](</tmp/result.gif>)" },
+  });
+  expect(images.project(completed)).toHaveLength(1);
+  images.cancel(ThreadId.make("thread"), TurnId.make("turn"));
+  expect(
+    images.project({
+      ...completed,
+      payload: {
+        item: {
+          type: "imageGeneration",
+          id: "cancelled",
+          status: "completed",
+          savedPath: "/tmp/cancelled.gif",
+        },
+      },
+    }),
+  ).toHaveLength(1);
+});

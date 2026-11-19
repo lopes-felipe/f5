@@ -2134,10 +2134,18 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
       };
     }
 
+    case "thread.message.assistant.moderate":
     case "thread.message.assistant.reconcile": {
       const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
       const existing = thread.messages.find((message) => message.id === command.messageId);
-      if (
+      if (command.type === "thread.message.assistant.moderate") {
+        if (
+          existing &&
+          (existing.role !== "assistant" ||
+            (command.turnId !== undefined && existing.turnId !== command.turnId))
+        )
+          return [];
+      } else if (
         thread.latestTurn?.turnId !== command.turnId ||
         (existing?.text ?? null) !== command.expectedText ||
         (existing?.reasoningText ?? "") !== command.expectedReasoningText ||
@@ -2148,7 +2156,12 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         existing &&
         !existing.streaming &&
         existing.text === command.text &&
-        (existing.reasoningText ?? "") === command.reasoningText
+        (existing.reasoningText ?? "") ===
+          (command.type === "thread.message.assistant.moderate"
+            ? command.clearReasoning
+              ? ""
+              : (existing.reasoningText ?? "") + command.reasoningSuffix
+            : command.reasoningText)
       )
         return [];
       return [
@@ -2165,8 +2178,17 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
             messageId: command.messageId,
             role: "assistant",
             text: command.text,
-            ...(command.reasoningText ? { reasoningText: command.reasoningText } : {}),
-            turnId: command.turnId,
+            ...(command.type === "thread.message.assistant.moderate"
+              ? {
+                  replace: true as const,
+                  reasoningText: command.clearReasoning
+                    ? ""
+                    : (existing?.reasoningText ?? "") + command.reasoningSuffix,
+                }
+              : command.reasoningText
+                ? { reasoningText: command.reasoningText }
+                : {}),
+            turnId: command.turnId ?? existing?.turnId ?? null,
             streaming: false,
             createdAt: existing?.createdAt ?? command.createdAt,
             updatedAt: command.createdAt,

@@ -28,6 +28,7 @@ import { makeHtmlPreviewBroker } from "./htmlRender/HtmlPreviewBroker.ts";
 import { makeHtmlRenderRuntime } from "./htmlRender/HtmlRenderRuntime.ts";
 import { ThreadMcpBroker } from "./mcp/threadMcpTools.ts";
 import { makeThreadToolHandler } from "./mcp/threadToolRuntime.ts";
+import { makeThreadImagePublisher } from "./mcp/publishThreadImage.ts";
 import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlanRepositoryLive } from "./persistence/Layers/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadMessageRepository } from "./persistence/Services/ProjectionThreadMessages.ts";
@@ -1075,7 +1076,9 @@ interface OrchestrationRuntimeServices {
   readonly defaultBranchAutoPull: DefaultBranchAutoPullShape;
 }
 
-export const createServer = Effect.fn(function* (): Effect.fn.Return<
+export const createServer = Effect.fn(function* (
+  options: { readonly orchestrationStartupGate?: Effect.Effect<void> } = {},
+): Effect.fn.Return<
   http.Server,
   ServerLifecycleError,
   | Scope.Scope
@@ -2674,6 +2677,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 : contentType,
               "Cache-Control": fingerprinted ? "public, max-age=31536000, immutable" : "no-cache",
               "X-Content-Type-Options": "nosniff",
+              ...(contentType === "text/html"
+                ? {
+                    "Content-Security-Policy": "frame-ancestors 'none'",
+                    "X-Frame-Options": "DENY",
+                  }
+                : {}),
             });
           } catch {
             if (res.headersSent) res.destroy();
@@ -2969,6 +2978,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const startOrchestrationRuntime = withStartupPhaseTiming(
     "orchestration.runtime.start",
     Effect.gen(function* () {
+      // An explicit gate keeps startup/readiness fixtures independent of module caches.
+      yield* options.orchestrationStartupGate ?? Effect.void;
       const orchestrationRuntimeServices = yield* Layer.buildWithScope(
         orchestrationRuntimeLayer,
         subscriptionsScope,
@@ -3056,6 +3067,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           attachmentsDir: serverConfig.attachmentsDir,
           preview: htmlPreviewBroker,
         });
+        const publishImage = yield* makeThreadImagePublisher({
+          engine: orchestrationEngine,
+          attachmentsDir: serverConfig.attachmentsDir,
+        });
         const threadContextRepositories = yield* Effect.gen(function* () {
           return {
             messages: yield* ProjectionThreadMessageRepository,
@@ -3081,6 +3096,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               settlement: threadSettlement,
               links: prHubExtensions.value,
               html,
+              publishImage,
             }),
           )
           .pipe(Effect.provideService(Scope.Scope, subscriptionsScope), Effect.orDie);
@@ -6581,6 +6597,23 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return { ...result, providers: yield* providerAdvisoryProjection.getProviders };
       }
 
+      case WS_METHODS.serverCodexConfiguration: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance?.codexConfiguration)
+          return yield* new RouteRequestError({ message: "Select a configured Codex provider." });
+        const result = yield* instance.codexConfiguration(body.action).pipe(
+          Effect.ensuring(
+            body.action.type === "write" || body.action.type === "setDefault"
+              ? (instance.invalidateModelCatalog ?? Effect.void)
+              : Effect.void,
+          ),
+          Effect.mapError(
+            (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+          ),
+        );
+        return result;
+      }
       case WS_METHODS.serverSaveProviderFeedback: {
         const body = stripRequestTag(request.body);
         const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);

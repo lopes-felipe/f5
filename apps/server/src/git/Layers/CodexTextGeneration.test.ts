@@ -312,6 +312,29 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       ),
     );
   }
+  it.effect("routes auxiliary prompts to the instance provider after filtering user flags", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ subject: "Provider-bound", body: "" }),
+        argsMustContain: 'model_provider="team"',
+      },
+      Effect.gen(function* () {
+        const generation = yield* makeCodexTextGeneration({
+          binaryPath: "",
+          homePath: "",
+          launchArgs: '-c model_provider="wrong"',
+          modelProvider: "team",
+        });
+        const result = yield* generation.generateCommitMessage({
+          cwd: process.cwd(),
+          branch: null,
+          stagedSummary: "M file",
+          stagedPatch: "diff",
+        });
+        expect(result.subject).toBe("Provider-bound");
+      }),
+    ),
+  );
 
   it.effect("generates and sanitizes commit messages without branch by default", () =>
     withFakeCodexEnv(

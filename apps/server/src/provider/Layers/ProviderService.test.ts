@@ -2186,6 +2186,155 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  const startStoppedTurn = (threadId: ThreadId, options: { readonly sendTurn: boolean }) =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = options.sendTurn
+        ? yield* provider.sendTurn({ threadId, input: "keep working", attachments: [] })
+        : undefined;
+      // Stopping a live session keeps the persisted active turn for recovery.
+      yield* provider.stopSession({ threadId });
+      routing.codex.interruptTurn.mockClear();
+      return turn?.turnId;
+    });
+  const nextOrphanedSettlement = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      return yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) =>
+            event.type === "session.exited" &&
+            event.threadId === threadId &&
+            event.eventId.startsWith("provider:orphaned-session-exit:"),
+        ),
+      ).pipe(Effect.forkChild);
+    });
+
+  it.effect("settles the persisted active turn when interrupting a stopped session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-stopped-interrupt");
+      const turnId = yield* startStoppedTurn(threadId, { sendTurn: true });
+      const settlement = yield* nextOrphanedSettlement(threadId);
+      yield* sleep(20);
+
+      yield* provider.interruptTurn({ threadId, turnId: turnId! });
+      const event = Option.getOrUndefined(yield* Fiber.join(settlement));
+
+      assert.equal(routing.codex.interruptTurn.mock.calls.length, 0);
+      assert.equal(event?.type, "session.exited");
+      assert.equal(event?.turnId, turnId);
+      assert.equal(event?.eventId, `provider:orphaned-session-exit:${threadId}:${turnId}`);
+      // Like recovery, ingestion gates it on the projected turn, not a generation.
+      assert.equal(event?.sessionGeneration, undefined);
+    }),
+  );
+
+  it.effect("settles the persisted active turn when stopping an already stopped session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-stopped-stop");
+      const turnId = yield* startStoppedTurn(threadId, { sendTurn: true });
+      const settlement = yield* nextOrphanedSettlement(threadId);
+      yield* sleep(20);
+
+      yield* provider.stopSession({ threadId });
+      const event = Option.getOrUndefined(yield* Fiber.join(settlement));
+
+      assert.equal(event?.turnId, turnId);
+    }),
+  );
+
+  // Each thread's runtime events stay ordered, so a later settlement on the
+  // same thread proves no earlier one was queued (no timing-based "absence").
+  it.effect("does not settle a stopped session for a conflicting turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-stopped-conflict");
+      const persisted = yield* startStoppedTurn(threadId, { sendTurn: true });
+      const settlement = yield* nextOrphanedSettlement(threadId);
+      yield* sleep(20);
+      yield* provider.interruptTurn({ threadId, turnId: asTurnId("turn-from-elsewhere") });
+      yield* provider.stopSession({ threadId });
+      assert.equal(Option.getOrUndefined(yield* Fiber.join(settlement))?.turnId, persisted);
+    }),
+  );
+
+  it.effect("lets a control-origin stop settle the captured turn of a stopped session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-stopped-control-stop");
+      const session = yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* provider.sendTurn({ threadId, input: "keep working", attachments: [] });
+      yield* provider.stopSession({ threadId });
+      const settlement = yield* nextOrphanedSettlement(threadId);
+      yield* sleep(20);
+      const origin = {
+        threadId,
+        provider: "codex",
+        instanceId: "codex",
+        generation: session.capabilities!.generation,
+        activeTurnId: turn.turnId,
+      };
+
+      yield* provider
+        .stopSession({ threadId })
+        .pipe(Effect.provideService(ProviderControlTarget, origin));
+      assert.equal(Option.getOrUndefined(yield* Fiber.join(settlement))?.turnId, turn.turnId);
+    }),
+  );
+
+  it.effect("still refuses a control-origin interrupt when a live session holds another turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-live-control-interrupt");
+      const session = yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({ threadId, input: "keep working", attachments: [] });
+      routing.codex.interruptTurn.mockClear();
+      const error = yield* provider.interruptTurn({ threadId }).pipe(
+        Effect.provideService(ProviderControlTarget, {
+          threadId,
+          provider: "codex",
+          instanceId: "codex",
+          generation: session.capabilities!.generation,
+          activeTurnId: "turn-no-longer-running",
+        }),
+        Effect.flip,
+      );
+      assert.equal(error._tag, "ProviderValidationError");
+      assert.equal(routing.codex.interruptTurn.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("does not settle a stopped session when no turn is named or persisted", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-stopped-idle");
+      yield* startStoppedTurn(threadId, { sendTurn: false });
+      const settlement = yield* nextOrphanedSettlement(threadId);
+      yield* sleep(20);
+      yield* provider.interruptTurn({ threadId });
+      yield* provider.stopSession({ threadId });
+      const marker = asTurnId("turn-named-by-projection");
+      yield* provider.interruptTurn({ threadId, turnId: marker });
+      assert.equal(Option.getOrUndefined(yield* Fiber.join(settlement))?.turnId, marker);
+    }),
+  );
+
   it.effect("recovers stale persisted sessions for rollback by resuming thread identity", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

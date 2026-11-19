@@ -1,6 +1,7 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { readIncompleteHistory } from "../provider/runtimePayload.ts";
 import { readPersistedSessionGeneration } from "../provider/sessionCapabilities.ts";
+import { codexMessagePresentation } from "@t3tools/shared/codexMessagePresentation";
 import {
   CommandId,
   MessageId,
@@ -108,6 +109,8 @@ function extractTextFromProviderSnapshotContent(value: unknown): string {
 function extractAssistantTextFromProviderSnapshotItem(
   item: Record<string, unknown>,
 ): string | undefined {
+  const presentation = codexMessagePresentation(item);
+  if (presentation.replace) return presentation.text;
   // Only pull from fields that carry the assistant's actual message text. `item.detail` and
   // `item.summary` are avoided here because on Codex reasoning items those fields hold the
   // reasoning summary — we must not leak that content into the assistant message text even

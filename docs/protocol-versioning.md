@@ -29,7 +29,7 @@ Each harness release bumps the version once: Release 1 is 16, and Release 2 is 1
 (session capability snapshots, reported model capabilities, catalog sources and the
 provider inventory RPC).
 
-Version 45 adds the explicit onboarding project discovery and history import RPCs.
+Version 46 adds the explicit onboarding project discovery and history import RPCs.
 Discovery uses the current server profile's configured Codex and Claude homes.
 History import is optional, never starts a turn, and uses the normal approval defaults.
 
@@ -125,6 +125,8 @@ Claude Release 5 (Agent SDK 0.3.317) uses version 43. It adds `usage.analyzeClau
 usage accounts, and the optional `latestCacheWrites` and observed `executableVersion` fields
 on session capability snapshots. Older clients could not decode the new fields or call the
 analysis, so the bump forces them to reload.
+
+Claude Release 6 (Agent SDK 0.3.326) keeps version 43: it changes no decoded browser shape.
 
 Request scheduling and startup (performance Releases 1 and 2) ship together as version 42.
 Version 41 was reserved for Release 1 on its own and was never released, so no client or

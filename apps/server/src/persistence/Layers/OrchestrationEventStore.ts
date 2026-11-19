@@ -66,6 +66,12 @@ const ReadFromSequenceByTypesRequestSchema = Schema.Struct({
   limit: Schema.Number,
   eventTypes: Schema.Array(OrchestrationEventType),
 });
+const ReadFromSequenceByThreadRequestSchema = Schema.Struct({
+  sequenceExclusive: NonNegativeInt,
+  limit: Schema.Number,
+  threadId: ThreadId,
+  eventTypes: Schema.optionalKey(Schema.Array(OrchestrationEventType)),
+});
 const ThreadStreamRequestSchema = Schema.Struct({
   threadId: ThreadId,
 });
@@ -217,6 +223,33 @@ const makeEventStore = Effect.gen(function* () {
       `,
   });
 
+  const readEventRowsFromSequenceByThread = SqlSchema.findAll({
+    Request: ReadFromSequenceByThreadRequestSchema,
+    Result: OrchestrationEventPersistedRowSchema,
+    execute: (request) =>
+      sql`
+        SELECT
+          sequence,
+          event_id AS "eventId",
+          event_type AS "type",
+          aggregate_kind AS "aggregateKind",
+          stream_id AS "aggregateId",
+          occurred_at AS "occurredAt",
+          command_id AS "commandId",
+          causation_event_id AS "causationEventId",
+          correlation_id AS "correlationId",
+          payload_json AS "payload",
+          metadata_json AS "metadata"
+        FROM orchestration_events
+        WHERE aggregate_kind = 'thread'
+          AND stream_id = ${request.threadId}
+          AND sequence > ${request.sequenceExclusive}
+          ${request.eventTypes === undefined ? sql`` : sql`AND +event_type IN ${sql.in(request.eventTypes)}`}
+        ORDER BY sequence ASC
+        LIMIT ${request.limit}
+      `,
+  });
+
   const collectCommandIdRowsForThread = SqlSchema.findAll({
     Request: ThreadStreamRequestSchema,
     Result: CommandIdRowSchema,
@@ -275,17 +308,25 @@ const makeEventStore = Effect.gen(function* () {
   ) => {
     const normalizedLimit = Math.max(0, Math.floor(limit));
     const eventTypes = options?.eventTypes;
+    const threadId = options?.threadId;
     if (normalizedLimit === 0 || (eventTypes !== undefined && eventTypes.length === 0)) {
       return Stream.empty;
     }
     const readPage = (cursor: number, pageLimit: number) =>
-      eventTypes === undefined
-        ? readEventRowsFromSequence({ sequenceExclusive: cursor, limit: pageLimit })
-        : readEventRowsFromSequenceByTypes({
+      threadId !== undefined
+        ? readEventRowsFromSequenceByThread({
             sequenceExclusive: cursor,
             limit: pageLimit,
-            eventTypes,
-          });
+            threadId,
+            ...(eventTypes === undefined ? {} : { eventTypes }),
+          })
+        : eventTypes === undefined
+          ? readEventRowsFromSequence({ sequenceExclusive: cursor, limit: pageLimit })
+          : readEventRowsFromSequenceByTypes({
+              sequenceExclusive: cursor,
+              limit: pageLimit,
+              eventTypes,
+            });
     return Stream.paginate(
       { cursor: sequenceExclusive, remaining: normalizedLimit },
       ({ cursor, remaining }) =>

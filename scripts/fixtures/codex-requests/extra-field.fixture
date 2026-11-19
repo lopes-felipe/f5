@@ -1,0 +1,8 @@
+type Exclude<T, U> = T extends U ? never : T;
+type Record<K extends keyof any, V> = { [P in K]: V };
+type Params = { threadId: string; lastTurnId?: string };
+const request = { threadId: "thread", misspelledBoundary: "turn" };
+const exact = <Expected>() => <Actual extends Expected>(value: Actual & Record<Exclude<keyof Actual, keyof Expected>, never>): Expected => value;
+const check = exact<Params>()(request);
+void check;
+export {};

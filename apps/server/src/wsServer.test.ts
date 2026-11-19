@@ -498,12 +498,16 @@ describe("WebSocket Server", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("static-root");
     expect(response.headers.get("cache-control")).toBe("no-cache");
+    expect(response.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(response.headers.get("x-frame-options")).toBe("DENY");
     fs.writeFileSync(path.join(staticDir, "index.html"), "<h1>updated app</h1>", "utf8");
     const refreshed = await fetch(`http://127.0.0.1:${port}/index.html`, {
       headers: { "If-None-Match": "old-client" },
     });
     expect(refreshed.status).toBe(200);
     expect(refreshed.headers.get("cache-control")).toBe("no-cache");
+    expect(refreshed.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(refreshed.headers.get("x-frame-options")).toBe("DENY");
     expect(await refreshed.text()).toContain("updated app");
   });
 
@@ -548,6 +552,13 @@ describe("WebSocket Server", () => {
     expect(navigation.status).toBe(200);
     expect(await navigation.text()).toContain("Application shell");
     expect(navigation.headers.get("cache-control")).toBe("no-cache");
+    expect(navigation.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(navigation.headers.get("x-frame-options")).toBe("DENY");
+    const htmlHead = await fetch(`http://127.0.0.1:${port}/index.html`, { method: "HEAD" });
+    expect(htmlHead.status).toBe(200);
+    expect(htmlHead.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(htmlHead.headers.get("x-frame-options")).toBe("DENY");
+    expect(await htmlHead.text()).toBe("");
     const request = await fetch(`http://127.0.0.1:${port}/thread/client-route`, {
       headers: { Accept: "application/json" },
     });
@@ -1032,18 +1043,11 @@ describe("WebSocket Server", () => {
     const persistenceLayer = makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
       Layer.provide(NodeServices.layer),
     );
-    vi.resetModules();
-    vi.doMock("./serverLayers.ts", async () => ({
-      ...(await vi.importActual<typeof import("./serverLayers.ts")>("./serverLayers.ts")),
-      // The runtime never finishes building, so readiness stays `starting`.
-      makeServerOrchestrationRuntimeLayer: () => Layer.effectDiscard(Effect.never),
-    }));
-    const { createServer: createServerWithStartingRuntime } = await import("./wsServer");
     h.server = await createTestServer({
       cwd: stateDir,
       stateDir,
       persistenceLayer,
-      createServerFactory: createServerWithStartingRuntime,
+      createServerFactory: () => createServer({ orchestrationStartupGate: Effect.never }),
     });
     const addr = h.server.address();
     const port = typeof addr === "object" && addr !== null ? addr.port : 0;

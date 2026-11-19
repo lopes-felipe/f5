@@ -4347,6 +4347,124 @@ it.effect("still interrupts on genuine overload of distinct items", () => {
   }).pipe(Effect.scoped);
 });
 
+it.effect("admits the next item's lifecycle while an oversized item/completed prepares", () => {
+  const manager = new FakeCodexManager();
+  return Effect.gen(function* () {
+    // A command's item/completed carries its whole output. The byte ceiling is
+    // below that completion but above the later lifecycle events, and there are
+    // enough control slots, so only the small-control byte bypass admits them.
+    const gate = yield* makeGatedAdapter(manager, ["big-completed"], {
+      entries: 16,
+      bytes: 512 * 1024,
+      controls: 8,
+    });
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const collected = yield* collectUntilCompleted(adapter, 1);
+      const base = mergeBase("big-completion-thread");
+      manager.emit("event", {
+        ...base,
+        id: asEventId("big-completed"),
+        kind: "notification",
+        method: "item/completed",
+        itemId: asItemId("exec-big"),
+        payload: {
+          item: {
+            type: "commandExecution",
+            id: "exec-big",
+            command: "git show",
+            status: "completed",
+            aggregatedOutput: "x".repeat(1_100_000),
+          },
+        },
+      });
+      yield* Deferred.await(gate.entered);
+      emitCommandItem(manager, base, "item/started", "next-started", "exec-next");
+      emitCommandDelta(manager, base, "next-delta", "exec-next", "next output");
+      emitCommandItem(manager, base, "item/completed", "next-completed", "exec-next");
+      emitTurnCompleted(manager, base, "big-turn-completed");
+      assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
+      yield* Deferred.succeed(gate.release, undefined);
+      const events = yield* Fiber.join(collected);
+      assert.equal(events.filter((event) => event.type === "runtime.error").length, 0);
+      const next = events.filter((event) => event.itemId === "exec-next");
+      assert.deepEqual(
+        next.map((event) => event.type),
+        ["item.started", "content.delta", "item.completed"],
+      );
+      assert.equal(deltaText(next[1]!), "next output");
+      assert.equal(events.at(-1)?.type, "turn.completed");
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("delivers turn/completed after overflow even when the control lane is full", () => {
+  const manager = new FakeCodexManager();
+  return Effect.gen(function* () {
+    const gate = yield* makeGatedAdapter(manager, ["full-started"], {
+      entries: 1,
+      bytes: 1024 * 1024,
+      controls: 1,
+    });
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const collected = yield* collectUntilCompleted(adapter, 1);
+      const base = mergeBase("full-control-thread");
+      emitCommandItem(manager, base, "item/started", "full-started", "exec-0");
+      yield* Deferred.await(gate.entered);
+      // The held item/started fills the only control slot.
+      emitCommandDelta(manager, base, "full-0", "exec-0", "a");
+      emitCommandDelta(manager, base, "full-1", "exec-1", "b");
+      assert.equal(manager.interruptTurnImpl.mock.calls.length, 1);
+      emitCommandItem(manager, base, "item/completed", "full-completed", "exec-0");
+      emitTurnCompleted(manager, base, "full-turn-completed");
+      yield* Deferred.succeed(gate.release, undefined);
+      const events = yield* Fiber.join(collected);
+      const error = events.find((event) => event.type === "runtime.error");
+      assert.ok(error?.type === "runtime.error" && error.payload.historyReconciliationRequired);
+      assert.equal(events.at(-1)?.type, "turn.completed");
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("keeps flooding error events count-capped while turn/completed still lands", () => {
+  const manager = new FakeCodexManager();
+  return Effect.gen(function* () {
+    const gate = yield* makeGatedAdapter(manager, ["flood-started"], {
+      entries: 4,
+      bytes: 1024 * 1024,
+      controls: 2,
+    });
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const collected = yield* collectUntilCompleted(adapter, 1);
+      const base = mergeBase("parse-error-flood-thread");
+      emitCommandItem(manager, base, "item/started", "flood-started", "exec-0");
+      yield* Deferred.await(gate.entered);
+      for (let index = 0; index < 100; index++)
+        manager.emit("event", {
+          ...base,
+          id: asEventId(`parse-error-${index}`),
+          kind: "error",
+          method: "protocol/parseError",
+          message: "Received invalid JSON from codex app-server.",
+        });
+      // Error events are controls, not always-admitted terminals.
+      assert.equal(manager.interruptTurnImpl.mock.calls.length, 1);
+      emitTurnCompleted(manager, base, "flood-turn-completed");
+      yield* Deferred.succeed(gate.release, undefined);
+      const events = yield* Fiber.join(collected);
+      const warnings = events.filter(
+        (event) => event.type === "runtime.warning" && event.payload.category === "protocol",
+      );
+      assert.equal(warnings.length, 1);
+      const error = events.find((event) => event.type === "runtime.error");
+      assert.ok(error?.type === "runtime.error" && error.payload.historyReconciliationRequired);
+      assert.equal(events.at(-1)?.type, "turn.completed");
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(Effect.scoped);
+});
+
 it.effect("rolls a merged delta over at 64 KiB and seals it at preparation start", () => {
   const manager = new FakeCodexManager();
   return Effect.gen(function* () {

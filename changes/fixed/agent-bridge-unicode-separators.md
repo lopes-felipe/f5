@@ -1,1 +1,0 @@
-- Agent Bridge tool calls whose text contains Unicode line or paragraph separators no longer fail with a parse error.

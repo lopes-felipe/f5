@@ -45,6 +45,9 @@ function sameAmendment(left: ReadonlyArray<string>, right: ReadonlyArray<string>
 
 export function readCodexCommandApprovalOffer(params: unknown): CodexCommandApprovalOffer {
   const payload = record(params);
+  // Human checkpoints cannot be satisfied by session allowances or policy rules.
+  if (payload?.kind === "humanCommand")
+    return { decisions: new Set(["accept", "decline", "cancel"]) };
   const proposed = readAmendment(payload?.proposedExecpolicyAmendment);
   const available = payload?.availableDecisions;
   if (!Array.isArray(available)) {

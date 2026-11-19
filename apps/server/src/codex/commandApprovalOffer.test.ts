@@ -6,6 +6,21 @@ import {
 } from "./commandApprovalOffer.ts";
 
 describe("Codex command approval offers", () => {
+  it("restricts human checkpoints even when session and policy options are advertised", () => {
+    const offer = readCodexCommandApprovalOffer({
+      kind: "humanCommand",
+      availableDecisions: ["acceptForSession", "accept"],
+      proposedExecpolicyAmendment: ["git"],
+    });
+    expect(codexCommandApprovalOptions(offer)?.map((option) => option.decision)).toEqual([
+      "cancel",
+      "decline",
+      "accept",
+    ]);
+    expect(() => codexCommandApprovalDecision(offer, "acceptForSession")).toThrow();
+    expect(() => codexCommandApprovalDecision(offer, "acceptAlways")).toThrow();
+    expect(codexCommandApprovalDecision(offer, "accept")).toBe("accept");
+  });
   it("keeps the default buttons when the server offers nothing extra", () => {
     const offer = readCodexCommandApprovalOffer({ command: "ls" });
     expect(codexCommandApprovalOptions(offer)).toBeUndefined();

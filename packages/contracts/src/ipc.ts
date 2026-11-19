@@ -1266,6 +1266,9 @@ export interface NativeApi {
     getProviderInventory: (
       input: ServerGetProviderInventoryInput,
     ) => Promise<ProviderInstanceInventory>;
+    codexConfiguration?: (
+      input: import("./codexConfiguration").ServerCodexConfigurationInput,
+    ) => Promise<import("./codexConfiguration").CodexConfigurationResult>;
     saveProviderFeedback?: (
       input: import("./providerInventory").ServerSaveProviderFeedbackInput,
     ) => Promise<{ path: string }>;

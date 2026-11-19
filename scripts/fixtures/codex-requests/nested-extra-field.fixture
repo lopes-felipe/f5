@@ -1,0 +1,8 @@
+/* EXACT_CODEX_REQUEST */
+type Params = { capabilities: { experimentalApi: boolean; requiredHumanApproval?: boolean } };
+const request = { capabilities: { experimentalApi: true, requiredHumanAproval: true } };
+exact<Params>()(request);
+type Patch = { settings: { type: "gcp"; credentialFile?: string } | { type: "customGateway"; envKey?: string } };
+const patch = { settings: { type: "gcp" as const, credentialFiel: "/tmp/key" } };
+exact<Patch>()(patch);
+export {};

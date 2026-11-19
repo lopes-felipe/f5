@@ -9,6 +9,7 @@ import {
 
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
 import { WORKING_RIBBON_SLOT } from "~/lib/workingRibbon";
+import { COMPOSER_DOCK_HEIGHT_VAR } from "./composer/ComposerDock";
 import {
   advanceRibbon,
   collisionMargin,
@@ -31,6 +32,8 @@ export type WorkingRibbonReleaseReason = "escape" | "blur" | "no-space" | "inval
 
 export interface WorkingRibbonProps {
   text: string;
+  /** The Working status region; the animation never leaves this element. */
+  boundsElement: HTMLElement | null;
   /** Client coordinates of the label's right edge, at its vertical centre. */
   origin: RibbonPoint;
   onRelease: (reason: WorkingRibbonReleaseReason) => void;
@@ -82,6 +85,7 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
   const pressedRef = useRef(new Set<string>());
   const inputRef = useRef<RibbonInput>(STILL);
   const releasedRef = useRef(false);
+  const updateBoundsRef = useRef<(() => boolean) | null>(null);
   const [measureVersion, setMeasureVersion] = useState(0);
   const glyphs = Array.from(text);
 
@@ -148,9 +152,10 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
     simulation.widths = widths;
     simulation.heights = heights;
     simulation.advances = widths;
-    simulation.margin = collisionMargin(Math.max(0, ...widths), Math.max(0, ...heights));
+    simulation.margin = collisionMargin(Math.max(0, ...widths), Math.max(0, ...heights), 1);
     simulation.textWidth = widths.reduce((total, width) => total + width, 0);
     simulation.maxTrailLength = simulation.textWidth + RIBBON_PHYSICS.trailSlack;
+    updateBoundsRef.current?.();
     // Fits synchronously so glyphs added mid-flight never paint at the
     // stage's corner, and a longer label never trails out of the stage.
     fitToStageRef.current();
@@ -172,8 +177,61 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
     }
     if (releasedRef.current) return;
 
+    const boundsElement = latestPropsRef.current.boundsElement;
+    const parent = stage.offsetParent;
+    if (!boundsElement || !(parent instanceof HTMLElement)) {
+      releaseRef.current("invalid");
+      return;
+    }
+    // The parent's box and the dock height change only on resizes and dock style writes, so
+    // they are cached from observers. Each frame reads one rect: the Working row moves as
+    // the timeline streams, which no ResizeObserver reports.
+    const dockHost = parent.closest<HTMLElement>("[data-composer-dock-host]") ?? parent;
+    const readDockHeight = () =>
+      Math.max(
+        0,
+        Number.parseFloat(getComputedStyle(parent).getPropertyValue(COMPOSER_DOCK_HEIGHT_VAR)) || 0,
+      );
+    let dockHeight = readDockHeight();
+    let parentRect = parent.getBoundingClientRect();
+    const refreshCachedGeometry = () => {
+      dockHeight = readDockHeight();
+      parentRect = parent.getBoundingClientRect();
+    };
+    const stageStyle = { left: "", top: "", width: "", height: "" };
+    const setStageStyle = (key: keyof typeof stageStyle, value: string) => {
+      if (stageStyle[key] === value) return;
+      stageStyle[key] = value;
+      stage.style[key] = value;
+    };
+    const updateBounds = () => {
+      if (!boundsElement.isConnected) {
+        releaseRef.current("no-space");
+        return false;
+      }
+      const region = boundsElement.getBoundingClientRect();
+      const left = Math.max(region.left, parentRect.left);
+      const top = Math.max(region.top, parentRect.top);
+      const width = Math.max(0, Math.min(region.right, parentRect.right) - left);
+      const height = Math.max(0, Math.min(region.bottom, parentRect.bottom - dockHeight) - top);
+      setStageStyle(
+        "left",
+        String(left - parentRect.left - parent.clientLeft + parent.scrollLeft) + "px",
+      );
+      setStageStyle(
+        "top",
+        String(top - parentRect.top - parent.clientTop + parent.scrollTop) + "px",
+      );
+      setStageStyle("width", String(width) + "px");
+      setStageStyle("height", String(height) + "px");
+      const resized = simulation.bounds.width !== width || simulation.bounds.height !== height;
+      simulation.bounds = { width, height };
+      if (resized) fitToStageRef.current();
+      return !releasedRef.current;
+    };
+    updateBoundsRef.current = updateBounds;
+    if (!updateBounds()) return;
     const rect = stage.getBoundingClientRect();
-    simulation.bounds = { width: rect.width, height: rect.height };
     if (!hasPlayableSpace(simulation.bounds, simulation.margin, simulation.textWidth)) {
       releaseRef.current("no-space");
       return;
@@ -189,12 +247,18 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
     writeFrameRef.current();
     stage.focus({ preventScroll: true });
 
-    const resizeObserver = new ResizeObserver(() => {
+    const refreshBounds = () => {
       if (disposed) return;
-      simulation.bounds = { width: stage.clientWidth, height: stage.clientHeight };
-      fitToStageRef.current();
-    });
-    resizeObserver.observe(stage);
+      refreshCachedGeometry();
+      updateBounds();
+    };
+    const resizeObserver = new ResizeObserver(refreshBounds);
+    resizeObserver.observe(boundsElement);
+    resizeObserver.observe(parent);
+    // ComposerDock publishes its height as an inline custom property on the dock host.
+    const dockObserver = new MutationObserver(refreshBounds);
+    dockObserver.observe(dockHost, { attributes: true, attributeFilter: ["style"] });
+    window.addEventListener("resize", refreshBounds);
 
     const remeasure = () => {
       if (!disposed) setMeasureVersion((version) => version + 1);
@@ -222,7 +286,7 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
       frame = window.requestAnimationFrame(tick);
       const elapsed = lastFrameAt === null ? 0 : (now - lastFrameAt) / 1000;
       lastFrameAt = now;
-      if (!simulation.state) return;
+      if (!simulation.state || !updateBounds()) return;
       const ticks = advanceRibbon(
         simulation.state,
         inputRef.current,
@@ -237,8 +301,11 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
 
     return () => {
       disposed = true;
+      if (updateBoundsRef.current === updateBounds) updateBoundsRef.current = null;
       window.cancelAnimationFrame(frame);
       resizeObserver.disconnect();
+      dockObserver.disconnect();
+      window.removeEventListener("resize", refreshBounds);
       appearanceObserver.disconnect();
       fonts?.removeEventListener("loadingdone", remeasure);
       window.removeEventListener("blur", onWindowBlur);
@@ -294,8 +361,7 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
       aria-label="Steerable working indicator"
       aria-describedby={`${statusId} ${hintId}`}
       data-slot={WORKING_RIBBON_SLOT}
-      className="pointer-events-none absolute inset-x-0 top-0 z-10 overflow-hidden outline-none"
-      style={{ bottom: "var(--composer-dock-height, 0px)" }}
+      className="pointer-events-none absolute z-10 overflow-hidden outline-none"
       onKeyDown={onKeyDown}
       onKeyUp={onKeyUp}
       onBlur={() => release("blur")}
@@ -313,15 +379,12 @@ export const WorkingRibbon = memo(function WorkingRibbon(props: WorkingRibbonPro
           }}
           aria-hidden="true"
           data-ribbon-glyph=""
-          className="absolute left-0 top-0 inline-block select-none whitespace-pre text-lg font-semibold tabular-nums text-muted-foreground will-change-transform"
+          className="absolute left-0 top-0 inline-block select-none whitespace-pre text-xs tabular-nums text-muted-foreground will-change-transform"
         >
           {glyph}
         </span>
       ))}
-      <p
-        id={hintId}
-        className="absolute inset-x-0 bottom-2 text-center text-2xs text-faint-foreground"
-      >
+      <p id={hintId} className="sr-only">
         Arrow keys or WASD to steer · Esc to drop
       </p>
     </div>

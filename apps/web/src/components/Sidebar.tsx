@@ -61,7 +61,6 @@ import { useLiveActivityHours, useThreadSummaries } from "../threadSelectors";
 import { type Project, type ThreadListItem } from "../types";
 import { Button } from "./ui/button";
 import { ProfileSwitcher } from "./ProfileSwitcher";
-import { SidebarUsageLimits } from "./usage/SidebarUsageLimits";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -1425,7 +1424,6 @@ export default function Sidebar() {
         </AlertDialog>
         <div className="pb-safe-add">
           <SidebarFooter className="p-2">
-            <SidebarUsageLimits threadId={routeThreadId} />
             <SidebarMenu>
               <SidebarMenuItem className="flex items-center gap-1">
                 <div className="min-w-0 flex-1">

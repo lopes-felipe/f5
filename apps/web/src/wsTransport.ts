@@ -488,13 +488,16 @@ export class WsTransport {
           : "interactive";
     const now = Date.now();
     const deadlineAtMs = deadline.timeoutMs === null ? null : now + deadline.timeoutMs;
-    const longQueueDeadline = deadline.startedAtMs + LONG_LANE_QUEUE_DEADLINE_MS;
+    const queueBudget =
+      policy?.queueTimeoutMs ?? (lane === "long" ? LONG_LANE_QUEUE_DEADLINE_MS : undefined);
+    const boundedQueueDeadline =
+      queueBudget === undefined ? undefined : deadline.startedAtMs + queueBudget;
     const queueDeadlineAtMs =
-      lane !== "long"
+      boundedQueueDeadline === undefined
         ? deadlineAtMs
         : deadlineAtMs === null
-          ? longQueueDeadline
-          : Math.min(deadlineAtMs, longQueueDeadline);
+          ? boundedQueueDeadline
+          : Math.min(deadlineAtMs, boundedQueueDeadline);
 
     return new Promise<T>((resolve, reject) => {
       const request: TransportRequest = {

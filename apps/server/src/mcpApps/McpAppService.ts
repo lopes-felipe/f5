@@ -117,6 +117,8 @@ export const makeMcpAppService = Effect.gen(function* () {
     Effect.gen(function* () {
       const { apps, reference } = yield* authorize(input);
       const response = yield* apps.readResource({
+        ...(reference.originCallId ? { originCallId: reference.originCallId } : {}),
+        ...(reference.target ? { target: reference.target } : {}),
         threadId: input.threadId,
         server: reference.server,
         uri: input.uri,

@@ -1,7 +1,6 @@
 import { Schema } from "effect";
 
 import {
-  CommandId,
   IsoDateTime,
   ProjectId,
   ThreadId,
@@ -11,12 +10,7 @@ import {
 import { WorkflowModelSlot, WorkflowStepStatus } from "./planningWorkflow";
 import { WorkflowArchiveRestorations } from "./workflowArchive";
 
-/**
- * The `thread.turn.start` command that began a stage's current attempt. Only
- * that command's turn may complete the stage; absent on stages recorded
- * before this field existed, which keep the older any-finished-turn rule.
- */
-export const WorkflowStageDispatchCommandId = Schema.optional(Schema.NullOr(CommandId));
+import { WorkflowStageDispatchCommandId } from "./workflowStageDispatch";
 
 export const CodeReviewWorkflowId = makeEntityId("CodeReviewWorkflowId");
 export type CodeReviewWorkflowId = typeof CodeReviewWorkflowId.Type;

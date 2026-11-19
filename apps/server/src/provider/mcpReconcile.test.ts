@@ -87,6 +87,56 @@ describe("reconcileClaudeMcpServers", () => {
     ]);
   });
 
+  it("re-sends F5's in-process servers so the replacement does not disconnect them", async () => {
+    // The SDK disconnects any in-process (`type: "sdk"`) server a payload omits.
+    let statuses: Status[] = [
+      { name: "f5_thread", status: "connected", source: "sdk" },
+      { name: "f5_preview", status: "connected", source: "sdk" },
+      { name: "old-user", status: "connected", source: "dynamic" },
+    ];
+    const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => {
+      const removed = statuses
+        .filter((status) => !(status.name in servers) && status.source !== "project")
+        .map((status) => status.name);
+      statuses = statuses.filter((status) => !removed.includes(status.name));
+      const added = Object.keys(servers).filter(
+        (name) => !statuses.some((status) => status.name === name),
+      );
+      for (const name of added) statuses.push({ name, status: "connected", source: "dynamic" });
+      return { added, removed, errors: {} };
+    });
+    const preserved = { f5_thread: { type: "sdk" }, f5_preview: { type: "sdk" } };
+
+    const outcome = await reconcileClaudeMcpServers({
+      query: { mcpServerStatus: async () => statuses, setMcpServers },
+      desired: { "new-user": { type: "stdio" }, f5_thread: { type: "stdio" } },
+      owned: new Set(["old-user"]),
+      preserved,
+    });
+
+    expect(setMcpServers).toHaveBeenCalledWith({ "new-user": { type: "stdio" }, ...preserved });
+    expect(statuses.map((status) => status.name).toSorted()).toEqual([
+      "f5_preview",
+      "f5_thread",
+      "new-user",
+    ]);
+    expect([...outcome.owned]).toEqual(["new-user"]);
+    expect(outcome.applied).toEqual({ "new-user": { type: "stdio" } });
+    expect(outcome.result.converged).toBe(true);
+    expect(outcome.result.restartRequired).toBe(false);
+    expect(outcome.result.errors).toEqual([
+      {
+        server: "f5_thread",
+        message: "F5 uses this name for its own tools; F5 left its server in place.",
+      },
+    ]);
+    expect(outcome.result.servers.map((server) => [server.name, server.owned])).toEqual([
+      ["f5_thread", false],
+      ["f5_preview", false],
+      ["new-user", true],
+    ]);
+  });
+
   it("refreshes observed status after a partial failure and reconnects on the next attempt", async () => {
     let healthy = false;
     const fake = fakeQuery([], (name) =>

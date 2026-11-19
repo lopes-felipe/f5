@@ -3,6 +3,11 @@
 Contributor reference for the Codex adapter: rewind compatibility, protocol baselines and
 Release 0–5 behavior. The user guide is [providers/codex.md](../providers/codex.md).
 
+## Release 6: codex-cli 0.170.0
+
+See [the 0.170.0 integration matrix](codex-0.170.0.md) for the current baseline,
+native configuration controls, compatibility decisions and certification limits.
+
 ## Release 5: codex-cli 0.166.0
 
 Baseline: `rust-v0.166.0`, source revision
@@ -370,7 +375,7 @@ workflow stages. The goal's objective and state appear in the thread header. F5'
 token budget is authoritative: observed exhaustion pauses the native goal. Stop
 pauses it before interrupting the current native turn; a failed pause closes the
 provider process rather than allowing uncontrolled continuations. Resume and fork
-requests defer goal continuation. Reconciliation pauses an active goal with no live
+requests differ: only forks defer goal continuation. Reconciliation pauses an active goal with no live
 F5 owner and waits for any running turn before releasing the reservation.
 
 ### Attachments
@@ -429,7 +434,7 @@ Codex remains an external executable. Updating F5 or this baseline does not repl
 an operator's installation or custom executable path. For an npm installation,
 `npm install -g @openai/codex@0.162.0` installs the pinned certified version; verify
 `codex --version`, or select the upgraded executable in **Settings > Providers**.
-Compaction requires 0.159.2; the other native capability gates require the certified 0.162.0 runtime. Older CLIs retain their existing conversation and rewind paths. `deferGoalContinuation` is omitted from resume requests below 0.162.0.
+Compaction requires 0.159.2; the other native capability gates require the certified 0.162.0 runtime. Older CLIs retain their existing conversation and rewind paths. `deferGoalContinuation` is fork-only and is never sent on resume; the F5 goal coordinator pauses unowned goals after resume.
 
 ### Review targets and recovery
 

@@ -6,6 +6,132 @@ Unreleased entries now live as one file each under [`changes/`](changes/README.m
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-11-17
+
+### Added
+
+- The Claude card on the Usage page lists your plan's limit resets (such as **Full reset** and **Fable reset**) with their expiry, and each has a button that uses it after you confirm, as on claude.ai. A reset that can't be used yet says why, such as "Usable once you hit a limit". When your tightest Claude limit is used up, the reset Claude suggests next appears beside it, and threads paused on that limit resume once it is cleared. F5 reads the sign-in Claude Code already stores, so macOS may ask once to let F5 read it from the Keychain.
+- Markdown continuation in the composer, supported High effort defaults, and compact per-turn token footers.
+- Linux builds include a Debian/Ubuntu package alongside the AppImage. Installed Debian packages can download and install updates from F5.
+- Desktop users can enable **Keep running threads synced** in Conversation settings to keep all active threads ready to open, including threads outside the recent-thread cache.
+- VS Code and file-manager actions for local paths and project breadcrumbs.
+- Opt into **Proactive panels** in Conversation settings to open linked pull requests and completed-turn diffs. Manual panel choices take priority and dismissed turn diffs stay dismissed.
+- Choose a project image in Project settings by entering its path inside the project. Emoji, colored symbols and automatic monograms remain available.
+- Separate prompt and response navigation rails, optional follow controls, and visible earlier-history loading.
+- Conversation usage limits above the sidebar profile, with pinning and account-scoped refresh.
+- Start, queue messages to, list and read threads from a terminal with `f5 thread` (or `t3 thread`). Use `--wait` to print the reply and distinguish failed runs from threads or paused queues waiting for you. Local commands use your project defaults, fall back to a ready provider when needed, and can access all projects without enabling the external Agent Bridge. Lists load only the newest 100 threads; transcript reads fetch bounded pages while preserving full text.
+- Workflow archive, restore and explicit deletion actions, with shared-thread protection and atomic child deletion.
+- A pull request's **Checks** tab lists the checks of the latest commit by workflow, with how long each ran. A failed GitHub Actions job shows its log below it, cut down to the lines around the first error, with **Copy** and **Open full log**. **Re-run failed jobs** starts the failed and cancelled jobs again after you confirm, from the tab, the status checklist or the queue's side panel; it needs write access to the repository. **Fix CI with F5** now gives the agent up to three failing checks with the end of their logs. Logs and re-runs are for GitHub Actions; other checks and forges are listed with a link to their own page.
+- Pull requests shows what changed since you last opened each one. A changed row is bold and names its first two changes, such as "2 new comments · Checks failed"; the bell in the title bar counts the changed pull requests and lists the 20 most recent, with **Mark these seen** for the ones listed. Opening a pull request marks it seen. Changes are tracked for GitHub accounts, and pull requests found before this version start as seen.
+- Select several pull requests in the queue with their checkboxes, the X key, Shift-click or a section's checkbox, then **Snooze**, **Ignore** or **Mark seen** them together. **Merge ready** merges the selected pull requests that are ready, up to 10 at a time on GitHub: it lists each with its commit and merge method, merges after one confirmation, and reports each result.
+- Save a search and its filters as a tab above the queue with **Save view**, up to 12. Each tab shows how many of its pull requests need you, and can be renamed or deleted from the **⋯** at the end of the tabs.
+- Reply to an assistant response from its hover actions. A removable “Replying to” bar survives draft reloads and stashing, and sends the response's IDs, opening text, and associated subagents as context.
+- Watched GitHub PRs can refresh from host events instead of waiting for the two-minute sweep. Enable the preview with F5_GITHUB_PR_EVENTS=1; polling remains the fallback, and subscriptions are cleaned up when watches stop.
+- Muse Code now shows its session and weekly limits with the reported subscription tier. Explicitly configured CLIProxyAPI hubs can read the selected xAI or Antigravity account, and Antigravity history uses a stable Google account fingerprint when userinfo is available.
+- OpenCode native todo updates now appear in the task checklist, including progress, cancellations, clears, and updates recovered from the native todo inventory.
+- Choose status only, status and messages, or every step for screen reader announcements in Conversation settings. The default remains status only, and the choice is saved on this device.
+- Windows installations can run F5 as a per-user Task Scheduler service, with background logs, graceful shutdown, restart, and the launcher's existing update handoff. The service runs while its user is signed in.
+- The custom theme editor's color swatches open a color picker, so Background, Text, Primary and Accent can be chosen visually with a saturation and brightness area and a hue bar, by pointer or arrow keys. Typing an exact color still works.
+
+### Changed
+
+- The box at the top of Home starts the thread itself. Pick the project, model, effort, **Agent** or **Plan**, access and **Local** or **New worktree**, then press `Enter`: the thread starts in the background and Home stays open, and `mod+Enter` also opens it. The box follows the **Send shortcut** setting: if it asks for `mod+Enter`, `Enter` adds a line and `mod+Enter` sends and stays. A send that fails keeps your text, and sending the same text again with the same project and settings after a lost connection starts one thread, not two. The confirmation's **Open** button waits for the new thread to arrive before it opens it. Text that begins with a `/` command or a skill, and anything that needs attachments or mentions, goes to the full composer, which the expand button opens with your text and settings.
+- Home is now a triage queue. Threads are grouped into **Needs a decision**, **Ready for review** (failed turns and finished work you have not opened), **Running** (with one row per active workflow) and **Pinned**, and the pane beside the queue shows the selected thread's request, error or last reply without opening it. From that pane you can approve or decline a request, answer a question, implement or revise a plan, resume a paused queue, reply to finished or failed work and queue a message behind a running turn; messages use the thread's own model and modes. `J`/`K` move, `O` opens, `E` settles, `H` snoozes, `P` pins and `R` starts a reply; `Enter` approves once or implements the plan (and opens other threads), `D` declines; `mod+shift+H` opens Home from anywhere. A line above the queue counts pull requests and upstream topics waiting on you and shows the next scheduled run, a usage limit above 50% and low disk space. The greeting, the resume banner, the Recent list and the `mod+1`–`9` project shortcut are gone from Home; recent threads are in the sidebar's Recent view.
+- Updated F5 icons, sidebar/header controls, model ordering, Find closing and composer readiness.
+- PR Hub's **Needs you**, the sidebar badge and pull request notifications now cover only reviews requested from you personally, your own pull requests that need a fix, and your pull requests that are ready to merge. A review requested from one of your teams reads "Review requested from your team" and no longer counts; add a team under **Settings → Git → Teams whose review requests are mine** to count its requests as yours. Pull requests with no activity for 30 days are stale: they leave **Needs you** and sort last (**Move PRs to Stale after**, 0 turns it off). Lists show the most recently updated pull request first instead of the longest-waiting one, **Ignore** has an **Undo** button, and search accepts `repo:owner/name`.
+- Usage limits use a shared snapshot cache and serialized account refreshes.
+- Pull requests is one queue instead of the Inbox and Focus views. It has a section per kind of work (**Review requested**, **Your action**, **Ready to merge**, **Waiting on others**, **Drafts**, **Team queue**, **Other**, **Stale**; the last four start collapsed and load when opened). Each row shows the review and check state, size, last update, linked F5 threads with their live status, and one button for the next step: **Review**, **Fix CI**, **Resolve conflicts**, **Update branch**, **Address feedback**, **Merge** or **Mark ready**. Selecting a row opens a side panel with its status and description, and Enter opens the whole pull request. Search suggests qualifiers and opens a pasted pull request link, a **Filter** menu with removable chips replaces the rows of filters, and the open pull request, search and filters are part of the address, so Back, Forward and links restore them. Sync details moved behind a status pill in the title bar, forge accounts moved to **Settings → Accounts**, and the page has single-key shortcuts (J/K, Space, Enter, Esc, /, A, M, S, E, O, R), listed in the keyboard shortcuts dialog.
+- The pull request page is redesigned. Its action bar has one button for the next step, a **Merge** button with **Merge now**, **Merge when ready** (the forge merges once reviews and checks pass) and the merge method, a **Review** button with **Approve**, **Comment** and **Request changes** when a review is requested from you, and **Snooze**; the rest, including **Convert to draft** and **Copy link**, number and branch name, is in the **⋯** menu. The tabs are **Overview**, **Conversation**, **Threads**, **Files**, **Checks** and **Guide**. **Overview** opens with the review, checks, branch and thread status, each with its step (**Request reviewers**, **View checks**, **Update branch** or **Resolve with F5**, **View threads**), and sync diagnostics are folded under **Sync details**. Reviewers are picked from a list instead of typed as comma-separated names, on the page and when re-requesting a review. The pull request panel beside a thread uses the same layout.
+- Conversations follow new messages again while scrolled to the bottom, and stop when you scroll
+  up. The Follow switch next to Jump to latest and the "Follow new messages by default" setting
+  are gone.
+- Switching the project folder's branch from F5 is no longer refused because other local
+  threads, including archived ones, reference the folder. Only live use blocks it: a running,
+  pending or queued turn, worktree setup, an agent session that is starting or running, an open
+  terminal or another profile. A new turn waits for a switch that is already under way. When the
+  switch is blocked, the error names the conversation and what it is doing instead of a generic
+  message, for started conversations too.
+- One workspace picker under the composer replaces the Local menu, the worktree chip, the branch
+  selector and the "Choose workspace" dialogs. Picking a branch under **New worktree from** opens
+  no dialog and creates nothing until you send. Rows for the project folder and existing
+  worktrees show how many conversations already work there, instead of asking you to confirm
+  sharing. **Switch branch here…** names the conversations that block the switch before you try
+  it.
+- A thread whose worktree is missing now shows **Recreate worktree** in its header, with
+  **Recreate from `<default branch>`** and **Continue in Local** in its menu, instead of a disabled
+  "Worktree missing" button. Archived threads show **Worktree removed**.
+- "Continue in project checkout" is now **Continue in Local**, matching the workspace picker.
+- **Use for this conversation** and **New conversation here** on the Worktrees page no longer ask
+  you to confirm sharing; the row already lists the conversations that use the checkout.
+- New assistant quotes in sent messages appear as inset, two-line cards with the selected passage highlighted and the comment below. Clicking a card opens and focuses its source response; cards keep their source identity when copied and stay out of Find results.
+- The floating Jump to latest control sits centered beside the Working indicator within the
+  conversation width, appears only once a conversation has messages, and shows its new-content dot
+  to the right of the button.
+- Weekly usage limits moved from the sidebar footer panel to a speedometer before the composer's
+  model picker. Its needle follows the selected provider's weekly consumption, its label announces
+  the percentage, and clicking it opens the limit details. The Usage shortcut stays in the sidebar
+  navigation.
+
+### Performance
+
+- The app no longer freezes for seconds when the database checkpoints while the disk is busy. Terminals and the interface keep responding; only work that needs the database waits for the checkpoint.
+- Merge message cleanup stays responsive with long malformed agent credits, Markdown links, or large runs of blank lines.
+- Project favicon discovery scans only the first 128 KiB of each metadata file, keeping lookups bounded while still finding icons declared near the start of large files.
+
+### Fixed
+
+- Agent Bridge tool calls whose text contains Unicode line or paragraph separators no longer fail with a parse error.
+- Background thread sync batches updates and backs off failed loads. Its desktop-only switch is disabled when using F5 in a browser.
+- Codex turns now record prompt-cache usage across all model requests, restoring cache history and cache-miss indicators while keeping context occupancy separate. Previously unreported historical usage remains unavailable.
+- Forgejo PR watches pass once required checks finish without failure, even if optional checks fail. Skipped jobs and warnings no longer keep watches pending. PR Hub refreshes Forgejo check status during polling and handles server-capped status pages and same-second check updates.
+- PR Hub no longer shows "results may be incomplete" while GitHub's request budget only delays part of a refresh. Waiting searches and detail reads continue on the next poll and are listed under the sync details line; your own pull requests and personal review requests are read first. The **Discover PRs from GitHub notifications** setting is now saved, and saving one PR Hub setting no longer clears text you were typing in another.
+- Proactive panels preserve manual choices across thread visits, keep dismissed PR panels closed, and open turn diffs without stale file previews or extra browser history entries. Rejected background message loads release their event-buffer retainers so stopped threads can leave the cache.
+- Project image choices wait for **Save image** before changing the saved icon. Linux downloads offer AppImage alongside Debian packages.
+- Pull requests is back in the sidebar's primary navigation with its "needs you" badge, alongside Usage. Usage limits sit above the profile footer and link to the full Usage page. The Pull requests page shows Settings in the footer; Settings and Usage retain their Back action.
+- Workflow deletion retries failed provider shutdowns and offers one cleanup prompt for orphaned worktrees. Reconnects clean retained deleted-thread state without replaying every historical deletion.
+- Workflow file-tree drops retain their mentions when editor focus arrives before a queued React render.
+- Large worktree submodule clones can run past five minutes while reporting progress. Updates with no output for five minutes stop with a warning instead of leaving worktree preparation stuck.
+- Opening a pull request from a notification no longer changes the Pull requests filter, and typing in its search no longer clears the list while results load. The forge account chosen for Pull requests now applies from startup, where the sidebar badge and notifications used the profile's GitHub account until the page was first opened. Pull request panels in threads no longer reload on every PR Hub update.
+- A pull request's checks show an icon for their own result. Failed, running and skipped checks used the same tick as passed ones, in a different colour.
+- Some of PR Hub's GitHub requests were refused before they were sent, because their paging options were written into the address: reviewer suggestions, the comment and changed-file reads behind review actions and review guides, and **Approve workflow runs**. They are sent now.
+- Error messages from a failed request no longer include a server stack trace. A terminal that could not be written to, for example, printed the error followed by a list of internal file paths; it now prints the error alone. The trace is kept in the server log.
+- Verbose Codex diagnostics, including large patch failure messages, no longer interrupt turns or block conversations with an incomplete-history error. Excess diagnostic text is summarized without consuming capacity reserved for session events.
+- Codex diagnostic excerpts are capped in both the timeline and native event log; omitted lines are counted, and the existing bounded stderr tail remains available for process-exit errors.
+- Pull requests on repositories with no review rule now show as "Ready to merge" and can be merged
+  from F5 once checks pass and the branch is clean. Before, they stayed in "Waiting on reviewers"
+  and Merge failed. Merge now is only offered for pull requests that are ready.
+- Claude Fable resets are identified separately from weekly resets, with a confirmation that explains which allowance the selected grant refills.
+- Claude Fable reset buttons and confirmation titles now consistently say "Fable reset", even when the account API supplies a weekly or full-reset label.
+- Reply and quote context preserves indentation, turn and subagent metadata, clipboard content, and the submitted reply target. Screen reader announcements no longer repeat an older step after failure and can announce identical messages again.
+- Windows service shutdown handles starting tasks and update trials safely, with one command lock per installation. PR subscription cleanup includes scheduler wait time, and one unavailable account no longer blocks the rest.
+- Muse account history distinguishes API keys. Antigravity waits for a verified account identity before accepting new quota data, preserving existing history through userinfo outages.
+- Windows service commands recover from interrupted commands and failed registrations, and can stop a server that never finishes starting. PR event watches retain changes received during a read and subscriptions during backoff, and wait for cleanup at shutdown.
+- Usage history keeps the last known Antigravity account identity during temporary userinfo failures. Incomplete Grok hub configuration reports an authentication error. Quote comments remain editable without shifting composer cursor offsets.
+- The workspace picker stays usable when worktree inventory is unavailable or incomplete.
+- Refused PR reviews now show GitHub's detailed reason. Drafts stay preserved, and submissions that require recovery keep guidance to check their saved state before retrying.
+- Mermaid diagrams no longer render as blank space; their size comes from the diagram itself and
+  fits narrow conversation panels.
+- Agents can publish screenshots from the thread's workspace or temporary directory, including
+  macOS `/tmp` paths, as durable conversation attachments with the `image_publish` tool.
+- Chat images distinguish loading, paths outside the available directories, unsupported sources
+  and failed loads.
+- The Worked for divider appears only after a turn finishes, including in threads started without
+  a user message.
+- Following stays pinned to the latest content while tool output and diffs grow inside existing
+  rows.
+- The message composer aligns with the conversation's content width and side margins.
+- Long agent questions and answer options scroll on their own, keeping the answer editor and
+  submit controls visible.
+- The Castlevania-inspired Working animation stays inside the Working indicator at its compact
+  font size.
+
+### Security
+
+- F5 development and server runtime requirements now use Node 26.13.1 with its HTTP/2 and HTTPS security fixes.
+- Sign-in links and browser fallback link opening reject addresses outside HTTP and HTTPS.
+- Workspace asset URLs are validated before use so a server response cannot redirect file previews to another origin.
+- Terminal history migration and deletion now ignore legacy filenames starting with `terminal_` (in any letter case), preventing those names from reading or deleting another thread's scrollback.
+
 ## [0.1.9] - 2026-11-14
 
 ### Added

@@ -159,6 +159,7 @@ export function resolveCodexLaunchArgv(input?: {
 }
 
 export interface BuildCodexAppServerCommandInput {
+  readonly modelProvider?: string;
   readonly providerLaunchArgs?: ReadonlyArray<string>;
   readonly environment?: NodeJS.ProcessEnv;
   readonly mcpServers?: Record<string, CodexMcpServerEntry> | null;
@@ -182,6 +183,11 @@ export const CODEX_PLUGINS_DISABLED_CONFIG_ARGS = [
   "features.plugins=false",
 ] as const satisfies ReadonlyArray<string>;
 
+/** Server-owned provider selection is appended after filtering user flags. */
+export function codexModelProviderConfigArgs(modelProvider?: string): ReadonlyArray<string> {
+  return modelProvider ? ["-c", "model_provider=" + JSON.stringify(modelProvider)] : [];
+}
+
 /** Build the one canonical argv used by every Codex app-server process. */
 export function buildCodexAppServerCommand(
   input: BuildCodexAppServerCommandInput = {},
@@ -197,7 +203,12 @@ export function buildCodexAppServerCommand(
     },
   );
   return {
-    argv: ["app-server", ...resolved.argv, ...managedArgs],
+    argv: [
+      "app-server",
+      ...resolved.argv,
+      ...managedArgs,
+      ...codexModelProviderConfigArgs(input.modelProvider),
+    ],
     dropped: resolved.dropped,
   };
 }

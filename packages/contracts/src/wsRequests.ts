@@ -1,5 +1,6 @@
 import * as Scheduled from "./scheduledTasks";
 import { AgentSessionImportInput } from "./agentSessions";
+import { ServerCodexConfigurationInput } from "./codexConfiguration";
 import { ThreadSearchInput } from "./threadSearch";
 import {
   MCP_APPS_WS_METHODS,
@@ -642,6 +643,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverRunProviderUpdate, ServerRunProviderUpdateInput),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
   tagRequestBody(WS_METHODS.serverGetProviderInventory, ServerGetProviderInventoryInput),
+  tagRequestBody(WS_METHODS.serverCodexConfiguration, ServerCodexConfigurationInput),
   tagRequestBody(WS_METHODS.serverSaveProviderFeedback, ServerSaveProviderFeedbackInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
   tagRequestBody(WS_METHODS.serverAddKeybinding, ServerAddKeybindingInput),

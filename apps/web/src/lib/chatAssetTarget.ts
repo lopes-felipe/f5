@@ -1,5 +1,6 @@
 import type { ProjectId, ThreadId, ProjectIssueAssetUrlInput } from "@t3tools/contracts";
 import { isNetworkPath, workspaceRelativeFilePath } from "@t3tools/shared/path";
+import { savedAttachmentFilename } from "@t3tools/shared/savedAttachmentPath";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { safeDecodeLocalPath } from "../local-paths";
@@ -68,10 +69,8 @@ export function resolveChatAssetTarget(
     if (target) return { identity: target.identity, path: absolute.slice(target.root.length + 1) };
     // Provider attachment context contains saved absolute paths. Only opaque attachment
     // filenames are eligible for this fallback; the server still confines the read.
-    const attachment = absolute.match(
-      /\/attachments\/([^/]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+)$/iu,
-    );
-    if (attachment?.[1]) return { identity: { kind: "attachments" }, path: attachment[1] };
+    const attachment = savedAttachmentFilename(absolute);
+    if (attachment) return { identity: { kind: "attachments" }, path: attachment };
   } catch {
     /* Invalid or remote paths have no local capability. */
   }

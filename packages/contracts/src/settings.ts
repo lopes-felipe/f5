@@ -135,6 +135,7 @@ const CodexHomePathSetting = Schema.String.pipe(
 );
 
 export const CodexSettings = Schema.Struct({
+  modelProvider: Schema.optionalKey(TrimmedNonEmptyString),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("codex"),
   homePath: CodexHomePathSetting,
@@ -683,6 +684,7 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 const CodexSettingsPatch = Schema.Struct({
+  modelProvider: Schema.optionalKey(TrimmedNonEmptyString),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   homePath: Schema.optionalKey(Schema.String),

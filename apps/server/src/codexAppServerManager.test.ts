@@ -11,6 +11,7 @@ import {
   ApprovalRequestId,
   DEFAULT_MODEL_BY_PROVIDER,
   EventId,
+  ProviderItemId,
   type ProviderEvent,
   type ProviderSession,
   ThreadId,
@@ -259,6 +260,129 @@ function createPendingApprovalHarness(
 
   return { manager, context, requestId, requireSession, writeMessage, emitEvent };
 }
+
+describe("Codex audio delivery", () => {
+  it("keeps the ordinary file when optional native audio configuration fails", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    Object.assign(context, {
+      cliVersion: "0.170.0",
+      reportedModelCapabilities: new Map([["gpt-5.3-codex", { inputModalities: ["audio"] }]]),
+    });
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "config/read") throw new Error("configuration timeout");
+      return { turn: { id: "turn" } };
+    });
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Use /tmp/audio.wav",
+      audioFiles: ["/tmp/audio.wav"],
+    });
+    const turn = sendRequest.mock.calls.find((call) => call[1] === "turn/start")?.[2] as {
+      input: Array<{ type: string }>;
+    };
+    expect(turn.input).toEqual([{ type: "text", text: "Use /tmp/audio.wav", text_elements: [] }]);
+  });
+  it.each([
+    ["0.170.0", false, ["audio"]],
+    ["0.170.0", true, ["text"]],
+    ["0.166.0", true, ["audio"]],
+    ["0.170.0", true, ["audio"]],
+  ])(
+    "keeps ordinary audio files usable (%s, enabled %s, %j)",
+    async (version, enabled, modalities) => {
+      const { manager, context, sendRequest } = createSendTurnHarness();
+      Object.assign(context, {
+        cliVersion: version,
+        reportedModelCapabilities: new Map([["gpt-5.3-codex", { inputModalities: modalities }]]),
+      });
+      sendRequest.mockImplementation(async (_context, method) =>
+        method === "config/read"
+          ? { config: { desktop: { f5_audio_attachments: enabled } } }
+          : { turn: { id: "turn_1" } },
+      );
+      await manager.sendTurn({
+        threadId: ThreadId.makeUnsafe("thread_1"),
+        input: "Convert the attached file /tmp/audio.wav",
+        audioFiles: ["/tmp/audio.wav", "/tmp/audio.wav"],
+      });
+      const turn = sendRequest.mock.calls.find((call) => call[1] === "turn/start")?.[2] as {
+        input: Array<{ type: string }>;
+      };
+      expect(turn.input.filter((entry) => entry.type === "localAudio")).toHaveLength(
+        version === "0.170.0" && enabled && modalities.includes("audio") ? 1 : 0,
+      );
+      expect(turn.input[0]).toMatchObject({
+        type: "text",
+        text: expect.stringContaining("/tmp/audio.wav"),
+      });
+    },
+  );
+  it("validates and dispatches a fixed model despite concurrent session changes", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    Object.assign(context, {
+      cliVersion: "0.170.0",
+      reportedModelCapabilities: new Map([["gpt-5.3-codex", { inputModalities: ["audio"] }]]),
+    });
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "config/read") {
+        context.session.model = "text-only";
+        return { config: { desktop: { f5_audio_attachments: true } } };
+      }
+      return { turn: { id: "turn_1" } };
+    });
+    await manager.sendTurn({
+      threadId: ThreadId.makeUnsafe("thread_1"),
+      attachments: [{ type: "localAudio", path: "/tmp/audio.wav" }],
+    });
+    expect(sendRequest.mock.calls.find((call) => call[1] === "turn/start")?.[2]).toMatchObject({
+      model: "gpt-5.3-codex",
+    });
+  });
+  it.each([
+    ["0.170.0", false, ["audio"]],
+    ["0.170.0", true, ["text", "image"]],
+    ["0.166.0", true, ["audio"]],
+  ])(
+    "rejects unsupported audio before turn dispatch (%s, enabled %s)",
+    async (version, enabled, modalities) => {
+      const { manager, context, sendRequest } = createSendTurnHarness();
+      Object.assign(context, {
+        cliVersion: version,
+        reportedModelCapabilities: new Map([["gpt-5.3-codex", { inputModalities: modalities }]]),
+      });
+      sendRequest.mockResolvedValue({ config: { desktop: { f5_audio_attachments: enabled } } });
+      await expect(
+        manager.sendTurn({
+          threadId: ThreadId.makeUnsafe("thread_1"),
+          attachments: [{ type: "localAudio", path: "/tmp/audio.wav" }],
+        }),
+      ).rejects.toThrow("audio attachments");
+      expect(sendRequest.mock.calls.some((call) => call[1] === "turn/start")).toBe(false);
+    },
+  );
+
+  it("sends an opted-in recording once as native localAudio", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    Object.assign(context, {
+      cliVersion: "0.170.0",
+      reportedModelCapabilities: new Map([["gpt-5.3-codex", { inputModalities: ["audio"] }]]),
+    });
+    sendRequest.mockImplementation(async (_context, method) =>
+      method === "config/read"
+        ? { config: { desktop: { f5_audio_attachments: true } } }
+        : { turn: { id: "turn_1" } },
+    );
+    await manager.sendTurn({
+      threadId: ThreadId.makeUnsafe("thread_1"),
+      attachments: [{ type: "localAudio", path: "/tmp/audio.wav" }],
+    });
+    const turns = sendRequest.mock.calls.filter((call) => call[1] === "turn/start");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.[2]).toMatchObject({
+      input: [{ type: "localAudio", path: "/tmp/audio.wav" }],
+    });
+  });
+});
 
 describe("CodexAppServerManager protocol diagnostics", () => {
   it.each(["Method not found", undefined])(
@@ -902,41 +1026,55 @@ describe("startSession", () => {
       await cleanupCodexFixture(manager, directory);
     }
   });
-  it("sends recovered context on the first real turn/start after resuming a replacement thread", async () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-recovery-context-"));
-    const binaryPath = path.join(directory, "codex.cjs");
-    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
-    const manager = new CodexAppServerManager();
-    vi.spyOn(
-      manager as unknown as { assertSupportedCodexCliVersion: () => string },
-      "assertSupportedCodexCliVersion",
-    ).mockReturnValue("0.162.0");
-    const requests = vi
-      .spyOn(
-        manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
-        "sendRequest",
-      )
-      .mockImplementation(async (_context, method) => {
-        if (method === "thread/resume") return { thread: { id: "replacement" } };
-        if (method === "turn/start") return { turn: { id: "turn" } };
-        return {};
-      });
-    try {
-      await manager.startSession({
-        threadId: asThreadId("recovery"),
-        cwd: directory,
-        runtimeMode: "full-access",
-        providerOptions: { codex: { binaryPath } },
-        resumeCursor: { threadId: "replacement", f5ResumedContextPending: true },
-        priorWorkSummary: "Recovered requirement: preserve the user's API",
-      });
-      await manager.sendTurn({ threadId: asThreadId("recovery"), input: "Continue" });
-      const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2];
-      expect(additionalContextText(first)).toContain("Recovered requirement");
-    } finally {
-      await cleanupCodexFixture(manager, directory);
-    }
-  });
+  it.each(["resume pending context", "fall back to a fresh thread"] as const)(
+    "sends recovered context when Codex must %s",
+    async (scenario) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "codex-recovery-context-"));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+      const manager = new CodexAppServerManager();
+      vi.spyOn(
+        manager as unknown as { assertSupportedCodexCliVersion: () => string },
+        "assertSupportedCodexCliVersion",
+      ).mockReturnValue("0.162.0");
+      const requests = vi
+        .spyOn(
+          manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method) => {
+          if (method === "thread/resume") {
+            if (scenario === "fall back to a fresh thread")
+              throw new Error("thread/resume failed: thread not found");
+            return { thread: { id: "replacement" } };
+          }
+          if (method === "thread/start") return { thread: { id: "replacement" } };
+          if (method === "turn/start") return { turn: { id: "turn" } };
+          return {};
+        });
+      try {
+        await manager.startSession({
+          threadId: asThreadId("recovery"),
+          cwd: directory,
+          runtimeMode: "full-access",
+          providerOptions: { codex: { binaryPath } },
+          resumeCursor:
+            scenario === "resume pending context"
+              ? { threadId: "replacement", f5ResumedContextPending: true }
+              : { threadId: "missing" },
+          priorWorkSummary: "Recovered requirement: preserve the user's API",
+        });
+        await manager.sendTurn({ threadId: asThreadId("recovery"), input: "Continue" });
+        const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2];
+        expect(additionalContextText(first)).toContain("Recovered requirement");
+        if (scenario === "fall back to a fresh thread") {
+          expect(requests.mock.calls.map((call) => call[1])).toContain("thread/start");
+        }
+      } finally {
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
 
   it("unarchives an archived Codex session and resumes it instead of starting fresh", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "codex-archived-resume-"));
@@ -2399,86 +2537,129 @@ describe("Codex collaboration notification routing", () => {
 });
 
 describe("runOneOffPrompt", () => {
-  it("collects assistant deltas from a synthetic Codex session", async () => {
-    const manager = new CodexAppServerManager();
-    const stopSession = vi
-      .spyOn(manager, "stopSession")
-      .mockImplementation(() => undefined as void);
-    vi.spyOn(manager, "startSession").mockImplementation(async (input) => ({
-      provider: "codex",
-      status: "ready",
-      runtimeMode: input.runtimeMode,
-      threadId: input.threadId,
-      cwd: input.cwd,
-      createdAt: "2026-04-08T10:00:00.000Z",
-      updatedAt: "2026-04-08T10:00:00.000Z",
-    }));
-    vi.spyOn(manager, "sendTurn").mockImplementation(async (input) => {
-      queueMicrotask(() => {
-        manager.emit("event", {
-          id: asEventId(`evt-${randomUUID()}`),
-          kind: "notification",
-          provider: "codex",
-          threadId: input.threadId,
-          createdAt: "2026-04-08T10:00:01.000Z",
-          method: "item/agentMessage/delta",
-          textDelta: "hello world",
-          payload: {
-            delta: "hello world",
-          },
-        });
-        manager.emit("event", {
-          id: asEventId(`evt-${randomUUID()}`),
-          kind: "notification",
-          provider: "codex",
-          threadId: input.threadId,
-          createdAt: "2026-04-08T10:00:02.000Z",
-          method: "turn/completed",
-          payload: {
-            turn: {
-              status: "completed",
+  it.each([undefined, "hide", "block", "show", "unknown"])(
+    "honors final presentation in one-off results (%s)",
+    async (mode) => {
+      const manager = new CodexAppServerManager();
+      const stopSession = vi
+        .spyOn(manager, "stopSession")
+        .mockImplementation(() => undefined as void);
+      vi.spyOn(manager, "startSession").mockImplementation(async (input) => ({
+        provider: "codex",
+        status: "ready",
+        runtimeMode: input.runtimeMode,
+        threadId: input.threadId,
+        cwd: input.cwd,
+        createdAt: "2026-04-08T10:00:00.000Z",
+        updatedAt: "2026-04-08T10:00:00.000Z",
+      }));
+      vi.spyOn(manager, "sendTurn").mockImplementation(async (input) => {
+        queueMicrotask(() => {
+          manager.emit("event", {
+            id: asEventId(randomUUID()),
+            kind: "notification",
+            provider: "codex",
+            threadId: input.threadId,
+            itemId: ProviderItemId.makeUnsafe("earlier-item"),
+            createdAt: "2026-04-08T10:00:01.000Z",
+            method: "item/agentMessage/delta",
+            textDelta: "earlier contribution\n",
+          });
+          manager.emit("event", {
+            id: asEventId(`evt-${randomUUID()}`),
+            kind: "notification",
+            provider: "codex",
+            threadId: input.threadId,
+            createdAt: "2026-04-08T10:00:01.000Z",
+            method: "item/agentMessage/delta",
+            textDelta: "hello world",
+            itemId: ProviderItemId.makeUnsafe("moderated-item"),
+            payload: {
+              delta: "hello world",
             },
-          },
+          });
+          if (mode)
+            manager.emit("event", {
+              id: asEventId(randomUUID()),
+              kind: "notification",
+              provider: "codex",
+              threadId: input.threadId,
+              createdAt: "2026-04-08T10:00:02.000Z",
+              method: "item/completed",
+              itemId: ProviderItemId.makeUnsafe("moderated-item"),
+              payload: {
+                item: {
+                  type: "agentMessage",
+                  text: "final response",
+                  moderation: {
+                    moderated: true,
+                    display: { mode, version: mode === "unknown" ? 2 : 1 },
+                  },
+                },
+              },
+            });
+          manager.emit("event", {
+            id: asEventId(`evt-${randomUUID()}`),
+            kind: "notification",
+            provider: "codex",
+            threadId: input.threadId,
+            createdAt: "2026-04-08T10:00:02.000Z",
+            method: "turn/completed",
+            payload: {
+              turn: {
+                status: "completed",
+              },
+            },
+          });
         });
+
+        return {
+          threadId: input.threadId,
+          turnId: "turn-one-off" as never,
+        };
       });
 
-      return {
-        threadId: input.threadId,
-        turnId: "turn-one-off" as never,
-      };
-    });
-
-    const text = await manager.runOneOffPrompt({
-      prompt: "Summarize the thread",
-      cwd: "/tmp/project",
-      model: "gpt-5.3-codex",
-      effort: "low",
-      timeoutMs: 1_000,
-    });
-
-    expect(text).toBe("hello world");
-    expect(manager.startSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        threadId: expect.stringMatching(/^one-off:/),
-        runtimeMode: "approval-required",
+      const text = await manager.runOneOffPrompt({
+        prompt: "Summarize the thread",
         cwd: "/tmp/project",
         model: "gpt-5.3-codex",
-      }),
-    );
-    expect(manager.sendTurn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        threadId: expect.stringMatching(/^one-off:/),
-        input: "Summarize the thread",
         effort: "low",
-      }),
-    );
-    expect(stopSession).toHaveBeenCalledWith(expect.stringMatching(/^one-off:/));
+        timeoutMs: 1_000,
+      });
 
-    await manager.runOneOffPrompt({ prompt: "No effort", timeoutMs: 1_000 });
-    expect(manager.sendTurn).toHaveBeenLastCalledWith(
-      expect.objectContaining({ input: "No effort", effort: "medium" }),
-    );
-  });
+      expect(text).toBe(
+        "earlier contribution\n" +
+          (mode === undefined
+            ? "hello world"
+            : mode === "show"
+              ? "final response"
+              : mode === "hide"
+                ? "Codex has replaced this response with a wellbeing support notice."
+                : "Codex blocked this response."),
+      );
+      expect(manager.startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: expect.stringMatching(/^one-off:/),
+          runtimeMode: "approval-required",
+          cwd: "/tmp/project",
+          model: "gpt-5.3-codex",
+        }),
+      );
+      expect(manager.sendTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: expect.stringMatching(/^one-off:/),
+          input: "Summarize the thread",
+          effort: "low",
+        }),
+      );
+      expect(stopSession).toHaveBeenCalledWith(expect.stringMatching(/^one-off:/));
+
+      await manager.runOneOffPrompt({ prompt: "No effort", timeoutMs: 1_000 });
+      expect(manager.sendTurn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ input: "No effort", effort: "medium" }),
+      );
+    },
+  );
 
   it("fails when the synthetic turn completes without assistant text", async () => {
     const manager = new CodexAppServerManager();
@@ -2782,6 +2963,9 @@ describe("runOneOffPrompt warm app-server reuse", () => {
     expect(codexOneOffPoolKey({ codex: { homePath: "/homes/work" } })).not.toBe(
       codexOneOffPoolKey({ codex: { homePath: "/homes/personal" } }),
     );
+    expect(codexOneOffPoolKey({ codex: { modelProvider: "team" } })).not.toBe(
+      codexOneOffPoolKey({ codex: { modelProvider: "personal" } }),
+    );
     manager.stopAll();
   });
 
@@ -2893,6 +3077,24 @@ describe("runOneOffPrompt warm app-server reuse", () => {
     expect(threadStarts).toHaveLength(1);
     expect(threadStarts[0]?.[2]).toEqual(expect.objectContaining({ cwd: process.cwd() }));
     manager.stopAll();
+  });
+
+  it("opens read-only one-off threads on cold and warm workers", async () => {
+    const { manager, startSession, sendRequest } = createOneOffPoolHarness();
+    try {
+      await manager.runOneOffPrompt({ prompt: "cold", runtimeMode: "approval-required" });
+      await manager.runOneOffPrompt({ prompt: "warm", runtimeMode: "approval-required" });
+      expect(startSession).toHaveBeenCalledTimes(1);
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({ runtimeMode: "approval-required" }),
+      );
+      expect(sendRequest.mock.calls.find((call) => call[1] === "thread/start")?.[2]).toMatchObject({
+        sandbox: "read-only",
+        approvalPolicy: "untrusted",
+      });
+    } finally {
+      manager.stopAll();
+    }
   });
 
   it("replaces a warm app-server that exited while idle", async () => {
@@ -3578,6 +3780,45 @@ describe("Codex server requests", () => {
     (context.session as { runtimeMode: string }).runtimeMode = "approval-required";
     command(93);
     expect(context.pendingApprovals.size).toBe(1);
+  });
+
+  it("never lets a session allowance satisfy a human checkpoint", async () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext(manager);
+    const internals = manager as unknown as {
+      handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      requireSession: (threadId: string) => unknown;
+      writeMessage: (...args: unknown[]) => Promise<void>;
+    };
+    vi.spyOn(internals, "requireSession").mockReturnValue(context);
+    const writeMessage = vi.spyOn(internals, "writeMessage").mockResolvedValue();
+    const ask = (id: number, kind: string) =>
+      internals.handleServerRequest(context, {
+        id,
+        method: "item/commandExecution/requestApproval",
+        params: {
+          kind,
+          threadId: "thread_1",
+          turnId: "turn_1",
+          itemId: "item-" + id,
+          command: "ls",
+        },
+      });
+    ask(190, "command");
+    await manager.respondToRequest(
+      asThreadId("thread_1"),
+      [...context.pendingApprovals.keys()][0]!,
+      "acceptForSession",
+    );
+    writeMessage.mockClear();
+    ask(191, "humanCommand");
+    expect(writeMessage).not.toHaveBeenCalled();
+    const requestId = [...context.pendingApprovals.keys()][0]!;
+    await expect(
+      manager.respondToRequest(asThreadId("thread_1"), requestId, "acceptForSession"),
+    ).rejects.toThrow();
+    await manager.respondToRequest(asThreadId("thread_1"), requestId, "accept");
+    expect(writeMessage).toHaveBeenCalledWith(context, { id: 191, result: { decision: "accept" } });
   });
 
   it("answers a session-allowed request only with a decision the request offers", () => {
@@ -4967,39 +5208,55 @@ it("keeps the review/start identity when Codex starts a transport control turn w
   expect(manager.listenerCount("event")).toBe(0);
 });
 
-it("reads one bounded native item page for an owned child thread", async () => {
-  const { manager, context, sendRequest } = createThreadControlHarness();
-  Object.assign(context, { childThreadIds: new Set(["native-child"]) });
-  sendRequest.mockResolvedValue({
-    data: [
-      { item: { type: "agentMessage", text: "first page" } },
-      { item: { text: "x".repeat(70_000) } },
-    ],
-    nextCursor: "next-native-page",
-  });
-  const page = await manager.inspectNativeOperation({
-    threadId: asThreadId("thread_1"),
-    generation: 1,
-    kind: "task",
-    nativeId: "native-child",
-    cursor: "current-native-page",
-    limit: 2,
-  });
-  expect(sendRequest).toHaveBeenCalledWith(context, "thread/items/list", {
-    threadId: "native-child",
-    cursor: "current-native-page",
-    limit: 2,
-    sortDirection: "asc",
-  });
-  expect(page).toEqual({
-    data: [
-      { item: { type: "agentMessage", text: "first page" } },
-      { omitted: true, reason: "Native output exceeds the page limit." },
-    ],
-    nextCursor: "next-native-page",
-  });
-  expect(sendRequest).toHaveBeenCalledTimes(1);
-});
+it.each([false, true])(
+  "reads a bounded, presented native child page (moderated: %s)",
+  async (moderated) => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, { childThreadIds: new Set(["native-child"]) });
+    sendRequest.mockResolvedValue({
+      data: [
+        {
+          item: {
+            type: "agentMessage",
+            text: "first page",
+            ...(moderated
+              ? { moderation: { moderated: true, display: { mode: "block", version: 1 } } }
+              : {}),
+          },
+        },
+        { item: { text: "x".repeat(70_000) } },
+      ],
+      nextCursor: "next-native-page",
+    });
+    const page = await manager.inspectNativeOperation({
+      threadId: asThreadId("thread_1"),
+      generation: 1,
+      kind: "task",
+      nativeId: "native-child",
+      cursor: "current-native-page",
+      limit: 2,
+    });
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/items/list", {
+      threadId: "native-child",
+      cursor: "current-native-page",
+      limit: 2,
+      sortDirection: "asc",
+    });
+    expect(page).toMatchObject({
+      data: [
+        {
+          item: {
+            type: "agentMessage",
+            text: moderated ? "Codex blocked this response." : "first page",
+          },
+        },
+        { omitted: true, reason: "Native output exceeds the page limit." },
+      ],
+      nextCursor: "next-native-page",
+    });
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+  },
+);
 
 it.each(
   ["started", "interacted", "completed", "interrupted"].flatMap((kind) => [
@@ -5184,19 +5441,107 @@ it("reads raw child transcript pages with ownership and envelope checks", async 
   );
 });
 
-it.each(["0.144.3", "0.147.0", "0.160.1", "0.162.0"])(
-  "gates goal deferral on resume for %s",
+it.each(["0.144.3", "0.147.0", "0.160.1", "0.162.0", "0.170.0"])(
+  "never sends fork-only goal deferral fields on resume for %s",
   (cliVersion) => {
     const params = buildCodexThreadOpenRequestParams({
       resumeThreadId: "thread",
       runtimeMode: "full-access",
       cliVersion,
     });
-    expect("deferGoalContinuation" in params.resume!).toBe(cliVersion === "0.162.0");
+    expect("deferGoalContinuation" in params.resume!).toBe(false);
   },
 );
 
 describe("session catalog paging and effective fallback", () => {
+  it.each(["fresh recovery", "resume", "refresh failure", "same provider"] as const)(
+    "binds catalog metadata to the opened provider (%s)",
+    async (scenario) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "codex-provider-refresh-"));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+      const manager = new CodexAppServerManager();
+      vi.spyOn(
+        manager as unknown as { assertSupportedCodexCliVersion: () => string },
+        "assertSupportedCodexCliVersion",
+      ).mockReturnValue("0.170.0");
+      const openedProvider = scenario === "same provider" ? "old" : "new";
+      const events: ProviderEvent[] = [];
+      manager.on("event", (event) => events.push(event));
+      const requests = vi
+        .spyOn(
+          manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method, params) => {
+          if (method === "thread/resume" && scenario === "fresh recovery")
+            throw new Error("thread/resume failed: thread not found");
+          if (method === "thread/start" || method === "thread/resume")
+            return { thread: { id: "opened", modelProvider: openedProvider }, serviceTier: null };
+          if (method === "model/list") {
+            const selected = (params as { modelProvider?: string }).modelProvider;
+            if (selected === "new" && scenario === "refresh failure")
+              throw new Error("catalog offline");
+            return {
+              data: [
+                {
+                  model: "gpt-fresh",
+                  limits: { contextWindowTokens: selected === "new" ? 872_000 : 100_000 },
+                  supportedReasoningEfforts: [],
+                  serviceTiers: selected === "old" ? [{ id: "priority" }] : [],
+                },
+              ],
+              nextCursor: null,
+            };
+          }
+          if (method === "turn/start") return { turn: { id: "turn" } };
+          return {};
+        });
+      const fallback = createReportedCodexModelCapabilities({
+        model: "gpt-fresh",
+        supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+        serviceTiers: [{ id: "priority" }],
+      });
+      try {
+        const session = await manager.startSession({
+          threadId: asThreadId("provider-refresh"),
+          model: "gpt-fresh",
+          serviceTier: "fast",
+          cwd: directory,
+          runtimeMode: "full-access",
+          resumeCursor: { threadId: "saved", f5ModelProvider: "old" },
+          providerOptions: { codex: { binaryPath } },
+          effectiveModelCapabilities: new Map([["gpt-fresh", fallback]]),
+        });
+        expect(session.resumeCursor).toMatchObject({ f5ModelProvider: openedProvider });
+        for (const call of requests.mock.calls.filter(
+          (call) => call[1] === "thread/start" || call[1] === "thread/resume",
+        ))
+          expect(call[2]).not.toHaveProperty("serviceTier");
+        expect(
+          events.find((event) => event.method === "session/configured")?.payload,
+        ).toMatchObject({ config: { serviceTier: null } });
+        const catalogs = requests.mock.calls.filter((call) => call[1] === "model/list");
+        expect(
+          catalogs.map((call) => (call[2] as { modelProvider: string }).modelProvider),
+        ).toEqual(scenario === "same provider" ? ["old"] : ["old", "new"]);
+        await manager.sendTurn({
+          threadId: asThreadId("provider-refresh"),
+          input: "hello",
+          effort: "high",
+        });
+        const turn = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2];
+        if (scenario === "refresh failure")
+          expect(turn).toMatchObject({ effort: "high", serviceTier: "priority" });
+        else
+          expect(turn).toMatchObject({
+            serviceTier: scenario === "same provider" ? "priority" : null,
+          });
+      } finally {
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
   it.each(["partial", "failed", "paged"] as const)(
     "uses fresh restrictions and hidden later-page metadata: %s",
     async (mode) => {

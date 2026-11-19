@@ -64,6 +64,8 @@ export function readMcpAppDocument(response: unknown, uri: string) {
 }
 
 export const snapshotMcpApp = (input: {
+  readonly originCallId?: string;
+  readonly target?: import("@t3tools/contracts").McpResourceRouting["target"];
   readonly attachmentsDir: string;
   readonly threadId: ThreadId;
   readonly activityId: string;
@@ -100,6 +102,8 @@ export const snapshotMcpApp = (input: {
       server: input.server,
       tool: input.tool,
       resourceUri: input.resourceUri,
+      ...(input.originCallId ? { originCallId: input.originCallId } : {}),
+      ...(input.target ? { target: input.target } : {}),
       ...(document.csp ? { csp: document.csp } : {}),
       ...(document.permissions ? { permissions: document.permissions } : {}),
       ...(document.prefersBorder !== undefined ? { prefersBorder: document.prefersBorder } : {}),

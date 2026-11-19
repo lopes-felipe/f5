@@ -3,6 +3,7 @@ import type { ComputerStepSummary } from "@t3tools/contracts";
 export const COMPUTER_ACTION_VERB: Record<string, readonly [ongoing: string, done: string]> = {
   batch: ["Running steps", "Ran steps"],
   wait: ["Waiting", "Waited"],
+  waitTarget: ["Waiting for a turn", "Waited for a turn"],
   requestForeground: ["Requesting foreground", "Requested foreground"],
   screenshot: ["Taking a screenshot", "Took a screenshot"],
   zoom: ["Zooming in", "Zoomed in"],
@@ -29,6 +30,7 @@ const TOOL_OPS: Record<string, string> = {
   element_action: "elementAction",
   open_app: "openApp",
   activate_app: "activateApp",
+  wait_for_target: "waitTarget",
 };
 /** The computer op for a `computer_*` tool name, with or without its `mcp__server__` prefix. */
 export function computerToolOp(toolName: string | undefined): string | undefined {
@@ -302,6 +304,21 @@ export function extractComputerStep(
       ? { keyChord: keyChordFromKeys(input?.keys), repeat: input?.repeat }
       : {}),
     ...(op === "type" ? { typedLength: textLength } : {}),
-    outcome: isError ? error?._tag : structured?.outcome,
+    outcome: isError
+      ? error?._tag
+      : op === "waitTarget"
+        ? waitTargetOutcome(structured)
+        : structured?.outcome,
   });
+}
+
+/**
+ * `ComputerTargetAvailability` as one word. A timeout always carries the last blocking reason,
+ * so the timeout is checked first and keeps that reason as a suffix.
+ */
+function waitTargetOutcome(structured: Record<string, unknown> | undefined): unknown {
+  if (structured?.available === true) return "available";
+  const reason = typeof structured?.reason === "string" ? structured.reason : undefined;
+  if (structured?.timedOut === true) return reason ? `timed-out-${reason}` : "timed-out";
+  return reason;
 }

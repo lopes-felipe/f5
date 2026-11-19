@@ -4,6 +4,7 @@ import { CODEX_MAX_INCOMING_MESSAGE_BYTES, ProviderLineReader } from "./lineRead
 
 import { type CodexMcpServerEntry, type McpServerStartupStatus } from "@t3tools/contracts";
 import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "@t3tools/shared/codexOAuthTiming";
+import { supportsCodexRelease6 } from "@t3tools/shared/providerRuntimeCapabilities";
 import {
   assertSupportedCodexCliVersion,
   buildCodexInitializeParams,
@@ -53,6 +54,8 @@ interface JsonRpcNotification {
 }
 
 export interface CodexControlEnvironmentConfig {
+  readonly modelProvider?: string;
+  readonly explicitGatewayOauth?: boolean;
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly binaryPath?: string;
   readonly homePath?: string;
@@ -258,6 +261,7 @@ export class CodexControlClient extends EventEmitter<{
       codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
     );
     const appServerCommand = buildCodexAppServerCommand({
+      ...(environment.modelProvider ? { modelProvider: environment.modelProvider } : {}),
       ...(environment.launchArgs ? { providerLaunchArgs: environment.launchArgs } : {}),
       environment: childEnvironment,
       mcpServers: environment.mcpServers ?? {},
@@ -301,7 +305,17 @@ export class CodexControlClient extends EventEmitter<{
       if (signal.aborted) client.close();
     }
     try {
-      await client.sendRequest("initialize", buildCodexInitializeParams());
+      await client.sendRequest("initialize", {
+        ...buildCodexInitializeParams(),
+        ...(environment.explicitGatewayOauth
+          ? {
+              capabilities: {
+                ...buildCodexInitializeParams().capabilities,
+                explicitGatewayOauth: true,
+              },
+            }
+          : {}),
+      });
       await client.writeMessage({
         method: "initialized",
       });
@@ -617,7 +631,13 @@ export class CodexControlClient extends EventEmitter<{
   }
 
   async listModelPages(maxPages = 10) {
-    return readCodexModelPages((params) => this.sendRequest("model/list", params), { maxPages });
+    const modelProvider = supportsCodexRelease6(this.cliVersion)
+      ? this.environment?.modelProvider
+      : undefined;
+    return readCodexModelPages((params) => this.sendRequest("model/list", params), {
+      maxPages,
+      ...(modelProvider ? { modelProvider } : {}),
+    });
   }
 
   /** `skills/list` entries (one per requested cwd) with their skills. */
@@ -639,6 +659,15 @@ export class CodexControlClient extends EventEmitter<{
 
   async readAccount(): Promise<Record<string, unknown>> {
     return this.sendRequest("account/read", {});
+  }
+
+  /** Restricted callers select methods; this never exposes arbitrary RPC to the browser. */
+  async configurationRequest(
+    method: string,
+    params: unknown = {},
+    timeoutMs = 10_000,
+  ): Promise<unknown> {
+    return this.sendRequest(method, params, timeoutMs);
   }
 
   async listAccountSessions(): Promise<Record<string, unknown>> {

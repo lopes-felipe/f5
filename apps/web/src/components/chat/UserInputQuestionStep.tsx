@@ -244,6 +244,7 @@ export function UserInputQuestionStep({
       ref={containerRef}
       tabIndex={-1}
       data-user-input-shortcut-scope={shortcutScope}
+      data-composer-question=""
       className="outline-none"
       onKeyDown={onPanelKeyDown}
       onFocus={() => {

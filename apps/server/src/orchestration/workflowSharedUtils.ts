@@ -10,27 +10,55 @@ import { OrchestrationCommandInvariantError } from "./Errors.ts";
 export const WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE = 0.5;
 export const WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT = 116_000;
 
-export function workflowPromptFitError(input: {
-  readonly prompt: string;
+interface WorkflowArtifactFitInput {
   readonly artifacts: ReadonlyArray<string>;
   readonly targetSlot: WorkflowModelSlot;
   readonly thread?: Pick<OrchestrationThread, "estimatedContextTokens"> | null;
+  readonly contextUsageTokens?: number;
+  readonly contextWindowTokens?: number;
+  readonly promptFramingTokens?: number;
+}
+
+type WorkflowPromptFitInput = WorkflowArtifactFitInput & {
+  readonly prompt: string;
   readonly artifactLabel: string;
   readonly enforceArtifactBudget: boolean;
-}): OrchestrationCommandInvariantError | null {
+};
+
+export function workflowPromptFit(
+  input: WorkflowPromptFitInput,
+):
+  | { readonly kind: "fits" }
+  | { readonly kind: "rendered-ceiling" | "artifact-budget"; readonly detail: string } {
   if (input.prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
-    return new OrchestrationCommandInvariantError({
-      commandType: "workflow.turn.start",
+    return {
+      kind: "rendered-ceiling",
       detail: `${input.artifactLabel} rendered prompt is ${input.prompt.length} characters; maximum is ${WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT}.`,
-    });
+    };
   }
-  if (!input.enforceArtifactBudget) return null;
+  if (!input.enforceArtifactBudget && input.contextUsageTokens === undefined)
+    return { kind: "fits" };
   const fit = workflowArtifactFit(input);
-  return fit.fits
+  const availableTokens = input.enforceArtifactBudget
+    ? fit.availableTokens
+    : contextHeadroom(input);
+  return fit.estimatedTokens <= availableTokens
+    ? { kind: "fits" }
+    : {
+        kind: "artifact-budget",
+        detail: `${input.artifactLabel} requires an estimated ${fit.estimatedTokens} tokens; only ${availableTokens} ${input.enforceArtifactBudget ? "authoritative-artifact " : ""}tokens are available.`,
+      };
+}
+
+export function workflowPromptFitError(
+  input: WorkflowPromptFitInput,
+): OrchestrationCommandInvariantError | null {
+  const fit = workflowPromptFit(input);
+  return fit.kind === "fits"
     ? null
     : new OrchestrationCommandInvariantError({
         commandType: "workflow.turn.start",
-        detail: `${input.artifactLabel} requires an estimated ${fit.estimatedTokens} tokens; only ${fit.availableTokens} authoritative-artifact tokens are available.`,
+        detail: fit.detail,
       });
 }
 
@@ -140,16 +168,21 @@ function isConsumableAssistantMessage(
 }
 
 function latestTurnAssistantMessage(
-  thread: WorkflowConsumableThread | null | undefined,
+  thread: Pick<WorkflowConsumableThread, "messages"> & {
+    readonly latestTurn: Pick<
+      NonNullable<WorkflowConsumableThread["latestTurn"]>,
+      "turnId" | "assistantMessageId"
+    >;
+  },
+  requireMatchingTurn: boolean,
 ): WorkflowConsumableThread["messages"][number] | null {
-  if (!thread?.latestTurn) {
-    return null;
-  }
-
   const preferredAssistantMessageId = thread.latestTurn.assistantMessageId;
   if (preferredAssistantMessageId) {
     const preferred = thread.messages.find((message) => message.id === preferredAssistantMessageId);
-    if (isConsumableAssistantMessage(preferred)) {
+    if (
+      isConsumableAssistantMessage(preferred) &&
+      (!requireMatchingTurn || preferred.turnId === thread.latestTurn.turnId)
+    ) {
       return preferred;
     }
   }
@@ -159,7 +192,7 @@ function latestTurnAssistantMessage(
       .toReversed()
       .find(
         (message) =>
-          message.turnId === thread.latestTurn?.turnId && isConsumableAssistantMessage(message),
+          message.turnId === thread.latestTurn.turnId && isConsumableAssistantMessage(message),
       ) ?? null
   );
 }
@@ -193,22 +226,36 @@ export function latestAssistantText(thread: {
 
 export function getFinishedConsumableLatestTurn(
   thread: WorkflowConsumableThread | null | undefined,
+): ReturnType<typeof getFinishedConsumableTurn> {
+  return getFinishedConsumableTurn(thread, thread?.latestTurn, false);
+}
+
+export function getFinishedConsumableTurn(
+  thread: Omit<WorkflowConsumableThread, "latestTurn"> | null | undefined,
+  turn:
+    | (Pick<
+        NonNullable<WorkflowConsumableThread["latestTurn"]>,
+        "turnId" | "assistantMessageId"
+      > & { readonly state: string })
+    | null
+    | undefined,
+  requireMatchingTurn = true,
 ): {
   readonly turnId: NonNullable<WorkflowConsumableThread["latestTurn"]>["turnId"];
   readonly assistantMessageId: WorkflowConsumableThread["messages"][number]["id"];
   readonly assistantText: string;
 } | null {
-  if (!thread?.latestTurn || thread.latestTurn.state !== "completed") {
+  if (!thread || turn?.state !== "completed") {
     return null;
   }
-  if (
-    thread.session?.status === "running" &&
-    thread.session.activeTurnId === thread.latestTurn.turnId
-  ) {
+  if (thread.session?.status === "running" && thread.session.activeTurnId === turn.turnId) {
     return null;
   }
 
-  const assistantMessage = latestTurnAssistantMessage(thread);
+  const assistantMessage = latestTurnAssistantMessage(
+    { messages: thread.messages, latestTurn: turn },
+    requireMatchingTurn,
+  );
   if (!assistantMessage) {
     return null;
   }
@@ -219,7 +266,7 @@ export function getFinishedConsumableLatestTurn(
   }
 
   return {
-    turnId: thread.latestTurn.turnId,
+    turnId: turn.turnId,
     assistantMessageId: assistantMessage.id,
     assistantText,
   };
@@ -288,16 +335,19 @@ export function formatAssistantFeedback(
     readonly reasoningText?: string | undefined;
   },
   combinedReasoningHeading = "Reviewer reasoning",
+  preserveWhitespace = false,
 ): AssistantFeedback | null {
-  const text = message.text.trim();
-  const reasoning = (message.reasoningText ?? "").trim();
-  if (text.length === 0 && reasoning.length === 0) {
+  const trimmedText = message.text.trim();
+  const trimmedReasoning = (message.reasoningText ?? "").trim();
+  const text = preserveWhitespace ? message.text : trimmedText;
+  const reasoning = preserveWhitespace ? (message.reasoningText ?? "") : trimmedReasoning;
+  if (!trimmedText && !trimmedReasoning) {
     return null;
   }
-  if (text.length === 0) {
+  if (!trimmedText) {
     return { text: reasoning, source: "reasoning-only" };
   }
-  if (reasoning.length === 0) {
+  if (!trimmedReasoning) {
     return { text, source: "text-only" };
   }
   return {
@@ -407,20 +457,25 @@ export function truncateWorkflowPromptArtifact(text: string, maxChars = 60_000):
   }).output;
 }
 
-export function workflowArtifactFit(input: {
-  readonly artifacts: ReadonlyArray<string>;
-  readonly targetSlot: WorkflowModelSlot;
-  readonly thread?: Pick<OrchestrationThread, "estimatedContextTokens"> | null;
-}): { fits: boolean; estimatedTokens: number; availableTokens: number } {
-  const contextWindow = estimateModelContextWindowTokens(
-    input.targetSlot.model,
-    input.targetSlot.provider,
-  );
+function contextHeadroom(input: WorkflowArtifactFitInput): number {
+  const contextWindow =
+    input.contextWindowTokens ??
+    estimateModelContextWindowTokens(input.targetSlot.model, input.targetSlot.provider);
   const outputReserve = Math.max(8_000, Math.floor(contextWindow * 0.15));
-  const contextTokens = input.thread?.estimatedContextTokens ?? 0;
-  const availableAfterContext = Math.max(0, contextWindow - outputReserve - contextTokens);
+  const contextTokens = input.contextUsageTokens ?? input.thread?.estimatedContextTokens ?? 0;
+  return Math.max(
+    0,
+    contextWindow - outputReserve - contextTokens - (input.promptFramingTokens ?? 0),
+  );
+}
+
+export function workflowArtifactFit(input: WorkflowArtifactFitInput): {
+  fits: boolean;
+  estimatedTokens: number;
+  availableTokens: number;
+} {
   const availableTokens = Math.floor(
-    availableAfterContext * WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE,
+    contextHeadroom(input) * WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE,
   );
   const estimatedTokens = input.artifacts.reduce(
     (total, artifact) => total + roughTokenEstimateFromCharacters(artifact.length),

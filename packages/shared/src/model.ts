@@ -1261,6 +1261,7 @@ export function createReportedClaudeModelCapabilities(
 
 /** Subset of Codex `model/list` `Model` entries that F5 reads. */
 export interface ReportedCodexModelInfo {
+  readonly inputModalities?: unknown;
   readonly model: string;
   readonly supportedReasoningEfforts?: ReadonlyArray<{ readonly reasoningEffort?: unknown }>;
   readonly defaultReasoningEffort?: unknown;
@@ -1318,6 +1319,12 @@ export function createReportedCodexModelCapabilities(
   const defaultServiceTier = nonEmptyString(info.defaultServiceTier);
   const upgradeTo = nonEmptyString(info.upgrade);
   return {
+    inputModalities: Array.isArray(info.inputModalities)
+      ? info.inputModalities.filter(
+          (value): value is "text" | "image" | "audio" =>
+            value === "text" || value === "image" || value === "audio",
+        )
+      : ["text", "image"],
     optionDescriptors:
       efforts.length > 0
         ? [

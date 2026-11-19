@@ -1,1 +1,0 @@
-- Select several pull requests in the queue with their checkboxes, the X key, Shift-click or a section's checkbox, then **Snooze**, **Ignore** or **Mark seen** them together. **Merge ready** merges the selected pull requests that are ready, up to 10 at a time on GitHub: it lists each with its commit and merge method, merges after one confirmation, and reports each result.

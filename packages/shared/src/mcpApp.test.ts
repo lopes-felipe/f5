@@ -11,10 +11,34 @@ import {
   mcpAppAllowAttribute,
   mcpAppContentSecurityPolicy,
   mcpAppToolCallableByApp,
+  mcpAppReferencesEqual,
   readMcpAppCsp,
   readMcpAppReference,
   readMcpAppResourceUri,
 } from "./mcpApp";
+
+it("keeps resource reference identity scoped to the originating connector account", () => {
+  const first = readMcpAppReference({
+    attachmentId: "a",
+    server: "apps",
+    tool: "read",
+    resourceUri: "ui://app",
+    originCallId: "call",
+    target: { connectorId: "drive", linkId: "work" },
+  })!;
+  expect(first.target).toEqual({ connectorId: "drive", linkId: "work" });
+  expect(
+    mcpAppReferencesEqual(first, {
+      ...first,
+      target: { connectorId: "drive", linkId: "personal" },
+    }),
+  ).toBe(false);
+  expect(
+    mcpAppReferencesEqual(first, { ...first, target: { connectorId: "drive", linkId: null } }),
+  ).toBe(false);
+  expect(mcpAppReferencesEqual(first, { ...first, originCallId: "other-call" })).toBe(false);
+  expect(mcpAppReferencesEqual(first, { ...first })).toBe(true);
+});
 
 describe("injectMcpAppDocumentGuard", () => {
   it("attests native frame activation through its private port despite app property overrides", () => {
@@ -177,6 +201,16 @@ describe("readMcpAppReference", () => {
     expect(readMcpAppReference(reference)).toEqual(reference);
     expect(readMcpAppReference({ ...reference, resourceUri: "https://x.test" })).toBeUndefined();
     expect(readMcpAppReference({ ...reference, server: "" })).toBeUndefined();
+    for (const target of [
+      null,
+      {},
+      { connectorId: "drive", linkId: "" },
+      { connectorId: "", linkId: null },
+    ])
+      expect(readMcpAppReference({ ...reference, target })).toBeUndefined();
+    expect(
+      readMcpAppReference({ ...reference, target: { connectorId: "drive", linkId: null } })?.target,
+    ).toEqual({ connectorId: "drive", linkId: null });
   });
 });
 

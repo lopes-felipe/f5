@@ -1,3 +1,4 @@
+import { presentCodexMessageItem } from "@t3tools/shared/codexMessagePresentation";
 import {
   type AgentTranscriptItem,
   type AgentsReadTranscriptInput,
@@ -29,7 +30,9 @@ export function normalizeCodexThreadItem(
   fallbackId: string,
 ): AgentTranscriptItem[] {
   const envelope = transcriptRecord(value);
-  const item = transcriptRecord(envelope?.item) ?? envelope;
+  const item = transcriptRecord(
+    presentCodexMessageItem(transcriptRecord(envelope?.item) ?? envelope),
+  );
   if (!item) return [];
   const type = normalizeCodexThreadItemType(item.type ?? item.kind);
   if (type === "hook_prompt") return [];

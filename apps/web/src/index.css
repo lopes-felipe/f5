@@ -1239,6 +1239,26 @@ label:has(> select#reasoning-effort) select {
   overscroll-behavior: contain;
 }
 
+/* Long agent questions scroll independently; answering and submitting stay
+   reachable in both composer layouts, including above an open terminal. */
+[data-slot="composer-dock"]:has([data-composer-question]) {
+  max-height: 85cqh;
+  overflow: visible;
+  --composer-editor-max-height: min(200px, 25cqh);
+}
+[data-slot="composer-dock"]:has([data-composer-question]) > div,
+[data-slot="composer-dock"]:has([data-composer-question]) [data-slot="composer-dock-column"],
+[data-slot="composer-dock"]:has([data-composer-question]) [data-slot="composer-tray"] {
+  min-height: 0;
+}
+[data-slot="composer-dock"]:has([data-composer-question]) [data-slot="composer-tray"] {
+  flex-shrink: 1;
+}
+[data-slot="composer-dock"]:has([data-composer-question]) [data-testid="composer-editor"] {
+  min-height: min(70px, 15cqh);
+  max-height: min(var(--composer-editor-max-height, 200px), 25cqh);
+}
+
 ::highlight(f5-thread-find) {
   background: color-mix(in oklch, var(--primary) 25%, transparent);
 }

@@ -1,5 +1,5 @@
 /** Pinned release certification; never float with the installed package. */
-export const CLAUDE_SDK_BASELINE_VERSION = "0.3.317";
+export const CLAUDE_SDK_BASELINE_VERSION = "0.3.326";
 export type ClaudeSdkDisposition = "canonical" | "diagnostics-only" | "ignored";
 
 export const CLAUDE_SDK_MESSAGE_DISPOSITIONS = {

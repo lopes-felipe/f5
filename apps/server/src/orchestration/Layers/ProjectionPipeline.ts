@@ -306,14 +306,16 @@ function resolveProjectedMessageState(
   readonly skillCall?: ProjectionThreadMessage["skillCall"] | undefined;
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
 } {
-  const text =
-    existingMessage && payload.streaming
+  const text = payload.replace
+    ? payload.text
+    : existingMessage && payload.streaming
       ? `${existingMessage.text}${payload.text}`
       : existingMessage && payload.text.length === 0
         ? existingMessage.text
         : payload.text;
-  const reasoningText =
-    payload.reasoningText !== undefined
+  const reasoningText = payload.replace
+    ? payload.reasoningText
+    : payload.reasoningText !== undefined
       ? existingMessage && payload.streaming
         ? `${existingMessage.reasoningText ?? ""}${payload.reasoningText}`
         : existingMessage && payload.reasoningText.length === 0
@@ -1154,6 +1156,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             ...existingRow.value,
             compaction: event.payload.compaction,
             estimatedContextTokens: event.payload.compaction.estimatedTokens,
+            ...(event.payload.compaction.freshSessionRecordId
+              ? { modelContextWindowTokens: event.payload.compaction.modelContextWindowTokens }
+              : {}),
             lastInteractionAt: event.occurredAt,
             updatedAt: event.occurredAt,
           });
@@ -1974,6 +1979,14 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           }
           yield* projectionThreadSessionRepository.upsert({
             ...existingRow.value,
+            ...(event.payload.compaction.freshSessionRecordId
+              ? {
+                  status: "stopped" as const,
+                  activeTurnId: null,
+                  capabilities: null,
+                  modelContextWindowTokens: event.payload.compaction.modelContextWindowTokens,
+                }
+              : {}),
             estimatedContextTokens: event.payload.compaction.estimatedTokens,
             tokenUsageSource: "estimated",
             updatedAt: event.occurredAt,

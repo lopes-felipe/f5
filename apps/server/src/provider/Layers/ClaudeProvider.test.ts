@@ -690,8 +690,8 @@ describe("current Claude catalog", () => {
     }
     expect(snapshot.modelCatalog?.status).toBe("menu");
   });
-  it("lists every gated model without an upgrade advisory on the bundled 2.1.317", async () => {
-    const snapshot = await runStatusForVersion("2.1.317");
+  it("lists every gated model without an upgrade advisory on the bundled 2.1.326", async () => {
+    const snapshot = await runStatusForVersion("2.1.326");
     for (const gate of VERSION_GATED_CLAUDE_MODELS)
       expect(snapshot.models.find((model) => model.slug === gate.slug)?.isUnlisted).not.toBe(true);
     expect(snapshot.message ?? "").not.toContain("too old");
@@ -700,7 +700,7 @@ describe("current Claude catalog", () => {
     expect(claudeSessionModelGateMessage("claude-sonnet-5-5", "2.1.298")).toBe(
       "This session runs Claude Code v2.1.298, which is too old for Claude Sonnet 5.5. Upgrade to v2.1.299 or newer.",
     );
-    expect(claudeSessionModelGateMessage("claude-sonnet-5-5", "2.1.317")).toBeUndefined();
+    expect(claudeSessionModelGateMessage("claude-sonnet-5-5", "2.1.326")).toBeUndefined();
     expect(claudeSessionModelGateMessage("claude-sonnet-5-5", undefined)).toBeUndefined();
   });
   it("ignores unresolved bare aliases and formats resolved aliases", () => {

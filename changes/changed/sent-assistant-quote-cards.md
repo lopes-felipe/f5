@@ -1,1 +1,0 @@
-- New assistant quotes in sent messages appear as inset, two-line cards with the selected passage highlighted and the comment below. Clicking a card opens and focuses its source response; cards keep their source identity when copied and stay out of Find results.

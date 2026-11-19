@@ -110,6 +110,9 @@ export interface ProviderInstance {
     readonly projectRoot?: string | undefined;
   }) => Effect.Effect<ProviderInstanceInventoryEntries, ProviderDriverError>;
   readonly saveFeedback?: () => Effect.Effect<{ path: string }, ProviderDriverError>;
+  readonly codexConfiguration?: (
+    action: import("@t3tools/contracts").CodexConfigurationAction,
+  ) => Effect.Effect<import("@t3tools/contracts").CodexConfigurationResult, ProviderDriverError>;
   /**
    * Remove a native session's local transcript from this instance's own
    * store (never the server-global home). Best-effort; callers log failures.

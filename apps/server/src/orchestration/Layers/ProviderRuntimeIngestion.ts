@@ -12,6 +12,7 @@ import { readPersistedSessionGeneration } from "../../provider/sessionCapabiliti
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import { isPreparedComputerEvent } from "../../provider/prepareAutomationRuntimeEvent";
 import { computerToolHeading } from "@t3tools/shared/computerAction";
+import { codexMessagePresentation } from "@t3tools/shared/codexMessagePresentation";
 import {
   COALESCE_STREAMING_DELTAS_DRIVERS,
   makeStreamingAssistantDeltas,
@@ -94,6 +95,7 @@ import { isSyntheticClaudeThreadId, isUuid } from "../../provider/claudeResumeSt
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { ThreadCommandExecutionQuery } from "../Services/ThreadCommandExecutionQuery.ts";
 import {
+  isOrphanedSessionExitEvent,
   makeOrphanedSessionExitedEvent,
   PROVIDER_SHUTDOWN_RUNTIME_EVENTS,
   readPersistedActiveTurnId,
@@ -4400,10 +4402,25 @@ const make = Effect.gen(function* () {
     }
 
     if (isProviderTerminalRuntimeEvent(event)) {
+      // A settlement for a retired turn has no generation of its own. Update
+      // the binding only while it is still inactive and names that turn (or,
+      // after a legacy shutdown, no turn); a live replacement or a binding
+      // naming another turn is never touched.
+      const orphaned = isOrphanedSessionExitEvent(event);
+      const persistedTurnId = readPersistedActiveTurnId(binding.runtimePayload);
+      if (
+        orphaned &&
+        (binding.status !== "stopped" ||
+          event.turnId === undefined ||
+          (persistedTurnId !== undefined && persistedTurnId !== event.turnId))
+      )
+        return;
       yield* providerSessionDirectory.updateTerminalLifecycleIfCurrent({
         threadId: event.threadId,
         instanceId: binding.providerInstanceId ?? ProviderInstanceId.makeUnsafe(binding.provider),
-        generation: event.sessionGeneration ?? 0,
+        generation: orphaned
+          ? readPersistedSessionGeneration(binding.runtimePayload)
+          : (event.sessionGeneration ?? 0),
         turnId: event.turnId ?? null,
         eventType: event.type,
         createdAt: event.createdAt,
@@ -4596,23 +4613,49 @@ const make = Effect.gen(function* () {
           yield* providerTerminalEventRepository.markApplied(incomingEvent.eventId);
         return;
       }
+      if (
+        event.sessionGeneration !== undefined &&
+        thread.compaction?.retiredSessionGeneration !== undefined &&
+        event.sessionGeneration <= thread.compaction.retiredSessionGeneration
+      ) {
+        if (isProviderTerminalRuntimeEvent(event))
+          yield* providerTerminalEventRepository.markApplied(event.eventId);
+        return;
+      }
       if (isProviderTerminalRuntimeEvent(event)) {
         const binding = Option.getOrUndefined(
           yield* providerSessionDirectory.getBinding(event.threadId),
         );
         const generation = readPersistedSessionGeneration(binding?.runtimePayload);
         const currentInstance = binding?.providerInstanceId ?? thread.session?.providerInstanceId;
+        const runtimePayload = binding?.runtimePayload;
+        if (
+          event.sessionGeneration !== undefined &&
+          runtimePayload &&
+          typeof runtimePayload === "object" &&
+          "compactionRetiredGeneration" in runtimePayload &&
+          typeof runtimePayload.compactionRetiredGeneration === "number" &&
+          event.sessionGeneration <= runtimePayload.compactionRetiredGeneration
+        ) {
+          yield* providerTerminalEventRepository.markApplied(event.eventId);
+          return;
+        }
         const legacyTurnMatches =
           event.turnId !== undefined &&
           (thread.session?.activeTurnId === event.turnId ||
             (thread.session?.activeTurnId == null && thread.latestTurn?.turnId === event.turnId));
-        const staleOrigin =
-          (event.sessionGeneration === undefined
-            ? !legacyTurnMatches
-            : event.sessionGeneration !== generation) ||
-          (event.providerInstanceId !== undefined &&
-            currentInstance != null &&
-            currentInstance !== event.providerInstanceId);
+        // F5's settlement for a turn whose provider is gone belongs to that
+        // turn, not to a session: it applies only while the projection still
+        // holds exactly that turn, whatever generation or instance replaced it,
+        // and never to a later session whose latest (settled) turn it names.
+        const staleOrigin = isOrphanedSessionExitEvent(event)
+          ? event.turnId === undefined || thread.session?.activeTurnId !== event.turnId
+          : (event.sessionGeneration === undefined
+              ? !legacyTurnMatches
+              : event.sessionGeneration !== generation) ||
+            (event.providerInstanceId !== undefined &&
+              currentInstance != null &&
+              currentInstance !== event.providerInstanceId);
         if (staleOrigin) {
           // Retired output remains authoritative for its own turn. Finalize it
           // before acknowledging the receipt, without touching replacement state.
@@ -5897,6 +5940,36 @@ const make = Effect.gen(function* () {
         const existingAssistantMessage = thread.messages.find(
           (entry) => entry.id === assistantMessageId,
         );
+        const presentation =
+          event.type === "item.completed" && event.provider === "codex"
+            ? codexMessagePresentation(asRecord(event.payload.data)?.item)
+            : { replace: false };
+        if (presentation.replace) {
+          // Discard queued provisional chunks before atomically replacing persisted text.
+          yield* takeBufferedAssistantText(assistantMessageId);
+          const resolvedTurnId = turnId ?? existingAssistantMessage?.turnId ?? undefined;
+          const turnKey = resolvedTurnId ? providerTurnKey(thread.id, resolvedTurnId) : undefined;
+          const reasoningSuffix = turnKey ? yield* takeBufferedReasoningText(turnKey) : "";
+          yield* orchestrationEngine.dispatch({
+            type: "thread.message.assistant.moderate",
+            commandId: providerCommandId(event, "moderation:" + assistantMessageId),
+            threadId: thread.id,
+            messageId: assistantMessageId,
+            ...(resolvedTurnId ? { turnId: resolvedTurnId } : {}),
+            text: presentation.text ?? "",
+            clearReasoning: presentation.mode !== "show",
+            reasoningSuffix,
+            createdAt: now,
+          });
+          streamingDeltas.forgetMessage(thread.id, assistantMessageId);
+          yield* flushDeferredReasoningTokens({
+            event,
+            threadId: thread.id,
+            messageId: assistantMessageId,
+          });
+          yield* clearAssistantMessageState(assistantMessageId, turnKey);
+          return;
+        }
         const finalText = assistantCompletion.fallbackText;
         const persistedText = existingAssistantMessage?.text ?? "";
         const recoverableSuffix =
@@ -6994,12 +7067,19 @@ const make = Effect.gen(function* () {
           continue;
         }
         const activeTurnId = thread.session?.activeTurnId;
+        // A failed or interrupted session can also keep an active turn whose
+        // terminal never arrived (for example a runtime.error that expected a
+        // turn.completed). With no live provider nothing else will settle it,
+        // and the queue waits on it forever.
+        const sessionRunning = thread.session?.status === "running";
         if (
-          thread.session?.status !== "running" ||
+          !thread.session ||
+          thread.session.status === "stopped" ||
           activeTurnId === null ||
           activeTurnId === undefined ||
-          thread.latestTurn?.state !== "running" ||
+          !thread.latestTurn ||
           thread.latestTurn.turnId !== activeTurnId ||
+          (sessionRunning && thread.latestTurn.state !== "running") ||
           liveThreadIds.has(thread.id)
         ) {
           continue;
@@ -7027,6 +7107,7 @@ const make = Effect.gen(function* () {
         // that one narrowly-scoped legacy marker so the deployment of this fix
         // can repair turns orphaned by the shutdown that installs it.
         const legacyShutdownMatch =
+          sessionRunning &&
           persistedActiveTurnId === undefined &&
           binding.status === "stopped" &&
           lastRuntimeEvent !== undefined &&
@@ -7047,9 +7128,23 @@ const make = Effect.gen(function* () {
           ...orphanedEvent,
           sessionGeneration: readPersistedSessionGeneration(binding.runtimePayload),
         };
-        yield* providerTerminalEventRepository.record(event);
-        yield* enqueueRuntimeEvent(event);
-        recoveredCount += 1;
+        // One thread's failure must not abandon the rest of the scan. A
+        // committed receipt is replayed by receipt retries; an uncommitted one
+        // is found again by the next scan under the same deterministic id.
+        const repaired = yield* providerTerminalEventRepository.record(event).pipe(
+          Effect.andThen(enqueueRuntimeEvent(event)),
+          Effect.as(true),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("startup orphaned turn repair failed for thread", {
+                  threadId: thread.id,
+                  turnId: activeTurnId,
+                  cause: Cause.pretty(cause),
+                }).pipe(Effect.as(false)),
+          ),
+        );
+        if (repaired) recoveredCount += 1;
       }
 
       if (recoveredCount > 0) {

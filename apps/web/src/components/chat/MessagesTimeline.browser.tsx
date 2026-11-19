@@ -282,6 +282,7 @@ describe("MessagesTimeline (LegendList)", () => {
     const threadId = ThreadId.makeUnsafe("remember-reading-position");
     const entries = makeOverflowEntries(40);
     let list: LegendListRef | null = null;
+    let api: TimelineHarnessApi | null = null;
     const screen = await render(
       <TimelineHarness
         threadId={threadId}
@@ -306,15 +307,24 @@ describe("MessagesTimeline (LegendList)", () => {
         initialEntries={entries}
         onIsAtEndChangeSpy={vi.fn()}
         initialHeight={360}
+        setApi={(value) => {
+          api = value;
+        }}
       />,
     );
+    const offsetFromSaved = () => {
+      const after = readTimelineScrollAnchor(node());
+      return after.rowId === before.rowId ? Math.abs(after.top - before.top) : 99999;
+    };
     try {
-      await expect
-        .poll(() => {
-          const after = readTimelineScrollAnchor(node());
-          return after.rowId === before.rowId ? Math.abs(after.top - before.top) : 99999;
-        })
-        .toBeLessThan(3);
+      await expect.poll(offsetFromSaved).toBeLessThan(3);
+      // Late size callbacks must not pin the reopened thread to the end.
+      await waitForTimelineLayout(() => node());
+      expect(offsetFromSaved()).toBeLessThan(3);
+      // Following stays paused above the end and new rows do not move the reader.
+      api!.setEntries([...entries, makeAssistantEntry("restored-tail", "Later reply", 120)]);
+      await waitForTimelineLayout(() => node());
+      expect(offsetFromSaved()).toBeLessThan(3);
     } finally {
       await reopened.unmount();
     }
@@ -1235,6 +1245,89 @@ describe("MessagesTimeline (LegendList)", () => {
         },
         { timeout: 3_000, interval: 16 },
       );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("automatically follows new content after reaching the bottom", async () => {
+    const initialEntries = makeOverflowEntries(16);
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={240}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(value) => {
+          api = value;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await waitForTimelineLayout(() => node);
+      const before = node.scrollHeight;
+      api!.setEntries([
+        ...initialEntries,
+        makeAssistantEntry("default-off-tail", "New reply\n\n".repeat(30), 120),
+      ]);
+      await waitForTimelineLayout(() => node);
+      await vi.waitFor(() => {
+        expect(node.scrollHeight).toBeGreaterThan(before);
+        expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeLessThan(40);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("follows growing tool output with a stable Working tail, then yields to manual scrolling", async () => {
+    const commandId = "growing-command-follow";
+    const history = makeOverflowEntries(16);
+    const entries = (lines: number) => [
+      ...history,
+      makeCommandEntry(commandId, { output: "tool output\n".repeat(lines) }),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    const host = document.body.appendChild(document.createElement("div"));
+    const screen = await render(
+      <TimelineHarness
+        initialIsWorking
+        initialEntries={entries(2)}
+        initialExpandedCommandExecutions={{ [commandId]: true }}
+        initialHeight={240}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(value) => {
+          api = value;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await waitForTimelineLayout(() => node);
+      for (const lines of [8, 14]) {
+        const beforeHeight = node.scrollHeight;
+        api!.setEntries(entries(lines));
+        await vi.waitFor(() => {
+          expect(node.scrollHeight).toBeGreaterThan(beforeHeight);
+          expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeLessThan(8);
+        });
+      }
+      node.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+      node.scrollTop -= 120;
+      node.dispatchEvent(new Event("scroll"));
+      await waitForTimelineLayout(() => node);
+      const beforeScroll = node.scrollTop;
+      api!.setEntries(entries(18));
+      await waitForTimelineLayout(() => node);
+      expect(Math.abs(node.scrollTop - beforeScroll)).toBeLessThan(8);
+      expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeGreaterThan(40);
     } finally {
       await screen.unmount();
       host.remove();
@@ -2508,8 +2601,7 @@ describe("MessagesTimeline (LegendList)", () => {
       // The previous disclosure pins the end for two layout frames. Finish that
       // phase before establishing this separate scrolled-up precondition.
       await waitForTimelineLayout(() => scrollContainer);
-      scrollContainer.scrollTop -= 120;
-      scrollContainer.dispatchEvent(new Event("scroll"));
+      scrollContainerToOffset(scrollContainer, scrollContainer.scrollTop - 120);
       await waitForTimelineLayout(() => scrollContainer);
       const rowTop = toggle()!.getBoundingClientRect().top;
       toggle()!.click();
@@ -3704,7 +3796,7 @@ describe("MessagesTimeline working ribbon", () => {
       await grab(host);
       expect(ribbonText(host)).toBe("Working…");
       const stageNode = stage(host);
-      await userEvent.keyboard("{ArrowDown>}");
+      await userEvent.keyboard("{ArrowRight>}");
       try {
         mounted.api().setTimelineState({ activeTurnStartedAt: TURN_START });
         await vi.waitFor(() => {
@@ -3715,31 +3807,69 @@ describe("MessagesTimeline working ribbon", () => {
         expectPlacedGlyphs(host);
         const before = headGlyph(host);
         await vi.waitFor(() => {
-          expect(headGlyph(host).y).toBeGreaterThan(before.y + 20);
+          expect(headGlyph(host).x).toBeGreaterThan(before.x + 20);
         });
       } finally {
-        await userEvent.keyboard("{/ArrowDown}");
+        await userEvent.keyboard("{/ArrowRight}");
       }
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("keeps the playfield above the composer dock", async () => {
+  it("reads cached dock geometry instead of computed styles on every frame", async () => {
+    const mounted = await mountWorkingTimeline();
+    const { host } = mounted;
+    try {
+      await grab(host);
+      await nextFrames(2);
+      const computed = vi.spyOn(window, "getComputedStyle");
+      try {
+        await nextFrames(10);
+        const stageParent = stage(host)!.offsetParent;
+        expect(computed.mock.calls.filter(([element]) => element === stageParent)).toHaveLength(0);
+        // A dock resize still refreshes the cached height.
+        mounted.api().setDockHeight(120);
+        const dockHost = host.querySelector<HTMLElement>("[data-composer-dock-host]")!;
+        await vi.waitFor(() => {
+          expect(stage(host)!.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+            dockHost.getBoundingClientRect().bottom - 120,
+          );
+        });
+      } finally {
+        computed.mockRestore();
+      }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("confines the playfield to the Working element above the composer dock", async () => {
     const mounted = await mountWorkingTimeline();
     const { host } = mounted;
     try {
       await grab(host);
       const dockHost = host.querySelector<HTMLElement>("[data-composer-dock-host]")!;
-      expect(stage(host)!.getBoundingClientRect().bottom).toBeCloseTo(
-        dockHost.getBoundingClientRect().bottom,
-        0,
+      const region = host.querySelector<HTMLElement>("[data-working-ribbon-bounds]")!;
+      const expectAligned = () => {
+        const rect = stage(host)!.getBoundingClientRect();
+        const bounds = region.getBoundingClientRect();
+        expect(rect.left).toBeCloseTo(bounds.left, 0);
+        expect(rect.top).toBeCloseTo(bounds.top, 0);
+        expect(rect.width).toBeCloseTo(bounds.width, 0);
+        expect(rect.height).toBeCloseTo(bounds.height, 0);
+        expectGlyphsInsideStage(host);
+      };
+      expectAligned();
+      expect(getComputedStyle(glyphs(host)[0]!).fontSize).toBe(
+        getComputedStyle(grabButton(host)!).fontSize,
       );
+      expect(getComputedStyle(grabButton(host)!).visibility).toBe("hidden");
       mounted.api().setDockHeight(120);
       await vi.waitFor(() => {
-        expect(stage(host)!.getBoundingClientRect().bottom).toBeCloseTo(
+        expectAligned();
+        expect(stage(host)!.getBoundingClientRect().bottom).toBeLessThanOrEqual(
           dockHost.getBoundingClientRect().bottom - 120,
-          0,
         );
       });
       expect(document.activeElement).toBe(stage(host));
@@ -3758,21 +3888,21 @@ describe("MessagesTimeline working ribbon", () => {
     const { host } = mounted;
     try {
       await grab(host);
-      // Lay a long vertical trail, then shrink the stage below it.
-      await userEvent.keyboard("{ArrowDown>}");
+      // Steer across the status region, then make that element narrower.
+      await userEvent.keyboard("{ArrowRight>}");
       try {
         await vi.waitFor(
           () => {
-            expect(headGlyph(host).y).toBeGreaterThan(300);
+            expect(headGlyph(host).x).toBeGreaterThan(300);
           },
           { timeout: 3_000 },
         );
       } finally {
-        await userEvent.keyboard("{/ArrowDown}");
+        await userEvent.keyboard("{/ArrowRight}");
       }
-      mounted.api().setHeight(120);
+      host.querySelector<HTMLElement>("[data-working-ribbon-bounds]")!.style.maxWidth = "200px";
       await vi.waitFor(() => {
-        expect(stage(host)!.getBoundingClientRect().height).toBeCloseTo(120, 0);
+        expect(stage(host)!.getBoundingClientRect().width).toBeCloseTo(200, 0);
       });
       await nextFrames(2);
       expectGlyphsInsideStage(host);

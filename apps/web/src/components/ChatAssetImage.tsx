@@ -11,6 +11,9 @@ import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
 import { useAppSettingsSelector } from "../appSettings";
 
 type ImageGrant = { url: string; width?: number | undefined; height?: number | undefined };
+/** URL schemes other than `https:` and `file:` (http, data, blob, …) never resolve to a file. */
+const isUnsupportedImageScheme = (src: string) =>
+  /^[a-z][a-z0-9+.-]*:/iu.test(src) && !/^file:/iu.test(src) && !/^[a-z]:[\\/]/iu.test(src);
 type Identity = ProjectIssueAssetUrlInput["identity"];
 const batches = new Map<
   string,
@@ -68,6 +71,7 @@ export function ChatAssetImage({
   const anchor = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(false);
   const [gallery, setGallery] = useState<AssetGalleryState | null>(null);
+  const [failedUrl, setFailedUrl] = useState<string>();
   useEffect(() => {
     if (!anchor.current) return;
     const observer = new IntersectionObserver((entries) => {
@@ -106,9 +110,18 @@ export function ChatAssetImage({
     refetchInterval: visible ? 25 * 60 * 1000 : false,
   });
   const url = remote ? (loadRemoteImagesInChat ? src : undefined) : grant.data?.url;
+  const error =
+    visible && !remote && !target
+      ? isUnsupportedImageScheme(src)
+        ? "Unsupported image source"
+        : "Image outside available directories"
+      : // A failed background refresh keeps the previous grant, and its loaded image stays.
+        (grant.isError && !url) || (url && failedUrl === url)
+        ? "Image unavailable"
+        : undefined;
   return (
     <span ref={anchor} className="inline-block min-h-12 min-w-24 max-w-full">
-      {visible && url ? (
+      {visible && url && !error ? (
         <button
           type="button"
           aria-label={`Preview ${alt || "image"}`}
@@ -145,18 +158,21 @@ export function ChatAssetImage({
                 : undefined
             }
             loading="lazy"
+            onError={() => setFailedUrl(url)}
             referrerPolicy="no-referrer"
             className="max-h-96 max-w-full rounded object-contain"
           />
         </button>
       ) : (
-        <span className="text-muted-foreground">
+        // Only failures are announced: every offscreen placeholder starts out loading, and
+        // a live region per image would flood screen readers.
+        <span className="text-muted-foreground" role={error ? "alert" : undefined}>
           {alt || "Image"}
           {remote && !loadRemoteImagesInChat
             ? " (remote images disabled)"
-            : grant.isError
-              ? " (unavailable)"
-              : ""}
+            : error
+              ? " (" + error + ")"
+              : " (loading…)"}
         </span>
       )}
       {gallery && (

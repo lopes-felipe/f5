@@ -1,0 +1,1 @@
+- Upgrade bundled Codex from 0.166.0 to 0.170.0, including upstream OAuth, reconnect, sandbox inheritance and Windows fixes. Custom executable paths remain supported.

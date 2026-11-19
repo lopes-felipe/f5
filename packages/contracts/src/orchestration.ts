@@ -499,6 +499,9 @@ export type ThreadCompactionTrigger = typeof ThreadCompactionTrigger.Type;
 
 export const ThreadCompaction = Schema.Struct({
   kind: Schema.optional(Schema.Literals(["summary", "native"])),
+  /** Record that rotated the provider conversation and measured the restored input. */
+  freshSessionRecordId: Schema.optional(CommandId),
+  retiredSessionGeneration: Schema.optional(NonNegativeInt),
   summary: TrimmedNonEmptyString,
   trigger: ThreadCompactionTrigger,
   estimatedTokens: NonNegativeInt,
@@ -1818,6 +1821,19 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+// Native moderation is authoritative even after a later turn has started.
+const ThreadMessageAssistantModerateCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.assistant.moderate"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  turnId: Schema.optional(TurnId),
+  text: Schema.String,
+  clearReasoning: Schema.Boolean,
+  reasoningSuffix: Schema.String,
+  createdAt: IsoDateTime,
+});
+
 // Metadata only, so it also applies to completed messages.
 const ThreadMessageReasoningTokensAddCommand = Schema.Struct({
   type: Schema.Literal("thread.message.reasoning-tokens.add"),
@@ -1893,6 +1909,26 @@ const ThreadCompactedRecordCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   compaction: ThreadCompaction,
+  freshSessionGuard: Schema.optional(
+    Schema.Struct({
+      workflowId: PlanningWorkflowId,
+      attempt: NonNegativeInt,
+      requestId: CommandId,
+      dispatchCommandId: CommandId,
+      lastInteractionAt: IsoDateTime,
+      branch: Schema.NullOr(TrimmedNonEmptyString),
+      worktreePath: Schema.NullOr(FilesystemPath),
+      workspaceRoot: FilesystemPath,
+      model: TrimmedNonEmptyString,
+      binding: Schema.NullOr(
+        Schema.Struct({
+          provider: ProviderKind,
+          instanceId: ProviderInstanceId,
+          generation: NonNegativeInt,
+        }),
+      ),
+    }),
+  ),
   createdAt: IsoDateTime,
 });
 
@@ -2053,6 +2089,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadMessageAssistantReconcileCommand,
+  ThreadMessageAssistantModerateCommand,
   ThreadMessageReasoningTokensAddCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
@@ -2421,6 +2458,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   messageId: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
+  replace: Schema.optional(Schema.Literal(true)),
   authorship: OrchestrationMessage.fields.authorship,
   reasoningText: Schema.optional(Schema.String),
   skillCall: Schema.optional(UserMessageSkillCall),

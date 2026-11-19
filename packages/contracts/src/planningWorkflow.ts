@@ -2,16 +2,21 @@ import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 
 import {
+  CommandId,
   IsoDateTime,
+  MessageId,
+  NonNegativeInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
+  TurnId,
   makeEntityId,
 } from "./baseSchemas";
 import { ProviderModelOptions } from "./model";
 import { ProviderKind } from "./providerKind";
 import { ProviderStartOptions } from "./providerStartOptions";
 import { WorkflowArchiveRestorations } from "./workflowArchive";
+import { WorkflowStageDispatchCommandId } from "./workflowStageDispatch";
 
 export const PlanningWorkflowId = makeEntityId("PlanningWorkflowId");
 export type PlanningWorkflowId = typeof PlanningWorkflowId.Type;
@@ -93,6 +98,8 @@ export const WorkflowCodeReview = Schema.Struct({
   threadId: ThreadId,
   status: WorkflowStepStatus,
   error: Schema.NullOr(Schema.String),
+  pinnedTurnId: Schema.optional(TurnId),
+  pinnedAssistantMessageId: Schema.optional(MessageId),
   retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
   lastRetryAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
   updatedAt: IsoDateTime,
@@ -177,6 +184,16 @@ export const WorkflowImplementation = Schema.Struct({
   ).pipe(Schema.withDecodingDefault(() => "full-access")),
   implementationTurnId: Schema.NullOr(TrimmedNonEmptyString),
   revisionTurnId: Schema.NullOr(TrimmedNonEmptyString),
+  revisionAttempt: Schema.optional(NonNegativeInt),
+  revisionDispatchCommandId: WorkflowStageDispatchCommandId,
+  revisionCompaction: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        requestId: CommandId,
+        recordCommandId: CommandId,
+      }),
+    ),
+  ),
   codeReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   codeReviews: Schema.Array(WorkflowCodeReview),
   status: WorkflowImplementationStatus,

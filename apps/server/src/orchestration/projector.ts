@@ -1052,16 +1052,20 @@ export function projectEvent(
               entry.id === message.id
                 ? {
                     ...entry,
-                    text: message.streaming
-                      ? `${entry.text}${message.text}`
-                      : message.text.length > 0
-                        ? message.text
-                        : entry.text,
-                    reasoningText: message.streaming
-                      ? `${entry.reasoningText ?? ""}${message.reasoningText ?? ""}`
-                      : (message.reasoningText ?? "").length > 0
-                        ? message.reasoningText
-                        : entry.reasoningText,
+                    text: payload.replace
+                      ? message.text
+                      : message.streaming
+                        ? `${entry.text}${message.text}`
+                        : message.text.length > 0
+                          ? message.text
+                          : entry.text,
+                    reasoningText: payload.replace
+                      ? message.reasoningText
+                      : message.streaming
+                        ? `${entry.reasoningText ?? ""}${message.reasoningText ?? ""}`
+                        : (message.reasoningText ?? "").length > 0
+                          ? message.reasoningText
+                          : entry.reasoningText,
                     streaming: message.streaming,
                     updatedAt: message.updatedAt,
                     turnId: message.turnId,
@@ -1184,11 +1188,21 @@ export function projectEvent(
       return decodeForEvent(ThreadCompactedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => {
           const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          const freshSession = payload.compaction.freshSessionRecordId !== undefined;
           const session =
             thread?.session === null || thread?.session === undefined
               ? (thread?.session ?? null)
               : {
                   ...thread.session,
+                  ...(freshSession
+                    ? {
+                        status: "stopped" as const,
+                        activeTurnId: null,
+                        capabilities: null,
+                        modelContextWindowTokens: payload.compaction.modelContextWindowTokens,
+                        updatedAt: event.occurredAt,
+                      }
+                    : {}),
                   estimatedContextTokens: payload.compaction.estimatedTokens,
                   tokenUsageSource: "estimated" as const,
                 };
@@ -1198,6 +1212,9 @@ export function projectEvent(
               compaction: payload.compaction,
               ...(session !== thread?.session ? { session } : {}),
               estimatedContextTokens: payload.compaction.estimatedTokens,
+              ...(freshSession
+                ? { modelContextWindowTokens: payload.compaction.modelContextWindowTokens }
+                : {}),
               lastInteractionAt: event.occurredAt,
               updatedAt: event.occurredAt,
             }),
