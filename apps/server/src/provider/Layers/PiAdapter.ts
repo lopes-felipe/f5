@@ -894,7 +894,9 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
         const serviceTier = getModelSelectionStringOptionValue(input.modelSelection, "serviceTier");
         if (serviceTier?.includes("\n") || serviceTier?.includes("\r"))
           return yield* requestError("model", "Invalid Pi service tier.");
-        const nextTier = serviceTier ?? "default";
+        const nextTier = input.modelSelection
+          ? (serviceTier ?? "default")
+          : (ctx.appliedServiceTier ?? "default");
         if (nextTier !== (ctx.appliedServiceTier ?? "default")) {
           yield* ctx.rpc.request({
             type: "prompt",

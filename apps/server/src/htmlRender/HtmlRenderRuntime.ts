@@ -17,8 +17,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ingestActivityAttachment } from "../activityAttachments.ts";
 import { ThreadToolError } from "../mcp/threadMcpTools.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
-import { prepareHtmlRender } from "./prepareHtmlRender.ts";
-import { readHtmlSource } from "./readHtmlSource.ts";
+import { prepareHtmlRender, HtmlRenderPrepareError } from "./prepareHtmlRender.ts";
+import { readHtmlSource, HtmlSourceError } from "./readHtmlSource.ts";
 import type { makeHtmlPreviewBroker } from "./HtmlPreviewBroker.ts";
 
 /**
@@ -86,7 +86,7 @@ export const makeHtmlRenderRuntime = (input: {
           catch: (error) =>
             new ThreadToolError({
               message:
-                error instanceof Error
+                error instanceof HtmlSourceError || error instanceof HtmlRenderPrepareError
                   ? error.message
                   : "Could not prepare HTML. Keep images inside the project, worktree or attachments, with at most 512 KiB of HTML and 25 MiB after image inlining.",
             }),

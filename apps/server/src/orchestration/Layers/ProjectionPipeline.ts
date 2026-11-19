@@ -1928,7 +1928,12 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
               event.payload.session.status === "stopped"
                 ? []
                 : (event.payload.session.extensionStatuses ??
-                  (Option.isSome(existingRow) ? existingRow.value.extensionStatuses : undefined) ??
+                  (Option.isSome(existingRow) &&
+                  existingRow.value.providerName === event.payload.session.providerName &&
+                  existingRow.value.providerInstanceId ===
+                    (event.payload.session.providerInstanceId ?? null)
+                    ? existingRow.value.extensionStatuses
+                    : undefined) ??
                   []),
             capabilities:
               mergeSessionCapabilities(

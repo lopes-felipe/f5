@@ -1634,7 +1634,8 @@ function resolveClaudeRuntimeTraits(
   const legacyUltracode =
     getProviderOptionStringSelectionValue(selection.options, "effort") === "ultracode";
   const ultracode =
-    getProviderOptionBooleanSelectionValue(selection.options, "ultracode") ?? legacyUltracode;
+    capabilities.optionDescriptors?.some((descriptor) => descriptor.id === "ultracode") === true &&
+    (getProviderOptionBooleanSelectionValue(selection.options, "ultracode") ?? legacyUltracode);
   const requestedEffort = resolveReasoningEffortForProvider(
     "claudeAgent",
     legacyUltracode

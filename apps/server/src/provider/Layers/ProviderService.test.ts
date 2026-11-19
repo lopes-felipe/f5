@@ -441,6 +441,27 @@ function makeProviderServiceLayerForAdapters(
   );
 }
 
+it.effect("discards a same-instance cursor when a fresh adapter start does not return one", () => {
+  const codex = makeFakeCodexAdapter();
+  const layer = makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]));
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService;
+    const directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("fresh-cursor");
+    const input = { provider: "codex" as const, threadId, runtimeMode: "full-access" as const };
+    const first = yield* provider.startSession(threadId, input);
+    yield* provider.stopSession({ threadId });
+    codex.startSession.mockImplementationOnce(() => {
+      const { resumeCursor: _old, ...session } = first;
+      return Effect.succeed(session);
+    });
+    yield* provider.startSession(threadId, { ...input, discardResumeCursor: true });
+    const binding = yield* directory.getBinding(threadId);
+    assert.equal(binding._tag, "Some");
+    if (binding._tag === "Some") assert.equal(binding.value.resumeCursor, null);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
 it.effect("reads child transcripts without recovering stopped or replacement sessions", () => {
   const codex = makeFakeCodexAdapter();
   const read = vi.fn(() => Effect.succeed({ data: [], nextCursor: null }));

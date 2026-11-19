@@ -2845,7 +2845,6 @@ export default memo(function ChatView({
     if (composerTrigger.kind === "path") {
       const search = workspaceEntriesQuery.data;
       return [
-        ...composerModelMentionItems(providerStatuses, composerTrigger.query),
         ...(search?.entries ?? []).map(
           (entry) =>
             ({
@@ -2858,6 +2857,7 @@ export default memo(function ChatView({
               description: entry.parentPath ?? "",
             }) as ComposerCommandItem,
         ),
+        ...composerModelMentionItems(providerStatuses, composerTrigger.query),
       ];
     }
 

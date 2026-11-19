@@ -6369,6 +6369,29 @@ describe("ProviderCommandReactor", () => {
       ).toBe(true);
     });
 
+    it("retries an incomplete fresh start on an ordinary send without restoring old history", async () => {
+      const harness = await claudeConversation();
+      harness.startSession.mockImplementationOnce(() => Effect.fail(new Error("Start failed")));
+      expect(
+        (
+          await turn(harness, {
+            id: "failed-clear",
+            text: "New",
+            selection: claude,
+            freshContext: true,
+          })
+        )._tag,
+      ).toBe("Failure");
+      expect(
+        (await turn(harness, { id: "retry-clear", text: "Retry", selection: claude }))._tag,
+      ).toBe("Success");
+      expect(harness.startSession.mock.calls.at(-1)?.[1]).toMatchObject({
+        discardResumeCursor: true,
+      });
+      expect(harness.startSession.mock.calls.at(-1)?.[1]).not.toHaveProperty("resumeCursor");
+      expect(sentInput(harness, 1)).not.toContain("indent with tabs");
+    });
+
     it("hands the full conversation to a fresh target and parks the outgoing session", async () => {
       const harness = await claudeConversation();
       const exit = await turn(harness, { id: "x1", text: "What did I ask?", selection: codex });

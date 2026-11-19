@@ -6,12 +6,30 @@ export const readThreadAfterContextBoundary = Effect.fnUntraced(function* (
   thread: OrchestrationThread,
   sql: SqlClient.SqlClient | undefined,
 ) {
-  if (!sql) return thread;
-  const rows = yield* sql.unsafe<{ messageId: string; createdAt: string }>(
-    "SELECT message_id AS messageId, created_at AS createdAt FROM thread_context_boundaries WHERE thread_id = ?",
-    [thread.id],
+  const rows = sql
+    ? yield* sql.unsafe<{ messageId: string; createdAt: string }>(
+        "SELECT message_id AS messageId, created_at AS createdAt FROM thread_context_boundaries WHERE thread_id = ? AND prepared = 1",
+        [thread.id],
+      )
+    : [];
+  // The timeline event also carries the committed boundary: projection rebuilds and
+  // a subsequent pending reset must not bring pre-clear history back into summaries.
+  const marker = thread.activities.findLast(
+    (activity) => activity.kind === "session.context-reset",
   );
-  return rows[0] ? threadAfterContextBoundary(thread, rows[0]) : thread;
+  const payload = marker?.payload as { messageId?: string } | undefined;
+  const boundary =
+    rows[0] ??
+    (marker
+      ? {
+          messageId:
+            payload?.messageId ??
+            thread.messages.find((message) => message.createdAt === marker.createdAt)?.id ??
+            "",
+          createdAt: marker.createdAt,
+        }
+      : undefined);
+  return boundary ? threadAfterContextBoundary(thread, boundary) : thread;
 });
 
 /** Keep the timeline intact; only provider-facing snapshots cross this boundary. */

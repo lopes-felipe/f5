@@ -45,6 +45,11 @@ it.effect("stores and preserves text generator keys outside settings", () =>
       textGenerators: { [id]: { ...client.textGenerators[id]!, label: "Renamed" } },
     });
     assert.equal((yield* settings.getSettings).textGenerators[id]?.apiKey, "text-secret");
+    yield* settings.updateSettings({
+      textGenerators: { [id]: { ...client.textGenerators[id]!, baseUrl: "https://other.test/v1" } },
+    });
+    assert.equal((yield* settings.getSettings).textGenerators[id]?.apiKey, "");
+    assert.equal((yield* settings.getSettings).textGenerators[id]?.apiKeyRedacted, false);
     yield* settings.updateSettings({ textGenerators: {} });
     assert.deepEqual((yield* settings.getSettings).textGenerators, {});
   }).pipe(Effect.provide(Layer.fresh(layer))),

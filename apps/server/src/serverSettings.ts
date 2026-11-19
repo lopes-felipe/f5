@@ -956,10 +956,30 @@ const makeServerSettings = Effect.gen(function* () {
           );
           // Apply explicit replacements/removals before resolving references. This lets a
           // user repair a missing secret, while unchanged references still fail closed.
+          const secretSafePatch = patch.textGenerators
+            ? {
+                ...patch,
+                textGenerators: Object.fromEntries(
+                  Object.entries(patch.textGenerators).map(([id, generator]) => {
+                    const old = current.textGenerators[id];
+                    const moved =
+                      old &&
+                      (old.kind !== generator.kind ||
+                        new URL(old.baseUrl).origin !== new URL(generator.baseUrl).origin);
+                    return [
+                      id,
+                      moved && !generator.apiKey
+                        ? { ...generator, apiKeyRedacted: false }
+                        : generator,
+                    ];
+                  }),
+                ),
+              }
+            : patch;
           const patched = yield* materializeProviderEnvironmentSecrets(
             applyServerSettingsPatch(
               { ...current, previousWorktreesDirectories: retainedLocations },
-              patch,
+              secretSafePatch,
             ),
           );
           const prepared = yield* prepareProviderEnvironmentSecrets(current, patched);

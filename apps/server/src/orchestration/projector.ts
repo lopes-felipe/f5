@@ -1294,7 +1294,12 @@ export function projectEvent(
                 extensionStatuses:
                   session.status === "stopped"
                     ? []
-                    : (session.extensionStatuses ?? thread.session?.extensionStatuses ?? []),
+                    : (session.extensionStatuses ??
+                      (session.providerName === thread.session?.providerName &&
+                      session.providerInstanceId === thread.session?.providerInstanceId
+                        ? thread.session?.extensionStatuses
+                        : undefined) ??
+                      []),
               }
             : {}),
           usageLimit: session.usageLimit ?? null,

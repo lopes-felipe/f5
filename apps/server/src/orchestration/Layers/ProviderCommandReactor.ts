@@ -914,7 +914,10 @@ const make = Effect.gen(function* () {
 
   const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    return readModel.threads.find((entry) => entry.id === threadId);
+  });
+  const resolveProviderThread = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const thread = yield* resolveThread(threadId);
     return thread
       ? yield* readThreadAfterContextBoundary(thread, Option.getOrUndefined(sqlOption))
       : thread;
@@ -931,7 +934,7 @@ const make = Effect.gen(function* () {
     reportFailure = true,
   ) {
     const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = yield* resolveThread(threadId);
+    const thread = yield* resolveProviderThread(threadId);
     if (!thread) {
       return yield* new ProviderTurnDeliveryError({
         certainty: "not_sent",
@@ -1340,6 +1343,7 @@ const make = Effect.gen(function* () {
          * never restore the compaction summary and transcripts next to it.
          */
         readonly carriesHandoff?: boolean;
+        readonly discardResumeCursor?: boolean;
       }) => {
         const providerForStart = input?.provider ?? preferredProvider;
         const startInstructionContext = input?.carriesHandoff
@@ -1439,6 +1443,7 @@ const make = Effect.gen(function* () {
               ? withoutTranscriptIncomplete(input?.resumeCursor)
               : input?.resumeCursor;
           const startInput = {
+            ...(input?.discardResumeCursor ? { discardResumeCursor: true } : {}),
             threadId,
             projectId: thread.projectId,
             ...(providerForStart ? { provider: providerForStart } : {}),
@@ -1513,9 +1518,9 @@ const make = Effect.gen(function* () {
         });
 
       const activeSession = yield* resolveActiveSession(threadId);
-      if (options?.freshContext && Option.isSome(sqlOption)) {
-        const boundary = yield* sqlOption.value.unsafe<{ prepared: number }>(
-          "SELECT prepared FROM thread_context_boundaries WHERE thread_id = ?",
+      if (Option.isSome(sqlOption)) {
+        const boundary = yield* sqlOption.value.unsafe<{ prepared: number; messageId: string }>(
+          "SELECT prepared, message_id AS messageId FROM thread_context_boundaries WHERE thread_id = ?",
           [threadId],
         );
         if (boundary[0]?.prepared === 0) {
@@ -1535,7 +1540,10 @@ const make = Effect.gen(function* () {
                 );
             }
           }
-          const started = yield* startProviderSession({ carriesHandoff: true });
+          const started = yield* startProviderSession({
+            carriesHandoff: true,
+            discardResumeCursor: true,
+          });
           yield* bindSessionToThread(started);
           yield* sqlOption.value.unsafe(
             "UPDATE thread_context_boundaries SET prepared = 1 WHERE thread_id = ?",
@@ -1551,7 +1559,7 @@ const make = Effect.gen(function* () {
               kind: "session.context-reset",
               tone: "info",
               summary: "New session",
-              payload: { freshContext: true },
+              payload: { freshContext: true, messageId: boundary[0].messageId },
               turnId: null,
               createdAt,
             },
@@ -2448,7 +2456,7 @@ const make = Effect.gen(function* () {
         }>`SELECT message_id AS "id", role, text, is_streaming AS "streaming", created_at AS "createdAt"
           FROM projection_thread_messages WHERE thread_id = ${threadId} AND role = 'user'
           AND created_at >= COALESCE(
-            (SELECT created_at FROM thread_context_boundaries WHERE thread_id = ${threadId}), ''
+            (SELECT created_at FROM thread_context_boundaries WHERE thread_id = ${threadId} AND prepared = 1), ''
           )
           ORDER BY created_at, message_id LIMIT 1`.pipe(
           Effect.map((rows) => {
@@ -2596,7 +2604,9 @@ const make = Effect.gen(function* () {
       input.messageId !== undefined &&
       activeSession !== undefined &&
       (normalizedInput !== undefined || normalizedAttachments.length > 0);
-    const handoffThread = handoffEligible ? yield* resolveThread(input.threadId) : undefined;
+    const handoffThread = handoffEligible
+      ? yield* resolveProviderThread(input.threadId)
+      : undefined;
     const prepared =
       handoffThread && input.messageId !== undefined && activeSession
         ? yield* prepareHandoffForTurn({

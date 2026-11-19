@@ -13,6 +13,7 @@ export async function generateApiText(
   model: string,
   prompt: string,
   fetcher: ApiFetcher = fetch,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (!config.enabled) throw new Error("This text generator is disabled.");
   if (config.apiKeyRedacted && !config.apiKey)
@@ -23,7 +24,9 @@ export async function generateApiText(
     {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(120_000),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(120_000)])
+        : AbortSignal.timeout(120_000),
       headers: {
         "Content-Type": "application/json",
         ...(anthropic
@@ -94,7 +97,7 @@ export function makeApiTextGeneration(config: TextGeneratorConfig, fetcher: ApiF
   const run: StructuredTextRunner = (input) =>
     Effect.gen(function* () {
       const text = yield* Effect.tryPromise({
-        try: () =>
+        try: (signal) =>
           generateApiText(
             config,
             input.modelSelection?.model ?? input.model ?? config.models[0] ?? "",
@@ -102,6 +105,7 @@ export function makeApiTextGeneration(config: TextGeneratorConfig, fetcher: ApiF
               "\n\nReturn only JSON matching this schema:\n" +
               JSON.stringify(toJsonSchemaObject(input.outputSchemaJson)),
             fetcher,
+            signal,
           ),
         catch: (cause) =>
           new TextGenerationError({

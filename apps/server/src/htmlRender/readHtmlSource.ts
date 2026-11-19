@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import { HTML_RENDER_MAX_SOURCE_BYTES } from "@t3tools/contracts";
 import { isNetworkPath } from "@t3tools/shared/path";
 import { openContainedFile } from "../assetHttp.ts";
+export class HtmlSourceError extends Error {}
 
 /** Read once from the checked inode; published pages never refer back to this mutable file. */
 export async function readHtmlSource(
@@ -11,13 +12,15 @@ export async function readHtmlSource(
   internalPaths: readonly string[],
 ): Promise<string> {
   if ((source.html === undefined) === (source.path === undefined))
-    throw new Error("Pass exactly one of html or path.");
+    throw new HtmlSourceError("Pass exactly one of html or path.");
   if (source.html !== undefined) return source.html;
   if (runtimeMode !== "full-access")
-    throw new Error("Pass html instead of path: only full-access threads may pass a path.");
+    throw new HtmlSourceError(
+      "Pass html instead of path: only full-access threads may pass a path.",
+    );
   const filePath = source.path!;
   const invalid = () =>
-    new Error(
+    new HtmlSourceError(
       "Pass an absolute path to a regular .html file that starts with <!doctype html> or <html>.",
     );
   if (!path.isAbsolute(filePath) || isNetworkPath(filePath)) throw invalid();

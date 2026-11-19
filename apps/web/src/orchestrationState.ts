@@ -73,13 +73,7 @@ export function toLegacySessionStatus(
 }
 
 export function toLegacyProvider(providerName: string | null): ProviderKind {
-  if (
-    providerName === "codex" ||
-    providerName === "claudeAgent" ||
-    providerName === "cursor" ||
-    providerName === "opencode" ||
-    providerName === "grok"
-  ) {
+  if (isKnownProviderKind(providerName)) {
     return providerName;
   }
   return "codex";
@@ -124,7 +118,12 @@ export function mapSessionFromReadModel(
           extensionStatuses:
             incoming.status === "stopped"
               ? []
-              : (incoming.extensionStatuses ?? previous?.extensionStatuses ?? []),
+              : (incoming.extensionStatuses ??
+                (toLegacyProvider(incoming.providerName) === previous?.provider &&
+                (incoming.providerInstanceId ?? null) === previous?.providerInstanceId
+                  ? previous?.extensionStatuses
+                  : undefined) ??
+                []),
         }
       : {}),
     provider: toLegacyProvider(incoming.providerName),

@@ -5,7 +5,7 @@ import {
   ProviderInstanceId,
   type TextGeneratorConfig,
 } from "@t3tools/contracts";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, Fiber } from "effect";
 import { makeTextGenerationFromRegistry } from "./TextGenerationLive.ts";
 const config: TextGeneratorConfig = {
   kind: "openaiCompatible",
@@ -15,6 +15,19 @@ const config: TextGeneratorConfig = {
   enabled: true,
   models: ["model"],
 };
+it("aborts the HTTP request when the generation effect is interrupted", async () => {
+  let signal: AbortSignal | undefined;
+  const api = makeApiTextGeneration(config, async (_url, init) => {
+    signal = init?.signal ?? undefined;
+    return await new Promise<Response>((_resolve, reject) => {
+      signal!.addEventListener("abort", () => reject(new Error("Canceled")), { once: true });
+    });
+  });
+  const fiber = Effect.runFork(api.generateThreadTitle({ cwd: "", message: "Title" }));
+  await expect.poll(() => signal).toBeDefined();
+  await Effect.runPromise(Fiber.interrupt(fiber));
+  expect(signal?.aborted).toBe(true);
+});
 it("routes structured cleanup without a provider session or workspace and validates its schema", async () => {
   let request: RequestInit | undefined;
   const api = makeApiTextGeneration(config, async (_url, init) => {
