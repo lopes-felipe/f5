@@ -1,6 +1,7 @@
 import type { OrchestrationThread, ProviderKind, WorkflowModelSlot } from "@t3tools/contracts";
 import {
   estimateModelContextWindowTokens,
+  normalizeModelSlug,
   roughTokenEstimateFromCharacters,
 } from "@t3tools/shared/model";
 
@@ -10,10 +11,19 @@ import { OrchestrationCommandInvariantError } from "./Errors.ts";
 export const WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE = 0.5;
 export const WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT = 116_000;
 
+export type WorkflowFitThread = Partial<
+  Pick<OrchestrationThread, "estimatedContextTokens" | "model">
+> & {
+  readonly session?: Pick<
+    NonNullable<OrchestrationThread["session"]>,
+    "providerName" | "modelContextWindowTokens"
+  > | null;
+};
+
 interface WorkflowArtifactFitInput {
   readonly artifacts: ReadonlyArray<string>;
   readonly targetSlot: WorkflowModelSlot;
-  readonly thread?: Pick<OrchestrationThread, "estimatedContextTokens"> | null;
+  readonly thread?: WorkflowFitThread | null;
   readonly contextUsageTokens?: number;
   readonly contextWindowTokens?: number;
   readonly promptFramingTokens?: number;
@@ -51,14 +61,17 @@ export function workflowPromptFit(
 }
 
 export function workflowPromptFitError(
-  input: WorkflowPromptFitInput,
+  input: WorkflowPromptFitInput & { readonly artifactBudgetRecovery?: string },
 ): OrchestrationCommandInvariantError | null {
   const fit = workflowPromptFit(input);
   return fit.kind === "fits"
     ? null
     : new OrchestrationCommandInvariantError({
         commandType: "workflow.turn.start",
-        detail: fit.detail,
+        detail:
+          fit.kind === "artifact-budget" && input.artifactBudgetRecovery
+            ? `${fit.detail} ${input.artifactBudgetRecovery}`
+            : fit.detail,
       });
 }
 
@@ -457,10 +470,26 @@ export function truncateWorkflowPromptArtifact(text: string, maxChars = 60_000):
   }).output;
 }
 
+function workflowContextWindowTokens(
+  slot: WorkflowModelSlot,
+  thread?: WorkflowFitThread | null,
+): number {
+  const reportedWindow = thread?.session?.modelContextWindowTokens;
+  if (
+    reportedWindow &&
+    reportedWindow > 0 &&
+    thread.session?.providerName === slot.provider &&
+    normalizeModelSlug(thread.model, slot.provider) ===
+      normalizeModelSlug(slot.model, slot.provider)
+  ) {
+    return reportedWindow;
+  }
+  return estimateModelContextWindowTokens(slot.model, slot.provider);
+}
+
 function contextHeadroom(input: WorkflowArtifactFitInput): number {
   const contextWindow =
-    input.contextWindowTokens ??
-    estimateModelContextWindowTokens(input.targetSlot.model, input.targetSlot.provider);
+    input.contextWindowTokens ?? workflowContextWindowTokens(input.targetSlot, input.thread);
   const outputReserve = Math.max(8_000, Math.floor(contextWindow * 0.15));
   const contextTokens = input.contextUsageTokens ?? input.thread?.estimatedContextTokens ?? 0;
   return Math.max(

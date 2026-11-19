@@ -11313,6 +11313,274 @@ describe("WorkflowService", () => {
     });
   });
 
+  describe("planning revision context budget", () => {
+    const planCreatedAt = "2026-03-26T11:59:00.000Z";
+    const authoringRequestedAt = "2026-03-26T11:58:00.000Z";
+    const planMarkdown = "# Original plan\n\n" + "x".repeat(34_000);
+    const crossReview = "Cross review asks for validation.";
+    const selfReview = "Self review asks for a migration check.";
+
+    function revisionFixture(input: {
+      statusA: PlanningWorkflow["branchA"]["status"];
+      statusB: PlanningWorkflow["branchB"]["status"];
+      contextTokens: number;
+      reportedWindow?: number;
+    }) {
+      const base = makeWorkflow();
+      const reviewThreads: OrchestrationReadModel["threads"][number][] = [];
+      const authors = [base.branchA, base.branchB].map((branch) => {
+        const reviews = (["cross", "self"] as const).map((slot) => {
+          const id = ThreadId.makeUnsafe(`review-${branch.branchId}-${slot}`);
+          const messageId = MessageId.makeUnsafe(`${id}-message`);
+          const turnId = TurnId.makeUnsafe(`${id}-turn`);
+          reviewThreads.push(
+            makeThread({
+              id,
+              messages: [
+                {
+                  id: messageId,
+                  role: "assistant",
+                  text: slot === "cross" ? crossReview : selfReview,
+                  turnId,
+                  streaming: false,
+                  createdAt: NOW,
+                  updatedAt: NOW,
+                },
+              ],
+            }),
+          );
+          return {
+            slot,
+            threadId: id,
+            outputFilePath: null,
+            status: "completed" as const,
+            pinnedTurnId: turnId,
+            pinnedAssistantMessageId: messageId,
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          };
+        });
+        const planTurnId = TurnId.makeUnsafe(`plan-${branch.branchId}`);
+        const isBranchA = branch.branchId === "a";
+        const status = isBranchA ? input.statusA : input.statusB;
+        return {
+          branch: {
+            ...branch,
+            status,
+            planTurnId,
+            reviews,
+            error: status === "error" ? "Revision preflight failed." : null,
+            errorStage: status === "error" ? ("revision" as const) : null,
+          },
+          thread: makeThread({
+            id: branch.authorThreadId,
+            model: branch.authorSlot.model,
+            estimatedContextTokens: isBranchA ? input.contextTokens : 0,
+            session: {
+              threadId: branch.authorThreadId,
+              providerName: branch.authorSlot.provider,
+              status: isBranchA ? "ready" : "stopped",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+              ...(isBranchA && input.reportedWindow
+                ? { modelContextWindowTokens: input.reportedWindow }
+                : {}),
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe(planTurnId),
+                turnId: planTurnId,
+                planMarkdown,
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: planCreatedAt,
+                updatedAt: planCreatedAt,
+              },
+            ],
+          }),
+        };
+      });
+      const workflow = makeWorkflow({
+        templateId: "builtin.planning.dual",
+        templateVersion: 2,
+        branchA: authors[0]!.branch,
+        branchB: authors[1]!.branch,
+        merge: { ...base.merge, threadId: null, status: "not_started" },
+      });
+      return { workflow, threads: [...authors.map(({ thread }) => thread), ...reviewThreads] };
+    }
+
+    it("starts both revisions with the reported Codex context window", async () => {
+      const fixture = revisionFixture({
+        statusA: "reviews_saved",
+        statusB: "reviews_saved",
+        contextTokens: 154_508,
+        reportedWindow: 475_000,
+      });
+      const { branchA, branchB } = fixture.workflow;
+      harness = await createHarness(makeReadModel(fixture));
+
+      await harness.start();
+
+      expect(turnStartsForThread(harness.dispatched, branchA.authorThreadId)).toHaveLength(1);
+      expect(turnStartsForThread(harness.dispatched, branchB.authorThreadId)).toHaveLength(1);
+      expect(harness.getSnapshot().planningWorkflows[0]).toMatchObject({
+        branchA: { status: "revising", error: null },
+        branchB: { status: "revising", error: null },
+      });
+    });
+
+    it.each(["reviews_saved", "revising"] as const)(
+      "records a revision overflow and starts the sibling from %s",
+      async (status) => {
+        const fixture = revisionFixture({
+          statusA: status,
+          statusB: status,
+          contextTokens: 154_508,
+        });
+        const { branchA, branchB } = fixture.workflow;
+        harness = await createHarness(makeReadModel(fixture));
+
+        await harness.start();
+
+        expect(turnStartsForThread(harness.dispatched, branchA.authorThreadId)).toHaveLength(0);
+        expect(turnStartsForThread(harness.dispatched, branchB.authorThreadId)).toHaveLength(1);
+        const workflow = harness.getSnapshot().planningWorkflows[0];
+        expect(workflow?.branchA).toMatchObject({ status: "error", errorStage: "revision" });
+        expect(workflow?.branchA.error).toContain("only 7746 authoritative-artifact tokens");
+        expect(workflow?.branchA.error).toContain("Compact the Branch A author conversation");
+        expect(workflow?.branchB).toMatchObject({ status: "revising", error: null });
+      },
+    );
+
+    it("resumes the sibling after a revision error was persisted before its dispatch", async () => {
+      const fixture = revisionFixture({
+        statusA: "error",
+        statusB: "revising",
+        contextTokens: 154_508,
+      });
+      const { branchA, branchB } = fixture.workflow;
+      harness = await createHarness(makeReadModel(fixture));
+
+      await harness.start();
+
+      expect(turnStartsForThread(harness.dispatched, branchA.authorThreadId)).toHaveLength(0);
+      expect(turnStartsForThread(harness.dispatched, branchB.authorThreadId)).toHaveLength(1);
+      expect(harness.getSnapshot().planningWorkflows[0]).toMatchObject({
+        branchA,
+        branchB: { status: "revising", error: null },
+      });
+    });
+
+    it.each(["accepted", "ambiguous"] as const)(
+      "reuses the saved plan and reviews after compaction with an old %s authoring delivery",
+      async (oldState) => {
+        const fixture = revisionFixture({
+          statusA: "error",
+          statusB: "revising",
+          contextTokens: 5_000,
+        });
+        const { branchA, branchB } = fixture.workflow;
+        const retry = () =>
+          Effect.runPromise(harness!.service.retryWorkflow({ workflowId: fixture.workflow.id }));
+        const retryDelivery = vi.fn(() =>
+          Effect.die("The authoring delivery must not be retried."),
+        );
+        harness = await createHarness(makeReadModel(fixture), {
+          retryDelivery,
+          recheckDelivery: (threadId) => {
+            const dispatched = turnStartsForThread(harness?.dispatched ?? [], threadId)[0];
+            return Effect.succeed({
+              ...makeProviderTurnDelivery(
+                threadId,
+                threadId === branchA.authorThreadId && !dispatched ? oldState : "accepted",
+              ),
+              createdAt:
+                dispatched?.createdAt ??
+                (threadId === branchA.authorThreadId ? authoringRequestedAt : NOW),
+            });
+          },
+        });
+
+        expect(await Promise.all([retry(), retry()])).toEqual([
+          { status: "started" },
+          { status: "started" },
+        ]);
+
+        const [revision] = turnStartsForThread(harness.dispatched, branchA.authorThreadId);
+        expect(revision?.message.text.includes(planMarkdown)).toBe(true);
+        expect(revision?.message.text).toContain(crossReview);
+        expect(revision?.message.text).toContain(selfReview);
+        expect(
+          harness.dispatched.filter((command) => command.type === "thread.turn.start"),
+        ).toEqual([revision]);
+        expect(retryDelivery).not.toHaveBeenCalled();
+        expect(harness.getSnapshot().planningWorkflows[0]).toMatchObject({
+          branchA: { status: "revising", planTurnId: branchA.planTurnId, reviews: branchA.reviews },
+          branchB,
+        });
+      },
+    );
+
+    it("does not send a new revision when the provider accepted the existing one", async () => {
+      const fixture = revisionFixture({
+        statusA: "error",
+        statusB: "revising",
+        contextTokens: 5_000,
+      });
+      const { branchA, branchB } = fixture.workflow;
+      harness = await createHarness(makeReadModel(fixture), {
+        recheckDelivery: (threadId) =>
+          Effect.succeed(makeProviderTurnDelivery(threadId, "accepted")),
+      });
+
+      await Effect.runPromise(harness.service.retryWorkflow({ workflowId: fixture.workflow.id }));
+
+      expect(harness.dispatched.some((command) => command.type === "thread.turn.start")).toBe(
+        false,
+      );
+      expect(harness.getSnapshot().planningWorkflows[0]).toMatchObject({
+        branchA: { status: "revising", planTurnId: branchA.planTurnId, reviews: branchA.reviews },
+        branchB,
+      });
+    });
+
+    it("keeps the revision retryable when the inputs still exceed the context budget", async () => {
+      const fixture = revisionFixture({
+        statusA: "error",
+        statusB: "revising",
+        contextTokens: 154_508,
+      });
+      const { branchA, branchB } = fixture.workflow;
+      harness = await createHarness(makeReadModel(fixture), {
+        recheckDelivery: (threadId) =>
+          Effect.succeed(
+            threadId === branchB.authorThreadId
+              ? makeProviderTurnDelivery(threadId, "accepted")
+              : null,
+          ),
+      });
+
+      await expect(
+        Effect.runPromise(harness.service.retryWorkflow({ workflowId: fixture.workflow.id })),
+      ).resolves.toEqual({ status: "started" });
+
+      expect(harness.dispatched.some((command) => command.type === "thread.turn.start")).toBe(
+        false,
+      );
+      const workflow = harness.getSnapshot().planningWorkflows[0];
+      expect(workflow).toMatchObject({
+        branchA: { status: "error", errorStage: "revision", reviews: branchA.reviews },
+        branchB,
+      });
+      expect(workflow?.branchA.error).toContain("only 7746 authoritative-artifact tokens");
+    });
+  });
+
   it("retries only a failed revision while preserving its plan, reviews, and sibling branch", async () => {
     const reviewThreadId = ThreadId.makeUnsafe("completed-review-a");
     const reviewTurnId = TurnId.makeUnsafe("completed-review-turn-a");

@@ -106,6 +106,7 @@ export function buildRevisionPromptSections(input: {
   );
 
   return [
+    input.retry?.kind === "retry" ? `## Original plan\n\n${input.originalPlan.markdown}` : null,
     `Reviewers have provided feedback on your plan. Their reviews are:
 
 ${reviewSections.join("\n\n")}`,
