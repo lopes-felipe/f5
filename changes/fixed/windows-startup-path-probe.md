@@ -1,0 +1,1 @@
+- Stopping the server during Windows startup also stops the background PowerShell PATH probe.

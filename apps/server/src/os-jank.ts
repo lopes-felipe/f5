@@ -25,6 +25,7 @@ export function hydratePosixHome(
 export async function fixPath(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  signal?: AbortSignal,
 ): Promise<void> {
   // Before the login-shell probe, which reads the user's profile from HOME.
   if (platform === "darwin" || platform === "linux") hydratePosixHome(env);
@@ -33,6 +34,8 @@ export async function fixPath(
   if (env.F5_SHELL_ENVIRONMENT_PREPARED === "1") return;
   if (platform === "win32") {
     await ensureWindowsPathHydrated(env, {
+      platform,
+      ...(signal ? { signal } : {}),
       warn: (message) => console.warn(`[environment] ${message}`),
     });
     return;

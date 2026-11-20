@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { Effect, Option } from "effect";
+import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import * as NodePath from "node:path";
 
@@ -9,6 +10,7 @@ export interface WindowsRegistryPaths {
 
 export type WindowsRegistryPathReader = (
   environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ) => Promise<WindowsRegistryPaths | undefined>;
 
 export type WindowsPathExists = (path: string) => Promise<boolean>;
@@ -18,10 +20,18 @@ export interface HydrateWindowsPathOptions {
   readonly readRegistryPaths?: WindowsRegistryPathReader;
   readonly pathExists?: WindowsPathExists;
   readonly warn?: (message: string) => void;
+  readonly signal?: AbortSignal;
 }
 
 let cachedRegistryPathsPromise: Promise<WindowsRegistryPaths | undefined> | undefined;
-let processWindowsPathHydrationPromise: Promise<WindowsPathHydration> | undefined;
+let processHydration:
+  | {
+      readonly controller: AbortController;
+      readonly promise: Promise<WindowsPathHydration>;
+      waiters: number;
+      settled: boolean;
+    }
+  | undefined;
 
 function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
   const normalized = name.toLowerCase();
@@ -64,7 +74,29 @@ export function mergeWindowsPathValues(values: ReadonlyArray<string | undefined>
   return merged.join(";");
 }
 
-export const readWindowsRegistryPaths: WindowsRegistryPathReader = async (environment) => {
+const readPowerShellOutput = (command: string, script: string) =>
+  Effect.callback<string | undefined>((resume) => {
+    let child;
+    try {
+      child = execFile(
+        command,
+        ["-NoProfile", "-NonInteractive", "-Command", script],
+        { encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 },
+        (error, stdout) => resume(Effect.succeed(error ? undefined : stdout)),
+      );
+    } catch {
+      return resume(Effect.succeed(undefined));
+    }
+
+    return Effect.sync(() => {
+      child.kill();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+    });
+  });
+
+export const readWindowsRegistryPaths: WindowsRegistryPathReader = async (environment, signal) => {
   const systemRoot =
     environmentValue(environment, "SystemRoot") ??
     environmentValue(environment, "SYSTEMROOT") ??
@@ -83,42 +115,17 @@ export const readWindowsRegistryPaths: WindowsRegistryPathReader = async (enviro
     "if ($user) { $user = [Environment]::ExpandEnvironmentVariables($user) }",
     "[Console]::Write((ConvertTo-Json @($machine, $user) -Compress))",
   ].join("; ");
-  const stdout = await new Promise<string | undefined>((resolve) => {
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-    } catch {
-      resolve(undefined);
-      return;
-    }
-
-    let output = "";
-    let settled = false;
-    const settle = (value: string | undefined): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolve(value);
-    };
-    const timeout = setTimeout(() => {
-      child.kill();
-      settle(undefined);
-    }, 3_000);
-    timeout.unref();
-
-    child.stdout?.on("data", (chunk: Buffer | string) => {
-      output += chunk.toString();
-      if (Buffer.byteLength(output) > 64 * 1024) {
-        child.kill();
-        settle(undefined);
+  const output = await Effect.runPromise(
+    Effect.gen(function* () {
+      for (const shell of [powershell, "pwsh.exe"]) {
+        const stdout = yield* readPowerShellOutput(shell, script);
+        if (stdout?.trim()) return stdout;
       }
-    });
-    child.once("error", () => settle(undefined));
-    child.once("close", (code) => settle(code === 0 && output.trim() ? output : undefined));
-  });
+      return undefined;
+    }).pipe(Effect.timeoutOption("3 seconds")),
+    signal ? { signal } : undefined,
+  );
+  const stdout = Option.getOrUndefined(output);
   if (!stdout) return undefined;
   try {
     const parsed = JSON.parse(stdout) as unknown;
@@ -141,7 +148,7 @@ function cachedReadRegistryPaths(
 
 export function resetWindowsPathCache(): void {
   cachedRegistryPathsPromise = undefined;
-  processWindowsPathHydrationPromise = undefined;
+  processHydration = undefined;
 }
 
 function knownWindowsInstallDirectories(environment: NodeJS.ProcessEnv): ReadonlyArray<string> {
@@ -201,9 +208,12 @@ async function hydrateWindowsPathWithStatus(
     return { path: undefined, registryRead: false };
   }
 
-  const reader = options.readRegistryPaths ?? cachedReadRegistryPaths;
+  const { signal } = options;
+  signal?.throwIfAborted();
+  const reader =
+    options.readRegistryPaths ?? (signal ? readWindowsRegistryPaths : cachedReadRegistryPaths);
   const [registryPaths, knownDirectories] = await Promise.all([
-    reader(environment).catch(() => undefined),
+    reader(environment, signal).catch(() => undefined),
     Promise.all(
       knownWindowsInstallDirectories(environment).map(async (candidate) =>
         (await (options.pathExists ?? pathExists)(candidate).catch(() => false))
@@ -212,6 +222,7 @@ async function hydrateWindowsPathWithStatus(
       ),
     ).then((entries) => entries.filter((entry): entry is string => entry !== undefined)),
   ]);
+  signal?.throwIfAborted();
   if (!registryPaths) {
     options.warn?.("Unable to read the Windows registry PATH; using the inherited PATH.");
   }
@@ -234,22 +245,70 @@ export function ensureWindowsPathHydrated(
 }
 
 /** Like ensureWindowsPathHydrated, but also reports whether the registry PATH was read. */
-export function ensureWindowsPathHydration(
+export async function ensureWindowsPathHydration(
   environment: NodeJS.ProcessEnv = process.env,
   options: HydrateWindowsPathOptions = {},
 ): Promise<WindowsPathHydration> {
   const platform = options.platform ?? process.platform;
-  if (platform !== "win32") return Promise.resolve({ path: undefined, registryRead: false });
+  if (platform !== "win32") return { path: undefined, registryRead: false };
+  const { signal } = options;
+  signal?.throwIfAborted();
   if (options.readRegistryPaths !== undefined || options.pathExists !== undefined) {
     return hydrateWindowsPathWithStatus(environment, options);
   }
-  processWindowsPathHydrationPromise ??= hydrateWindowsPathWithStatus(process.env, options);
-  if (environment === process.env) return processWindowsPathHydrationPromise;
+
+  if (!processHydration) {
+    const controller = new AbortController();
+    const hydration = {
+      controller,
+      waiters: 0,
+      settled: false,
+      promise: hydrateWindowsPathWithStatus(process.env, {
+        ...options,
+        signal: controller.signal,
+      }).finally(() => {
+        hydration.settled = true;
+      }),
+    };
+    processHydration = hydration;
+  }
+
+  const hydration = processHydration;
+  hydration.waiters += 1;
+  let onAbort: (() => void) | undefined;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+    hydration.waiters -= 1;
+    // A startup cancellation stops the probe when nobody else is using it.
+    if (hydration.waiters === 0 && !hydration.settled) {
+      if (processHydration === hydration) processHydration = undefined;
+      hydration.controller.abort();
+    }
+  };
+  let result: WindowsPathHydration;
+  try {
+    result = await (signal
+      ? new Promise<WindowsPathHydration>((resolve, reject) => {
+          onAbort = () => {
+            release();
+            reject(signal.reason);
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          void hydration.promise.then(resolve, reject);
+        })
+      : hydration.promise);
+  } finally {
+    release();
+  }
+  if (environment === process.env) return result;
   // A caller-supplied environment is an explicit execution boundary. Await
   // process hydration so startup remains serialized, but never widen or mutate
   // a deliberately restricted PATH with user-writable global install folders.
-  return processWindowsPathHydrationPromise.then(({ registryRead }) => ({
+  return {
     path: inheritedPath(environment) || undefined,
-    registryRead,
-  }));
+    registryRead: result.registryRead,
+  };
 }

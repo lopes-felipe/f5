@@ -310,10 +310,19 @@ it("builds platform-specific file reveal commands", () => {
     command: "open",
     args: ["-R", "/tmp/workspace/src/app.ts"],
   });
-  expect(resolveFileManagerRevealLaunch("C:\\workspace\\src\\app.ts", "win32")).toEqual({
-    command: "explorer",
-    args: ["/select,C:\\workspace\\src\\app.ts"],
-  });
+  for (const target of [
+    "C:/workspace with spaces/author's file.ts",
+    "C:\\workspace with spaces\\author's file.ts",
+  ]) {
+    expect(resolveFileManagerRevealLaunch(target, "win32")).toEqual({
+      command: "explorer",
+      args: [`/select,"C:\\workspace with spaces\\author's file.ts"`],
+      windowsVerbatimArguments: true,
+    });
+  }
+  expect(resolveFileManagerRevealLaunch("//server/share/file.txt", "win32").args).toEqual([
+    '/select,"\\\\server\\share\\file.txt"',
+  ]);
   expect(resolveFileManagerRevealLaunch("/tmp/workspace/src/app.ts", "linux")).toEqual({
     command: "xdg-open",
     args: ["/tmp/workspace/src"],
@@ -588,6 +597,111 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
     }).pipe(Effect.provide(OpenLive)),
   );
 });
+
+vitestIt.skipIf(process.platform === "win32")(
+  "recovers the systemd display for editors and the file manager only",
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "f5-graphical-session-"));
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const output = path.join(root, "launches.jsonl");
+    const probe = path.join(root, "busctl.jsonl");
+    const recordLaunch = `
+      require("node:fs").appendFileSync(${JSON.stringify(output)}, JSON.stringify({
+        target: process.argv[2], display: process.env.DISPLAY ?? null,
+        wayland: process.env.WAYLAND_DISPLAY ?? null, auth: process.env.XAUTHORITY ?? null,
+        home: process.env.HOME, runAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null
+      }) + "\\n");
+    `;
+    try {
+      writeCliCommand(path.join(root, "codium"), recordLaunch);
+      writeCliCommand(path.join(root, "xdg-open"), recordLaunch);
+      writeCliCommand(
+        path.join(root, "busctl"),
+        `require("node:fs").appendFileSync(${JSON.stringify(probe)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+        process.stdout.write(process.env.F5_TEST_MANAGER_ENV);`,
+      );
+      Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+      vi.stubEnv("PATH", `${root}${path.delimiter}${process.env.PATH ?? ""}`);
+      vi.stubEnv("DISPLAY", undefined);
+      vi.stubEnv("WAYLAND_DISPLAY", undefined);
+      vi.stubEnv("XAUTHORITY", undefined);
+      vi.stubEnv("HOME", "/server-home");
+      vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
+      vi.stubEnv(
+        "F5_TEST_MANAGER_ENV",
+        JSON.stringify({
+          data: [
+            "DISPLAY=:0",
+            "WAYLAND_DISPLAY=wayland-1",
+            "XAUTHORITY=/auth files/cookie=1",
+            "HOME=/ignored",
+          ],
+        }),
+      );
+
+      const launches = () =>
+        fs
+          .readFileSync(output, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const open = yield* Open;
+          yield* open.openInEditor({ editor: "vscodium", cwd: "/workspace" });
+          yield* open.revealInFileManager("/workspace/file.txt");
+          yield* Effect.promise(() => expect.poll(() => launches().length).toBe(2));
+          yield* open.openBrowser("https://example.com");
+          yield* Effect.promise(() => expect.poll(() => launches().length).toBe(3));
+          vi.stubEnv("F5_TEST_MANAGER_ENV", '{"data":[42]}');
+          yield* open.openInEditor({ editor: "vscodium", cwd: "/invalid-response" });
+          vi.stubEnv("DISPLAY", ":5");
+          yield* open.openInEditor({ editor: "vscodium", cwd: "/existing-display" });
+        }).pipe(Effect.provide(OpenLive)),
+      );
+
+      const base = {
+        display: null,
+        wayland: null,
+        auth: null,
+        home: "/server-home",
+        runAsNode: null,
+      };
+      const recovered = {
+        ...base,
+        display: ":0",
+        wayland: "wayland-1",
+        auth: "/auth files/cookie=1",
+      };
+      expect(launches()).toEqual([
+        { ...recovered, target: "/workspace" },
+        { ...recovered, target: "/workspace" },
+        { ...base, target: "https://example.com" },
+        { ...base, target: "/invalid-response" },
+        { ...base, target: "/existing-display", display: ":5" },
+      ]);
+      const calls = fs
+        .readFileSync(probe, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(calls).toHaveLength(3);
+      expect(calls[0]).toEqual([
+        "--user",
+        "--json=short",
+        "get-property",
+        "org.freedesktop.systemd1",
+        "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager",
+        "Environment",
+      ]);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
   it.effect("resolves win32 commands with PATHEXT", () =>
