@@ -57,7 +57,7 @@ import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
 import { capturePreviewSnapshotPage } from "./preview/snapshotScript";
-import { buildPreviewPickScript } from "./preview/pickScript";
+import { PreviewPicker } from "./preview/PreviewPicker";
 import {
   PreviewAutomationControl,
   PreviewDiagnostics,
@@ -1667,12 +1667,14 @@ function isPickedElementResult(value: unknown): value is {
   );
 }
 
+const previewPicker = new PreviewPicker();
+
 async function pickPreviewElement(tabId: string): Promise<PreviewAnnotationPayload | null> {
   const guest = getPreviewWebContents(tabId);
   if (!guest) {
     throw new Error("Preview webview is not attached.");
   }
-  const rawResult = await guest.executeJavaScript(buildPreviewPickScript(), true);
+  const rawResult = await previewPicker.pick(guest, previewAutomationControl.isActive(tabId));
   if (!isPickedElementResult(rawResult)) {
     return null;
   }
@@ -1760,6 +1762,7 @@ async function runPreviewAutomationAction<T>(
   try {
     const result = await previewAutomationControl.run(tabId, async (checkpoint) => {
       const guest = requirePreviewWebContents(tabId);
+      previewPicker.assertAutomationAllowed(guest);
       requireAllowedPreviewPage(tabId, guest);
       markAgentNavigation(tabId);
       try {
@@ -4344,9 +4347,8 @@ function registerIpcHandlers(): void {
         getPreviewWebContents(scopeTabId(tabId))?.openDevTools({ mode: "detach" }),
       pickElement: (tabId) => pickPreviewElement(scopeTabId(tabId)),
       cancelPickElement: async (tabId) => {
-        await getPreviewWebContents(scopeTabId(tabId))
-          ?.executeJavaScript("window.__f5PreviewPickCancel?.()", true)
-          .catch(() => null);
+        const guest = getPreviewWebContents(scopeTabId(tabId));
+        if (guest) await previewPicker.cancel(guest);
       },
       automationStatus: (tabId) => previewAutomationStatus(scopeTabId(tabId)),
       automationSnapshot: (tabId, save) => previewAutomationSnapshot(scopeTabId(tabId), save),
@@ -4474,10 +4476,33 @@ function createWindow(
     params.src = "about:blank";
     installPreviewPermissionPolicy(electronSession.fromPartition(partition), {
       isUserDriven: (guest) => {
-        const id = (guest as { readonly id?: unknown }).id;
-        return [...previewTabs.entries()].some(
-          ([tabId, tab]) => tab.webContentsId === id && !isAgentPreviewNavigation(tabId),
+        return (
+          !guest.isDestroyed() &&
+          [...previewTabs.entries()].some(
+            ([tabId, tab]) => tab.webContentsId === guest.id && !isAgentPreviewNavigation(tabId),
+          )
         );
+      },
+      confirmGeolocation: async (guest, origin) => {
+        const host = guest.isDestroyed() ? null : guest.hostWebContents;
+        const parent = host && !host.isDestroyed() ? BrowserWindow.fromWebContents(host) : null;
+        if (!parent || parent.isDestroyed()) return undefined;
+        const maxOriginLength = 300;
+        const displayOrigin =
+          origin.length > maxOriginLength ? origin.slice(0, maxOriginLength) + "…" : origin;
+        const options: Electron.MessageBoxOptions = {
+          type: "question",
+          message: displayOrigin + " wants to know your location",
+          buttons: ["Allow", "Block"],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        };
+        const { response } =
+          process.platform === "win32"
+            ? await dialog.showMessageBox(options)
+            : await dialog.showMessageBox(parent, options);
+        return response === 0;
       },
     });
     // A page that goes fullscreen fills its own webview instead of the whole F5 window.

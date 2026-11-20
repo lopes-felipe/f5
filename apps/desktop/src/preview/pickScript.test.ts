@@ -1,6 +1,8 @@
+import { EventEmitter } from "node:events";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
-import { buildPreviewPickScript, PREVIEW_PICK_INPUT_LAYER_ATTRIBUTE } from "./pickScript";
+import { PreviewPicker } from "./PreviewPicker";
+import { PREVIEW_PICK_INPUT_LAYER_ATTRIBUTE, PREVIEW_PICK_WORLD_ID } from "./pickScript";
 
 interface FakeElement {
   nodeType: number;
@@ -94,23 +96,38 @@ function startPick(contentType: string) {
     Node: { ELEMENT_NODE: 1 },
     CSS: { escape: (value: string) => value },
   };
-  const run = () =>
-    runInNewContext(buildPreviewPickScript(), context) as Promise<{
-      element: { tagName: string };
-    } | null>;
+  const guest = Object.assign(new EventEmitter(), {
+    getURL: vi.fn(() => context.location.href),
+    isLoadingMainFrame: vi.fn(() => false),
+    executeJavaScriptInIsolatedWorld: vi.fn(
+      async (worldId: number, scripts: Electron.WebSource[]) => {
+        expect(worldId).toBe(PREVIEW_PICK_WORLD_ID);
+        return runInNewContext(scripts[0]!.code, context);
+      },
+    ),
+  });
+  const picker = new PreviewPicker();
+  const run = (automationActive = false) => picker.pick(guest, automationActive);
   const result = run();
   const dispatch = (type: string, event: Record<string, unknown>) =>
-    listeners.get(type)?.({ preventDefault: () => {}, stopPropagation: () => {}, ...event });
+    listeners.get(type)?.({
+      isTrusted: true,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+      ...event,
+    });
   const inputLayers = () =>
     documentElement.children.filter((child) =>
       child.hasAttribute(PREVIEW_PICK_INPUT_LAYER_ATTRIBUTE),
     );
   const inputLayer = () => inputLayers()[0];
-  const cancel = () => (window.__f5PreviewPickCancel as (() => void) | undefined)?.();
+  const cancel = () => picker.cancel(guest);
   return {
     result,
     run,
     cancel,
+    picker,
+    guest,
     dispatch,
     window,
     documentElement,
@@ -122,7 +139,19 @@ function startPick(contentType: string) {
   };
 }
 
-describe("buildPreviewPickScript", () => {
+describe("PreviewPicker", () => {
+  it("keeps picking after a page dispatches a synthetic click or Escape", async () => {
+    const pick = startPick("text/html");
+    const preventDefault = vi.fn();
+    pick.dispatch("click", { isTrusted: false, target: pick.body, preventDefault });
+    pick.dispatch("keydown", { isTrusted: false, key: "Escape", preventDefault });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(pick.listeners.has("click")).toBe(true);
+
+    pick.dispatch("click", { target: pick.embed });
+    await expect(pick.result).resolves.toMatchObject({ element: { tagName: "embed" } });
+  });
+
   it("adds no input layer on ordinary pages", async () => {
     const pick = startPick("text/html");
     expect(pick.inputLayer()).toBeUndefined();
@@ -163,11 +192,15 @@ describe("buildPreviewPickScript", () => {
 
   it("removes the input layer when the host cancels the pick", async () => {
     const pick = startPick("application/pdf");
-    pick.cancel();
+    expect(() => pick.picker.assertAutomationAllowed(pick.guest)).toThrow(
+      "The user is picking an element",
+    );
+    await pick.cancel();
     await expect(pick.result).resolves.toBeNull();
     expect(pick.documentElement.children).toEqual([pick.body]);
     expect(pick.listeners.size).toBe(0);
-    expect(pick.window.__f5PreviewPickCancel).toBeUndefined();
+    expect(pick.window.__f5PreviewPicker).toBeUndefined();
+    expect(() => pick.picker.assertAutomationAllowed(pick.guest)).not.toThrow();
   });
 
   it("keeps a single input layer when a pick restarts", async () => {
@@ -179,5 +212,58 @@ describe("buildPreviewPickScript", () => {
     pick.dispatch("click", { target: pick.inputLayer(), clientX: 10, clientY: 10 });
     await expect(restarted).resolves.toMatchObject({ element: { tagName: "embed" } });
     expect(pick.documentElement.children).toEqual([pick.body]);
+  });
+
+  it("keeps a restarted pick active if an earlier cancellation arrives late", async () => {
+    const pick = startPick("text/html");
+    const evaluate = pick.guest.executeJavaScriptInIsolatedWorld.getMockImplementation()!;
+    let dispatchCancel!: () => void;
+    pick.guest.executeJavaScriptInIsolatedWorld.mockImplementationOnce(
+      (worldId, scripts) =>
+        new Promise((resolve) => {
+          dispatchCancel = () => resolve(evaluate(worldId, scripts));
+        }),
+    );
+    const cancellation = pick.cancel();
+    const restarted = pick.run();
+    await expect(pick.result).resolves.toBeNull();
+    dispatchCancel();
+    await cancellation;
+    expect(() => pick.picker.assertAutomationAllowed(pick.guest)).toThrow();
+    pick.dispatch("click", { target: pick.embed });
+    await expect(restarted).resolves.toMatchObject({ element: { tagName: "embed" } });
+  });
+
+  it.each(["did-navigate", "destroyed", "render-process-gone"])(
+    "releases pending picks and automation on %s",
+    async (event) => {
+      const pick = startPick("text/html");
+      pick.guest.emit(event);
+      await expect(pick.result).resolves.toBeNull();
+      expect(pick.guest.eventNames()).toEqual([]);
+      expect(() => pick.picker.assertAutomationAllowed(pick.guest)).not.toThrow();
+    },
+  );
+
+  it("cleans up the overlay before the document can enter the back-forward cache", async () => {
+    const pick = startPick("application/pdf");
+    pick.dispatch("pagehide", { isTrusted: false });
+    expect(pick.inputLayer()).toBeDefined();
+    pick.dispatch("pagehide", { persisted: true });
+    await expect(pick.result).resolves.toBeNull();
+    expect(pick.inputLayers()).toHaveLength(0);
+    expect(pick.listeners.size).toBe(0);
+  });
+
+  it("refuses to inject while automation is active or the main frame is loading", async () => {
+    const pick = startPick("text/html");
+    await pick.cancel();
+    await pick.result;
+    pick.guest.executeJavaScriptInIsolatedWorld.mockClear();
+    await expect(pick.run(true)).rejects.toThrow("current browser automation action");
+    pick.guest.isLoadingMainFrame.mockReturnValue(true);
+    await expect(pick.run()).rejects.toThrow("finish loading");
+    expect(pick.guest.executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
+    expect(() => pick.picker.assertAutomationAllowed(pick.guest)).not.toThrow();
   });
 });
