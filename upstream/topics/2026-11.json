@@ -28783,11 +28783,21 @@
     },
     {
       "createdAt": "2026-11-05T11:02:07.777Z",
-      "decidedAt": "2026-11-13T11:26:08.229Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-20T09:48:10.537Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:2944",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:10634"
+        ],
+        "f5Refs": [
+          "5ada62dbd338f137f920053f84b88096489b7730"
+        ]
+      },
       "id": "pr-29803",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
