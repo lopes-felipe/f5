@@ -170,6 +170,8 @@ export function formatKeybindingCommandLabel(
       return "Toggle thread settlement";
     case "thread.togglePin":
       return "Pin or unpin thread";
+    case "project.togglePin":
+      return "Pin or unpin project";
     case "thread.copyReference":
       return "Copy thread reference";
     case "thread.undo":

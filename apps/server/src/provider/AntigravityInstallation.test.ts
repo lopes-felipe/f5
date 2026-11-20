@@ -17,7 +17,8 @@ const zip = Buffer.from(
 const asset: AntigravityReleaseAsset = {
   version: "test",
   url: "https://example.invalid/release.zip",
-  sha256: createHash("sha256").update(zip).digest("hex"),
+  sha512: createHash("sha512").update(zip).digest("hex"),
+  format: "zip",
   archiveBytes: zip.length,
   executable: { name: "agy", bytes: 10 },
   harness: { name: "harness", bytes: 7 },
@@ -34,16 +35,16 @@ afterEach(async () => {
 });
 
 describe("Antigravity explicit installation", () => {
-  it("resolves verified 1.3.0 assets for every supported platform including Intel Mac", () => {
+  it("resolves supported 1.5 CLI assets for every platform including Intel Mac", () => {
     for (const platform of ["darwin", "linux", "win32"] as const) {
       for (const arch of ["arm64", "x64"]) {
         const release = resolveAntigravityReleaseAsset(platform, arch);
-        expect(release?.version).toBe("1.3.0");
-        expect(release?.url).toContain("1.3.0");
-        expect(release?.sha256).toMatch(/^[a-f0-9]{64}$/);
+        expect(release?.version).toBe("1.5.13");
+        expect(release?.url).toContain("1.5.13");
+        expect(release?.sha512).toMatch(/^[a-f0-9]{128}$/);
         expect(release?.archiveBytes).toBeGreaterThan(0);
-        expect(release?.executable.bytes).toBeGreaterThan(0);
-        expect(release?.harness.bytes).toBeGreaterThan(0);
+        expect(release?.executable.name).toBe(platform === "win32" ? "agy.exe" : "antigravity");
+        expect(release?.harness).toBeUndefined();
       }
     }
     expect(resolveAntigravityReleaseAsset("freebsd", "x64")).toBeNull();
@@ -58,7 +59,7 @@ describe("Antigravity explicit installation", () => {
     expect(first).toEqual(second);
     expect(download).toHaveBeenCalledTimes(1);
     expect(await fs.readFile(first.executablePath, "utf8")).toBe("executable");
-    expect(await fs.readdir(install.directory)).toEqual([asset.sha256]);
+    expect(await fs.readdir(install.directory)).toEqual([asset.sha512]);
     expect(await install.install()).toEqual(first);
     expect(download).toHaveBeenCalledTimes(1);
   });
@@ -67,7 +68,7 @@ describe("Antigravity explicit installation", () => {
       "fetch",
       vi.fn(async () => new Response(zip)),
     );
-    const install = await setup({ sha256: "0".repeat(64) });
+    const install = await setup({ sha512: "0".repeat(128) });
     await expect(install.install()).rejects.toThrow("integrity");
     expect(await fs.readdir(install.directory)).toEqual([]);
     await expect(install.resolve()).rejects.toThrow("Install Antigravity");

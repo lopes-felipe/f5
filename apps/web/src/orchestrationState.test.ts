@@ -5,7 +5,22 @@ import {
   type OrchestrationSession,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
-import { mapSessionFromReadModel } from "./orchestrationState";
+import { mapSessionFromReadModel, mapMessageAttachmentsFromReadModel } from "./orchestrationState";
+
+it("retains attachment provenance across hydration and invalidates changed sources", () => {
+  const image = {
+    type: "image" as const,
+    id: "snapshot",
+    name: "snapshot.png",
+    mimeType: "image/png",
+    sizeBytes: 128,
+  };
+  const first = mapMessageAttachmentsFromReadModel([image], undefined)!;
+  const next = mapMessageAttachmentsFromReadModel([{ ...image, source: "snapshot" }], first)!;
+  expect(next[0]?.source).toBe("snapshot");
+  expect(next).not.toBe(first);
+  expect(mapMessageAttachmentsFromReadModel([{ ...image, source: "snapshot" }], next)).toBe(next);
+});
 
 const session: OrchestrationSession = {
   threadId: ThreadId.makeUnsafe("limited"),

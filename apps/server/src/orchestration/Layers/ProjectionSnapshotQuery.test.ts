@@ -265,12 +265,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         `;
       }
 
+      yield* sql.unsafe(
+        "UPDATE projection_projects SET pinned = 1, archived = 1 WHERE project_id = 'project-1'",
+      );
       const snapshot = yield* snapshotQuery.getSnapshot();
 
       assert.equal(snapshot.snapshotSequence, 5);
       assert.equal(snapshot.updatedAt, "2026-02-24T00:00:09.000Z");
       assert.deepEqual(snapshot.projects, [
         {
+          pinned: true,
+          archived: true,
           id: asProjectId("project-1"),
           kind: "standard",
           title: "Project 1",

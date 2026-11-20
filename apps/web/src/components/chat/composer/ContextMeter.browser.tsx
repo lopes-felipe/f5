@@ -63,6 +63,40 @@ describe("ContextMeter", () => {
     }
   });
 
+  it("shows token counts and only marks a valid auto-compaction point", async () => {
+    const screen = await render(
+      <ContextMeter
+        tokenUsage={usage({
+          estimatedContextTokens: 38_000,
+          modelContextWindowTokens: 200_000,
+          autoCompactThreshold: 117_000,
+        })}
+      />,
+    );
+    try {
+      expect(document.querySelector('[data-slot="context-token-count"]')?.textContent).toBe(
+        "38K / 200K",
+      );
+      expect(document.querySelector('[data-slot="context-auto-compact-mark"]')).not.toBeNull();
+      await page.getByRole("button", { name: /Context window occupancy/ }).hover();
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("Auto-compacts around 117,000 tokens"),
+      );
+      await screen.rerender(
+        <ContextMeter
+          tokenUsage={usage({
+            estimatedContextTokens: 38_000,
+            modelContextWindowTokens: 200_000,
+            autoCompactThreshold: 200_000,
+          })}
+        />,
+      );
+      expect(document.querySelector('[data-slot="context-auto-compact-mark"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("tones the ring by occupancy and explains the model window in the tooltip", async () => {
     const screen = await render(
       <ContextMeter

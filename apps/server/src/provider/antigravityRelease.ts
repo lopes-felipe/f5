@@ -1,94 +1,92 @@
-const ANTIGRAVITY_RELEASE_VERSION = "1.3.0";
-
+// Pinned from Google's official CLI manifests on 2026-11-20. Install is explicit;
+// status probes never download. Upstream withdrew the separate pre-1.5 ACP harness.
 export interface AntigravityReleaseAsset {
   readonly version: string;
   readonly url: string;
-  readonly sha256: string;
+  readonly sha512: string;
   readonly archiveBytes: number;
-  readonly executable: {
-    readonly name: string;
-    readonly bytes: number;
-  };
-  readonly harness: {
-    readonly name: string;
-    readonly bytes: number;
-  };
+  readonly format: "tar.gz" | "executable" | "zip";
+  readonly executable: { readonly name: string; readonly bytes?: number };
+  /** Legacy archive test fixtures only; supported CLI releases embed their harness. */
+  readonly harness?: { readonly name: string; readonly bytes: number };
 }
-
-// URLs come from the official registry. Hashes and sizes were checked on 2026-10-05.
-// https://github.com/agentclientprotocol/registry/blob/dc55a34900fdd60e5e97c1cbd7825c5a1df673fc/antigravity-acp/agent.json
 const releaseAssets = new Map<string, AntigravityReleaseAsset>([
   [
     "darwin-arm64",
     {
-      version: ANTIGRAVITY_RELEASE_VERSION,
-      url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.3.0-darwin-arm64.zip",
-      sha256: "7cd97045f7b4fe81175a107cdf16f9c51484e3c78a5162cae415338bb6aa5b88",
-      archiveBytes: 111_456_962,
-      executable: { name: "agy_acp_server.par", bytes: 278_535_456 },
-      harness: { name: "localharness_external", bytes: 118_611_392 },
+      version: "1.5.13",
+      url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.13-5999302598852608/darwin-arm/cli_mac_arm64.tar.gz",
+      sha512:
+        "d9825ebce6954df6b7841970fd7ef3d37acdfe628993f14c396ec73b20ed06bbe95e7b7be047e7c0b0baaf009f75fe95ce051b9f4af5e84b002da15bda4a1f45",
+      archiveBytes: 85497754,
+      format: "tar.gz",
+      executable: { name: "antigravity" },
     },
   ],
   [
     "darwin-x64",
     {
-      version: ANTIGRAVITY_RELEASE_VERSION,
-      url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.3.0-darwin-x86_64.zip",
-      sha256: "bb23956b89984bf5d354af2c3725e6c57f0cc1b7228e77a0e91c9c2bc1d47646",
-      archiveBytes: 117_245_544,
-      executable: { name: "agy_acp_server.par", bytes: 282_840_688 },
-      harness: { name: "localharness_external", bytes: 124_175_392 },
+      version: "1.5.13",
+      url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.13-5999302598852608/darwin-x64/cli_mac_x64.tar.gz",
+      sha512:
+        "6a7087eb847029bead89d496a6c4a5d3ec8552f351a486b3917948fee2a9a72ec6e2be7eae866b975b8ed3fc2a1827cf176b5bd45d6eb9970424fec4352d3930",
+      archiveBytes: 91068379,
+      format: "tar.gz",
+      executable: { name: "antigravity" },
     },
   ],
   [
     "linux-x64",
     {
-      version: ANTIGRAVITY_RELEASE_VERSION,
-      url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.3.0-linux-x86_64.zip",
-      sha256: "9fb60956af0a9d76220a4db91ca9ac88e2a2372ad68f985ab5fceace6b825b96",
-      archiveBytes: 333_727_150,
-      executable: { name: "agy_acp_server.par", bytes: 926_533_965 },
-      harness: { name: "localharness_external", bytes: 130_388_040 },
+      version: "1.5.13",
+      url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.13-5999302598852608/linux-x64/cli_linux_x64.tar.gz",
+      sha512:
+        "014b37387703acab1f47cd532c8bb60167a6a3537b0f9891de03f1b1ffa9614307bc83c4b2f7551273b0877d722716b0cd9e26782f6b2a50705db4f05e18c68f",
+      archiveBytes: 100548668,
+      format: "tar.gz",
+      executable: { name: "antigravity" },
     },
   ],
   [
     "linux-arm64",
     {
-      version: ANTIGRAVITY_RELEASE_VERSION,
-      url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.3.0-linux-arm64.zip",
-      sha256: "500b0bc0fb858e88f4df404d4cedf80bf9298c178291e39e383d6c50b111cbdf",
-      archiveBytes: 321_690_363,
-      executable: { name: "agy_acp_server.par", bytes: 930_848_992 },
-      harness: { name: "localharness_external", bytes: 123_224_968 },
+      version: "1.5.13",
+      url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.13-5999302598852608/linux-arm/cli_linux_arm64.tar.gz",
+      sha512:
+        "dccea2eb455099f5175f0c87cc47b38fcefe4cb0cb44dea3927469bb4bbf68ac3c0b30fc04affb24c17e90959386a93c3785e8e4b8b1a3338ca4e4d57b80057b",
+      archiveBytes: 91596782,
+      format: "tar.gz",
+      executable: { name: "antigravity" },
     },
   ],
   [
     "win32-x64",
     {
-      version: ANTIGRAVITY_RELEASE_VERSION,
-      url: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.3.0-windows-x86_64.zip",
-      sha256: "65215e0688681fa3116e048a9eab27ef53af1bbd6f3da3f1c52bd4911d8b17f9",
-      archiveBytes: 124_509_787,
-      executable: { name: "agy_acp_server.exe", bytes: 81_437_336 },
-      harness: { name: "localharness_external.exe", bytes: 145_548_952 },
+      version: "1.5.13",
+      url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.13-5999302598852608/windows-x64/cli_windows_x64.exe",
+      sha512:
+        "6b80a17a2bc34a969ed9ba31500a8201b0b4aad3e7fe061374022d161fec8bd7de49b6dc069a6ac67a90632e8671bbe860a7e94309bc5adbc536d27a75a86b58",
+      archiveBytes: 236040344,
+      format: "executable",
+      executable: { name: "agy.exe", bytes: 236040344 },
     },
   ],
   [
     "win32-arm64",
     {
-      version: ANTIGRAVITY_RELEASE_VERSION,
-      url: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.3.0-windows-arm64.zip",
-      sha256: "4a0f469720e9beb9438a979f543fdbfad5022ebe0992c052c590bd78b3144ca3",
-      archiveBytes: 124_654_803,
-      executable: { name: "agy_acp_server.exe", bytes: 85_893_472 },
-      harness: { name: "localharness_external.exe", bytes: 135_640_216 },
+      version: "1.5.13",
+      url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.13-5999302598852608/windows-arm/cli_windows_arm64.exe",
+      sha512:
+        "c85686d6ae68d4566f86af0c240e4b49a303549ae152757546878193f25a263b02c4d8f1d5030631dc93646a298dcb02713c18e7850390e3db5c9dda6c31265f",
+      archiveBytes: 224102040,
+      format: "executable",
+      executable: { name: "agy.exe", bytes: 224102040 },
     },
   ],
 ]);
-
 export function resolveAntigravityReleaseAsset(
   platform: NodeJS.Platform,
   arch: string,
 ): AntigravityReleaseAsset | null {
-  return releaseAssets.get(`${platform}-${arch}`) ?? null;
+  return releaseAssets.get(platform + "-" + arch) ?? null;
 }

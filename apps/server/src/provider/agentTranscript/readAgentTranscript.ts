@@ -11,15 +11,22 @@ import { readClaudeAgentTranscript, unavailable } from "./readClaudeAgentTranscr
 import { readCodexAgentTranscript } from "./readCodexAgentTranscript.ts";
 import { decodeCursor } from "./agentTranscriptCursor.ts";
 import { backgroundWorkSessionIdentity } from "../backgroundWorkIdentity.ts";
+import { antigravityProfileDirectory } from "../acp/AntigravityAcpSupport.ts";
+import { readAntigravityChildWork } from "../acp/AntigravityChildWork.ts";
+import { emptyTranscriptPage } from "./readClaudeAgentTranscript.ts";
+import { fitTranscriptItems } from "./transcriptPageBudget.ts";
+import type { AgentTranscriptItem } from "@t3tools/contracts";
 
 export function readAgentTranscript(
   input: AgentsReadTranscriptInput,
   deps: {
-    work: Pick<ThreadBackgroundWorkShape, "getOwnedEntries">;
+    work: Pick<ThreadBackgroundWorkShape, "getOwnedEntries"> &
+      Partial<Pick<ThreadBackgroundWorkShape, "getThreadSnapshot">>;
     directory: Pick<ProviderSessionDirectoryShape, "getBinding">;
     service: Pick<ProviderServiceShape, "readChildThreadItems">;
     resolveAccount: (id: ProviderInstanceId) => Promise<{ environment: NodeJS.ProcessEnv }>;
     cwd?: string | undefined;
+    stateDir?: string | undefined;
   },
 ) {
   return Effect.gen(function* () {
@@ -40,6 +47,86 @@ export function readAgentTranscript(
     if (input.cursor && decodeCursor(input.cursor).p !== expected)
       throw new Error("Wrong provider cursor.");
     const { taskId } = readNativeTaskIdentity(row.workItemId);
+    if (provider === "antigravity") {
+      if (input.cursor) throw new Error("Antigravity transcripts do not use cursors.");
+      if (!deps.stateDir || !row.providerInstanceId || !row.nativeParentSessionId)
+        return unavailable("identity-unavailable");
+      const snapshot = deps.work.getThreadSnapshot
+        ? yield* deps.work.getThreadSnapshot(input.threadId)
+        : undefined;
+      const launchRow = snapshot?.entries.find((entry) => entry.workItemId === row.workItemId);
+      const children = yield* readAntigravityChildWork({
+        profileDirectory: antigravityProfileDirectory(deps.stateDir, row.providerInstanceId),
+        rootSessionId: row.nativeParentSessionId,
+        nativeTaskId: taskId,
+        launch: { title: launchRow?.title ?? null, prompt: launchRow?.prompt ?? "" },
+        siblings: (snapshot?.entries ?? [])
+          .filter(
+            (entry) =>
+              entry.provider === "antigravity" &&
+              entry.providerInstanceId === row.providerInstanceId &&
+              entry.workItemId !== row.workItemId,
+          )
+          .map((entry) => ({
+            nativeTaskId: readNativeTaskIdentity(entry.workItemId).taskId,
+            title: entry.title,
+            prompt: entry.prompt ?? "",
+          })),
+      });
+      if (!children.length) return unavailable(row.active ? "not-started" : "not-found");
+      const items: AgentTranscriptItem[] = children.flatMap((child) => [
+        {
+          id: child.conversationId + ":launch",
+          createdAt: null,
+          kind: "message" as const,
+          role: "user" as const,
+          text: child.role + "\n" + child.prompt,
+          truncated: false,
+        },
+        ...(child.steps ?? []).flatMap((step): AgentTranscriptItem[] => {
+          const id = child.conversationId + ":" + step.index;
+          const tools: AgentTranscriptItem[] = step.toolCalls.map((tool, index) => ({
+            id: id + ":tool:" + index,
+            createdAt: null,
+            kind: "tool-call",
+            toolCallId: id + ":" + index,
+            toolName: tool.name,
+            itemType: "dynamic_tool_call",
+            title: tool.name,
+            detail: tool.input,
+            status: "completed",
+            output: "",
+            outputTruncated: false,
+          }));
+          return [
+            ...tools,
+            ...(step.text
+              ? [
+                  {
+                    id,
+                    createdAt: null,
+                    kind: "message" as const,
+                    role: "assistant" as const,
+                    text: step.text,
+                    truncated: child.truncated,
+                  },
+                ]
+              : []),
+          ];
+        }),
+        ...(child.steps === null
+          ? [
+              {
+                id: child.conversationId + ":missing",
+                createdAt: null,
+                kind: "notice" as const,
+                text: "This child's transcript is not available yet.",
+              },
+            ]
+          : []),
+      ]);
+      return { ...emptyTranscriptPage(), items: fitTranscriptItems(items.slice(-500)) };
+    }
     if (provider === "codex") {
       if (!deps.service.readChildThreadItems) return unavailable("unsupported-provider");
       return yield* readCodexAgentTranscript(input, (cursor) =>

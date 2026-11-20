@@ -1305,6 +1305,7 @@ export const PR_HUB_WS_METHODS = {
   recoverOperation: "prHub.recoverOperation",
   cancelOperation: "prHub.cancelOperation",
   listReviewerCandidates: "prHub.listReviewerCandidates",
+  completions: "prHub.completions",
   getChecks: "prHub.getChecks",
   getCheckLog: "prHub.getCheckLog",
 

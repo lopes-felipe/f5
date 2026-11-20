@@ -32,6 +32,14 @@ describe("buildNewThreadInProjectItems", () => {
   const last = project("last");
   const scratch = project("scratch", "scratch");
 
+  it("keeps favorites before the current project and omits archived projects", () => {
+    const { items } = build(
+      [first, { ...last, pinned: true }, current, { ...scratch, archived: true }],
+      current.id,
+    );
+    expect(items.map((item) => item.title)).toEqual(["last", "current", "No project", "first"]);
+  });
+
   function build(projects: Project[], currentProjectId: Project["id"] | null) {
     const runProject = vi.fn(async (_project: Project) => undefined);
     const runScratch = vi.fn(async () => undefined);

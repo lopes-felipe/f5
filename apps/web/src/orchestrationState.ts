@@ -113,6 +113,17 @@ export function mapSessionFromReadModel(
 
   const lastError = sanitizeThreadErrorMessage(incoming.lastError);
   const next: Thread["session"] = {
+    ...(incoming.autoCompactThreshold !== undefined || previous?.autoCompactThreshold !== undefined
+      ? {
+          autoCompactThreshold:
+            incoming.autoCompactThreshold !== undefined
+              ? incoming.autoCompactThreshold
+              : incoming.providerName === previous?.provider &&
+                  incoming.providerInstanceId === previous?.providerInstanceId
+                ? (previous?.autoCompactThreshold ?? null)
+                : null,
+        }
+      : {}),
     ...(incoming.extensionStatuses !== undefined || previous?.extensionStatuses !== undefined
       ? {
           extensionStatuses:
@@ -164,6 +175,7 @@ export function mapSessionFromReadModel(
     previous.lastErrorOccurredAt === next.lastErrorOccurredAt &&
     areUnknownEqual(previous.usageLimit ?? null, next.usageLimit ?? null) &&
     previous.tokenUsageSource === next.tokenUsageSource &&
+    previous.autoCompactThreshold === next.autoCompactThreshold &&
     areUnknownEqual(previous.extensionStatuses ?? [], next.extensionStatuses ?? []) &&
     areUnknownEqual(previous.capabilities ?? null, next.capabilities ?? null)
   ) {
@@ -195,6 +207,7 @@ export function mapMessageAttachmentsFromReadModel(
       existing.name === attachment.name &&
       existing.mimeType === attachment.mimeType &&
       existing.sizeBytes === attachment.sizeBytes &&
+      existing.source === attachment.source &&
       existing.previewUrl === previewUrl &&
       existing.sourceUrl === previewUrl
     ) {
@@ -207,6 +220,7 @@ export function mapMessageAttachmentsFromReadModel(
       name: attachment.name,
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
+      ...(attachment.source ? { source: attachment.source } : {}),
       previewUrl,
       sourceUrl: previewUrl,
     };

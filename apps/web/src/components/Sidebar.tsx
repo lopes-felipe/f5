@@ -27,6 +27,8 @@ import {
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
+import { projectChoices } from "../lib/projectChoices";
+import { updateProjectVisibility } from "./ProjectPinButton";
 import { selectProjectDraftThread, useComposerDraftStore } from "../composerDraftStore";
 import { useStartupReady } from "../lib/startupReady";
 import { cn, newCommandId } from "../lib/utils";
@@ -242,7 +244,10 @@ export default function Sidebar() {
   );
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const multipleThreadsSelected = useThreadSelectionStore((s) => s.selectedThreadIds.size >= 2);
-  const listedProjects = useMemo(() => withoutScratchProjects(projects), [projects]);
+  const listedProjects = useMemo(
+    () => projectChoices(withoutScratchProjects(projects)),
+    [projects],
+  );
   const firstProjectId = listedProjects[0]?.id ?? null;
   const mostRecentProjectId = useMemo(
     () =>
@@ -945,6 +950,20 @@ export default function Sidebar() {
         mostRecentProjectId,
         firstProjectId,
       });
+
+      if (command === "project.togglePin") {
+        const project = projects.find((entry) => entry.id === projectId);
+        if (!project || isScratchProject(project)) return;
+        event.preventDefault();
+        void updateProjectVisibility(project.id, { pinned: !project.pinned }).catch((error) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not update project pin",
+            description: String(error),
+          });
+        });
+        return;
+      }
 
       if (command === "workflow.new") {
         if (!projectId || isScratchProject(projects.find((entry) => entry.id === projectId)))

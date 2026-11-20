@@ -12,6 +12,7 @@ import { quoteGitPatchPath, unquoteGitPatchPath } from "@t3tools/shared/gitPatch
 import { parseSourceControlPullRequestUrl } from "@t3tools/shared/sourceControl";
 import type { PrReviewPosition } from "@t3tools/shared/prReview";
 import { forgeRequestBudget, updateForgeRequestBudget } from "./forgeRequestBudget.ts";
+import { completionCandidates } from "../prHub/completionCandidates.ts";
 import { gitLabHeadPipelineChecks, gitLabTriggerJobChecks } from "./gitLabPipelineChecks.ts";
 import { markRequiredForgejoChecks } from "./forgejoRequiredChecks.ts";
 import {
@@ -64,6 +65,13 @@ export interface ForgeWorkflowRun {
   readonly completed: boolean;
 }
 export interface ForgeProvider extends SourceControlProvider {
+  readonly completions?: (
+    ref: SourceControlPullRequestRef,
+    input: { readonly sigil: "@" | "#" | "!"; readonly query: string },
+  ) => Effect.Effect<
+    ReadonlyArray<import("@t3tools/contracts").PrHubCompletion>,
+    SourceControlProviderError
+  >;
   readonly forgeCapabilities: ForgeCapabilities;
   readonly listPullRequests: (
     ref: SourceControlPullRequestRef,
@@ -1269,6 +1277,51 @@ export function makeForgeSourceControlProvider(options: {
                 ? "/default-reviewers"
                 : "/collaborators",
           ),
+    completions: (ref, input) => {
+      if (kind !== "gitlab" && kind !== "forgejo") return Effect.succeed([]);
+      if (kind === "forgejo" && input.sigil !== "@") return Effect.succeed([]);
+      if (input.sigil === "!" && kind !== "gitlab") return Effect.succeed([]);
+      const numeric = /^\d+$/.test(input.query);
+      const params = new URLSearchParams({ per_page: "100", limit: "100" });
+      if (input.sigil === "@") {
+        if (input.query.length >= 3) params.set(kind === "gitlab" ? "search" : "q", input.query);
+        return request(
+          ref,
+          undefined,
+          (kind === "gitlab" ? "/users" : "/collaborators") + "?" + params,
+        ).pipe(Effect.map((v) => completionCandidates(v, input.sigil, input.query)));
+      }
+      if (kind === "gitlab") {
+        params.set("order_by", "updated_at");
+        if (!numeric && input.query.length >= 3) {
+          params.set("search", input.query);
+          params.set("in", "title");
+        }
+        const path = input.sigil === "!" ? "/merge_requests" : "/issues";
+        const recent = request(ref, undefined, path + "?" + params);
+        const exact = numeric
+          ? request(
+              ref,
+              undefined,
+              path + "?iids[]=" + encodeURIComponent(input.query) + "&per_page=1",
+            )
+          : Effect.succeed([]);
+        return Effect.all([exact, recent]).pipe(
+          Effect.map((pages) =>
+            completionCandidates(
+              pages.flatMap((v) => (Array.isArray(v) ? v : [])),
+              input.sigil,
+              input.query,
+            ),
+          ),
+        );
+      }
+      if (input.query) params.set("q", input.query);
+      params.set("state", "all");
+      return request(ref, undefined, "/issues?" + params).pipe(
+        Effect.map((v) => completionCandidates(v, "#", input.query)),
+      );
+    },
     setLabels: (input) =>
       !caps.labels
         ? unsupported("labels")

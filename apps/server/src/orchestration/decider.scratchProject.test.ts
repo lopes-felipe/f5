@@ -155,6 +155,20 @@ describe("decider scratch project", () => {
       scratchPath: `${ROOT}/2026-10-22-hello-0f9e8d7c`,
       worktreePath: null,
     });
+    const child = ThreadId.makeUnsafe("side-chat");
+    const forked = await apply(
+      created,
+      threadCreate(SCRATCH_ID, {
+        threadId: child,
+        commandId: CommandId.makeUnsafe("create-side-chat"),
+        sideChatOf: THREAD_ID,
+        scratchPath: created.threads[0]!.scratchPath,
+      }),
+    );
+    expect(forked.threads.find((thread) => thread.id === child)).toMatchObject({
+      sideChatOf: THREAD_ID,
+      scratchPath: created.threads[0]!.scratchPath,
+    });
   });
 
   it("rejects Git metadata updates while allowing title, model and null/omitted Git fields", async () => {

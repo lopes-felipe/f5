@@ -36,6 +36,7 @@ describe("buildThreadActionMenuItems", () => {
       "copy-path",
       "copy-branch",
       "copy-thread-id",
+      "copy-thread-link",
     ]);
     expect(nativeThreadActionMenuItems(items).find((item) => item.id === "copy")).toEqual(copy);
   });

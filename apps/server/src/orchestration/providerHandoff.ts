@@ -49,6 +49,38 @@ export interface HandoffSource {
   readonly summary: string | null;
 }
 
+/** Capture a portable fork without replaying live/unfinished output or unbounded history. */
+export function captureSideChatContext(
+  thread: Pick<OrchestrationThread, "messages" | "compaction">,
+): HandoffSource & { effectiveMode: "full" } {
+  const source = selectHandoffSource({
+    thread,
+    mode: "full",
+    sinceMessageId: null,
+    excludeMessageId: null,
+  });
+  const bounded = {
+    effectiveMode: "full" as const,
+    messages: source.messages.slice(-200).map((message) => ({
+      ...message,
+      text: message.text.slice(0, HANDOFF_MESSAGE_MAX_CHARS),
+    })),
+    summary: source.summary?.slice(0, HANDOFF_SUMMARY_MAX_CHARS) ?? null,
+  };
+  const rendered = renderProviderHandoff({
+    source: bounded,
+    userText: "",
+    allowanceChars: HANDOFF_HISTORY_MAX_CHARS,
+    participants: { fromLabel: "the main thread" },
+  });
+  const selected = new Set(rendered.messageIds);
+  return {
+    ...bounded,
+    messages: bounded.messages.filter((message) => selected.has(message.id)),
+    summary: rendered.summaryIncluded ? bounded.summary : null,
+  };
+}
+
 /**
  * The history a switch hands off. A delta whose starting message is gone (a
  * rewind removed it) degrades to the full conversation.

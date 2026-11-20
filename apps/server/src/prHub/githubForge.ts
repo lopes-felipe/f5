@@ -17,6 +17,7 @@ import { SourceControlProviderError } from "../sourceControl/SourceControlProvid
 import { record, text } from "./forgeModel.ts";
 import { GITHUB_AUTO_MERGE_QUERY, gitHubAutoMergeAvailable } from "./githubAutoMerge.ts";
 import { failedGitHubWorkflowRuns, gitHubWorkflowRunOf } from "./githubChecks.ts";
+import { completionCandidates } from "./completionCandidates.ts";
 
 export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvider {
   const scope = <A>(
@@ -638,6 +639,50 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
         }),
       ),
     listReviewerCandidates: (ref) => request(ref, "/collaborators?per_page=100"),
+    completions: (ref, input) => {
+      if (input.sigil === "!") return Effect.succeed([]);
+      const [owner = "", name = ""] = ref.repository.split("/");
+      if (input.sigil === "@")
+        return graphql(
+          ref,
+          "query($owner:String!,$name:String!,$query:String!){repository(owner:$owner,name:$name){mentionableUsers(first:100,query:$query){nodes{login name}}}}",
+          { owner, name, query: input.query },
+        ).pipe(
+          Effect.map((v) =>
+            completionCandidates(
+              record(record(record(record(v).data).repository).mentionableUsers).nodes,
+              "@",
+              input.query,
+            ),
+          ),
+        );
+      const phrase = input.query.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+      const search = graphql(
+        ref,
+        "query($query:String!){search(query:$query,type:ISSUE,first:100){nodes{... on Issue{number title}... on PullRequest{number title}}}}",
+        {
+          query:
+            "repo:" + ref.repository + (phrase ? ' "' + phrase + '"' : "") + " sort:updated-desc",
+        },
+      ).pipe(
+        Effect.map((v) => {
+          const nodes = record(record(record(v).data).search).nodes;
+          return Array.isArray(nodes) ? nodes : [];
+        }),
+      );
+      const exact =
+        /^\d+$/.test(input.query) && Number(input.query) > 0
+          ? request(ref, "/issues/" + encodeURIComponent(input.query)).pipe(
+              Effect.map((v) => [v]),
+              Effect.catch((error) =>
+                error.kind === "not_found" ? Effect.succeed([]) : Effect.fail(error),
+              ),
+            )
+          : Effect.succeed([]);
+      return Effect.all([exact, search]).pipe(
+        Effect.map((pages) => completionCandidates(pages.flat(), "#", input.query)),
+      );
+    },
     setLabels: (input) =>
       request(input.ref, `/issues/${input.ref.number}/labels`, "PUT", { labels: input.labels }),
     react: (input) =>

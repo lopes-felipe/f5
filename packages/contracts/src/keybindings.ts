@@ -81,6 +81,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "workspace.focusPrevious",
   "thread.stop",
   "thread.togglePin",
+  "project.togglePin",
   "thread.toggleSettled",
   "thread.copyReference",
   "thread.undo",

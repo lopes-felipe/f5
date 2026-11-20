@@ -13,6 +13,7 @@ export function acpFileChanges(content: unknown): ReadonlyArray<Record<string, u
     const diff = record(entry);
     if (diff?.type !== "diff") return [];
     const patch = record(diff.patch);
+    if (patch?.format === "omitted") return [];
     if (typeof patch?.text === "string") {
       const changes = Array.isArray(diff.changes) ? diff.changes : [];
       const first = record(changes[0]);

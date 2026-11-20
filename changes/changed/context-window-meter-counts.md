@@ -1,0 +1,1 @@
+- The context meter shows used tokens against the model limit, warns at 80% and 90%, and marks Claude's configured auto-compaction point when available. Context remains separate from provider Usage limits.

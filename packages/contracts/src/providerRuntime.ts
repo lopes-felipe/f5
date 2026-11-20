@@ -323,6 +323,7 @@ export type ThreadMetadataUpdatedPayload = typeof ThreadMetadataUpdatedPayload.T
 
 const ThreadTokenUsageUpdatedPayload = Schema.Struct({
   usage: Schema.Unknown,
+  autoCompactThreshold: Schema.optional(Schema.NullOr(NonNegativeInt)),
   contextTokens: Schema.optional(NonNegativeInt),
   modelContextWindowTokens: Schema.optional(NonNegativeInt),
 });
@@ -501,6 +502,7 @@ const UserInputResolvedPayload = Schema.Struct({
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
 const TaskStartedPayload = Schema.Struct({
+  prompt: Schema.optional(Schema.String),
   nativeParentSessionId: Schema.optional(
     TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(128)),
   ),

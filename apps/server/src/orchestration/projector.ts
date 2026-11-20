@@ -323,6 +323,8 @@ export function projectEvent(
               ? {
                   ...project,
                   ...(payload.title !== undefined ? { title: payload.title } : {}),
+                  ...(payload.pinned !== undefined ? { pinned: payload.pinned } : {}),
+                  ...(payload.archived !== undefined ? { archived: payload.archived } : {}),
                   ...(payload.workspaceRoot !== undefined
                     ? { workspaceRoot: payload.workspaceRoot }
                     : {}),
@@ -682,6 +684,7 @@ export function projectEvent(
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             scratchPath: payload.scratchPath,
+            ...(payload.sideChatOf ? { sideChatOf: payload.sideChatOf } : {}),
             latestTurn: null,
             archivedAt: null,
             pinnedAt: null,
@@ -1288,6 +1291,18 @@ export function projectEvent(
         );
         const nextSession: OrchestrationSession = {
           ...session,
+          ...(session.autoCompactThreshold !== undefined ||
+          thread.session?.autoCompactThreshold !== undefined
+            ? {
+                autoCompactThreshold:
+                  session.autoCompactThreshold !== undefined
+                    ? session.autoCompactThreshold
+                    : session.providerName === thread.session?.providerName &&
+                        session.providerInstanceId === thread.session?.providerInstanceId
+                      ? (thread.session?.autoCompactThreshold ?? null)
+                      : null,
+              }
+            : {}),
           ...(session.extensionStatuses !== undefined ||
           thread.session?.extensionStatuses !== undefined
             ? {

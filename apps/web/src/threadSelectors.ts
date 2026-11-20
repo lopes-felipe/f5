@@ -32,6 +32,7 @@ export interface ThreadSummary extends ThreadListItem {
 }
 
 const LIST_ITEM_KEYS = [
+  "sideChatOf",
   "id",
   "projectId",
   "title",
@@ -336,7 +337,9 @@ export function selectThreadIds(state: Pick<AppState, "threads">): ReadonlyArray
 // ── Hooks ────────────────────────────────────────────────────────────
 
 export function useThreadSummaries(): ReadonlyArray<ThreadSummary> {
-  return useStore(selectThreadSummaries);
+  return useStore(
+    useShallow((state) => selectThreadSummaries(state).filter((thread) => !thread.sideChatOf)),
+  );
 }
 
 export function useThreadSummary(threadId: ThreadId | null | undefined): ThreadSummary | undefined {
@@ -352,11 +355,11 @@ export function useOrderedThreadIds(scope: OrderedThreadScope = {}): ReadonlyArr
   return useStore(
     useShallow((state) => {
       const order = selectThreadActivityOrder(state);
-      if (projectId === undefined && includeArchived) return order;
       const summaryById = selectThreadSummaryById(state);
       return order.filter((threadId) => {
         const summary = summaryById.get(threadId);
         if (!summary) return false;
+        if (summary.sideChatOf) return false;
         if (projectId !== undefined && summary.projectId !== projectId) return false;
         return includeArchived || summary.archivedAt === null;
       });

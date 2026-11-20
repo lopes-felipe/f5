@@ -8,6 +8,7 @@ import { formatRelativeTimeLabel } from "../lib/relativeTime";
 import { compareThreadsByActivity, isSnoozedThread } from "../lib/threadOrdering";
 import { pillForStatus, type ThreadStatus, type ThreadStatusPill } from "../threadStatus";
 import type { Project, ThreadListItem } from "../types";
+import { projectChoices } from "../lib/projectChoices";
 import { isScratchProject, withoutScratchProjects } from "@t3tools/shared/scratchProject";
 
 export const RECENT_THREAD_LIMIT = 12;
@@ -175,12 +176,14 @@ export function buildNewThreadInProjectItems(input: {
   icon: (project: Project) => ReactNode;
   runProject: (project: Project) => Promise<void>;
 }): CommandPaletteActionItem[] {
-  const current = input.projects.find((project) => project.id === input.currentProjectId);
-  const projects = withoutScratchProjects(input.projects);
-  const ordered =
+  const available = projectChoices(input.projects);
+  const current = available.find((project) => project.id === input.currentProjectId);
+  const projects = withoutScratchProjects(available);
+  const ordered = projectChoices(
     current && !isScratchProject(current)
       ? [current, ...projects.filter((project) => project.id !== current.id)]
-      : projects;
+      : projects,
+  );
   const items = buildProjectActionItems({
     projects: ordered,
     valuePrefix: "new-thread-in",
@@ -195,7 +198,13 @@ export function buildNewThreadInProjectItems(input: {
   const noProjectItem = currentIsScratch
     ? { ...input.noProjectItem, description: "Current" }
     : input.noProjectItem;
-  items.splice(current && !currentIsScratch ? 1 : 0, 0, noProjectItem);
+  items.splice(
+    current && !currentIsScratch
+      ? ordered.findIndex((project) => project.id === current.id) + 1
+      : 0,
+    0,
+    noProjectItem,
+  );
   return items;
 }
 

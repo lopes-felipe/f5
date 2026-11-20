@@ -141,6 +141,7 @@ export const NATIVE_OPERATION_WS_METHODS = {
 } as const;
 
 export const NativeForkInput = /* @__PURE__ */ Schema.Struct({
+  sideChat: /* @__PURE__ */ Schema.optional(Schema.Boolean),
   threadId: ThreadId,
   operationId: /* @__PURE__ */ TrimmedNonEmptyString.check(/* @__PURE__ */ Schema.isMaxLength(200)),
   generation: NonNegativeInt,

@@ -76,6 +76,7 @@ import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts"
 import { claudeThinkingConfig, type ClaudeThinkingResolution } from "../claudeProviderOptions.ts";
 import {
   claudeApprovalPresentation,
+  claudeRemovalSafetyDenial,
   effectiveClaudeApprovalDecision,
 } from "../claudeApprovalPresentation.ts";
 import { ElicitationRegistry, type ElicitationTerminalReceipt } from "../elicitationRegistry.ts";
@@ -4620,6 +4621,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           // Zero-input starts are proxy placeholders, not context measurements.
           if (claudeInputTokens(mergedUsage) <= 0) return;
           const modelContextWindowTokens = emittedModelContextWindowTokens(context);
+          const configuredWindow = Number(
+            asUnknownRecord(context.queryOptions.settings)?.autoCompactWindow,
+          );
+          const autoCompactThreshold =
+            context.nativeCompactionEnabled &&
+            configuredWindow > 33_000 &&
+            (modelContextWindowTokens === undefined || configuredWindow < modelContextWindowTokens)
+              ? configuredWindow - 33_000
+              : null;
           const stamp = yield* makeEventStamp(context);
           yield* offerRuntimeEvent({
             type: "thread.token-usage.updated",
@@ -4631,6 +4641,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
             payload: {
               usage: mergedUsage,
+              ...(autoCompactThreshold !== null ? { autoCompactThreshold } : {}),
               ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
             },
             providerRefs: nativeProviderRefs(context),
@@ -8247,6 +8258,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   message: `Tool '${toolName}' is not permitted in a read-only workflow stage.`,
                 } satisfies PermissionResult;
               }
+              const removalDenial = claudeRemovalSafetyDenial(
+                toolName,
+                context.configuredBase?.permissionMode ?? context.basePermissionMode,
+                callbackOptions,
+              );
+              if (removalDenial) return removalDenial;
               const inPlanMode = context.configuredBase?.permissionMode === "plan";
               // Bypass sessions in plan mode still refuse workspace edits.
               if (

@@ -5468,6 +5468,7 @@ const make = Effect.gen(function* () {
           authoritativeSnapshot: normalizedContextTokens !== undefined,
         });
         const modelContextWindowTokens = event.payload.modelContextWindowTokens;
+        const autoCompactThreshold = event.payload.autoCompactThreshold ?? null;
         const tokenUsageSource =
           estimatedContextTokens === providerReportedContextTokens
             ? ("provider" as const)
@@ -5480,6 +5481,7 @@ const make = Effect.gen(function* () {
           thread.session?.status === "running" &&
           thread.session.activeTurnId !== null &&
           thread.session.tokenUsageSource === tokenUsageSource &&
+          autoCompactThreshold === (thread.session.autoCompactThreshold ?? null) &&
           (modelContextWindowTokens === undefined ||
             modelContextWindowTokens === thread.session.modelContextWindowTokens) &&
           Math.abs(estimatedContextTokens - storedContextTokens) <
@@ -5518,6 +5520,7 @@ const make = Effect.gen(function* () {
                 ? { estimatedContextTokens, tokenUsageSource }
                 : {}),
               ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
+              autoCompactThreshold,
               updatedAt: now,
             },
             createdAt: now,

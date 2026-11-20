@@ -130,6 +130,8 @@ import type {
   PrHubPeekInput,
   PrHubStack,
   PrHubStackInput,
+  PrHubCompletionsInput,
+  PrHubCompletion,
   PrHubViewedFilesInput,
   PrHubSetViewedFileInput,
   ForgePrepareOperationInput,
@@ -1547,6 +1549,7 @@ export interface NativeApi {
     recoverOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
     cancelOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
     listReviewerCandidates: (input: PrHubStackInput) => Promise<unknown>;
+    completions: (input: PrHubCompletionsInput) => Promise<ReadonlyArray<PrHubCompletion>>;
     getChecks: (input: PrHubChecksInput) => Promise<PrHubChecksResult>;
     getCheckLog: (input: PrHubCheckLogInput) => Promise<PrHubCheckLog>;
 

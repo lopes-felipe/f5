@@ -24,6 +24,7 @@ import type { Effect } from "effect";
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThreadSession = Schema.Struct({
+  autoCompactThreshold: Schema.optional(Schema.NullOr(NonNegativeInt)),
   extensionStatuses: Schema.optional(ProviderExtensionStatuses),
   threadId: ThreadId,
   status: OrchestrationSessionStatus,

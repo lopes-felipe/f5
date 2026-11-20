@@ -1,5 +1,9 @@
 import { RuntimeTaskId, type ProviderRuntimeEvent } from "@t3tools/contracts";
 import type { AcpToolCallState } from "./AcpRuntimeModel.ts";
+import {
+  antigravitySubagentLaunches,
+  describeAntigravitySubagentLaunches,
+} from "./AntigravityChildWork.ts";
 type TaskEvent = Pick<
   Extract<ProviderRuntimeEvent, { type: "task.started" | "task.progress" | "task.completed" }>,
   "type" | "payload"
@@ -10,6 +14,27 @@ export class AntigravityTasks {
   private readonly active = new Set<string>();
   private readonly awaitingParent = new Set<string>();
   private generation = 0;
+  get taskIds(): readonly string[] {
+    return [...this.active];
+  }
+  settleDetached(atWork: readonly string[], observed = this.taskIds): TaskEvent[] {
+    const live = new Set(atWork);
+    return observed.flatMap((id): TaskEvent[] => {
+      if (!this.active.has(id) || live.has(id)) return [];
+      this.active.delete(id);
+      this.awaitingParent.delete(id);
+      return [
+        {
+          type: "task.completed",
+          payload: {
+            taskId: RuntimeTaskId.make(id),
+            status: "completed",
+            summary: "Native child finished or stopped.",
+          },
+        },
+      ];
+    });
+  }
   get inactivityPauseGeneration(): number | null {
     return this.awaitingParent.size > 0 ? this.generation : null;
   }
@@ -31,7 +56,9 @@ export class AntigravityTasks {
     if (
       !this.active.has(tool.toolCallId) &&
       tool.title !== "Running start_subagent" &&
-      tool.title !== "Run start_subagent?"
+      tool.title !== "Run start_subagent?" &&
+      tool.title !== "Running invoke_subagent" &&
+      tool.title !== "Run invoke_subagent?"
     )
       return [];
     const taskId = RuntimeTaskId.make(tool.toolCallId);
@@ -42,7 +69,18 @@ export class AntigravityTasks {
       this.generation++;
       events.push({
         type: "task.started",
-        payload: { taskId, taskType: "subagent", description: "Antigravity subagent batch" },
+        payload: {
+          taskId,
+          taskType: "subagent",
+          ...(() => {
+            const launches = antigravitySubagentLaunches(tool.data.rawInput);
+            const launch = launches ? describeAntigravitySubagentLaunches(launches) : undefined;
+            return {
+              description: launch?.title ?? "Antigravity subagent batch",
+              ...(launch ? { prompt: launch.prompt } : {}),
+            };
+          })(),
+        },
       });
     }
     const output =

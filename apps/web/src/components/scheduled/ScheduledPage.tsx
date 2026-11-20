@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { projectChoices } from "../../lib/projectChoices";
 import { Link } from "@tanstack/react-router";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -102,7 +103,8 @@ export function ScheduledPage({
     else setError("That conversation is no longer available.");
     onThreadRequestHandled?.();
   }, [newTaskThreadId, threadsHydrated, requestedThreadProjectId, onThreadRequestHandled]);
-  const creationProjectId = filterProject?.id ?? (unknownFilter ? undefined : projects[0]?.id);
+  const creationProjectId =
+    filterProject?.id ?? (unknownFilter ? undefined : projectChoices(projects)[0]?.id);
   const permission = useNotificationPermissionState();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -223,7 +225,12 @@ export function ScheduledPage({
           }
         >
           <option value="">All projects ({list.data?.tasks.length ?? 0})</option>
-          {projects.map((p) => (
+          {filterProject?.archived && (
+            <option hidden disabled value={filterProject.id}>
+              {filterProject.name} (archived)
+            </option>
+          )}
+          {projectChoices(projects).map((p) => (
             <option key={p.id} value={p.id}>
               {p.name} ({counts.get(p.id) ?? 0})
             </option>

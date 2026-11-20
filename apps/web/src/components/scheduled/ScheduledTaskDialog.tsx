@@ -1,3 +1,4 @@
+import { projectChoices } from "../../lib/projectChoices";
 import {
   fixedTimeCron,
   normalizeCron,
@@ -491,7 +492,12 @@ export function ScheduledTaskDialog(props: {
                     setBoundThreadId(undefined);
                   }}
                 >
-                  {projects.map((p) => (
+                  {project?.archived && (
+                    <option hidden disabled value={project.id}>
+                      {project.name} (archived)
+                    </option>
+                  )}
+                  {projectChoices(projects).map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>

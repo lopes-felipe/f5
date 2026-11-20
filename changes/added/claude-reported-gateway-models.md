@@ -1,0 +1,1 @@
+- Claude's model picker includes models reported by Claude Code gateways, preserving their selectable IDs, context-window variants and supported reasoning efforts. Gateway discovery can finish in the background after a model probe.

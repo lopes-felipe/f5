@@ -22,6 +22,7 @@ import {
   type PrHubSnapshot,
   type SourceControlPullRequestRef,
   type PrHubStackInput,
+  type PrHubCompletionsInput,
   type PrHubThreadLink,
   type PrHubViewedFilesInput,
   type PrHubSetViewedFileInput,
@@ -1171,6 +1172,14 @@ export const makePrHubExtensions = Effect.gen(function* () {
         ),
       ),
     );
+  const completions = (input: PrHubCompletionsInput) =>
+    permit.withPermits(1)(
+      resolve(input).pipe(
+        Effect.flatMap(
+          ({ runtime, ref }) => runtime.provider.completions?.(ref, input) ?? Effect.succeed([]),
+        ),
+      ),
+    );
   const listReviewerCandidates = (input: PrHubStackInput) =>
     resolve(input).pipe(
       Effect.flatMap(({ runtime, ref }) =>
@@ -1364,6 +1373,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
     recoverOperation,
     cancelOperation,
     listReviewerCandidates,
+    completions,
   };
 });
 export const PrHubExtensionsLive = Layer.effect(PrHubExtensions, makePrHubExtensions);

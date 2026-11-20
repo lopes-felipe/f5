@@ -29,6 +29,7 @@ import {
 import { selectThreadById } from "~/threadSelectors";
 import type { Thread, ThreadListItem } from "~/types";
 import { toastManager } from "~/components/ui/toast";
+import { threadLinkFor } from "~/components/promptLinks/copyPromptLink";
 
 import { useCopyToClipboard } from "./useCopyToClipboard";
 
@@ -62,6 +63,7 @@ export type ThreadActionId =
   | "copy"
   | "copy-branch"
   | "copy-thread-id"
+  | "copy-thread-link"
   | "delete";
 
 /** One per configured snooze option, keyed by its preset id. */
@@ -215,6 +217,7 @@ export function buildThreadActionMenuItems(input: {
           ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
           : []),
         { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
+        { id: "copy-thread-link", label: "Thread link", icon: "hash" },
       ],
     },
     {
@@ -290,20 +293,22 @@ export function useThreadActionController(input: {
   );
   const clearTerminalState = useTerminalStateStore((state) => state.clearTerminalState);
 
-  const { copyToClipboard: copyThreadIdToClipboard } = useCopyToClipboard<{
+  const { copyToClipboard: copyThreadLinkToClipboard } = useCopyToClipboard<{
     threadId: ThreadId;
+    kind: "ID" | "link";
+    value: string;
   }>({
     onCopy: (context) => {
       toastManager.add({
         type: "success",
-        title: "Thread ID copied",
-        description: context.threadId,
+        title: `Thread ${context.kind} copied`,
+        description: context.value,
       });
     },
     onError: (error) => {
       toastManager.add({
         type: "error",
-        title: "Failed to copy thread ID",
+        title: "Failed to copy thread reference",
         description: error instanceof Error ? error.message : "An error occurred.",
       });
     },
@@ -597,8 +602,13 @@ export function useThreadActionController(input: {
         copyPathToClipboard(workspacePath, { path: workspacePath });
         return;
       }
-      if (actionId === "copy-thread-id") {
-        copyThreadIdToClipboard(threadId, { threadId });
+      if (actionId === "copy-thread-id" || actionId === "copy-thread-link") {
+        const value = actionId === "copy-thread-id" ? threadId : threadLinkFor(threadId);
+        copyThreadLinkToClipboard(value, {
+          threadId,
+          value,
+          kind: value === threadId ? "ID" : "link",
+        });
         return;
       }
       if (actionId === "copy-branch") {
@@ -621,7 +631,7 @@ export function useThreadActionController(input: {
     [
       archiveThread,
       copyPathToClipboard,
-      copyThreadIdToClipboard,
+      copyThreadLinkToClipboard,
       deleteThread,
       input.onRenameRequested,
       input.activeThreadId,
