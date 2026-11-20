@@ -1053,6 +1053,72 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("renders media above text and gives files, audio, pastes and pending sends their own shapes", async () => {
+    const file = (id: string, mimeType: string, extra = {}) => ({
+      type: "file" as const,
+      id,
+      name: `${id}.dat`,
+      mimeType,
+      sizeBytes: 128,
+      previewUrl: `/attachments/${id}`,
+      ...extra,
+    });
+    const entries = [
+      makeUserEntry("captioned", "Caption", 0, {
+        attachments: [
+          { ...file("left", "image/png"), type: "image" as const },
+          { ...file("right", "image/png"), type: "image" as const },
+          file("video", "video/mp4"),
+        ],
+      }),
+      makeUserEntry("file-card", "", 1, { attachments: [file("notes", "text/plain")] }),
+      makeUserEntry("pasted-card", "", 2, {
+        attachments: [file("paste", "text/plain", { source: "pasted-text" })],
+      }),
+      makeUserEntry("audio-card", "", 3, { attachments: [file("voice", "audio/wav")] }),
+      makeUserEntry("sending-card", "", 4, {
+        attachments: [file("pending", "text/plain")],
+        sending: true,
+      }),
+      makeUserEntry("snapshot-card", "", 5, {
+        attachments: [
+          { ...file("snapshot", "image/png"), type: "image" as const, source: "snapshot" as const },
+        ],
+      }),
+    ];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness initialEntries={entries} onIsAtEndChangeSpy={() => {}} />,
+      { container: host },
+    );
+    try {
+      await vi.waitFor(() => expect(host.querySelector('[aria-label="video.dat"]')).not.toBeNull());
+      const image = host.querySelector('img[alt="left.dat"]')!;
+      const message = image.closest('[data-slot="user-message-bubble"]')!;
+      const body = message.querySelector('[data-slot="user-message-body"]')!;
+      expect(body.textContent).toBe("Caption");
+      expect(body.querySelector("img,video")).toBeNull();
+      expect(image.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        body.getBoundingClientRect().top,
+      );
+      expect(host.querySelectorAll('[data-slot="user-file-card"]')).toHaveLength(4);
+      expect(host.textContent).toContain("Pasted text");
+      expect(host.querySelector('audio[aria-label="voice.dat"]')).not.toBeNull();
+      const pending = [...host.querySelectorAll('[data-slot="user-file-card"]')].find((card) =>
+        card.textContent?.includes("pending.dat"),
+      )!;
+      expect(pending.textContent).toContain("Sending…");
+      expect(pending.querySelector("a,button")).toBeNull();
+      const snapshot = host.querySelector('img[alt="snapshot.dat"]')!;
+      expect(snapshot.classList.contains("object-contain")).toBe(true);
+      expect(snapshot.classList.contains("h-auto")).toBe(true);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("preserves the native image context menu outside Electron", async () => {
     const onImageActionMenu = vi.fn();
     const entry = makeUserEntry("message-with-web-image", "See screenshot", 0, {

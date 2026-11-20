@@ -1,7 +1,37 @@
-import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import { stripVTControlCharacters } from "node:util";
 import type { ProviderApprovalDecision, ProviderApprovalPresentation } from "@t3tools/contracts";
 
 type ClaudePermissionCallbackOptions = Parameters<CanUseTool>[2];
+
+/** A forwarded removal warning is a failed safety check, not a request for bypass consent. */
+export function claudeRemovalSafetyDenial(
+  toolName: string,
+  permissionMode: unknown,
+  options: Pick<ClaudePermissionCallbackOptions, "decisionReason" | "matchedAskRule" | "toolUseID">,
+): PermissionResult | undefined {
+  if (
+    toolName !== "Bash" ||
+    permissionMode !== "bypassPermissions" ||
+    options.matchedAskRule !== undefined
+  )
+    return undefined;
+  const reason = stripVTControlCharacters(options.decisionReason ?? "").trim();
+  if (
+    !(
+      /^Dangerous rm(?:dir)?\b/i.test(reason) ||
+      /\bdangerous removal\b/i.test(reason) ||
+      reason === "This shell -c script runs rm and could not be checked" ||
+      reason === "A permission rule denies a command in this shell -c script"
+    )
+  )
+    return undefined;
+  return {
+    behavior: "deny",
+    message: `Claude Code's removal safety check denied this command; the user did not reject it. The command did not run. Do not bypass the check by splitting the removal, putting it in a script, or using another tool or shell. If the warning below supplies a safe rewrite, use it and let the same check evaluate it. Otherwise continue the rest of the task without the removal and tell the user what you needed to delete and why. Warning: ${reason}`,
+    toolUseID: options.toolUseID,
+  };
+}
 
 const MAX_PRESENTATION_TEXT_CHARS = 2_000;
 

@@ -706,6 +706,8 @@ function collectTerminalContextIds(node: LexicalNode): string[] {
 }
 
 export interface ComposerPromptEditorHandle {
+  /** Selection in the expanded prompt text, including the source of inline chips. */
+  readSelectionRange: () => { start: number; end: number };
   insertAssistantQuote: (quote: AssistantQuote) => void;
   focus: () => void;
   focusAt: (cursor: number) => void;
@@ -1330,6 +1332,23 @@ function ComposerPromptEditorInner({
         );
       },
       readSnapshot,
+      readSelectionRange: () =>
+        editor.getEditorState().read(() => {
+          const selection = $getSelection();
+          if (!$isRangeSelection(selection)) {
+            const cursor = readSnapshot().expandedCursor;
+            return { start: cursor, end: cursor };
+          }
+          const anchor = getExpandedAbsoluteOffsetForPoint(
+            selection.anchor.getNode(),
+            selection.anchor.offset,
+          );
+          const focus = getExpandedAbsoluteOffsetForPoint(
+            selection.focus.getNode(),
+            selection.focus.offset,
+          );
+          return { start: Math.min(anchor, focus), end: Math.max(anchor, focus) };
+        }),
     }),
     [editor, focusAt, readSnapshot],
   );
@@ -1417,7 +1436,7 @@ function ComposerPromptEditorInner({
                 : {})}
               aria-placeholder={placeholder}
               placeholder={<span />}
-              onPaste={onPaste}
+              onPasteCapture={onPaste}
             />
           }
           placeholder={

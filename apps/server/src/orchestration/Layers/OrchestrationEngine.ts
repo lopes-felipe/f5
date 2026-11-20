@@ -1256,6 +1256,17 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         (entry) => entry.id === command.projectId && entry.deletedAt === null,
       );
       if (!isScratchProject(project) || !project) return command;
+      if (command.sideChatOf) {
+        const parent = readModel.threads.find(
+          (thread) =>
+            thread.id === command.sideChatOf &&
+            thread.deletedAt === null &&
+            thread.projectId === project.id &&
+            !thread.sideChatOf,
+        );
+        // Side chats share their main thread's workspace; cleanup already protects live owners.
+        if (parent?.scratchPath) return { ...command, scratchPath: parent.scratchPath };
+      }
       const { scratchFolderWords, ...rest } = command;
       const folder = NodePath.join(
         project.workspaceRoot,

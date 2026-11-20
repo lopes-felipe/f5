@@ -1,0 +1,1 @@
+- Images and videos appear above message text, and multiple images share a collage. Files sent on their own appear as file cards, pasted text is labeled “Pasted text”, audio attachments have playback controls, snapshots retain their aspect ratio, and pending file sends show “Sending…”.

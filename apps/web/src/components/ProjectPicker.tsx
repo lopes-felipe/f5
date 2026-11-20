@@ -5,6 +5,8 @@ import { useState, type MouseEventHandler } from "react";
 
 import { cn } from "../lib/utils";
 import type { Project } from "../types";
+import { projectChoices } from "../lib/projectChoices";
+import { ProjectPinButton } from "./ProjectPinButton";
 import { COMPOSER_CHIP_CLASS_NAME } from "./chat/composer/composerChip";
 import {
   HOME_PROJECT_TRIGGER_CLASS_NAME,
@@ -84,7 +86,7 @@ export function ProjectPicker(props: {
 }) {
   const [projectSearch, setProjectSearch] = useState("");
   const normalizedSearch = projectSearch.trim().toLowerCase();
-  const filteredProjects = props.projects.filter((project) =>
+  const filteredProjects = projectChoices(props.projects).filter((project) =>
     project.name.toLowerCase().includes(normalizedSearch),
   );
   const selectedProject = props.projects.find(
@@ -177,6 +179,7 @@ export function ProjectPicker(props: {
               key={value}
               index={index}
               value={value}
+              aria-label={project?.name ?? SCRATCH_PROJECT_TITLE}
               data-testid={project ? undefined : "project-picker-no-project"}
             >
               <span className="inline-flex min-w-0 items-center gap-2">
@@ -189,6 +192,7 @@ export function ProjectPicker(props: {
                   className="size-3.5"
                 />
                 <span className="truncate">{project?.name ?? SCRATCH_PROJECT_TITLE}</span>
+                {project ? <ProjectPinButton project={project} /> : null}
               </span>
             </ComboboxItem>
           ))}

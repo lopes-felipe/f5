@@ -3,6 +3,7 @@ import { resolvePastedPath } from "@t3tools/shared/path";
 
 import { buildAppSettingsPatch } from "../../../appSettings";
 import { ProjectIcon } from "../../ProjectIcon";
+import { ProjectPinButton, ProjectArchiveButton } from "../../ProjectPinButton";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { SettingsCard } from "../SettingsCard";
 import { Button } from "../../ui/button";
@@ -50,17 +51,21 @@ export function ProjectsSettings() {
                     </p>
                   </div>
                 </div>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  className="shrink-0"
-                  aria-label={`Configure ${project.name}`}
-                  render={
-                    <Link to="/settings" search={{ category: "project", project: project.id }} />
-                  }
-                >
-                  Configure
-                </Button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <ProjectPinButton project={project} />
+                  <ProjectArchiveButton project={project} />
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="shrink-0"
+                    aria-label={`Configure ${project.name}`}
+                    render={
+                      <Link to="/settings" search={{ category: "project", project: project.id }} />
+                    }
+                  >
+                    Configure
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>

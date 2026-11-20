@@ -1,4 +1,5 @@
 import { ThreadFindBar } from "./chat/ThreadFindBar";
+import { attachmentSources } from "../lib/attachmentUploadQueue";
 import { composerModelMentionItems } from "./chat/composerModelMentions";
 import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
 import { useFreshSessionStore } from "../freshSessionStore";
@@ -16,6 +17,7 @@ import {
 import { hasThreadReferenceDrag, readThreadReferenceDrag } from "../lib/threadReferenceDrag";
 import {
   formatThreadReference,
+  threadIdOfThreadReferenceUrl,
   referencedThreadIds,
   THREAD_REFERENCE_MAX_PER_MESSAGE,
 } from "@t3tools/shared/threadReferences";
@@ -388,7 +390,11 @@ import {
   MessagesTimeline,
   type MessagesTimelineEmptyState,
 } from "./chat/MessagesTimeline";
-import { promptLinkRepositoryOf, promptLinkScheme } from "./promptLinks/copyPromptLink";
+import {
+  promptLinkRepositoryOf,
+  promptLinkScheme,
+  threadLinkFor,
+} from "./promptLinks/copyPromptLink";
 import { OlderActivityHistoryControl } from "./chat/OlderActivityHistoryControl";
 import { NewerMessageHistoryControl } from "./chat/NewerMessageHistoryControl";
 
@@ -714,6 +720,7 @@ function deriveFallbackTasksFromPlan(
 }
 
 interface ChatViewProps {
+  embedded?: boolean;
   threadId: ThreadId;
   openInShortcutEnabled: boolean;
   liveAgentCount: number;
@@ -801,6 +808,7 @@ function selectFavoritePresets(settings: UnifiedWebSettings): ReadonlyArray<Favo
 // Memoized: props are primitives, so streamed tokens and panel updates only re-render this
 // component when they change a prop, such as which surface owns the editor shortcut.
 export default memo(function ChatView({
+  embedded = false,
   threadId,
   openInShortcutEnabled,
   liveAgentCount,
@@ -4355,6 +4363,11 @@ export default memo(function ChatView({
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      const owner =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-chat-thread]")?.dataset.chatThread
+          : undefined;
+      if (owner ? owner !== threadId : embedded) return;
       // Capture phase, so a held close-terminal shortcut stops here before it
       // reaches the next terminal, a right-panel tab or the browser tab.
       if (terminalCloseRepeatGuard.preventRepeat(event, keybindings)) {
@@ -4426,14 +4439,14 @@ export default memo(function ChatView({
         if (dialogFocus || isTerminalFocused()) return;
         event.preventDefault();
         if (command === "thread.copyReference") {
-          const api = readNativeApi();
           void (async () => {
+            const api = readNativeApi();
             const status =
               gitCwd && api ? await api.git.status({ cwd: gitCwd }).catch(() => null) : null;
-            await writeTextToClipboard(status?.pr?.url ?? activeThreadId);
+            await writeTextToClipboard(status?.pr?.url ?? threadLinkFor(activeThreadId));
             toastManager.add({
               type: "success",
-              title: status?.pr?.url ? "Pull request link copied" : "Thread ID copied",
+              title: status?.pr?.url ? "Pull request link copied" : "Thread link copied",
             });
           })().catch((error) =>
             toastManager.add({
@@ -4636,6 +4649,8 @@ export default memo(function ChatView({
     terminalCloseRepeatGuard,
     activeThreadId,
     selectedProviderModels,
+    embedded,
+    threadId,
     selectedModel,
     selectedProviderDriver,
     selectedProviderModelOptionsForDispatch,
@@ -4665,6 +4680,11 @@ export default memo(function ChatView({
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      const owner =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-chat-thread]")?.dataset.chatThread
+          : undefined;
+      if (owner ? owner !== threadId : embedded) return;
       if (!activeThreadId || event.defaultPrevented) return;
       if (wsInteractionBlocked) return;
       const shortcutContext = {
@@ -4748,6 +4768,8 @@ export default memo(function ChatView({
     terminalState.terminalOpen,
     terminalState.activeTerminalId,
     terminalCloseRepeatGuard,
+    embedded,
+    threadId,
     activeThreadId,
     closeTerminal,
     createNewTerminal,
@@ -4886,6 +4908,17 @@ export default memo(function ChatView({
       if (folders.length > 0) return;
       if (isConnecting) return;
       const text = event.clipboardData.getData("text/plain");
+      const linkedThreadId = threadIdOfThreadReferenceUrl(text.trim());
+      if (linkedThreadId) {
+        event.preventDefault();
+        event.stopPropagation();
+        appendThreadReferences(
+          [{ threadId: linkedThreadId, title: "Thread" }],
+          "Could not paste thread reference",
+          composerEditorRef.current?.readSelectionRange(),
+        );
+        return;
+      }
       const folded = foldedPasteFile(
         text,
         prompt,
@@ -4971,8 +5004,12 @@ export default memo(function ChatView({
     setIsDragOverComposer(false);
   };
 
-  /** Appends reference links to the end of the prompt, or explains why the composer is blocked. */
-  const appendComposerReferences = (links: ReadonlyArray<string>, errorTitle: string): boolean => {
+  /** Inserts references at the selected range, or appends them when no range is supplied. */
+  const appendComposerReferences = (
+    links: ReadonlyArray<string>,
+    errorTitle: string,
+    range?: { start: number; end: number },
+  ): boolean => {
     if (
       links.length === 0 ||
       isConnecting ||
@@ -4984,11 +5021,50 @@ export default memo(function ChatView({
       return false;
     }
     const current = promptRef.current;
+    const start = range?.start ?? current.length;
+    const end = range?.end ?? current.length;
     return applyPromptReplacement(
-      current.length,
-      current.length,
-      `${current && !/\s$/.test(current) ? " " : ""}${links.join(" ")} `,
+      start,
+      end,
+      `${start > 0 && !/\s/.test(current[start - 1]!) ? " " : ""}${links.join(" ")}${/^\s/.test(current.slice(end)) ? "" : " "}`,
     );
+  };
+
+  const appendThreadReferences = (
+    dragged: ReadonlyArray<{ threadId: string; title: string }>,
+    errorTitle: string,
+    range?: { start: number; end: number },
+  ) => {
+    const current = promptRef.current;
+    const remaining = range ? current.slice(0, range.start) + current.slice(range.end) : current;
+    const existing = referencedThreadIds([remaining]);
+    const candidates = dragged.filter(
+      (item, index) =>
+        item.threadId !== threadId &&
+        !existing.includes(item.threadId) &&
+        dragged.findIndex((other) => other.threadId === item.threadId) === index,
+    );
+    if (candidates.length === 0) {
+      if (dragged.some((item) => item.threadId === threadId))
+        toastManager.add({ type: "info", title: "A thread can't reference itself." });
+      return;
+    }
+    const room = Math.max(0, THREAD_REFERENCE_MAX_PER_MESSAGE - existing.length);
+    const accepted = candidates.slice(0, room);
+    const state = useStore.getState();
+    const links = accepted.map((item) =>
+      formatThreadReference({
+        threadId: item.threadId,
+        title: selectThreadById(state, item.threadId as ThreadId)?.title ?? item.title,
+        scheme: promptLinkScheme,
+      }),
+    );
+    if (accepted.length > 0 && !appendComposerReferences(links, errorTitle, range)) return;
+    if (accepted.length < candidates.length)
+      toastManager.add({
+        type: "warning",
+        title: `Up to ${THREAD_REFERENCE_MAX_PER_MESSAGE} thread references per message.`,
+      });
   };
 
   const onComposerFileMentionDropCapture = (event: React.DragEvent<HTMLDivElement>) => {
@@ -5002,34 +5078,7 @@ export default memo(function ChatView({
         toastManager.add({ type: "error", title: errorTitle });
         return;
       }
-      const existing = referencedThreadIds([promptRef.current]);
-      const candidates = dragged.filter(
-        (item, index) =>
-          item.threadId !== threadId &&
-          !existing.includes(item.threadId) &&
-          dragged.findIndex((other) => other.threadId === item.threadId) === index,
-      );
-      if (candidates.length === 0) {
-        if (dragged.some((item) => item.threadId === threadId))
-          toastManager.add({ type: "info", title: "A thread can't reference itself." });
-        return;
-      }
-      const room = Math.max(0, THREAD_REFERENCE_MAX_PER_MESSAGE - existing.length);
-      const accepted = candidates.slice(0, room);
-      const state = useStore.getState();
-      const links = accepted.map((item) =>
-        formatThreadReference({
-          threadId: item.threadId,
-          title: selectThreadById(state, item.threadId as ThreadId)?.title ?? item.title,
-          scheme: promptLinkScheme,
-        }),
-      );
-      if (accepted.length > 0 && !appendComposerReferences(links, errorTitle)) return;
-      if (accepted.length < candidates.length)
-        toastManager.add({
-          type: "warning",
-          title: `Up to ${THREAD_REFERENCE_MAX_PER_MESSAGE} thread references per message.`,
-        });
+      appendThreadReferences(dragged, errorTitle);
       return;
     }
     if (hasPullRequestReferenceDrag(event.dataTransfer.types)) {
@@ -5309,6 +5358,29 @@ export default memo(function ChatView({
     onAdmittedCallback?: () => void,
   ) => {
     e?.preventDefault();
+    const sideChatCommand = /^\/(?:side|btw)(?:\s+([\s\S]*))?$/i.exec(promptRef.current.trim());
+    if (
+      sideChatCommand &&
+      composerImages.length === 0 &&
+      composerFilePaths.length === 0 &&
+      composerTerminalContexts.length === 0
+    ) {
+      const original = promptRef.current;
+      try {
+        await openNewSideChat(threadId, sideChatCommand[1] ?? "");
+        if (promptRef.current === original) {
+          promptRef.current = "";
+          setPrompt("");
+        }
+      } catch (cause) {
+        toastManager.add({
+          type: "error",
+          title: "Side chat could not open",
+          description: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+      return;
+    }
     if (
       promptRef.current.trim().toLowerCase() === "/clear" &&
       composerImages.length === 0 &&
@@ -5732,6 +5804,7 @@ export default memo(function ChatView({
       name: image.name,
       mimeType: image.mimeType,
       sizeBytes: image.sizeBytes,
+      ...(attachmentSources.get(image.file) ? { source: attachmentSources.get(image.file) } : {}),
       previewUrl: image.previewUrl,
       ...(image.uploadId ? {} : { sourceBlob: image.file }),
     }));
@@ -5887,6 +5960,7 @@ export default memo(function ChatView({
             ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
             createdAt: messageCreatedAt,
             streaming: false,
+            sending: true,
           },
         ]);
       };
@@ -8746,6 +8820,7 @@ export default memo(function ChatView({
                         model: activeThread.model,
                         provider: activeThread.session?.provider ?? null,
                         tokenUsageSource: activeThread.session?.tokenUsageSource,
+                        autoCompactThreshold: activeThread.session?.autoCompactThreshold,
                       }}
                       promptCache={promptCache.meter}
                       pendingInteraction={composerPendingInteraction}
@@ -8868,8 +8943,13 @@ export default memo(function ChatView({
   );
   return (
     <OpenLinkThread.Provider value={threadId}>
-      <RepositoryLinks.Provider value={repositoryLinks}>{workspace}</RepositoryLinks.Provider>
+      <RepositoryLinks.Provider value={repositoryLinks}>
+        <div className="contents" data-chat-thread={threadId}>
+          {workspace}
+        </div>
+      </RepositoryLinks.Provider>
     </OpenLinkThread.Provider>
   );
 });
 import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
+import { openNewSideChat } from "../lib/sideChats";

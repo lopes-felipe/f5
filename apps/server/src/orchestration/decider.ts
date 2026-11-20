@@ -247,6 +247,11 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
       });
       if (
         isScratchProject(project) &&
+        (command.pinned !== undefined || command.archived !== undefined)
+      )
+        return yield* scratchProjectRefusal(command.type, "its visibility");
+      if (
+        isScratchProject(project) &&
         (command.workspaceRoot !== undefined || command.scripts !== undefined)
       )
         return yield* scratchProjectRefusal(command.type, "its folder or actions");
@@ -280,6 +285,8 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         payload: {
           projectId: command.projectId,
           ...(command.title !== undefined ? { title: command.title } : {}),
+          ...(command.pinned !== undefined ? { pinned: command.pinned } : {}),
+          ...(command.archived !== undefined ? { archived: command.archived } : {}),
           ...(command.workspaceRoot !== undefined ? { workspaceRoot: command.workspaceRoot } : {}),
           ...(command.defaultModel !== undefined ? { defaultModel: command.defaultModel } : {}),
           ...(command.defaultEnvMode !== undefined
@@ -752,6 +759,23 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         threadId: command.threadId,
       });
       const scratchPath = command.scratchPath ?? null;
+      if (command.sideChatOf) {
+        const parent = readModel.threads.find(
+          (thread) => thread.id === command.sideChatOf && thread.deletedAt === null,
+        );
+        if (
+          !parent ||
+          parent.projectId !== project.id ||
+          parent.sideChatOf ||
+          parent.worktreePath !== command.worktreePath ||
+          parent.branch !== command.branch ||
+          (parent.scratchPath ?? null) !== scratchPath
+        )
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A side chat needs a main thread in the same project.",
+          });
+      }
       if (isScratchProject(project)) {
         // The engine allocates the folder before dispatch; without one a scratch thread
         // would have no workspace of its own, so creation fails closed.
@@ -787,12 +811,16 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           titleRevision: 0,
           titleUpdatedAt: command.createdAt,
           model: command.model,
+          ...(command.sideChatOf && command.modelSelection
+            ? { modelSelection: command.modelSelection }
+            : {}),
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
           scratchPath,
           threadReferences: command.threadReferences ?? [],
+          ...(command.sideChatOf ? { sideChatOf: command.sideChatOf } : {}),
           ...(command.scheduledOrigin ? { scheduledOrigin: command.scheduledOrigin } : {}),
           ...(command.pullRequest ? { pullRequest: command.pullRequest } : {}),
           createdAt: command.createdAt,

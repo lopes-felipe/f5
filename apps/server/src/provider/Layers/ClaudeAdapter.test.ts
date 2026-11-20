@@ -10048,6 +10048,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: "claudeAgent",
         runtimeMode: "full-access",
+        providerOptions: { claudeAgent: { autoCompactWindow: 150_000 } },
       });
       assert.equal(session.threadId, THREAD_ID);
 
@@ -10096,6 +10097,7 @@ describe("ClaudeAdapterLive", () => {
       if (tokenUsageUpdated?.type === "thread.token-usage.updated") {
         assert.equal(String(tokenUsageUpdated.turnId), String(turn.turnId));
         assert.deepEqual(tokenUsageUpdated.payload, {
+          autoCompactThreshold: 117_000,
           usage: {
             input_tokens: 500,
             cache_creation_input_tokens: 30,
@@ -16707,6 +16709,77 @@ for (const terminalFirst of [false, true]) {
     },
   );
 }
+
+it.effect("returns bypass removal warnings directly without opening an approval", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    const events: ProviderRuntimeEvent[] = [];
+    yield* Stream.runForEach(adapter.streamEvents, (event) =>
+      Effect.sync(() => {
+        events.push(event);
+      }),
+    ).pipe(Effect.forkChild);
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+    });
+    const result = yield* Effect.promise(() =>
+      Promise.resolve(
+        h.getLastCreateQueryInput()!.options.canUseTool!(
+          "Bash",
+          { command: "rm -r target" },
+          {
+            signal: new AbortController().signal,
+            toolUseID: "removal-check",
+            requestId: "removal-check",
+            decisionReason: "Dangerous rm command. Use a safer path.",
+          },
+        ),
+      ),
+    );
+    assert.equal(result?.behavior, "deny");
+    if (result?.behavior === "deny") assert.include(result.message, "safe rewrite");
+    assert.equal(events.filter((event) => event.type === "request.opened").length, 0);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("surfaces a native child's approval in the parent and answers only that child", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+    });
+    const pending = h.getLastCreateQueryInput()!.options.canUseTool!(
+      "Bash",
+      { command: "pwd" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "child-tool",
+        requestId: "child-request",
+        agentID: "native-child",
+      },
+    );
+    const requested = yield* Stream.runHead(
+      adapter.streamEvents.pipe(Stream.filter((event) => event.type === "request.opened")),
+    );
+    assert.equal(requested._tag, "Some");
+    if (requested._tag !== "Some") return;
+    assert.equal(requested.value.threadId, THREAD_ID);
+    assert.include(JSON.stringify(requested.value.payload), "native-child");
+    yield* adapter.respondToRequest(
+      THREAD_ID,
+      ApprovalRequestId.makeUnsafe(requested.value.requestId!),
+      "accept",
+    );
+    const result = yield* Effect.promise(() => Promise.resolve(pending));
+    assert.equal(result?.behavior, "allow");
+  }).pipe(Effect.provide(h.layer));
+});
 
 for (const terminal of ["task_notification", "task_updated"] as const) {
   for (const backgrounded of [false, true]) {

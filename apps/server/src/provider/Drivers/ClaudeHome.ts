@@ -37,26 +37,38 @@ const decodeSettingsEnv = Schema.decodeUnknownEffect(
 );
 
 /** User and managed settings override the process environment, as in Claude Code. */
-export const readClaudeSettingsBaseUrl = Effect.fn("readClaudeSettingsBaseUrl")(function* (
+export const readClaudeSettingsEnv = Effect.fn("readClaudeSettingsEnv")(function* (
   config: Pick<ClaudeSettings, "homePath">,
   baseEnv: NodeJS.ProcessEnv,
   cwd?: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const environment = yield* makeClaudeEnvironment(config, baseEnv);
-  let baseUrl = environment.ANTHROPIC_BASE_URL;
+  const settingsEnv: Record<string, unknown> = {};
   for (const file of [
     NodePath.join(resolveClaudeConfigDir(environment, cwd), "settings.json"),
     NodePath.join(claudeManagedSettingsDir(process.platform), "managed-settings.json"),
   ]) {
     const value = yield* fs.readFileString(file).pipe(
       Effect.flatMap(decodeSettingsEnv),
-      Effect.map((settings) => settings.env?.ANTHROPIC_BASE_URL),
+      Effect.map((settings) => settings.env),
       Effect.orElseSucceed(() => undefined),
     );
-    if (typeof value === "string") baseUrl = value;
+    Object.assign(settingsEnv, value);
   }
-  return baseUrl;
+  return settingsEnv;
+});
+
+export const readClaudeSettingsBaseUrl = Effect.fn("readClaudeSettingsBaseUrl")(function* (
+  config: Pick<ClaudeSettings, "homePath">,
+  baseEnv: NodeJS.ProcessEnv,
+  cwd?: string,
+) {
+  const environment = yield* makeClaudeEnvironment(config, baseEnv);
+  const settings = yield* readClaudeSettingsEnv(config, environment, cwd);
+  return typeof settings.ANTHROPIC_BASE_URL === "string"
+    ? settings.ANTHROPIC_BASE_URL
+    : environment.ANTHROPIC_BASE_URL;
 });
 
 const CLAUDE_HOST_SESSION_VARIABLES = new Set([

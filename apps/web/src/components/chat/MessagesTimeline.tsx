@@ -19,6 +19,7 @@ import { McpToolCallDetails } from "./McpToolCallDetails";
 import type { PromptLinkRepository } from "@t3tools/shared/promptLinks";
 import { NativeFilePreview } from "./NativeFilePreview";
 import { AttachmentFileChip } from "./AttachmentFileChip";
+import { videoPreviewMimeType } from "@t3tools/shared/filePreview";
 import { ChatAssetImage } from "../ChatAssetImage";
 import { readTimelineScrollAnchor, timelineScrollAnchors } from "./timelineScrollAnchors";
 import {
@@ -4772,7 +4773,10 @@ function UserMessageRowContent(props: {
     (attachment) => attachment.type === "image",
   );
   const userFiles = (row.message.attachments ?? []).filter(
-    (attachment) => attachment.type === "file",
+    (attachment) => attachment.type === "file" && !videoPreviewMimeType(attachment),
+  );
+  const userVideos = (row.message.attachments ?? []).filter(
+    (attachment) => attachment.type === "file" && videoPreviewMimeType(attachment),
   );
   // A message-mode answer is delivered as JSON for the provider; show the chosen answers.
   const displayedUserMessage = deriveDisplayedUserMessageState(
@@ -4780,17 +4784,22 @@ function UserMessageRowContent(props: {
   );
   const terminalContexts = displayedUserMessage.contexts;
   const canRevertAgentWork = externals.canRevert;
-  // Images sent without words show as media, not as a bubble around them.
+  const hasBody =
+    displayedUserMessage.visibleText.trim().length > 0 ||
+    terminalContexts.length > 0 ||
+    displayedUserMessage.attachedFilePaths.length > 0;
+  // Media is its own shape even when a message also includes words.
   const mediaOnly =
-    userImages.length > 0 &&
+    userImages.length + userVideos.length > 0 &&
     userFiles.length === 0 &&
     displayedUserMessage.attachedFilePaths.length === 0 &&
     terminalContexts.length === 0 &&
     displayedUserMessage.visibleText.trim() === "";
   // A lone image keeps its own shape; a fixed crop hides most of a wide screenshot.
-  const loneImage = mediaOnly && userImages.length === 1;
+  const loneImage = userImages.length === 1;
   // Several images sent without words share one rounded shape, split by hairlines.
-  const collage = mediaOnly && userImages.length > 1;
+  const hasSnapshots = userImages.some((image) => image.source === "snapshot");
+  const collage = userImages.length > 1 && !hasSnapshots;
   return (
     <div className="group/user-message flex flex-col items-end">
       {row.userInput ? (
@@ -4800,33 +4809,39 @@ function UserMessageRowContent(props: {
         </div>
       ) : (
         <div
-          className={cn(
-            "max-w-full sm:max-w-[85%]",
-            !mediaOnly && "rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5",
-          )}
+          className={cn("flex max-w-full flex-col items-end gap-2 sm:max-w-[85%]")}
           data-slot="user-message-bubble"
           data-media-only={mediaOnly ? "" : undefined}
         >
-          {userFiles.map((file) => (
-            <AttachmentFileChip key={file.id} file={file} />
+          {userVideos.map((file) => (
+            <video
+              key={file.id}
+              aria-label={file.name}
+              controls
+              preload="metadata"
+              src={file.sourceUrl ?? file.previewUrl}
+              className="max-h-80 max-w-full rounded-2xl"
+            />
           ))}
           {userImages.length > 0 && (
             <div
               className={cn(
                 "grid",
-                loneImage
-                  ? "max-w-full"
-                  : collage
-                    ? cn(
-                        USER_MEDIA_EDGE_CLASS_NAME,
-                        "w-80 max-w-full gap-px overflow-hidden rounded-2xl bg-black/9 dark:bg-white/12",
-                        userImages.length === 2
-                          ? "auto-rows-[12rem] grid-cols-2"
-                          : userImages.length === 3
-                            ? "auto-rows-[calc(6rem-0.5px)] grid-cols-[3fr_2fr]"
-                            : "auto-rows-[6rem] grid-cols-2",
-                      )
-                    : "mb-2 max-w-[420px] grid-cols-2 gap-2",
+                hasSnapshots
+                  ? "max-w-full grid-cols-1 gap-2"
+                  : loneImage
+                    ? "max-w-full"
+                    : collage
+                      ? cn(
+                          USER_MEDIA_EDGE_CLASS_NAME,
+                          "w-80 max-w-full gap-px overflow-hidden rounded-2xl bg-black/9 dark:bg-white/12",
+                          userImages.length === 2
+                            ? "auto-rows-[12rem] grid-cols-2"
+                            : userImages.length === 3
+                              ? "auto-rows-[calc(6rem-0.5px)] grid-cols-[3fr_2fr]"
+                              : "auto-rows-[6rem] grid-cols-2",
+                        )
+                      : "mb-2 max-w-[420px] grid-cols-2 gap-2",
               )}
             >
               {userImages.map(
@@ -4836,21 +4851,26 @@ function UserMessageRowContent(props: {
                     <div
                       key={image.id}
                       className={cn(
-                        loneImage
+                        image.source === "snapshot"
                           ? cn(
                               USER_MEDIA_EDGE_CLASS_NAME,
-                              "overflow-hidden rounded-2xl bg-background/70",
+                              "max-w-full overflow-hidden rounded-2xl bg-background/70",
                             )
-                          : collage
+                          : loneImage
                             ? cn(
-                                "overflow-hidden bg-background",
-                                userImages.length === 3 && index === 0 && "row-span-2",
-                                userImages.length > 3 &&
-                                  userImages.length % 2 === 1 &&
-                                  index === userImages.length - 1 &&
-                                  "col-span-2",
+                                USER_MEDIA_EDGE_CLASS_NAME,
+                                "overflow-hidden rounded-2xl bg-background/70",
                               )
-                            : "overflow-hidden rounded-lg border border-border/80 bg-background/70",
+                            : collage
+                              ? cn(
+                                  "overflow-hidden bg-background",
+                                  userImages.length === 3 && index === 0 && "row-span-2",
+                                  userImages.length > 3 &&
+                                    userImages.length % 2 === 1 &&
+                                    index === userImages.length - 1 &&
+                                    "col-span-2",
+                                )
+                              : "overflow-hidden rounded-lg border border-border/80 bg-background/70",
                       )}
                     >
                       {previewUrl ? (
@@ -4887,11 +4907,13 @@ function UserMessageRowContent(props: {
                             className={cn(
                               "block object-cover",
                               // A fixed height keeps the row from growing when the image loads.
-                              loneImage
-                                ? "h-48 w-auto min-w-24 max-w-full"
-                                : collage
-                                  ? "size-full"
-                                  : "h-full max-h-[220px] w-full",
+                              image.source === "snapshot"
+                                ? "h-auto max-h-96 w-auto max-w-full object-contain"
+                                : loneImage
+                                  ? "h-48 w-auto min-w-24 max-w-full"
+                                  : collage
+                                    ? "size-full"
+                                    : "h-full max-h-[220px] w-full",
                             )}
                             draggable={false}
                           />
@@ -4913,36 +4935,57 @@ function UserMessageRowContent(props: {
               )}
             </div>
           )}
-          {displayedUserMessage.attachedFilePaths.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-1.5">
-              {displayedUserMessage.attachedFilePaths.map((filePath) => {
-                const displayPath = relativePathForDisplay(filePath, workspaceRoot);
-                return (
-                  <span
-                    key={filePath}
-                    className={COMPOSER_INLINE_CHIP_CLASS_NAME}
-                    title={displayPath}
-                  >
-                    <VscodeEntryIcon pathValue={filePath} kind="file" theme={resolvedTheme} />
-                    <span className="max-w-[320px] truncate">{displayPath}</span>
-                  </span>
-                );
-              })}
-            </div>
-          )}
-          {(displayedUserMessage.visibleText.trim().length > 0 || terminalContexts.length > 0) && (
-            <>
-              {/* The copy button below uses copyText, which is derived before
+          {(hasBody || userFiles.length > 0) && (
+            <div
+              data-slot="user-message-body"
+              className={cn(
+                "max-w-full",
+                hasBody
+                  ? "rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5"
+                  : "flex flex-col items-end gap-2",
+              )}
+            >
+              {userFiles.map((file) => (
+                <AttachmentFileChip
+                  key={file.id}
+                  file={file}
+                  standalone={!hasBody}
+                  sending={row.message.sending === true}
+                />
+              ))}
+              {displayedUserMessage.attachedFilePaths.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {displayedUserMessage.attachedFilePaths.map((filePath) => {
+                    const displayPath = relativePathForDisplay(filePath, workspaceRoot);
+                    return (
+                      <span
+                        key={filePath}
+                        className={COMPOSER_INLINE_CHIP_CLASS_NAME}
+                        title={displayPath}
+                      >
+                        <VscodeEntryIcon pathValue={filePath} kind="file" theme={resolvedTheme} />
+                        <span className="max-w-[320px] truncate">{displayPath}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              {(displayedUserMessage.visibleText.trim().length > 0 ||
+                terminalContexts.length > 0) && (
+                <>
+                  {/* The copy button below uses copyText, which is derived before
                     visual collapse, so collapsed messages still copy in full. */}
-              <TimelineUserMessageBody
-                key={row.message.id}
-                text={displayedUserMessage.visibleText}
-                skillCall={row.message.skillCall}
-                terminalContexts={terminalContexts}
-                markup={userMessageMarkup}
-                forceExpandedForFind={forceExpandedForFind}
-              />
-            </>
+                  <TimelineUserMessageBody
+                    key={row.message.id}
+                    text={displayedUserMessage.visibleText}
+                    skillCall={row.message.skillCall}
+                    terminalContexts={terminalContexts}
+                    markup={userMessageMarkup}
+                    forceExpandedForFind={forceExpandedForFind}
+                  />
+                </>
+              )}
+            </div>
           )}
         </div>
       )}

@@ -33,7 +33,7 @@ import { cn } from "../../lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Textarea } from "../ui/textarea";
+import { PrCompletionTextarea as Textarea } from "./PrCompletionTextarea";
 import { PrReactionBar } from "./PrReactionBar";
 import { prDetailCapability } from "./prDetails.logic";
 import {
@@ -145,7 +145,11 @@ function TimelineComment({
 
       {isEditing ? (
         <div className="space-y-2">
-          <Textarea value={draft} onChange={(event) => setDraft(event.target.value)} />
+          <Textarea
+            prKey={pr.key}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
           <div className="flex gap-2">
             {pr.provider !== "github" ? (
               <ForgeOperationPanel

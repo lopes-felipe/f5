@@ -7,7 +7,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PrHubReviewDraft, PrHubReviewOperation, PullRequestKey } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration, getPrHubDraftIdentity } from "../../lib/prHubAccount";
-import { Textarea } from "../ui/textarea";
+import { PrCompletionTextarea as Textarea } from "./PrCompletionTextarea";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { reviewSubmissionFailure } from "./reviewSubmissionFailure";
@@ -248,6 +248,7 @@ export function PrReviewSubmit({
           ) : null}
           {quickEvent ? (
             <Textarea
+              prKey={prKey}
               aria-label="Quick review note"
               value={quickBody}
               onChange={(e) => setQuickBody(e.currentTarget.value)}

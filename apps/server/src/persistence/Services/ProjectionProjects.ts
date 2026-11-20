@@ -22,6 +22,8 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionProject = Schema.Struct({
   projectId: ProjectId,
+  pinned: Schema.optional(Schema.Boolean),
+  archived: Schema.optional(Schema.Boolean),
   kind: Schema.optional(ProjectKind).pipe(Schema.withDecodingDefault(() => "standard" as const)),
   title: Schema.String,
   workspaceRoot: Schema.String,

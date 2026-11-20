@@ -16,6 +16,8 @@ import { ProjectIcon, ProjectScript } from "@t3tools/contracts";
 // Makes sure that the scripts are parsed from the JSON string the DB returns
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
+    pinned: Schema.optional(Schema.BooleanFromBit),
+    archived: Schema.optional(Schema.BooleanFromBit),
     defaultModelSelection: Schema.NullOr(
       Schema.fromJsonString(ProjectionProject.fields.defaultModelSelection),
     ),
@@ -40,6 +42,8 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
       sql`
             INSERT INTO projection_projects (
               project_id,
+              pinned,
+              archived,
               kind,
               title,
               workspace_root,
@@ -54,6 +58,8 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
             )
             VALUES (
               ${row.projectId},
+              ${row.pinned ? 1 : 0},
+              ${row.archived ? 1 : 0},
               ${row.kind ?? "standard"},
               ${row.title},
               ${row.workspaceRoot},
@@ -68,6 +74,8 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
             )
             ON CONFLICT (project_id)
             DO UPDATE SET
+              pinned = excluded.pinned,
+              archived = excluded.archived,
               title = excluded.title,
               workspace_root = excluded.workspace_root,
               default_model = excluded.default_model,
@@ -88,6 +96,8 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
       sql`
         SELECT
           project_id AS "projectId",
+          pinned,
+          archived,
           kind,
           title,
           workspace_root AS "workspaceRoot",
@@ -111,6 +121,8 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
       sql`
         SELECT
           project_id AS "projectId",
+          pinned,
+          archived,
           kind,
           title,
           workspace_root AS "workspaceRoot",

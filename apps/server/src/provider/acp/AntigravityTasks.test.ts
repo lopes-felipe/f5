@@ -11,6 +11,33 @@ const launch: AcpToolCallState = {
 };
 
 describe("Antigravity subagent tasks", () => {
+  it("does not settle children launched while a native status read is in flight", () => {
+    const tasks = new AntigravityTasks();
+    tasks.update(launch, {});
+    const observed = tasks.taskIds;
+    tasks.update({ ...launch, toolCallId: "batch-2" }, {});
+    expect(tasks.settleDetached([], observed)).toMatchObject([
+      { type: "task.completed", payload: { taskId: "batch-1" } },
+    ]);
+    expect(tasks.taskIds).toEqual(["batch-2"]);
+  });
+  it("keeps detached children visible until their native record settles", () => {
+    const tasks = new AntigravityTasks();
+    const native = {
+      ...launch,
+      title: "Running invoke_subagent",
+      data: { rawInput: { Role: "Research", Prompt: "Read the code" } },
+    };
+    expect(tasks.update(native, {})[0]).toMatchObject({
+      payload: { description: "Research", prompt: "Read the code" },
+    });
+    expect(tasks.settleDetached(["batch-1"])).toEqual([]);
+    expect(tasks.taskIds).toEqual(["batch-1"]);
+    expect(tasks.settleDetached([])).toMatchObject([
+      { type: "task.completed", payload: { status: "completed" } },
+    ]);
+    expect(tasks.taskIds).toEqual([]);
+  });
   it("keeps a launched batch active until the turn ends", () => {
     const tasks = new AntigravityTasks();
     expect(tasks.update(launch, {}).map((event) => event.type)).toEqual([

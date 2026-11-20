@@ -1116,11 +1116,13 @@ async function executeComputerBatch(
           verification?.verified !== true
         )
           stopped = "unverified";
-        // A shortcut that moved focus, or a foreground press that removed its element, needs
-        // a fresh observation: later steps would otherwise act on an unexpected window.
+        // A shortcut that moved focus, typing cut short by a focus change, or a foreground
+        // press that removed its element, needs a fresh observation: later steps would
+        // otherwise act on an unexpected window.
         else if (
           verification?.verified === false &&
           (op === "key" ||
+            op === "type" ||
             (delivery !== "background" && op === "elementAction" && step.action !== "focus"))
         )
           stopped = "unverified";

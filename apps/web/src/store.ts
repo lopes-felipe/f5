@@ -304,6 +304,8 @@ function mapProjectsFromReadModel(
         resolveProjectModel(project.defaultModel, project.defaultModelSelection?.instanceId),
       createdAt: project.createdAt,
       defaultEnvMode: project.defaultEnvMode ?? null,
+      pinned: project.pinned ?? false,
+      archived: project.archived ?? false,
       icon: project.icon ?? null,
       expanded:
         existing?.expanded ??
@@ -1238,6 +1240,7 @@ function buildThreadFromReadModel(
     existing.branch === thread.branch &&
     existing.worktreePath === thread.worktreePath &&
     (existing.scratchPath ?? null) === (thread.scratchPath ?? null) &&
+    (existing.sideChatOf ?? null) === (thread.sideChatOf ?? null) &&
     existingCompaction === compaction &&
     existing.turnDiffSummaries === nextDetailFields.turnDiffSummaries &&
     existing.activities === activities &&
@@ -1303,6 +1306,7 @@ function buildThreadFromReadModel(
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     scratchPath: thread.scratchPath ?? null,
+    ...(thread.sideChatOf ? { sideChatOf: thread.sideChatOf } : {}),
     compaction,
     turnDiffSummaries: nextDetailFields.turnDiffSummaries,
     activities,

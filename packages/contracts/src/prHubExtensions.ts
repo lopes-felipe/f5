@@ -63,6 +63,18 @@ export const PrHubStackInput = Schema.Struct({
   accountGeneration: Schema.optional(Schema.String),
 });
 export type PrHubStackInput = typeof PrHubStackInput.Type;
+export const PrHubCompletionsInput = Schema.Struct({
+  ...PrHubStackInput.fields,
+  sigil: Schema.Literals(["@", "#", "!"]),
+  query: Schema.String.check(Schema.isMaxLength(100)),
+});
+export type PrHubCompletionsInput = typeof PrHubCompletionsInput.Type;
+export const PrHubCompletion = Schema.Struct({
+  token: Schema.String,
+  label: Schema.String,
+  detail: Schema.optional(Schema.String),
+});
+export type PrHubCompletion = typeof PrHubCompletion.Type;
 export const PrHubStackLayer = Schema.Struct({
   number: Schema.Int,
   title: Schema.String,

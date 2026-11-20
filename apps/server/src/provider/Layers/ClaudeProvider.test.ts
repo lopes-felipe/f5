@@ -25,6 +25,7 @@ import {
   resolveClaudeEffort,
   VERSION_GATED_CLAUDE_MODELS,
   parseClaudeInitializationModels,
+  claudeGatewayDiscoveryGraceMs,
 } from "./ClaudeProvider.ts";
 
 const encoder = new TextEncoder();
@@ -674,6 +675,26 @@ describe("Claude version gates", () => {
   });
 });
 
+describe("claudeGatewayDiscoveryGraceMs", () => {
+  it.each([
+    { enabled: "", url: "https://gateway.example", timeout: "10", expected: 0 },
+    { enabled: "0", url: "https://gateway.example", timeout: "10", expected: 0 },
+    { enabled: " FALSE ", url: "https://gateway.example", timeout: "10", expected: 0 },
+    { enabled: "true", url: "", timeout: "10", expected: 0 },
+    { enabled: "1", url: "https://gateway.example", timeout: "10", expected: 10 },
+    { enabled: "1", url: "https://gateway.example", timeout: "invalid", expected: 3000 },
+    { enabled: "1", url: "https://gateway.example", timeout: "-10", expected: 3000 },
+  ])("resolves enabled discovery and valid timeouts: %o", ({ enabled, url, timeout, expected }) => {
+    expect(
+      claudeGatewayDiscoveryGraceMs({
+        CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: enabled,
+        ANTHROPIC_BASE_URL: url,
+        CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS: timeout,
+      }),
+    ).toBe(expected);
+  });
+});
+
 describe("parseClaudeInitializationModels", () => {
   it("resolves aliases to canonical slugs, strips context suffixes and dedupes", () => {
     const models = parseClaudeInitializationModels([
@@ -686,12 +707,59 @@ describe("parseClaudeInitializationModels", () => {
         supportedEffortLevels: ["low", "max"],
       },
       { value: "claude-cli-only-9", displayName: "Duplicate", description: "" },
-      { value: "team-alias", displayName: "Alias without resolution", description: "" },
+      {
+        value: "claude-cli-other-9",
+        resolvedModel: "backend/private",
+        displayName: "Other CLI",
+        description: "",
+      },
     ] as never);
     expect(models.map((model) => [model.slug, model.name])).toEqual([
       ["claude-cli-only-9", "CLI Only"],
+      ["claude-cli-other-9", "Other CLI"],
     ]);
     expect(models[0]?.capabilities.source).toBe("reported");
+  });
+
+  it("preserves selectable gateway values and separate context variants", () => {
+    const models = parseClaudeInitializationModels([
+      { value: "default", displayName: "Default", description: "" },
+      {
+        value: "gateway/reasoner[500k]",
+        resolvedModel: "backend/internal-reasoner",
+        displayName: "Gateway Reasoner",
+        description: "",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "high"],
+      },
+      { value: "gateway/reasoner[1m]", displayName: "Large Reasoner", description: "" },
+      { value: "gateway/reasoner[500k]", displayName: "Duplicate", description: "" },
+    ] as never);
+    expect(models.map(({ slug, name }) => [slug, name])).toEqual([
+      ["gateway/reasoner[500k]", "Gateway Reasoner"],
+      ["gateway/reasoner[1m]", "Large Reasoner"],
+    ]);
+    expect(models[0]?.capabilities.source).toBe("reported");
+    expect(JSON.stringify(models[0]?.capabilities)).toContain("high");
+  });
+
+  it("omits catalog aliases and custom model duplicates without dropping unknown gateway ids", () => {
+    const models = parseClaudeInitializationModels(
+      [
+        { value: "opus-5.5", displayName: "Alias", description: "" },
+        { value: "opus-4.7", displayName: "Alias", description: "" },
+        { value: "gateway/custom[500k]", displayName: "Custom variant", description: "" },
+        {
+          value: "gateway/alias",
+          resolvedModel: "gateway/custom",
+          displayName: "Custom alias",
+          description: "",
+        },
+        { value: "team-alias", displayName: "Team", description: "" },
+      ] as never,
+      ["gateway/custom"],
+    );
+    expect(models.map(({ slug }) => slug)).toEqual(["team-alias"]);
   });
 });
 

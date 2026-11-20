@@ -50,5 +50,28 @@ final class ActionOutcomeTests: XCTestCase {
     XCTAssertNil(bare?["axError"])
     XCTAssertNil(bare?["appId"])
     XCTAssertEqual(bare?["delivery"] as? String, "background")
+    XCTAssertEqual(bare?["cause"] as? String, "Interrupted")
+    XCTAssertNil(diagnostic?["cause"])
+  }
+  func testOutcomeUnknownDiagnosticNamesTheEscalatedFailure() {
+    let failure: [String: Any] = ["_tag": "TargetBlocked", "kind": "focus-unknown"]
+    let error = computerActionFailure(failure, tracked: true, background: false, posted: true)
+    XCTAssertEqual(computerAgentFacingError(error).keys.sorted(), ["_tag"])
+    XCTAssertEqual(error["_tag"] as? String, "OutcomeUnknown")
+    let diagnostic = computerOutcomeUnknownDiagnostic(
+      error: error, failure: failure, op: "type", appId: "", background: false)
+    XCTAssertEqual(diagnostic?["cause"] as? String, "TargetBlocked")
+    XCTAssertEqual(diagnostic?["kind"] as? String, "focus-unknown")
+    XCTAssertNil(diagnostic?["axError"])
+    let paused = computerOutcomeUnknownDiagnostic(
+      error: ["_tag": "OutcomeUnknown"], failure: ["_tag": "Interrupted", "cause": "paused"],
+      op: "type", appId: "", background: false)
+    XCTAssertEqual(paused?["kind"] as? String, "paused")
+    let ax = computerOutcomeUnknownDiagnostic(
+      error: ["_tag": "OutcomeUnknown"],
+      failure: ["_tag": "ForegroundRequired", "reason": "typing-unsupported", "axError": -25200],
+      op: "type", appId: "com.google.Chrome", background: true)
+    XCTAssertEqual(ax?["kind"] as? String, "typing-unsupported")
+    XCTAssertEqual(ax?["axError"] as? Int, -25200)
   }
 }

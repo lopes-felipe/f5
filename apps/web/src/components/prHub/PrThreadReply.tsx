@@ -8,7 +8,7 @@ import { prReplyBody } from "@t3tools/shared/prReview";
 import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import { Button } from "../ui/button";
-import { Textarea } from "../ui/textarea";
+import { PrCompletionTextarea as Textarea } from "./PrCompletionTextarea";
 
 type Props = {
   prKey: PullRequestKey;
@@ -193,6 +193,7 @@ function ReplyEditor({
       ) : (
         <>
           <Textarea
+            prKey={prKey}
             aria-label="Reply to review thread"
             value={body}
             disabled={busy || query.isPending || query.isError}

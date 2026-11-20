@@ -26,7 +26,11 @@ const TONE_CLASS_NAME: Record<ContextMeterTone, string> = {
   destructive: "text-destructive",
 };
 
-function ContextRing(props: { ratio: number; tone: ContextMeterTone }) {
+function ContextRing(props: {
+  ratio: number;
+  tone: ContextMeterTone;
+  thresholdRatio?: number | undefined;
+}) {
   const filled = Math.min(1, Math.max(0, props.ratio));
   return (
     <svg
@@ -46,6 +50,17 @@ function ContextRing(props: { ratio: number; tone: ContextMeterTone }) {
         strokeDasharray={RING_CIRCUMFERENCE}
         strokeDashoffset={RING_CIRCUMFERENCE * (1 - filled)}
       />
+      {props.thresholdRatio !== undefined ? (
+        <line
+          data-slot="context-auto-compact-mark"
+          x1={8 + 4 * Math.cos(props.thresholdRatio * 2 * Math.PI)}
+          y1={8 + 4 * Math.sin(props.thresholdRatio * 2 * Math.PI)}
+          x2={8 + 8 * Math.cos(props.thresholdRatio * 2 * Math.PI)}
+          y2={8 + 8 * Math.sin(props.thresholdRatio * 2 * Math.PI)}
+          stroke="currentColor"
+          strokeWidth="1"
+        />
+      ) : null}
     </svg>
   );
 }
@@ -71,6 +86,11 @@ export function ContextMeter(props: {
   if (!context && thinkingTokens === null && !promptCache) return null;
 
   const tone = context ? contextMeterTone(context.ratio) : "muted";
+  const threshold = tokenUsage.autoCompactThreshold;
+  const thresholdRatio =
+    context && threshold != null && threshold > 0 && threshold < context.windowTokens
+      ? threshold / context.windowTokens
+      : undefined;
   const sourceLabel = tokenUsageSourceLabel(tokenUsage.tokenUsageSource);
   const lastTurnMissed = promptCache?.summary.last?.state === "miss";
   const ariaLabel = [
@@ -93,7 +113,7 @@ export function ContextMeter(props: {
       {context || promptCache ? (
         <span className="relative inline-flex">
           {context ? (
-            <ContextRing ratio={context.ratio} tone={tone} />
+            <ContextRing ratio={context.ratio} tone={tone} thresholdRatio={thresholdRatio} />
           ) : (
             <DatabaseIcon className="size-3.5" aria-hidden="true" />
           )}
@@ -104,6 +124,11 @@ export function ContextMeter(props: {
               className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-warning ring-2 ring-background"
             />
           ) : null}
+        </span>
+      ) : null}
+      {context ? (
+        <span aria-hidden="true" data-slot="context-token-count">
+          {formatCompactTokens(context.usedTokens)} / {formatCompactTokens(context.windowTokens)}
         </span>
       ) : null}
       {thinkingTokens !== null ? (
@@ -127,6 +152,11 @@ export function ContextMeter(props: {
             Window: {formatExactTokens(context.windowTokens)} tokens
           </p>
           <p className="text-muted-foreground">Model: {tokenUsage.model}</p>
+          {thresholdRatio !== undefined ? (
+            <p className="text-muted-foreground">
+              Auto-compacts around {formatExactTokens(threshold!)} tokens
+            </p>
+          ) : null}
           {sourceLabel ? <p className="text-muted-foreground">Source: {sourceLabel}</p> : null}
         </div>
       ) : null}

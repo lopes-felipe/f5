@@ -2,7 +2,7 @@ import type { ClaudeSettings } from "@t3tools/contracts";
 import type { query } from "@anthropic-ai/claude-agent-sdk";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { Cache, Clock, Duration, Effect, Exit, Path, Ref } from "effect";
+import { Cache, Clock, Duration, Effect, Exit, FileSystem, Path, Ref } from "effect";
 import * as Semaphore from "effect/Semaphore";
 import {
   probeClaudeCapabilities,
@@ -50,6 +50,7 @@ export const makeClaudeInstanceProbes = (
 ) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
     const lock = yield* Semaphore.make(1);
     const probeEnvironment = yield* makeClaudeEnvironment(settings, environment);
     const configDir =
@@ -94,6 +95,7 @@ export const makeClaudeInstanceProbes = (
               return { fresh: true, value: recent.value };
             const value = yield* probeClaudeCapabilities(settings, environment, options).pipe(
               Effect.provideService(Path.Path, path),
+              Effect.provideService(FileSystem.FileSystem, fs),
             );
             if (value !== undefined) {
               yield* Ref.set(lastGood, { identity, value });
@@ -118,7 +120,10 @@ export const makeClaudeInstanceProbes = (
             yield* Ref.set(lastGood, { identity, value });
             yield* Cache.set(cache, key, { fresh: true, value });
           }),
-      }).pipe(Effect.provideService(Path.Path, path)),
+      }).pipe(
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(FileSystem.FileSystem, fs),
+      ),
     );
     return {
       capabilities: Cache.get(cache, key).pipe(Effect.map((result) => result.value)),

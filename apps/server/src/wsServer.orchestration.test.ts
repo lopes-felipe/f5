@@ -2780,120 +2780,143 @@ describe("WebSocket Server", () => {
     ).toBe(false);
   });
 
-  it("native fork persists and prepares the flat branch when t3code already exists", async () => {
-    const workspaceRoot = makeTempDir("f5-native-fork-repo-");
-    const stateDir = makeTempDir("f5-native-fork-state-");
-    const git = (...args: string[]) =>
-      execFileSync("git", ["-C", workspaceRoot, ...args], { encoding: "utf8" }).trim();
-    git("init", "-q", "-b", "main");
-    git(
-      "-c",
-      "user.name=Test",
-      "-c",
-      "user.email=test@example.com",
-      "commit",
-      "-q",
-      "--allow-empty",
-      "-m",
-      "initial",
-    );
-    git("branch", "t3code");
-    const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
-      list: () => unsupportedProviderCall(),
-      inspect: () => unsupportedProviderCall(),
-      resolve: () => unsupportedProviderCall(),
-      execute: () => unsupportedProviderCall(),
-      executeWithApply: (input, apply, prepare) =>
-        Effect.gen(function* () {
-          if (prepare) yield* prepare;
-          yield* apply({ resumeCursor: { nativeThreadId: "forked-native-session" } });
-          const now = new Date().toISOString();
-          return { ...input, state: "completed" as const, createdAt: now, updatedAt: now };
-        }),
-    };
-    h.server = await createTestServer({
-      cwd: workspaceRoot,
-      stateDir,
-      persistenceLayer: makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
-        Layer.provide(NodeServices.layer),
-      ),
-      providerLayer: Layer.succeed(ProviderService, {
-        ...defaultProviderService,
-        nativeOperations,
-      }),
-    });
-    const address = h.server.address();
-    const [ws] = await connectAndAwaitWelcome(
-      typeof address === "object" && address !== null ? address.port : 0,
-    );
-    connections.push(ws);
-    const now = new Date().toISOString();
-    const project = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
-      type: "project.create",
-      commandId: "fork-project-create",
-      projectId: "fork-project",
-      title: "Fork",
-      workspaceRoot,
-      createdAt: now,
-    });
-    expect(project.error).toBeUndefined();
-    const source = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
-      type: "thread.create",
-      commandId: "fork-source-create",
-      threadId: "fork-source",
-      projectId: "fork-project",
-      title: "Source",
-      model: "gpt-5-codex",
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: "main",
-      worktreePath: null,
-      createdAt: now,
-    });
-    expect(source.error).toBeUndefined();
-    const database = new DatabaseSync(path.join(stateDir, "state.sqlite"));
-    try {
-      database
-        .prepare(
-          "INSERT INTO provider_session_runtime (thread_id, project_id, provider_name, provider_instance_id, adapter_key, runtime_mode, status, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .run(
-          "fork-source",
-          "fork-project",
-          "codex",
-          "codex",
-          "codex",
-          "full-access",
-          "stopped",
-          now,
-        );
-      const operationId = "abcdef12-1234-4234-8234-123456789abc";
-      const response = await sendRequest(ws, NATIVE_OPERATION_WS_METHODS.fork, {
-        threadId: "fork-source",
-        operationId,
-        generation: 1,
-      });
-      expect(response.error).toBeUndefined();
-      expect(response.result).toMatchObject({ state: "completed" });
-      const snapshot = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
-      const fork = (snapshot.result as OrchestrationReadModel).threads.find(
-        (thread) => thread.id === `fork-${operationId}`,
+  it.each([false, true])(
+    "native fork preserves its workspace contract (side chat: %s)",
+    async (sideChat) => {
+      const workspaceRoot = makeTempDir("f5-native-fork-repo-");
+      const stateDir = makeTempDir("f5-native-fork-state-");
+      const git = (...args: string[]) =>
+        execFileSync("git", ["-C", workspaceRoot, ...args], { encoding: "utf8" }).trim();
+      git("init", "-q", "-b", "main");
+      git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "initial",
       );
-      expect(fork?.branch).toBe("t3code-abcdef12");
-      expect(fork?.worktreePath).toBeTruthy();
-      expect(
-        execFileSync("git", ["-C", fork!.worktreePath!, "branch", "--show-current"], {
-          encoding: "utf8",
-        }).trim(),
-      ).toBe(fork?.branch);
-      const binding = database
-        .prepare("SELECT runtime_payload_json FROM provider_session_runtime WHERE thread_id = ?")
-        .get(fork!.id);
-      expect(JSON.parse(String(binding?.runtime_payload_json))).toMatchObject({
-        cwd: fork!.worktreePath,
+      git("branch", "t3code");
+      let nativeForks = 0;
+      const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
+        list: () => unsupportedProviderCall(),
+        inspect: () => unsupportedProviderCall(),
+        resolve: () => unsupportedProviderCall(),
+        execute: () => unsupportedProviderCall(),
+        executeWithApply: (input, apply, prepare) =>
+          Effect.gen(function* () {
+            nativeForks++;
+            if (prepare) yield* prepare;
+            yield* apply({ resumeCursor: { nativeThreadId: "forked-native-session" } });
+            const now = new Date().toISOString();
+            return { ...input, state: "completed" as const, createdAt: now, updatedAt: now };
+          }),
+      };
+      h.server = await createTestServer({
+        cwd: workspaceRoot,
+        stateDir,
+        persistenceLayer: makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+        providerLayer: Layer.succeed(ProviderService, {
+          ...defaultProviderService,
+          nativeOperations,
+        }),
       });
-    } finally {
-      database.close();
-    }
-  }, 60_000);
+      const address = h.server.address();
+      const [ws] = await connectAndAwaitWelcome(
+        typeof address === "object" && address !== null ? address.port : 0,
+      );
+      connections.push(ws);
+      const now = new Date().toISOString();
+      const project = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+        type: "project.create",
+        commandId: "fork-project-create",
+        projectId: "fork-project",
+        title: "Fork",
+        workspaceRoot,
+        createdAt: now,
+      });
+      expect(project.error).toBeUndefined();
+      const source = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+        type: "thread.create",
+        commandId: "fork-source-create",
+        threadId: "fork-source",
+        projectId: "fork-project",
+        title: "Source",
+        model: "gpt-5-codex",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "main",
+        worktreePath: null,
+        createdAt: now,
+      });
+      expect(source.error).toBeUndefined();
+      const database = new DatabaseSync(path.join(stateDir, "state.sqlite"));
+      try {
+        database
+          .prepare(
+            "INSERT INTO provider_session_runtime (thread_id, project_id, provider_name, provider_instance_id, adapter_key, runtime_mode, status, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run(
+            "fork-source",
+            "fork-project",
+            "codex",
+            "codex",
+            "codex",
+            "full-access",
+            "stopped",
+            now,
+          );
+        const operationId = "abcdef12-1234-4234-8234-123456789abc";
+        const response = await sendRequest(ws, NATIVE_OPERATION_WS_METHODS.fork, {
+          threadId: "fork-source",
+          operationId,
+          generation: 1,
+          sideChat,
+        });
+        expect(response.error).toBeUndefined();
+        expect(response.result).toMatchObject({ state: "completed" });
+        expect(nativeForks).toBe(sideChat ? 0 : 1);
+        const snapshot = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+        const fork = (snapshot.result as OrchestrationReadModel).threads.find(
+          (thread) => thread.id === `fork-${operationId}`,
+        );
+        expect(fork?.branch).toBe(sideChat ? "main" : "t3code-abcdef12");
+        expect(fork?.sideChatOf).toBe(sideChat ? "fork-source" : undefined);
+        expect(fork?.worktreePath).toEqual(sideChat ? null : expect.any(String));
+        expect(
+          execFileSync(
+            "git",
+            ["-C", fork!.worktreePath ?? workspaceRoot, "branch", "--show-current"],
+            {
+              encoding: "utf8",
+            },
+          ).trim(),
+        ).toBe(fork?.branch);
+        const binding = database
+          .prepare("SELECT runtime_payload_json FROM provider_session_runtime WHERE thread_id = ?")
+          .get(fork!.id);
+        if (sideChat) {
+          expect(binding).toBeUndefined();
+          const pending = database
+            .prepare("SELECT pending_json FROM provider_handoff_state WHERE thread_id = ?")
+            .get(fork!.id);
+          expect(JSON.parse(String(pending?.pending_json))).toMatchObject({
+            targetInstanceId: "codex",
+            sourceContext: { effectiveMode: "full", messages: [] },
+          });
+        } else
+          expect(JSON.parse(String(binding?.runtime_payload_json))).toMatchObject({
+            cwd: fork!.worktreePath,
+          });
+      } finally {
+        database.close();
+      }
+    },
+    60_000,
+  );
 });

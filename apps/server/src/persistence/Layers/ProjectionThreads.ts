@@ -46,6 +46,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     execute: (row) =>
       sql`
         INSERT INTO projection_threads (
+          side_chat_of,
           scheduled_origin_json,
           thread_id,
           project_id,
@@ -85,6 +86,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           deleted_at
         )
         VALUES (
+          ${row.sideChatOf ?? null},
           ${row.scheduledOrigin == null ? null : JSON.stringify(row.scheduledOrigin)},
           ${row.threadId},
           ${row.projectId},
@@ -135,6 +137,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           branch = excluded.branch,
           worktree_path = excluded.worktree_path,
           scratch_path = excluded.scratch_path,
+          side_chat_of = excluded.side_chat_of,
           latest_turn_id = excluded.latest_turn_id,
           tasks_json = excluded.tasks_json,
           tasks_turn_id = excluded.tasks_turn_id,
@@ -203,6 +206,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           scratch_path AS "scratchPath",
+          side_chat_of AS "sideChatOf",
           latest_turn_id AS "latestTurnId",
           tasks_json AS "tasks",
           tasks_turn_id AS "tasksTurnId",
@@ -251,6 +255,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           scratch_path AS "scratchPath",
+          side_chat_of AS "sideChatOf",
           latest_turn_id AS "latestTurnId",
           tasks_json AS "tasks",
           tasks_turn_id AS "tasksTurnId",
