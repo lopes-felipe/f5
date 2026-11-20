@@ -21,6 +21,33 @@ type AcpAdapterRawSource = Extract<
   "acp.jsonrpc" | `acp.${string}.extension`
 >;
 
+export function makeAcpNoticeEvent(input: {
+  readonly stamp: AcpEventStamp;
+  readonly provider: ProviderKind;
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | undefined;
+  readonly notice: {
+    readonly title: string;
+    readonly description?: string;
+    readonly severity: string;
+  };
+}): ProviderRuntimeEvent {
+  return {
+    type: "runtime.warning",
+    ...input.stamp,
+    provider: input.provider,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    payload: {
+      message: input.notice.description
+        ? input.notice.title + "\n\n" + input.notice.description
+        : input.notice.title,
+      detail: { severity: input.notice.severity },
+      category: "provider",
+    },
+  };
+}
+
 interface AcpEventStamp {
   readonly eventId: EventId;
   readonly createdAt: string;

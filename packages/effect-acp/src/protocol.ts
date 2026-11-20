@@ -15,7 +15,7 @@ import * as RpcMessage from "effect/unstable/rpc/RpcMessage";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 
-import * as AcpSchema from "./_generated/schema.gen";
+import * as AcpSchema from "./schema";
 import { CLIENT_METHODS } from "./_generated/meta.gen";
 import * as AcpError from "./errors";
 import { isolateNotificationHandler } from "./_internal/shared";
