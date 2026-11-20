@@ -13369,6 +13369,64 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("toggles Ultracode without forcing xhigh or restarting", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        runtimeMode: "full-access",
+      });
+      for (const enabled of [true, false]) {
+        const turn = yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "Continue",
+          attachments: [],
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-opus-5",
+            [
+              { id: "effort", value: "low" },
+              { id: "ultracode", value: enabled },
+            ],
+          ),
+        });
+        emitClaudeSuccessResult(harness.query, { uuid: "ultracode-" + enabled });
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+              ),
+            ),
+          ),
+        );
+      }
+      assert.deepEqual(
+        harness.query.applyFlagSettingsCalls.map(({ effortLevel, ultracode }) => ({
+          effortLevel,
+          ultracode,
+        })),
+        [
+          { effortLevel: "low", ultracode: true },
+          { effortLevel: "low", ultracode: false },
+        ],
+      );
+      assert.deepEqual(harness.query.setModelCalls, []);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("restores the model after a partially applied live selection fails", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

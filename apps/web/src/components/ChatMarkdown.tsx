@@ -68,6 +68,8 @@ import {
 } from "../markdown-links";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { ThreadReferenceChip } from "./chat/ThreadReferenceChip";
+import { ModelMentionChip } from "./chat/ModelMentionChip";
+import { remarkModelMentions } from "../lib/remarkModelMentions";
 import { threadIdOfThreadReferenceUrl } from "@t3tools/shared/threadReferences";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { SurfaceErrorBoundary } from "./ui/SurfaceErrorBoundary";
@@ -798,6 +800,21 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         ) : null;
       },
       a({ node: _node, href, children, ...props }) {
+        if (href?.startsWith("f5://model/")) {
+          const parts = href.slice("f5://model/".length).split("/");
+          if (parts.length === 2) {
+            try {
+              return (
+                <ModelMentionChip
+                  instanceId={decodeURIComponent(parts[0]!)}
+                  model={decodeURIComponent(parts[1]!)}
+                />
+              );
+            } catch {
+              /* Preserve malformed text. */
+            }
+          }
+        }
         // A thread reference only navigates; it never grants the agent access to the thread.
         const referencedThreadId = href ? threadIdOfThreadReferenceUrl(href) : null;
         if (referencedThreadId)
@@ -1002,6 +1019,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
       <ReactMarkdown
         remarkPlugins={[
           remarkGfm,
+          remarkModelMentions,
           remarkGfmAlerts,
           remarkKeepWindowsPaths,
           [remarkIssueReferences, repositoryLinks],

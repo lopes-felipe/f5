@@ -29,7 +29,7 @@ export function ReviewGuideSettings() {
     <SettingsCard
       title="Guided PR reviews"
       searchTarget="git.review-guide-model"
-      description="Generate a review tour from the PR description and diff using this provider's account."
+      description="Generate a review tour from the PR description and diff using the selected model."
     >
       <SettingsRow
         title="Use git text generation model"

@@ -399,7 +399,7 @@ export const makeScheduledTaskService = (deps: {
       });
     const cancelUnstarted = (
       taskId: string,
-      reason: "task_disabled" | "task_deleted",
+      reason: "task_disabled" | "task_deleted" | "canceled",
       at: string,
     ) =>
       Effect.gen(function* () {
@@ -514,6 +514,7 @@ export const makeScheduledTaskService = (deps: {
             const value: ScheduledTask = {
               ...current,
               ...config,
+              freshContext: config.freshContext === true,
               runsConsumed: current.runsConsumed,
               lastRunAt: current.lastRunAt,
               ...(adopting ? { disabledReason: null } : {}),
@@ -544,6 +545,12 @@ export const makeScheduledTaskService = (deps: {
             if (adopting && value.enabled) yield* checkAgentCapacity(actor, value.id);
             yield* store.saveTask(value);
             if (!value.enabled) yield* cancelUnstarted(value.id, "task_disabled", at);
+            else if (
+              current.workspace.kind === "thread" &&
+              (value.workspace.kind !== "thread" ||
+                current.workspace.threadId !== value.workspace.threadId)
+            )
+              yield* cancelUnstarted(value.id, "canceled", at);
             yield* store.revision;
             return value;
           }),
@@ -1167,6 +1174,7 @@ export const makeScheduledTaskService = (deps: {
                 });
             const command = {
               ...built,
+              ...(boundWorkspace && current.snapshot.freshContext ? { freshContext: true } : {}),
               message: {
                 ...built.message,
                 ...(rewritten.skillCall ? { skillCall: rewritten.skillCall } : {}),

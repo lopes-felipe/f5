@@ -2,6 +2,7 @@ import { useAppSettings } from "../../appSettings";
 import { isBotReviewComment, visibleReviewThreads } from "./prCommentFilters";
 import { Menu, MenuCheckboxItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { PrSendToAgent } from "./PrSendToAgent";
+import { PrAddCommentToChat } from "./PrAddCommentToChat";
 import { ForgeComposer } from "./ForgeControls";
 import { ForgeOperationPanel } from "./ForgeOperationPanel";
 import { PrAuthorLink } from "./PrAuthorLink";
@@ -166,6 +167,12 @@ function Thread({
               @<PrAuthorLink prUrl={pr.url} login={comment.author} />
             </span>
             <p className="whitespace-pre-wrap text-sm">{comment.bodyText}</p>
+            <PrAddCommentToChat
+              pr={pr}
+              body={"@" + comment.author + ": " + comment.bodyText}
+              path={thread.path}
+              line={thread.line ?? thread.originalLine}
+            />
             <PrSendToAgent
               pr={pr}
               body={comment.bodyText}

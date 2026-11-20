@@ -9,8 +9,10 @@ import type { AssistantResponseContext } from "@t3tools/contracts";
 import type { SourceControlPullRequestRef } from "@t3tools/contracts";
 import { threadReferenceMatches } from "@t3tools/shared/threadReferences";
 import { randomUUID } from "./lib/utils";
+import { collectComposerModelMentions } from "@t3tools/shared/composerModelMentions";
 
 export type ComposerPromptSegment =
+  | { type: "model-reference"; raw: string; instanceId: string; model: string }
   | { type: "assistant-quote"; raw: string; record: AssistantResponseContext }
   | { type: "pull-request"; raw: string; url: string; ref: SourceControlPullRequestRef }
   | { type: "thread-reference"; raw: string; threadId: string; label: string }
@@ -356,7 +358,7 @@ export function splitPromptIntoComposerSegments(
 
 type ReferenceSegment = Extract<
   ComposerPromptSegment,
-  { type: "pull-request" | "thread-reference" | "assistant-quote" }
+  { type: "pull-request" | "thread-reference" | "assistant-quote" | "model-reference" }
 >;
 type ReferenceMatcher = (text: string) => ReadonlyArray<{
   readonly start: number;
@@ -366,6 +368,19 @@ type ReferenceMatcher = (text: string) => ReadonlyArray<{
 
 // Applied in order to the text left by earlier matchers, so a match never spans two references.
 const REFERENCE_MATCHERS: readonly ReferenceMatcher[] = [
+  (text) =>
+    collectComposerModelMentions(text)
+      .filter((match) => /\s/u.test(text[match.end] ?? ""))
+      .map((match) => ({
+        start: match.start,
+        end: match.end,
+        segment: {
+          type: "model-reference",
+          raw: match.raw,
+          instanceId: match.instanceId,
+          model: match.model,
+        },
+      })),
   (text) =>
     assistantResponseContextMatches(text)
       .filter((match) => match.record.kind === "quote")

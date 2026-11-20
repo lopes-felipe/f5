@@ -544,6 +544,13 @@ describe("buildSlashComposerMenuItems", () => {
       }),
     ).toEqual([
       {
+        id: "slash:clear",
+        type: "slash-command",
+        command: "clear",
+        label: "/clear",
+        description: "Start a fresh provider session with the next message",
+      },
+      {
         id: "slash:model",
         type: "slash-command",
         command: "model",
@@ -638,7 +645,7 @@ describe("buildSlashComposerMenuItems", () => {
       ],
     });
 
-    expect(items.map((item) => item.label)).toEqual(["/model", "/plan", "/default"]);
+    expect(items.map((item) => item.label)).toEqual(["/clear", "/model", "/plan", "/default"]);
   });
 
   it("drops runtime skills that cannot round-trip through the slash UI", () => {
@@ -666,6 +673,13 @@ describe("buildSlashComposerMenuItems", () => {
         ],
       }),
     ).toEqual([
+      {
+        id: "slash:clear",
+        type: "slash-command",
+        command: "clear",
+        label: "/clear",
+        description: "Start a fresh provider session with the next message",
+      },
       {
         id: "slash:model",
         type: "slash-command",

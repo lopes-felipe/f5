@@ -251,6 +251,7 @@ export function applyServerSettingsPatch(
   // Model aliases are a whole map: merging would keep removed mappings.
   const nextWithReplacements = {
     ...nextWithInstances,
+    ...(patch.textGenerators !== undefined ? { textGenerators: patch.textGenerators } : {}),
     ...(patch.worktreeCleanup !== undefined ? { worktreeCleanup: patch.worktreeCleanup } : {}),
     ...(patch.usageModelAliases !== undefined
       ? { usageModelAliases: patch.usageModelAliases }
@@ -297,6 +298,8 @@ export function applyServerSettingsPatch(
  * persisted preference is preserved for when a provider is re-enabled.
  */
 export function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
+  if (settings.textGenerators[settings.textGenerationModelSelection.instanceId]?.enabled)
+    return settings;
   return resolveProjectProviderInstanceEnabled(
     settings,
     null,

@@ -49,7 +49,8 @@ export function parsePiDiscoveredCommands(data: unknown): PiDiscoveredCommands {
   const skills: Array<ServerProviderSkill> = [];
   for (const command of commands) {
     const commandName = recordString(command, "name");
-    if (commandName === undefined || commandName.length === 0) continue;
+    if (commandName === undefined || commandName.length === 0 || commandName === "f5-service-tier")
+      continue;
     const description = recordString(command, "description");
     if (recordString(command, "source") === "skill") {
       const name = commandName.startsWith("skill:")

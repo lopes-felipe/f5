@@ -10,7 +10,7 @@ type ComposerCommandItem =
   | {
       id: string;
       type: "slash-command";
-      command: "model" | "plan" | "default";
+      command: "model" | "plan" | "default" | "clear";
       label: string;
       description: string;
     }
@@ -23,7 +23,7 @@ type ComposerCommandItem =
       argumentHint: string | null;
       source: "session" | "instance" | "project";
     };
-export const HOST_LOCAL_SLASH_COMMAND_NAMES = ["model", "plan", "default"] as const;
+export const HOST_LOCAL_SLASH_COMMAND_NAMES = ["model", "plan", "default", "clear"] as const;
 
 const HOST_LOCAL_SLASH_COMMAND_NAME_SET = new Set<string>(HOST_LOCAL_SLASH_COMMAND_NAMES);
 const HOST_COMPATIBLE_RUNTIME_SLASH_COMMAND_NAME_PATTERN = /^[a-z0-9]+(?:[-:][a-z0-9]+)*$/;
@@ -44,6 +44,13 @@ export function normalizeHostCompatibleRuntimeSlashCommandName(value: string): s
 }
 
 const HOST_LOCAL_SLASH_COMMAND_ITEMS = [
+  {
+    id: "slash:clear",
+    type: "slash-command",
+    command: "clear",
+    label: "/clear",
+    description: "Start a fresh provider session with the next message",
+  },
   {
     id: "slash:model",
     type: "slash-command",

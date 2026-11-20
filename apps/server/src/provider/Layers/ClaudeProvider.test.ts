@@ -524,9 +524,12 @@ describe("makePendingClaudeProvider", () => {
 });
 
 describe("getClaudeModelCapabilities", () => {
-  it("uses only effort for Fable 5.2 and strips stale context suffixes on the wire", () => {
+  it("keeps effort and Ultracode independent for Fable 5.2", () => {
     const caps = getClaudeModelCapabilities("fable");
-    expect(caps.optionDescriptors?.map((descriptor) => descriptor.id)).toEqual(["effort"]);
+    expect(caps.optionDescriptors?.map((descriptor) => descriptor.id)).toEqual([
+      "effort",
+      "ultracode",
+    ]);
     expect(resolveClaudeEffort(caps, undefined)).toBe("high");
     expect(resolveClaudeEffort(caps, "xhigh")).toBe("xhigh");
     expect(normalizeClaudeCliEffort("xhigh")).toBe("xhigh");
@@ -544,7 +547,11 @@ describe("getClaudeModelCapabilities", () => {
     const descriptors = caps.optionDescriptors ?? [];
     const effortDescriptor = descriptors.find((descriptor) => descriptor.id === "effort");
 
-    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["effort", "fastMode"]);
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+      "effort",
+      "fastMode",
+      "ultracode",
+    ]);
     expect(
       effortDescriptor?.type === "select"
         ? effortDescriptor.options.map((option) => option.id)
@@ -557,7 +564,11 @@ describe("getClaudeModelCapabilities", () => {
     const descriptors = caps.optionDescriptors ?? [];
     const effortDescriptor = descriptors.find((descriptor) => descriptor.id === "effort");
 
-    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["effort", "contextWindow"]);
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+      "effort",
+      "ultracode",
+      "contextWindow",
+    ]);
     expect(
       effortDescriptor?.type === "select"
         ? effortDescriptor.options.map((option) => option.id)
@@ -570,7 +581,11 @@ describe("getClaudeModelCapabilities", () => {
     const descriptors = caps.optionDescriptors ?? [];
     const effortDescriptor = descriptors.find((descriptor) => descriptor.id === "effort");
 
-    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["effort", "contextWindow"]);
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+      "effort",
+      "ultracode",
+      "contextWindow",
+    ]);
     expect(effortDescriptor?.type).toBe("select");
     expect(
       effortDescriptor?.type === "select"
@@ -585,7 +600,7 @@ describe("getClaudeModelCapabilities", () => {
       getClaudeModelCapabilities("claude-opus-4-8").optionDescriptors?.map(
         (descriptor) => descriptor.id,
       ),
-    ).toEqual(["effort", "contextWindow"]);
+    ).toEqual(["effort", "ultracode", "contextWindow"]);
     expect(
       getClaudeModelCapabilities("claude-opus-4-6").optionDescriptors?.map(
         (descriptor) => descriptor.id,

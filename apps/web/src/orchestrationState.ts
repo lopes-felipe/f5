@@ -73,13 +73,7 @@ export function toLegacySessionStatus(
 }
 
 export function toLegacyProvider(providerName: string | null): ProviderKind {
-  if (
-    providerName === "codex" ||
-    providerName === "claudeAgent" ||
-    providerName === "cursor" ||
-    providerName === "opencode" ||
-    providerName === "grok"
-  ) {
+  if (isKnownProviderKind(providerName)) {
     return providerName;
   }
   return "codex";
@@ -119,6 +113,19 @@ export function mapSessionFromReadModel(
 
   const lastError = sanitizeThreadErrorMessage(incoming.lastError);
   const next: Thread["session"] = {
+    ...(incoming.extensionStatuses !== undefined || previous?.extensionStatuses !== undefined
+      ? {
+          extensionStatuses:
+            incoming.status === "stopped"
+              ? []
+              : (incoming.extensionStatuses ??
+                (toLegacyProvider(incoming.providerName) === previous?.provider &&
+                (incoming.providerInstanceId ?? null) === previous?.providerInstanceId
+                  ? previous?.extensionStatuses
+                  : undefined) ??
+                []),
+        }
+      : {}),
     provider: toLegacyProvider(incoming.providerName),
     providerInstanceId: incoming.providerInstanceId ?? null,
     status: toLegacySessionStatus(incoming.status),
@@ -157,6 +164,7 @@ export function mapSessionFromReadModel(
     previous.lastErrorOccurredAt === next.lastErrorOccurredAt &&
     areUnknownEqual(previous.usageLimit ?? null, next.usageLimit ?? null) &&
     previous.tokenUsageSource === next.tokenUsageSource &&
+    areUnknownEqual(previous.extensionStatuses ?? [], next.extensionStatuses ?? []) &&
     areUnknownEqual(previous.capabilities ?? null, next.capabilities ?? null)
   ) {
     return previous;

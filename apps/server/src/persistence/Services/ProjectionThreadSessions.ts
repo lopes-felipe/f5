@@ -14,6 +14,7 @@ import {
   OrchestrationSessionStatus,
   ProviderInstanceId,
   ProviderSessionCapabilities,
+  ProviderExtensionStatuses,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -23,6 +24,7 @@ import type { Effect } from "effect";
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThreadSession = Schema.Struct({
+  extensionStatuses: Schema.optional(ProviderExtensionStatuses),
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
   providerName: Schema.NullOr(Schema.String),

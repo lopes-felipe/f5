@@ -1,6 +1,7 @@
 import { ForgeReactionControl } from "./ForgeReactionControl";
 import { ForgeOperationPanel } from "./ForgeOperationPanel";
 import { PrSendToAgent } from "./PrSendToAgent";
+import { PrAddCommentToChat } from "./PrAddCommentToChat";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrAuthorLink } from "./PrAuthorLink";
 import { createContext, useContext, useEffect, useState, type SetStateAction } from "react";
@@ -131,6 +132,7 @@ function TimelineComment({
         </div>
       </header>
 
+      <PrAddCommentToChat pr={pr} body={comment.body} path={comment.path} line={comment.line} />
       {comment.path ? (
         <PrSendToAgent pr={pr} body={comment.body} path={comment.path} line={comment.line} />
       ) : null}

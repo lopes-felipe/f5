@@ -8,6 +8,7 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
 import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
+import { modelMentionsAsSlugs } from "@t3tools/shared/composerModelMentions";
 import { isUnsupportedCodexModelError } from "./provider/codexErrors.ts";
 import { Cause, Effect, ServiceMap } from "effect";
 import type * as Duration from "effect/Duration";
@@ -124,7 +125,7 @@ export function buildFallbackTitle(input: {
   readonly defaultTitle: string;
 }): string {
   const firstImageName = input.attachments.find((attachment) => attachment.type === "image")?.name;
-  const candidates = [input.titleSourceText, firstImageName];
+  const candidates = [modelMentionsAsSlugs(input.titleSourceText), firstImageName];
   for (const candidate of candidates) {
     if (typeof candidate !== "string") {
       continue;
@@ -199,7 +200,7 @@ export const resolveBestEffortGeneratedTitleResult = (input: {
       Effect.suspend(() =>
         input.textGeneration.generateThreadTitle({
           cwd,
-          message: input.titleSourceText,
+          message: modelMentionsAsSlugs(input.titleSourceText),
           ...(input.previousTitle !== undefined ? { previousTitle: input.previousTitle } : {}),
           ...(input.linkedContext !== undefined ? { linkedContext: input.linkedContext } : {}),
           ...(input.instructions ? { instructions: input.instructions } : {}),

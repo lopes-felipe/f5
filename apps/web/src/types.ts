@@ -271,6 +271,7 @@ export type ThreadListItem = Pick<
 >;
 
 export interface ThreadSession {
+  extensionStatuses?: import("@t3tools/contracts").OrchestrationSession["extensionStatuses"];
   provider: ProviderKind;
   providerInstanceId?: ProviderInstanceId | null | undefined;
   status: SessionPhase | "error" | "closed";

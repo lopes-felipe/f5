@@ -83,6 +83,7 @@ import {
 } from "../pi/PiHistory.ts";
 
 import { PiPromptQueue } from "../pi/PiPromptQueue.ts";
+import { updatePiExtensionStatuses } from "../pi/extensionStatuses.ts";
 
 interface PiContext {
   readonly threadId: ThreadId;
@@ -96,6 +97,8 @@ interface PiContext {
   baselineModel: { provider: string; modelId: string } | null;
   baselineThinking: string | undefined;
   appliedThinking: string | undefined;
+  appliedServiceTier?: string;
+  statusPublishScheduled?: boolean;
   readonly output: PiAssistantOutput;
   readonly usage: PiTurnUsage;
   readonly tools: Map<string, { name: string; args: unknown; done: boolean }>;
@@ -697,6 +700,26 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
     const nativeEvent = (ctx: PiContext, event: PiRpcRecord) =>
       Effect.gen(function* () {
         if (ctx.closed) return;
+        if (event.type === "extension_ui_request" && event.method === "setStatus") {
+          const previous = ctx.session.extensionStatuses ?? [];
+          const statuses = updatePiExtensionStatuses(previous, event);
+          if (statuses !== previous) {
+            ctx.session = { ...ctx.session, extensionStatuses: statuses };
+            if (!ctx.statusPublishScheduled) {
+              ctx.statusPublishScheduled = true;
+              yield* Effect.gen(function* () {
+                yield* Effect.sleep("500 millis");
+                ctx.statusPublishScheduled = false;
+                if (!ctx.closed)
+                  yield* emit(ctx, {
+                    type: "session.configured",
+                    payload: { config: { extensionStatuses: ctx.session.extensionStatuses ?? [] } },
+                  });
+              }).pipe(Effect.forkIn(ctx.scope));
+            }
+          }
+          return;
+        }
         const delivery = ctx.prompts.observe(event, ctx.turns.activeTurnId !== undefined);
         if (delivery.consumed) return;
         for (const record of delivery.send) {
@@ -877,6 +900,19 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
           ctx.ready = wasReady;
         }
         if (selected) ctx.session = { ...ctx.session, model: selected };
+        const serviceTier = getModelSelectionStringOptionValue(input.modelSelection, "serviceTier");
+        if (serviceTier?.includes("\n") || serviceTier?.includes("\r"))
+          return yield* requestError("model", "Invalid Pi service tier.");
+        const nextTier = input.modelSelection
+          ? (serviceTier ?? "default")
+          : (ctx.appliedServiceTier ?? "default");
+        if (nextTier !== (ctx.appliedServiceTier ?? "default")) {
+          yield* ctx.rpc.request({
+            type: "prompt",
+            message: "/f5-service-tier" + (nextTier !== "default" ? " " + nextTier : ""),
+          });
+          ctx.appliedServiceTier = nextTier;
+        }
       });
     const startSession: ProviderAdapterShape<ProviderAdapterError>["startSession"] = (input) =>
       owned(
@@ -1049,6 +1085,7 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                     payload: {
                       config: {
                         models: catalog.models,
+                        extensionStatuses: ctx.session.extensionStatuses ?? [],
                         slashCommands: catalog.slashCommands,
                         skills: catalog.skills,
                       },

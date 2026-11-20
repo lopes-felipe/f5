@@ -214,6 +214,27 @@ function mcpWorkEntry(
   };
 }
 
+it("keeps fresh session dividers visible as standalone rows", async () => {
+  const markup = await renderMcpTimelineMarkup([
+    mcpWorkEntry("before", { label: "Earlier work" }),
+    {
+      kind: "work",
+      id: "fresh",
+      createdAt: "2026-03-17T19:12:28.000Z",
+      entry: {
+        id: "fresh",
+        createdAt: "2026-03-17T19:12:28.000Z",
+        activityKind: "session.context-reset",
+        label: "New session",
+        tone: "info",
+      },
+    },
+    mcpWorkEntry("after", { label: "Later work" }),
+  ]);
+  expect(markup).toContain('role="separator"');
+  expect(markup).toContain('aria-label="New session"');
+});
+
 const DEFAULT_CHAT_DIFF_CONTEXT = {
   threadId: ThreadId.makeUnsafe("thread-inline-diff-test"),
   isGitRepo: true,

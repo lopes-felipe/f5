@@ -59,6 +59,7 @@ import { ComposerFooterControls } from "./ComposerFooterControls";
 import { ComposerPrimaryAction } from "./ComposerPrimaryAction";
 import { ContextMeter } from "./ContextMeter";
 import type { PromptCacheMeterView } from "../../../lib/useThreadCacheTurns";
+import { useFreshSessionStore } from "../../../freshSessionStore";
 import { contextUsageSummaryLine, type ComposerTokenUsage } from "./contextMeter.logic";
 import { composerSendShortcutLabel } from "./sendShortcut";
 import { isMacPlatform } from "~/lib/utils";
@@ -210,6 +211,7 @@ export function ChatComposer({
     isComposerApprovalState,
   } = pendingInteraction;
   const isComposerQuestionState = !activePendingApproval && pendingUserInputs.length > 0;
+  const freshArm = useFreshSessionStore((state) => state.arms[threadId]);
   // The editor points at the highlighted option only while the list is on screen.
   const composerSuggestionsVisible = composerMenuOpen && !isComposerApprovalState;
   const { interactionMode, showPlanFollowUpPrompt, activeProposedPlan } = modeControls;
@@ -504,6 +506,26 @@ export function ChatComposer({
                   <PaperclipIcon className="size-4 text-primary" />
                 )}
                 {dropLabel}
+              </div>
+            ) : null}
+            {freshArm ? (
+              <div className="border-b border-border px-3 py-2 text-sm">
+                The next message starts a new session without earlier context.
+                <button
+                  type="button"
+                  className="ml-2 underline"
+                  onClick={() => useFreshSessionStore.getState().consume(threadId, freshArm)}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : null}
+            {activeThread?.session?.extensionStatuses?.length ? (
+              <div className="border-b border-border px-3 py-2 text-sm text-muted-foreground">
+                <output>
+                  Pi ·{" "}
+                  {activeThread.session.extensionStatuses.map((status) => status.text).join(" · ")}
+                </output>
               </div>
             ) : null}
             {activePendingApproval ? (

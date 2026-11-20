@@ -517,9 +517,8 @@ it.effect("rejects unadvertised operations before preparing or dispatching", () 
   run(({ engine, state }) =>
     Effect.gen(function* () {
       const input = prepared("unsupported", {
-        kind: "review",
-        body: "Request changes",
-        verdict: "request-changes",
+        kind: "action",
+        action: "rerun-failed-checks",
       });
       assert.equal((yield* engine.prepareOperation(input).pipe(Effect.result))._tag, "Failure");
       assert.equal(state.writes.length, 0);

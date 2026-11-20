@@ -2,6 +2,13 @@ import { Schema } from "effect";
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderInstanceId } from "./providerInstance";
 
+export const ProviderExtensionStatuses = Schema.Array(
+  Schema.Struct({
+    key: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+    text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+  }),
+).check(Schema.isMaxLength(32));
+
 /**
  * Actions whose availability depends on the live provider session, not only
  * on the adapter. Adapter-wide facts stay in `ProviderRuntimeCapabilities`.

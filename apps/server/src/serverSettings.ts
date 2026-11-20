@@ -134,6 +134,16 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
   );
   return {
     ...settings,
+    textGenerators: Object.fromEntries(
+      Object.entries(settings.textGenerators).map(([id, generator]) => [
+        id,
+        {
+          ...generator,
+          apiKey: "",
+          apiKeyRedacted: Boolean(generator.apiKey || generator.apiKeyRedacted),
+        },
+      ]),
+    ),
     observability: {
       ...settings.observability,
       ...(settings.observability.otlpHeaders
@@ -899,6 +909,19 @@ const makeServerSettings = Effect.gen(function* () {
             });
           }
           const current = yield* reloadSettingsForWrite;
+          const providerIds = new Set([
+            ...Object.keys(current.providerInstances),
+            ...Object.keys(patch.providerInstances ?? {}),
+          ]);
+          if (
+            Object.keys(patch.textGenerators ?? current.textGenerators).some((id) =>
+              providerIds.has(id),
+            )
+          )
+            return yield* new ServerSettingsError({
+              settingsPath: serverConfig.settingsPath ?? "<memory>",
+              detail: "A text generator id must not match a provider instance id.",
+            });
           const previousLocations =
             patch.worktreesDirectory !== undefined &&
             current.worktreesDirectory &&
@@ -946,10 +969,30 @@ const makeServerSettings = Effect.gen(function* () {
           );
           // Apply explicit replacements/removals before resolving references. This lets a
           // user repair a missing secret, while unchanged references still fail closed.
+          const secretSafePatch = patch.textGenerators
+            ? {
+                ...patch,
+                textGenerators: Object.fromEntries(
+                  Object.entries(patch.textGenerators).map(([id, generator]) => {
+                    const old = current.textGenerators[ProviderInstanceId.make(id)];
+                    const moved =
+                      old &&
+                      (old.kind !== generator.kind ||
+                        new URL(old.baseUrl).origin !== new URL(generator.baseUrl).origin);
+                    return [
+                      id,
+                      moved && !generator.apiKey
+                        ? { ...generator, apiKeyRedacted: false }
+                        : generator,
+                    ];
+                  }),
+                ),
+              }
+            : patch;
           const patched = yield* materializeProviderEnvironmentSecrets(
             applyServerSettingsPatch(
               { ...current, previousWorktreesDirectories: retainedLocations },
-              patch,
+              secretSafePatch,
             ),
           );
           const prepared = yield* prepareProviderEnvironmentSecrets(current, patched);

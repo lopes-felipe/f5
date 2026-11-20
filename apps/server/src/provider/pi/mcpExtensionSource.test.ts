@@ -11,7 +11,7 @@ import { loadMcpBridge } from "./mcpBridge.testkit.ts";
 
 type RequestHook = (
   event: { payload: unknown },
-  ctx: { model: { provider: string } },
+  ctx: { model: { provider: string; serviceTiers?: { id: string }[] } },
 ) => Record<string, unknown> | undefined;
 
 interface SkillCommand {
@@ -40,6 +40,7 @@ async function loadHooks(commands: ReadonlyArray<SkillCommand> = []) {
     NodePath,
     stripFrontmatter: (content: string) => content,
     pi: {
+      registerCommand: () => undefined,
       on: (name: string, handler: unknown) => handlers.set(name, handler),
       getCommands: () => commands,
     },
@@ -420,6 +421,7 @@ describe("Pi tool discovery permissions", () => {
     await NodeVM.runInNewContext(`${source}\nf5McpExtension(pi)`, {
       process: { env: { F5_PI_RUNTIME_MODE: "approval-required" } },
       pi: {
+        registerCommand: () => undefined,
         on: (name: string, handler: ToolCallHook) => {
           if (name === "tool_call") toolCall = handler;
         },
@@ -497,7 +499,7 @@ describe("Pi MCP bounds and private failures", () => {
   });
 });
 
-async function loadRequestHook(): Promise<RequestHook> {
+async function loadRequestHook(tier?: string): Promise<RequestHook> {
   const handlers = new Map<string, RequestHook>();
   const source = NodeModule.stripTypeScriptTypes(
     PI_F5_MCP_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
@@ -507,7 +509,12 @@ async function loadRequestHook(): Promise<RequestHook> {
   );
   await NodeVM.runInNewContext(`${source}\nf5McpExtension(pi)`, {
     process: { env: {} },
-    pi: { on: (name: string, handler: RequestHook) => handlers.set(name, handler) },
+    pi: {
+      registerCommand: (_name: string, command: { handler: (args: string) => Promise<void> }) => {
+        if (tier !== undefined) void command.handler(tier);
+      },
+      on: (name: string, handler: RequestHook) => handlers.set(name, handler),
+    },
   });
   const hook = handlers.get("before_provider_request");
   assert.isDefined(hook);
@@ -515,6 +522,25 @@ async function loadRequestHook(): Promise<RequestHook> {
 }
 
 describe("Pi upstream output-budget workaround", () => {
+  it("sends only advertised tiers and Standard leaves the provider default", async () => {
+    const hook = await loadRequestHook("priority");
+    expect(
+      hook(
+        { payload: { model: "test" } },
+        { model: { provider: "anthropic", serviceTiers: [{ id: "priority" }] } },
+      ),
+    ).toMatchObject({ service_tier: "priority" });
+    expect(
+      hook({ payload: { model: "test" } }, { model: { provider: "anthropic" } }),
+    ).toBeUndefined();
+    const standard = await loadRequestHook("");
+    expect(
+      standard(
+        { payload: { model: "test" } },
+        { model: { provider: "anthropic", serviceTiers: [{ id: "priority" }] } },
+      ),
+    ).toBeUndefined();
+  });
   it.each(["max_tokens", "max_completion_tokens"])(
     "caps %s without changing the conversation or tools",
     async (key) => {

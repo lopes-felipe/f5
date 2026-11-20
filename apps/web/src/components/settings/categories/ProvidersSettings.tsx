@@ -22,6 +22,7 @@ import { Switch } from "../../ui/switch";
 import { toastManager } from "../../ui/toast";
 
 export { PROVIDERS_SETTINGS_DESCRIPTORS } from "./ProvidersSettings.descriptors";
+import { TextGeneratorsSettings } from "../TextGeneratorsSettings";
 import { withInstanceFavoriteModels } from "../../../favoritePresets";
 import { AddProviderInstanceDialog } from "../AddProviderInstanceDialog";
 import { ProviderInstanceCard } from "../ProviderInstanceCard";
@@ -320,6 +321,7 @@ export function ProvidersSettings() {
 
   return (
     <>
+      <TextGeneratorsSettings />
       <section
         className="rounded-2xl border border-border bg-card"
         data-settings-search-target="providers.instances"

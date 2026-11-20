@@ -265,7 +265,16 @@ export const THREAD_TOOL_DEFINITIONS = [
       html: z
         .string()
         .min(1)
-        .max(512 * 1024),
+        .max(512 * 1024)
+        .optional(),
+      path: z
+        .string()
+        .min(1)
+        .max(4096)
+        .optional()
+        .describe(
+          "Absolute .html file path. Pass exactly one of html or path; paths require full access.",
+        ),
       title: z.string().min(1).max(80),
       height: z
         .number()
@@ -287,7 +296,16 @@ export const THREAD_TOOL_DEFINITIONS = [
       html: z
         .string()
         .min(1)
-        .max(512 * 1024),
+        .max(512 * 1024)
+        .optional(),
+      path: z
+        .string()
+        .min(1)
+        .max(4096)
+        .optional()
+        .describe(
+          "Absolute .html file path. Pass exactly one of html or path; paths require full access.",
+        ),
       width: z
         .number()
         .int()

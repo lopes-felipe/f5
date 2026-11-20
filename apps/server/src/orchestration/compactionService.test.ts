@@ -8,6 +8,53 @@ import {
   type OrchestrationThread,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
+import { threadAfterContextBoundary } from "./contextBoundary";
+import { buildThreadInstructionContext } from "./threadSessionInstructions";
+
+it("excludes all earlier restore state from fresh instructions and subsequent compaction", () => {
+  const thread = makeThread();
+  const earlier = "2026-04-03T10:00:00.000Z";
+  const boundary = "2026-04-03T11:00:00.000Z";
+  const seeded: OrchestrationThread = {
+    ...thread,
+    tasksUpdatedAt: earlier,
+    proposedPlans: [
+      {
+        id: "old-plan",
+        turnId: TurnId.makeUnsafe("turn-1"),
+        planMarkdown: "OLD_PLAN",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: earlier,
+        updatedAt: earlier,
+      },
+    ],
+    messages: [
+      ...thread.messages,
+      {
+        ...thread.messages[0]!,
+        id: MessageId.makeUnsafe("fresh"),
+        text: "NEW_TOPIC",
+        createdAt: boundary,
+        updatedAt: boundary,
+      },
+    ],
+  };
+  const filtered = threadAfterContextBoundary(seeded, { messageId: "fresh", createdAt: boundary });
+  const instructions = buildThreadInstructionContext({ thread: filtered });
+  expect(instructions.restoredTasks).toBeUndefined();
+  expect(instructions.restoredActivePlan).toBeUndefined();
+  expect(instructions.priorWorkSummary).toBeUndefined();
+  const compacted = buildThreadCompactionTranscript({
+    thread: filtered,
+    direction: null,
+    pivotMessageId: null,
+  });
+  expect(compacted.transcript).toContain("NEW_TOPIC");
+  expect(compacted.transcript).not.toContain("OLD_PLAN");
+  expect(compacted.transcript).not.toContain("Finishing the feature");
+  expect(seeded.tasks).toHaveLength(1);
+});
 
 import {
   buildThreadCompactionRestoreInput,

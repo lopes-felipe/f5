@@ -320,6 +320,7 @@ export function rewriteMarkdownFileUriHref(href: string): string {
  * file chips; everything else gets the default sanitizing.
  */
 export function chatMarkdownUrlTransform(href: string): string {
+  if (/^f5:\/\/model\/[a-zA-Z][a-zA-Z0-9_-]*\/[^/?#\s]+$/u.test(href)) return href;
   // A bare thread reference opens the thread in the app; other `f5:` links stay stripped.
   if (threadIdOfThreadReferenceUrl(href)) return href;
   // Destinations arrive percent-encoded, so `C:\me` is `C:%5Cme` here.

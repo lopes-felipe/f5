@@ -1921,7 +1921,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   launchFingerprint,
                   startConfig: persistedStartConfig,
                   instructionContext: toInstructionContextFromSessionStartInput(input),
-                  clearMissingResumeCursor: !sameProvenance,
+                  clearMissingResumeCursor: input.discardResumeCursor === true || !sameProvenance,
                   sessionGeneration,
                 },
               );

@@ -6193,6 +6193,7 @@ describe("ProviderCommandReactor", () => {
         readonly text: string;
         readonly selection: { readonly instanceId: ProviderInstanceId; readonly model: string };
         readonly durable?: boolean;
+        readonly freshContext?: boolean;
         readonly attachments?: ReadonlyArray<ChatAttachment>;
       },
     ) {
@@ -6204,6 +6205,7 @@ describe("ProviderCommandReactor", () => {
       harness: Harness,
       input: {
         readonly id: string;
+        readonly freshContext?: boolean;
         readonly text: string;
         readonly selection: { readonly instanceId: ProviderInstanceId; readonly model: string };
         readonly attachments?: ReadonlyArray<ChatAttachment>;
@@ -6214,6 +6216,7 @@ describe("ProviderCommandReactor", () => {
         harness.engine.dispatch({
           type: "thread.turn.start",
           commandId: CommandId.makeUnsafe(input.id),
+          ...(input.freshContext ? { freshContext: true } : {}),
           threadId,
           message: {
             messageId: asMessageId(`message-${input.id}`),
@@ -6337,6 +6340,89 @@ describe("ProviderCommandReactor", () => {
       await assistant(harness, "c1", "Noted, tabs only.");
       return harness;
     }
+
+    it("starts fresh without handoff and never reintroduces earlier context on a provider switch", async () => {
+      const harness = await claudeConversation();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.compacted.record",
+          commandId: CommandId.makeUnsafe("before-fresh-summary"),
+          threadId,
+          compaction: {
+            kind: "summary",
+            summary: "PRE_CLEAR_SUMMARY",
+            trigger: "manual",
+            estimatedTokens: 100000,
+            modelContextWindowTokens: 200000,
+            createdAt: nextAt(),
+            direction: "up_to",
+            pivotMessageId: asMessageId("message-c1"),
+            fromTurnCount: null,
+            toTurnCount: null,
+          },
+          createdAt: nextAt(),
+        }),
+      );
+      const cleared = await turn(harness, {
+        id: "clear",
+        text: "A new topic",
+        selection: claude,
+        freshContext: true,
+      });
+      expect(cleared._tag).toBe("Success");
+      expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
+      expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("priorWorkSummary");
+      const recoveryContext = harness.getBinding(threadId)?.runtimePayload as
+        | { instructionContext?: Record<string, unknown> }
+        | undefined;
+      expect(recoveryContext?.instructionContext).not.toHaveProperty("priorWorkSummary");
+      expect(recoveryContext?.instructionContext).not.toHaveProperty("preservedTranscriptBefore");
+      expect(recoveryContext?.instructionContext).not.toHaveProperty("restoredActivePlan");
+      const freshModel = await Effect.runPromise(harness.engine.getReadModel());
+      expect(
+        freshModel.threads.find((thread) => thread.id === threadId)?.session
+          ?.estimatedContextTokens,
+      ).toBeLessThan(100000);
+      expect(JSON.stringify(recoveryContext)).not.toContain("PRE_CLEAR_SUMMARY");
+      expect(sentInput(harness, 1)).toBe("A new topic");
+      await assistant(harness, "clear", "New response");
+      expect(
+        (await turn(harness, { id: "after-clear", text: "Continue", selection: codex }))._tag,
+      ).toBe("Success");
+      const switched = sentInput(harness, 2);
+      expect(switched).toContain("A new topic");
+      expect(switched).not.toContain("indent with tabs");
+      expect(switched).not.toContain("tabs only");
+      const model = await Effect.runPromise(harness.engine.getReadModel());
+      expect(
+        model.threads
+          .find((thread) => thread.id === threadId)
+          ?.messages.some((message) => message.text.includes("indent with tabs")),
+      ).toBe(true);
+    });
+
+    it("retries an incomplete fresh start on an ordinary send without restoring old history", async () => {
+      const harness = await claudeConversation();
+      harness.startSession.mockImplementationOnce(() => Effect.die(new Error("Start failed")));
+      expect(
+        (
+          await turn(harness, {
+            id: "failed-clear",
+            text: "New",
+            selection: claude,
+            freshContext: true,
+          })
+        )._tag,
+      ).toBe("Failure");
+      expect(
+        (await turn(harness, { id: "retry-clear", text: "Retry", selection: claude }))._tag,
+      ).toBe("Success");
+      expect(harness.startSession.mock.calls.at(-1)?.[1]).toMatchObject({
+        discardResumeCursor: true,
+      });
+      expect(harness.startSession.mock.calls.at(-1)?.[1]).not.toHaveProperty("resumeCursor");
+      expect(sentInput(harness, 1)).not.toContain("indent with tabs");
+    });
 
     it("hands the full conversation to a fresh target and parks the outgoing session", async () => {
       const harness = await claudeConversation();

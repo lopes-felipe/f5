@@ -1288,6 +1288,20 @@ export function projectEvent(
         );
         const nextSession: OrchestrationSession = {
           ...session,
+          ...(session.extensionStatuses !== undefined ||
+          thread.session?.extensionStatuses !== undefined
+            ? {
+                extensionStatuses:
+                  session.status === "stopped"
+                    ? []
+                    : (session.extensionStatuses ??
+                      (session.providerName === thread.session?.providerName &&
+                      session.providerInstanceId === thread.session?.providerInstanceId
+                        ? thread.session?.extensionStatuses
+                        : undefined) ??
+                      []),
+              }
+            : {}),
           usageLimit: session.usageLimit ?? null,
           ...(session.estimatedContextTokens === undefined &&
           thread.session?.estimatedContextTokens !== undefined

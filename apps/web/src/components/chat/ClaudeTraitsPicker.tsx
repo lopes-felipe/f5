@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import { memo, useState } from "react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, WorkflowIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { COMPOSER_CHIP_CLASS_NAME } from "./composer/composerChip";
@@ -42,10 +42,14 @@ function getClaudeOptionDescriptors(
 function getClaudeTriggerPresentation(input: ClaudeTraitsInput): {
   label: string;
   fastModeEnabled: boolean;
+  ultracodeEnabled: boolean;
   effortTint: { level: string; className: string } | null;
 } {
   const descriptors = getClaudeOptionDescriptors(input);
   return {
+    ultracodeEnabled: descriptors.some(
+      (descriptor) => descriptor.id === "ultracode" && descriptor.currentValue === true,
+    ),
     effortTint: getEffortChipClass(descriptors),
     label: descriptors
       .map((descriptor) => {
@@ -133,6 +137,9 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(props: {
       >
         <span>{trigger.label}</span>
         {trigger.fastModeEnabled ? <FastModeTriggerIcon /> : null}
+        {trigger.ultracodeEnabled ? (
+          <WorkflowIcon className="size-3" aria-label="Ultracode" />
+        ) : null}
         <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
       </MenuTrigger>
       <MenuPopup align="start">

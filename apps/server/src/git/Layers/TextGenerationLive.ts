@@ -42,13 +42,18 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
-import {
-  ProviderInstanceRegistry,
-  type ProviderInstanceRegistryShape,
-} from "../../provider/Services/ProviderInstanceRegistry.ts";
+import { ProviderInstanceRegistry } from "../../provider/Services/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "../../provider/ProviderDriver.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry";
 import { TextGeneration, type TextGenerationShape } from "../Services/TextGeneration.ts";
+import { makeApiTextGeneration } from "./ApiTextGeneration.ts";
+import { ProviderDriverKind } from "@t3tools/contracts";
+
+interface TextGenerationRegistry {
+  getInstance: (
+    id: ProviderInstanceId,
+  ) => Effect.Effect<Pick<ProviderInstance, "driverKind" | "textGeneration"> | undefined>;
+}
 
 type TextGenerationOp =
   | "generateCommitMessage"
@@ -58,10 +63,10 @@ type TextGenerationOp =
   | "generateStructuredJson";
 
 const resolveInstance = (
-  registry: ProviderInstanceRegistryShape,
+  registry: TextGenerationRegistry,
   operation: TextGenerationOp,
   instanceId: ProviderInstanceId,
-): Effect.Effect<ProviderInstance, TextGenerationError> =>
+): Effect.Effect<Pick<ProviderInstance, "driverKind" | "textGeneration">, TextGenerationError> =>
   registry.getInstance(instanceId).pipe(
     Effect.flatMap((instance) =>
       instance
@@ -76,7 +81,7 @@ const resolveInstance = (
   );
 
 const resolveInstanceSelection = (
-  registry: ProviderInstanceRegistryShape,
+  registry: TextGenerationRegistry,
   operation: TextGenerationOp,
   selection: ModelSelection,
   getProviders: Effect.Effect<ReadonlyArray<ServerProvider>>,
@@ -103,7 +108,7 @@ const resolveInstanceSelection = (
  * against a stub registry without layering gymnastics.
  */
 export const makeTextGenerationFromRegistry = (
-  registry: ProviderInstanceRegistryShape,
+  registry: TextGenerationRegistry,
   getProviders: Effect.Effect<ReadonlyArray<ServerProvider>> = Effect.succeed([]),
   resolveSelection: (
     operation: TextGenerationOp,
@@ -220,7 +225,7 @@ export const makeTextGenerationFromRegistry = (
  * read-only` can still read the filesystem, so it does not qualify.
  */
 export function supportsNoWorkspaceIsolation(driverKind: string): boolean {
-  return driverKind === "claudeAgent";
+  return driverKind === "claudeAgent" || driverKind === "textGenerator";
 }
 
 const defaultCodexModelSelection = (model?: string): ModelSelection =>
@@ -242,39 +247,69 @@ export const TextGenerationLive = Layer.effect(
     const settings = yield* ServerSettingsService;
     const projects = yield* ProjectionProjectRepository;
     const threads = yield* ProjectionThreadRepository;
-    return makeTextGenerationFromRegistry(registry, providers.getProviders, (operation, input) =>
-      Effect.gen(function* () {
-        const global = yield* settings.getSettings;
-        const project = yield* readProjectForCwd(input.cwd).pipe(
-          Effect.provideService(ProjectionProjectRepository, projects),
-          Effect.provideService(ProjectionThreadRepository, threads),
-        );
-        const selected = input.modelSelection ?? defaultCodexModelSelection(input.model);
-        if (resolveProjectProviderInstanceEnabled(global, project?.projectId, selected.instanceId))
-          return selected;
-        if (project) {
-          const resolved = (yield* readProjectSettings(global, {
-            ...project,
-            id: project.projectId,
-          })).settings;
-          const fallback = resolved.textGenerationModelSelection;
-          if (resolveProjectProviderInstanceEnabled(global, project.projectId, fallback.instanceId))
-            return fallback;
-        }
-        return yield* new TextGenerationError({
-          operation,
-          detail: "No enabled provider is available for this project's text generation.",
-        });
-      }).pipe(
-        Effect.mapError((cause) =>
-          Schema.is(TextGenerationError)(cause)
-            ? cause
-            : new TextGenerationError({
-                operation,
-                detail: "Project provider settings could not be read.",
-              }),
+    const textRegistry: TextGenerationRegistry = {
+      getInstance: (id) =>
+        settings.getSettings.pipe(
+          Effect.flatMap(
+            (
+              global,
+            ): Effect.Effect<
+              Pick<ProviderInstance, "driverKind" | "textGeneration"> | undefined
+            > => {
+              const generator = global.textGenerators[id];
+              return generator
+                ? Effect.succeed({
+                    driverKind: ProviderDriverKind.make("textGenerator"),
+                    textGeneration: makeApiTextGeneration(generator),
+                  })
+                : registry.getInstance(id);
+            },
+          ),
+          Effect.orElseSucceed(() => undefined),
         ),
-      ),
+    };
+    return makeTextGenerationFromRegistry(
+      textRegistry,
+      providers.getProviders,
+      (operation, input) =>
+        Effect.gen(function* () {
+          const global = yield* settings.getSettings;
+          const project = yield* readProjectForCwd(input.cwd).pipe(
+            Effect.provideService(ProjectionProjectRepository, projects),
+            Effect.provideService(ProjectionThreadRepository, threads),
+          );
+          const selected = input.modelSelection ?? defaultCodexModelSelection(input.model);
+          if (global.textGenerators[selected.instanceId]?.enabled) return selected;
+          if (
+            resolveProjectProviderInstanceEnabled(global, project?.projectId, selected.instanceId)
+          )
+            return selected;
+          if (project) {
+            const resolved = (yield* readProjectSettings(global, {
+              ...project,
+              id: project.projectId,
+            })).settings;
+            const fallback = resolved.textGenerationModelSelection;
+            if (global.textGenerators[fallback.instanceId]?.enabled) return fallback;
+            if (
+              resolveProjectProviderInstanceEnabled(global, project.projectId, fallback.instanceId)
+            )
+              return fallback;
+          }
+          return yield* new TextGenerationError({
+            operation,
+            detail: "No enabled provider is available for this project's text generation.",
+          });
+        }).pipe(
+          Effect.mapError((cause) =>
+            Schema.is(TextGenerationError)(cause)
+              ? cause
+              : new TextGenerationError({
+                  operation,
+                  detail: "Project provider settings could not be read.",
+                }),
+          ),
+        ),
     );
   }),
 );

@@ -37,6 +37,7 @@ export const CodexModelOptions = Schema.Struct({
 export type CodexModelOptions = typeof CodexModelOptions.Type;
 
 export const ClaudeModelOptions = Schema.Struct({
+  ultracode: Schema.optional(Schema.Boolean),
   thinking: Schema.optional(Schema.Boolean),
   effort: Schema.optional(Schema.Literals(CLAUDE_CODE_EFFORT_OPTIONS)),
   fastMode: Schema.optional(Schema.Boolean),

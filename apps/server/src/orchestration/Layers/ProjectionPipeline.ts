@@ -1924,6 +1924,17 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
               event.payload.session.tokenUsageSource ??
               (Option.isSome(existingRow) ? existingRow.value.tokenUsageSource : null),
             // Omitted keeps the current snapshot, null clears it, older never wins.
+            extensionStatuses:
+              event.payload.session.status === "stopped"
+                ? []
+                : (event.payload.session.extensionStatuses ??
+                  (Option.isSome(existingRow) &&
+                  existingRow.value.providerName === event.payload.session.providerName &&
+                  existingRow.value.providerInstanceId ===
+                    (event.payload.session.providerInstanceId ?? null)
+                    ? existingRow.value.extensionStatuses
+                    : undefined) ??
+                  []),
             capabilities:
               mergeSessionCapabilities(
                 Option.isSome(existingRow) ? existingRow.value.capabilities : undefined,

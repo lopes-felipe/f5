@@ -30,6 +30,27 @@ const session: OrchestrationSession = {
   },
 };
 describe("usage limit session mapping", () => {
+  it("keeps extension status across a turn failure but clears it on provider or instance replacement", () => {
+    const source = {
+      ...session,
+      providerName: "pi",
+      extensionStatuses: [{ key: "test", text: "Ready" }],
+    };
+    const mapped = mapSessionFromReadModel(source, null);
+    const { extensionStatuses: _removed, ...next } = source;
+    expect(
+      mapSessionFromReadModel({ ...next, status: "error" }, mapped)?.extensionStatuses,
+    ).toEqual(source.extensionStatuses);
+    expect(
+      mapSessionFromReadModel({ ...next, providerName: "codex" }, mapped)?.extensionStatuses,
+    ).toEqual([]);
+    expect(
+      mapSessionFromReadModel(
+        { ...next, providerInstanceId: ProviderInstanceId.make("another") },
+        mapped,
+      )?.extensionStatuses,
+    ).toEqual([]);
+  });
   it("preserves the structured limit and reuses an equal session", () => {
     const mapped = mapSessionFromReadModel(session, null);
     expect(mapped?.usageLimit).toEqual(session.usageLimit);

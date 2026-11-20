@@ -1,4 +1,6 @@
 import Migration0147 from "./Migrations/147_StorageMachineCleanupAudit.ts";
+import Migration0168 from "./Migrations/168_ProviderExtensionStatuses.ts";
+import Migration0169 from "./Migrations/169_ThreadContextBoundaries.ts";
 import Migration0161 from "./Migrations/161_UsageNativeIdentity.ts";
 import Migration0154 from "./Migrations/154_DesktopActivityPendingIndex.ts";
 import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts";
@@ -200,6 +202,8 @@ import Migration0102 from "./Migrations/102_ForgeAccounts.ts";
 import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
 
 export const MIGRATIONS = {
+  "169_ThreadContextBoundaries": Migration0169,
+  "168_ProviderExtensionStatuses": Migration0168,
   "161_UsageNativeIdentity": Migration0161,
   "154_DesktopActivityPendingIndex": Migration0154,
   "155_BackgroundWorkNativeParentSession": Migration0155,
