@@ -489,63 +489,103 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
                 if chars.len() > 10000 {
                     return Err(fail("ResultTooLarge"));
                 }
-                for chunk in chars.chunks(32) {
-                    validate()?;
-                    crate::safety::deliver_characters(
-                        chunk.iter().copied(),
-                        || validate(),
-                        |character| {
-                            let mut units = [0u16; 2];
-                            for unit in character.encode_utf16(&mut units) {
-                                for flags in
-                                    [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP]
-                                {
-                                    check(request)?;
-                                    let _gate = STATE.get().unwrap().input_gate.lock().unwrap();
-                                    if !flags.contains(KEYEVENTF_KEYUP) {
-                                        STATE
-                                            .get()
-                                            .unwrap()
-                                            .held_unicode
-                                            .lock()
-                                            .unwrap()
-                                            .insert(*unit);
-                                    }
-                                    check(request)?;
-                                    // Secure-field/focus checks also precede every UTF-16 down event.
-                                    if !flags.contains(KEYEVENTF_KEYUP) {
-                                        validate()?;
-                                    }
-                                    if GetForegroundWindow() != initial_hwnd {
-                                        return Err(blocked("focus-unknown"));
-                                    }
-                                    send(INPUT {
-                                        r#type: INPUT_KEYBOARD,
-                                        Anonymous: INPUT_0 {
-                                            ki: KEYBDINPUT {
-                                                wVk: VIRTUAL_KEY(0),
-                                                wScan: *unit,
-                                                dwFlags: flags,
-                                                time: 0,
-                                                dwExtraInfo: MARK,
-                                            },
-                                        },
-                                    })?;
-                                    if flags.contains(KEYEVENTF_KEYUP) {
-                                        STATE
-                                            .get()
-                                            .unwrap()
-                                            .held_unicode
-                                            .lock()
-                                            .unwrap()
-                                            .remove(unit);
-                                    }
-                                }
-                            }
-                            Ok(())
+                // Before any character, nothing happened yet: the original failure stays exact.
+                validate()?;
+                let anchors = typing_anchors(&initial_element);
+                // Focus is read once per chunk, never between a character's down and up events:
+                // a character's own effect may move focus (a combobox moving its active option),
+                // and that must not turn delivered text into an unknown outcome.
+                let focus_state = || -> Option<&'static str> {
+                    let (element, p, h) = match focused(request, host) {
+                        Ok(current) => current,
+                        Err(error) => return Some(crate::safety::typing_stop(&error)),
+                    };
+                    let unchanged = crate::safety::typing_focus_unchanged(
+                        p == initial_pid && h == initial_hwnd,
+                        || {
+                            initial_identity.as_ref().is_some_and(|identity| {
+                                runtime_id(&element).is_ok_and(|id| id == *identity)
+                            })
                         },
-                    )?;
-                    std::thread::sleep(Duration::from_millis(10));
+                        || {
+                            initial_element
+                                .CurrentHasKeyboardFocus()
+                                .is_ok_and(|value| value.as_bool())
+                        },
+                        || editable_element(&element),
+                        || element_within(&element, &anchors),
+                    );
+                    (!unchanged).then_some("focus-moved")
+                };
+                let outcome = crate::safety::deliver_characters(
+                    &chars,
+                    32,
+                    || -> Result<Option<&'static str>, Value> {
+                        check(request)?;
+                        Ok(focus_state())
+                    },
+                    |character| -> Result<bool, Value> {
+                        let state = STATE.get().unwrap();
+                        let _gate = state.input_gate.lock().unwrap();
+                        check(request)?;
+                        // The recipient is checked under the gate right before each character,
+                        // so a window raised during the chunk's UIA reads never receives input.
+                        if GetForegroundWindow() != initial_hwnd {
+                            return Ok(false);
+                        }
+                        // A posted down event always gets its up event.
+                        for (unit, up) in crate::safety::unicode_key_events(character) {
+                            if !up {
+                                state.held_unicode.lock().unwrap().insert(unit);
+                            }
+                            send(INPUT {
+                                r#type: INPUT_KEYBOARD,
+                                Anonymous: INPUT_0 {
+                                    ki: KEYBDINPUT {
+                                        wVk: VIRTUAL_KEY(0),
+                                        wScan: unit,
+                                        dwFlags: if up {
+                                            KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+                                        } else {
+                                            KEYEVENTF_UNICODE
+                                        },
+                                        time: 0,
+                                        dwExtraInfo: MARK,
+                                    },
+                                },
+                            })?;
+                            if up {
+                                state.held_unicode.lock().unwrap().remove(&unit);
+                            }
+                        }
+                        Ok(true)
+                    },
+                    || std::thread::sleep(Duration::from_millis(10)),
+                )?;
+                match outcome {
+                    crate::safety::CharacterDelivery::Complete => {
+                        // The last chunk may move focus as its own effect; watch for it so a
+                        // following step never acts on a new focus unobserved.
+                        if crate::timing::poll_until(
+                            Duration::from_millis(300),
+                            || check(request).is_err(),
+                            || focus_state().is_some(),
+                        ) {
+                            verification = Some(json!({"verified": false}));
+                        }
+                    }
+                    crate::safety::CharacterDelivery::Blocked => {
+                        return Err(blocked("focus-unknown"));
+                    }
+                    crate::safety::CharacterDelivery::Stopped { delivered, reason } => {
+                        // The remaining text was never sent; say how much was.
+                        verification = Some(json!({
+                            "verified": false,
+                            "charactersDelivered": delivered,
+                            "charactersRequested": s(request, "text").encode_utf16().count(),
+                            "stoppedBy": reason,
+                        }));
+                    }
                 }
             } else {
                 let chords = request["chords"]
