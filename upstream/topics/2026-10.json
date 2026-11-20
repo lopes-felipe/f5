@@ -41753,14 +41753,16 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-20T15:53:57.825Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-22739",
+      "reason": "F5 handles preview input directly in Electron and has no streamed viewer input queue.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-19456"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview browser"
