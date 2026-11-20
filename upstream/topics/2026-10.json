@@ -7832,11 +7832,22 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-20T15:43:10.479Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/git/DefaultBranchAutoPull.ts:307",
+          "apps/server/src/git/DefaultBranchAutoPull.ts:255",
+          "apps/server/src/git/DefaultBranchAutoPull.ts:282"
+        ],
+        "f5Refs": [
+          "6ff10063052612724db49fc448d044606e7a6634"
+        ]
+      },
       "id": "pr-14912",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "git",
