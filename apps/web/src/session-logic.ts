@@ -101,6 +101,8 @@ export const PROVIDER_OPTIONS: Array<{
 ];
 
 export interface WorkLogEntry {
+  requestId?: string;
+  pendingApproval?: PendingApproval;
   /** A provider pause, rather than a failed tool call. */
   usageLimited?: boolean;
   htmlRender?: HtmlRenderReference;
@@ -1986,6 +1988,7 @@ export function deriveWorkLogEntries(
               : activity.summary;
       const answerPreview = answeredQuestion ? userInputAnswerPreview(payload?.answers) : "";
       const entry: WorkLogEntry = {
+        ...(typeof payload?.requestId === "string" ? { requestId: payload.requestId } : {}),
         id: activity.id,
         createdAt: activity.createdAt,
         label: answeredQuestion && answerPreview ? answeredQuestion : label,

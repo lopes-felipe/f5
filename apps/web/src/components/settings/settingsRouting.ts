@@ -304,6 +304,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "conversation.send-shortcut": {
     category: "conversation",
   },
+  "conversation.persistent-usage-limits": {
+    category: "conversation",
+  },
   "conversation.composer-editor": {
     category: "conversation",
   },
@@ -572,6 +575,7 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "threads",
     scope: "both",
   },
+  "threads.keep-awake": { category: "threads" },
   "threads.auto-continue": {
     category: "threads",
     scope: "both",

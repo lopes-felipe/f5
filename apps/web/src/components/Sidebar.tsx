@@ -121,6 +121,7 @@ import {
 } from "./sidebar/sidebarLists";
 import { useDesktopUpdate } from "./sidebar/useDesktopUpdate";
 import { SidebarPeekProvider, SidebarPeekScrollDismissArea } from "./sidebar/SidebarPeekCard";
+import { SidebarFolderDrop } from "./sidebar/SidebarFolderDrop";
 import { SidebarRecentView } from "./sidebar/SidebarRecentView";
 import { bucketRecentSidebarItems, collectRecentSidebarItems } from "./sidebar/sidebarRecent";
 import { useLocalStorage } from "../hooks/useLocalStorage";
@@ -1279,126 +1280,128 @@ export default function Sidebar() {
           onViewChange={setSidebarView}
         />
 
-        <SidebarPeekScrollDismissArea className="contents">
-          <SidebarContent className="gap-0">
-            <SidebarArm64Warning update={desktopUpdate} />
-            {sidebarSearchQuery.trim().length > 0 ? (
-              <SidebarThreadSearchResults
-                query={sidebarSearchQuery}
-                projects={projects}
-                threads={threads}
-                {...(routeThreadId ? { activeThreadId: routeThreadId } : {})}
-                onResultOpened={handleSidebarSearchResultOpened}
-              />
-            ) : null}
-            <div className={cn("px-2", sidebarSearchQuery.trim().length > 0 && "hidden")}>
-              <SidebarAttentionSection
-                threads={attentionThreads}
-                projectsById={projectsById}
-                routeThreadId={routeThreadId}
-                indicatorsForThread={indicatorsForThread}
-                actions={threadActions}
-              />
-            </div>
-            <SidebarGroup
-              className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
-            >
-              {sidebarView === "projects" ? (
-                <div
-                  className="flex h-5 items-center justify-between gap-2 pr-1.5 pl-2"
-                  data-testid="sidebar-projects-label"
-                >
-                  <span className="text-[10.5px] font-medium tracking-wide text-muted-foreground uppercase">
-                    Projects
-                  </span>
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          type="button"
-                          aria-label="Add project"
-                          aria-pressed={addProject.showPathEntry}
-                          className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                          onClick={addProject.handleStartAddProject}
-                        />
-                      }
-                    >
-                      <FolderPlusIcon className="size-3.5" />
-                    </TooltipTrigger>
-                    <TooltipPopup side="right">Add project</TooltipPopup>
-                  </Tooltip>
-                </div>
-              ) : null}
-
-              {addProject.showPathEntry && <SidebarAddProjectForm controller={addProject} />}
-
-              {sidebarView === "recent" ? (
-                <SidebarRecentView
+        <SidebarFolderDrop>
+          <SidebarPeekScrollDismissArea className="contents">
+            <SidebarContent className="gap-0">
+              <SidebarArm64Warning update={desktopUpdate} />
+              {sidebarSearchQuery.trim().length > 0 ? (
+                <SidebarThreadSearchResults
+                  query={sidebarSearchQuery}
                   projects={projects}
-                  listsByProjectId={projectSidebarListsById}
-                  statusById={threadStatusById}
-                  now={nowHour}
-                  liveActivityHours={liveActivityHours}
-                  frozenItemKeys={sidebarHoverFreezeSnapshot?.recentItemKeys}
-                  threadPreviewLimit={threadPreviewLimit}
-                  draftThreadsByThreadId={draftThreadsByThreadId}
-                  persistedThreadIds={persistedThreadIds}
-                  routeThreadId={routeThreadId}
-                  pathname={pathname}
-                  expandWorkflowThreadsByDefault={appSettings.expandWorkflowThreadsByDefault}
-                  workflowExpandedById={workflowExpandedById}
-                  indicatorsForThread={indicatorsForThread}
-                  threadActions={threadActions}
-                  projectActions={projectActions}
+                  threads={threads}
+                  {...(routeThreadId ? { activeThreadId: routeThreadId } : {})}
+                  onResultOpened={handleSidebarSearchResultOpened}
                 />
-              ) : (
-                <DndContext
-                  sensors={projectDnDSensors}
-                  collisionDetection={projectCollisionDetection}
-                  modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
-                  onDragStart={handleProjectDragStart}
-                  onDragEnd={handleProjectDragEnd}
-                  onDragCancel={handleProjectDragCancel}
-                >
-                  <SidebarMenu
-                    {...SIDEBAR_TREE_PROPS}
-                    aria-label="Threads and projects"
-                    ref={attachSidebarTree}
-                    className="gap-4"
-                  >
-                    {projects.filter(isScratchProject).map(renderProjectItem)}
-                    <SortableContext
-                      items={listedProjects.map((project) => project.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      {listedProjects.map(renderProjectItem)}
-                    </SortableContext>
-                  </SidebarMenu>
-                </DndContext>
-              )}
-
-              {!startupReady && projects.length === 0 && !addProject.showPathEntry ? (
-                <StartupSidebarSkeleton />
-              ) : startupReady && projects.length === 0 && !addProject.showPathEntry ? (
-                <div className="mx-1 mt-2 flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-3 py-5 text-center">
-                  <p className="text-ui text-muted-foreground">No projects yet</p>
-                  <Button size="sm" variant="outline" onClick={addProject.handleStartAddProject}>
-                    <PlusIcon className="size-4" />
-                    Add a project
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="link"
-                    data-testid="sidebar-start-without-project"
-                    onClick={() => void startScratchThread()}
-                  >
-                    or start without a project
-                  </Button>
-                </div>
               ) : null}
-            </SidebarGroup>
-          </SidebarContent>
-        </SidebarPeekScrollDismissArea>
+              <div className={cn("px-2", sidebarSearchQuery.trim().length > 0 && "hidden")}>
+                <SidebarAttentionSection
+                  threads={attentionThreads}
+                  projectsById={projectsById}
+                  routeThreadId={routeThreadId}
+                  indicatorsForThread={indicatorsForThread}
+                  actions={threadActions}
+                />
+              </div>
+              <SidebarGroup
+                className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
+              >
+                {sidebarView === "projects" ? (
+                  <div
+                    className="flex h-5 items-center justify-between gap-2 pr-1.5 pl-2"
+                    data-testid="sidebar-projects-label"
+                  >
+                    <span className="text-[10.5px] font-medium tracking-wide text-muted-foreground uppercase">
+                      Projects
+                    </span>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            type="button"
+                            aria-label="Add project"
+                            aria-pressed={addProject.showPathEntry}
+                            className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                            onClick={addProject.handleStartAddProject}
+                          />
+                        }
+                      >
+                        <FolderPlusIcon className="size-3.5" />
+                      </TooltipTrigger>
+                      <TooltipPopup side="right">Add project</TooltipPopup>
+                    </Tooltip>
+                  </div>
+                ) : null}
+
+                {addProject.showPathEntry && <SidebarAddProjectForm controller={addProject} />}
+
+                {sidebarView === "recent" ? (
+                  <SidebarRecentView
+                    projects={projects}
+                    listsByProjectId={projectSidebarListsById}
+                    statusById={threadStatusById}
+                    now={nowHour}
+                    liveActivityHours={liveActivityHours}
+                    frozenItemKeys={sidebarHoverFreezeSnapshot?.recentItemKeys}
+                    threadPreviewLimit={threadPreviewLimit}
+                    draftThreadsByThreadId={draftThreadsByThreadId}
+                    persistedThreadIds={persistedThreadIds}
+                    routeThreadId={routeThreadId}
+                    pathname={pathname}
+                    expandWorkflowThreadsByDefault={appSettings.expandWorkflowThreadsByDefault}
+                    workflowExpandedById={workflowExpandedById}
+                    indicatorsForThread={indicatorsForThread}
+                    threadActions={threadActions}
+                    projectActions={projectActions}
+                  />
+                ) : (
+                  <DndContext
+                    sensors={projectDnDSensors}
+                    collisionDetection={projectCollisionDetection}
+                    modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
+                    onDragStart={handleProjectDragStart}
+                    onDragEnd={handleProjectDragEnd}
+                    onDragCancel={handleProjectDragCancel}
+                  >
+                    <SidebarMenu
+                      {...SIDEBAR_TREE_PROPS}
+                      aria-label="Threads and projects"
+                      ref={attachSidebarTree}
+                      className="gap-4"
+                    >
+                      {projects.filter(isScratchProject).map(renderProjectItem)}
+                      <SortableContext
+                        items={listedProjects.map((project) => project.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {listedProjects.map(renderProjectItem)}
+                      </SortableContext>
+                    </SidebarMenu>
+                  </DndContext>
+                )}
+
+                {!startupReady && projects.length === 0 && !addProject.showPathEntry ? (
+                  <StartupSidebarSkeleton />
+                ) : startupReady && projects.length === 0 && !addProject.showPathEntry ? (
+                  <div className="mx-1 mt-2 flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-3 py-5 text-center">
+                    <p className="text-ui text-muted-foreground">No projects yet</p>
+                    <Button size="sm" variant="outline" onClick={addProject.handleStartAddProject}>
+                      <PlusIcon className="size-4" />
+                      Add a project
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="link"
+                      data-testid="sidebar-start-without-project"
+                      onClick={() => void startScratchThread()}
+                    >
+                      or start without a project
+                    </Button>
+                  </div>
+                ) : null}
+              </SidebarGroup>
+            </SidebarContent>
+          </SidebarPeekScrollDismissArea>
+        </SidebarFolderDrop>
 
         <SidebarSeparator />
         <AlertDialog

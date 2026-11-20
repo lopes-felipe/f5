@@ -1647,6 +1647,18 @@ describe("sendTurn", () => {
       expect(params.effort).toBe("high");
       expect(params.collaborationMode?.settings.reasoning_effort).toBe("high");
     });
+    it("sends Cyber Access each turn only for a reported eligible model", () => {
+      const capabilities = createReportedCodexModelCapabilities({
+        model: "gpt-5.3-codex",
+        availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
+      });
+      const state = { reportedModelCapabilities: new Map([["gpt-5.3-codex", capabilities]]) };
+      expect(build({}, state).cyberAccessProgram).toBe("standard");
+      expect(build({ cyberAccessProgram: "daybreakBlue" }, state).cyberAccessProgram).toBe(
+        "daybreakBlue",
+      );
+      expect(build({ cyberAccessProgram: "daybreakBlue" }).cyberAccessProgram).toBeUndefined();
+    });
 
     it("uses the reported default effort", () => {
       const params = build({}, { reportedModelCapabilities: reportedEfforts("medium") });

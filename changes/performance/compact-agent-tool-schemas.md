@@ -1,0 +1,1 @@
+- F5 advertises smaller MCP input schemas while keeping full validation when tools run, reducing tool context sent to agents.

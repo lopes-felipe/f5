@@ -107,7 +107,7 @@ export function ProviderAccountPanel({
               })
             }
           >
-            Install Antigravity
+            {status === "authenticated" ? "Update Antigravity" : "Install or update Antigravity"}
           </Button>
         ) : null}
         {showSignIn ? (

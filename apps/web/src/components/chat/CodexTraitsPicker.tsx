@@ -27,6 +27,10 @@ import { getEffortLevel } from "./effortLevels";
 import {
   Menu,
   MenuCheckboxItem,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuRadioGroup,
+  MenuRadioItem,
   MenuPopup,
   MenuSeparator as MenuDivider,
   MenuTrigger,
@@ -106,6 +110,35 @@ function CodexTraitsMenuContentImpl(props: {
 
   return (
     <>
+      {reported?.optionDescriptors?.find(
+        (option) => option.id === "cyberAccessProgram" && option.type === "select",
+      )
+        ? (() => {
+            const cyber = reported.optionDescriptors?.find(
+              (option) => option.id === "cyberAccessProgram",
+            );
+            if (cyber?.type !== "select") return null;
+            return (
+              <MenuGroup>
+                <MenuGroupLabel>Cyber Access</MenuGroupLabel>
+                <MenuRadioGroup
+                  value={modelOptions?.cyberAccessProgram ?? cyber.currentValue ?? ""}
+                  onValueChange={(value) => {
+                    if (value === "standard" || value === "daybreakBlue" || value === "daybreakRed")
+                      setCodexModelOptions({ ...modelOptions, cyberAccessProgram: value });
+                  }}
+                >
+                  {cyber.options.map((option) => (
+                    <MenuRadioItem key={option.id} value={option.id}>
+                      {option.label}
+                    </MenuRadioItem>
+                  ))}
+                </MenuRadioGroup>
+                <MenuDivider />
+              </MenuGroup>
+            );
+          })()
+        : null}
       <EffortMenuSection
         options={options.map((option) => ({
           id: option,

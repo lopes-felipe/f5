@@ -1,0 +1,1 @@
+- Managed Antigravity can update from Google's CLI release channel without waiting for an F5 release. Fresh installations still use F5's pinned, checksum-verified version.

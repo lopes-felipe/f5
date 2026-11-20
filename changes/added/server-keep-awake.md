@@ -1,0 +1,1 @@
+- Enable “Keep the server awake while agents work” in Threads settings to prevent server idle sleep during active runs, with a one-minute grace period after they finish.

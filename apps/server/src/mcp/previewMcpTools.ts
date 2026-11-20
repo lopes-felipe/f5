@@ -28,6 +28,7 @@ import {
 import { normalizePreviewUrl, type PreviewNavigationPolicy } from "@t3tools/shared/preview";
 import { Cause, Effect, Exit, Option, Schema } from "effect";
 import { z } from "zod";
+import { advertisedJsonSchema } from "./advertisedJsonSchema";
 
 import type { AgentBrowserPolicy } from "./browserAccess.ts";
 import {
@@ -374,7 +375,7 @@ export function previewToolInputJsonSchema(tool: PreviewToolDefinition): Record<
   const { $schema: _ignored, ...schema } = z.toJSONSchema(z.object(tool.shape).strict(), {
     io: "input",
   }) as Record<string, unknown>;
-  return schema;
+  return advertisedJsonSchema(schema);
 }
 
 export type McpToolResult = {

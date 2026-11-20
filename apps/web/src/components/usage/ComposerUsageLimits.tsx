@@ -109,7 +109,13 @@ export function ComposerLimitRow({
 }
 
 /** Reads cached snapshots for the weekly meter, without starting provider probes. */
-export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
+export function ComposerUsageLimits({
+  threadId,
+  persistent = false,
+}: {
+  threadId: ThreadId;
+  persistent?: boolean;
+}) {
   const selection = useActiveComposerSelection(
     (state) =>
       [...state.registrations.values()].findLast((entry) => entry.threadId === threadId) ?? null,
@@ -142,12 +148,12 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
   }, [selection?.instanceId, resetRefresh]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open && !persistent) return;
     // The clock is idle while the panel is closed; catch up before showing reset times.
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
-  }, [open]);
+  }, [open, persistent]);
 
   const panel = (
     <section aria-label="Conversation usage limits" className="min-w-0 w-full space-y-3">
@@ -224,6 +230,17 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
     </section>
   );
 
+  if (persistent)
+    return (
+      <div aria-label="Persistent usage limits" className="grid gap-3 sm:grid-cols-2">
+        {windows.map((window) => (
+          <ComposerLimitRow key={window.windowKey} window={window} now={now} />
+        ))}
+        {windows.length === 0 ? (
+          <span className="text-xs text-muted-foreground">No reported limits available.</span>
+        ) : null}
+      </div>
+    );
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger

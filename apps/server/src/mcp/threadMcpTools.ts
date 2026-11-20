@@ -17,6 +17,7 @@ import {
   ServiceMap,
 } from "effect";
 import { z } from "zod";
+import { advertisedJsonSchema } from "./advertisedJsonSchema";
 import { HTML_RENDER_COLUMN_WIDTH } from "@t3tools/shared/htmlRender";
 import {
   HTML_PREVIEW_DESCRIPTION,
@@ -338,7 +339,7 @@ export function threadToolDefinitions(
 export function threadToolInputJsonSchema(tool: {
   readonly shape: z.ZodRawShape;
 }): Record<string, unknown> {
-  return z.toJSONSchema(z.object(tool.shape)) as Record<string, unknown>;
+  return advertisedJsonSchema(z.toJSONSchema(z.object(tool.shape)) as Record<string, unknown>);
 }
 export async function callThreadTool(
   context: {

@@ -1,0 +1,1 @@
+- Enable “Keep usage limits visible” in Conversation settings to keep provider limit windows and thread context usage above the composer.

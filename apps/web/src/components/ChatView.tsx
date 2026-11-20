@@ -5,6 +5,7 @@ import { formatComposerModelMention } from "@t3tools/shared/composerModelMention
 import { useFreshSessionStore } from "../freshSessionStore";
 import { isDiffSearchEditingKey, isEventInFindScope } from "../lib/keyboardFocus";
 import { ThreadTokenUsageProvider } from "./chat/MessageTokenUsage";
+import { withTimelineApprovals } from "./chat/timelineApprovals";
 import { usePublishComposerSelection } from "../activeComposerSelection";
 import { useComposerTypingGuard } from "./chat/useComposerTypingGuard";
 import { settleListScroll } from "./chat/settleListScroll";
@@ -2535,15 +2536,18 @@ export default memo(function ChatView({
   const timelineEntryCache = timelineEntryCacheRef.current;
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(
-        timelineMessages,
-        findMatch?.plan &&
-          !activeThread?.proposedPlans.some((plan) => plan.id === findMatch.plan?.id)
-          ? [...(activeThread?.proposedPlans ?? []), findMatch.plan]
-          : (activeThread?.proposedPlans ?? []),
-        workLogEntries,
-        commandExecutions,
-        timelineEntryCache,
+      withTimelineApprovals(
+        deriveTimelineEntries(
+          timelineMessages,
+          findMatch?.plan &&
+            !activeThread?.proposedPlans.some((plan) => plan.id === findMatch.plan?.id)
+            ? [...(activeThread?.proposedPlans ?? []), findMatch.plan]
+            : (activeThread?.proposedPlans ?? []),
+          workLogEntries,
+          commandExecutions,
+          timelineEntryCache,
+        ),
+        pendingApprovals,
       ),
     [
       activeThread?.proposedPlans,
@@ -2552,6 +2556,7 @@ export default memo(function ChatView({
       timelineEntryCache,
       timelineMessages,
       workLogEntries,
+      pendingApprovals,
     ],
   );
   const [announcementTimelineCache] = useState(createTimelineEntryCache);
@@ -6040,6 +6045,10 @@ export default memo(function ChatView({
     [activeThreadId, setStoreThreadError],
   );
 
+  const timelineApprovalActions = useMemo(
+    () => ({ respondingRequestIds, onRespondToApproval }),
+    [respondingRequestIds, onRespondToApproval],
+  );
   const onRespondToUserInput = useCallback(
     async (requestId: ApprovalRequestId, answers: Record<string, unknown>, dismissed = false) => {
       const api = readNativeApi();
@@ -8513,6 +8522,7 @@ export default memo(function ChatView({
                   <ThreadTokenUsageProvider threadId={isServerThread ? activeThread.id : null}>
                     <ThreadFindContext value={threadFind.contextValue}>
                       <MessagesTimeline
+                        approvalActions={timelineApprovalActions}
                         key={activeThread.id}
                         threadId={activeThread.id}
                         hasMessages={timelineEntries.length > 0}
