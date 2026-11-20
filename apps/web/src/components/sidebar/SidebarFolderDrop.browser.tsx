@@ -67,3 +67,34 @@ it("does not attempt a pathless browser folder open", async () => {
     await view.unmount();
   }
 });
+it("clears an active overlay when a thread claims a file drag", async () => {
+  const view = await render(
+    <SidebarFolderDrop>
+      <div data-testid="drop-content">Projects</div>
+      <div
+        data-testid="thread-drop"
+        onDragEnter={(event) => event.preventDefault()}
+        onDragOver={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+      >
+        Thread
+      </div>
+    </SidebarFolderDrop>,
+  );
+  try {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File(["file"], "notes.txt"));
+    document
+      .querySelector("[data-testid=drop-content]")!
+      .dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer }));
+    await vi.waitFor(() => expect(document.querySelector('[aria-hidden="true"]')).not.toBeNull());
+    document
+      .querySelector("[data-testid=thread-drop]")!
+      .dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer }));
+    await vi.waitFor(() => expect(document.querySelector('[aria-hidden="true"]')).toBeNull());
+  } finally {
+    await view.unmount();
+  }
+});

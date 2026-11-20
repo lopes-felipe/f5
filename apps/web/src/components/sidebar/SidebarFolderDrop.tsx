@@ -1,12 +1,15 @@
-import { useState, type DragEvent, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useState, type DragEvent, type ReactNode } from "react";
 import { FolderPlusIcon } from "lucide-react";
 import { partitionDroppedAttachments } from "../../lib/droppedAttachments";
-import { useOpenLocalWorkspace } from "../../hooks/useOpenLocalWorkspace";
 import { toastManager } from "../ui/toast";
+const OpenDroppedFolders = lazy(() => import("./OpenDroppedFolders"));
 
 export function SidebarFolderDrop({ children }: { children: ReactNode }) {
   const [active, setActive] = useState(false);
-  const workspace = useOpenLocalWorkspace();
+  const [batches, setBatches] = useState<
+    Array<Array<{ name: string; path: string | null | undefined }>>
+  >([]);
+  const completed = useCallback(() => setBatches((current) => current.slice(1)), []);
   const isFileDrag = (event: DragEvent) => event.dataTransfer.types.includes("Files");
   const over = (event: DragEvent) => {
     if (!isFileDrag(event)) return;
@@ -36,23 +39,7 @@ export function SidebarFolderDrop({ children }: { children: ReactNode }) {
           name: folder.name,
           path: window.desktopBridge?.getPathForFile?.(folder),
         }));
-        void (async () => {
-          for (const folder of paths) {
-            try {
-              if (!folder.path)
-                throw new Error(
-                  "Dropping folders requires the desktop app. Use Add project to choose a folder.",
-                );
-              await workspace.open(folder.path);
-            } catch (cause) {
-              toastManager.add({
-                type: "error",
-                title: "Could not open " + folder.name,
-                description: cause instanceof Error ? cause.message : "Could not open project.",
-              });
-            }
-          }
-        })();
+        if (paths.length) setBatches((current) => [...current, paths]);
         if (files.length && !claimed)
           toastManager.add({
             type: "info",
@@ -62,6 +49,11 @@ export function SidebarFolderDrop({ children }: { children: ReactNode }) {
       }}
     >
       {children}
+      {batches[0] ? (
+        <Suspense fallback={null}>
+          <OpenDroppedFolders folders={batches[0]} completed={completed} />
+        </Suspense>
+      ) : null}
       {active ? (
         <div
           aria-hidden

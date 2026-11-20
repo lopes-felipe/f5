@@ -5,7 +5,7 @@ import { formatComposerModelMention } from "@t3tools/shared/composerModelMention
 import { useFreshSessionStore } from "../freshSessionStore";
 import { isDiffSearchEditingKey, isEventInFindScope } from "../lib/keyboardFocus";
 import { ThreadTokenUsageProvider } from "./chat/MessageTokenUsage";
-import { withTimelineApprovals } from "./chat/timelineApprovals";
+import { withTimelineApprovals, createTimelineApprovalCache } from "./chat/timelineApprovals";
 import { usePublishComposerSelection } from "../activeComposerSelection";
 import { useComposerTypingGuard } from "./chat/useComposerTypingGuard";
 import { settleListScroll } from "./chat/settleListScroll";
@@ -2368,7 +2368,6 @@ export default memo(function ChatView({
     providerStatuses,
   ]);
   const hasComposerHeader =
-    isComposerApprovalState ||
     blockingUserInputs.length > 0 ||
     (showPlanFollowUpPrompt && activeProposedPlan !== null) ||
     pendingProviderHandoff !== null ||
@@ -2534,6 +2533,7 @@ export default memo(function ChatView({
   const timelineEntryCacheRef = useRef<TimelineEntryCache | null>(null);
   timelineEntryCacheRef.current ??= createTimelineEntryCache();
   const timelineEntryCache = timelineEntryCacheRef.current;
+  const [timelineApprovalCache] = useState(createTimelineApprovalCache);
   const timelineEntries = useMemo(
     () =>
       withTimelineApprovals(
@@ -2548,6 +2548,8 @@ export default memo(function ChatView({
           timelineEntryCache,
         ),
         pendingApprovals,
+        timelineApprovalCache,
+        typingGuard.heldRequestIds,
       ),
     [
       activeThread?.proposedPlans,
@@ -2557,6 +2559,8 @@ export default memo(function ChatView({
       timelineMessages,
       workLogEntries,
       pendingApprovals,
+      typingGuard.heldRequestIds,
+      timelineApprovalCache,
     ],
   );
   const [announcementTimelineCache] = useState(createTimelineEntryCache);

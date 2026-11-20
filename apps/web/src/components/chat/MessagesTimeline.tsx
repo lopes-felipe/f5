@@ -34,6 +34,8 @@ import {
 import {
   createContext,
   Fragment,
+  lazy,
+  Suspense,
   memo,
   useCallback,
   useContext,
@@ -118,10 +120,12 @@ import { UserMessageRevertPopover } from "./UserMessageRevertPopover";
 import { computeRevertImpact } from "./revertImpact";
 import { AssistantMessageActions } from "./AssistantMessageActions";
 import { AssistantResponseCard } from "./AssistantResponseCard";
-import {
-  TimelinePendingApprovalRow,
-  type TimelineApprovalActions,
-} from "./TimelinePendingApprovalRow";
+import type { TimelineApprovalActions } from "./TimelinePendingApprovalRow";
+const TimelinePendingApprovalRow = lazy(() =>
+  import("./TimelinePendingApprovalRow").then((module) => ({
+    default: module.TimelinePendingApprovalRow,
+  })),
+);
 import { assistantResponseContextMatches } from "@t3tools/shared/assistantResponseContext";
 import { PromptCacheMissPill } from "./PromptCacheMissPill";
 import type { TurnCacheSummary } from "./cacheIndicator.logic";
@@ -4299,7 +4303,18 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   const { threadId, approvalActions } = useTimelineRowContext();
   if (workEntry.pendingApproval)
     return (
-      <TimelinePendingApprovalRow approval={workEntry.pendingApproval} actions={approvalActions} />
+      <Suspense
+        fallback={
+          <pre className="whitespace-pre-wrap text-xs">
+            {workEntry.pendingApproval.detail || "Waiting for approval"}
+          </pre>
+        }
+      >
+        <TimelinePendingApprovalRow
+          approval={workEntry.pendingApproval}
+          actions={approvalActions}
+        />
+      </Suspense>
     );
   if (workEntry.activityKind === "session.context-reset") {
     return (

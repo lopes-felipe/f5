@@ -369,7 +369,7 @@ interface CodexAccountSnapshot {
 }
 
 export interface CodexAppServerSendTurnInput {
-  readonly cyberAccessProgram?: string;
+  readonly cyberAccessProgram?: "standard" | "daybreakBlue" | "daybreakRed";
   /** Ordinary files remain in attachment context; native audio is an optional extra. */
   audioFiles?: ReadonlyArray<string>;
   readonly expectedTurnId?: TurnId;
@@ -941,7 +941,7 @@ export function buildCodexTurnStartParams(
     >;
     model?: string;
     serviceTier?: string | null;
-    cyberAccessProgram?: string;
+    cyberAccessProgram?: "standard" | "daybreakBlue" | "daybreakRed";
     effort?: string;
     collaborationMode?: {
       mode: "default" | "plan";
@@ -974,7 +974,8 @@ export function buildCodexTurnStartParams(
   );
   if (cyber?.type === "select") {
     const program = [input.cyberAccessProgram, cyber.currentValue].find(
-      (value) => value && ["standard", "daybreakBlue", "daybreakRed"].includes(value),
+      (value): value is "standard" | "daybreakBlue" | "daybreakRed" =>
+        value === "standard" || value === "daybreakBlue" || value === "daybreakRed",
     );
     if (program) turnStartParams.cyberAccessProgram = program;
   }

@@ -125,7 +125,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
             defaultToNo,
           })}
           // The provider asked for Decline to be the focused choice.
-          autoFocus={!inline && option.decision === focusDecision}
+          autoFocus={option.decision === focusDecision}
           disabled={isResponding || (option.decision.startsWith("accept") && !canApprove)}
           onClick={() => void onRespondToApproval(requestId, option.decision)}
         >

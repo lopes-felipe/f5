@@ -3,7 +3,10 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AntigravityInstallation } from "./AntigravityInstallation.ts";
+import {
+  AntigravityInstallation,
+  estimateAntigravityInstallBytes,
+} from "./AntigravityInstallation.ts";
 import {
   resolveAntigravityReleaseAsset,
   type AntigravityReleaseAsset,
@@ -35,6 +38,21 @@ afterEach(async () => {
 });
 
 describe("Antigravity explicit installation", () => {
+  it("estimates unknown-size staging from the pin, not the maximum allowed download", () => {
+    const { harness: _harness, ...base } = asset;
+    const pinned = { ...base, archiveBytes: 100 * 1024 * 1024 };
+    const latest = {
+      ...pinned,
+      archiveBytes: 1024 * 1024 * 1024,
+      archiveSizeUnknown: true,
+      format: "tar.gz" as const,
+      executable: { name: "antigravity" },
+    };
+    expect(estimateAntigravityInstallBytes(latest, pinned)).toBe(464 * 1024 * 1024);
+    expect(estimateAntigravityInstallBytes({ ...latest, format: "executable" }, pinned)).toBe(
+      164 * 1024 * 1024,
+    );
+  });
   it("keeps the pin on first install, verifies updates, and retains the selected release across restarts", async () => {
     const pinned = { ...asset, version: "1.5.13" };
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "f5-antigravity-update-"));
@@ -61,6 +79,9 @@ describe("Antigravity explicit installation", () => {
     expect(lookup).not.toHaveBeenCalled();
     expect((await install.install()).version).toBe("1.5.14");
     const restarted = new AntigravityInstallation(root, pinned, lookup);
+    expect((await restarted.resolve()).version).toBe("1.5.14");
+    lookup.mockRejectedValueOnce(new Error("Manifest lookup failed"));
+    await expect(restarted.install()).rejects.toThrow("Manifest lookup failed");
     expect((await restarted.resolve()).version).toBe("1.5.14");
     lookup.mockResolvedValueOnce({ ...update, version: "1.5.15", sha512: "a".repeat(128) });
     await expect(restarted.install()).rejects.toThrow("integrity");

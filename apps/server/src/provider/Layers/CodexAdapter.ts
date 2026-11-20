@@ -195,7 +195,7 @@ export function resolveCodexSelectionOptions(input: {
 }): {
   readonly reasoningEffort?: string;
   readonly fastMode?: boolean;
-  readonly cyberAccessProgram?: string | undefined;
+  readonly cyberAccessProgram?: "standard" | "daybreakBlue" | "daybreakRed";
 } {
   if (input.modelSelection && input.modelSelection.instanceId === input.boundInstanceId) {
     const reasoningEffort = getModelSelectionStringOptionValue(
@@ -206,15 +206,13 @@ export function resolveCodexSelectionOptions(input: {
       input.modelSelection.options,
       "fastMode",
     );
+    const program = getModelSelectionStringOptionValue(input.modelSelection, "cyberAccessProgram");
+    const cyberAccessProgram =
+      program === "standard" || program === "daybreakBlue" || program === "daybreakRed"
+        ? program
+        : undefined;
     return {
-      ...(getModelSelectionStringOptionValue(input.modelSelection, "cyberAccessProgram")
-        ? {
-            cyberAccessProgram: getModelSelectionStringOptionValue(
-              input.modelSelection,
-              "cyberAccessProgram",
-            ),
-          }
-        : {}),
+      ...(cyberAccessProgram ? { cyberAccessProgram } : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       ...(fastMode !== undefined ? { fastMode } : {}),
     };

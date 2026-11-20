@@ -2367,6 +2367,12 @@ export function hasToolActivityForTurn(
  * timeline rows only re-render when their own entry changed.
  */
 const timelineStructures = new WeakMap<ReadonlyArray<TimelineEntry>, object>();
+export function setTimelineEntriesStructure(
+  entries: ReadonlyArray<TimelineEntry>,
+  structure: object,
+) {
+  timelineStructures.set(entries, structure);
+}
 export const timelineEntriesStructure = (
   entries: ReadonlyArray<TimelineEntry>,
 ): object | undefined => timelineStructures.get(entries);
@@ -2660,7 +2666,7 @@ function commandTimelineEntry(
   };
 }
 
-function compareTimelineEntries(left: TimelineEntry, right: TimelineEntry): number {
+export function compareTimelineEntries(left: TimelineEntry, right: TimelineEntry): number {
   const createdAtOrder = left.createdAt.localeCompare(right.createdAt);
   if (createdAtOrder !== 0) {
     return createdAtOrder;

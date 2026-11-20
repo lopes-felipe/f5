@@ -1,7 +1,8 @@
 import { expect, it } from "vitest";
 import { ApprovalRequestId } from "@t3tools/contracts";
 import type { PendingApproval, TimelineEntry } from "../../session-logic";
-import { withTimelineApprovals } from "./timelineApprovals";
+import { withTimelineApprovals, createTimelineApprovalCache } from "./timelineApprovals";
+import { setTimelineEntriesStructure, timelineEntriesStructure } from "../../session-logic";
 
 const approval: PendingApproval = {
   requestId: ApprovalRequestId.make("approval"),
@@ -42,8 +43,32 @@ it("replaces the request row without duplicating it or attaching controls to the
     },
   ];
   expect(withTimelineApprovals(entries, [approval])).toHaveLength(2);
-  expect(withTimelineApprovals(entries, [approval])[1]).toMatchObject({
+  expect(
+    withTimelineApprovals(entries, [approval]).find((row) => row.id === "request"),
+  ).toMatchObject({
     entry: { pendingApproval: approval },
   });
   expect(withTimelineApprovals(entries, [])).toBe(entries);
+});
+it("never paints held requests as answerable", () => {
+  expect(
+    withTimelineApprovals(
+      [],
+      [approval],
+      createTimelineApprovalCache(),
+      new Set([approval.requestId]),
+    ),
+  ).toEqual([]);
+});
+it("retains structure identity and unchanged approval rows during content updates", () => {
+  const source = {};
+  const cache = createTimelineApprovalCache();
+  const entries: TimelineEntry[] = [];
+  setTimelineEntriesStructure(entries, source);
+  const first = withTimelineApprovals(entries, [approval], cache);
+  const next: TimelineEntry[] = [];
+  setTimelineEntriesStructure(next, source);
+  const second = withTimelineApprovals(next, [approval], cache);
+  expect(timelineEntriesStructure(second)).toBe(timelineEntriesStructure(first));
+  expect(second[0]).toBe(first[0]);
 });

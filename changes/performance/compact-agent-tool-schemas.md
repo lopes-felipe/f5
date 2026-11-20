@@ -1,1 +1,1 @@
-- F5 advertises smaller MCP input schemas while keeping full validation when tools run, reducing tool context sent to agents.
+- F5's HTTP MCP catalogs advertise smaller input schemas while keeping full validation when tools run, reducing tool context for HTTP MCP clients. Claude's in-process catalogs keep their existing schemas.

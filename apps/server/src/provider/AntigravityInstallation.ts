@@ -20,13 +20,29 @@ export interface AntigravityExecutable {
   version: string;
 }
 
+export function estimateAntigravityInstallBytes(
+  asset: AntigravityReleaseAsset,
+  pinned: AntigravityReleaseAsset | null,
+) {
+  // Hard download limits remain independent of this advisory free-space estimate.
+  const archive = asset.archiveSizeUnknown
+    ? (pinned?.archiveBytes ?? 128 * 1024 * 1024)
+    : asset.archiveBytes;
+  return (
+    archive +
+    (asset.format === "executable" ? 0 : (asset.executable.bytes ?? archive * 3)) +
+    (asset.harness?.bytes ?? 0) +
+    64 * 1024 * 1024
+  );
+}
+
 export class AntigravityUpdateRequiredError extends Error {
   constructor(
     readonly installedVersion: string,
     requiredVersion: string,
   ) {
     super(
-      `Antigravity ${installedVersion} is installed. Update to ${requiredVersion} using Install Antigravity in Settings before starting a new session.`,
+      `Antigravity ${installedVersion} is installed. Update to ${requiredVersion} using Install or update Antigravity in Settings before starting a new session.`,
     );
   }
 }
@@ -163,11 +179,7 @@ export class AntigravityInstallation {
     }
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const disk = await fs.statfs(this.directory);
-    const requiredBytes =
-      asset.archiveBytes +
-      (asset.executable.bytes ?? 1024 * 1024 * 1024) +
-      (asset.harness?.bytes ?? 0) +
-      64 * 1024 * 1024;
+    const requiredBytes = estimateAntigravityInstallBytes(asset, this.asset);
     if (disk.bavail * disk.bsize < requiredBytes)
       throw new Error("Not enough free disk space to stage and verify Antigravity.");
     const staging = await fs.mkdtemp(path.join(this.directory, ".install-"));
