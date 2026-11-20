@@ -40,13 +40,7 @@ import { agentBridgeLocalCredentialsPath } from "./agentBridge/localCredentials.
 import { runAgentBridgeStdio } from "./agentBridge/stdioShim.ts";
 import { makeThreadCommand } from "./threadCli/command.ts";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
-import { profileExecutionEnvironment, type ProfileRecord } from "@t3tools/contracts";
-
-/** Linux VM profiles run only in their guest; a host process never serves or opens them. */
-const hostExecutionRefusal = (profile: ProfileRecord): string | undefined =>
-  profileExecutionEnvironment(profile) === "host"
-    ? undefined
-    : `Profile '${profile.slug}' runs in a Linux VM, which this build can't start. F5 never runs it on the host.`;
+import { hostExecutionRefusal } from "@t3tools/shared/profileExecution";
 import { Open } from "./open";
 import * as SqlitePersistence from "./persistence/Layers/Sqlite";
 import { makeServerProviderLayer, makeServerRuntimeServicesLayer } from "./serverLayers";

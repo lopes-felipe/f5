@@ -8,7 +8,13 @@ import { ComputerHostChannel } from "./ComputerHostChannel";
 import { ComputerLeaseAuthority } from "./ComputerLeaseAuthority";
 
 /** A guest backend (Linux VM profile): framed stdio, no host pid, every integration certified. */
-function guest() {
+function guest(
+  openExternalUrl?: (
+    profileId: string,
+    url: string,
+    options?: { preapproved?: boolean },
+  ) => Promise<"opened">,
+) {
   const controller = {
     disconnect: vi.fn(),
     setPaused: vi.fn(),
@@ -54,7 +60,7 @@ function guest() {
       verifyAdoption: async () => "verified",
     },
     undefined,
-    { background: () => ({ available: true }) },
+    { background: () => ({ available: true }), ...(openExternalUrl ? { openExternalUrl } : {}) },
   );
   const fromGuest = new PassThrough();
   const toGuest = new PassThrough();
@@ -74,7 +80,12 @@ function guest() {
     profileId: "guest",
     backendIncarnation: "incarnation",
     protocolVersion: 1,
-    capabilities: ["chrome-calls-v1", "chrome-call-admission-v1", "chrome-shared-v1"],
+    capabilities: [
+      "chrome-calls-v1",
+      "chrome-call-admission-v1",
+      "chrome-shared-v1",
+      "open-external-url-v1",
+    ],
   });
   const response = (requestId: string) => sent.find((message) => message.requestId === requestId);
   return { channel, controller, emit, response, register, toGuest, fromGuest };
@@ -155,6 +166,23 @@ describe("guest backend channel", () => {
     h.emit({ type: "builtinLeaseAcquire", requestId: "sky", holder });
     await vi.waitFor(() => expect(h.response("sky")).toMatchObject(notCertified));
     expect(h.controller.lease.holders()).toEqual([]);
+  });
+
+  it("always prompts before opening a URL for a guest, even when it claims preapproval", async () => {
+    const openExternalUrl = vi.fn(async () => "opened" as const);
+    const h = guest(openExternalUrl);
+    h.emit({
+      type: "openExternalUrlRequest",
+      id: "full-access",
+      url: "https://example.com",
+      preapproved: true,
+    });
+    await vi.waitFor(() =>
+      expect(openExternalUrl).toHaveBeenCalledWith("guest", "https://example.com"),
+    );
+    expect(openExternalUrl).not.toHaveBeenCalledWith("guest", "https://example.com", {
+      preapproved: true,
+    });
   });
 
   it("drops the backend when the guest stream ends", async () => {

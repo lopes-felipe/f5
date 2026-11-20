@@ -32,7 +32,7 @@ D-profiles/.trash/               removed profiles
 
 Production defaults to `~/.f5/userdata`; the dev runner uses `~/.f5/dev`. `--state-dir`, `F5_STATE_DIR`, `T3CODE_STATE_DIR`, `F5_HOME` and `T3CODE_HOME` retain their existing meaning. Default worktrees stay in `<baseDir>/worktrees`. Profile ids are disk-safe identities; slugs are only selection and display names.
 
-The registry is written as version 1 unless it contains a [Linux VM profile](vm-profiles.md), in which case it's written as version 2 until the last one is removed. Builds that predate VM profiles refuse a version 2 registry rather than run a VM profile on the host. A Linux VM profile never starts on the host: builds without the VM runtime show its startup error instead.
+The registry is written as version 1 unless it contains a [Linux VM profile](vm-profiles.md), in which case it's written as version 2 until the last one is removed. Builds that predate VM profiles refuse a version 2 registry rather than run a VM profile on the host. Version 2 always means "contains a VM profile", so any other format change must use version 3 or later. A Linux VM profile never starts on the host: builds without the VM runtime show why instead.
 
 SQLite OS locks prevent two processes from opening the same profile or removing a running profile. Locks disappear when the owning process exits, including after a crash. Network filesystems are unsupported for F5 state. A corrupted or newer registry is never rewritten: explicit selection fails closed; an unselected startup uses literal Default state and shows a diagnostic. A crash while holding the short registry mutation lock requires stopping all backends before removing the indicated `registry.lock` file.
 

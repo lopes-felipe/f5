@@ -14,6 +14,21 @@ describe("backend frames", () => {
     expect(new BackendFrameDecoder().push(bytes)).toEqual(messages);
   });
 
+  it("reassembles a large frame from many small chunks, next to coalesced frames", () => {
+    const large = { type: "screenshot", data: "x".repeat(4 * 1024 * 1024) };
+    const bytes = Uint8Array.from([
+      ...encodeBackendFrame({ type: "before" }),
+      ...encodeBackendFrame(large),
+      ...encodeBackendFrame({ type: "after" }),
+    ]);
+    const decoder = new BackendFrameDecoder();
+    const received: unknown[] = [];
+    for (let offset = 0; offset < bytes.byteLength; offset += 4096)
+      received.push(...decoder.push(bytes.subarray(offset, offset + 4096)));
+    expect(received).toEqual([{ type: "before" }, large, { type: "after" }]);
+    expect(decoder.pendingBytes).toBe(0);
+  });
+
   it("reports a truncated trailing frame as pending bytes", () => {
     const frame = encodeBackendFrame({ a: 1 });
     const decoder = new BackendFrameDecoder();

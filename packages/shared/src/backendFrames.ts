@@ -33,7 +33,14 @@ export function encodeBackendFrame(message: unknown): Uint8Array {
  * close the channel rather than try to resynchronize a stream it can no longer trust.
  */
 export class BackendFrameDecoder {
-  private buffered: Uint8Array = new Uint8Array(0);
+  /**
+   * Unconsumed input, kept as received. Bytes are copied only once a whole frame has
+   * arrived, so a large frame split into many chunks costs linear, not quadratic, copying.
+   */
+  private chunks: Uint8Array[] = [];
+  /** Bytes of `chunks[0]` already consumed. */
+  private headOffset = 0;
+  private size = 0;
   private failed = false;
   private readonly utf8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -41,19 +48,20 @@ export class BackendFrameDecoder {
 
   push(chunk: Uint8Array): unknown[] {
     if (this.failed) throw new BackendFrameError("Decoder already failed.");
-    const joined = new Uint8Array(this.buffered.byteLength + chunk.byteLength);
-    joined.set(this.buffered, 0);
-    joined.set(chunk, this.buffered.byteLength);
-    const view = new DataView(joined.buffer, joined.byteOffset, joined.byteLength);
+    if (chunk.byteLength > 0) {
+      this.chunks.push(chunk);
+      this.size += chunk.byteLength;
+    }
     const messages: unknown[] = [];
-    let offset = 0;
     try {
-      while (joined.byteLength - offset >= 4) {
-        const length = view.getUint32(offset, false);
+      while (this.size >= 4) {
+        const header = this.peek(4);
+        const length = new DataView(header.buffer, header.byteOffset, 4).getUint32(0, false);
         if (length > this.maxBytes)
           throw new BackendFrameError("Frame payload exceeds the maximum size.");
-        if (joined.byteLength - offset - 4 < length) break;
-        const payload = joined.subarray(offset + 4, offset + 4 + length);
+        if (this.size - 4 < length) break;
+        this.take(4);
+        const payload = this.take(length);
         let text: string;
         try {
           text = this.utf8.decode(payload);
@@ -65,19 +73,71 @@ export class BackendFrameDecoder {
         } catch {
           throw new BackendFrameError("Frame payload is not valid JSON.");
         }
-        offset += 4 + length;
       }
     } catch (error) {
       this.failed = true;
-      this.buffered = new Uint8Array(0);
+      this.chunks = [];
+      this.headOffset = 0;
+      this.size = 0;
       throw error;
     }
-    this.buffered = joined.slice(offset);
     return messages;
   }
 
   /** Bytes of an incomplete trailing frame; a non-zero value at end of stream is truncation. */
   get pendingBytes(): number {
-    return this.buffered.byteLength;
+    return this.size;
+  }
+
+  /** The first `count` buffered bytes, without consuming them. */
+  private peek(count: number): Uint8Array {
+    const first = this.chunks[0]!;
+    if (first.byteLength - this.headOffset >= count)
+      return first.subarray(this.headOffset, this.headOffset + count);
+    return this.gather(count, false);
+  }
+
+  /** Removes and returns the first `count` buffered bytes. */
+  private take(count: number): Uint8Array {
+    if (count === 0) return new Uint8Array(0);
+    const first = this.chunks[0]!;
+    if (first.byteLength - this.headOffset >= count) {
+      const bytes = first.subarray(this.headOffset, this.headOffset + count);
+      this.advance(count);
+      return bytes;
+    }
+    return this.gather(count, true);
+  }
+
+  private gather(count: number, consume: boolean): Uint8Array {
+    const out = new Uint8Array(count);
+    let written = 0;
+    let index = 0;
+    let offset = this.headOffset;
+    while (written < count) {
+      const chunk = this.chunks[index]!;
+      const slice = chunk.subarray(offset, offset + Math.min(count - written, chunk.byteLength - offset));
+      out.set(slice, written);
+      written += slice.byteLength;
+      index++;
+      offset = 0;
+    }
+    if (consume) this.advance(count);
+    return out;
+  }
+
+  private advance(count: number): void {
+    this.size -= count;
+    let remaining = count;
+    while (remaining > 0) {
+      const available = this.chunks[0]!.byteLength - this.headOffset;
+      if (remaining < available) {
+        this.headOffset += remaining;
+        return;
+      }
+      remaining -= available;
+      this.chunks.shift();
+      this.headOffset = 0;
+    }
   }
 }

@@ -6,9 +6,9 @@ import {
   PROFILE_REGISTRY_VERSION_HOST,
   PROFILE_REGISTRY_VERSION_LINUX_VM,
   ProfileRegistryFile,
-  profileRegistryVersionViolation,
   type ProfileRecord,
 } from "@t3tools/contracts";
+import { profileRegistryVersionViolation } from "@t3tools/shared/profileExecution";
 import { profileRegistryPath, profileStateDir } from "@t3tools/shared/profilePaths";
 
 /** Electron only reads. The backend is the sole registry writer. */

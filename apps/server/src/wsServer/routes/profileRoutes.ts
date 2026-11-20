@@ -40,12 +40,7 @@ export const profileRoutes = ({
   return {
     [WS_METHODS.profilesList]: () => routePromise(list),
     [WS_METHODS.profilesCreate]: (body) =>
-      routePromise(async () => {
-        // The VM runtime isn't part of this build; never create a profile it can't run.
-        if (body.executionEnvironment === "linux-vm")
-          throw new Error("Linux VM profiles are not available in this build.");
-        return store.create(Struct.omit(body, ["_tag"]));
-      }).pipe(Effect.map(answer)),
+      routePromise(() => store.create(Struct.omit(body, ["_tag"]))).pipe(Effect.map(answer)),
     [WS_METHODS.profilesUpdate]: (body) =>
       routePromise(() => store.update(Struct.omit(body, ["_tag"]))).pipe(Effect.map(answer)),
     [WS_METHODS.profilesDelete]: ({ profileId }) => routePromise(() => store.remove(profileId)),

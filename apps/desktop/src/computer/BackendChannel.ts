@@ -1,6 +1,16 @@
 import type { ChildProcess, Serializable } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
-import { BackendFrameDecoder, encodeBackendFrame } from "@t3tools/shared/backendFrames";
+import {
+  BACKEND_FRAME_MAX_BYTES,
+  BackendFrameDecoder,
+  encodeBackendFrame,
+} from "@t3tools/shared/backendFrames";
+
+/**
+ * Output main may hold for a guest that isn't reading. Room for two maximum-size frames;
+ * a guest that falls further behind is disconnected rather than allowed to grow main's heap.
+ */
+export const BACKEND_CHANNEL_MAX_PENDING_BYTES = 2 * BACKEND_FRAME_MAX_BYTES;
 
 /**
  * Main's private link to one backend incarnation. Main creates every channel itself and
@@ -54,16 +64,18 @@ export function childProcessBackendChannel(child: ChildProcess): BackendChannel 
 
 /**
  * A guest backend: length-prefixed JSON frames over the stdio of the process main spawned
- * to reach it (`limactl shell`). Malformed input, end of stream or a write failure closes
- * the channel; the guest launcher treats the resulting stdin EOF as an order to stop every
- * process the backend owns.
+ * to reach it (`limactl shell`). Malformed input, end of stream, a write failure or a guest
+ * that stops reading (more than `maxPendingBytes` queued) closes the channel; the guest
+ * launcher treats the resulting stdin EOF as an order to stop every process the backend owns.
  */
 export function streamBackendChannel(io: {
   readonly input: Readable;
   readonly output: Writable;
   readonly maxFrameBytes?: number;
+  readonly maxPendingBytes?: number;
 }): BackendChannel {
   const decoder = new BackendFrameDecoder(io.maxFrameBytes);
+  const maxPendingBytes = io.maxPendingBytes ?? BACKEND_CHANNEL_MAX_PENDING_BYTES;
   const messageListeners: Array<(raw: unknown) => void> = [];
   const disconnectListeners: Array<() => void> = [];
   let closed = false;
@@ -107,6 +119,11 @@ export function streamBackendChannel(io: {
         frame = encodeBackendFrame(message);
       } catch {
         // Main's own message failed to encode; dropping it beats corrupting the stream.
+        return;
+      }
+      // `write` queues without limit while the guest isn't reading; bound the queue here.
+      if (io.output.writableLength + frame.byteLength > maxPendingBytes) {
+        close();
         return;
       }
       io.output.write(frame);

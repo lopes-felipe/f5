@@ -9,6 +9,7 @@ import { Schema } from "effect";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { managedWorktreesDirectories, isFilesystemRoot } from "../worktreesDirectoryPaths.ts";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
+import { isLinuxVmProfile } from "@t3tools/shared/profileExecution";
 import { executionDirectoryIssue } from "./executionDirectory";
 import { ProfileRegistryStore } from "./ProfileRegistryStore.ts";
 
@@ -100,7 +101,8 @@ export async function repositorySharingWarnings(
 ) {
   const entries = await Promise.all(
     profiles
-      .filter((profile) => profile.status === "ready")
+      // A Linux VM profile keeps its database on the guest disk, so it has no host roots.
+      .filter((profile) => profile.status === "ready" && !isLinuxVmProfile(profile))
       .map(async (profile) => ({
         profile,
         roots: await Promise.all(
@@ -136,6 +138,9 @@ export async function assertExclusiveProfileCheckout(
   const target = await canonicalWorktreePath(checkout);
   for (const profile of registry.registry.profiles) {
     if (profile.id === config.profile.id) continue;
+    // Linux VM profiles keep their state on the guest disk and work only on separate
+    // clones in their own exports, never on a host profile's checkout.
+    if (isLinuxVmProfile(profile)) continue;
     const stateDir = profileStateDir(config.defaultStateDir, profile);
     const file = Path.join(stateDir, "state.sqlite");
     const stat = await FS.stat(file).catch((error: NodeJS.ErrnoException) => {
@@ -176,7 +181,8 @@ export async function readOtherProfileManagedRoots(
   if (!registry.ok) throw new Error("Managed workspace ownership could not be established.");
   const roots = await Promise.all(
     registry.registry.profiles
-      .filter((profile) => profile.id !== config.profile!.id)
+      // Linux VM worktrees live in the guest, not in a managed host root.
+      .filter((profile) => profile.id !== config.profile!.id && !isLinuxVmProfile(profile))
       .map(async (profile) => {
         const stateDir = profileStateDir(config.defaultStateDir!, profile);
         let raw = "{}";

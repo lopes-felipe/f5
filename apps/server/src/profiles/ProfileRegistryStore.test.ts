@@ -317,6 +317,40 @@ it("refuses to remove a profile whose Claude in Chrome setup still owns the real
 describe("execution environments", () => {
   const fileVersion = async (store: ProfileRegistryStore) =>
     JSON.parse(await FS.readFile(store.path, "utf8")).version as number;
+  /** A VM record as a VM-capable build would write it; this build can't create one. */
+  const writeVmRecord = async (store: ProfileRegistryStore) => {
+    const registry = JSON.parse(await FS.readFile(store.path, "utf8"));
+    const vm = {
+      id: "f".repeat(32),
+      slug: "guest",
+      name: "Guest",
+      port: 4799,
+      isDefault: false,
+      status: "ready",
+      createdAt: new Date().toISOString(),
+      executionEnvironment: "linux-vm",
+    };
+    await FS.mkdir(profileStateDir(store.defaultStateDir, vm), { recursive: true });
+    await FS.writeFile(
+      store.path,
+      JSON.stringify({ ...registry, version: 2, profiles: [...registry.profiles, vm] }),
+    );
+    return vm;
+  };
+
+  it("refuses to create a Linux VM profile without touching the registry", async () => {
+    const { root, store } = await fixture();
+    try {
+      await store.init();
+      const before = await FS.readFile(store.path, "utf8");
+      await expect(
+        store.create({ name: "Guest", executionEnvironment: "linux-vm" }),
+      ).rejects.toThrow("Linux VM profiles are not available in this build.");
+      expect(await FS.readFile(store.path, "utf8")).toBe(before);
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
 
   it("writes version 2 only while a Linux VM profile exists", async () => {
     const { root, store } = await fixture();
@@ -328,20 +362,17 @@ describe("execution environments", () => {
       expect(JSON.parse(await FS.readFile(store.path, "utf8")).profiles[1]).not.toHaveProperty(
         "executionEnvironment",
       );
-      const vm = await store.create({ name: "Guest", executionEnvironment: "linux-vm" });
-      expect(vm).toMatchObject({ executionEnvironment: "linux-vm", status: "ready" });
-      expect(await fileVersion(store)).toBe(2);
-      // Updates keep the environment: it is fixed at creation.
+      const vm = await writeVmRecord(store);
+      expect((await store.read()).ok).toBe(true);
+      // Writes keep version 2 and the environment while the VM profile exists.
       await store.update({ profileId: vm.id, name: "Guest 2" });
+      await store.create({ name: "Another host" });
       expect(await fileVersion(store)).toBe(2);
       const read = await store.read();
       expect(read.ok && read.registry.profiles.find((p) => p.id === vm.id)).toMatchObject({
         name: "Guest 2",
         executionEnvironment: "linux-vm",
       });
-      // VM profiles get no host provider homes or settings; those live in the guest.
-      const dir = profileStateDir(store.defaultStateDir, vm);
-      expect(await FS.readdir(dir)).toEqual([]);
       await store.remove(vm.id);
       expect(await fileVersion(store)).toBe(1);
       expect((await store.read()).ok).toBe(true);
@@ -355,7 +386,7 @@ describe("execution environments", () => {
     const { root, store } = await fixture();
     try {
       await store.init();
-      await store.create({ name: "Guest", executionEnvironment: "linux-vm" });
+      await writeVmRecord(store);
       const v2 = JSON.parse(await FS.readFile(store.path, "utf8"));
       const vmDefault = {
         ...v2,

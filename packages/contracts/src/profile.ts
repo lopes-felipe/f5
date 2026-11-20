@@ -28,46 +28,15 @@ export const ProfileRecord = Schema.Struct({
   executionEnvironment: Schema.optional(ProfileExecutionEnvironment),
 });
 export type ProfileRecord = typeof ProfileRecord.Type;
-export const profileExecutionEnvironment = (
-  record: Pick<ProfileRecord, "executionEnvironment">,
-): ProfileExecutionEnvironment => record.executionEnvironment ?? "host";
 /** Registry format without Linux VM profiles; builds that predate VM profiles read it. */
 export const PROFILE_REGISTRY_VERSION_HOST = 1;
 /**
  * Registry format once any Linux VM profile exists. Older builds ignore unknown record
  * fields, so they would run a VM profile on the host; the bump makes them refuse it instead.
+ * Version 2 always means "contains a VM profile": any other format change needs version 3+.
  */
 export const PROFILE_REGISTRY_VERSION_LINUX_VM = 2;
 export const PROFILE_REGISTRY_MAX_VERSION = PROFILE_REGISTRY_VERSION_LINUX_VM;
-/** The version a registry holding `profiles` is written with: v2 only while a VM profile exists. */
-export const profileRegistryVersionFor = (
-  profiles: ReadonlyArray<Pick<ProfileRecord, "executionEnvironment">>,
-): number =>
-  profiles.some((profile) => profileExecutionEnvironment(profile) === "linux-vm")
-    ? PROFILE_REGISTRY_VERSION_LINUX_VM
-    : PROFILE_REGISTRY_VERSION_HOST;
-/**
- * Version invariants every reader enforces. A v1 file carrying a VM record would be run on
- * the host by an older build, and Default always runs on the host.
- */
-export function profileRegistryVersionViolation(registry: {
-  readonly version: number;
-  readonly profiles: ReadonlyArray<Pick<ProfileRecord, "executionEnvironment" | "isDefault">>;
-}): string | undefined {
-  if (
-    registry.version !== PROFILE_REGISTRY_VERSION_HOST &&
-    registry.version !== PROFILE_REGISTRY_VERSION_LINUX_VM
-  )
-    return "Unsupported registry version.";
-  if (registry.profiles.some((p) => p.isDefault && profileExecutionEnvironment(p) !== "host"))
-    return "Default must run on the host.";
-  if (
-    registry.version === PROFILE_REGISTRY_VERSION_HOST &&
-    registry.profiles.some((p) => profileExecutionEnvironment(p) === "linux-vm")
-  )
-    return "A version 1 registry cannot contain Linux VM profiles.";
-  return undefined;
-}
 export type ActiveProfile = Pick<
   ProfileRecord,
   "id" | "slug" | "name" | "accentColor" | "isDefault"

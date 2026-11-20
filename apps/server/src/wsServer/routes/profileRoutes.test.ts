@@ -80,23 +80,6 @@ it("creates a profile and answers where it lives, with no accounts and not activ
   });
 });
 
-it("refuses to create a Linux VM profile in a build without the VM runtime", async () => {
-  const { calls, answer } = makeRoutes();
-  const refused = await answer({
-    _tag: WS_METHODS.profilesCreate,
-    name: "Guest",
-    accentColor: undefined,
-    executionEnvironment: "linux-vm",
-  });
-  expect(calls).toEqual([]);
-  expect(refused).toMatchObject({
-    error: {
-      _tag: "RouteRequestError",
-      message: "Linux VM profiles are not available in this build.",
-    },
-  });
-});
-
 it("marks a changed profile active only when this server runs as it", async () => {
   const { calls, answer } = makeRoutes();
   const active = await answer({

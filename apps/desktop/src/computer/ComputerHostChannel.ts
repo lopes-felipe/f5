@@ -524,7 +524,9 @@ export class ComputerHostChannel {
         case "openExternalUrlRequest":
           if (!backend.capabilities.has(OPEN_EXTERNAL_URL_CAPABILITY)) return;
           void (
-            message.preapproved === true
+            // A host backend shares main's trust, so its preapproval stands. A guest backend
+            // is the side the VM contains: every URL it opens goes through the prompt.
+            message.preapproved === true && hostIntegrations()
               ? this.options.openExternalUrl!(profileId, message.url, { preapproved: true })
               : this.options.openExternalUrl!(profileId, message.url)
           ).then(

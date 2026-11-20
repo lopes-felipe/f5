@@ -44,7 +44,11 @@ import { isDebPackage } from "./linuxPackage";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
 import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
-import { hostBackendLauncher, resolveProfileBackendLauncher } from "./profileBackendLauncher";
+import {
+  hostBackendLauncher,
+  requireProfileBackendLauncher,
+  resolveProfileBackendLauncher,
+} from "./profileBackendLauncher";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
@@ -3294,7 +3298,8 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     return;
   }
 
-  // No fallback: a profile whose environment has no launcher never starts elsewhere.
+  // No fallback: a profile whose environment has no launcher never starts elsewhere. Opening
+  // refuses such a profile earlier; this also covers restarts and the startup Default.
   const resolved = resolveProfileBackendLauncher(runtime.profile, backendLaunchers);
   if (!resolved.ok) {
     runtime.stopped = true;
@@ -3531,6 +3536,8 @@ async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
     stop: () => stopBackendAndWaitForExit(5000, runtime),
     prepare: async () => {
       if (isQuitting) throw new Error("F5 is shutting down.");
+      // Before any port, auth or cap bookkeeping: a refused profile fails once, with its reason.
+      requireProfileBackendLauncher(runtime.profile, backendLaunchers);
       const otherBackends = [...backends.values()].filter(
         (entry) => entry !== runtime && (!entry.stopped || isProfileBackendRunning(entry)),
       );

@@ -5,9 +5,11 @@ import { MAC_BACKEND_COMPUTER_SANDBOX } from "./backendComputerIsolation";
 import {
   hostBackendLauncher,
   LINUX_VM_UNAVAILABLE_MESSAGE,
+  requireProfileBackendLauncher,
   resolveProfileBackendLauncher,
   type ProfileBackendLauncher,
 } from "./profileBackendLauncher";
+import { ensureProfileBackend } from "./profileRuntime";
 
 function fakeChild() {
   return Object.assign(new EventEmitter(), {
@@ -64,5 +66,30 @@ describe("profile backend launchers", () => {
     expect(
       resolveProfileBackendLauncher({ executionEnvironment: "linux-vm" }, { "linux-vm": vm }).ok,
     ).toBe(true);
+  });
+
+  it("refuses a VM profile while preparing, before it starts or waits for readiness", async () => {
+    const host = hostBackendLauncher({ platform: "linux", executable: "/F5", spawn: vi.fn() });
+    expect(requireProfileBackendLauncher({}, { host })).toBe(host);
+    const runtime = { backendProcess: null, stopped: true, restartAttempt: 0, restartTimer: null };
+    const reserve = vi.fn();
+    const start = vi.fn();
+    const ready = vi.fn(async () => {});
+    await expect(
+      ensureProfileBackend(runtime, {
+        stop: async () => {},
+        // Mirrors desktop main: the launcher check comes before port/auth/cap bookkeeping.
+        prepare: async () => {
+          requireProfileBackendLauncher({ executionEnvironment: "linux-vm" }, { host });
+          reserve();
+        },
+        start,
+        ready,
+      }),
+    ).rejects.toThrow(LINUX_VM_UNAVAILABLE_MESSAGE);
+    expect(reserve).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(ready).not.toHaveBeenCalled();
+    expect(runtime.stopped).toBe(true);
   });
 });

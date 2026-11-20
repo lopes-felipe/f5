@@ -1,5 +1,9 @@
 import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
 export { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
+import {
+  profileRegistryVersionFor,
+  profileRegistryVersionViolation,
+} from "@t3tools/shared/profileExecution";
 import { deriveServerPaths, ensureStateDirectories } from "../config";
 import * as FS from "node:fs/promises";
 import { watch } from "node:fs";
@@ -13,8 +17,6 @@ import {
   ProfileRegistryFile,
   ProfileRecord,
   ServerSettings,
-  profileRegistryVersionFor,
-  profileRegistryVersionViolation,
   type ProfileRegistryDiagnostic,
   type ProfileCreateInput,
   type ProfileUpdateInput,
@@ -62,7 +64,8 @@ export async function assertProfileDirectory(
   }
   return directory;
 }
-export const isProfilePortBindable = (port: number, host = "127.0.0.1") =>
+export const LINUX_VM_CREATE_UNAVAILABLE = "Linux VM profiles are not available in this build.";
+export const isProfilePortBindable =(port: number, host = "127.0.0.1") =>
   new Promise<boolean>((resolve) => {
     const server = Net.createServer();
     server.once("error", () => resolve(false));
@@ -288,6 +291,8 @@ export class ProfileRegistryStore {
     };
   }
   async create(input: ProfileCreateInput): Promise<ProfileRecord> {
+    // The VM runtime, and the provisioning lifecycle a VM record needs, aren't in this build.
+    if (input.executionEnvironment === "linux-vm") throw new Error(LINUX_VM_CREATE_UNAVAILABLE);
     return this.locked(async () => {
       let registry = await this.required();
       let stem = input.name
@@ -312,26 +317,10 @@ export class ProfileRegistryStore {
         isDefault: false,
         status: "provisioning",
         createdAt: new Date().toISOString(),
-        // Host records omit the field so host-only registries stay byte-compatible with v1.
-        ...(input.executionEnvironment === "linux-vm"
-          ? { executionEnvironment: "linux-vm" as const }
-          : {}),
       });
       const directory = await assertProfileDirectory(this.defaultStateDir, record);
       registry = { ...registry, profiles: [...registry.profiles, record] };
       await this.write(registry);
-      if (record.executionEnvironment === "linux-vm") {
-        // The host directory only holds main-owned VM metadata; provider homes, settings
-        // and the database live on the guest's data disk, never on the host.
-        await FS.mkdir(directory, { recursive: true, mode: 0o700 });
-        await FS.chmod(directory, 0o700);
-        const vmReady = { ...record, status: "ready" as const };
-        await this.write({
-          ...registry,
-          profiles: registry.profiles.map((p) => (p.id === record.id ? vmReady : p)),
-        });
-        return vmReady;
-      }
       const homes = profileProviderHomesDir(directory);
       for (const name of ["codex", "claude"])
         await FS.mkdir(Path.join(homes, name), { recursive: true, mode: 0o700 });

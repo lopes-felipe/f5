@@ -1,9 +1,6 @@
 import * as ChildProcess from "node:child_process";
-import {
-  profileExecutionEnvironment,
-  type ProfileExecutionEnvironment,
-  type ProfileRecord,
-} from "@t3tools/contracts";
+import type { ProfileExecutionEnvironment, ProfileRecord } from "@t3tools/contracts";
+import { profileExecutionEnvironment } from "@t3tools/shared/profileExecution";
 import { isolatedBackendCommand } from "./backendComputerIsolation";
 import { childProcessBackendChannel, type BackendChannel } from "./computer/BackendChannel";
 
@@ -79,7 +76,7 @@ export type BackendLauncherResolution =
   | { readonly ok: false; readonly message: string };
 
 export const LINUX_VM_UNAVAILABLE_MESSAGE =
-  "This profile runs in a Linux VM, which this build of F5 can't start. F5 never runs it on the host. Use a build with Linux VM profiles, or open a host profile.";
+  "This profile runs in a Linux VM, which this version of F5 can't start. F5 never runs it on the host; open a host profile instead.";
 
 /**
  * The launcher for a profile's recorded environment. There is no fallback: an environment
@@ -97,4 +94,18 @@ export function resolveProfileBackendLauncher(
       message: environment === "linux-vm" ? LINUX_VM_UNAVAILABLE_MESSAGE : "No backend launcher.",
     };
   return { ok: true, launcher };
+}
+
+/**
+ * The launcher for `profile`, or an error carrying the refusal. Opening a profile calls this
+ * before it reserves a port, configures request auth or counts against the backend cap, so
+ * a refused profile fails once, with its own reason.
+ */
+export function requireProfileBackendLauncher(
+  profile: Pick<ProfileRecord, "executionEnvironment">,
+  launchers: Partial<Record<ProfileExecutionEnvironment, ProfileBackendLauncher>>,
+): ProfileBackendLauncher {
+  const resolved = resolveProfileBackendLauncher(profile, launchers);
+  if (!resolved.ok) throw new Error(resolved.message);
+  return resolved.launcher;
 }

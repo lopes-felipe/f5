@@ -48,6 +48,38 @@ describe("stream backend channel", () => {
     channel.send({ type: "dropped" });
   });
 
+  it("disconnects a guest that stops reading once its queue passes the bound", () => {
+    const fromGuest = new PassThrough();
+    // Nobody reads this side, and its buffers are small, so writes queue up.
+    const toGuest = new PassThrough({ highWaterMark: 16 });
+    const channel = streamBackendChannel({
+      input: fromGuest,
+      output: toGuest,
+      maxPendingBytes: 1024,
+    });
+    const disconnected = vi.fn();
+    channel.onDisconnect(disconnected);
+    const message = { type: "activity", data: "y".repeat(200) };
+    let sent = 0;
+    while (channel.connected && sent < 100) {
+      channel.send(message);
+      sent++;
+    }
+    expect(disconnected).toHaveBeenCalledTimes(1);
+    expect(channel.connected).toBe(false);
+    // Disconnected well before the cap was exceeded by more than one frame.
+    expect(sent).toBeLessThan(10);
+  });
+
+  it("keeps frames up to the per-frame maximum flowing to a reading guest", async () => {
+    const { channel, sent } = streams();
+    const large = { type: "screenshot", data: "z".repeat(1024 * 1024) };
+    channel.send(large);
+    channel.send(large);
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(channel.connected).toBe(true);
+  });
+
   it("disconnects once at end of stream, and late listeners still hear it", async () => {
     const { fromGuest, channel } = streams();
     const first = vi.fn();
