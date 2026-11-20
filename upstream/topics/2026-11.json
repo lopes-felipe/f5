@@ -79751,11 +79751,20 @@
     },
     {
       "createdAt": "2026-11-19T11:06:04.640Z",
-      "decidedAt": "2026-11-20T11:44:39.946Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-20T11:49:36.253Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/main.ts:607"
+        ],
+        "f5Refs": [
+          "5ada62dbd338f137f920053f84b88096489b7730"
+        ]
+      },
       "id": "pr-38813",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "cli",
@@ -80976,11 +80985,13 @@
     },
     {
       "createdAt": "2026-11-19T11:06:04.640Z",
-      "decidedAt": "2026-11-20T11:44:39.946Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-20T11:49:36.253Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-38974",
-      "status": "port",
+      "reason": "F5 has no CLI commands for session or pairing revocation, device approval, or project add, remove, and rename.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli",
