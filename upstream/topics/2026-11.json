@@ -7216,9 +7216,11 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24310",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings",
@@ -12507,12 +12509,14 @@
     },
     {
       "createdAt": "2026-11-18T11:12:10.405Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26652",
       "relatedTopics": [
         "pr-38173"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -74967,12 +74971,14 @@
     },
     {
       "createdAt": "2026-11-19T11:06:04.640Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37866",
       "relatedTopics": [
         "pr-38357"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "preview-browser",
@@ -79687,9 +79693,11 @@
     },
     {
       "createdAt": "2026-11-19T11:06:04.640Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-38813",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "cli",
@@ -80910,9 +80918,11 @@
     },
     {
       "createdAt": "2026-11-19T11:06:04.640Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-38974",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "cli",
@@ -81212,9 +81222,13 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39027",
-      "status": "inbox",
+      "reason": "This builds on upstream's scoped RPC permissions and orchestration-v2 intake, which f5 does not have.",
+      "reasonKey": "upstream-only:auth-scopes",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "security",
@@ -83092,12 +83106,14 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39415",
       "relatedTopics": [
         "pr-37947"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "security",
@@ -83441,9 +83457,11 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39464",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "security",
@@ -83519,12 +83537,14 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-20T11:44:39.945Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39480",
       "relatedTopics": [
         "pr-38775"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "forges",
@@ -83578,9 +83598,13 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39483",
-      "status": "inbox",
+      "reason": "The attack vector is T3 Connect proof claims (CloudLink), and f5 lacks these files.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "security",
@@ -83655,9 +83679,11 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39491",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "security",
@@ -83707,12 +83733,16 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39495",
+      "reason": "Pairing grants are relay-cloud under f5 policy.",
+      "reasonKey": "relay-cloud",
       "relatedTopics": [
         "pr-38974"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "security",
@@ -83736,9 +83766,13 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-20T11:44:39.946Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39497",
-      "status": "inbox",
+      "reason": "Upstream's server headless-Chrome preview does not apply to f5, which keeps its desktop-hosted preview.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview-browser",
