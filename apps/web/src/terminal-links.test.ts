@@ -389,9 +389,11 @@ describe("trailing colons", () => {
   });
 });
 
-it("recognizes uppercase HTTP schemes as URLs rather than paths", () => {
-  expect(extractTerminalLinks("HTTPS://example.com/path")[0]).toMatchObject({
-    kind: "url",
-    text: "HTTPS://example.com/path",
-  });
+it.each([
+  ["HTTPS://example.com/path", "HTTPS://example.com/path"],
+  ["git+https://github.com/x/y.git", "https://github.com/x/y.git"],
+])("recognizes the HTTP URL in %s", (line, text) => {
+  expect(extractTerminalLinks(line)).toEqual([
+    { kind: "url", text, start: line.indexOf(text), end: line.length },
+  ]);
 });

@@ -20,6 +20,7 @@ type TerminalLinkRange = Pick<TerminalLinkMatch, "start" | "end">;
 const URL_PATTERN = /https?:\/\/[^\s"'`<>]+/giu;
 const FILE_URL_PATTERN = /file:\/\/[^\s"'`<>]+/gi;
 // Allow diff prefixes and keep one-letter schemes available for drive paths.
+// The lookbehind prevents rescanning a run of scheme characters at every suffix.
 const UNSUPPORTED_URL_PATTERN =
   /(?<![A-Za-z\d+.-])[+-]?(?!(?:https?|file):)[A-Za-z][A-Za-z\d+.-]+:\/\/[^\s"'`<>]+/giu;
 const FILE_PATH_PATTERN =
