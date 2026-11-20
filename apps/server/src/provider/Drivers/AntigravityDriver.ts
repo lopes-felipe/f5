@@ -80,6 +80,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         { enabled, binaryPath: "", customModels: config.customModels },
         {
           provider: "antigravity",
+          antigravityProfileDirectory: antigravityProfileDirectory(server.stateDir, instanceId),
           ...(previewMcp ? { previewMcpHttpServer: previewMcp } : {}),
           ...(computerBroker ? { computerAutomationBroker: computerBroker } : {}),
           nativeCompaction: config.nativeCompaction,

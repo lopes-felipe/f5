@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { useAgentTranscriptStore, transcriptKey } from "./lib/agentTranscriptStore";
 
 export type RightPanelSurface =
+  | { id: `side:${string}`; kind: "side-chat"; threadId: ThreadId; title: string }
   | {
       id: `agent:${string}`;
       kind: "agent-transcript";
@@ -48,6 +49,7 @@ export interface OpenFileSurfaceInput {
 }
 
 interface RightPanelStoreState {
+  openSideChat: (threadId: ThreadId, childId: ThreadId, title: string) => void;
   userActionRevisionByThreadId: Record<string, number>;
   proactiveDiffTurnIdByThreadId: Record<string, TurnId>;
   proactivePullRequestKeyByThreadId: Record<string, string>;
@@ -81,7 +83,10 @@ interface RightPanelStoreState {
   reopenClosed: () => ClosedRightPanelSurface | null;
   open: (
     threadId: ThreadId,
-    kind: Exclude<RightPanelSurfaceKind, "file" | "pull-request" | "agent-transcript">,
+    kind: Exclude<
+      RightPanelSurfaceKind,
+      "file" | "pull-request" | "agent-transcript" | "side-chat"
+    >,
   ) => void;
   /**
    * Adds a surface tab without opening the panel or changing the active tab unless
@@ -89,7 +94,10 @@ interface RightPanelStoreState {
    */
   addSurface: (
     threadId: ThreadId,
-    kind: Exclude<RightPanelSurfaceKind, "file" | "pull-request" | "agent-transcript">,
+    kind: Exclude<
+      RightPanelSurfaceKind,
+      "file" | "pull-request" | "agent-transcript" | "side-chat"
+    >,
     options?: { readonly activate?: boolean },
   ) => void;
   consumePullRequestAction: (threadId: ThreadId, surfaceId: string, requestId: string) => void;
@@ -126,7 +134,7 @@ function threadKey(threadId: ThreadId): string {
 }
 
 function singletonSurface(
-  kind: Exclude<RightPanelSurfaceKind, "file" | "pull-request" | "agent-transcript">,
+  kind: Exclude<RightPanelSurfaceKind, "file" | "pull-request" | "agent-transcript" | "side-chat">,
 ): RightPanelSurface {
   switch (kind) {
     case "diff":
@@ -352,6 +360,17 @@ export const useRightPanelStore = create<RightPanelStoreState>()((automaticSet, 
             ...(input.focusActivityId !== undefined
               ? { focusActivityId: input.focusActivityId }
               : {}),
+          }),
+        ),
+      })),
+    openSideChat: (threadId, childId, title) =>
+      set((state) => ({
+        byThreadId: updateThread(state.byThreadId, threadId, (current) =>
+          upsertSurface(current, {
+            id: `side:${childId}`,
+            kind: "side-chat",
+            threadId: childId,
+            title,
           }),
         ),
       })),

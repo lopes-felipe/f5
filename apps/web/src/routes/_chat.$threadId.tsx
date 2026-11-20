@@ -30,6 +30,7 @@ import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { getLocalStorageItem } from "../hooks/useLocalStorage";
 import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../appSettings";
 import ChatView from "../components/ChatView";
+import { SideChatPanel } from "../components/SideChatPanel";
 import { DiffSurfaceBoundary } from "../components/DiffSurfaceBoundary";
 import PlanSidebar from "../components/PlanSidebar";
 import { PreviewPanelProjection } from "../components/PreviewBrowserHost";
@@ -822,6 +823,12 @@ function ChatThreadRouteView() {
                 visible={rightPanelState.isOpen}
                 cwd={workspaceBrowserRoot ?? undefined}
               />
+            );
+          case "side-chat":
+            return (
+              <Suspense fallback={<DiffPanelLoadingState label="Loading side chat..." />}>
+                <SideChatPanel threadId={surface.threadId} />
+              </Suspense>
             );
         }
       },

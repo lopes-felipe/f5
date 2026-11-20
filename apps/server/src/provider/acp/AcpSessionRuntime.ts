@@ -92,6 +92,9 @@ export interface AcpSessionRuntimeOptions {
   readonly cwd: string;
   readonly resumeSessionId?: string;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
+  readonly sessionMeta?: (
+    init: EffectAcpSchema.InitializeResponse,
+  ) => EffectAcpSchema.NewSessionRequest["_meta"];
   /** Provider-owned attribution runs on the wire reader, before state or text coalescing. */
   readonly normalizeSessionUpdate?: (
     notification: EffectAcpSchema.SessionNotification,
@@ -815,6 +818,7 @@ const makeAcpSessionRuntime = (
       }
 
       let sessionId: string;
+      const sessionMeta = options.sessionMeta?.(initializeResult);
       let sessionSetupResult:
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
@@ -824,6 +828,7 @@ const makeAcpSessionRuntime = (
           sessionId: options.resumeSessionId,
           cwd: options.cwd,
           mcpServers: [...mcpServers],
+          ...(sessionMeta ? { _meta: sessionMeta } : {}),
         } satisfies EffectAcpSchema.LoadSessionRequest;
         if (options.resumeMethod === "resume") {
           const resumed = yield* runLoggedRequest(
@@ -840,6 +845,7 @@ const makeAcpSessionRuntime = (
             const createPayload = {
               cwd: options.cwd,
               mcpServers: [...mcpServers],
+              ...(sessionMeta ? { _meta: sessionMeta } : {}),
             } satisfies EffectAcpSchema.NewSessionRequest;
             const created = yield* runLoggedRequest(
               "session/new",
@@ -875,6 +881,7 @@ const makeAcpSessionRuntime = (
             const createPayload = {
               cwd: options.cwd,
               mcpServers: [...mcpServers],
+              ...(sessionMeta ? { _meta: sessionMeta } : {}),
             } satisfies EffectAcpSchema.NewSessionRequest;
             const created = yield* runLoggedRequest(
               "session/new",
@@ -901,6 +908,7 @@ const makeAcpSessionRuntime = (
             const createPayload = {
               cwd: options.cwd,
               mcpServers: [...mcpServers],
+              ...(sessionMeta ? { _meta: sessionMeta } : {}),
             } satisfies EffectAcpSchema.NewSessionRequest;
             const created = yield* runLoggedRequest(
               "session/new",
@@ -915,6 +923,7 @@ const makeAcpSessionRuntime = (
         const createPayload = {
           cwd: options.cwd,
           mcpServers: [...mcpServers],
+          ...(sessionMeta ? { _meta: sessionMeta } : {}),
         } satisfies EffectAcpSchema.NewSessionRequest;
         const created = yield* runLoggedRequest(
           "session/new",

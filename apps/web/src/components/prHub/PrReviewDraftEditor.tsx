@@ -12,7 +12,7 @@ import type {
 } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
-import { Textarea } from "../ui/textarea";
+import { PrCompletionTextarea as Textarea } from "./PrCompletionTextarea";
 
 export function PrReviewDraftEditor({
   prKey,
@@ -291,6 +291,7 @@ function DraftEditor({
         </p>
       ) : null}
       <Textarea
+        prKey={prKey}
         id="pr-review-draft"
         value={content.body}
         maxLength={65_536}
@@ -306,6 +307,7 @@ function DraftEditor({
             {comment.path}:{comment.line} ({comment.side === "LEFT" ? "old" : "new"})
           </label>
           <Textarea
+            prKey={prKey}
             id={`pr-comment-${comment.id}`}
             value={comment.body}
             disabled={draft?.frozen || reviewBusy || saving}

@@ -6463,6 +6463,62 @@ describe("ProviderCommandReactor", () => {
       });
     });
 
+    it("delivers captured side-chat context once through durable handoff without replaying parent rows", async () => {
+      const harness = await createHarness({
+        handoff: true,
+        nativeCursors: true,
+        bridgeTurnDelivery: false,
+      });
+      const at = nextAt();
+      const pending = {
+        id: "side-chat-fork",
+        mode: "full",
+        targetInstanceId: "codex",
+        fromProvider: "codex",
+        fromInstanceId: "codex",
+        fromModel: codex.model,
+        sinceMessageId: null,
+        expectedNativeIdentity: null,
+        createdAt: at,
+        sourceContext: {
+          effectiveMode: "full",
+          messages: [
+            {
+              id: "parent-context",
+              role: "user",
+              text: "The parent asked about portable forks.",
+              streaming: false,
+              createdAt: at,
+            },
+          ],
+          summary: null,
+        },
+      };
+      await harness.withSql(
+        (sql) =>
+          sql`INSERT INTO provider_handoff_state(thread_id,pending_json,parked_json,revision,updated_at) VALUES (${threadId},${JSON.stringify(pending)},'{}',1,${at})`,
+      );
+      const delivered = await turn(harness, {
+        id: "side-first",
+        text: "Explain it.",
+        selection: codex,
+        durable: true,
+      });
+      expect(delivered._tag).toBe("Success");
+      expect(sentInput(harness, 0)).toContain("The parent asked about portable forks.");
+      expect(sentInput(harness, 0)).toContain("Explain it.");
+      expect((await harness.readHandoffState(threadId))?.pending).toBeNull();
+      await harness.completeAcceptedTurns();
+      const second = await turn(harness, {
+        id: "side-second",
+        text: "Continue.",
+        selection: codex,
+        durable: true,
+      });
+      expect(second._tag).toBe("Success");
+      expect(sentInput(harness, 1)).toBe("Continue.");
+    });
+
     it("resumes the parked session on the way back and sends only the delta", async () => {
       const harness = await claudeConversation();
       await turn(harness, { id: "x1", text: "Rename the helper.", selection: codex });

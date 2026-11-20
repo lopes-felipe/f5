@@ -1,0 +1,1 @@
+- Pin favorite projects from project rows, the command palette, or Settings → Projects. Pinned projects come first in project pickers. Archive projects to hide them from pickers, and restore them from Settings.

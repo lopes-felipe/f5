@@ -1,0 +1,1 @@
+- Complete user mentions and issue or pull request references with a keyboard-accessible suggestion list in PR composers. GitLab also supports merge request references beginning with an exclamation mark.

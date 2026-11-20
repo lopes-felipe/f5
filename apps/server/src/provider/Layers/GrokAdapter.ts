@@ -17,6 +17,9 @@ import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAut
 import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeEvent";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { AntigravityTasks } from "../acp/AntigravityTasks.ts";
+import { makeAntigravityToolNormalizer } from "../acp/AntigravityToolCalls.ts";
+import { watchAntigravityPromptOutcome } from "../acp/AntigravityTurnOutcome.ts";
+import { readAntigravityChildrenAtWork } from "../acp/AntigravityChildWork.ts";
 import { PromptInactivityDeadline } from "../acp/PromptInactivityDeadline";
 import {
   acpElicitationDescriptor,
@@ -131,6 +134,7 @@ const PROVIDER: ProviderKind = "grok";
 const GROK_RESUME_VERSION = 1 as const;
 
 export interface GrokAdapterLiveOptions {
+  readonly antigravityProfileDirectory?: string;
   /** Antigravity silent-prompt deadline; configurable for deterministic tests. */
   readonly promptInactivityTimeoutMs?: number;
   /** Certification/test seam; production drivers leave this unset. */
@@ -195,6 +199,8 @@ interface GrokSessionContext {
   transportFailure?: string | undefined;
   readonly backgroundTasks: Map<string, GrokBackgroundTaskRecord>;
   readonly antigravityTasks: AntigravityTasks;
+  readonly normalizeAntigravityTool: ReturnType<typeof makeAntigravityToolNormalizer>;
+  nativeChildrenPolling: boolean;
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -1120,6 +1126,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             stopped: false,
             backgroundTasks: new Map(),
             antigravityTasks: new AntigravityTasks(),
+            normalizeAntigravityTool: makeAntigravityToolNormalizer(),
+            nativeChildrenPolling: false,
           };
 
           let nativeSkillCommands: typeof discoveredSkillCommands = [];
@@ -1202,6 +1210,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       ))
                         yield* offerRuntimeEvent({
                           ...eventData,
+                          payload: {
+                            ...eventData.payload,
+                            ...(eventData.type === "task.started"
+                              ? { nativeParentSessionId: ctx.acpSessionId }
+                              : {}),
+                          },
                           ...(yield* makeEventStamp(ctx)),
                           provider: PROVIDER,
                           threadId: ctx.threadId,
@@ -1232,7 +1246,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: ctx.activeTurnId,
-                        toolCall: event.toolCall,
+                        toolCall:
+                          PROVIDER === "antigravity"
+                            ? ctx.normalizeAntigravityTool(event.toolCall)
+                            : event.toolCall,
                         rawPayload: event.rawPayload,
                       }),
                     );
@@ -1554,6 +1571,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
 
         return yield* Effect.gen(function* () {
+          const checkOutcome =
+            PROVIDER === "antigravity" && options?.antigravityProfileDirectory
+              ? yield* watchAntigravityPromptOutcome(
+                  options.antigravityProfileDirectory,
+                  prepared.context.acpSessionId,
+                )
+              : undefined;
           const deadline =
             options?.promptInactivityTimeoutMs ??
             (PROVIDER === "antigravity" ? 15 * 60_000 : undefined);
@@ -1624,6 +1648,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 : Effect.void,
             ),
           );
+          const nativeFailure = checkOutcome ? yield* checkOutcome(result) : undefined;
+          const nativeChildren =
+            PROVIDER === "antigravity" && options?.antigravityProfileDirectory
+              ? yield* readAntigravityChildrenAtWork({
+                  profileDirectory: options.antigravityProfileDirectory,
+                  rootSessionId: prepared.context.acpSessionId,
+                  toolCallIds: prepared.context.antigravityTasks.taskIds,
+                })
+              : [];
 
           return yield* withThreadLock(
             input.threadId,
@@ -1660,7 +1693,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
               if (ctx.promptsInFlight === 1) {
                 yield* ctx.acp.awaitEventBarrier;
-                for (const eventData of ctx.antigravityTasks.finish())
+                for (const eventData of nativeChildren.length
+                  ? ctx.antigravityTasks.settleDetached(nativeChildren)
+                  : ctx.antigravityTasks.finish())
                   yield* offerRuntimeEvent({
                     ...eventData,
                     ...(yield* makeEventStamp(ctx)),
@@ -1668,8 +1703,63 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     threadId: ctx.threadId,
                     turnId: prepared.turnId,
                   } as ProviderRuntimeEvent);
+                if (
+                  nativeChildren.length &&
+                  !ctx.nativeChildrenPolling &&
+                  options?.antigravityProfileDirectory
+                ) {
+                  ctx.nativeChildrenPolling = true;
+                  const profileDirectory = options.antigravityProfileDirectory;
+                  yield* Effect.gen(function* () {
+                    while (!ctx.stopped && ctx.antigravityTasks.taskIds.length) {
+                      yield* Effect.sleep(Duration.seconds(2));
+                      const observed = ctx.antigravityTasks.taskIds;
+                      const atWork = yield* readAntigravityChildrenAtWork({
+                        profileDirectory,
+                        rootSessionId: ctx.acpSessionId,
+                        toolCallIds: observed,
+                      });
+                      for (const eventData of ctx.antigravityTasks.settleDetached(atWork, observed))
+                        yield* offerRuntimeEvent({
+                          ...eventData,
+                          ...(yield* makeEventStamp(ctx)),
+                          provider: PROVIDER,
+                          threadId: ctx.threadId,
+                        } as ProviderRuntimeEvent);
+                    }
+                  }).pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        ctx.nativeChildrenPolling = false;
+                      }),
+                    ),
+                    Effect.forkIn(ctx.scope),
+                  );
+                }
                 yield* settleElicitationsForTurn(input.threadId, prepared.turnId);
                 ctx.completedTurnId = prepared.turnId;
+                if (nativeFailure)
+                  yield* offerRuntimeEvent({
+                    type: "runtime.error",
+                    ...(yield* makeEventStamp(ctx)),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: prepared.turnId,
+                    payload: {
+                      class: "provider_error",
+                      message: nativeFailure.message,
+                      ...(nativeFailure.class === "usage_limit"
+                        ? {
+                            usageLimit: {
+                              windows: [],
+                              resetsAt: nativeFailure.resetAt ?? null,
+                              resetSource: nativeFailure.resetAt ? ("provider" as const) : null,
+                              evidence: "typed" as const,
+                            },
+                          }
+                        : {}),
+                    },
+                  });
                 yield* offerRuntimeEvent({
                   type: "turn.completed",
                   ...(yield* makeEventStamp(ctx)),
@@ -1677,7 +1767,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   threadId: input.threadId,
                   turnId: prepared.turnId,
                   payload: {
-                    state: result.stopReason === "cancelled" ? "cancelled" : "completed",
+                    state: nativeFailure
+                      ? "failed"
+                      : result.stopReason === "cancelled"
+                        ? "cancelled"
+                        : "completed",
+                    ...(nativeFailure ? { errorMessage: nativeFailure.message } : {}),
                     stopReason: result.stopReason ?? null,
                   },
                 });

@@ -110,6 +110,7 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "workflow.new",
       "thread.stop",
       "thread.togglePin",
+      "project.togglePin",
       "thread.toggleSettled",
       "thread.copyReference",
       "thread.undo",

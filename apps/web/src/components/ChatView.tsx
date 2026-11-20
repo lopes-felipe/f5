@@ -720,6 +720,7 @@ function deriveFallbackTasksFromPlan(
 }
 
 interface ChatViewProps {
+  embedded?: boolean;
   threadId: ThreadId;
   openInShortcutEnabled: boolean;
   liveAgentCount: number;
@@ -807,6 +808,7 @@ function selectFavoritePresets(settings: UnifiedWebSettings): ReadonlyArray<Favo
 // Memoized: props are primitives, so streamed tokens and panel updates only re-render this
 // component when they change a prop, such as which surface owns the editor shortcut.
 export default memo(function ChatView({
+  embedded = false,
   threadId,
   openInShortcutEnabled,
   liveAgentCount,
@@ -4361,6 +4363,11 @@ export default memo(function ChatView({
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      const owner =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-chat-thread]")?.dataset.chatThread
+          : undefined;
+      if (owner ? owner !== threadId : embedded) return;
       // Capture phase, so a held close-terminal shortcut stops here before it
       // reaches the next terminal, a right-panel tab or the browser tab.
       if (terminalCloseRepeatGuard.preventRepeat(event, keybindings)) {
@@ -4642,6 +4649,8 @@ export default memo(function ChatView({
     terminalCloseRepeatGuard,
     activeThreadId,
     selectedProviderModels,
+    embedded,
+    threadId,
     selectedModel,
     selectedProviderDriver,
     selectedProviderModelOptionsForDispatch,
@@ -4671,6 +4680,11 @@ export default memo(function ChatView({
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      const owner =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-chat-thread]")?.dataset.chatThread
+          : undefined;
+      if (owner ? owner !== threadId : embedded) return;
       if (!activeThreadId || event.defaultPrevented) return;
       if (wsInteractionBlocked) return;
       const shortcutContext = {
@@ -4754,6 +4768,8 @@ export default memo(function ChatView({
     terminalState.terminalOpen,
     terminalState.activeTerminalId,
     terminalCloseRepeatGuard,
+    embedded,
+    threadId,
     activeThreadId,
     closeTerminal,
     createNewTerminal,
@@ -5342,6 +5358,29 @@ export default memo(function ChatView({
     onAdmittedCallback?: () => void,
   ) => {
     e?.preventDefault();
+    const sideChatCommand = /^\/(?:side|btw)(?:\s+([\s\S]*))?$/i.exec(promptRef.current.trim());
+    if (
+      sideChatCommand &&
+      composerImages.length === 0 &&
+      composerFilePaths.length === 0 &&
+      composerTerminalContexts.length === 0
+    ) {
+      const original = promptRef.current;
+      try {
+        await openNewSideChat(threadId, sideChatCommand[1] ?? "");
+        if (promptRef.current === original) {
+          promptRef.current = "";
+          setPrompt("");
+        }
+      } catch (cause) {
+        toastManager.add({
+          type: "error",
+          title: "Side chat could not open",
+          description: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+      return;
+    }
     if (
       promptRef.current.trim().toLowerCase() === "/clear" &&
       composerImages.length === 0 &&
@@ -8781,6 +8820,7 @@ export default memo(function ChatView({
                         model: activeThread.model,
                         provider: activeThread.session?.provider ?? null,
                         tokenUsageSource: activeThread.session?.tokenUsageSource,
+                        autoCompactThreshold: activeThread.session?.autoCompactThreshold,
                       }}
                       promptCache={promptCache.meter}
                       pendingInteraction={composerPendingInteraction}
@@ -8903,8 +8943,13 @@ export default memo(function ChatView({
   );
   return (
     <OpenLinkThread.Provider value={threadId}>
-      <RepositoryLinks.Provider value={repositoryLinks}>{workspace}</RepositoryLinks.Provider>
+      <RepositoryLinks.Provider value={repositoryLinks}>
+        <div className="contents" data-chat-thread={threadId}>
+          {workspace}
+        </div>
+      </RepositoryLinks.Provider>
     </OpenLinkThread.Provider>
   );
 });
 import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
+import { openNewSideChat } from "../lib/sideChats";

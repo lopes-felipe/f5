@@ -4621,6 +4621,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           // Zero-input starts are proxy placeholders, not context measurements.
           if (claudeInputTokens(mergedUsage) <= 0) return;
           const modelContextWindowTokens = emittedModelContextWindowTokens(context);
+          const configuredWindow = Number(
+            asUnknownRecord(context.queryOptions.settings)?.autoCompactWindow,
+          );
+          const autoCompactThreshold =
+            context.nativeCompactionEnabled &&
+            configuredWindow > 33_000 &&
+            (modelContextWindowTokens === undefined || configuredWindow < modelContextWindowTokens)
+              ? configuredWindow - 33_000
+              : null;
           const stamp = yield* makeEventStamp(context);
           yield* offerRuntimeEvent({
             type: "thread.token-usage.updated",
@@ -4632,6 +4641,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
             payload: {
               usage: mergedUsage,
+              ...(autoCompactThreshold !== null ? { autoCompactThreshold } : {}),
               ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
             },
             providerRefs: nativeProviderRefs(context),

@@ -13,6 +13,11 @@ import {
 } from "./AcpSessionRuntime.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 
+export function antigravitySessionMeta(version: string | undefined) {
+  const match = /^1\.4\.([2-5])(?:$|[.-])/.test(version ?? "");
+  return match ? { antigravity: { disabledTools: ["run_workflow"] } } : undefined;
+}
+
 async function publishProfileFile(file: string, contents: string): Promise<void> {
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
@@ -105,14 +110,16 @@ const credentialVariables =
 export function antigravityEnvironment(
   base: NodeJS.ProcessEnv,
   home: string,
-  harness: string,
+  harness: string | undefined,
   browserCommand: string,
 ): NodeJS.ProcessEnv {
   return {
     ...Object.fromEntries(Object.entries(base).filter(([key]) => !credentialVariables.test(key))),
     GEMINI_HOME: home,
     AGY_ACP_FORCE_FILE_STORAGE: "1",
-    ANTIGRAVITY_HARNESS_PATH: harness,
+    ...(harness ? { ANTIGRAVITY_HARNESS_PATH: harness } : {}),
+    SSH_CONNECTION: base.SSH_CONNECTION || "127.0.0.1 0 127.0.0.1 0",
+    AGY_CLI_DISABLE_AUTO_UPDATE: "1",
     BROWSER: browserCommand,
     PYTHONUNBUFFERED: "1",
   };
@@ -142,6 +149,49 @@ export function antigravityAuthorizationUrl(value: string): string | undefined {
   }
 }
 
+export async function prepareAntigravityProfile(input: {
+  stateDir: string;
+  instanceId: string;
+  environment: NodeJS.ProcessEnv;
+  accountSetup?: boolean;
+}) {
+  const executable = await new AntigravityInstallation(input.stateDir).resolve();
+  const home = antigravityProfileDirectory(input.stateDir, input.instanceId);
+  await fs.mkdir(path.join(home, "antigravity-acp"), { recursive: true, mode: 0o700 });
+  if (!input.accountSetup) {
+    const token = await fs.lstat(path.join(home, "antigravity-acp", "acp_token.json"));
+    if (!token.isFile() || token.size === 0)
+      throw new Error("Sign in to Antigravity in Settings first.");
+  }
+  await publishProfileFile(
+    path.join(home, "antigravity-acp", "settings.json"),
+    JSON.stringify({ auth: { type: "oauth-personal" } }),
+  );
+  const userHome =
+    process.platform === "win32"
+      ? input.environment.USERPROFILE || os.homedir()
+      : input.environment.HOME || os.homedir();
+  // Share only user skill directories. MCP, hooks and credentials remain private.
+  await linkAntigravityUserSkills(home, userHome);
+  // A helper handles browser requests without opening a browser in the server account.
+  const helper = path.join(home, "browser.cjs");
+  await publishProfileFile(
+    helper,
+    'process.stderr.on("error",()=>process.exit(0));process.stderr.write("F5_AUTH_URL="+JSON.stringify(process.argv[2])+"\\n");',
+  );
+  const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+  const wrapper = path.join(home, process.platform === "win32" ? "browser.cmd" : "browser.sh");
+  const script =
+    process.platform === "win32"
+      ? `@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${javascriptRuntimeExecutable().replaceAll("%", "%%")}" "${helper.replaceAll("%", "%%")}" %1\r\n`
+      : `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quote(javascriptRuntimeExecutable())} ${quote(helper)} "$1"\n`;
+  await publishProfileFile(wrapper, script);
+  await fs.chmod(wrapper, 0o700);
+  // Python webbrowser shlex-splits commands containing %s, including quoted paths.
+  const browser = `${quote(wrapper)} %s`;
+  return { executable, home, browser };
+}
+
 export const makeAntigravityAcpRuntime = (input: {
   stateDir: string;
   instanceId: string;
@@ -160,46 +210,7 @@ export const makeAntigravityAcpRuntime = (input: {
 }): Effect.Effect<AcpSessionRuntimeShape, AcpErrors.AcpError, Scope.Scope> =>
   Effect.gen(function* () {
     const prepared = yield* Effect.tryPromise({
-      try: async () => {
-        const executable = await new AntigravityInstallation(input.stateDir).resolve();
-        const home = antigravityProfileDirectory(input.stateDir, input.instanceId);
-        await fs.mkdir(path.join(home, "antigravity-acp"), { recursive: true, mode: 0o700 });
-        if (!input.accountSetup) {
-          const token = await fs.lstat(path.join(home, "antigravity-acp", "acp_token.json"));
-          if (!token.isFile() || token.size === 0)
-            throw new Error("Sign in to Antigravity in Settings first.");
-        }
-        await publishProfileFile(
-          path.join(home, "antigravity-acp", "settings.json"),
-          JSON.stringify({ auth: { type: "oauth-personal" } }),
-        );
-        const userHome =
-          process.platform === "win32"
-            ? input.environment.USERPROFILE || os.homedir()
-            : input.environment.HOME || os.homedir();
-        // Share only user skill directories. MCP, hooks and credentials remain private.
-        await linkAntigravityUserSkills(home, userHome);
-        // A helper handles browser requests without opening a browser in the server account.
-        const helper = path.join(home, "browser.cjs");
-        await publishProfileFile(
-          helper,
-          'process.stderr.on("error",()=>process.exit(0));process.stderr.write("F5_AUTH_URL="+JSON.stringify(process.argv[2])+"\\n");',
-        );
-        const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-        const wrapper = path.join(
-          home,
-          process.platform === "win32" ? "browser.cmd" : "browser.sh",
-        );
-        const script =
-          process.platform === "win32"
-            ? `@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${javascriptRuntimeExecutable().replaceAll("%", "%%")}" "${helper.replaceAll("%", "%%")}" %1\r\n`
-            : `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quote(javascriptRuntimeExecutable())} ${quote(helper)} "$1"\n`;
-        await publishProfileFile(wrapper, script);
-        await fs.chmod(wrapper, 0o700);
-        // Python webbrowser shlex-splits commands containing %s, including quoted paths.
-        const browser = `${quote(wrapper)} %s`;
-        return { executable, home, browser };
-      },
+      try: () => prepareAntigravityProfile(input),
       catch: (cause) =>
         new AcpErrors.AcpTransportError({
           detail: "Antigravity is not installed or its profile could not be prepared.",
@@ -240,11 +251,16 @@ export const makeAntigravityAcpRuntime = (input: {
         resumeMethod: "resume",
         authMethodId: "oauth-personal",
         clientInfo: { name: "f5", version: "1" },
+        sessionMeta: (init) => antigravitySessionMeta(init.agentInfo?.version),
         hardening: { enabled: true, provider: "antigravity" },
-        clientCapabilities: { elicitation: { form: {} } },
+        clientCapabilities: {
+          elicitation: { form: {} },
+          fs: { readTextFile: false, writeTextFile: false },
+          terminal: false,
+        },
         spawn: {
           command: prepared.executable.executablePath,
-          args: process.platform === "linux" ? ["--uid="] : [],
+          args: ["acp", "--gemini-dir", prepared.home, "--app-data-dir", "antigravity-acp"],
           cwd: input.cwd,
           env: {
             ...antigravityEnvironment(

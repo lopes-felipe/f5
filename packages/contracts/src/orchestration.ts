@@ -375,6 +375,8 @@ export type ProjectKind = typeof ProjectKind.Type;
 
 export const OrchestrationProject = Schema.Struct({
   id: ProjectId,
+  pinned: Schema.optional(Schema.Boolean),
+  archived: Schema.optional(Schema.Boolean),
   kind: Schema.optional(ProjectKind).pipe(Schema.withDecodingDefault(() => "standard" as const)),
   title: TrimmedNonEmptyString,
   workspaceRoot: FilesystemPath,
@@ -690,6 +692,7 @@ export const OrchestrationSession = Schema.Struct({
     Schema.NullOr(Schema.Literals(["retryable", "non-retryable"])),
   ).pipe(Schema.withDecodingDefault(() => null)),
   turnCostUsd: Schema.optional(Schema.Number),
+  autoCompactThreshold: Schema.optional(Schema.NullOr(NonNegativeInt)),
   estimatedContextTokens: Schema.optional(NonNegativeInt),
   estimatedThinkingTokens: Schema.optional(NonNegativeInt),
   modelContextWindowTokens: Schema.optional(NonNegativeInt),
@@ -999,6 +1002,7 @@ export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
 export const THREAD_PULL_REQUEST_SHELL_LIMIT = 20;
 
 export const OrchestrationThread = Schema.Struct({
+  sideChatOf: Schema.optional(Schema.NullOr(ThreadId)),
   /** PRs linked to this thread, newest first, at most `THREAD_PULL_REQUEST_SHELL_LIMIT`. */
   pullRequests: Schema.optional(Schema.Array(ThreadPullRequestLink)),
   scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
@@ -1131,6 +1135,8 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("project.meta.update"),
   commandId: CommandId,
   projectId: ProjectId,
+  pinned: Schema.optional(Schema.Boolean),
+  archived: Schema.optional(Schema.Boolean),
   title: Schema.optional(TrimmedNonEmptyString),
   workspaceRoot: Schema.optional(FilesystemPath),
   defaultModel: Schema.optional(TrimmedNonEmptyString),
@@ -1306,6 +1312,7 @@ const ProjectInvestigationWorkflowDeleteCommand = Schema.Struct({
 });
 
 const ThreadCreateCommand = Schema.Struct({
+  sideChatOf: Schema.optional(Schema.NullOr(ThreadId)),
   scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
   sharedFilesystemConfirmed: Schema.optional(Schema.Boolean),
   pullRequest: Schema.optional(ThreadPullRequestLink),
@@ -2212,6 +2219,8 @@ export const ProjectCreatedPayload = Schema.Struct({
 
 export const ProjectMetaUpdatedPayload = Schema.Struct({
   projectId: ProjectId,
+  pinned: Schema.optional(Schema.Boolean),
+  archived: Schema.optional(Schema.Boolean),
   title: Schema.optional(TrimmedNonEmptyString),
   workspaceRoot: Schema.optional(FilesystemPath),
   defaultModel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -2298,6 +2307,7 @@ export const ProjectInvestigationWorkflowDeletedPayload = Schema.Struct({
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
+  sideChatOf: Schema.optional(Schema.NullOr(ThreadId)),
   scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
   pullRequest: Schema.optional(ThreadPullRequestLink),
   threadId: ThreadId,

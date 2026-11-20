@@ -150,6 +150,8 @@ export interface TurnDiffSummary {
 }
 
 export interface Project {
+  pinned?: boolean;
+  archived?: boolean;
   defaultModel?: string | null;
   defaultModelSelection?: ModelSelection | null | undefined;
   id: ProjectId;
@@ -168,6 +170,7 @@ export interface Project {
 }
 
 export interface Thread {
+  sideChatOf?: ThreadId | null;
   id: ThreadId;
   codexThreadId: string | null;
   projectId: ProjectId;
@@ -240,6 +243,7 @@ export interface Thread {
  */
 export type ThreadListItem = Pick<
   Thread,
+  | "sideChatOf"
   | "id"
   | "projectId"
   | "title"
@@ -274,6 +278,7 @@ export type ThreadListItem = Pick<
 >;
 
 export interface ThreadSession {
+  autoCompactThreshold?: number | null;
   extensionStatuses?: import("@t3tools/contracts").OrchestrationSession["extensionStatuses"];
   provider: ProviderKind;
   providerInstanceId?: ProviderInstanceId | null | undefined;

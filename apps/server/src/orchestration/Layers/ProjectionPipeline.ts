@@ -550,6 +550,8 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionProjectRepository.upsert({
             ...existingRow.value,
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            ...(event.payload.pinned !== undefined ? { pinned: event.payload.pinned } : {}),
+            ...(event.payload.archived !== undefined ? { archived: event.payload.archived } : {}),
             ...(event.payload.workspaceRoot !== undefined
               ? { workspaceRoot: event.payload.workspaceRoot }
               : {}),
@@ -742,6 +744,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             scratchPath: event.payload.scratchPath,
+            ...(event.payload.sideChatOf ? { sideChatOf: event.payload.sideChatOf } : {}),
             latestTurnId: null,
             tasks: [],
             tasksTurnId: null,
@@ -1920,6 +1923,15 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             modelContextWindowTokens:
               event.payload.session.modelContextWindowTokens ??
               (Option.isSome(existingRow) ? existingRow.value.modelContextWindowTokens : null),
+            autoCompactThreshold:
+              event.payload.session.autoCompactThreshold !== undefined
+                ? event.payload.session.autoCompactThreshold
+                : Option.isSome(existingRow) &&
+                    existingRow.value.providerName === event.payload.session.providerName &&
+                    existingRow.value.providerInstanceId ===
+                      event.payload.session.providerInstanceId
+                  ? (existingRow.value.autoCompactThreshold ?? null)
+                  : null,
             tokenUsageSource:
               event.payload.session.tokenUsageSource ??
               (Option.isSome(existingRow) ? existingRow.value.tokenUsageSource : null),

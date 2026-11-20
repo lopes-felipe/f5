@@ -2375,13 +2375,15 @@ const make = Effect.gen(function* () {
         Option.isSome(sqlOption)
           ? yield* readFirstUserMessage(threadId)
           : null;
-      const source = selectHandoffSource({
-        thread,
-        mode: requestedMode,
-        sinceMessageId: pending.sinceMessageId,
-        excludeMessageId: input.messageId,
-        evictedFirstUserMessage,
-      });
+      const source =
+        pending.sourceContext ??
+        selectHandoffSource({
+          thread,
+          mode: requestedMode,
+          sinceMessageId: pending.sinceMessageId,
+          excludeMessageId: input.messageId,
+          evictedFirstUserMessage,
+        });
       const images = input.attachments.filter((attachment) => attachment.type === "image").length;
       const rendered = renderProviderHandoff({
         source,

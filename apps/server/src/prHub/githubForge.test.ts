@@ -97,6 +97,17 @@ function fixture(
   };
 }
 describe("typed GitHub forge", () => {
+  it("looks up an exact issue number and keeps search qualifiers repository-scoped", async () => {
+    const { provider, calls, queries } = fixture([{ number: 123, title: "Exact issue" }]);
+    expect(
+      await Effect.runPromise(provider.completions!(ref, { sigil: "#", query: "123" })),
+    ).toEqual([{ token: "#123", label: "#123", detail: "Exact issue" }]);
+    expect(calls[0]?.endpoint).toBe("repos/team/repo/issues/123");
+    expect(queries[0]?.variables).toEqual({ query: 'repo:team/repo "123" sort:updated-desc' });
+    expect(await Effect.runPromise(provider.completions!(ref, { sigil: "!", query: "" }))).toEqual(
+      [],
+    );
+  });
   it("preserves GitHub update time separately from creation time", async () => {
     const created = "2026-01-01T12:00:00Z";
     const updated = "2026-11-03T12:00:00Z";

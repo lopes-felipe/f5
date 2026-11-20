@@ -9,6 +9,7 @@ describe("Claude approval presentation", () => {
   it.each([
     "Dangerous rm command. Use a safer path.",
     "Dangerous rmdir command.",
+    "This command includes a dangerous removal. Use a safer path.",
     "This shell -c script runs rm and could not be checked",
     "A permission rule denies a command in this shell -c script",
     "\u001b[31mDangerous rm command.\u001b[0m",

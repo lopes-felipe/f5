@@ -268,6 +268,7 @@ export const RPC_METHOD_POLICY = {
   "prHub.listLocalCheckoutCandidates": READ,
   "prHub.listPullRequests": READ,
   "prHub.listReviewerCandidates": READ,
+  "prHub.completions": READ,
   "prHub.markNotified": MUTATION,
   "prHub.markReady": MUTATION,
   "prHub.markSeen": MUTATION,

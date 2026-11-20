@@ -6,7 +6,7 @@ import type { PrHubCommentOperation, PullRequestKey } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration, getPrHubDraftIdentity } from "../../lib/prHubAccount";
 import { Button } from "../ui/button";
-import { Textarea } from "../ui/textarea";
+import { PrCompletionTextarea as Textarea } from "./PrCompletionTextarea";
 import { PrOperationRecovery } from "./PrOperationRecovery";
 import { isPrSubmitShortcut } from "./prHubKeyboard";
 
@@ -144,6 +144,7 @@ export function PrCommentSubmit({ prKey }: { prKey: PullRequestKey }) {
             </Button>
           ) : null}
           <Textarea
+            prKey={prKey}
             aria-label="PR timeline comment"
             value={body}
             onChange={(e) => setBody(e.currentTarget.value)}

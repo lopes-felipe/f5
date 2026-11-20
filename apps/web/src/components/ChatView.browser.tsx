@@ -2100,6 +2100,58 @@ async function mountChatView(options: {
 }
 
 describe("ChatView timeline (full app)", () => {
+  it("opens a side chat beside the main thread with an independent composer", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: MessageId.makeUnsafe("side-main-message"),
+      targetText: "Main conversation",
+    });
+    const childId = ThreadId.makeUnsafe("fork-side-chat-browser");
+    const source = snapshot.threads[0]!;
+    const child = {
+      ...source,
+      id: childId,
+      title: "Hidden side conversation",
+      sideChatOf: THREAD_ID,
+      messages: [],
+      activities: [],
+      session: null,
+      latestTurn: null,
+    };
+    const mounted = await mountChatView({
+      viewport: { name: "side-chat", width: 1440, height: 1000 },
+      snapshot: { ...snapshot, threads: [...snapshot.threads, child] },
+    });
+    try {
+      await expect.element(page.getByTestId("composer-editor")).toBeVisible();
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Main draft");
+      useComposerDraftStore.getState().setPrompt(childId, "Child draft");
+      useRightPanelStore.getState().openSideChat(THREAD_ID, childId, "Side chat");
+      const editorOf = (id: ThreadId) =>
+        document.querySelector<HTMLElement>(
+          '[data-chat-thread="' + id + '"] [data-testid="composer-editor"]',
+        );
+      await vi.waitFor(() => {
+        expect(editorOf(THREAD_ID)?.textContent).toBe("Main draft");
+        expect(editorOf(childId)?.textContent).toBe("Child draft");
+      });
+      await page.elementLocator(editorOf(childId)!).fill("Changed child draft");
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[childId]?.prompt).toBe(
+          "Changed child draft",
+        ),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+        "Main draft",
+      );
+      expect(document.querySelector('a[href="/' + childId + '"]')).toBeNull();
+      useRightPanelStore.getState().closeSurface(THREAD_ID, "side:" + childId);
+      await vi.waitFor(() => expect(editorOf(childId)).toBeNull());
+      expect(editorOf(THREAD_ID)?.textContent).toBe("Main draft");
+    } finally {
+      useRightPanelStore.setState({ byThreadId: {} });
+      await mounted.cleanup();
+    }
+  });
   it("focuses search when the add-project intent opens the real palette submenu", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

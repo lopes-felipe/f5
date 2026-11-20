@@ -36,6 +36,29 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("completes GitLab issue and MR numbers within the selected project", async () => {
+    const { provider, ref, calls } = fixture("gitlab", [
+      [{ iid: 123, title: "Exact merge request" }],
+      [
+        { iid: 123, title: "Exact merge request" },
+        { iid: 1234, title: "Related" },
+      ],
+    ]);
+    expect(
+      await Effect.runPromise(provider.completions!(ref, { sigil: "!", query: "123" })),
+    ).toEqual([
+      { token: "!123", label: "!123", detail: "Exact merge request" },
+      { token: "!1234", label: "!1234", detail: "Related" },
+    ]);
+    expect(calls).toHaveLength(2);
+    expect(
+      calls.every((call) =>
+        call.url.startsWith("https://gitlab.com/api/v4/projects/team%2Frepo/merge_requests?"),
+      ),
+    ).toBe(true);
+    expect(calls[0]!.url).toContain("iids[]=123");
+    expect(calls[1]!.url).not.toContain("search=");
+  });
   it("appends the GitLab viewer before requesting changes and surfaces refused mutations", async () => {
     const { provider, ref, calls } = fixture(
       "gitlab",

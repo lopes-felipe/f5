@@ -289,6 +289,9 @@ import {
   type OrchestrationEngineShape,
 } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
+import { captureSideChatContext } from "./orchestration/providerHandoff.ts";
+import { isKnownProviderKind } from "@t3tools/contracts";
+import { ProviderHandoffStateRepository } from "./persistence/Services/ProviderHandoffState.ts";
 import { submitElicitation } from "./orchestration/elicitationSubmission";
 import { ProjectionWorkspaceQuery } from "./orchestration/Services/ProjectionWorkspaceQuery";
 import {
@@ -1052,6 +1055,7 @@ function formatServerLifecycleRouteFailure(error: ServerLifecycleError): string 
 const ORCHESTRATION_RUNTIME_ROUTE_WAIT_MS = 55_000;
 
 interface OrchestrationRuntimeServices {
+  readonly providerHandoffStates: ProviderHandoffStateRepository["Service"] | undefined;
   readonly mcpApps: McpAppService["Service"];
   readonly threadSettlement: ThreadSettlementService["Service"];
   readonly pullRequestWatches: PullRequestWatchService["Service"];
@@ -3013,6 +3017,9 @@ export const createServer = Effect.fn(function* (
         orchestrationRuntimeServices,
         ProviderSessionDirectory,
       );
+      const providerHandoffStates = Option.getOrUndefined(
+        ServiceMap.getOption(orchestrationRuntimeServices, ProviderHandoffStateRepository),
+      );
       const workflowService = ServiceMap.get(orchestrationRuntimeServices, WorkflowService);
       const codeReviewWorkflowService = ServiceMap.get(
         orchestrationRuntimeServices,
@@ -3293,6 +3300,7 @@ export const createServer = Effect.fn(function* (
         providerCommandReactor,
         providerTurnDeliveryWorker,
         providerSessionDirectory,
+        providerHandoffStates,
         workflowService,
         codeReviewWorkflowService,
         investigationWorkflowService,
@@ -4288,6 +4296,7 @@ export const createServer = Effect.fn(function* (
             ),
           );
         return yield* readAgentTranscript(input, {
+          stateDir: serverConfig.stateDir,
           work: threadBackgroundWork,
           directory: providerSessionDirectory,
           service: providerService,
@@ -4410,8 +4419,12 @@ export const createServer = Effect.fn(function* (
 
       case NATIVE_OPERATION_WS_METHODS.fork: {
         const input = stripRequestTag(request.body);
-        const { orchestrationEngine, providerSessionDirectory, worktreePreparation } =
-          yield* awaitOrchestrationRuntimeForRoute;
+        const {
+          orchestrationEngine,
+          providerSessionDirectory,
+          worktreePreparation,
+          providerHandoffStates,
+        } = yield* awaitOrchestrationRuntimeForRoute;
         const snapshot = yield* orchestrationEngine.getReadModel();
         const source = snapshot.threads.find(
           (entry) => entry.id === input.threadId && entry.deletedAt === null,
@@ -4421,13 +4434,118 @@ export const createServer = Effect.fn(function* (
         if (
           !source ||
           !project ||
-          isScratchProject(project) ||
-          !providerService.nativeOperations?.executeWithApply
+          (isScratchProject(project) && !input.sideChat) ||
+          (!input.sideChat && !providerService.nativeOperations?.executeWithApply)
         )
           return yield* new RouteRequestError({ message: "This conversation cannot be forked." });
         if (!/^[0-9a-f-]{36}$/i.test(input.operationId))
           return yield* new RouteRequestError({ message: "Invalid fork identifier." });
         const targetId = NativeForkThreadId.makeUnsafe(`fork-${input.operationId}`);
+        if (input.sideChat && source.sideChatOf)
+          return yield* new RouteRequestError({
+            message: "Open a side chat from the main thread.",
+          });
+        if (input.sideChat) {
+          const at = new Date().toISOString();
+          const existing = snapshot.threads.find((thread) => thread.id === targetId);
+          if (existing && (existing.sideChatOf !== source.id || existing.deletedAt !== null))
+            return yield* new RouteRequestError({
+              message: "This side-chat identifier is already in use.",
+            });
+          if (!existing) {
+            if (!providerHandoffStates)
+              return yield* new RouteRequestError({
+                message: "Side-chat context storage is unavailable.",
+              });
+            const generation = source.session?.capabilities?.generation;
+            if (generation !== undefined && generation !== input.generation)
+              return yield* new RouteRequestError({
+                message: "The main thread session changed. Retry opening the side chat.",
+              });
+            const binding = Option.getOrUndefined(
+              yield* providerSessionDirectory
+                .getBinding(source.id)
+                .pipe(
+                  Effect.mapError((error) => new RouteRequestError({ message: String(error) })),
+                ),
+            );
+            const instanceId =
+              source.modelSelection?.instanceId ??
+              binding?.providerInstanceId ??
+              source.session?.providerInstanceId;
+            const provider = binding?.provider ?? source.session?.providerName;
+            if (!instanceId || !provider || !isKnownProviderKind(provider))
+              return yield* new RouteRequestError({
+                message: "Start a provider session before opening a side chat.",
+              });
+            const details = yield* projectionReadModelQuery
+              .getThreadDetails({ threadId: source.id })
+              .pipe(Effect.mapError((error) => new RouteRequestError({ message: String(error) })));
+            const captured = captureSideChatContext({
+              messages: details.messages,
+              compaction: source.compaction,
+            });
+            const seed = {
+              id: "side-chat:" + targetId,
+              mode: "full" as const,
+              targetInstanceId: instanceId,
+              fromProvider: provider,
+              fromInstanceId: instanceId,
+              fromModel: source.model,
+              sinceMessageId: null,
+              expectedNativeIdentity: null,
+              createdAt: at,
+              sourceContext: captured,
+            };
+            // Persist the fork context before publishing its thread, so a first send cannot race it.
+            yield* providerHandoffStates
+              .compareAndSet({
+                threadId: targetId,
+                expectedRevision: null,
+                pending: seed,
+                parked: {},
+              })
+              .pipe(Effect.mapError((error) => new RouteRequestError({ message: String(error) })));
+            yield* orchestrationEngine
+              .dispatch({
+                type: "thread.create",
+                commandId: CommandId.makeUnsafe("side-chat-create:" + input.operationId),
+                threadId: targetId,
+                projectId: project.id,
+                title: "Side chat · " + source.title,
+                model: source.model,
+                modelSelection: {
+                  ...(source.modelSelection ?? {}),
+                  instanceId,
+                  model: source.model,
+                },
+                runtimeMode: source.runtimeMode,
+                interactionMode: source.interactionMode,
+                branch: source.branch,
+                worktreePath: source.worktreePath,
+                sideChatOf: source.id,
+                sharedFilesystemConfirmed: true,
+                threadReferences: [{ threadId: source.id, relation: "source", createdAt: at }],
+                createdAt: at,
+              })
+              .pipe(Effect.mapError((error) => new RouteRequestError({ message: String(error) })));
+          }
+          return {
+            ...input,
+            command: {
+              kind: "fork",
+              targetThreadId: targetId,
+              cwd: threadWorkspaceCwd(source, project) ?? project.workspaceRoot,
+            },
+            state: "completed",
+            createdAt: at,
+            updatedAt: at,
+          };
+        }
+        if (!providerService.nativeOperations?.executeWithApply)
+          return yield* new RouteRequestError({
+            message: "Native forks are unavailable for this provider.",
+          });
         const branch = yield* resolveTemporaryWorktreeBranch(
           git,
           project.workspaceRoot,
@@ -4495,14 +4613,19 @@ export const createServer = Effect.fn(function* (
                   },
                 });
                 yield* worktreePreparation
-                  .prepare({ threadId: targetId, projectId: project.id, worktreePath: cwd, branch })
+                  .prepare({
+                    threadId: targetId,
+                    projectId: project.id,
+                    worktreePath: cwd,
+                    branch: branch!,
+                  })
                   .pipe(Effect.mapError(validation));
               }),
             createConfiguredWorktree({
               cwd: threadWorkspaceCwd(source, project) ?? project.workspaceRoot,
               branch: source.branch ?? "HEAD",
               baseRefName: source.branch ?? "HEAD",
-              newBranch: branch,
+              newBranch: branch!,
               preparation: { owner: `thread:${targetId}`, runSetupScript: true },
               path: cwd,
             }).pipe(Effect.asVoid, Effect.mapError(validation)),
@@ -5882,6 +6005,9 @@ export const createServer = Effect.fn(function* (
       case PR_HUB_WS_METHODS.listReviewerCandidates:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
         return yield* prHubExtensions.value.listReviewerCandidates(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.completions:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.completions(stripRequestTag(request.body));
       case PR_HUB_WS_METHODS.getChecks:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
         return yield* prHubExtensions.value.getChecks(stripRequestTag(request.body));

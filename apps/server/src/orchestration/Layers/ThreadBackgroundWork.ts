@@ -163,6 +163,7 @@ function taskTransition(
       ownership: ownershipForTask(taskType),
       kind: kindForTask(taskType),
       ...(event.payload.description ? { title: event.payload.description } : {}),
+      ...(event.payload.prompt ? { prompt: event.payload.prompt } : {}),
       status:
         classification === "monitoring"
           ? "monitoring"

@@ -83,6 +83,8 @@ function surfaceTitle(
   previewPresentation?: PreviewPresentation,
 ): string {
   switch (surface.kind) {
+    case "side-chat":
+      return surface.title;
     case "agent-transcript":
       return surface.title;
     case "pull-request":
@@ -110,6 +112,8 @@ function SurfaceIcon({
   previewPresentation: PreviewPresentation | undefined;
 }) {
   switch (surface.kind) {
+    case "side-chat":
+      return <BotIcon className="size-3.5 shrink-0" />;
     case "agent-transcript":
       return <BotIcon className="size-3.5 shrink-0" />;
     case "pull-request":

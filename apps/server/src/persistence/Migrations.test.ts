@@ -146,6 +146,9 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 167, name: "PrHubSeenBaseline" },
       { migration_id: 168, name: "ProviderExtensionStatuses" },
       { migration_id: 169, name: "ThreadContextBoundaries" },
+      { migration_id: 170, name: "ProjectPinArchive" },
+      { migration_id: 171, name: "SessionAutoCompactThreshold" },
+      { migration_id: 172, name: "ThreadSideChat" },
     ]);
     // The queue reads linked threads by pull request; the lookup uses its own index.
     const linkLookup = yield* sql<{

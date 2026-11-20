@@ -112,6 +112,8 @@ const shouldLogProjectionTimings =
     process.env.T3CODE_LOG_PROJECTION_TIMINGS === "true");
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
+    pinned: Schema.optional(Schema.BooleanFromBit),
+    archived: Schema.optional(Schema.BooleanFromBit),
     defaultModelSelection: Schema.NullOr(
       Schema.fromJsonString(ProjectionProject.fields.defaultModelSelection),
     ),
@@ -152,6 +154,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   }),
 );
 const ProjectionThreadSummaryDbRowSchema = Schema.Struct({
+  sideChatOf: ProjectionThread.fields.sideChatOf,
   scheduledOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ScheduledOrigin))),
   threadId: ProjectionThread.fields.threadId,
   projectId: ProjectionThread.fields.projectId,
@@ -587,6 +590,7 @@ function buildThreadSnapshot(params: {
     branch: row.branch,
     worktreePath: row.worktreePath,
     scratchPath: row.scratchPath ?? null,
+    ...(row.sideChatOf ? { sideChatOf: row.sideChatOf } : {}),
     latestTurn: params.latestTurnByThread.get(row.threadId) ?? null,
     archivedAt: row.archivedAt,
     settledAt: row.settledAt ?? null,
@@ -1071,6 +1075,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           project_id AS "projectId",
+          pinned,
+          archived,
           kind,
           title,
           workspace_root AS "workspaceRoot",
@@ -1102,6 +1108,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           scratch_path AS "scratchPath",
+          side_chat_of AS "sideChatOf",
           latest_turn_id AS "latestTurnId",
           tasks_json AS "tasks",
           tasks_turn_id AS "tasksTurnId",
@@ -1149,6 +1156,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           scratch_path AS "scratchPath",
+          side_chat_of AS "sideChatOf",
           settled_at AS "settledAt",settled_by AS "settledBy",auto_settle_disabled AS "autoSettleDisabled",
           archived_at AS "archivedAt",
           pinned_at AS "pinnedAt",
@@ -1486,6 +1494,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens",
           token_usage_source AS "tokenUsageSource",
+          auto_compact_threshold AS "autoCompactThreshold",
           capabilities_json AS "capabilities",
           extension_statuses_json AS "extensionStatuses",
           updated_at AS "updatedAt"
@@ -2848,6 +2857,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threadId: row.threadId,
           status: row.status,
           providerName: row.providerName,
+          ...(row.autoCompactThreshold != null
+            ? { autoCompactThreshold: row.autoCompactThreshold }
+            : {}),
           runtimeMode: row.runtimeMode,
           activeTurnId: row.activeTurnId,
           lastError: row.lastError,
@@ -2965,6 +2977,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ? { defaultModelSelection: row.defaultModelSelection }
           : {}),
         defaultEnvMode: row.defaultEnvMode,
+        pinned: row.pinned ?? false,
+        archived: row.archived ?? false,
         icon: row.icon,
         scripts: row.scripts,
         memories: memoriesByProject.get(row.projectId) ?? [],

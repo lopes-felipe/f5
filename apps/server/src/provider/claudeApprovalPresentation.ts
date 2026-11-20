@@ -20,6 +20,7 @@ export function claudeRemovalSafetyDenial(
   if (
     !(
       /^Dangerous rm(?:dir)?\b/i.test(reason) ||
+      /\bdangerous removal\b/i.test(reason) ||
       reason === "This shell -c script runs rm and could not be checked" ||
       reason === "A permission rule denies a command in this shell -c script"
     )

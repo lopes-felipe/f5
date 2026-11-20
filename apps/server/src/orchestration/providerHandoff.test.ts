@@ -10,6 +10,7 @@ import {
   renderProviderHandoff,
   selectHandoffSource,
   type HandoffSource,
+  captureSideChatContext,
 } from "./providerHandoff.ts";
 
 function message(
@@ -45,6 +46,19 @@ function source(messages: OrchestrationMessage[], summary: string | null = null)
 }
 
 describe("selectHandoffSource", () => {
+  it("captures a bounded side-chat snapshot without unfinished output", () => {
+    const rows = [
+      message("question", "user", "Original request", 1),
+      message("answer", "assistant", "x".repeat(100000), 2),
+      message("live", "assistant", "unfinished secret marker", 3, true),
+    ];
+    const parent = thread(rows);
+    const captured = captureSideChatContext(parent);
+    expect(captured.messages.map((entry) => entry.id)).toEqual(["question", "answer"]);
+    expect(captured.messages.every((entry) => entry.text.length <= 8000)).toBe(true);
+    rows[0] = { ...rows[0]!, text: "changed after fork" };
+    expect(captured.messages[0]!.text).toBe("Original request");
+  });
   const conversation = [
     message("u1", "user", "first", 1),
     message("a1", "assistant", "reply", 2),

@@ -23,6 +23,7 @@ import { cn } from "~/lib/utils";
 
 import { COMPOSER_CHIP_CLASS_NAME } from "./composerChip";
 import { ProjectPicker } from "~/components/ProjectPicker";
+import { SideChatMenuItems } from "./SideChatMenuItems";
 
 import type {
   ComposerAttachments,
@@ -167,6 +168,7 @@ export function ComposerFooterControls(props: {
             <AtSignIcon className="size-4 shrink-0" />
             Mention a file
           </MenuItem>
+          <SideChatMenuItems threadId={threadId} />
           {nativeGoal ? (
             <>
               <MenuSeparator />

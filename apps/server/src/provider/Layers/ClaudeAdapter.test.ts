@@ -10048,6 +10048,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: "claudeAgent",
         runtimeMode: "full-access",
+        providerOptions: { claudeAgent: { autoCompactWindow: 150_000 } },
       });
       assert.equal(session.threadId, THREAD_ID);
 
@@ -10096,6 +10097,7 @@ describe("ClaudeAdapterLive", () => {
       if (tokenUsageUpdated?.type === "thread.token-usage.updated") {
         assert.equal(String(tokenUsageUpdated.turnId), String(turn.turnId));
         assert.deepEqual(tokenUsageUpdated.payload, {
+          autoCompactThreshold: 117_000,
           usage: {
             input_tokens: 500,
             cache_creation_input_tokens: 30,
