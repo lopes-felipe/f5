@@ -15,8 +15,13 @@ export interface TerminalLinkMatch {
   end: number;
 }
 
+type TerminalLinkRange = Pick<TerminalLinkMatch, "start" | "end">;
+
 const URL_PATTERN = /https?:\/\/[^\s"'`<>]+/giu;
 const FILE_URL_PATTERN = /file:\/\/[^\s"'`<>]+/gi;
+// Allow diff prefixes and keep one-letter schemes available for drive paths.
+const UNSUPPORTED_URL_PATTERN =
+  /(?<![A-Za-z\d+.-])[+-]?(?!(?:https?|file):)[A-Za-z][A-Za-z\d+.-]+:\/\/[^\s"'`<>]+/giu;
 const FILE_PATH_PATTERN =
   /(?:~\/|\.{1,2}[\\/]|\/|[A-Za-z]:[\\/]|\\\\)[^\s"'`<>]+|[A-Za-z0-9._-]+(?:[\\/][A-Za-z0-9._-]+)+(?::\d+){0,2}/g;
 const QUOTED_FILE_PATH_PATTERN =
@@ -48,7 +53,7 @@ function trimClosingDelimiters(value: string, kind: TerminalLinkKind): string {
   return output;
 }
 
-function overlaps(a: { start: number; end: number }, b: { start: number; end: number }): boolean {
+function overlaps(a: TerminalLinkRange, b: TerminalLinkRange): boolean {
   return a.start < b.end && b.start < a.end;
 }
 
@@ -60,7 +65,7 @@ function collectMatches(
   line: string,
   kind: TerminalLinkKind,
   pattern: RegExp,
-  existing: TerminalLinkMatch[],
+  existing: readonly TerminalLinkRange[],
   allowFileUri = false,
 ): TerminalLinkMatch[] {
   const matches: TerminalLinkMatch[] = [];
@@ -95,7 +100,7 @@ function collectMatches(
 
 function collectQuotedPathMatches(
   line: string,
-  existing: TerminalLinkMatch[],
+  existing: readonly TerminalLinkRange[],
 ): TerminalLinkMatch[] {
   const matches: TerminalLinkMatch[] = [];
   QUOTED_FILE_PATH_PATTERN.lastIndex = 0;
@@ -181,16 +186,21 @@ export function splitPathAndPosition(value: string): {
 
 export function extractTerminalLinks(line: string): TerminalLinkMatch[] {
   const urlMatches = collectMatches(line, "url", URL_PATTERN, []);
-  const fileUrlCandidates = collectMatches(line, "path", FILE_URL_PATTERN, urlMatches, true);
+  const unsupportedUrlRanges = Array.from(line.matchAll(UNSUPPORTED_URL_PATTERN), (match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+  const urlRanges = [...urlMatches, ...unsupportedUrlRanges];
+  const fileUrlCandidates = collectMatches(line, "path", FILE_URL_PATTERN, urlRanges, true);
   const fileUrlMatches = fileUrlCandidates.filter((match) =>
     Boolean(parseLocalFileUrl(match.text)),
   );
   // Invalid or remote file URIs are not actionable, but reserve their full
   // range so the generic path regex cannot register a suffix as a local path.
-  const quotedPathMatches = collectQuotedPathMatches(line, [...urlMatches, ...fileUrlCandidates]);
+  const reservedRanges = [...urlRanges, ...fileUrlCandidates];
+  const quotedPathMatches = collectQuotedPathMatches(line, reservedRanges);
   const pathMatches = collectMatches(line, "path", FILE_PATH_PATTERN, [
-    ...urlMatches,
-    ...fileUrlCandidates,
+    ...reservedRanges,
     ...quotedPathMatches,
   ]);
   return [...urlMatches, ...fileUrlMatches, ...quotedPathMatches, ...pathMatches].toSorted(

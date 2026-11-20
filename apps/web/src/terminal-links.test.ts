@@ -80,6 +80,25 @@ describe("extractTerminalLinks", () => {
     expect(extractTerminalLinks("file://%/C:/repo/main.ts:4")).toEqual([]);
   });
 
+  it.each([
+    "connected to redis://127.0.0.1:6379/0",
+    "connected to postgres://localhost:5432/app",
+    "uploaded s3://bucket/reports/today.csv",
+    "+redis://localhost:6379/0",
+    "-REDIS://localhost:6379/0",
+    "profile+file:///repo/main.ts",
+  ])("does not turn part of an unsupported URL into a path link: %s", (line) => {
+    expect(extractTerminalLinks(line)).toEqual([]);
+  });
+
+  it("keeps file links beside unsupported URLs", () => {
+    const line = "src/db.ts:4 redis://localhost:6379/0 C://app/src/db.ts:9";
+    expect(extractTerminalLinks(line)).toEqual([
+      { kind: "path", text: "src/db.ts:4", start: 0, end: 11 },
+      { kind: "path", text: "C://app/src/db.ts:9", start: 37, end: 56 },
+    ]);
+  });
+
   it("finds quoted Windows and UNC paths containing spaces", () => {
     const line = 'open "C:\\Program Files\\repo\\main.ts:12:3" and "\\\\server\\my share\\a.ts:4"';
     expect(extractTerminalLinks(line).map((match) => match.text)).toEqual([
