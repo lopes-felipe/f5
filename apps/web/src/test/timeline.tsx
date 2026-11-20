@@ -9,7 +9,7 @@ import {
 } from "@t3tools/contracts";
 import type { LegendListRef } from "@legendapp/list/react";
 import type { deriveTimelineEntries, LiveWorkActivity } from "../session-logic";
-import type { TurnDiffSummary } from "../types";
+import type { ChatAttachment, TurnDiffSummary } from "../types";
 import { setNowTickerClockForTests } from "../lib/nowTicker";
 import { MessagesTimeline } from "../components/chat/MessagesTimeline";
 import { ComposerDock } from "../components/chat/composer/ComposerDock";
@@ -50,14 +50,8 @@ export function makeUserEntry(
   offsetSeconds: number,
   options: {
     skillCall?: UserMessageSkillCall;
-    attachments?: Array<{
-      type: "image";
-      id: string;
-      name: string;
-      mimeType: string;
-      sizeBytes: number;
-      previewUrl: string;
-    }>;
+    attachments?: ChatAttachment[];
+    sending?: boolean;
   } = {},
 ): TimelineEntry {
   const createdAt = new Date(
@@ -75,6 +69,7 @@ export function makeUserEntry(
       createdAt,
       completedAt: createdAt,
       streaming: false,
+      ...(options.sending !== undefined ? { sending: options.sending } : {}),
       attachments: options.attachments ?? [],
       reasoningText: null,
     },

@@ -195,6 +195,7 @@ export function mapMessageAttachmentsFromReadModel(
       existing.name === attachment.name &&
       existing.mimeType === attachment.mimeType &&
       existing.sizeBytes === attachment.sizeBytes &&
+      existing.source === attachment.source &&
       existing.previewUrl === previewUrl &&
       existing.sourceUrl === previewUrl
     ) {
@@ -207,6 +208,7 @@ export function mapMessageAttachmentsFromReadModel(
       name: attachment.name,
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
+      ...(attachment.source ? { source: attachment.source } : {}),
       previewUrl,
       sourceUrl: previewUrl,
     };

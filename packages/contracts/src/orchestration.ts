@@ -267,6 +267,7 @@ export const ChatImageAttachment = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
   mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100), Schema.isPattern(/^image\//i)),
   sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)),
+  source: Schema.optional(Schema.Literals(["pasted-text", "snapshot"])),
 });
 export type ChatImageAttachment = typeof ChatImageAttachment.Type;
 

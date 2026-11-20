@@ -1,4 +1,5 @@
 import { ThreadFindBar } from "./chat/ThreadFindBar";
+import { attachmentSources } from "../lib/attachmentUploadQueue";
 import { composerModelMentionItems } from "./chat/composerModelMentions";
 import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
 import { useFreshSessionStore } from "../freshSessionStore";
@@ -5764,6 +5765,7 @@ export default memo(function ChatView({
       name: image.name,
       mimeType: image.mimeType,
       sizeBytes: image.sizeBytes,
+      ...(attachmentSources.get(image.file) ? { source: attachmentSources.get(image.file) } : {}),
       previewUrl: image.previewUrl,
       ...(image.uploadId ? {} : { sourceBlob: image.file }),
     }));
@@ -5919,6 +5921,7 @@ export default memo(function ChatView({
             ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
             createdAt: messageCreatedAt,
             streaming: false,
+            sending: true,
           },
         ]);
       };

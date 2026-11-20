@@ -76,6 +76,7 @@ import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts"
 import { claudeThinkingConfig, type ClaudeThinkingResolution } from "../claudeProviderOptions.ts";
 import {
   claudeApprovalPresentation,
+  claudeRemovalSafetyDenial,
   effectiveClaudeApprovalDecision,
 } from "../claudeApprovalPresentation.ts";
 import { ElicitationRegistry, type ElicitationTerminalReceipt } from "../elicitationRegistry.ts";
@@ -8247,6 +8248,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   message: `Tool '${toolName}' is not permitted in a read-only workflow stage.`,
                 } satisfies PermissionResult;
               }
+              const removalDenial = claudeRemovalSafetyDenial(
+                toolName,
+                context.configuredBase?.permissionMode ?? context.basePermissionMode,
+                callbackOptions,
+              );
+              if (removalDenial) return removalDenial;
               const inPlanMode = context.configuredBase?.permissionMode === "plan";
               // Bypass sessions in plan mode still refuse workspace edits.
               if (

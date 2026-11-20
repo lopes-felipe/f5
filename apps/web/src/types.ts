@@ -85,6 +85,7 @@ export interface ThreadTerminalGroup {
 }
 
 export interface ChatImageAttachment {
+  source?: "pasted-text" | "snapshot" | undefined;
   type: "image";
   id: string;
   name: string;
@@ -103,6 +104,8 @@ export type ChatAttachment = Omit<ChatImageAttachment, "type"> & {
 };
 
 export interface ChatMessage {
+  /** Optimistic send awaiting a persisted server message. */
+  sending?: boolean;
   id: MessageId;
   role: "user" | "assistant" | "system";
   text: string;
