@@ -12233,9 +12233,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-20T11:47:41.561Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26566",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
@@ -12962,9 +12964,11 @@
     },
     {
       "createdAt": "2026-11-19T11:06:04.640Z",
+      "decidedAt": "2026-11-20T11:47:41.561Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26751",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "mcp",
@@ -25469,12 +25473,14 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-20T11:47:41.561Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29383",
       "relatedTopics": [
         "pr-37364"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -67787,9 +67793,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-20T11:47:41.561Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-36680",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings",
@@ -74400,9 +74408,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-20T11:47:41.561Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37771",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "composer",
@@ -74424,9 +74434,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-20T11:47:41.561Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37781",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings"
@@ -77854,9 +77866,11 @@
     },
     {
       "createdAt": "2026-11-19T11:06:04.640Z",
+      "decidedAt": "2026-11-20T11:47:41.561Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-38350",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "composer",
