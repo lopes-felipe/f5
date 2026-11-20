@@ -63,6 +63,7 @@ export type ThreadActionId =
   | "copy"
   | "copy-branch"
   | "copy-thread-id"
+  | "copy-thread-link"
   | "delete";
 
 /** One per configured snooze option, keyed by its preset id. */
@@ -215,7 +216,8 @@ export function buildThreadActionMenuItems(input: {
         ...(thread.branch
           ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
           : []),
-        { id: "copy-thread-id", label: "Thread link", icon: "hash" },
+        { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
+        { id: "copy-thread-link", label: "Thread link", icon: "hash" },
       ],
     },
     {
@@ -293,18 +295,20 @@ export function useThreadActionController(input: {
 
   const { copyToClipboard: copyThreadLinkToClipboard } = useCopyToClipboard<{
     threadId: ThreadId;
+    kind: "ID" | "link";
+    value: string;
   }>({
     onCopy: (context) => {
       toastManager.add({
         type: "success",
-        title: "Thread link copied",
-        description: context.threadId,
+        title: `Thread ${context.kind} copied`,
+        description: context.value,
       });
     },
     onError: (error) => {
       toastManager.add({
         type: "error",
-        title: "Failed to copy thread link",
+        title: "Failed to copy thread reference",
         description: error instanceof Error ? error.message : "An error occurred.",
       });
     },
@@ -598,8 +602,13 @@ export function useThreadActionController(input: {
         copyPathToClipboard(workspacePath, { path: workspacePath });
         return;
       }
-      if (actionId === "copy-thread-id") {
-        copyThreadLinkToClipboard(threadLinkFor(threadId), { threadId });
+      if (actionId === "copy-thread-id" || actionId === "copy-thread-link") {
+        const value = actionId === "copy-thread-id" ? threadId : threadLinkFor(threadId);
+        copyThreadLinkToClipboard(value, {
+          threadId,
+          value,
+          kind: value === threadId ? "ID" : "link",
+        });
         return;
       }
       if (actionId === "copy-branch") {

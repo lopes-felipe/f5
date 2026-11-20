@@ -4,18 +4,24 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import * as NodePath from "@effect/platform-node/NodePath";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ClaudeSettings } from "@t3tools/contracts";
-import { Effect, Schema, Fiber } from "effect";
+import { Effect, Schema, Fiber, FileSystem } from "effect";
 import { makeClaudeInstanceProbes } from "../Drivers/ClaudeProbeCache.ts";
 import { it as effectIt } from "@effect/vitest";
 import { TestClock } from "effect/testing";
-import { probeClaudeAccountUsage, withClaudeProbeQuery } from "./ClaudeProvider.ts";
+import {
+  probeClaudeAccountUsage,
+  probeClaudeCapabilities,
+  withClaudeProbeQuery,
+} from "./ClaudeProvider.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
 import { ACCOUNT_ATTEMPT_TTL_MS } from "../../usage/accountUsage.ts";
 
 const settings = Schema.decodeSync(ClaudeSettings)({});
-const run = <A, E>(effect: Effect.Effect<A, E, import("effect").Path.Path>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(NodePath.layer)));
+const run = <A, E>(
+  effect: Effect.Effect<A, E, import("effect").Path.Path | FileSystem.FileSystem>,
+) => Effect.runPromise(effect.pipe(Effect.provide(NodeServices.layer)));
 
 effectIt.effect(
   "reuses capabilities for one failed refresh, retries immediately and fences account changes",
@@ -75,7 +81,7 @@ effectIt.effect(
       fail = false;
       expect((yield* probes.capabilities)?.email).toBe("account@example.com");
       expect(createQuery).toHaveBeenCalledTimes(6);
-    }).pipe(Effect.scoped, Effect.provide(NodePath.layer)),
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 describe("Claude account probe", () => {
@@ -215,11 +221,11 @@ it("reuses usage initialization for capabilities waiting behind it, without anot
     started = resolve;
   });
   const createQuery = vi.fn<typeof query>(() => {
-    started();
     return {
       initializationResult: () =>
         new Promise((resolve) => {
           finishInit = resolve;
+          started();
         }),
       usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => ({
         rate_limits_available: false,
@@ -276,6 +282,80 @@ it("ordinary capabilities checks never request usage", async () => {
   expect(usage).not.toHaveBeenCalled();
 });
 
+effectIt.effect.each([
+  { source: "process", delay: 3_000 },
+  { source: "settings", delay: 50 },
+] as const)(
+  "keeps the machine probe alive for gateway discovery from $source",
+  ({ source, delay }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const abort = vi.fn();
+      const createQuery: typeof query = (input) => {
+        input.options?.abortController?.signal.addEventListener("abort", abort);
+        return {
+          initializationResult: async () => ({ commands: [], models: [] }),
+        } as unknown as Query;
+      };
+      const discovery = {
+        CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
+        ANTHROPIC_BASE_URL: "https://gateway.example",
+        ...(source === "settings"
+          ? { CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS: String(delay) }
+          : {}),
+      };
+      const value = yield* probeClaudeCapabilities(
+        settings,
+        source === "process" ? discovery : {},
+        { createQuery },
+      ).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          readFileString: () =>
+            Effect.succeed(JSON.stringify({ env: source === "settings" ? discovery : {} })),
+        }),
+      );
+      expect(value).toBeDefined();
+      expect(abort).not.toHaveBeenCalled();
+      yield* TestClock.adjust(delay - 1);
+      expect(abort).not.toHaveBeenCalled();
+      yield* TestClock.adjust(1);
+      expect(abort).toHaveBeenCalledOnce();
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+effectIt.effect.each(["disabled", "missing-url", "failure"] as const)(
+  "does not delay cleanup for gateway discovery: %s",
+  (scenario) =>
+    Effect.gen(function* () {
+      const abort = vi.fn();
+      const createQuery: typeof query = (input) => {
+        input.options?.abortController?.signal.addEventListener("abort", abort);
+        return {
+          initializationResult: async () => {
+            if (scenario === "failure") throw new Error("init failed");
+            return { commands: [] };
+          },
+        } as unknown as Query;
+      };
+      const fs = yield* FileSystem.FileSystem;
+      yield* probeClaudeCapabilities(
+        settings,
+        {
+          CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: scenario === "disabled" ? "false" : "1",
+          ...(scenario !== "missing-url" ? { ANTHROPIC_BASE_URL: "https://gateway.example" } : {}),
+        },
+        { createQuery },
+      ).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          readFileString: () => Effect.succeed("{}"),
+        }),
+      );
+      expect(abort).toHaveBeenCalledOnce();
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 effectIt.effect("timeout aborts a prompt-free query exactly once", () =>
   Effect.gen(function* () {
     const abort = vi.fn();
@@ -287,7 +367,7 @@ effectIt.effect("timeout aborts a prompt-free query exactly once", () =>
       settings,
       process.env,
       () => new Promise<never>(() => {}),
-      { createQuery },
+      { createQuery, gatewayDiscoveryGraceMs: 3_000 },
     ).pipe(Effect.provide(NodePath.layer), Effect.result, Effect.forkChild);
     yield* TestClock.adjust("8 seconds");
     const result = yield* Fiber.join(fiber);
@@ -348,5 +428,5 @@ effectIt.effect(
       yield* TestClock.adjust("2 seconds");
       yield* probes.capabilities;
       expect(createQuery).toHaveBeenCalledTimes(2);
-    }).pipe(Effect.provide(NodePath.layer)),
+    }).pipe(Effect.provide(NodeServices.layer)),
 );

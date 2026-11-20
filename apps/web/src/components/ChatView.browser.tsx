@@ -7236,6 +7236,7 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it("pastes copied thread links as context chips without sending", async () => {
+    const toast = vi.spyOn(toastManager, "add");
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -7252,6 +7253,7 @@ describe("ChatView timeline (full app)", () => {
     };
     const promptOf = () => useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt;
     try {
+      (await waitForComposerEditor()).focus();
       await paste("source-a");
       await vi.waitFor(() => {
         expect(promptOf()).toBe(`[Thread](${promptLinkScheme}://thread/source-a) `);
@@ -7260,12 +7262,204 @@ describe("ChatView timeline (full app)", () => {
       const previous = promptOf();
       await paste("source-a");
       await paste(THREAD_ID);
-      expect(promptOf()).toBe(previous);
+      await waitForLayout();
+      await vi.waitFor(() => {
+        expect(promptOf()).toBe(previous);
+        expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(1);
+        expect(
+          (document.querySelector('[data-testid="composer-editor"]')?.textContent ?? "").includes(
+            "://",
+          ),
+        ).toBe(false);
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "info",
+            title: "A thread can't reference itself.",
+          }),
+        );
+      });
       expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      toast.mockRestore();
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([
+    { name: "in the middle", start: 6, end: 6, expected: "Before [Thread](LINK) selected After" },
+    {
+      name: "over a forward selection",
+      start: 7,
+      end: 15,
+      expected: "Before [Thread](LINK) After",
+    },
+    {
+      name: "over a backward selection",
+      start: 15,
+      end: 7,
+      expected: "Before [Thread](LINK) After",
+    },
+  ])("pastes a thread link $name", async ({ start, end, expected }) => {
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "Before selected After");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-link-selection" as MessageId,
+        targetText: "Target",
+      }),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      editor.focus();
+      const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
+      window.getSelection()!.setBaseAndExtent(text, start, text, end);
+      await waitForLayout();
+      const transfer = new DataTransfer();
+      const link = `${promptLinkScheme}://thread/source-a`;
+      transfer.setData("text/plain", link);
+      editor.dispatchEvent(
+        new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }),
+      );
+      await vi.waitFor(() => {
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          expected.replace("LINK", link),
+        );
+        expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(1);
+      });
     } finally {
       await mounted.cleanup();
     }
   });
+
+  it("counts thread references after replacing the selected draft", async () => {
+    const links = Array.from(
+      { length: 10 },
+      (_, i) => `[Thread](${promptLinkScheme}://thread/source-${i})`,
+    ).join(" ");
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, links);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-link-limit" as MessageId,
+        targetText: "Target",
+      }),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      await vi.waitFor(() =>
+        expect(editor.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(10),
+      );
+      editor.focus();
+      await userEvent.keyboard(
+        isMacPlatform(navigator.platform) ? "{Meta>}a{/Meta}" : "{Control>}a{/Control}",
+      );
+      await waitForLayout();
+      const transfer = new DataTransfer();
+      transfer.setData("text/plain", `${promptLinkScheme}://thread/source-0`);
+      editor.dispatchEvent(
+        new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }),
+      );
+      await vi.waitFor(() => {
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          `[Thread](${promptLinkScheme}://thread/source-0) `,
+        );
+        expect(editor.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(1);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([false, true])("copies the thread reference shortcut with a PR: %s", async (withPr) => {
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const url = "https://github.com/example/repo/pull/123";
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-copy-shortcut" as MessageId,
+        targetText: "Target",
+      }),
+      configureFixture: (next) => {
+        next.serverConfig = {
+          ...next.serverConfig,
+          keybindings: [createModKeybinding("thread.copyReference", "y")],
+        };
+        next.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.gitStatus
+            ? {
+                type: "result",
+                result: {
+                  branch: "main",
+                  hasWorkingTreeChanges: false,
+                  workingTree: { files: [], insertions: 0, deletions: 0 },
+                  hasUpstream: true,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: withPr
+                    ? {
+                        url,
+                        number: 123,
+                        title: "PR",
+                        state: "open",
+                        baseBranch: "main",
+                        headBranch: "feature",
+                      }
+                    : null,
+                },
+              }
+            : null;
+      },
+    });
+    try {
+      await waitForComposerEditor();
+      const mac = isMacPlatform(navigator.platform);
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "y",
+          metaKey: mac,
+          ctrlKey: !mac,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(copy).toHaveBeenCalledWith(
+          withPr ? url : `${promptLinkScheme}://thread/${THREAD_ID}`,
+        ),
+      );
+    } finally {
+      copy.mockRestore();
+      await mounted.cleanup();
+    }
+  });
+
+  it.each(["Thread ID", "Thread link"])(
+    "copies %s separately from the thread menu",
+    async (label) => {
+      const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "msg-copy-menu" as MessageId,
+          targetText: "Target",
+        }),
+      });
+      try {
+        await waitForComposerEditor();
+        await page.getByRole("button", { name: "Thread actions", exact: true }).click();
+        await page.getByRole("menuitem", { name: "Copy", exact: true }).hover();
+        await page.getByRole("menuitem", { name: label, exact: true }).click();
+        await vi.waitFor(() =>
+          expect(copy).toHaveBeenCalledWith(
+            label === "Thread ID" ? THREAD_ID : `${promptLinkScheme}://thread/${THREAD_ID}`,
+          ),
+        );
+      } finally {
+        copy.mockRestore();
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("refuses an invalid thread drag payload", async () => {
     const toast = vi.spyOn(toastManager, "add");

@@ -4432,10 +4432,13 @@ export default memo(function ChatView({
         event.preventDefault();
         if (command === "thread.copyReference") {
           void (async () => {
-            await writeTextToClipboard(threadLinkFor(activeThreadId));
+            const api = readNativeApi();
+            const status =
+              gitCwd && api ? await api.git.status({ cwd: gitCwd }).catch(() => null) : null;
+            await writeTextToClipboard(status?.pr?.url ?? threadLinkFor(activeThreadId));
             toastManager.add({
               type: "success",
-              title: "Thread link copied",
+              title: status?.pr?.url ? "Pull request link copied" : "Thread link copied",
             });
           })().catch((error) =>
             toastManager.add({
@@ -4895,6 +4898,7 @@ export default memo(function ChatView({
         appendThreadReferences(
           [{ threadId: linkedThreadId, title: "Thread" }],
           "Could not paste thread reference",
+          composerEditorRef.current?.readSelectionRange(),
         );
         return;
       }
@@ -4983,8 +4987,12 @@ export default memo(function ChatView({
     setIsDragOverComposer(false);
   };
 
-  /** Appends reference links to the end of the prompt, or explains why the composer is blocked. */
-  const appendComposerReferences = (links: ReadonlyArray<string>, errorTitle: string): boolean => {
+  /** Inserts references at the selected range, or appends them when no range is supplied. */
+  const appendComposerReferences = (
+    links: ReadonlyArray<string>,
+    errorTitle: string,
+    range?: { start: number; end: number },
+  ): boolean => {
     if (
       links.length === 0 ||
       isConnecting ||
@@ -4996,18 +5004,23 @@ export default memo(function ChatView({
       return false;
     }
     const current = promptRef.current;
+    const start = range?.start ?? current.length;
+    const end = range?.end ?? current.length;
     return applyPromptReplacement(
-      current.length,
-      current.length,
-      `${current && !/\s$/.test(current) ? " " : ""}${links.join(" ")} `,
+      start,
+      end,
+      `${start > 0 && !/\s/.test(current[start - 1]!) ? " " : ""}${links.join(" ")}${/^\s/.test(current.slice(end)) ? "" : " "}`,
     );
   };
 
   const appendThreadReferences = (
     dragged: ReadonlyArray<{ threadId: string; title: string }>,
     errorTitle: string,
+    range?: { start: number; end: number },
   ) => {
-    const existing = referencedThreadIds([promptRef.current]);
+    const current = promptRef.current;
+    const remaining = range ? current.slice(0, range.start) + current.slice(range.end) : current;
+    const existing = referencedThreadIds([remaining]);
     const candidates = dragged.filter(
       (item, index) =>
         item.threadId !== threadId &&
@@ -5029,7 +5042,7 @@ export default memo(function ChatView({
         scheme: promptLinkScheme,
       }),
     );
-    if (accepted.length > 0 && !appendComposerReferences(links, errorTitle)) return;
+    if (accepted.length > 0 && !appendComposerReferences(links, errorTitle, range)) return;
     if (accepted.length < candidates.length)
       toastManager.add({
         type: "warning",

@@ -1,4 +1,5 @@
 import type { SourceControlProviderIdentity } from "@t3tools/contracts";
+import { isThreadReferenceId } from "@t3tools/shared/threadReferences";
 import {
   buildNewThreadLink,
   PROMPT_LINK_DEV_SCHEME,
@@ -15,7 +16,7 @@ import { toastManager } from "../ui/toast";
 export const promptLinkScheme = import.meta.env.DEV ? PROMPT_LINK_DEV_SCHEME : PROMPT_LINK_SCHEME;
 
 export function threadLinkFor(threadId: string): string {
-  return `${promptLinkScheme}://thread/${threadId}`;
+  return isThreadReferenceId(threadId) ? `${promptLinkScheme}://thread/${threadId}` : threadId;
 }
 
 /** A shareable link to a prompt, or null when the prompt is empty or too long for one. */
