@@ -9,9 +9,12 @@ import { randomUUID } from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Schema } from "effect";
 import {
+  PROFILE_REGISTRY_MAX_VERSION,
   ProfileRegistryFile,
   ProfileRecord,
   ServerSettings,
+  profileRegistryVersionFor,
+  profileRegistryVersionViolation,
   type ProfileRegistryDiagnostic,
   type ProfileCreateInput,
   type ProfileUpdateInput,
@@ -114,7 +117,7 @@ export class ProfileRegistryStore {
       value !== null &&
       "version" in value &&
       typeof value.version === "number" &&
-      value.version > 1
+      value.version > PROFILE_REGISTRY_MAX_VERSION
     )
       return this.diagnostic(
         "newer-version",
@@ -125,11 +128,14 @@ export class ProfileRegistryStore {
       registry = Schema.decodeUnknownSync(ProfileRegistryFile)(value, {
         onExcessProperty: "preserve",
       });
-      if (registry.version !== 1) throw new Error("Unsupported registry version.");
+      if (registry.version !== 1 && registry.version !== PROFILE_REGISTRY_MAX_VERSION)
+        throw new Error("Unsupported registry version.");
     } catch (error) {
       return this.diagnostic("malformed", `Invalid profile registry: ${String(error)}`);
     }
     try {
+      const versionViolation = profileRegistryVersionViolation(registry);
+      if (versionViolation) throw new Error(versionViolation);
       if (registry.profiles.filter((p) => p.isDefault).length !== 1)
         throw new Error("Exactly one default profile is required.");
       for (const field of ["id", "slug", "port"] as const) {
@@ -150,8 +156,13 @@ export class ProfileRegistryStore {
     if (!result.ok) throw new Error(result.diagnostic.message);
     return result.registry;
   }
-  private async write(registry: ProfileRegistryFile): Promise<void> {
+  private async write(input: ProfileRegistryFile): Promise<void> {
+    // v2 only while a Linux VM profile exists, so installations that never create one
+    // stay readable by older builds, and removing the last one restores v1.
+    const registry = { ...input, version: profileRegistryVersionFor(input.profiles) };
     Schema.decodeUnknownSync(ProfileRegistryFile)(registry);
+    const violation = profileRegistryVersionViolation(registry);
+    if (violation) throw new Error(violation);
     const contents = JSON.stringify(registry, null, 2) + "\n";
     await atomicWrite(this.path, contents);
     this.lastContents = contents;
@@ -301,10 +312,26 @@ export class ProfileRegistryStore {
         isDefault: false,
         status: "provisioning",
         createdAt: new Date().toISOString(),
+        // Host records omit the field so host-only registries stay byte-compatible with v1.
+        ...(input.executionEnvironment === "linux-vm"
+          ? { executionEnvironment: "linux-vm" as const }
+          : {}),
       });
       const directory = await assertProfileDirectory(this.defaultStateDir, record);
       registry = { ...registry, profiles: [...registry.profiles, record] };
       await this.write(registry);
+      if (record.executionEnvironment === "linux-vm") {
+        // The host directory only holds main-owned VM metadata; provider homes, settings
+        // and the database live on the guest's data disk, never on the host.
+        await FS.mkdir(directory, { recursive: true, mode: 0o700 });
+        await FS.chmod(directory, 0o700);
+        const vmReady = { ...record, status: "ready" as const };
+        await this.write({
+          ...registry,
+          profiles: registry.profiles.map((p) => (p.id === record.id ? vmReady : p)),
+        });
+        return vmReady;
+      }
       const homes = profileProviderHomesDir(directory);
       for (const name of ["codex", "claude"])
         await FS.mkdir(Path.join(homes, name), { recursive: true, mode: 0o700 });

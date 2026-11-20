@@ -806,4 +806,28 @@ it.layer(testLayer)("profile startup selection", (it) => {
       }
     }),
   );
+  it.effect("never serves a Linux VM profile from the host", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-profile-vm-"));
+      try {
+        const stateDir = Path.join(root, "state");
+        const store = new ProfileRegistryStore(stateDir);
+        yield* Effect.promise(() => store.init());
+        const guest = yield* Effect.promise(() =>
+          store.create({ name: "Guest", executionEnvironment: "linux-vm" }),
+        );
+        const result = yield* Effect.result(
+          runCli(["--state-dir", stateDir, "--profile", "guest"]),
+        );
+        assert.equal(result._tag, "Failure");
+        assert.equal(start.mock.calls.length, 0);
+        const diagnostic = JSON.parse(
+          FS.readFileSync(Path.join(store.root, `last-startup-error-${guest.id}.json`), "utf8"),
+        );
+        assert.match(diagnostic.message, /Linux VM/);
+      } finally {
+        FS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+  );
 });

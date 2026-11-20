@@ -2,6 +2,7 @@ import { ComputerGrantAuthority } from "./ComputerGrantAuthority";
 import { ComputerConsentStore, computerConsentKey } from "./ComputerConsentStore";
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { childProcessBackendChannel, type BackendChannel } from "./BackendChannel";
 import { Schema } from "effect";
 import {
   SCHEDULED_NOTIFICATIONS_CAPABILITY,
@@ -63,7 +64,7 @@ import {
 } from "./IntegrationConsentStore";
 
 interface Backend {
-  child: ChildProcess;
+  channel: BackendChannel;
   incarnation: string;
   ready: boolean;
   capabilities: ReadonlySet<string>;
@@ -413,14 +414,23 @@ export class ComputerHostChannel {
       for (const holder of quarantined) this.controller.lease.release(holder);
     }
   }
+  /** A host backend, reached over the inherited IPC of the child main spawned. */
   register(profileId: string, incarnation: string, child: ChildProcess): void {
+    this.registerChannel(profileId, incarnation, childProcessBackendChannel(child));
+  }
+  /**
+   * Any backend, over a channel main created for the incarnation it launched. A channel
+   * without `hostPid` (a guest backend) is refused every feature that identifies host
+   * processes, whatever capabilities it advertises.
+   */
+  registerChannel(profileId: string, incarnation: string, channel: BackendChannel): void {
     // Replacing an incarnation also revokes the old process's device authority.
     if (this.backends.has(profileId)) {
       this.backends.delete(profileId);
       this.disconnectProfile(profileId);
     }
     const backend: Backend = {
-      child,
+      channel,
       incarnation,
       ready: false,
       capabilities: new Set(),
@@ -429,13 +439,15 @@ export class ComputerHostChannel {
       acquiring: new Map(),
     };
     this.backends.set(profileId, backend);
-    child.on("message", (raw: unknown) => {
+    // Chrome and Sky identify the backend's host descendants; a guest backend has none.
+    const hostIntegrations = () => channel.hostPid !== undefined;
+    channel.onMessage((raw: unknown) => {
       if (this.backends.get(profileId) !== backend) return;
       let message: DesktopComputerHostMessage;
       try {
         message = Schema.decodeUnknownSync(DesktopComputerHostMessage)(raw);
       } catch {
-        child.disconnect();
+        channel.disconnect();
         return;
       }
       if (!backend.ready) {
@@ -445,7 +457,7 @@ export class ComputerHostChannel {
           message.backendIncarnation !== incarnation ||
           message.protocolVersion !== 1
         ) {
-          child.disconnect();
+          channel.disconnect();
           return;
         }
         backend.ready = true;
@@ -539,7 +551,7 @@ export class ComputerHostChannel {
           return;
         case "request":
           if (message.request.authorization.profileId !== profileId) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           if (
@@ -558,7 +570,7 @@ export class ComputerHostChannel {
           }
           // Background delivery is only accepted from peers that negotiated it.
           if (message.request.delivery === "background" && !this.capable(backend)) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           {
@@ -590,7 +602,7 @@ export class ComputerHostChannel {
               !(this.cooperationCapable(profileId) && message.cooperative)) ||
             (message.holder.scope.kind === "app" && !this.capable(backend))
           ) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           if (
@@ -703,7 +715,7 @@ export class ComputerHostChannel {
             !this.capable(backend) ||
             message.holder.scope.kind !== "takeover"
           ) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           const requestId = message.requestId;
@@ -791,11 +803,11 @@ export class ComputerHostChannel {
         }
         case "chromeLeaseAcquire":
           if (message.holder.profileId !== profileId) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           try {
-            if (!this.chromeOptions?.certified(message.holder.provider))
+            if (!hostIntegrations() || !this.chromeOptions?.certified(message.holder.provider))
               throw new ComputerControlError({ _tag: "Unavailable", reason: "not-certified" });
             const status = this.status();
             if (!status.available)
@@ -871,12 +883,15 @@ export class ComputerHostChannel {
         }
         case "chromeRestoreAcquire":
           if (message.holder.profileId !== profileId) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           try {
             // Restoring setup files launches nothing, so it needs no certified record or
-            // helper; it still excludes Chrome sessions, native work and recovery.
+            // helper; it still excludes Chrome sessions, native work and recovery. Those
+            // files are the host's, so a guest backend never restores them.
+            if (!hostIntegrations())
+              throw new ComputerControlError({ _tag: "Unavailable", reason: "not-certified" });
             if (this.controller.nativeWorkConflicts("chrome"))
               throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
             this.chrome.acquire(message.holder, this.controller.lease.chromeConflict(profileId));
@@ -947,18 +962,19 @@ export class ComputerHostChannel {
             registration.profileId !== profileId ||
             registration.backendIncarnation !== incarnation
           ) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           const supervisor = this.chromeOptions?.supervisor;
-          if (!supervisor || child.pid === undefined) {
+          const hostPid = channel.hostPid;
+          if (!supervisor || hostPid === undefined) {
             fail(
               message.requestId,
               new ComputerControlError({ _tag: "Unavailable", reason: "not-certified" }),
             );
             break;
           }
-          void supervisor.register(registration, child.pid).then(
+          void supervisor.register(registration, hostPid).then(
             () =>
               this.send(profileId, {
                 type: "response",
@@ -979,15 +995,16 @@ export class ComputerHostChannel {
         case "chromeProcessAdopt": {
           const adoption = message.adoption;
           if (adoption.profileId !== profileId || adoption.backendIncarnation !== incarnation) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           const supervisor = this.chromeOptions?.supervisor;
           const verify = this.chromeOptions?.verifyAdoption;
+          const hostPid = channel.hostPid;
           if (
             !supervisor ||
             !verify ||
-            child.pid === undefined ||
+            hostPid === undefined ||
             adoption.integration !== "codex-chrome" ||
             !this.chromeOptions?.certified("codex")
           ) {
@@ -997,7 +1014,7 @@ export class ComputerHostChannel {
             );
             break;
           }
-          void supervisor.adopt(adoption, child.pid, verify).then(
+          void supervisor.adopt(adoption, hostPid, verify).then(
             (registration) =>
               this.send(profileId, {
                 type: "response",
@@ -1036,7 +1053,7 @@ export class ComputerHostChannel {
             message.holder.backend === "native" ||
             message.holder.scope.kind !== "foreground"
           ) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           try {
@@ -1064,7 +1081,7 @@ export class ComputerHostChannel {
               break;
             }
             // Sky stays closed until its spike passes and `codex-computer` is certified.
-            if (!this.chromeOptions?.builtinCertified?.())
+            if (!hostIntegrations() || !this.chromeOptions?.builtinCertified?.())
               throw new ComputerControlError({ _tag: "Unavailable", reason: "not-certified" });
             this.chrome.assertNativeAvailable(profileId);
             if (this.controller.nativeWorkConflicts(message.holder.scope))
@@ -1078,11 +1095,11 @@ export class ComputerHostChannel {
         }
         case "chromeLeaseValidate":
           if (message.holder.profileId !== profileId) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           try {
-            if (!this.chromeOptions?.certified(message.holder.provider))
+            if (!hostIntegrations() || !this.chromeOptions?.certified(message.holder.provider))
               throw new ComputerControlError({ _tag: "Unavailable", reason: "not-certified" });
             const status = this.status();
             if (!status.available)
@@ -1247,7 +1264,7 @@ export class ComputerHostChannel {
           break;
         case "targetWait":
           if (message.holder.profileId !== profileId) {
-            child.disconnect();
+            channel.disconnect();
             return;
           }
           if (!this.cooperationCapable(profileId)) {
@@ -1347,16 +1364,14 @@ export class ComputerHostChannel {
           break;
         }
         default:
-          child.disconnect();
+          channel.disconnect();
       }
     });
-    const disconnected = () => {
+    channel.onDisconnect(() => {
       if (this.backends.get(profileId) !== backend) return;
       this.backends.delete(profileId);
       this.disconnectProfile(profileId);
-    };
-    child.once("disconnect", disconnected);
-    child.once("exit", disconnected);
+    });
   }
   /**
    * What `profileId` learns about Chrome: its own holders (all of them for shared peers, the
@@ -1435,7 +1450,7 @@ export class ComputerHostChannel {
       } = message.activity;
       message = { type: "activity", activity };
     }
-    if (backend?.ready && backend.child.connected) backend.child.send(message, () => undefined);
+    if (backend?.ready && backend.channel.connected) backend.channel.send(message);
   }
   /** Capable peers get every own holder; legacy peers keep the single-holder message. */
   private sendLeases(profileId: string): void {

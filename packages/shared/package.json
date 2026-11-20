@@ -356,6 +356,10 @@
       "types": "./src/profileIdentity.ts",
       "import": "./src/profileIdentity.ts"
     },
+    "./backendFrames": {
+      "types": "./src/backendFrames.ts",
+      "import": "./src/backendFrames.ts"
+    },
     "./profilePaths": {
       "types": "./src/profilePaths.ts",
       "import": "./src/profilePaths.ts"

@@ -313,3 +313,86 @@ it("refuses to remove a profile whose Claude in Chrome setup still owns the real
     await FS.rm(root, { recursive: true, force: true });
   }
 });
+
+describe("execution environments", () => {
+  const fileVersion = async (store: ProfileRegistryStore) =>
+    JSON.parse(await FS.readFile(store.path, "utf8")).version as number;
+
+  it("writes version 2 only while a Linux VM profile exists", async () => {
+    const { root, store } = await fixture();
+    try {
+      await store.init();
+      const host = await store.create({ name: "Host" });
+      expect(await fileVersion(store)).toBe(1);
+      // Host records stay byte-compatible with builds that predate VM profiles.
+      expect(JSON.parse(await FS.readFile(store.path, "utf8")).profiles[1]).not.toHaveProperty(
+        "executionEnvironment",
+      );
+      const vm = await store.create({ name: "Guest", executionEnvironment: "linux-vm" });
+      expect(vm).toMatchObject({ executionEnvironment: "linux-vm", status: "ready" });
+      expect(await fileVersion(store)).toBe(2);
+      // Updates keep the environment: it is fixed at creation.
+      await store.update({ profileId: vm.id, name: "Guest 2" });
+      expect(await fileVersion(store)).toBe(2);
+      const read = await store.read();
+      expect(read.ok && read.registry.profiles.find((p) => p.id === vm.id)).toMatchObject({
+        name: "Guest 2",
+        executionEnvironment: "linux-vm",
+      });
+      // VM profiles get no host provider homes or settings; those live in the guest.
+      const dir = profileStateDir(store.defaultStateDir, vm);
+      expect(await FS.readdir(dir)).toEqual([]);
+      await store.remove(vm.id);
+      expect(await fileVersion(store)).toBe(1);
+      expect((await store.read()).ok).toBe(true);
+      await store.remove(host.id);
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects VM records in a version 1 registry and a VM Default, without rewriting", async () => {
+    const { root, store } = await fixture();
+    try {
+      await store.init();
+      await store.create({ name: "Guest", executionEnvironment: "linux-vm" });
+      const v2 = JSON.parse(await FS.readFile(store.path, "utf8"));
+      const vmDefault = {
+        ...v2,
+        profiles: v2.profiles.map((p: { isDefault: boolean }) =>
+          p.isDefault ? { ...p, executionEnvironment: "linux-vm" } : p,
+        ),
+      };
+      for (const contents of [
+        JSON.stringify({ ...v2, version: 1 }),
+        JSON.stringify(vmDefault),
+        JSON.stringify({ ...v2, version: 3 }),
+      ]) {
+        await FS.writeFile(store.path, contents);
+        const result = await store.read();
+        expect(result.ok).toBe(false);
+        await expect(store.create({ name: "Unsafe" })).rejects.toThrow();
+        expect(await FS.readFile(store.path, "utf8")).toBe(contents);
+      }
+      await FS.writeFile(store.path, JSON.stringify({ ...v2, version: 3 }));
+      const newer = await store.read();
+      expect(!newer.ok && newer.diagnostic.code).toBe("newer-version");
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a version 2 registry without VM profiles and normalizes it on the next write", async () => {
+    const { root, store } = await fixture();
+    try {
+      await store.init();
+      const v1 = JSON.parse(await FS.readFile(store.path, "utf8"));
+      await FS.writeFile(store.path, JSON.stringify({ ...v1, version: 2 }));
+      expect((await store.read()).ok).toBe(true);
+      await store.create({ name: "Host" });
+      expect(await fileVersion(store)).toBe(1);
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
+});
