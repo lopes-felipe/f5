@@ -70,6 +70,55 @@ pub(super) unsafe fn runtime_id(element: &IUIAutomationElement) -> Result<String
     let _ = SafeArrayDestroy(array);
     Ok(id)
 }
+/// Whether focus on `element` means keyboard input really goes there. Unknown counts as yes.
+pub(super) unsafe fn editable_element(element: &IUIAutomationElement) -> bool {
+    element.CurrentControlType().map_or(true, |kind| {
+        [
+            UIA_EditControlTypeId,
+            UIA_ComboBoxControlTypeId,
+            UIA_DocumentControlTypeId,
+        ]
+        .contains(&kind)
+    })
+}
+/// `element` itself and the elements it controls (a combobox's listbox).
+pub(super) unsafe fn typing_anchors(element: &IUIAutomationElement) -> Vec<IUIAutomationElement> {
+    let mut anchors = vec![element.clone()];
+    if let Ok(controlled) = element.CurrentControllerFor() {
+        for index in 0..controlled.Length().unwrap_or(0).clamp(0, 16) {
+            if let Ok(item) = controlled.GetElement(index) {
+                anchors.push(item);
+            }
+        }
+    }
+    anchors
+}
+/// Whether `element` is one of `anchors` or lies under one, within a bounded parent walk.
+pub(super) unsafe fn element_within(
+    element: &IUIAutomationElement,
+    anchors: &[IUIAutomationElement],
+) -> bool {
+    let (Ok(uia), Ok(walker)) = (
+        automation(),
+        automation().and_then(|uia| uia.ControlViewWalker().map_err(|_| fail("Execution"))),
+    ) else {
+        return false;
+    };
+    let mut node = element.clone();
+    for _ in 0..24 {
+        if anchors.iter().any(|anchor| {
+            uia.CompareElements(anchor, &node)
+                .is_ok_and(|same| same.as_bool())
+        }) {
+            return true;
+        }
+        match walker.GetParentElement(&node) {
+            Ok(parent) => node = parent,
+            Err(_) => return false,
+        }
+    }
+    false
+}
 pub(super) unsafe fn walk(root: &IUIAutomationElement, max: usize) -> Vec<IUIAutomationElement> {
     walk_checked(root, max).0
 }

@@ -531,130 +531,298 @@ pub enum CharacterDelivery {
     Complete,
     /// Focus moved before anything was sent: nothing happened yet.
     Blocked,
-    /// Focus moved after some characters were sent (often their own effect, such as a
-    /// combobox moving its active option): the rest were not sent.
-    Stopped,
+    /// Focus moved after some text was sent (often its own effect, such as a combobox moving
+    /// its active option); the rest was not sent. `delivered` counts UTF-16 code units.
+    Stopped {
+        delivered: usize,
+        reason: &'static str,
+    },
 }
 
-/// Validation precedes every Unicode character, even within one 32-character chunk.
-/// `validate` returns whether focus is unchanged; its errors (stop, pause) propagate as they
-/// are. `delivered` counts characters across chunks, so a later chunk never reports Blocked.
+fn stopped(delivered: usize, reason: &'static str) -> CharacterDelivery {
+    if delivered == 0 {
+        CharacterDelivery::Blocked
+    } else {
+        CharacterDelivery::Stopped { delivered, reason }
+    }
+}
+
+/// Foreground typing. `focus` runs once before each chunk of `chunk` characters and returns a
+/// stop reason when focus moved; it never runs between a character's down and up events, since
+/// a character's own effect may move focus. `emit` sends one character and returns `false`
+/// when its recipient check failed before anything was sent. Errors (stop, pause, send
+/// failures) propagate unchanged. `between` runs between chunks.
 pub fn deliver_characters<E>(
-    characters: impl IntoIterator<Item = char>,
-    delivered: &mut usize,
-    mut validate: impl FnMut() -> Result<bool, E>,
-    mut emit: impl FnMut(char) -> Result<(), E>,
+    characters: &[char],
+    chunk: usize,
+    mut focus: impl FnMut() -> Result<Option<&'static str>, E>,
+    mut emit: impl FnMut(char) -> Result<bool, E>,
+    mut between: impl FnMut(),
 ) -> Result<CharacterDelivery, E> {
-    for character in characters {
-        if !validate()? {
-            return Ok(if *delivered == 0 {
-                CharacterDelivery::Blocked
-            } else {
-                CharacterDelivery::Stopped
-            });
+    let mut delivered = 0;
+    for (index, part) in characters.chunks(chunk.max(1)).enumerate() {
+        if index > 0 {
+            between();
         }
-        emit(character)?;
-        *delivered += 1;
+        if let Some(reason) = focus()? {
+            return Ok(stopped(delivered, reason));
+        }
+        for character in part {
+            if !emit(*character)? {
+                return Ok(stopped(delivered, "focus-moved"));
+            }
+            delivered += character.len_utf16();
+        }
     }
     Ok(CharacterDelivery::Complete)
+}
+
+/// One character's Unicode key events as (UTF-16 unit, keyup): down then up for each unit, so
+/// a surrogate pair is sent as both halves together.
+pub fn unicode_key_events(character: char) -> Vec<(u16, bool)> {
+    let mut units = [0u16; 2];
+    character
+        .encode_utf16(&mut units)
+        .iter()
+        .flat_map(|unit| [(*unit, false), (*unit, true)])
+        .collect()
+}
+
+/// The stop reason for a failure raised while re-reading focus between chunks, so a revoked
+/// grant or a password field taking focus stays distinguishable from a harmless focus move.
+pub fn typing_stop(error: &Value) -> &'static str {
+    match error["_tag"].as_str() {
+        Some("NotGranted") => "not-granted",
+        Some("TargetBlocked") => match error["kind"].as_str() {
+            Some("other-app") => "other-app",
+            Some("owner-unknown") => "owner-unknown",
+            Some("secure-field") => "secure-field",
+            _ => "focus-unknown",
+        },
+        _ => "focus-unknown",
+    }
+}
+
+/// Whether typing may continue into the element it started in. UI Automation focus can move
+/// to a combobox's active option while keyboard input stays in the field. That counts as
+/// unchanged when the field still has keyboard focus, or when the new, non-editable focus lies
+/// inside the field or inside an element it controls. The expensive reads run only when needed.
+pub fn typing_focus_unchanged(
+    same_owner_and_window: bool,
+    same_element: impl FnOnce() -> bool,
+    initial_still_focused: impl FnOnce() -> bool,
+    current_editable: impl FnOnce() -> bool,
+    current_within_initial: impl FnOnce() -> bool,
+) -> bool {
+    same_owner_and_window
+        && (same_element()
+            || initial_still_focused()
+            || (!current_editable() && current_within_initial()))
 }
 #[cfg(test)]
 mod character_delivery_tests {
     use super::*;
-    use std::cell::Cell;
+    use serde_json::json;
+    use std::cell::{Cell, RefCell};
+    fn chars(text: &str) -> Vec<char> {
+        text.chars().collect()
+    }
     #[test]
-    fn changed_focus_in_the_same_window_stops_after_one_character() {
-        let focus = Cell::new(1);
-        let mut sent = String::new();
-        let mut delivered = 0;
+    fn focus_is_checked_once_per_chunk_not_per_character() {
+        // A combobox moves focus as each character lands; only the next chunk sees it.
+        let checks = Cell::new(0);
+        let log = RefCell::new(Vec::new());
         let result = deliver_characters(
-            "first chunk".chars(),
-            &mut delivered,
-            || Ok::<_, &str>(focus.get() == 1),
-            |character| {
-                sent.push(character);
-                focus.set(2);
-                Ok(())
+            &chars("abcdef"),
+            4,
+            || {
+                checks.set(checks.get() + 1);
+                Ok::<_, &str>((checks.get() > 1).then_some("focus-moved"))
             },
+            |character| {
+                log.borrow_mut().push(character);
+                Ok(true)
+            },
+            || log.borrow_mut().push('|'),
         );
-        assert_eq!(result, Ok(CharacterDelivery::Stopped));
-        assert_eq!(delivered, 1);
-        assert_eq!(sent, "f");
+        assert_eq!(
+            result,
+            Ok(CharacterDelivery::Stopped {
+                delivered: 4,
+                reason: "focus-moved"
+            })
+        );
+        assert_eq!(log.into_inner(), chars("abcd|"));
+        assert_eq!(checks.get(), 2);
+    }
+    #[test]
+    fn single_chunk_text_is_never_rechecked() {
+        let checks = Cell::new(0);
+        let result = deliver_characters(
+            &chars("SingleEnvironmentMultiApps"),
+            32,
+            || {
+                checks.set(checks.get() + 1);
+                Ok::<_, &str>(None)
+            },
+            |_| Ok(true),
+            || {},
+        );
+        assert_eq!(result, Ok(CharacterDelivery::Complete));
+        assert_eq!(checks.get(), 1);
     }
     #[test]
     fn focus_moved_before_any_character_is_blocked() {
-        let mut delivered = 0;
         let mut events = 0;
         let result = deliver_characters(
-            "text".chars(),
-            &mut delivered,
-            || Ok::<_, &str>(false),
+            &chars("text"),
+            32,
+            || Ok::<_, &str>(Some("secure-field")),
             |_| {
                 events += 1;
-                Ok(())
+                Ok(true)
             },
+            || {},
         );
         assert_eq!(result, Ok(CharacterDelivery::Blocked));
-        assert_eq!((delivered, events), (0, 0));
+        assert_eq!(events, 0);
     }
     #[test]
-    fn a_later_chunk_stops_instead_of_blocking() {
-        let mut delivered = 32;
+    fn a_recipient_change_stops_with_utf16_counts() {
+        // 'a' and the emoji (a surrogate pair) land; the foreground then changes before 'b'.
         let result = deliver_characters(
-            "more".chars(),
-            &mut delivered,
-            || Ok::<_, &str>(false),
-            |_| Ok(()),
+            &chars("a😀b"),
+            32,
+            || Ok::<_, &str>(None),
+            |character| Ok(character != 'b'),
+            || {},
         );
-        assert_eq!(result, Ok(CharacterDelivery::Stopped));
-        assert_eq!(delivered, 32);
+        assert_eq!(
+            result,
+            Ok(CharacterDelivery::Stopped {
+                delivered: 3,
+                reason: "focus-moved"
+            })
+        );
+        let first = deliver_characters(
+            &chars("ab"),
+            32,
+            || Ok::<_, &str>(None),
+            |_| Ok(false),
+            || {},
+        );
+        assert_eq!(first, Ok(CharacterDelivery::Blocked));
     }
     #[test]
-    fn validation_and_emit_errors_propagate_after_partial_delivery() {
-        let mut delivered = 0;
+    fn focus_and_emit_errors_propagate_after_partial_delivery() {
         let result = deliver_characters(
-            "abc".chars(),
-            &mut delivered,
-            || Ok(true),
+            &chars("abc"),
+            32,
+            || Ok(None),
             |character| {
                 if character == 'b' {
                     Err("send-failed")
                 } else {
-                    Ok(())
+                    Ok(true)
                 }
             },
+            || {},
         );
         assert_eq!(result, Err("send-failed"));
-        assert_eq!(delivered, 1);
-        let calls = Cell::new(0);
-        let mut delivered = 0;
+        let checks = Cell::new(0);
         let result = deliver_characters(
-            "abc".chars(),
-            &mut delivered,
+            &chars("abcd"),
+            2,
             || {
-                calls.set(calls.get() + 1);
-                if calls.get() == 1 {
-                    Ok(true)
+                checks.set(checks.get() + 1);
+                if checks.get() == 1 {
+                    Ok(None)
                 } else {
                     Err("paused")
                 }
             },
-            |_| Ok(()),
+            |_| Ok(true),
+            || {},
         );
         assert_eq!(result, Err("paused"));
-        assert_eq!(delivered, 1);
     }
     #[test]
-    fn complete_delivery_counts_every_character() {
-        let mut delivered = 0;
-        let result = deliver_characters(
-            "héllo".chars(),
-            &mut delivered,
-            || Ok::<_, &str>(true),
-            |_| Ok(()),
+    fn surrogate_pairs_send_both_halves_down_then_up() {
+        assert_eq!(unicode_key_events('a'), vec![(0x61, false), (0x61, true)]);
+        assert_eq!(
+            unicode_key_events('😀'),
+            vec![
+                (0xD83D, false),
+                (0xD83D, true),
+                (0xDE00, false),
+                (0xDE00, true)
+            ]
         );
-        assert_eq!(result, Ok(CharacterDelivery::Complete));
-        assert_eq!(delivered, 5);
+    }
+    #[test]
+    fn focus_failures_become_stop_reasons() {
+        assert_eq!(
+            typing_stop(&json!({"_tag":"NotGranted","needed":"type"})),
+            "not-granted"
+        );
+        assert_eq!(
+            typing_stop(&json!({"_tag":"TargetBlocked","kind":"secure-field"})),
+            "secure-field"
+        );
+        assert_eq!(
+            typing_stop(&json!({"_tag":"TargetBlocked","kind":"other-app"})),
+            "other-app"
+        );
+        assert_eq!(
+            typing_stop(&json!({"_tag":"TargetBlocked","kind":"f5"})),
+            "focus-unknown"
+        );
+        assert_eq!(
+            typing_stop(&json!({"_tag":"StaleElement"})),
+            "focus-unknown"
+        );
+    }
+    #[test]
+    fn combobox_option_focus_counts_as_unchanged() {
+        let unread = || -> bool { panic!("read only when needed") };
+        assert!(typing_focus_unchanged(
+            true,
+            || true,
+            unread,
+            unread,
+            unread
+        ));
+        assert!(!typing_focus_unchanged(
+            false, unread, unread, unread, unread
+        ));
+        assert!(typing_focus_unchanged(
+            true,
+            || false,
+            || true,
+            unread,
+            unread
+        ));
+        assert!(typing_focus_unchanged(
+            true,
+            || false,
+            || false,
+            || false,
+            || true
+        ));
+        assert!(!typing_focus_unchanged(
+            true,
+            || false,
+            || false,
+            || true,
+            unread
+        ));
+        assert!(!typing_focus_unchanged(
+            true,
+            || false,
+            || false,
+            || false,
+            || false
+        ));
     }
     #[test]
     fn rejected_shell_chords_emit_no_input() {

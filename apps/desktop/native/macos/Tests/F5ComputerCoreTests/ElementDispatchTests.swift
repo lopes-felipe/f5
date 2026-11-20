@@ -83,7 +83,5 @@ final class ElementDispatchTests: XCTestCase {
     XCTAssertEqual(computerDeliveryStep(delivered: 0, focusUnchanged: false), .blocked)
     XCTAssertEqual(computerDeliveryStep(delivered: 1, focusUnchanged: false), .stop)
     XCTAssertEqual(computerDeliveryStep(delivered: 3, focusUnchanged: true), .send)
-    // Typed text counts characters: a chunk that moved focus stops the rest.
-    XCTAssertEqual(computerDeliveryStep(delivered: 32, focusUnchanged: false), .stop)
   }
 }

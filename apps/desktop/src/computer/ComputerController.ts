@@ -157,11 +157,14 @@ export function describeOutcomeUnknown(message: Record<string, unknown>): string
   const delivery =
     diagnostic.delivery === "background" ? "bg" : diagnostic.delivery === "foreground" ? "fg" : "?";
   const axError = Number.isSafeInteger(diagnostic.axError) ? String(diagnostic.axError) : "none";
-  // The failure the helper escalated to OutcomeUnknown once input was posted.
-  const cause = field(diagnostic.cause, /^[A-Za-z-]{1,32}$/);
+  // The failure the helper escalated to OutcomeUnknown once input was posted, when it sent one.
   const kind =
     typeof diagnostic.kind === "string" ? `/${field(diagnostic.kind, /^[A-Za-z-]{1,32}$/)}` : "";
-  return `computer outcome-unknown: op=${op} app=${app} axError=${axError} delivery=${delivery} cause=${cause}${kind}`;
+  const cause =
+    typeof diagnostic.cause === "string"
+      ? ` cause=${field(diagnostic.cause, /^[A-Za-z-]{1,32}$/)}${kind}`
+      : "";
+  return `computer outcome-unknown: op=${op} app=${app} axError=${axError} delivery=${delivery}${cause}`;
 }
 export class ComputerController {
   readonly cooperation: ComputerCooperation;

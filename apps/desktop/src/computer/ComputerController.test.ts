@@ -169,10 +169,10 @@ describe("main computer controller", () => {
     h.event({ type: "response", requestId: "ok", result: {} });
     expect(h.log.mock.calls).toEqual([
       [
-        "computer outcome-unknown: op=elementAction app=com.apple.Preview axError=-25204 delivery=fg cause=?",
+        "computer outcome-unknown: op=elementAction app=com.apple.Preview axError=-25204 delivery=fg",
       ],
       ["computer outcome-unknown: op=? app=? axError=none delivery=? cause=?/?"],
-      ["computer outcome-unknown: op=? app=? axError=none delivery=? cause=?"],
+      ["computer outcome-unknown: op=? app=? axError=none delivery=?"],
       [
         "computer outcome-unknown: op=type app=? axError=none delivery=fg cause=TargetBlocked/focus-unknown",
       ],

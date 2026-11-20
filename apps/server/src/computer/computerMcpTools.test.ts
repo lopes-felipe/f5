@@ -166,9 +166,19 @@ describe("computer batches", () => {
     });
     expect(h.invoke.mock.calls.some((call) => call[2].op === "type")).toBe(false);
   });
-  it("stops a batch after foreground typing cut short by a focus change", async () => {
+  it.each([
+    [
+      "cut short by a focus change",
+      {
+        verified: false,
+        charactersDelivered: 32,
+        charactersRequested: 40,
+        stoppedBy: "focus-moved",
+      },
+    ],
+    ["whose last chunk moved focus", { verified: false }],
+  ] as const)("stops a batch after foreground typing %s", async (_label, verification) => {
     const h = batchSetup();
-    const verification = { verified: false, charactersDelivered: 3, charactersRequested: 40 };
     h.invoke.mockImplementation(async (_t, _s, input) =>
       input.op === "type"
         ? { actionCompleted: true, verification }

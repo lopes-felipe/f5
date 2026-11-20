@@ -492,9 +492,23 @@ export const ComputerActionResult = Schema.Struct({
       /** Set when a key action stopped early after focus moved; later chords were not sent. */
       chordsDelivered: Schema.optional(NonNegative),
       chordsRequested: Schema.optional(NonNegative),
-      /** Set when typing stopped early after focus moved; the remaining text was not sent. */
+      /**
+       * Set when typing stopped early after focus moved; the remaining text was not sent.
+       * Counted in UTF-16 code units, the same as JavaScript `string.length`, on every OS.
+       */
       charactersDelivered: Schema.optional(NonNegative),
       charactersRequested: Schema.optional(NonNegative),
+      /** Why typing stopped: a focus move, or a block such as a password field taking focus. */
+      stoppedBy: Schema.optional(
+        Schema.Literals([
+          "focus-moved",
+          "focus-unknown",
+          "other-app",
+          "owner-unknown",
+          "secure-field",
+          "not-granted",
+        ]),
+      ),
     }),
   ),
   /** Set when a background mutation waited for a secure field and did not run. */

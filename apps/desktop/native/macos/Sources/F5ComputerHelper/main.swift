@@ -76,6 +76,16 @@ func axElement(_ value: CFTypeRef?) -> AXUIElement? {
   guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
   return unsafeBitCast(value, to: AXUIElement.self)
 }
+/// Whether `element` is one of `anchors` or lies under one, within a bounded parent walk.
+func axIsWithin(_ element: AXUIElement, _ anchors: [AXUIElement]) -> Bool {
+  var node: AXUIElement? = element
+  for _ in 0..<24 {
+    guard let current = node else { return false }
+    if anchors.contains(where: { CFEqual($0, current) }) { return true }
+    node = axElement(attribute(current, kAXParentAttribute))
+  }
+  return false
+}
 func axRect(_ element: AXUIElement) -> CGRect? {
   guard let position = attribute(element, kAXPositionAttribute),
     let size = attribute(element, kAXSizeAttribute), CFGetTypeID(position) == AXValueGetTypeID(),
@@ -1996,7 +2006,8 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
   defer { releaseHeldInput(where: { $0 == owner }) }
   if isBackground(request) { return try await backgroundMutate(request, host) }
   var verification: [String: Any]?
-  var keyFocusUnchanged: (() -> Bool)?
+  /// Set when the last keydown may move focus as its own effect (a chord, a typed chunk).
+  var settleFocusUnchanged: (() -> Bool)?
   if ["click", "move", "drag", "scroll"].contains(op) {
     let target = try display(string(request, "displayId"))
     guard target.generation == string(request, "geometryGeneration") else {
@@ -2059,52 +2070,59 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
   } else if op == "type" || op == "key" {
     let initial = try focused(request, host, needed: "type")
     if op == "type" {
-      let characters = Array(string(request, "text"))
-      guard characters.count <= 10_000 else { throw Failure("ResultTooLarge") }
-      func focusUnchanged() -> Bool {
-        guard let current = try? focused(request, host, needed: "type") else { return false }
-        return computerFocusUnchanged(
-          initialPid: Int(initial.0.processIdentifier),
-          currentPid: Int(current.0.processIdentifier), sameWindow: CFEqual(current.2, initial.2),
-          sameElement: CFEqual(current.1, initial.1), typing: true)
+      let text = string(request, "text")
+      guard text.count <= 10_000 else { throw Failure("ResultTooLarge") }
+      // Elements the field controls (a combobox's listbox), read once.
+      let anchors =
+        [initial.1] + ((attribute(initial.1, "AXLinkedUIElements") as? [AnyObject]) ?? [])
+        .compactMap { axElement($0) }
+      func typingFocus() -> ComputerTypingStop? {
+        let current: (NSRunningApplication, AXUIElement, AXUIElement)
+        do { current = try focused(request, host, needed: "type") } catch let failure as Failure {
+          return computerTypingStop(failure: failure.payload)
+        } catch { return .focusUnknown }
+        let unchanged = computerTypingFocusUnchanged(
+          samePidAndWindow: current.0.processIdentifier == initial.0.processIdentifier
+            && CFEqual(current.2, initial.2),
+          sameElement: CFEqual(current.1, initial.1),
+          initialStillFocused: attribute(initial.1, kAXFocusedAttribute) as? Bool == true,
+          currentEditable: computerEditableRole(attribute(current.1, kAXRoleAttribute) as? String),
+          currentWithinInitial: axIsWithin(current.1, anchors))
+        return unchanged ? nil : .focusMoved
       }
-      var start = 0
-      typeLoop: while start < characters.count {
-        // Focus is checked before each chunk's keydown only. The keydown inserts the whole
-        // chunk, and that insert may move AX focus as its own effect (Chrome reports a
-        // combobox's new active option as focused), so a check between keydown and keyup would
-        // misreport delivered text as an unknown outcome.
-        try checkPermit(request)
-        // Before any chunk, nothing happened yet: the original failure stays exact.
-        if start == 0 { _ = try focused(request, host, needed: "type") }
-        switch computerDeliveryStep(delivered: start, focusUnchanged: focusUnchanged()) {
-        case .send: break
-        case .blocked: throw Failure("TargetBlocked", "kind", "focus-unknown")
-        case .stop:
-          // The remaining text was never sent; say how much was.
-          verification = [
-            "verified": false, "charactersDelivered": start,
-            "charactersRequested": characters.count,
-          ]
-          break typeLoop
-        }
-        let end = min(start + 32, characters.count)
-        let units = Array(String(characters[start..<end]).utf16)
-        guard let down = computerKeyboardEvent(keyCode: 0, keyDown: true, unicode: units),
-          let up = computerKeyboardEvent(keyCode: 0, keyDown: false, unicode: units)
-        else { throw Failure("UnsupportedAction") }
-        try inputLock.withLock {
-          try checkPermit(request)
-          pressedKeys.insert(0, owner: owner)
-          postActionEvent(down, request)
-        }
-        // A posted keydown always gets its keyup, even after a stop or focus change.
-        inputLock.withLock {
-          postActionEvent(up, request)
-          pressedKeys.remove(0)
-        }
-        start = end
-        try await Task.sleep(nanoseconds: 10_000_000)
+      let outcome = try await computerDeliverText(
+        text,
+        checkPermit: { try checkPermit(request) },
+        focusBeforeStart: { _ = try focused(request, host, needed: "type") },
+        focusState: typingFocus,
+        postDown: { units in
+          guard let down = computerKeyboardEvent(keyCode: 0, keyDown: true, unicode: units) else {
+            throw Failure("UnsupportedAction")
+          }
+          try inputLock.withLock {
+            try checkPermit(request)
+            pressedKeys.insert(0, owner: owner)
+            postActionEvent(down, request)
+          }
+        },
+        postUp: { units in
+          // Without an event, the key stays held and releaseHeldInput posts its keyup.
+          guard let up = computerKeyboardEvent(keyCode: 0, keyDown: false, unicode: units) else {
+            return
+          }
+          inputLock.withLock {
+            postActionEvent(up, request)
+            pressedKeys.remove(0)
+          }
+        },
+        pause: { try await Task.sleep(nanoseconds: 10_000_000) })
+      switch outcome {
+      case .blocked: throw Failure("TargetBlocked", "kind", "focus-unknown")
+      case .stopped: verification = outcome.verification
+      case .complete:
+        // The last chunk may move focus as its own effect, so watch during settling, as for
+        // the last chord: a following step must not act on a new focus unobserved.
+        settleFocusUnchanged = { typingFocus() == nil }
       }
     } else {
       let chords = request["chords"] as? [String] ?? []
@@ -2155,7 +2173,7 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
       }
       // A last chord that moves focus (a single Cmd+N) must still tell the agent to observe;
       // the app may open its window after the keyup, so the check runs during settling.
-      if verification == nil { keyFocusUnchanged = focusUnchanged }
+      if verification == nil { settleFocusUnchanged = focusUnchanged }
     }
   } else if op == "elementAction" {
     verification = try elementAction(request, host)
@@ -2187,13 +2205,13 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
     op: op, screenshot: request["screenshot"] as? Bool == true,
     appTargeted: !string(request, "appId").isEmpty, displayCount: displays().count)
   deferredSettle = settle == 0
-  if let keyFocusUnchanged {
-    // Spend the settle window watching for the shortcut's own focus change. Waiting it out
+  if let settleFocusUnchanged {
+    // Spend the settle window watching for the input's own focus change. Waiting it out
     // inline replaces the deferred settle; an early exit keeps the gap for the next action.
     let started = ProcessInfo.processInfo.systemUptime
     let moved = computerPollUntil(
       timeout: 0.3, cancelled: { requestCancelled(string(request, "requestId")) },
-      predicate: { !keyFocusUnchanged() })
+      predicate: { !settleFocusUnchanged() })
     if moved { verification = ["verified": false] }
     let remaining = Double(settle) / 1000 - (ProcessInfo.processInfo.systemUptime - started)
     if remaining > 0 { try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000)) }
