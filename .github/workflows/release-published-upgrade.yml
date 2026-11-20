@@ -29,7 +29,7 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha }}
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -39,7 +39,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_RUN: ${{ inputs.run_id }}
           REQUESTED_ARTIFACT: ${{ inputs.artifact }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ steps.artifact.outputs.name }}
           run-id: ${{ inputs.run_id }}
@@ -61,13 +61,13 @@ jobs:
           cp "$(command -v node)" "$RUNNER_TEMP/rehearsal-node/node.exe"
           "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir published-upgrade/baseline --target-dir published-upgrade/target --baseline "$BASELINE" --baseline-channel "$BASELINE_CHANNEL" --client-channel "$CLIENT_CHANNEL" --target "$VERSION" --channel "$CHANNEL" --published-baseline --log-dir rehearsal-logs
       - run: node scripts/record-upgrade-proof.ts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: upgrade-receipt-${{ inputs.client_channel }}-attempt-${{ github.run_attempt }}
           path: upgrade-receipt/upgrade.json
           retention-days: 30
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-published-upgrade-${{ inputs.client_channel }}-logs-${{ github.run_attempt }}
           path: rehearsal-logs/**
