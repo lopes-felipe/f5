@@ -5,6 +5,7 @@ export interface AntigravityReleaseAsset {
   readonly url: string;
   readonly sha512: string;
   readonly archiveBytes: number;
+  readonly archiveSizeUnknown?: boolean;
   readonly format: "tar.gz" | "executable" | "zip";
   readonly executable: { readonly name: string; readonly bytes?: number };
   /** Legacy archive test fixtures only; supported CLI releases embed their harness. */

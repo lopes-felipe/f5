@@ -192,7 +192,11 @@ export function resolveCodexSelectionOptions(input: {
   readonly modelOptions?: ProviderModelOptions | undefined;
   readonly modelSelection?: ModelSelection | undefined;
   readonly boundInstanceId: ProviderInstanceId;
-}): { readonly reasoningEffort?: string; readonly fastMode?: boolean } {
+}): {
+  readonly reasoningEffort?: string;
+  readonly fastMode?: boolean;
+  readonly cyberAccessProgram?: "standard" | "daybreakBlue" | "daybreakRed";
+} {
   if (input.modelSelection && input.modelSelection.instanceId === input.boundInstanceId) {
     const reasoningEffort = getModelSelectionStringOptionValue(
       input.modelSelection,
@@ -202,13 +206,20 @@ export function resolveCodexSelectionOptions(input: {
       input.modelSelection.options,
       "fastMode",
     );
+    const program = getModelSelectionStringOptionValue(input.modelSelection, "cyberAccessProgram");
+    const cyberAccessProgram =
+      program === "standard" || program === "daybreakBlue" || program === "daybreakRed"
+        ? program
+        : undefined;
     return {
+      ...(cyberAccessProgram ? { cyberAccessProgram } : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       ...(fastMode !== undefined ? { fastMode } : {}),
     };
   }
   const codex = input.modelOptions?.codex;
   return {
+    ...(codex?.cyberAccessProgram ? { cyberAccessProgram: codex.cyberAccessProgram } : {}),
     ...(codex?.reasoningEffort !== undefined ? { reasoningEffort: codex.reasoningEffort } : {}),
     ...(codex?.fastMode !== undefined ? { fastMode: codex.fastMode } : {}),
   };
@@ -3068,6 +3079,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               ...(input.expectedTurnId ? { expectedTurnId: input.expectedTurnId } : {}),
               ...(providerInput !== undefined ? { input: providerInput } : {}),
               ...(input.model !== undefined ? { model: input.model } : {}),
+              ...(selectionOptions.cyberAccessProgram
+                ? { cyberAccessProgram: selectionOptions.cyberAccessProgram }
+                : {}),
               ...(selectionOptions.reasoningEffort !== undefined
                 ? { effort: selectionOptions.reasoningEffort }
                 : {}),

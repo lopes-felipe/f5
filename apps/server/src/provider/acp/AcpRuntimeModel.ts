@@ -43,6 +43,13 @@ export interface AcpPermissionRequest {
 }
 
 export type AcpParsedSessionEvent =
+  | {
+      readonly _tag: "NoticeReceived";
+      readonly severity: string;
+      readonly title: string;
+      readonly description?: string;
+      readonly rawPayload: unknown;
+    }
   | { readonly _tag: "TransportTerminated"; readonly message: string }
   | {
       readonly _tag: "SlashCommandsUpdated";
@@ -677,6 +684,19 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
   let modeId: string | undefined;
 
   switch (upd.sessionUpdate) {
+    case "notice": {
+      const title = upd.title.trim().slice(0, 1024);
+      const description = upd.description?.trim().slice(0, 4096);
+      if (title)
+        events.push({
+          _tag: "NoticeReceived",
+          severity: upd.severity.trim().slice(0, 64) || "info",
+          title,
+          ...(description ? { description } : {}),
+          rawPayload: params,
+        });
+      break;
+    }
     case "current_mode_update": {
       modeId = upd.currentModeId.trim();
       if (modeId) {

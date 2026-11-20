@@ -895,6 +895,9 @@ export function normalizeCodexModelOptions(
       ? resolveCodexEffectiveReasoningEffort(model, modelOptions.reasoningEffort, reported)
       : undefined;
     const reportedOptions: CodexModelOptions = {
+      ...(modelOptions?.cyberAccessProgram && selectDescriptor(reported, "cyberAccessProgram")
+        ? { cyberAccessProgram: modelOptions.cyberAccessProgram }
+        : {}),
       ...(effort && effort !== capabilities.defaultEffort ? { reasoningEffort: effort } : {}),
       ...(modelOptions?.fastMode !== undefined &&
       capabilities.supportsFastMode &&
@@ -1310,6 +1313,7 @@ export function createReportedClaudeModelCapabilities(
 
 /** Subset of Codex `model/list` `Model` entries that F5 reads. */
 export interface ReportedCodexModelInfo {
+  readonly availableAccessPrograms?: { readonly cyber?: ReadonlyArray<string> };
   readonly inputModalities?: unknown;
   readonly model: string;
   readonly supportedReasoningEfforts?: ReadonlyArray<{ readonly reasoningEffort?: unknown }>;
@@ -1367,6 +1371,30 @@ export function createReportedCodexModelCapabilities(
   });
   const defaultServiceTier = nonEmptyString(info.defaultServiceTier);
   const upgradeTo = nonEmptyString(info.upgrade);
+  const cyber = [...new Set(info.availableAccessPrograms?.cyber ?? [])].filter((program) =>
+    ["standard", "daybreakBlue", "daybreakRed"].includes(program),
+  );
+  const defaultCyberProgram = cyber.includes("standard") ? "standard" : cyber[0];
+  const cyberOptions: ProviderOptionDescriptor[] = cyber.length
+    ? [
+        {
+          id: "cyberAccessProgram",
+          label: "Cyber Access",
+          type: "select",
+          options: [...new Set(["standard", ...cyber])].map((id) => ({
+            id,
+            label:
+              id === "standard"
+                ? "Standard"
+                : id === "daybreakBlue"
+                  ? "Daybreak Blue"
+                  : "Daybreak Red",
+            ...(id === defaultCyberProgram ? { isDefault: true } : {}),
+          })),
+          ...(defaultCyberProgram ? { currentValue: defaultCyberProgram } : {}),
+        },
+      ]
+    : [];
   return {
     inputModalities: Array.isArray(info.inputModalities)
       ? info.inputModalities.filter(
@@ -1374,13 +1402,14 @@ export function createReportedCodexModelCapabilities(
             value === "text" || value === "image" || value === "audio",
         )
       : ["text", "image"],
-    optionDescriptors:
-      efforts.length > 0
+    optionDescriptors: [
+      ...cyberOptions,
+      ...(efforts.length > 0
         ? [
             {
               id: "reasoningEffort",
               label: "Reasoning",
-              type: "select",
+              type: "select" as const,
               options: efforts.map((effort) => ({
                 id: effort,
                 label: CODEX_EFFORT_LABELS[effort],
@@ -1389,7 +1418,8 @@ export function createReportedCodexModelCapabilities(
               ...(defaultEffort ? { currentValue: defaultEffort } : {}),
             },
           ]
-        : [],
+        : []),
+    ],
     source: "reported",
     // A reported empty list means "none"; an absent field leaves F5's defaults.
     ...(effortsReported ? { supportsEffort: efforts.length > 0 } : {}),
@@ -1403,6 +1433,49 @@ export function createReportedCodexModelCapabilities(
     ...(serviceTiers.length > 0 ? { serviceTiers } : {}),
     ...(defaultServiceTier ? { defaultServiceTier } : {}),
     ...(upgradeTo && upgradeTo !== info.model ? { upgradeTo } : {}),
+  };
+}
+
+/** Unknown config keeps the choice explicit; API-key opt-outs offer no program. */
+export function configureCodexCyberAccess(
+  capabilities: ModelCapabilities,
+  config: unknown,
+  accountType?: string,
+): ModelCapabilities {
+  const record =
+    config !== null && typeof config === "object" ? (config as Record<string, unknown>) : undefined;
+  const features =
+    record?.features !== null && typeof record?.features === "object"
+      ? (record.features as Record<string, unknown>)
+      : undefined;
+  return {
+    ...capabilities,
+    optionDescriptors: (capabilities.optionDescriptors ?? []).flatMap((descriptor) => {
+      if (descriptor.id !== "cyberAccessProgram" || descriptor.type !== "select")
+        return [descriptor];
+      if (
+        accountType === "apiKey" &&
+        (!record || features?.api_key_cyber_access_programs === false)
+      )
+        return [];
+      const program = !record
+        ? undefined
+        : record.daybreak === true
+          ? (["daybreakBlue", "daybreakRed"].find((id) =>
+              descriptor.options.some((option) => option.id === id),
+            ) ?? descriptor.currentValue)
+          : descriptor.currentValue;
+      const { currentValue: _current, ...rest } = descriptor;
+      return [
+        {
+          ...rest,
+          ...(program ? { currentValue: program } : {}),
+          options: descriptor.options.map(({ isDefault: _default, ...option }) =>
+            option.id === program ? { ...option, isDefault: true } : option,
+          ),
+        },
+      ];
+    }),
   };
 }
 

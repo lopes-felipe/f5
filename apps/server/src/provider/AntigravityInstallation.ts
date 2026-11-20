@@ -3,6 +3,9 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { compareCliVersions } from "./cliVersion";
+import { lookupAntigravityCliRelease, parseAntigravityCliRelease } from "./antigravityCliRelease";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import * as yauzl from "yauzl";
@@ -17,13 +20,29 @@ export interface AntigravityExecutable {
   version: string;
 }
 
+export function estimateAntigravityInstallBytes(
+  asset: AntigravityReleaseAsset,
+  pinned: AntigravityReleaseAsset | null,
+) {
+  // Hard download limits remain independent of this advisory free-space estimate.
+  const archive = asset.archiveSizeUnknown
+    ? (pinned?.archiveBytes ?? 128 * 1024 * 1024)
+    : asset.archiveBytes;
+  return (
+    archive +
+    (asset.format === "executable" ? 0 : (asset.executable.bytes ?? archive * 3)) +
+    (asset.harness?.bytes ?? 0) +
+    64 * 1024 * 1024
+  );
+}
+
 export class AntigravityUpdateRequiredError extends Error {
   constructor(
     readonly installedVersion: string,
     requiredVersion: string,
   ) {
     super(
-      `Antigravity ${installedVersion} is installed. Update to ${requiredVersion} using Install Antigravity in Settings before starting a new session.`,
+      `Antigravity ${installedVersion} is installed. Update to ${requiredVersion} using Install or update Antigravity in Settings before starting a new session.`,
     );
   }
 }
@@ -35,11 +54,38 @@ export class AntigravityInstallation {
   constructor(
     stateDir: string,
     private readonly asset = resolveAntigravityReleaseAsset(process.platform, process.arch),
+    private readonly lookupUpdate = asset ===
+    resolveAntigravityReleaseAsset(process.platform, process.arch)
+      ? lookupAntigravityCliRelease
+      : undefined,
   ) {
     this.directory = path.join(stateDir, "providers", "antigravity", "releases");
   }
   async resolve(): Promise<AntigravityExecutable> {
-    const asset = this.asset;
+    const active = await this.activeAsset();
+    return this.resolveRelease(active ?? this.asset);
+  }
+  private async activeAsset(): Promise<AntigravityReleaseAsset | null> {
+    if (!this.lookupUpdate) return null;
+    try {
+      const pointer = path.join(this.directory, "active.json");
+      const stat = await fs.lstat(pointer);
+      if (!stat.isFile() || stat.size > 4096) return null;
+      const active = parseAntigravityCliRelease(
+        JSON.parse(await fs.readFile(pointer, "utf8")),
+        process.platform,
+        process.arch,
+      );
+      return active && (!this.asset || compareCliVersions(active.version, this.asset.version) > 0)
+        ? active
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  private async resolveRelease(
+    asset: AntigravityReleaseAsset | null,
+  ): Promise<AntigravityExecutable> {
     if (!asset) throw new Error("Antigravity does not support this platform and architecture.");
     const directory = path.join(this.directory, asset.sha512);
     const record = await fs.readFile(path.join(directory, "complete.json"), "utf8").catch(() => "");
@@ -101,10 +147,11 @@ export class AntigravityInstallation {
     return undefined;
   }
   private async installRelease(signal?: AbortSignal): Promise<AntigravityExecutable> {
-    const asset = this.asset;
+    let asset = this.asset;
     if (!asset) throw new Error("Antigravity does not support this platform and architecture.");
+    let current: AntigravityExecutable | undefined;
     try {
-      return await this.resolve();
+      current = await this.resolve();
     } catch {
       // A complete release is immutable. Do not overwrite an invalid existing directory.
       const destination = path.join(this.directory, asset.sha512);
@@ -120,13 +167,19 @@ export class AntigravityInstallation {
           `Antigravity installation is incomplete. Inspect ${destination} before reinstalling.`,
         );
     }
+    if (current) {
+      const update = await this.lookupUpdate?.(signal);
+      if (!update || compareCliVersions(update.version, current.version) <= 0) return current;
+      asset = update;
+      const existing = await fs.lstat(path.join(this.directory, asset.sha512)).catch((error) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (existing) return this.activate(asset);
+    }
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const disk = await fs.statfs(this.directory);
-    const requiredBytes =
-      asset.archiveBytes +
-      (asset.executable.bytes ?? 1024 * 1024 * 1024) +
-      (asset.harness?.bytes ?? 0) +
-      64 * 1024 * 1024;
+    const requiredBytes = estimateAntigravityInstallBytes(asset, this.asset);
     if (disk.bavail * disk.bsize < requiredBytes)
       throw new Error("Not enough free disk space to stage and verify Antigravity.");
     const staging = await fs.mkdtemp(path.join(this.directory, ".install-"));
@@ -155,7 +208,11 @@ export class AntigravityInstallation {
         createWriteStream(archive, { flags: "wx", mode: 0o600 }),
         { signal: combined },
       );
-      if (bytes !== asset.archiveBytes || hash.digest("hex") !== asset.sha512)
+      if (
+        (!asset.archiveSizeUnknown && bytes !== asset.archiveBytes) ||
+        bytes === 0 ||
+        hash.digest("hex") !== asset.sha512
+      )
         throw new Error("Antigravity archive integrity check failed.");
       if (asset.format === "executable") {
         await fs.rename(archive, path.join(staging, asset.executable.name));
@@ -182,7 +239,7 @@ export class AntigravityInstallation {
       } catch (error) {
         // Another installer may have published first; never replace its complete release.
         try {
-          return await this.resolve();
+          return await this.activate(asset);
         } catch {
           throw error;
         }
@@ -195,10 +252,32 @@ export class AntigravityInstallation {
           await directory.close();
         }
       }
-      return await this.resolve();
+      return await this.activate(asset);
     } finally {
       await fs.rm(staging, { recursive: true, force: true });
     }
+  }
+  private async activate(asset: AntigravityReleaseAsset) {
+    const executable = await this.resolveRelease(asset);
+    const active = await this.activeAsset();
+    if (active && compareCliVersions(active.version, asset.version) > 0)
+      return this.resolveRelease(active);
+    if (asset !== this.asset) {
+      const temporary = path.join(this.directory, ".active-" + randomUUID());
+      try {
+        const handle = await fs.open(temporary, "wx", 0o600);
+        try {
+          await handle.writeFile(JSON.stringify(asset));
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await fs.rename(temporary, path.join(this.directory, "active.json"));
+      } finally {
+        await fs.rm(temporary, { force: true });
+      }
+    }
+    return executable;
   }
 }
 

@@ -5,12 +5,35 @@ import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
   makeAcpPlanUpdatedEvent,
+  makeAcpNoticeEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
   makeAcpToolCallEvent,
 } from "./AcpCoreRuntimeEvents.ts";
 
 describe("AcpCoreRuntimeEvents", () => {
+  it("maps session notices to warnings without assistant message events", () => {
+    expect(
+      makeAcpNoticeEvent({
+        stamp: { eventId: "notice-1" as never, createdAt: "2026-11-20T00:00:00.000Z" },
+        provider: ProviderDriverKind.make("antigravity"),
+        threadId: "thread-1" as never,
+        turnId: undefined,
+        notice: {
+          title: "Skipped skill",
+          description: "Could not load SKILL.md",
+          severity: "warning",
+        },
+      }),
+    ).toMatchObject({
+      type: "runtime.warning",
+      payload: {
+        message: "Skipped skill\n\nCould not load SKILL.md",
+        detail: { severity: "warning" },
+        category: "provider",
+      },
+    });
+  });
   it("maps ACP permission requests to canonical runtime events", () => {
     const stamp = { eventId: "event-1" as never, createdAt: "2026-03-27T00:00:00.000Z" };
     const turnId = TurnId.make("turn-1");

@@ -514,6 +514,7 @@ const makeAcpSessionRuntime = (
     );
 
     const initializeClientCapabilities = {
+      session: { notices: {} },
       fs: {
         readTextFile: false,
         writeTextFile: false,

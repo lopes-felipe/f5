@@ -31,6 +31,7 @@ export type ProviderReasoningEffort =
   | MuseReasoningEffort;
 
 export const CodexModelOptions = Schema.Struct({
+  cyberAccessProgram: Schema.optional(Schema.Literals(["standard", "daybreakBlue", "daybreakRed"])),
   reasoningEffort: Schema.optional(Schema.Literals(CODEX_REASONING_EFFORT_OPTIONS)),
   fastMode: Schema.optional(Schema.Boolean),
 });

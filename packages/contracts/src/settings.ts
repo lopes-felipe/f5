@@ -537,6 +537,7 @@ export type TextGeneratorConfig = typeof TextGeneratorConfig.Type;
 const TextGeneratorId = ProviderInstanceId.check(Schema.isPattern(/^textgen_/));
 
 export const ServerSettings = Schema.Struct({
+  keepAwakeWhileAgentsWork: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   textGenerators: Schema.Record(TextGeneratorId, TextGeneratorConfig).pipe(
     Schema.withDecodingDefault(() => ({})),
   ),
@@ -781,6 +782,7 @@ const PrHubSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  keepAwakeWhileAgentsWork: Schema.optionalKey(Schema.Boolean),
   textGenerators: Schema.optionalKey(Schema.Record(TextGeneratorId, TextGeneratorConfig)),
   removeAgentCreditsOnMerge: Schema.optionalKey(Schema.Boolean),
   autoSettleOnPullRequestMerge: Schema.optionalKey(Schema.Boolean),

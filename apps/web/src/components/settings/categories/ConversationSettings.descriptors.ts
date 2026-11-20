@@ -4,6 +4,13 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 const CONVERSATION_CONTROL_DESCRIPTORS = (
   [
     [
+      "persistent-usage-limits",
+      "Keep usage limits visible",
+      "Keep 5-hour, weekly and context usage visible above the composer.",
+      "Keep usage limits visible",
+      ["usage", "limits", "context", "weekly", "5h"],
+    ],
+    [
       "send-shortcut",
       "Send shortcut",
       "Send with Enter or Command/Ctrl+Enter, including multiline prompts.",

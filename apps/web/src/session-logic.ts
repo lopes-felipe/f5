@@ -101,6 +101,8 @@ export const PROVIDER_OPTIONS: Array<{
 ];
 
 export interface WorkLogEntry {
+  requestId?: string;
+  pendingApproval?: PendingApproval;
   /** A provider pause, rather than a failed tool call. */
   usageLimited?: boolean;
   htmlRender?: HtmlRenderReference;
@@ -1986,6 +1988,7 @@ export function deriveWorkLogEntries(
               : activity.summary;
       const answerPreview = answeredQuestion ? userInputAnswerPreview(payload?.answers) : "";
       const entry: WorkLogEntry = {
+        ...(typeof payload?.requestId === "string" ? { requestId: payload.requestId } : {}),
         id: activity.id,
         createdAt: activity.createdAt,
         label: answeredQuestion && answerPreview ? answeredQuestion : label,
@@ -2364,6 +2367,12 @@ export function hasToolActivityForTurn(
  * timeline rows only re-render when their own entry changed.
  */
 const timelineStructures = new WeakMap<ReadonlyArray<TimelineEntry>, object>();
+export function setTimelineEntriesStructure(
+  entries: ReadonlyArray<TimelineEntry>,
+  structure: object,
+) {
+  timelineStructures.set(entries, structure);
+}
 export const timelineEntriesStructure = (
   entries: ReadonlyArray<TimelineEntry>,
 ): object | undefined => timelineStructures.get(entries);
@@ -2657,7 +2666,7 @@ function commandTimelineEntry(
   };
 }
 
-function compareTimelineEntries(left: TimelineEntry, right: TimelineEntry): number {
+export function compareTimelineEntries(left: TimelineEntry, right: TimelineEntry): number {
   const createdAtOrder = left.createdAt.localeCompare(right.createdAt);
   if (createdAtOrder !== 0) {
     return createdAtOrder;

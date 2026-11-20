@@ -1,4 +1,3 @@
-import { DesktopAppActivationCoordinator } from "../components/DesktopAppActivationCoordinator";
 import { RunningThreadSync } from "../components/RunningThreadSync";
 import { createOrchestrationSyncController } from "../orchestration/syncController";
 export {
@@ -19,7 +18,12 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
+const DesktopAppActivationCoordinator = lazy(() =>
+  import("../components/DesktopAppActivationCoordinator").then((module) => ({
+    default: module.DesktopAppActivationCoordinator,
+  })),
+);
 import { QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
@@ -274,5 +278,10 @@ function EventRouter() {
 
 function DesktopProjectBootstrap() {
   // Desktop hydration runs through EventRouter project + orchestration sync.
-  return <DesktopAppActivationCoordinator />;
+  if (typeof window === "undefined" || !window.desktopBridge?.takeAppActivations) return null;
+  return (
+    <Suspense fallback={null}>
+      <DesktopAppActivationCoordinator />
+    </Suspense>
+  );
 }

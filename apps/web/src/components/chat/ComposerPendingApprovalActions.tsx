@@ -8,6 +8,7 @@ import { type PendingApproval } from "../../session-logic";
 import { Button } from "../ui/button";
 
 interface ComposerPendingApprovalActionsProps {
+  inline?: boolean;
   requestId: ApprovalRequestId;
   requestKind: PendingApproval["requestKind"];
   requestedPermissions?: PendingApproval["requestedPermissions"];
@@ -87,6 +88,7 @@ function optionVariant(
 }
 
 export const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActions({
+  inline = false,
   requestId,
   requestKind,
   requestedPermissions,
@@ -110,10 +112,13 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     : undefined;
   return (
     <>
-      {options.map((option) => (
+      {(inline
+        ? options.filter((option) => option.decision === "accept" || option.decision === "decline")
+        : options
+      ).map((option) => (
         <Button
           key={option.decision}
-          size="sm"
+          size={inline ? "xs" : "sm"}
           variant={approvalOptionVariant({
             decision: option.decision,
             providerOptions: Boolean(approvalOptions?.length),
@@ -127,6 +132,27 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           {option.label}
         </Button>
       ))}
+      {inline &&
+      options.some((option) => option.decision !== "accept" && option.decision !== "decline") ? (
+        <details>
+          <summary className="cursor-pointer">More</summary>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {options
+              .filter((option) => option.decision !== "accept" && option.decision !== "decline")
+              .map((option) => (
+                <Button
+                  key={option.decision}
+                  size="xs"
+                  variant="outline"
+                  disabled={isResponding || (option.decision.startsWith("accept") && !canApprove)}
+                  onClick={() => void onRespondToApproval(requestId, option.decision)}
+                >
+                  {option.label}
+                </Button>
+              ))}
+          </div>
+        </details>
+      ) : null}
       {options
         .filter((option) => option.warning)
         .map((option) => (

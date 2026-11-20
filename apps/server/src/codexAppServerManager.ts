@@ -85,6 +85,7 @@ import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStder
 import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
 import {
   normalizeModelSlug,
+  configureCodexCyberAccess,
   resolveCodexEffectiveReasoningEffort,
   resolveModelCapabilities,
 } from "@t3tools/shared/model";
@@ -368,6 +369,7 @@ interface CodexAccountSnapshot {
 }
 
 export interface CodexAppServerSendTurnInput {
+  readonly cyberAccessProgram?: "standard" | "daybreakBlue" | "daybreakRed";
   /** Ordinary files remain in attachment context; native audio is an optional extra. */
   audioFiles?: ReadonlyArray<string>;
   readonly expectedTurnId?: TurnId;
@@ -939,6 +941,7 @@ export function buildCodexTurnStartParams(
     >;
     model?: string;
     serviceTier?: string | null;
+    cyberAccessProgram?: "standard" | "daybreakBlue" | "daybreakRed";
     effort?: string;
     collaborationMode?: {
       mode: "default" | "plan";
@@ -966,6 +969,16 @@ export function buildCodexTurnStartParams(
   // CLI-only model receives the effort the composer offered for it.
   const effortModel = normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex;
   const reportedCapabilities = state.reportedModelCapabilities?.get(effortModel);
+  const cyber = reportedCapabilities?.optionDescriptors?.find(
+    (option) => option.id === "cyberAccessProgram",
+  );
+  if (cyber?.type === "select") {
+    const program = [input.cyberAccessProgram, cyber.currentValue].find(
+      (value): value is "standard" | "daybreakBlue" | "daybreakRed" =>
+        value === "standard" || value === "daybreakBlue" || value === "daybreakRed",
+    );
+    if (program) turnStartParams.cyberAccessProgram = program;
+  }
   if (input.serviceTier !== undefined) {
     // A persisted fast-mode choice must not reach a model whose reported tiers
     // lack it (the composer hides the toggle); null clears a thread-level tier.
@@ -1740,13 +1753,34 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const { serviceTier: _requestedTier, ...inputWithoutTier } = input;
     const turnInput =
       input.serviceTier === null && !context.serviceTierApplied ? inputWithoutTier : input;
+    const cyberModel = normalizeCodexModelSlug(input.model ?? context.session.model);
+    const cyberCapabilities = cyberModel
+      ? context.reportedModelCapabilities?.get(cyberModel)
+      : undefined;
+    let turnCapabilities = context.reportedModelCapabilities;
+    if (
+      cyberModel &&
+      cyberCapabilities?.optionDescriptors?.some((option) => option.id === "cyberAccessProgram")
+    ) {
+      const config = asObject(
+        await this.sendRequest(context, "config/read", { includeLayers: false }).catch(
+          () => undefined,
+        ),
+      )?.config;
+      const configuredCapabilities = new Map(context.reportedModelCapabilities);
+      configuredCapabilities.set(
+        cyberModel,
+        configureCodexCyberAccess(cyberCapabilities, config, context.account.type),
+      );
+      turnCapabilities = configuredCapabilities;
+    }
     const turnStartParams = buildCodexTurnStartParams(turnInput, {
       providerThreadId,
       model: context.session.model,
       account: context.account,
       instructionContext: context.instructionContext,
       resumedContextSent: context.resumedContextSent,
-      reportedModelCapabilities: context.reportedModelCapabilities,
+      reportedModelCapabilities: turnCapabilities,
     });
     if (input.audioFiles?.length && supportsCodexRelease6(context.cliVersion)) {
       const model = normalizeCodexModelSlug(turnStartParams.model);

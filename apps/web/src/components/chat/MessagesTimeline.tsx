@@ -34,6 +34,8 @@ import {
 import {
   createContext,
   Fragment,
+  lazy,
+  Suspense,
   memo,
   useCallback,
   useContext,
@@ -118,6 +120,12 @@ import { UserMessageRevertPopover } from "./UserMessageRevertPopover";
 import { computeRevertImpact } from "./revertImpact";
 import { AssistantMessageActions } from "./AssistantMessageActions";
 import { AssistantResponseCard } from "./AssistantResponseCard";
+import type { TimelineApprovalActions } from "./TimelinePendingApprovalRow";
+const TimelinePendingApprovalRow = lazy(() =>
+  import("./TimelinePendingApprovalRow").then((module) => ({
+    default: module.TimelinePendingApprovalRow,
+  })),
+);
 import { assistantResponseContextMatches } from "@t3tools/shared/assistantResponseContext";
 import { PromptCacheMissPill } from "./PromptCacheMissPill";
 import type { TurnCacheSummary } from "./cacheIndicator.logic";
@@ -307,6 +315,7 @@ const EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES: Readonly<Record<string, boolean>> = {
 const EMPTY_CACHE_MISSES: ReadonlyMap<MessageId, TurnCacheSummary> = new Map();
 
 interface MessagesTimelineProps {
+  approvalActions?: TimelineApprovalActions | undefined;
   nativeSessionCapabilities?:
     | import("@t3tools/contracts").ProviderSessionCapabilities
     | null
@@ -494,6 +503,7 @@ function selectTimelineSettings(settings: AppSettings) {
 }
 
 export const MessagesTimeline = memo(function MessagesTimeline({
+  approvalActions,
   nativeSessionCapabilities,
   threadId = null,
   hasMessages,
@@ -1482,6 +1492,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   const timelineRowContext = useMemo<TimelineRowContextValue>(
     () => ({
+      approvalActions,
       threadId,
       nativeSessionCapabilities: nativeSessionCapabilities ?? null,
       expandMcpToolCalls: settings.expandMcpToolCalls,
@@ -1510,6 +1521,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       actions: rowActions,
     }),
     [
+      approvalActions,
       allDirectoriesExpanded,
       canRestoreFiles,
       onQuoteAssistantMessage,
@@ -2088,6 +2100,7 @@ function shouldRenderWorkEntryAsStandaloneRow(
   options: { settingsExpandMcpToolCalls: boolean },
 ): boolean {
   return (
+    !!entry.pendingApproval ||
     entry.usageLimited === true ||
     entry.activityKind === "session.context-reset" ||
     entry.activityKind === "user-input.resolved" ||
@@ -4287,7 +4300,22 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
   const { workEntry } = props;
-  const { threadId } = useTimelineRowContext();
+  const { threadId, approvalActions } = useTimelineRowContext();
+  if (workEntry.pendingApproval)
+    return (
+      <Suspense
+        fallback={
+          <pre className="whitespace-pre-wrap text-xs">
+            {workEntry.pendingApproval.detail || "Waiting for approval"}
+          </pre>
+        }
+      >
+        <TimelinePendingApprovalRow
+          approval={workEntry.pendingApproval}
+          actions={approvalActions}
+        />
+      </Suspense>
+    );
   if (workEntry.activityKind === "session.context-reset") {
     return (
       <div
@@ -4447,6 +4475,7 @@ interface TimelineRowActions {
  * actions). A change re-renders every row, so per-row inputs stay out of it.
  */
 interface TimelineRowContextValue {
+  approvalActions?: TimelineApprovalActions | undefined;
   threadId: ThreadId | null;
   nativeSessionCapabilities: ProviderSessionCapabilities | null;
   expandMcpToolCalls: boolean;
@@ -5636,6 +5665,7 @@ export function buildTimelineRows(input: {
       // A steer leaves a running subagent working, so its group stays open until it ends.
       const isPriorTurn =
         index < lastUserMessageEntryIndex &&
+        !groupedEntries.some((entry) => entry.pendingApproval) &&
         !groupedEntries.some((entry) => entry.subagentType && entry.status === "inProgress");
       // Only the working turn's calls can still be running; elsewhere an in-progress
       // snapshot is a completion that never arrived.

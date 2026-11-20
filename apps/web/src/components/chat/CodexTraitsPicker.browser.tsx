@@ -78,6 +78,41 @@ async function mountPicker(props?: {
 }
 
 describe("CodexTraitsPicker", () => {
+  it("shows reported Cyber Access defaults and persists an explicit opt-out", async () => {
+    const capabilities = createReportedCodexModelCapabilities({
+      model: "gpt-cyber",
+      availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
+    });
+    const models: ServerProviderModel[] = [
+      {
+        slug: "gpt-cyber",
+        name: "Cyber",
+        isCustom: false,
+        capabilities: {
+          ...capabilities,
+          optionDescriptors: capabilities.optionDescriptors?.map((option) =>
+            option.id === "cyberAccessProgram" && option.type === "select"
+              ? { ...option, currentValue: "daybreakBlue" }
+              : option,
+          ),
+        },
+      },
+    ];
+    const mounted = await mountPicker({ model: "gpt-cyber", models });
+    try {
+      await page.getByRole("button").click();
+      await expect
+        .element(page.getByRole("menuitemradio", { name: "Daybreak Blue" }))
+        .toHaveAttribute("aria-checked", "true");
+      await page.getByRole("menuitemradio", { name: "Standard", exact: true }).click();
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[mounted.threadId]?.modelOptions?.codex
+          ?.cyberAccessProgram,
+      ).toBe("standard");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
   it("starts at High and retains a selected provider default explicitly for dispatch", async () => {
     const models: ReadonlyArray<ServerProviderModel> = [
       {

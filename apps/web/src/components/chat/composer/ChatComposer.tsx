@@ -11,6 +11,7 @@ import { type ComposerMention, insertComposerMentionTrigger } from "~/composer-e
 import { recallComposerMentions } from "~/composerMentionHistoryStore";
 import { collapseExpandedComposerCursor } from "~/composer-logic";
 import { type AppSettings, useAppSettingsSelector } from "~/appSettings";
+import { ComposerUsageLimits } from "../../usage/ComposerUsageLimits";
 import { useEffect, useRef, useId, useState, useSyncExternalStore } from "react";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
@@ -37,8 +38,6 @@ import {
   composerCommandMenuEmptyText,
   composerSuggestionOptionId,
 } from "~/components/chat/ComposerCommandMenu";
-import { ComposerPendingApprovalActions } from "~/components/chat/ComposerPendingApprovalActions";
-import { ComposerPendingApprovalPanel } from "~/components/chat/ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "~/components/chat/ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "~/components/chat/ComposerPlanFollowUpBanner";
 import {
@@ -152,6 +151,7 @@ function selectComposerSettings(settings: AppSettings) {
     composerCollapseOnScroll: settings.composerCollapseOnScroll,
     composerRichTextEnabled: settings.composerRichTextEnabled,
     sendShortcut: settings.sendShortcut,
+    persistentUsageLimits: settings.persistentUsageLimits,
   };
 }
 
@@ -204,7 +204,6 @@ export function ChatComposer({
   const contextSummary = isComposerFooterCompact ? contextUsageSummaryLine(tokenUsage) : null;
   const {
     activePendingApproval,
-    pendingApprovals,
     pendingUserInputs,
     respondingRequestIds,
     activePendingProgress,
@@ -472,6 +471,12 @@ export function ChatComposer({
               : undefined
           }
         >
+          {settings.persistentUsageLimits ? (
+            <section className="mb-2 space-y-2 rounded-lg border p-3" aria-label="Usage">
+              <ComposerUsageLimits threadId={threadId} persistent />
+              <p className="text-xs text-muted-foreground">{contextUsageSummaryLine(tokenUsage)}</p>
+            </section>
+          ) : null}
           <div
             data-chat-composer-shell="true"
             className={cn(
@@ -528,14 +533,7 @@ export function ChatComposer({
                 </output>
               </div>
             ) : null}
-            {activePendingApproval ? (
-              <div className="rounded-t-[calc(var(--radius-xl)-1px)] border-b border-border bg-muted/40">
-                <ComposerPendingApprovalPanel
-                  approval={activePendingApproval}
-                  pendingCount={pendingApprovals.length}
-                />
-              </div>
-            ) : pendingUserInputs.length > 0 ? (
+            {pendingUserInputs.length > 0 ? (
               <div
                 className="min-h-0 overflow-y-auto overscroll-contain rounded-t-[calc(var(--radius-xl)-1px)] border-b border-border bg-muted/40"
                 data-composer-question-scroll=""
@@ -881,26 +879,7 @@ export function ChatComposer({
             </div>
 
             {/* Bottom toolbar */}
-            {activePendingApproval ? (
-              <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
-                <ComposerPendingApprovalActions
-                  requestId={activePendingApproval.requestId}
-                  requestKind={activePendingApproval.requestKind}
-                  requestedPermissions={activePendingApproval.requestedPermissions}
-                  approvalOptions={activePendingApproval.approvalOptions}
-                  defaultToNo={activePendingApproval.presentation?.defaultToNo}
-                  suppressAlwaysAllowRule={
-                    activePendingApproval.presentation?.suppressAlwaysAllowRule
-                  }
-                  canApprove={
-                    activePendingApproval.requestKind !== "permission" ||
-                    activePendingApproval.requestedPermissions !== undefined
-                  }
-                  isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
-                  onRespondToApproval={pendingInteraction.onRespondToApproval}
-                />
-              </div>
-            ) : (
+            {
               <div
                 data-chat-composer-footer="true"
                 className={cn(
@@ -947,7 +926,7 @@ export function ChatComposer({
                   }
                 />
               </div>
-            )}
+            }
           </div>
         </form>
       </PopupFocusContext>
