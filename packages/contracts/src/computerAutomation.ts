@@ -492,6 +492,9 @@ export const ComputerActionResult = Schema.Struct({
       /** Set when a key action stopped early after focus moved; later chords were not sent. */
       chordsDelivered: Schema.optional(NonNegative),
       chordsRequested: Schema.optional(NonNegative),
+      /** Set when typing stopped early after focus moved; the remaining text was not sent. */
+      charactersDelivered: Schema.optional(NonNegative),
+      charactersRequested: Schema.optional(NonNegative),
     }),
   ),
   /** Set when a background mutation waited for a secure field and did not run. */

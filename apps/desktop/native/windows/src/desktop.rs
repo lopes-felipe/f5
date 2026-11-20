@@ -489,36 +489,47 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
                 if chars.len() > 10000 {
                     return Err(fail("ResultTooLarge"));
                 }
+                // Before any character, nothing happened yet: the original failure stays exact.
+                validate()?;
+                // Secure-field/focus checks precede every character's first down event, never
+                // its up event: a character's own effect may move focus (a combobox moving its
+                // active option), and that must not turn delivered text into an unknown outcome.
+                let focus_unchanged = || -> bool {
+                    let Ok((element, p, h)) = focused(request, host) else {
+                        return false;
+                    };
+                    p == initial_pid
+                        && h == initial_hwnd
+                        && GetForegroundWindow() == initial_hwnd
+                        && initial_identity.as_ref().map_or(true, |identity| {
+                            runtime_id(&element).map_or(false, |id| id == *identity)
+                        })
+                };
+                let mut delivered = 0usize;
                 for chunk in chars.chunks(32) {
-                    validate()?;
-                    crate::safety::deliver_characters(
+                    let outcome = crate::safety::deliver_characters(
                         chunk.iter().copied(),
-                        || validate(),
+                        &mut delivered,
+                        || -> Result<bool, Value> {
+                            check(request)?;
+                            Ok(focus_unchanged())
+                        },
                         |character| {
                             let mut units = [0u16; 2];
                             for unit in character.encode_utf16(&mut units) {
+                                let _gate = STATE.get().unwrap().input_gate.lock().unwrap();
+                                check(request)?;
+                                STATE
+                                    .get()
+                                    .unwrap()
+                                    .held_unicode
+                                    .lock()
+                                    .unwrap()
+                                    .insert(*unit);
+                                // A posted down event always gets its up event.
                                 for flags in
                                     [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP]
                                 {
-                                    check(request)?;
-                                    let _gate = STATE.get().unwrap().input_gate.lock().unwrap();
-                                    if !flags.contains(KEYEVENTF_KEYUP) {
-                                        STATE
-                                            .get()
-                                            .unwrap()
-                                            .held_unicode
-                                            .lock()
-                                            .unwrap()
-                                            .insert(*unit);
-                                    }
-                                    check(request)?;
-                                    // Secure-field/focus checks also precede every UTF-16 down event.
-                                    if !flags.contains(KEYEVENTF_KEYUP) {
-                                        validate()?;
-                                    }
-                                    if GetForegroundWindow() != initial_hwnd {
-                                        return Err(blocked("focus-unknown"));
-                                    }
                                     send(INPUT {
                                         r#type: INPUT_KEYBOARD,
                                         Anonymous: INPUT_0 {
@@ -531,20 +542,33 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
                                             },
                                         },
                                     })?;
-                                    if flags.contains(KEYEVENTF_KEYUP) {
-                                        STATE
-                                            .get()
-                                            .unwrap()
-                                            .held_unicode
-                                            .lock()
-                                            .unwrap()
-                                            .remove(unit);
-                                    }
                                 }
+                                STATE
+                                    .get()
+                                    .unwrap()
+                                    .held_unicode
+                                    .lock()
+                                    .unwrap()
+                                    .remove(unit);
                             }
                             Ok(())
                         },
                     )?;
+                    match outcome {
+                        crate::safety::CharacterDelivery::Complete => {}
+                        crate::safety::CharacterDelivery::Blocked => {
+                            return Err(blocked("focus-unknown"));
+                        }
+                        crate::safety::CharacterDelivery::Stopped => {
+                            // The remaining text was never sent; say how much was.
+                            verification = Some(json!({
+                                "verified": false,
+                                "charactersDelivered": delivered,
+                                "charactersRequested": chars.len(),
+                            }));
+                            break;
+                        }
+                    }
                     std::thread::sleep(Duration::from_millis(10));
                 }
             } else {

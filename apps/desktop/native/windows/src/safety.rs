@@ -525,17 +525,38 @@ mod keyboard_tests {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum CharacterDelivery {
+    /// Every character was sent.
+    Complete,
+    /// Focus moved before anything was sent: nothing happened yet.
+    Blocked,
+    /// Focus moved after some characters were sent (often their own effect, such as a
+    /// combobox moving its active option): the rest were not sent.
+    Stopped,
+}
+
 /// Validation precedes every Unicode character, even within one 32-character chunk.
+/// `validate` returns whether focus is unchanged; its errors (stop, pause) propagate as they
+/// are. `delivered` counts characters across chunks, so a later chunk never reports Blocked.
 pub fn deliver_characters<E>(
     characters: impl IntoIterator<Item = char>,
-    mut validate: impl FnMut() -> Result<(), E>,
+    delivered: &mut usize,
+    mut validate: impl FnMut() -> Result<bool, E>,
     mut emit: impl FnMut(char) -> Result<(), E>,
-) -> Result<(), E> {
+) -> Result<CharacterDelivery, E> {
     for character in characters {
-        validate()?;
+        if !validate()? {
+            return Ok(if *delivered == 0 {
+                CharacterDelivery::Blocked
+            } else {
+                CharacterDelivery::Stopped
+            });
+        }
         emit(character)?;
+        *delivered += 1;
     }
-    Ok(())
+    Ok(CharacterDelivery::Complete)
 }
 #[cfg(test)]
 mod character_delivery_tests {
@@ -544,24 +565,96 @@ mod character_delivery_tests {
     #[test]
     fn changed_focus_in_the_same_window_stops_after_one_character() {
         let focus = Cell::new(1);
-        let mut delivered = String::new();
+        let mut sent = String::new();
+        let mut delivered = 0;
         let result = deliver_characters(
             "first chunk".chars(),
-            || {
-                if focus.get() == 1 {
-                    Ok(())
-                } else {
-                    Err("focus-unknown")
-                }
-            },
+            &mut delivered,
+            || Ok::<_, &str>(focus.get() == 1),
             |character| {
-                delivered.push(character);
+                sent.push(character);
                 focus.set(2);
                 Ok(())
             },
         );
-        assert_eq!(result, Err("focus-unknown"));
-        assert_eq!(delivered, "f");
+        assert_eq!(result, Ok(CharacterDelivery::Stopped));
+        assert_eq!(delivered, 1);
+        assert_eq!(sent, "f");
+    }
+    #[test]
+    fn focus_moved_before_any_character_is_blocked() {
+        let mut delivered = 0;
+        let mut events = 0;
+        let result = deliver_characters(
+            "text".chars(),
+            &mut delivered,
+            || Ok::<_, &str>(false),
+            |_| {
+                events += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(result, Ok(CharacterDelivery::Blocked));
+        assert_eq!((delivered, events), (0, 0));
+    }
+    #[test]
+    fn a_later_chunk_stops_instead_of_blocking() {
+        let mut delivered = 32;
+        let result = deliver_characters(
+            "more".chars(),
+            &mut delivered,
+            || Ok::<_, &str>(false),
+            |_| Ok(()),
+        );
+        assert_eq!(result, Ok(CharacterDelivery::Stopped));
+        assert_eq!(delivered, 32);
+    }
+    #[test]
+    fn validation_and_emit_errors_propagate_after_partial_delivery() {
+        let mut delivered = 0;
+        let result = deliver_characters(
+            "abc".chars(),
+            &mut delivered,
+            || Ok(true),
+            |character| {
+                if character == 'b' {
+                    Err("send-failed")
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(result, Err("send-failed"));
+        assert_eq!(delivered, 1);
+        let calls = Cell::new(0);
+        let mut delivered = 0;
+        let result = deliver_characters(
+            "abc".chars(),
+            &mut delivered,
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    Ok(true)
+                } else {
+                    Err("paused")
+                }
+            },
+            |_| Ok(()),
+        );
+        assert_eq!(result, Err("paused"));
+        assert_eq!(delivered, 1);
+    }
+    #[test]
+    fn complete_delivery_counts_every_character() {
+        let mut delivered = 0;
+        let result = deliver_characters(
+            "héllo".chars(),
+            &mut delivered,
+            || Ok::<_, &str>(true),
+            |_| Ok(()),
+        );
+        assert_eq!(result, Ok(CharacterDelivery::Complete));
+        assert_eq!(delivered, 5);
     }
     #[test]
     fn rejected_shell_chords_emit_no_input() {

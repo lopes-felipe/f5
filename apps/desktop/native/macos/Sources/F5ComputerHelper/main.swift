@@ -2058,35 +2058,50 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
     }
   } else if op == "type" || op == "key" {
     let initial = try focused(request, host, needed: "type")
-    func validateFocus() throws {
-      try checkPermit(request)
-      let current = try focused(request, host, needed: "type")
-      guard
-        computerFocusUnchanged(
-          initialPid: Int(initial.0.processIdentifier),
-          currentPid: Int(current.0.processIdentifier), sameWindow: CFEqual(current.2, initial.2),
-          sameElement: CFEqual(current.1, initial.1), typing: op == "type")
-      else { throw Failure("TargetBlocked", "kind", "focus-unknown") }
-    }
     if op == "type" {
       let characters = Array(string(request, "text"))
       guard characters.count <= 10_000 else { throw Failure("ResultTooLarge") }
+      func focusUnchanged() -> Bool {
+        guard let current = try? focused(request, host, needed: "type") else { return false }
+        return computerFocusUnchanged(
+          initialPid: Int(initial.0.processIdentifier),
+          currentPid: Int(current.0.processIdentifier), sameWindow: CFEqual(current.2, initial.2),
+          sameElement: CFEqual(current.1, initial.1), typing: true)
+      }
       var start = 0
-      while start < characters.count {
-        try validateFocus()
+      typeLoop: while start < characters.count {
+        // Focus is checked before each chunk's keydown only. The keydown inserts the whole
+        // chunk, and that insert may move AX focus as its own effect (Chrome reports a
+        // combobox's new active option as focused), so a check between keydown and keyup would
+        // misreport delivered text as an unknown outcome.
+        try checkPermit(request)
+        // Before any chunk, nothing happened yet: the original failure stays exact.
+        if start == 0 { _ = try focused(request, host, needed: "type") }
+        switch computerDeliveryStep(delivered: start, focusUnchanged: focusUnchanged()) {
+        case .send: break
+        case .blocked: throw Failure("TargetBlocked", "kind", "focus-unknown")
+        case .stop:
+          // The remaining text was never sent; say how much was.
+          verification = [
+            "verified": false, "charactersDelivered": start,
+            "charactersRequested": characters.count,
+          ]
+          break typeLoop
+        }
         let end = min(start + 32, characters.count)
         let units = Array(String(characters[start..<end]).utf16)
-        for down in [true, false] {
-          try validateFocus()
-          try inputLock.withLock {
-            guard let event = computerKeyboardEvent(keyCode: 0, keyDown: down, unicode: units) else {
-              throw Failure("UnsupportedAction")
-            }
-            try checkPermit(request)
-            if down { pressedKeys.insert(0, owner: owner) }
-            postActionEvent(event, request)
-            if !down { pressedKeys.remove(0) }
-          }
+        guard let down = computerKeyboardEvent(keyCode: 0, keyDown: true, unicode: units),
+          let up = computerKeyboardEvent(keyCode: 0, keyDown: false, unicode: units)
+        else { throw Failure("UnsupportedAction") }
+        try inputLock.withLock {
+          try checkPermit(request)
+          pressedKeys.insert(0, owner: owner)
+          postActionEvent(down, request)
+        }
+        // A posted keydown always gets its keyup, even after a stop or focus change.
+        inputLock.withLock {
+          postActionEvent(up, request)
+          pressedKeys.remove(0)
         }
         start = end
         try await Task.sleep(nanoseconds: 10_000_000)
@@ -2111,7 +2126,7 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
           try checkPermit(request)
           // Before any chord, nothing happened yet: the original failure stays exact.
           if delivered == 0 { _ = try focused(request, host, needed: "type") }
-          switch computerChordStep(chordsDelivered: delivered, focusUnchanged: focusUnchanged()) {
+          switch computerDeliveryStep(delivered: delivered, focusUnchanged: focusUnchanged()) {
           case .send: break
           case .blocked: throw Failure("TargetBlocked", "kind", "focus-unknown")
           case .stop:
