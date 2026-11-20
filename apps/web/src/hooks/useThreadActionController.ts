@@ -29,6 +29,7 @@ import {
 import { selectThreadById } from "~/threadSelectors";
 import type { Thread, ThreadListItem } from "~/types";
 import { toastManager } from "~/components/ui/toast";
+import { threadLinkFor } from "~/components/promptLinks/copyPromptLink";
 
 import { useCopyToClipboard } from "./useCopyToClipboard";
 
@@ -214,7 +215,7 @@ export function buildThreadActionMenuItems(input: {
         ...(thread.branch
           ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
           : []),
-        { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
+        { id: "copy-thread-id", label: "Thread link", icon: "hash" },
       ],
     },
     {
@@ -290,20 +291,20 @@ export function useThreadActionController(input: {
   );
   const clearTerminalState = useTerminalStateStore((state) => state.clearTerminalState);
 
-  const { copyToClipboard: copyThreadIdToClipboard } = useCopyToClipboard<{
+  const { copyToClipboard: copyThreadLinkToClipboard } = useCopyToClipboard<{
     threadId: ThreadId;
   }>({
     onCopy: (context) => {
       toastManager.add({
         type: "success",
-        title: "Thread ID copied",
+        title: "Thread link copied",
         description: context.threadId,
       });
     },
     onError: (error) => {
       toastManager.add({
         type: "error",
-        title: "Failed to copy thread ID",
+        title: "Failed to copy thread link",
         description: error instanceof Error ? error.message : "An error occurred.",
       });
     },
@@ -598,7 +599,7 @@ export function useThreadActionController(input: {
         return;
       }
       if (actionId === "copy-thread-id") {
-        copyThreadIdToClipboard(threadId, { threadId });
+        copyThreadLinkToClipboard(threadLinkFor(threadId), { threadId });
         return;
       }
       if (actionId === "copy-branch") {
@@ -621,7 +622,7 @@ export function useThreadActionController(input: {
     [
       archiveThread,
       copyPathToClipboard,
-      copyThreadIdToClipboard,
+      copyThreadLinkToClipboard,
       deleteThread,
       input.onRenameRequested,
       input.activeThreadId,

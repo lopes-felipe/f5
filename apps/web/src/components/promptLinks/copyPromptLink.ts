@@ -14,6 +14,10 @@ import { toastManager } from "../ui/toast";
 /** The scheme this build registers, so a copied link opens the same kind of build. */
 export const promptLinkScheme = import.meta.env.DEV ? PROMPT_LINK_DEV_SCHEME : PROMPT_LINK_SCHEME;
 
+export function threadLinkFor(threadId: string): string {
+  return `${promptLinkScheme}://thread/${threadId}`;
+}
+
 /** A shareable link to a prompt, or null when the prompt is empty or too long for one. */
 export function promptLinkFor(
   prompt: string,

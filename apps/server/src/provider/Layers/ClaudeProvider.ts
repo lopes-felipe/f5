@@ -304,22 +304,19 @@ type ClaudeInitializationModel = NonNullable<
 >[number];
 
 /**
- * Canonical slugs for the SDK's model rows. Alias rows (`default`, `sonnet`)
- * resolve through `resolvedModel`; rows that do not name a Claude model id are
- * skipped so F5 never persists an alias as a model slug.
+ * Prefer resolved model ids over aliases. Gateway models may use ids outside
+ * the Claude catalog; keep those while omitting unresolved built-in aliases.
  */
 export function parseClaudeInitializationModels(
   models: ReadonlyArray<ClaudeInitializationModel> | undefined,
 ): ReadonlyArray<ClaudeReportedModel> {
   const bySlug = new Map<string, ClaudeReportedModel>();
   for (const model of models ?? []) {
-    const raw = [model.resolvedModel, model.value]
-      .map((value) => nonEmptyProbeString(value ?? ""))
-      .find((value) => value?.startsWith("claude-"));
-    const slug = raw?.startsWith("claude-")
-      ? normalizeModelSlug(raw.replace(/\[(?:1m|200k)\]$/i, ""), "claudeAgent")
-      : null;
-    if (!slug || !slug.startsWith("claude-") || bySlug.has(slug)) continue;
+    const raw = nonEmptyProbeString(model.resolvedModel ?? "") ?? nonEmptyProbeString(model.value);
+    const id = raw?.replace(/\[[^\]]*\]$/, "").trim();
+    if (!id || ["default", "sonnet", "opus", "haiku"].includes(id.toLowerCase())) continue;
+    const slug = id.startsWith("claude-") ? normalizeModelSlug(id, "claudeAgent") : id;
+    if (!slug || bySlug.has(slug)) continue;
     bySlug.set(slug, {
       slug,
       name:

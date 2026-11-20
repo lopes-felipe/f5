@@ -7235,6 +7235,38 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("pastes copied thread links as context chips without sending", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-thread-link-paste" as MessageId,
+        targetText: "Thread target",
+      }),
+    });
+    const paste = async (id: string) => {
+      const transfer = new DataTransfer();
+      transfer.setData("text/plain", `${promptLinkScheme}://thread/${id}`);
+      (await waitForComposerEditor()).dispatchEvent(
+        new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }),
+      );
+    };
+    const promptOf = () => useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt;
+    try {
+      await paste("source-a");
+      await vi.waitFor(() => {
+        expect(promptOf()).toBe(`[Thread](${promptLinkScheme}://thread/source-a) `);
+        expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(1);
+      });
+      const previous = promptOf();
+      await paste("source-a");
+      await paste(THREAD_ID);
+      expect(promptOf()).toBe(previous);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("refuses an invalid thread drag payload", async () => {
     const toast = vi.spyOn(toastManager, "add");
     const mounted = await mountChatView({

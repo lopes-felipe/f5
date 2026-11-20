@@ -16,6 +16,7 @@ import {
 import { hasThreadReferenceDrag, readThreadReferenceDrag } from "../lib/threadReferenceDrag";
 import {
   formatThreadReference,
+  threadIdOfThreadReferenceUrl,
   referencedThreadIds,
   THREAD_REFERENCE_MAX_PER_MESSAGE,
 } from "@t3tools/shared/threadReferences";
@@ -388,7 +389,11 @@ import {
   MessagesTimeline,
   type MessagesTimelineEmptyState,
 } from "./chat/MessagesTimeline";
-import { promptLinkRepositoryOf, promptLinkScheme } from "./promptLinks/copyPromptLink";
+import {
+  promptLinkRepositoryOf,
+  promptLinkScheme,
+  threadLinkFor,
+} from "./promptLinks/copyPromptLink";
 import { OlderActivityHistoryControl } from "./chat/OlderActivityHistoryControl";
 import { NewerMessageHistoryControl } from "./chat/NewerMessageHistoryControl";
 
@@ -4426,14 +4431,11 @@ export default memo(function ChatView({
         if (dialogFocus || isTerminalFocused()) return;
         event.preventDefault();
         if (command === "thread.copyReference") {
-          const api = readNativeApi();
           void (async () => {
-            const status =
-              gitCwd && api ? await api.git.status({ cwd: gitCwd }).catch(() => null) : null;
-            await writeTextToClipboard(status?.pr?.url ?? activeThreadId);
+            await writeTextToClipboard(threadLinkFor(activeThreadId));
             toastManager.add({
               type: "success",
-              title: status?.pr?.url ? "Pull request link copied" : "Thread ID copied",
+              title: "Thread link copied",
             });
           })().catch((error) =>
             toastManager.add({
@@ -4886,6 +4888,16 @@ export default memo(function ChatView({
       if (folders.length > 0) return;
       if (isConnecting) return;
       const text = event.clipboardData.getData("text/plain");
+      const linkedThreadId = threadIdOfThreadReferenceUrl(text.trim());
+      if (linkedThreadId) {
+        event.preventDefault();
+        event.stopPropagation();
+        appendThreadReferences(
+          [{ threadId: linkedThreadId, title: "Thread" }],
+          "Could not paste thread reference",
+        );
+        return;
+      }
       const folded = foldedPasteFile(
         text,
         prompt,
@@ -4991,6 +5003,40 @@ export default memo(function ChatView({
     );
   };
 
+  const appendThreadReferences = (
+    dragged: ReadonlyArray<{ threadId: string; title: string }>,
+    errorTitle: string,
+  ) => {
+    const existing = referencedThreadIds([promptRef.current]);
+    const candidates = dragged.filter(
+      (item, index) =>
+        item.threadId !== threadId &&
+        !existing.includes(item.threadId) &&
+        dragged.findIndex((other) => other.threadId === item.threadId) === index,
+    );
+    if (candidates.length === 0) {
+      if (dragged.some((item) => item.threadId === threadId))
+        toastManager.add({ type: "info", title: "A thread can't reference itself." });
+      return;
+    }
+    const room = Math.max(0, THREAD_REFERENCE_MAX_PER_MESSAGE - existing.length);
+    const accepted = candidates.slice(0, room);
+    const state = useStore.getState();
+    const links = accepted.map((item) =>
+      formatThreadReference({
+        threadId: item.threadId,
+        title: selectThreadById(state, item.threadId as ThreadId)?.title ?? item.title,
+        scheme: promptLinkScheme,
+      }),
+    );
+    if (accepted.length > 0 && !appendComposerReferences(links, errorTitle)) return;
+    if (accepted.length < candidates.length)
+      toastManager.add({
+        type: "warning",
+        title: `Up to ${THREAD_REFERENCE_MAX_PER_MESSAGE} thread references per message.`,
+      });
+  };
+
   const onComposerFileMentionDropCapture = (event: React.DragEvent<HTMLDivElement>) => {
     if (hasThreadReferenceDrag(event.dataTransfer.types)) {
       claimFileTreeMentionDrag(event);
@@ -5002,34 +5048,7 @@ export default memo(function ChatView({
         toastManager.add({ type: "error", title: errorTitle });
         return;
       }
-      const existing = referencedThreadIds([promptRef.current]);
-      const candidates = dragged.filter(
-        (item, index) =>
-          item.threadId !== threadId &&
-          !existing.includes(item.threadId) &&
-          dragged.findIndex((other) => other.threadId === item.threadId) === index,
-      );
-      if (candidates.length === 0) {
-        if (dragged.some((item) => item.threadId === threadId))
-          toastManager.add({ type: "info", title: "A thread can't reference itself." });
-        return;
-      }
-      const room = Math.max(0, THREAD_REFERENCE_MAX_PER_MESSAGE - existing.length);
-      const accepted = candidates.slice(0, room);
-      const state = useStore.getState();
-      const links = accepted.map((item) =>
-        formatThreadReference({
-          threadId: item.threadId,
-          title: selectThreadById(state, item.threadId as ThreadId)?.title ?? item.title,
-          scheme: promptLinkScheme,
-        }),
-      );
-      if (accepted.length > 0 && !appendComposerReferences(links, errorTitle)) return;
-      if (accepted.length < candidates.length)
-        toastManager.add({
-          type: "warning",
-          title: `Up to ${THREAD_REFERENCE_MAX_PER_MESSAGE} thread references per message.`,
-        });
+      appendThreadReferences(dragged, errorTitle);
       return;
     }
     if (hasPullRequestReferenceDrag(event.dataTransfer.types)) {

@@ -1,0 +1,1 @@
+- Copying a thread reference copies a link that opens the thread. Paste the link into a composer to add a thread context chip.

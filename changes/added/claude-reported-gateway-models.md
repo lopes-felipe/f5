@@ -1,0 +1,1 @@
+- Claude's model picker includes models reported by Claude Code gateways, with their supported reasoning efforts and without context-window suffixes.

@@ -686,12 +686,30 @@ describe("parseClaudeInitializationModels", () => {
         supportedEffortLevels: ["low", "max"],
       },
       { value: "claude-cli-only-9", displayName: "Duplicate", description: "" },
-      { value: "team-alias", displayName: "Alias without resolution", description: "" },
     ] as never);
     expect(models.map((model) => [model.slug, model.name])).toEqual([
       ["claude-cli-only-9", "CLI Only"],
     ]);
     expect(models[0]?.capabilities.source).toBe("reported");
+  });
+
+  it("keeps gateway models and their reported efforts without context suffixes", () => {
+    const models = parseClaudeInitializationModels([
+      { value: "default", displayName: "Default", description: "" },
+      {
+        value: "gateway/reasoner[500k]",
+        displayName: "Gateway Reasoner",
+        description: "",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "high"],
+      },
+      { value: "gateway/reasoner", displayName: "Duplicate", description: "" },
+    ] as never);
+    expect(models.map(({ slug, name }) => [slug, name])).toEqual([
+      ["gateway/reasoner", "Gateway Reasoner"],
+    ]);
+    expect(models[0]?.capabilities.source).toBe("reported");
+    expect(JSON.stringify(models[0]?.capabilities)).toContain("high");
   });
 });
 
