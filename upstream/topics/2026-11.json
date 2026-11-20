@@ -24768,11 +24768,23 @@
     },
     {
       "createdAt": "2026-11-07T11:05:23.639Z",
-      "decidedAt": "2026-11-20T11:45:27.611Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-20T12:32:47.488Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/distribution/commands.ts:70",
+          "apps/server/tsdown.launcher.config.ts:7",
+          "scripts/build-cli-archive.ts:121",
+          "apps/server/src/distribution/handoff.ts:347"
+        ],
+        "f5Refs": [
+          "5ada62dbd338f137f920053f84b88096489b7730"
+        ]
+      },
       "id": "pr-29284",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "desktop",
