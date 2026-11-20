@@ -1,4 +1,5 @@
 export const PREVIEW_PICK_INPUT_LAYER_ATTRIBUTE = "data-f5-preview-pick-input";
+export const PREVIEW_PICK_WORLD_ID = 1008;
 
 export function buildPreviewPickScript(): string {
   return String.raw`
@@ -96,6 +97,7 @@ export function buildPreviewPickScript(): string {
     }
 
     function onClick(event) {
+      if (!event.isTrusted) return;
       event.preventDefault();
       event.stopPropagation();
       const target = targetOf(event);
@@ -132,7 +134,7 @@ export function buildPreviewPickScript(): string {
     }
 
     function onKeyDown(event) {
-      if (event.key === "Escape") {
+      if (event.isTrusted && event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
         finish(null);

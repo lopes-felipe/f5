@@ -1,0 +1,1 @@
+- The desktop preview attaches an element annotation only when you click the element yourself.

@@ -57,7 +57,7 @@ import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
 import { capturePreviewSnapshotPage } from "./preview/snapshotScript";
-import { buildPreviewPickScript } from "./preview/pickScript";
+import { buildPreviewPickScript, PREVIEW_PICK_WORLD_ID } from "./preview/pickScript";
 import {
   PreviewAutomationControl,
   PreviewDiagnostics,
@@ -1667,12 +1667,44 @@ function isPickedElementResult(value: unknown): value is {
   );
 }
 
+const pickingPreviewGuests = new WeakSet<Electron.WebContents>();
+
 async function pickPreviewElement(tabId: string): Promise<PreviewAnnotationPayload | null> {
   const guest = getPreviewWebContents(tabId);
   if (!guest) {
     throw new Error("Preview webview is not attached.");
   }
-  const rawResult = await guest.executeJavaScript(buildPreviewPickScript(), true);
+  if (pickingPreviewGuests.has(guest)) return null;
+  if (previewAutomationControl.isActive(tabId)) {
+    throw new Error("Wait for the current browser automation action to finish before picking.");
+  }
+  // Electron can defer script execution until navigation finishes.
+  if (!guest.getURL() || guest.isLoadingMainFrame()) {
+    throw new Error("Wait for the preview page to finish loading before picking.");
+  }
+  pickingPreviewGuests.add(guest);
+  let cancelPick!: () => void;
+  const documentClosed = new Promise<null>((resolve) => {
+    cancelPick = () => resolve(null);
+  });
+  guest.once("did-navigate", cancelPick);
+  guest.once("destroyed", cancelPick);
+  guest.once("render-process-gone", cancelPick);
+  let rawResult: unknown;
+  try {
+    // Use an isolated world so the page cannot replace the picker's DOM or event APIs.
+    rawResult = await Promise.race([
+      guest.executeJavaScriptInIsolatedWorld(PREVIEW_PICK_WORLD_ID, [
+        { code: buildPreviewPickScript() },
+      ]),
+      documentClosed,
+    ]);
+  } finally {
+    guest.off("did-navigate", cancelPick);
+    guest.off("destroyed", cancelPick);
+    guest.off("render-process-gone", cancelPick);
+    pickingPreviewGuests.delete(guest);
+  }
   if (!isPickedElementResult(rawResult)) {
     return null;
   }
@@ -1760,6 +1792,12 @@ async function runPreviewAutomationAction<T>(
   try {
     const result = await previewAutomationControl.run(tabId, async (checkpoint) => {
       const guest = requirePreviewWebContents(tabId);
+      if (pickingPreviewGuests.has(guest)) {
+        throw taggedAutomationError(
+          "PreviewAutomationControlInterruptedError",
+          "The user is picking an element in the browser preview.",
+        );
+      }
       requireAllowedPreviewPage(tabId, guest);
       markAgentNavigation(tabId);
       try {
@@ -4474,10 +4512,30 @@ function createWindow(
     params.src = "about:blank";
     installPreviewPermissionPolicy(electronSession.fromPartition(partition), {
       isUserDriven: (guest) => {
-        const id = (guest as { readonly id?: unknown }).id;
-        return [...previewTabs.entries()].some(
-          ([tabId, tab]) => tab.webContentsId === id && !isAgentPreviewNavigation(tabId),
+        return (
+          !guest.isDestroyed() &&
+          [...previewTabs.entries()].some(
+            ([tabId, tab]) => tab.webContentsId === guest.id && !isAgentPreviewNavigation(tabId),
+          )
         );
+      },
+      confirmGeolocation: async (guest, origin) => {
+        const host = guest.isDestroyed() ? null : guest.hostWebContents;
+        const parent = host && !host.isDestroyed() ? BrowserWindow.fromWebContents(host) : null;
+        if (!parent || parent.isDestroyed()) return undefined;
+        const options: Electron.MessageBoxOptions = {
+          type: "question",
+          message: origin + " wants to know your location",
+          buttons: ["Allow", "Block"],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        };
+        const { response } =
+          process.platform === "win32"
+            ? await dialog.showMessageBox(options)
+            : await dialog.showMessageBox(parent, options);
+        return response === 0;
       },
     });
     // A page that goes fullscreen fills its own webview instead of the whole F5 window.

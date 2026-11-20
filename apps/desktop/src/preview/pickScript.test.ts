@@ -100,7 +100,12 @@ function startPick(contentType: string) {
     } | null>;
   const result = run();
   const dispatch = (type: string, event: Record<string, unknown>) =>
-    listeners.get(type)?.({ preventDefault: () => {}, stopPropagation: () => {}, ...event });
+    listeners.get(type)?.({
+      isTrusted: true,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+      ...event,
+    });
   const inputLayers = () =>
     documentElement.children.filter((child) =>
       child.hasAttribute(PREVIEW_PICK_INPUT_LAYER_ATTRIBUTE),
@@ -123,6 +128,18 @@ function startPick(contentType: string) {
 }
 
 describe("buildPreviewPickScript", () => {
+  it("keeps picking after a page dispatches a synthetic click or Escape", async () => {
+    const pick = startPick("text/html");
+    const preventDefault = vi.fn();
+    pick.dispatch("click", { isTrusted: false, target: pick.body, preventDefault });
+    pick.dispatch("keydown", { isTrusted: false, key: "Escape", preventDefault });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(pick.listeners.has("click")).toBe(true);
+
+    pick.dispatch("click", { target: pick.embed });
+    await expect(pick.result).resolves.toMatchObject({ element: { tagName: "embed" } });
+  });
+
   it("adds no input layer on ordinary pages", async () => {
     const pick = startPick("text/html");
     expect(pick.inputLayer()).toBeUndefined();

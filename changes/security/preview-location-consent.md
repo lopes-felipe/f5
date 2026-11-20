@@ -1,0 +1,1 @@
+- The desktop preview asks before a local app can access your location and remembers your choice for that origin until F5 restarts.
