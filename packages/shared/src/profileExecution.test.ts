@@ -6,8 +6,10 @@ import {
   profileRegistryVersionViolation,
 } from "./profileExecution";
 
-const host = { isDefault: false };
-const vm = { isDefault: false, executionEnvironment: "linux-vm" as const };
+type Fixture = { isDefault: boolean; executionEnvironment?: "host" | "linux-vm" };
+/** A host record written before VM profiles existed: no environment field at all. */
+const host: Fixture = { isDefault: false };
+const vm: Fixture = { isDefault: false, executionEnvironment: "linux-vm" };
 
 describe("profile execution environments", () => {
   it("treats a missing environment as host", () => {

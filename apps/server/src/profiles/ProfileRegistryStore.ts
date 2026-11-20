@@ -65,7 +65,7 @@ export async function assertProfileDirectory(
   return directory;
 }
 export const LINUX_VM_CREATE_UNAVAILABLE = "Linux VM profiles are not available in this build.";
-export const isProfilePortBindable =(port: number, host = "127.0.0.1") =>
+export const isProfilePortBindable = (port: number, host = "127.0.0.1") =>
   new Promise<boolean>((resolve) => {
     const server = Net.createServer();
     server.once("error", () => resolve(false));

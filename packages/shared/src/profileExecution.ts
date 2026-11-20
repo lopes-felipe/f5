@@ -28,7 +28,9 @@ export const hostExecutionRefusal = (
 export const profileRegistryVersionFor = (
   profiles: ReadonlyArray<Pick<ProfileRecord, "executionEnvironment">>,
 ): number =>
-  profiles.some(isLinuxVmProfile) ? PROFILE_REGISTRY_VERSION_LINUX_VM : PROFILE_REGISTRY_VERSION_HOST;
+  profiles.some(isLinuxVmProfile)
+    ? PROFILE_REGISTRY_VERSION_LINUX_VM
+    : PROFILE_REGISTRY_VERSION_HOST;
 
 /**
  * Version invariants every reader enforces. A v1 file carrying a VM record would be run on
@@ -45,7 +47,10 @@ export function profileRegistryVersionViolation(registry: {
     return "Unsupported registry version.";
   if (registry.profiles.some((p) => p.isDefault && isLinuxVmProfile(p)))
     return "Default must run on the host.";
-  if (registry.version === PROFILE_REGISTRY_VERSION_HOST && registry.profiles.some(isLinuxVmProfile))
+  if (
+    registry.version === PROFILE_REGISTRY_VERSION_HOST &&
+    registry.profiles.some(isLinuxVmProfile)
+  )
     return "A version 1 registry cannot contain Linux VM profiles.";
   return undefined;
 }

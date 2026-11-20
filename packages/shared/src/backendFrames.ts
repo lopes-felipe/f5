@@ -116,7 +116,10 @@ export class BackendFrameDecoder {
     let offset = this.headOffset;
     while (written < count) {
       const chunk = this.chunks[index]!;
-      const slice = chunk.subarray(offset, offset + Math.min(count - written, chunk.byteLength - offset));
+      const slice = chunk.subarray(
+        offset,
+        offset + Math.min(count - written, chunk.byteLength - offset),
+      );
       out.set(slice, written);
       written += slice.byteLength;
       index++;

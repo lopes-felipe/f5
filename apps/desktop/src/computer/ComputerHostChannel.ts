@@ -526,22 +526,24 @@ export class ComputerHostChannel {
           void (
             // A host backend shares main's trust, so its preapproval stands. A guest backend
             // is the side the VM contains: every URL it opens goes through the prompt.
-            message.preapproved === true && hostIntegrations()
-              ? this.options.openExternalUrl!(profileId, message.url, { preapproved: true })
-              : this.options.openExternalUrl!(profileId, message.url)
-          ).then(
-            (status) => {
-              if (this.backends.get(profileId) === backend)
-                this.send(profileId, { type: "openExternalUrlResult", id: message.id, status });
-            },
-            () => {
-              if (this.backends.get(profileId) === backend)
-                this.send(profileId, {
-                  type: "openExternalUrlResult",
-                  id: message.id,
-                  status: "denied",
-                });
-            },
+            (
+              message.preapproved === true && hostIntegrations()
+                ? this.options.openExternalUrl!(profileId, message.url, { preapproved: true })
+                : this.options.openExternalUrl!(profileId, message.url)
+            ).then(
+              (status) => {
+                if (this.backends.get(profileId) === backend)
+                  this.send(profileId, { type: "openExternalUrlResult", id: message.id, status });
+              },
+              () => {
+                if (this.backends.get(profileId) === backend)
+                  this.send(profileId, {
+                    type: "openExternalUrlResult",
+                    id: message.id,
+                    status: "denied",
+                  });
+              },
+            )
           );
           return;
         case "scheduledNotification":

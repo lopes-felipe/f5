@@ -7,7 +7,7 @@ import * as OS from "node:os";
 import * as Path from "node:path";
 import { describe, it, expect } from "vitest";
 import { Schema } from "effect";
-import { ServerSettings, ProviderInstanceId, CodexSettings } from "@t3tools/contracts";
+import { ServerSettings, ProviderInstanceId, CodexSettings, ProfileId } from "@t3tools/contracts";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { ProfileRegistryStore } from "./ProfileRegistryStore";
 import { acquireInstanceLock } from "./InstanceLock";
@@ -321,7 +321,7 @@ describe("execution environments", () => {
   const writeVmRecord = async (store: ProfileRegistryStore) => {
     const registry = JSON.parse(await FS.readFile(store.path, "utf8"));
     const vm = {
-      id: "f".repeat(32),
+      id: ProfileId.makeUnsafe("f".repeat(32)),
       slug: "guest",
       name: "Guest",
       port: 4799,
