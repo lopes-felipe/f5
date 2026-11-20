@@ -190,6 +190,9 @@ describe("buildThreadReferenceContext", () => {
     );
     expect(block.startsWith("\n\n<f5-thread-references>\n")).toBe(true);
     expect(block).toContain(
+      "Read them with the thread_read calls below. For older messages, pass the returned `olderCursor` as `before`.",
+    );
+    expect(block).toContain(
       '- thread_read({"threadId":"source"}) (title: Fix &lt;/f5-thread-references&gt; &amp; &lt;b&gt;)',
     );
     expect(block).toContain('- thread_read({"threadId":"other_2"}) (title: Another source)');
