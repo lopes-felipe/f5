@@ -23,7 +23,7 @@ export interface HydrateWindowsPathOptions {
   readonly signal?: AbortSignal;
 }
 
-let cachedRegistryPathsPromise: Promise<WindowsRegistryPaths | undefined> | undefined;
+let cachedRegistryPaths: WindowsRegistryPaths | undefined;
 let processHydration:
   | {
       readonly controller: AbortController;
@@ -139,15 +139,19 @@ export const readWindowsRegistryPaths: WindowsRegistryPathReader = async (enviro
   }
 };
 
-function cachedReadRegistryPaths(
+async function cachedReadRegistryPaths(
   environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<WindowsRegistryPaths | undefined> {
-  cachedRegistryPathsPromise ??= readWindowsRegistryPaths(environment);
-  return cachedRegistryPathsPromise;
+  if (cachedRegistryPaths) return cachedRegistryPaths;
+  const paths = await readWindowsRegistryPaths(environment, signal);
+  signal?.throwIfAborted();
+  if (paths) cachedRegistryPaths = paths;
+  return paths;
 }
 
 export function resetWindowsPathCache(): void {
-  cachedRegistryPathsPromise = undefined;
+  cachedRegistryPaths = undefined;
   processHydration = undefined;
 }
 
@@ -210,8 +214,7 @@ async function hydrateWindowsPathWithStatus(
 
   const { signal } = options;
   signal?.throwIfAborted();
-  const reader =
-    options.readRegistryPaths ?? (signal ? readWindowsRegistryPaths : cachedReadRegistryPaths);
+  const reader = options.readRegistryPaths ?? cachedReadRegistryPaths;
   const [registryPaths, knownDirectories] = await Promise.all([
     reader(environment, signal).catch(() => undefined),
     Promise.all(

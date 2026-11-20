@@ -605,6 +605,7 @@ vitestIt.skipIf(process.platform === "win32")(
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     const output = path.join(root, "launches.jsonl");
     const probe = path.join(root, "busctl.jsonl");
+    const hangingProbePid = path.join(root, "hanging-probe.pid");
     const recordLaunch = `
       require("node:fs").appendFileSync(${JSON.stringify(output)}, JSON.stringify({
         target: process.argv[2], display: process.env.DISPLAY ?? null,
@@ -617,8 +618,14 @@ vitestIt.skipIf(process.platform === "win32")(
       writeCliCommand(path.join(root, "xdg-open"), recordLaunch);
       writeCliCommand(
         path.join(root, "busctl"),
-        `require("node:fs").appendFileSync(${JSON.stringify(probe)}, JSON.stringify(process.argv.slice(2)) + "\\n");
-        process.stdout.write(process.env.F5_TEST_MANAGER_ENV);`,
+        `const fs = require("node:fs");
+        fs.appendFileSync(${JSON.stringify(probe)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+        if (process.env.F5_TEST_MANAGER_ENV === "hang") {
+          fs.writeFileSync(${JSON.stringify(hangingProbePid)}, String(process.pid));
+          setTimeout(() => {}, 15_000);
+        } else {
+          process.stdout.write(process.env.F5_TEST_MANAGER_ENV);
+        }`,
       );
       Object.defineProperty(process, "platform", { ...platform, value: "linux" });
       vi.stubEnv("PATH", `${root}${path.delimiter}${process.env.PATH ?? ""}`);
@@ -655,6 +662,8 @@ vitestIt.skipIf(process.platform === "win32")(
           yield* Effect.promise(() => expect.poll(() => launches().length).toBe(3));
           vi.stubEnv("F5_TEST_MANAGER_ENV", '{"data":[42]}');
           yield* open.openInEditor({ editor: "vscodium", cwd: "/invalid-response" });
+          vi.stubEnv("F5_TEST_MANAGER_ENV", "hang");
+          yield* open.openInEditor({ editor: "vscodium", cwd: "/timed-out-probe" });
           vi.stubEnv("DISPLAY", ":5");
           yield* open.openInEditor({ editor: "vscodium", cwd: "/existing-display" });
         }).pipe(Effect.provide(OpenLive)),
@@ -678,6 +687,7 @@ vitestIt.skipIf(process.platform === "win32")(
         { ...recovered, target: "/workspace" },
         { ...base, target: "https://example.com" },
         { ...base, target: "/invalid-response" },
+        { ...base, target: "/timed-out-probe" },
         { ...base, target: "/existing-display", display: ":5" },
       ]);
       const calls = fs
@@ -685,7 +695,19 @@ vitestIt.skipIf(process.platform === "win32")(
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line));
-      expect(calls).toHaveLength(3);
+      expect(calls).toHaveLength(4);
+      const pid = Number(fs.readFileSync(hangingProbePid, "utf8"));
+      expect(pid).toBeGreaterThan(0);
+      await expect
+        .poll(() => {
+          try {
+            process.kill(pid, 0);
+            return "running";
+          } catch (error) {
+            return (error as NodeJS.ErrnoException).code;
+          }
+        })
+        .toBe("ESRCH");
       expect(calls[0]).toEqual([
         "--user",
         "--json=short",
@@ -701,6 +723,7 @@ vitestIt.skipIf(process.platform === "win32")(
       fs.rmSync(root, { recursive: true, force: true });
     }
   },
+  10_000,
 );
 
 it.layer(NodeServices.layer)("isCommandAvailable", (it) => {

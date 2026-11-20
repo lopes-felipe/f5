@@ -68,6 +68,12 @@ describe("Windows registry probe", () => {
     (await retry.complete)(null, JSON.stringify(["C:\\Tools", null]));
     await expect(restarted).resolves.toMatchObject({ registryRead: true });
     expect(process.env.PATH?.split(";")).toContain("C:\\Tools");
+
+    const env = { Path: "C:\\Inherited" };
+    await expect(hydrateWindowsPath(env, { platform: "win32" })).resolves.toBe(
+      "C:\\Inherited;C:\\Tools",
+    );
+    expect(execFile).toHaveBeenCalledTimes(2);
   });
 
   it("stops waiting at the existing deadline even if the child never calls back", async () => {

@@ -384,6 +384,12 @@ const readGraphicalSessionEnvironment = Effect.fn("open.read-graphical-session")
   }).pipe(
     Effect.timeout("2 seconds"),
     Effect.catch(() => Effect.succeed(env)),
+    Effect.tap((result) =>
+      Effect.annotateCurrentSpan(
+        "open.graphical_session",
+        result.DISPLAY?.trim() || result.WAYLAND_DISPLAY?.trim() ? "recovered" : "unavailable",
+      ),
+    ),
   );
 });
 
