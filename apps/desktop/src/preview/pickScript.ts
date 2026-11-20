@@ -1,12 +1,17 @@
 export const PREVIEW_PICK_INPUT_LAYER_ATTRIBUTE = "data-f5-preview-pick-input";
 export const PREVIEW_PICK_WORLD_ID = 1008;
 
-export function buildPreviewPickScript(): string {
+export function buildCancelPreviewPickScript(pickIds: readonly number[]): string {
+  return `(() => {
+    const picker = window.__f5PreviewPicker;
+    if (picker && ${JSON.stringify(pickIds)}.includes(picker.id)) picker.cancel();
+  })()`;
+}
+
+export function buildPreviewPickScript(pickId: number): string {
   return String.raw`
 (() => {
-  if (window.__f5PreviewPickCancel) {
-    window.__f5PreviewPickCancel();
-  }
+  window.__f5PreviewPicker?.cancel();
 
   const selectorFor = (element) => {
     if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
@@ -59,10 +64,11 @@ export function buildPreviewPickScript(): string {
     };
 
     const cleanup = () => {
-      window.__f5PreviewPickCancel = undefined;
+      window.__f5PreviewPicker = undefined;
       window.removeEventListener("mousemove", onMove, true);
       window.removeEventListener("click", onClick, true);
       window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pagehide", onPageHide, true);
       inputLayer?.remove();
       overlay.remove();
       label.remove();
@@ -141,10 +147,15 @@ export function buildPreviewPickScript(): string {
       }
     }
 
-    window.__f5PreviewPickCancel = () => finish(null);
+    function onPageHide(event) {
+      if (event.isTrusted) finish(null);
+    }
+
+    window.__f5PreviewPicker = { id: ${pickId}, cancel: () => finish(null) };
     window.addEventListener("mousemove", onMove, true);
     window.addEventListener("click", onClick, true);
     window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pagehide", onPageHide, true);
   });
 })()
 `;

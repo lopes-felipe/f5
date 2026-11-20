@@ -57,7 +57,7 @@ import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
 import { capturePreviewSnapshotPage } from "./preview/snapshotScript";
-import { buildPreviewPickScript, PREVIEW_PICK_WORLD_ID } from "./preview/pickScript";
+import { PreviewPicker } from "./preview/PreviewPicker";
 import {
   PreviewAutomationControl,
   PreviewDiagnostics,
@@ -1667,44 +1667,14 @@ function isPickedElementResult(value: unknown): value is {
   );
 }
 
-const pickingPreviewGuests = new WeakSet<Electron.WebContents>();
+const previewPicker = new PreviewPicker();
 
 async function pickPreviewElement(tabId: string): Promise<PreviewAnnotationPayload | null> {
   const guest = getPreviewWebContents(tabId);
   if (!guest) {
     throw new Error("Preview webview is not attached.");
   }
-  if (pickingPreviewGuests.has(guest)) return null;
-  if (previewAutomationControl.isActive(tabId)) {
-    throw new Error("Wait for the current browser automation action to finish before picking.");
-  }
-  // Electron can defer script execution until navigation finishes.
-  if (!guest.getURL() || guest.isLoadingMainFrame()) {
-    throw new Error("Wait for the preview page to finish loading before picking.");
-  }
-  pickingPreviewGuests.add(guest);
-  let cancelPick!: () => void;
-  const documentClosed = new Promise<null>((resolve) => {
-    cancelPick = () => resolve(null);
-  });
-  guest.once("did-navigate", cancelPick);
-  guest.once("destroyed", cancelPick);
-  guest.once("render-process-gone", cancelPick);
-  let rawResult: unknown;
-  try {
-    // Use an isolated world so the page cannot replace the picker's DOM or event APIs.
-    rawResult = await Promise.race([
-      guest.executeJavaScriptInIsolatedWorld(PREVIEW_PICK_WORLD_ID, [
-        { code: buildPreviewPickScript() },
-      ]),
-      documentClosed,
-    ]);
-  } finally {
-    guest.off("did-navigate", cancelPick);
-    guest.off("destroyed", cancelPick);
-    guest.off("render-process-gone", cancelPick);
-    pickingPreviewGuests.delete(guest);
-  }
+  const rawResult = await previewPicker.pick(guest, previewAutomationControl.isActive(tabId));
   if (!isPickedElementResult(rawResult)) {
     return null;
   }
@@ -1792,12 +1762,7 @@ async function runPreviewAutomationAction<T>(
   try {
     const result = await previewAutomationControl.run(tabId, async (checkpoint) => {
       const guest = requirePreviewWebContents(tabId);
-      if (pickingPreviewGuests.has(guest)) {
-        throw taggedAutomationError(
-          "PreviewAutomationControlInterruptedError",
-          "The user is picking an element in the browser preview.",
-        );
-      }
+      previewPicker.assertAutomationAllowed(guest);
       requireAllowedPreviewPage(tabId, guest);
       markAgentNavigation(tabId);
       try {
@@ -4382,9 +4347,8 @@ function registerIpcHandlers(): void {
         getPreviewWebContents(scopeTabId(tabId))?.openDevTools({ mode: "detach" }),
       pickElement: (tabId) => pickPreviewElement(scopeTabId(tabId)),
       cancelPickElement: async (tabId) => {
-        await getPreviewWebContents(scopeTabId(tabId))
-          ?.executeJavaScript("window.__f5PreviewPickCancel?.()", true)
-          .catch(() => null);
+        const guest = getPreviewWebContents(scopeTabId(tabId));
+        if (guest) await previewPicker.cancel(guest);
       },
       automationStatus: (tabId) => previewAutomationStatus(scopeTabId(tabId)),
       automationSnapshot: (tabId, save) => previewAutomationSnapshot(scopeTabId(tabId), save),
@@ -4523,9 +4487,12 @@ function createWindow(
         const host = guest.isDestroyed() ? null : guest.hostWebContents;
         const parent = host && !host.isDestroyed() ? BrowserWindow.fromWebContents(host) : null;
         if (!parent || parent.isDestroyed()) return undefined;
+        const maxOriginLength = 300;
+        const displayOrigin =
+          origin.length > maxOriginLength ? origin.slice(0, maxOriginLength) + "…" : origin;
         const options: Electron.MessageBoxOptions = {
           type: "question",
-          message: origin + " wants to know your location",
+          message: displayOrigin + " wants to know your location",
           buttons: ["Allow", "Block"],
           defaultId: 1,
           cancelId: 1,
