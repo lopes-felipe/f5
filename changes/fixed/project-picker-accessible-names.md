@@ -1,0 +1,1 @@
+- Project picker options keep their project names for assistive technology and keyboard selection when pin buttons are shown.

@@ -46,6 +46,8 @@ it("orders favorites first, hides archives and pins without selecting a project"
       [...document.querySelectorAll('[role="option"]')].map((row) => row.textContent?.trim()),
     ).toEqual(["Favorite", "Alpha"]);
   });
+  await expect.element(page.getByRole("option", { name: "Alpha", exact: true })).toBeVisible();
+  await expect.element(page.getByRole("option", { name: "Favorite", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Pin Alpha", exact: true }).click();
   await vi.waitFor(() =>
     expect(api.orchestration.dispatchCommand).toHaveBeenCalledWith(

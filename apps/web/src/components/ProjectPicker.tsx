@@ -179,6 +179,7 @@ export function ProjectPicker(props: {
               key={value}
               index={index}
               value={value}
+              aria-label={project?.name ?? SCRATCH_PROJECT_TITLE}
               data-testid={project ? undefined : "project-picker-no-project"}
             >
               <span className="inline-flex min-w-0 items-center gap-2">
