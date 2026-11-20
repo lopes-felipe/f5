@@ -78,6 +78,16 @@ describe("fixPath", () => {
     await fixPath(env, "win32");
     expect(env.HOME).toBeUndefined();
   });
+
+  it("passes the startup cancellation signal to Windows PATH hydration", async () => {
+    const env = { Path: "C:\\Windows" };
+    const { signal } = new AbortController();
+    await fixPath(env, "win32", signal);
+    expect(ensureWindowsPathHydrated).toHaveBeenCalledExactlyOnceWith(
+      env,
+      expect.objectContaining({ platform: "win32", signal }),
+    );
+  });
 });
 
 describe("hydratePosixHome", () => {

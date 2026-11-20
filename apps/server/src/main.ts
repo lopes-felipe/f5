@@ -113,7 +113,7 @@ export class CliConfig extends ServiceMap.Service<CliConfig, CliConfigShape>()(
       const path = yield* Path.Path;
       return {
         cwd: process.cwd(),
-        fixPath: Effect.promise(() => fixPath()),
+        fixPath: Effect.promise((signal) => fixPath(process.env, process.platform, signal)),
         resolveStaticDir: resolveStaticDir().pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
