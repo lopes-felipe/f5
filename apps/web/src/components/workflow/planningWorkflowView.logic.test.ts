@@ -54,10 +54,13 @@ describe("planningWorkflowView.logic", () => {
         error: "Revision failed",
         errorStage: "revision",
       },
+      branchB: { planTurnId: "plan-b", status: "revising" },
     });
 
     expect(collectPlanningWorkflowErrors(authoring)[0]?.step).toBe("Authoring · Branch A");
     expect(collectPlanningWorkflowErrors(revision)[0]?.step).toBe("Revision · Branch A");
+    expect(planningWorkflowStatusLabel(revision)).toBe("Error");
+    expect(canRetryFailedPlanningWorkflow(revision)).toBe(true);
   });
 
   it("uses the shared legacy fallback for authoring, reviews, and revision errors", () => {

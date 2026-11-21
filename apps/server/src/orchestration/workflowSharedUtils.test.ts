@@ -358,4 +358,42 @@ describe("workflowArtifactFit", () => {
       }).fits,
     ).toBe(true);
   });
+
+  it("uses the matching provider's reported context window", () => {
+    expect(
+      workflowArtifactFit({
+        artifacts: ["x".repeat(34_940)],
+        targetSlot,
+        thread: {
+          model: targetSlot.model,
+          estimatedContextTokens: 154_508,
+          session: { providerName: "codex", modelContextWindowTokens: 475_000 },
+        },
+      }),
+    ).toEqual({ fits: true, estimatedTokens: 8_735, availableTokens: 124_621 });
+  });
+
+  it.each([
+    { model: targetSlot.model, session: null },
+    { model: targetSlot.model, session: { providerName: "codex", modelContextWindowTokens: 0 } },
+    {
+      model: targetSlot.model,
+      session: { providerName: "claudeAgent", modelContextWindowTokens: 475_000 },
+    },
+    {
+      model: "different-codex-model",
+      session: { providerName: "codex", modelContextWindowTokens: 475_000 },
+    },
+  ] as const)(
+    "uses the static estimate without matching window metadata ($model, $session)",
+    (thread) => {
+      expect(
+        workflowArtifactFit({
+          artifacts: ["x".repeat(34_940)],
+          targetSlot,
+          thread: { ...thread, estimatedContextTokens: 154_508 },
+        }),
+      ).toEqual({ fits: false, estimatedTokens: 8_735, availableTokens: 7_746 });
+    },
+  );
 });
