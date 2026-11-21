@@ -44,7 +44,11 @@ import { isDebPackage } from "./linuxPackage";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
 import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
-import { isolatedBackendCommand } from "./backendComputerIsolation";
+import {
+  hostBackendLauncher,
+  requireProfileBackendLauncher,
+  resolveProfileBackendLauncher,
+} from "./profileBackendLauncher";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
@@ -389,6 +393,10 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
   startupFailure: null,
 });
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
+/** Only host profiles can start in this build; Linux VM profiles are refused, never rerouted. */
+const backendLaunchers = {
+  host: hostBackendLauncher({ platform: process.platform, executable: process.execPath }),
+};
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
 const profileByWebContentsId = new Map<number, string>();
 function profileWindows(profileId: string): BrowserWindow[] {
@@ -3290,29 +3298,28 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     return;
   }
 
+  // No fallback: a profile whose environment has no launcher never starts elsewhere. Opening
+  // refuses such a profile earlier; this also covers restarts and the startup Default.
+  const resolved = resolveProfileBackendLauncher(runtime.profile, backendLaunchers);
+  if (!resolved.ok) {
+    runtime.stopped = true;
+    showStartupRecovery(runtime, resolved.message);
+    return;
+  }
+
   const backendIncarnation = Crypto.randomUUID();
   runtime.outputTail = new BackendOutputTail();
   runtime.startupReady = false;
-  const isolated = isolatedBackendCommand(
-    process.platform,
-    process.execPath,
-    backendEntry,
-    app.isPackaged ? compileCachePreloadArgs(__dirname) : [],
-  );
-  const child = ChildProcess.spawn(isolated.executable, isolated.args, {
+  const launch = resolved.launcher.launch({
+    entry: backendEntry,
+    nodeArgs: app.isPackaged ? compileCachePreloadArgs(__dirname) : [],
     cwd: resolveBackendCwd(),
-    // In Electron main, process.execPath points to the Electron binary.
-    // Run the child in Node mode so this backend process does not become a GUI app instance.
-    env: {
-      ...backendEnv(runtime),
-      ELECTRON_RUN_AS_NODE: "1",
-      F5_DESKTOP_COMPUTER_HOST: "ipc",
-      F5_DESKTOP_BACKEND_INCARNATION: backendIncarnation,
-    },
-    stdio: ["ignore", "pipe", "pipe", "ipc"],
+    env: backendEnv(runtime),
+    incarnation: backendIncarnation,
   });
+  const child = launch.process;
   runtime.backendProcess = child;
-  computerSystem?.channel.register(runtime.profile.id, backendIncarnation, child);
+  computerSystem?.channel.registerChannel(runtime.profile.id, backendIncarnation, launch.channel);
   stopHealthMonitor(runtime);
   runtime.cancelHealthMonitor = monitorBackendHealth({
     isCurrent: () =>
@@ -3529,6 +3536,8 @@ async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
     stop: () => stopBackendAndWaitForExit(5000, runtime),
     prepare: async () => {
       if (isQuitting) throw new Error("F5 is shutting down.");
+      // Before any port, auth or cap bookkeeping: a refused profile fails once, with its reason.
+      requireProfileBackendLauncher(runtime.profile, backendLaunchers);
       const otherBackends = [...backends.values()].filter(
         (entry) => entry !== runtime && (!entry.stopped || isProfileBackendRunning(entry)),
       );

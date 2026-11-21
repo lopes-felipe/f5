@@ -806,4 +806,73 @@ it.layer(testLayer)("profile startup selection", (it) => {
       }
     }),
   );
+  /** A registry holding a VM profile, as a VM-capable build would write it. */
+  const vmRegistry = (root: string) =>
+    Effect.gen(function* () {
+      const stateDir = Path.join(root, "state");
+      const store = new ProfileRegistryStore(stateDir);
+      yield* Effect.promise(() => store.init());
+      const registry = JSON.parse(FS.readFileSync(store.path, "utf8"));
+      const guest = {
+        id: "e".repeat(32),
+        slug: "guest",
+        name: "Guest",
+        port: 4790,
+        isDefault: false,
+        status: "ready",
+        createdAt: new Date().toISOString(),
+        executionEnvironment: "linux-vm",
+      };
+      FS.mkdirSync(Path.join(store.root, guest.id), { recursive: true });
+      FS.writeFileSync(
+        store.path,
+        JSON.stringify({ ...registry, version: 2, profiles: [...registry.profiles, guest] }),
+      );
+      return { stateDir, store, guest };
+    });
+  it.effect("never serves a Linux VM profile from the host", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-profile-vm-"));
+      try {
+        const { stateDir, store, guest } = yield* vmRegistry(root);
+        const result = yield* Effect.result(
+          runCli(["--state-dir", stateDir, "--profile", "guest"]),
+        );
+        assert.equal(result._tag, "Failure");
+        assert.equal(start.mock.calls.length, 0);
+        const diagnostic = JSON.parse(
+          FS.readFileSync(Path.join(store.root, `last-startup-error-${guest.id}.json`), "utf8"),
+        );
+        assert.match(diagnostic.message, /Linux VM/);
+      } finally {
+        FS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+  );
+  it.effect("refuses a Linux VM profile in local CLI clients before touching its state", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-profile-vm-cli-"));
+      try {
+        const { stateDir } = yield* vmRegistry(root);
+        const written: string[] = [];
+        const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+          written.push(String(chunk));
+          return true;
+        });
+        const previousExitCode = process.exitCode;
+        try {
+          // agent-bridge-stdio resolves its profile through the shared CLI selection, and
+          // reports a StartupError on stderr with exit code 1.
+          yield* runCli(["--state-dir", stateDir, "--profile", "guest", "agent-bridge-stdio"]);
+          assert.equal(process.exitCode, 1);
+          assert.match(written.join(""), /runs in a Linux VM/);
+        } finally {
+          stderr.mockRestore();
+          process.exitCode = previousExitCode;
+        }
+      } finally {
+        FS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+  );
 });

@@ -7,7 +7,7 @@ import * as OS from "node:os";
 import * as Path from "node:path";
 import { describe, it, expect } from "vitest";
 import { Schema } from "effect";
-import { ServerSettings, ProviderInstanceId, CodexSettings } from "@t3tools/contracts";
+import { ServerSettings, ProviderInstanceId, CodexSettings, ProfileId } from "@t3tools/contracts";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { ProfileRegistryStore } from "./ProfileRegistryStore";
 import { acquireInstanceLock } from "./InstanceLock";
@@ -312,4 +312,118 @@ it("refuses to remove a profile whose Claude in Chrome setup still owns the real
   } finally {
     await FS.rm(root, { recursive: true, force: true });
   }
+});
+
+describe("execution environments", () => {
+  const fileVersion = async (store: ProfileRegistryStore) =>
+    JSON.parse(await FS.readFile(store.path, "utf8")).version as number;
+  /** A VM record as a VM-capable build would write it; this build can't create one. */
+  const writeVmRecord = async (store: ProfileRegistryStore) => {
+    const registry = JSON.parse(await FS.readFile(store.path, "utf8"));
+    const vm = {
+      id: ProfileId.makeUnsafe("f".repeat(32)),
+      slug: "guest",
+      name: "Guest",
+      port: 4799,
+      isDefault: false,
+      status: "ready",
+      createdAt: new Date().toISOString(),
+      executionEnvironment: "linux-vm",
+    };
+    await FS.mkdir(profileStateDir(store.defaultStateDir, vm), { recursive: true });
+    await FS.writeFile(
+      store.path,
+      JSON.stringify({ ...registry, version: 2, profiles: [...registry.profiles, vm] }),
+    );
+    return vm;
+  };
+
+  it("refuses to create a Linux VM profile without touching the registry", async () => {
+    const { root, store } = await fixture();
+    try {
+      await store.init();
+      const before = await FS.readFile(store.path, "utf8");
+      await expect(
+        store.create({ name: "Guest", executionEnvironment: "linux-vm" }),
+      ).rejects.toThrow("Linux VM profiles are not available in this build.");
+      expect(await FS.readFile(store.path, "utf8")).toBe(before);
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes version 2 only while a Linux VM profile exists", async () => {
+    const { root, store } = await fixture();
+    try {
+      await store.init();
+      const host = await store.create({ name: "Host" });
+      expect(await fileVersion(store)).toBe(1);
+      // Host records stay byte-compatible with builds that predate VM profiles.
+      expect(JSON.parse(await FS.readFile(store.path, "utf8")).profiles[1]).not.toHaveProperty(
+        "executionEnvironment",
+      );
+      const vm = await writeVmRecord(store);
+      expect((await store.read()).ok).toBe(true);
+      // Writes keep version 2 and the environment while the VM profile exists.
+      await store.update({ profileId: vm.id, name: "Guest 2" });
+      await store.create({ name: "Another host" });
+      expect(await fileVersion(store)).toBe(2);
+      const read = await store.read();
+      expect(read.ok && read.registry.profiles.find((p) => p.id === vm.id)).toMatchObject({
+        name: "Guest 2",
+        executionEnvironment: "linux-vm",
+      });
+      await store.remove(vm.id);
+      expect(await fileVersion(store)).toBe(1);
+      expect((await store.read()).ok).toBe(true);
+      await store.remove(host.id);
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects VM records in a version 1 registry and a VM Default, without rewriting", async () => {
+    const { root, store } = await fixture();
+    try {
+      await store.init();
+      await writeVmRecord(store);
+      const v2 = JSON.parse(await FS.readFile(store.path, "utf8"));
+      const vmDefault = {
+        ...v2,
+        profiles: v2.profiles.map((p: { isDefault: boolean }) =>
+          p.isDefault ? { ...p, executionEnvironment: "linux-vm" } : p,
+        ),
+      };
+      for (const contents of [
+        JSON.stringify({ ...v2, version: 1 }),
+        JSON.stringify(vmDefault),
+        JSON.stringify({ ...v2, version: 3 }),
+      ]) {
+        await FS.writeFile(store.path, contents);
+        const result = await store.read();
+        expect(result.ok).toBe(false);
+        await expect(store.create({ name: "Unsafe" })).rejects.toThrow();
+        expect(await FS.readFile(store.path, "utf8")).toBe(contents);
+      }
+      await FS.writeFile(store.path, JSON.stringify({ ...v2, version: 3 }));
+      const newer = await store.read();
+      expect(!newer.ok && newer.diagnostic.code).toBe("newer-version");
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a version 2 registry without VM profiles and normalizes it on the next write", async () => {
+    const { root, store } = await fixture();
+    try {
+      await store.init();
+      const v1 = JSON.parse(await FS.readFile(store.path, "utf8"));
+      await FS.writeFile(store.path, JSON.stringify({ ...v1, version: 2 }));
+      expect((await store.read()).ok).toBe(true);
+      await store.create({ name: "Host" });
+      expect(await fileVersion(store)).toBe(1);
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
 });

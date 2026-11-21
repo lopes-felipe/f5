@@ -1,5 +1,9 @@
 import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
 export { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
+import {
+  profileRegistryVersionFor,
+  profileRegistryVersionViolation,
+} from "@t3tools/shared/profileExecution";
 import { deriveServerPaths, ensureStateDirectories } from "../config";
 import * as FS from "node:fs/promises";
 import { watch } from "node:fs";
@@ -9,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Schema } from "effect";
 import {
+  PROFILE_REGISTRY_MAX_VERSION,
   ProfileRegistryFile,
   ProfileRecord,
   ServerSettings,
@@ -59,6 +64,7 @@ export async function assertProfileDirectory(
   }
   return directory;
 }
+export const LINUX_VM_CREATE_UNAVAILABLE = "Linux VM profiles are not available in this build.";
 export const isProfilePortBindable = (port: number, host = "127.0.0.1") =>
   new Promise<boolean>((resolve) => {
     const server = Net.createServer();
@@ -114,7 +120,7 @@ export class ProfileRegistryStore {
       value !== null &&
       "version" in value &&
       typeof value.version === "number" &&
-      value.version > 1
+      value.version > PROFILE_REGISTRY_MAX_VERSION
     )
       return this.diagnostic(
         "newer-version",
@@ -125,11 +131,14 @@ export class ProfileRegistryStore {
       registry = Schema.decodeUnknownSync(ProfileRegistryFile)(value, {
         onExcessProperty: "preserve",
       });
-      if (registry.version !== 1) throw new Error("Unsupported registry version.");
+      if (registry.version !== 1 && registry.version !== PROFILE_REGISTRY_MAX_VERSION)
+        throw new Error("Unsupported registry version.");
     } catch (error) {
       return this.diagnostic("malformed", `Invalid profile registry: ${String(error)}`);
     }
     try {
+      const versionViolation = profileRegistryVersionViolation(registry);
+      if (versionViolation) throw new Error(versionViolation);
       if (registry.profiles.filter((p) => p.isDefault).length !== 1)
         throw new Error("Exactly one default profile is required.");
       for (const field of ["id", "slug", "port"] as const) {
@@ -150,8 +159,13 @@ export class ProfileRegistryStore {
     if (!result.ok) throw new Error(result.diagnostic.message);
     return result.registry;
   }
-  private async write(registry: ProfileRegistryFile): Promise<void> {
+  private async write(input: ProfileRegistryFile): Promise<void> {
+    // v2 only while a Linux VM profile exists, so installations that never create one
+    // stay readable by older builds, and removing the last one restores v1.
+    const registry = { ...input, version: profileRegistryVersionFor(input.profiles) };
     Schema.decodeUnknownSync(ProfileRegistryFile)(registry);
+    const violation = profileRegistryVersionViolation(registry);
+    if (violation) throw new Error(violation);
     const contents = JSON.stringify(registry, null, 2) + "\n";
     await atomicWrite(this.path, contents);
     this.lastContents = contents;
@@ -277,6 +291,8 @@ export class ProfileRegistryStore {
     };
   }
   async create(input: ProfileCreateInput): Promise<ProfileRecord> {
+    // The VM runtime, and the provisioning lifecycle a VM record needs, aren't in this build.
+    if (input.executionEnvironment === "linux-vm") throw new Error(LINUX_VM_CREATE_UNAVAILABLE);
     return this.locked(async () => {
       let registry = await this.required();
       let stem = input.name
