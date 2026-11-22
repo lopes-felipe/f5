@@ -7,6 +7,7 @@ import { Effect, FileSystem, Layer, Option, Path, Tracer } from "effect";
 import { version as serverPackageVersion } from "../../../package.json" with { type: "json" };
 
 import { ServerConfig } from "../../config.ts";
+import { makeHeapAttribution } from "../HeapAttribution.ts";
 import { makeLocalFileTracer } from "../LocalFileTracer.ts";
 import { makeMetricSnapshotWriter, sampleEventLoopDelay } from "../Metrics.ts";
 
@@ -52,7 +53,7 @@ export const ObservabilityLive = Layer.unwrap(
         const external = remote.traces.url
           ? yield* makeOtlpTraceSink(remote.traces, resource)
           : undefined;
-        const tracer = yield* makeLocalFileTracer({
+        const baseTracer = yield* makeLocalFileTracer({
           sink: {
             filePath: tracePath,
             push: (record) => {
@@ -72,6 +73,12 @@ export const ObservabilityLive = Layer.unwrap(
           maxFiles: TRACE_MAX_FILES,
           batchWindowMs: TRACE_BATCH_WINDOW_MS,
         });
+        let tracer = baseTracer;
+        if (local || external) {
+          const heapAttribution = makeHeapAttribution(baseTracer);
+          yield* heapAttribution.run;
+          tracer = heapAttribution.tracer;
+        }
         yield* Effect.forkScoped(
           sampleEventLoopDelay.pipe(Effect.provideService(Tracer.Tracer, tracer)),
         );
