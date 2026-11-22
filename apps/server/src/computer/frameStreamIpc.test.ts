@@ -94,11 +94,21 @@ describe("reopenCloseOnExec", () => {
       execFileSync("mkfifo", [fifo]);
       const read = FS.openSync(fifo, FS.constants.O_RDONLY | FS.constants.O_NONBLOCK);
       const write = FS.openSync(fifo, FS.constants.O_WRONLY | FS.constants.O_NONBLOCK);
+      const isCloseOnExec = (fd: number) => {
+        const flags = /^flags:\s*([0-7]+)$/m.exec(
+          FS.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"),
+        )?.[1];
+        return flags !== undefined && (parseInt(flags, 8) & 0o2000000) !== 0;
+      };
+      // Check each original right after its own reopen: the next open reuses its number.
       const privateRead = reopenCloseOnExec(read, "read");
-      const privateWrite = reopenCloseOnExec(write, "write");
       expect(privateRead).not.toBe(read);
       expect(() => FS.fstatSync(read)).toThrow();
+      const privateWrite = reopenCloseOnExec(write, "write");
+      expect(privateWrite).not.toBe(write);
       expect(() => FS.fstatSync(write)).toThrow();
+      expect(isCloseOnExec(privateRead)).toBe(true);
+      expect(isCloseOnExec(privateWrite)).toBe(true);
       FS.writeSync(privateWrite, "frame");
       const buffer = Buffer.alloc(5);
       expect(FS.readSync(privateRead, buffer)).toBe(5);
