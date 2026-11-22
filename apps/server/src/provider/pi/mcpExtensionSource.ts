@@ -545,7 +545,7 @@ export default async function f5McpExtension(pi: ExtensionAPI) {
     const options = event.systemPromptOptions;
     const sections = options?.sections;
     if (sections && typeof sections === "object" && options?.forceSystemPrompt === undefined) {
-      sections.t3_code_orchestration = guidance;
+      sections.f5_orchestration = guidance;
       return undefined;
     }
     return { systemPrompt: event.systemPrompt + "\\n\\n" + guidance };

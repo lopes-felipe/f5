@@ -59,14 +59,14 @@ describe("Pi orchestration prompt section", () => {
     assert.isUndefined(await hook(event, ctx));
     assert.equal(event.systemPrompt, "base");
     assert.include(bridge.getActiveTools(), "mcp__f5__preview_snapshot");
-    const guidance = sections.t3_code_orchestration!;
+    const guidance = sections.f5_orchestration!;
     assert.include(guidance, "thread_status");
     assert.include(guidance, "Show data trends and comparisons with html_render");
 
     assert.isUndefined(await hook(event, ctx));
     assert.deepEqual(sections, {
       existing: "Other extension guidance",
-      t3_code_orchestration: guidance,
+      f5_orchestration: guidance,
     });
   });
 
