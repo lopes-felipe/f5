@@ -1,1 +1,1 @@
-- Dragging to select conversation text now works across the turn rails and minimap without opening a turn preview or unexpectedly extending the selection.
+- Dragging with a mouse or pen to select conversation text now works across the turn rails and minimap without opening a turn preview or unexpectedly extending the selection.

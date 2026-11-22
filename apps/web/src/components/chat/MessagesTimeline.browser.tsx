@@ -472,7 +472,9 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
-  it("keeps a text drag in its message across the turn rail and minimap", async () => {
+  it("keeps a text drag in its message across the turn rail and minimap", async ({
+    onTestFinished,
+  }) => {
     await page.viewport(600, 896);
     const host = document.createElement("div");
     document.body.append(host);
@@ -520,6 +522,9 @@ describe("MessagesTimeline (LegendList)", () => {
         ...(type === "mouseMoved" ? {} : { clickCount: 1 }),
         force: buttons > 0 ? 0.5 : 0,
       });
+    onTestFinished(async () => {
+      await cdp().send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0, buttons: 0 });
+    });
 
     expect(document.elementFromPoint(railX, y)).toBe(rail);
     expect(document.elementFromPoint(minimapX, y)).toBe(minimap);
@@ -557,6 +562,33 @@ describe("MessagesTimeline (LegendList)", () => {
       await mouse("mouseReleased", startX, minimapBounds.bottom - 1, 0);
     }
   });
+
+  it.each(["pointermove", "pointercancel"])(
+    "restores the minimap after a pen drag ends with %s",
+    async (releaseType) => {
+      const host = document.createElement("div");
+      document.body.append(host);
+      await render(
+        <TimelineHarness
+          initialEntries={makeOverflowEntries(40)}
+          initialHeight={360}
+          onIsAtEndChangeSpy={() => {}}
+        />,
+        { container: host },
+      );
+      const container = await waitForScrollContainer(host);
+      const minimap = host.querySelector<HTMLElement>('[aria-label="Conversation minimap"]')!;
+      const area = minimap.parentElement!;
+      // Start on the timeline surface outside the virtualized list.
+      expect(container.contains(area)).toBe(false);
+      const pen = { bubbles: true, pointerId: 42, pointerType: "pen", isPrimary: true };
+      area.dispatchEvent(new PointerEvent("pointerdown", { ...pen, button: 0, buttons: 1 }));
+      expect(getComputedStyle(minimap).pointerEvents).toBe("none");
+
+      window.dispatchEvent(new PointerEvent(releaseType, { ...pen, buttons: 0 }));
+      expect(getComputedStyle(minimap).pointerEvents).toBe("auto");
+    },
+  );
 
   it("tracks the active turn-rail tick while scrolling", async () => {
     await page.viewport(1200, 896);

@@ -1672,42 +1672,45 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [pendingRevert, revertDimFromRowIndex, rowExternals],
   );
 
-  const setTimelineSelectionRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      if (!node) return;
-      let stopSelection: (() => void) | undefined;
-      const startSelection = (event: PointerEvent) => {
-        if (event.pointerType !== "mouse" || event.button !== 0) return;
-        const scroller = listRef.current?.getScrollableNode?.();
-        if (!(event.target instanceof Node) || !scroller?.contains(event.target)) return;
+  const setTimelineSelectionRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    let stopSelection: (() => void) | undefined;
+    const startSelection = (event: PointerEvent) => {
+      if (event.button !== 0 || (event.pointerType !== "mouse" && event.pointerType !== "pen")) {
+        return;
+      }
+      if (
+        !(event.target instanceof Element) ||
+        event.target.closest("[data-timeline-navigation]")
+      ) {
+        return;
+      }
 
-        // Let native selection hit the timeline underneath the navigation overlays.
-        stopSelection?.();
-        node.setAttribute("data-selecting-text", "");
-        const controller = new AbortController();
-        stopSelection = () => {
-          controller.abort();
-          node.removeAttribute("data-selecting-text");
-          stopSelection = undefined;
-        };
-        const finishSelection = (next: PointerEvent) => {
-          if (next.pointerId !== event.pointerId) return;
-          // A release outside the window may only be seen on the next move.
-          if (next.type !== "pointermove" || (next.buttons & 1) === 0) stopSelection?.();
-        };
-        const options = { capture: true, signal: controller.signal };
-        window.addEventListener("pointerup", finishSelection, options);
-        window.addEventListener("pointercancel", finishSelection, options);
-        window.addEventListener("pointermove", finishSelection, options);
+      // Let native selection hit the timeline underneath the navigation overlays.
+      stopSelection?.();
+      node.setAttribute("data-selecting-text", "");
+      const controller = new AbortController();
+      stopSelection = () => {
+        controller.abort();
+        node.removeAttribute("data-selecting-text");
+        stopSelection = undefined;
       };
-      node.addEventListener("pointerdown", startSelection, true);
-      return () => {
-        node.removeEventListener("pointerdown", startSelection, true);
-        stopSelection?.();
+      const finishSelection = (next: PointerEvent) => {
+        if (next.pointerId !== event.pointerId) return;
+        // A release outside the window may only be seen on the next move.
+        if (next.type !== "pointermove" || (next.buttons & 1) === 0) stopSelection?.();
       };
-    },
-    [listRef],
-  );
+      const options = { capture: true, signal: controller.signal };
+      window.addEventListener("pointerup", finishSelection, options);
+      window.addEventListener("pointercancel", finishSelection, options);
+      window.addEventListener("pointermove", finishSelection, options);
+    };
+    node.addEventListener("pointerdown", startSelection, true);
+    return () => {
+      node.removeEventListener("pointerdown", startSelection, true);
+      stopSelection?.();
+    };
+  }, []);
 
   // Portalled into the header: turn data never passes through header props.
   const navigationControl = navigationHost
