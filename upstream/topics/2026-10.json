@@ -13369,12 +13369,14 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-11-22T18:13:50.956Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16694",
       "relatedTopics": [
         "pr-15060"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "keybindings",
