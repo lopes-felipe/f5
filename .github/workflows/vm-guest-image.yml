@@ -60,8 +60,9 @@ jobs:
           LIBGUESTFS_BACKEND=direct LIBGUESTFS_BACKEND_SETTINGS=force_tcg \
             libguestfs-test-tool >"$RUNNER_TEMP/libguestfs-test.log" 2>&1 ||
             { tail -60 "$RUNNER_TEMP/libguestfs-test.log"; exit 1; }
-          # The test tool runs without a network device; the build needs its ROM.
-          test -e /usr/share/qemu/efi-virtio.rom || { ls -l /usr/share/qemu/; exit 1; }
+          # The test tool runs without a network device; the build needs its ROM, which
+          # QEMU finds through its firmware path (/usr/lib/ipxe/qemu on Ubuntu).
+          dpkg -L ipxe-qemu | grep '/efi-virtio\.rom$'
 
       - name: Build image
         # The verbose libguestfs trace is long: keep it in a file, show its end on failure.
