@@ -1,0 +1,432 @@
+#!/usr/bin/python3
+"""F5 guest tool. Root-owned and baked into the guest image; Lima's admin user runs it
+through sudo. The non-sudo `f5` user, which runs the backend and everything it starts,
+can't run it or change it.
+
+  f5-guest status
+      Prints one line of readiness JSON, including each installed backend's version and
+      archive digest. Exit 0 only when the guest may run a backend.
+  f5-guest install <version> <sha256> <archive>
+      Verifies a linux-arm64 F5 CLI archive and installs it, root-owned, on the data disk.
+  f5-guest launch <incarnation> <version> <sha256>
+      Main writes one line of boot JSON to stdin, then backend frames. Starts the installed
+      backend with that digest as `f5` in a transient systemd scope, relays frames between
+      this process's stdio and the backend's fds 3 (in) and 4 (out), and stops the whole
+      scope when stdin closes.
+
+Every command refuses to run anything when a check fails: exit 77, with the reason as the
+last line on stderr. The backend's own exit codes never come out as 77.
+"""
+import grp
+import hashlib
+import json
+import os
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import threading
+import time
+
+DATA = "/var/lib/f5"
+DATA_DEVICE_MOUNT = "/mnt/lima-f5-data"
+POLICY_SUMS = "/opt/f5/policy.sha256"
+IMAGE_INFO = "/opt/f5/image.json"
+BACKEND_ROOT = DATA + "/backend"
+STATE_DIR = DATA + "/state"
+HOME = DATA + "/home"
+GUEST_USER = "f5"
+KEEP_BACKENDS = 2
+# Membership in any of these is a route to root, or to raw disks and other users' files.
+PRIVILEGED_GROUPS = {"root", "sudo", "admin", "wheel", "adm", "disk", "shadow", "docker", "lxd", "incus"}
+STOP_DEADLINE_SECONDS = 30
+VERSION_PATTERN = r"[0-9A-Za-z][0-9A-Za-z.+-]{0,63}"
+SHA256_PATTERN = r"[0-9a-f]{64}"
+# The host supervisor reads this as "f5-guest refused"; see main().
+REFUSED = 77
+
+
+class Refusal(Exception):
+    pass
+
+
+def quiet(*command):
+    return subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+
+
+def ensure_data_disk():
+    """The persistent data disk holds all state. Without it, nothing runs."""
+    if quiet("mountpoint", "-q", DATA) == 0:
+        return
+    if quiet("mountpoint", "-q", DATA_DEVICE_MOUNT) != 0:
+        raise Refusal("the data disk is not attached")
+    os.makedirs(DATA, mode=0o755, exist_ok=True)
+    if quiet("mount", "--bind", DATA_DEVICE_MOUNT, DATA) != 0:
+        raise Refusal("could not mount the data disk")
+    os.chmod(DATA, 0o755)
+
+
+def guest_user():
+    """The `f5` account and its group ids, once both are confirmed unprivileged."""
+    try:
+        user = pwd.getpwnam(GUEST_USER)
+    except KeyError:
+        raise Refusal("the f5 user is missing")
+    if user.pw_uid == 0 or user.pw_gid == 0:
+        raise Refusal("the f5 user is privileged")
+    gids = os.getgrouplist(GUEST_USER, user.pw_gid)
+    groups = set()
+    for gid in gids:
+        try:
+            groups.add(grp.getgrgid(gid).gr_name)
+        except KeyError:
+            groups.add(str(gid))
+    if 0 in gids or groups & PRIVILEGED_GROUPS:
+        raise Refusal("the f5 user is in a privileged group")
+    # Fail closed: only sudo's own "not allowed" answer, in the C locale, counts as no rights.
+    result = subprocess.run(
+        ["sudo", "-n", "-l", "-U", GUEST_USER],
+        capture_output=True,
+        text=True,
+        env={"LC_ALL": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+    )
+    output = result.stdout + result.stderr
+    if "may run the following" in output:
+        raise Refusal("the f5 user has sudo rights")
+    if "is not allowed to run sudo" not in output:
+        raise Refusal("could not confirm that the f5 user has no sudo rights")
+    return user, gids
+
+
+def check_policy():
+    if quiet("sha256sum", "--quiet", "--strict", "-c", POLICY_SUMS) != 0:
+        raise Refusal("guest policy files do not match the image")
+    if quiet("nft", "list", "table", "inet", "f5_egress") != 0:
+        raise Refusal("the egress policy is not loaded")
+    return guest_user()
+
+
+def root_owned(path):
+    info = os.lstat(path)
+    return info.st_uid == 0 and not info.st_mode & 0o022
+
+
+def installed_versions():
+    """Installed backends, oldest install first (version names don't sort by age)."""
+    try:
+        names = os.listdir(BACKEND_ROOT)
+    except FileNotFoundError:
+        return []
+    installed = []
+    for name in names:
+        marker = os.path.join(BACKEND_ROOT, name, ".installed")
+        if re.fullmatch(VERSION_PATTERN, name) and os.path.isfile(marker):
+            installed.append((os.stat(marker).st_mtime_ns, name))
+    return [name for _mtime, name in sorted(installed)]
+
+
+def installed_backends():
+    """Each installed backend's version and the archive digest it was installed from."""
+    backends = []
+    for name in installed_versions():
+        try:
+            with open(os.path.join(BACKEND_ROOT, name, ".installed")) as handle:
+                digest = handle.read().strip()
+        except OSError:
+            continue
+        if re.fullmatch(SHA256_PATTERN, digest):
+            backends.append({"version": name, "sha256": digest})
+    return backends
+
+
+def retired_versions(installed, current):
+    """Every installed version except `current` and the one installed just before it."""
+    others = [name for name in installed if name != current]
+    return others[: max(0, len(others) - (KEEP_BACKENDS - 1))]
+
+
+def check_backend(version, sha256):
+    if not re.fullmatch(VERSION_PATTERN, version):
+        raise Refusal("invalid backend version")
+    if not re.fullmatch(SHA256_PATTERN, sha256):
+        raise Refusal("invalid sha256")
+    root = os.path.join(BACKEND_ROOT, version)
+    executable = os.path.join(root, "f5")
+    marker = os.path.join(root, ".installed")
+    for path in (BACKEND_ROOT, root, executable, marker):
+        try:
+            if not root_owned(path):
+                raise Refusal("backend " + version + " is not root-owned")
+        except FileNotFoundError:
+            raise Refusal("backend " + version + " is not installed")
+    with open(marker) as handle:
+        if handle.read().strip() != sha256:
+            raise Refusal("backend " + version + " was installed from a different archive")
+    return root, executable
+
+
+def channel_pipe(uid, gid):
+    """A pipe for the backend's frame channel, owned by the backend's user. The backend
+    reopens its ends through /proc/self/fd to get close-on-exec copies, which the kernel
+    allows only on a pipe its user owns: a pipe root creates is root's, mode 0600."""
+    read_end, write_end = os.pipe()
+    # Both ends share one inode.
+    os.fchown(read_end, uid, gid)
+    return read_end, write_end
+
+
+def command_status(args):
+    if args:
+        raise Refusal("usage: f5-guest status")
+    status = {"ready": False}
+    try:
+        with open(IMAGE_INFO) as handle:
+            status["image"] = json.load(handle)
+    except (OSError, ValueError):
+        status["image"] = None
+    try:
+        ensure_data_disk()
+        check_policy()
+        status["backends"] = installed_backends()
+        status["ready"] = True
+    except Refusal as refusal:
+        status["reason"] = str(refusal)
+    print(json.dumps(status, sort_keys=True))
+    return 0 if status["ready"] else REFUSED
+
+
+def safe_members(archive, top):
+    for member in archive.getmembers():
+        name = member.name
+        if name.startswith("/") or ".." in name.split("/"):
+            raise Refusal("archive entry escapes the install root: " + name)
+        if name != top and not name.startswith(top + "/"):
+            raise Refusal("archive entry outside " + top + ": " + name)
+        # The CLI archive is built with dereferenced links: regular files and directories only.
+        if not (member.isfile() or member.isdir()):
+            raise Refusal("archive entry is not a regular file: " + name)
+        yield member
+
+
+def command_install(args):
+    if len(args) != 3:
+        raise Refusal("usage: f5-guest install <version> <sha256> <archive>")
+    version, expected, archive_path = args
+    if not re.fullmatch(VERSION_PATTERN, version):
+        raise Refusal("invalid backend version")
+    if not re.fullmatch(SHA256_PATTERN, expected):
+        raise Refusal("invalid sha256")
+    ensure_data_disk()
+    check_policy()
+    target = os.path.join(BACKEND_ROOT, version)
+    os.makedirs(BACKEND_ROOT, mode=0o755, exist_ok=True)
+    os.chown(BACKEND_ROOT, 0, 0)
+    os.chmod(BACKEND_ROOT, 0o755)
+    top = "f5-" + version + "-linux-arm64"
+    os.umask(0o022)
+    stage = tempfile.mkdtemp(prefix=".install-", dir=BACKEND_ROOT)
+    try:
+        # Hash and extract the same root-owned copy, so the uploaded file can't change
+        # between verification and use.
+        copy = os.path.join(stage, "archive.tar.gz")
+        digest = hashlib.sha256()
+        with open(archive_path, "rb") as source, open(copy, "wb") as sink:
+            for chunk in iter(lambda: source.read(1 << 20), b""):
+                digest.update(chunk)
+                sink.write(chunk)
+        if digest.hexdigest() != expected:
+            raise Refusal("archive digest does not match")
+        with tarfile.open(copy, "r:gz") as archive:
+            archive.extractall(stage, members=list(safe_members(archive, top)), filter="data")
+        extracted = os.path.join(stage, top)
+        for directory, dirnames, filenames in os.walk(extracted):
+            for name in dirnames + filenames:
+                path = os.path.join(directory, name)
+                os.lchown(path, 0, 0)
+                os.chmod(path, os.lstat(path).st_mode & 0o755)
+        os.chown(extracted, 0, 0)
+        os.chmod(extracted, 0o755)
+        with open(os.path.join(extracted, ".installed"), "w") as handle:
+            handle.write(expected + "\n")
+        if os.path.exists(target):
+            shutil.rmtree(target)
+        os.rename(extracted, target)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+        try:
+            os.unlink(archive_path)
+        except OSError:
+            pass
+    # Keep the new version and the one installed before it, for a rollback to an older F5.
+    for name in retired_versions(installed_versions(), version):
+        shutil.rmtree(os.path.join(BACKEND_ROOT, name), ignore_errors=True)
+    print(json.dumps({"installed": version}))
+    return 0
+
+
+def read_boot_line():
+    """Read exactly one line from fd 0 without buffering past it: the rest is frames."""
+    data = bytearray()
+    while True:
+        byte = os.read(0, 1)
+        if not byte:
+            raise Refusal("stdin closed before the boot line")
+        if byte == b"\n":
+            break
+        data += byte
+        if len(data) > 4096:
+            raise Refusal("boot line too long")
+    try:
+        boot = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise Refusal("boot line is not JSON")
+    if not isinstance(boot, dict) or set(boot) != {"port", "authToken", "profileId"}:
+        raise Refusal("boot line has unexpected fields")
+    port, token, profile_id = boot["port"], boot["authToken"], boot["profileId"]
+    if not isinstance(port, int) or isinstance(port, bool) or not 1024 <= port <= 65535:
+        raise Refusal("invalid port")
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", token):
+        raise Refusal("invalid auth token")
+    if not isinstance(profile_id, str) or not re.fullmatch(r"[0-9a-f]{32}", profile_id):
+        raise Refusal("invalid profile id")
+    return port, token, profile_id
+
+
+def command_launch(args):
+    if len(args) != 3:
+        raise Refusal("usage: f5-guest launch <incarnation> <version> <sha256>")
+    incarnation, version, sha256 = args
+    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", incarnation):
+        raise Refusal("invalid incarnation")
+    port, token, profile_id = read_boot_line()
+    ensure_data_disk()
+    user, gids = check_policy()
+    _root, executable = check_backend(version, sha256)
+    for path in (STATE_DIR, HOME):
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        os.chown(path, user.pw_uid, user.pw_gid)
+
+    unit = "f5-backend-" + incarnation
+    env = {
+        "HOME": HOME,
+        "USER": GUEST_USER,
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "T3CODE_MODE": "desktop",
+        "T3CODE_NO_BROWSER": "1",
+        "T3CODE_HOST": "127.0.0.1",
+        "T3CODE_PORT": str(port),
+        "F5_STATE_DIR": STATE_DIR,
+        "T3CODE_STATE_DIR": STATE_DIR,
+        "F5_EXECUTION_ENVIRONMENT": "linux-vm-guest",
+        "F5_DESKTOP_COMPUTER_HOST": "frames",
+        "F5_DESKTOP_PROFILE_ID": profile_id,
+        "F5_DESKTOP_BACKEND_INCARNATION": incarnation,
+    }
+    setenv = [arg for key, value in env.items() for arg in ("--setenv", key + "=" + value)]
+    # A bare --setenv NAME copies the value from systemd-run's own environment, so the token
+    # never appears in a command line.
+    setenv.append("--setenv=T3CODE_AUTH_TOKEN")
+    # fd 3 carries main's frames in, fd 4 the backend's frames out: pipes this process
+    # creates and gives to `f5`, so the backend can reopen them close-on-exec before it
+    # starts anything (it refuses to start otherwise). Its stdout joins stderr, so nothing
+    # it or its children print can corrupt the frame stream.
+    frames_in_read, frames_in_write = channel_pipe(user.pw_uid, user.pw_gid)
+    frames_out_read, frames_out_write = channel_pipe(user.pw_uid, user.pw_gid)
+    shim = 'exec 3<&0 4>&1 0</dev/null 1>&2; exec "$@"'
+    child = subprocess.Popen(
+        [
+            "systemd-run", "--scope", "--quiet", "--collect", "--unit=" + unit,
+            "--uid=" + GUEST_USER, "--gid=" + GUEST_USER, *setenv,
+            "--", "/bin/sh", "-c", shim, "f5-backend", executable,
+        ],
+        stdin=frames_in_read,
+        stdout=frames_out_write,
+        stderr=sys.stderr.fileno(),
+        cwd=HOME,
+        env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "T3CODE_AUTH_TOKEN": token},
+        # A scope switches only the uid and gid: without this the backend would keep this
+        # root process's supplementary groups. Exactly the groups guest_user() checked.
+        extra_groups=gids,
+    )
+    os.close(frames_in_read)
+    os.close(frames_out_write)
+    scope = unit + ".scope"
+
+    def stop_backend():
+        """Stop the scope until it's gone, including a stop that beats its registration."""
+        deadline = time.monotonic() + STOP_DEADLINE_SECONDS
+        while time.monotonic() < deadline:
+            quiet("systemctl", "stop", scope)
+            if child.poll() is not None and quiet("systemctl", "is-active", "--quiet", scope) != 0:
+                return
+            time.sleep(0.5)
+        quiet("systemctl", "kill", "--signal=SIGKILL", scope)
+        try:
+            child.kill()
+        except OSError:
+            pass
+
+    def relay_in():
+        try:
+            while True:
+                chunk = os.read(0, 65536)
+                if not chunk:
+                    break
+                write_all(frames_in_write, chunk)
+        except OSError:
+            pass
+        # Main closed the channel: end every process the backend owns, then exit.
+        stop_backend()
+        os._exit(0)
+
+    def relay_out():
+        try:
+            while True:
+                chunk = os.read(frames_out_read, 65536)
+                if not chunk:
+                    return
+                write_all(1, chunk)
+        except OSError:
+            pass
+
+    threading.Thread(target=relay_in, daemon=True).start()
+    output = threading.Thread(target=relay_out, daemon=True)
+    output.start()
+    code = child.wait()
+    output.join(timeout=5)
+    stop_backend()
+    # Only this tool's own refusals exit REFUSED, so a backend can't pass one off.
+    return code if code >= 0 and code != REFUSED else 1
+
+
+def write_all(fd, data):
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+
+
+COMMANDS = {"status": command_status, "install": command_install, "launch": command_launch}
+
+
+def main():
+    if os.geteuid() != 0:
+        sys.stderr.write("f5-guest: must run as root\n")
+        return REFUSED
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        sys.stderr.write("f5-guest: usage: f5-guest status|install|launch ...\n")
+        return REFUSED
+    try:
+        return COMMANDS[sys.argv[1]](sys.argv[2:])
+    except Refusal as refusal:
+        sys.stderr.write("f5-guest: " + str(refusal) + "\n")
+        sys.stderr.flush()
+        return REFUSED
+
+
+if __name__ == "__main__":
+    sys.exit(main())

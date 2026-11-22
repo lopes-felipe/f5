@@ -48,7 +48,17 @@ import {
   hostBackendLauncher,
   requireProfileBackendLauncher,
   resolveProfileBackendLauncher,
+  HOST_BACKEND_STOP_GRACE_MS,
+  type BackendLaunch,
+  type ProfileBackendLauncher,
 } from "./profileBackendLauncher";
+import {
+  resolveVmLaunchAssets,
+  vmBackendLauncher,
+  VmSlotReservations,
+} from "./vm/vmBackendLauncher";
+import { VM_REFUSED_EXIT_CODE, VM_STOP_FAILED_EXIT_CODE } from "./vm/vmSupervisor";
+import { isLinuxVmProfile } from "@t3tools/shared/profileExecution";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
@@ -375,6 +385,11 @@ interface BackendRuntime {
   stopped: boolean;
   outputTail: BackendOutputTail;
   startupReady: boolean;
+  /**
+   * The profile's port reaches this incarnation. Readiness checks carry the auth token, so
+   * none is sent before it: a VM's port stays free until its forward is up.
+   */
+  backendReachable: boolean;
   recoveryWindow: BrowserWindow | null;
   startupFailure: BackendStartupFailure | null;
 }
@@ -390,15 +405,50 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
   stopped: false,
   outputTail: new BackendOutputTail(),
   startupReady: false,
+  backendReachable: false,
   recoveryWindow: null,
   startupFailure: null,
 });
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
-/** Only host profiles can start in this build; Linux VM profiles are refused, never rerouted. */
-const backendLaunchers = {
+const lastStartupErrorPath = (profileId: string) =>
+  Path.join(profilesRootDir(STATE_DIR), `last-startup-error-${profileId}.json`);
+/**
+ * Host profiles always have a launcher. Linux VM profiles get one only behind the hidden
+ * experiment flag, on Apple silicon, with Lima, the backend archive and a pinned image;
+ * otherwise they are refused, never rerouted to the host.
+ */
+const vmLaunchAssets = resolveVmLaunchAssets({
+  env: process.env,
+  platform: process.platform,
+  arch: process.arch,
+  resourcesPath: process.resourcesPath ?? "",
+  packaged: app.isPackaged,
+});
+if (!vmLaunchAssets.ok && process.env.F5_EXPERIMENTAL_LINUX_VM === "1")
+  console.warn(`[desktop] Linux VM profiles unavailable: ${vmLaunchAssets.reason}`);
+const backendLaunchers: Partial<Record<"host" | "linux-vm", ProfileBackendLauncher>> = {
   host: hostBackendLauncher({ platform: process.platform, executable: process.execPath }),
+  ...(vmLaunchAssets.ok
+    ? {
+        "linux-vm": vmBackendLauncher({
+          platform: process.platform,
+          executable: process.execPath,
+          supervisorEntry: Path.join(__dirname, "vmSupervisorEntry.js"),
+          stateDir: STATE_DIR,
+          assets: vmLaunchAssets.assets,
+          startupErrorPath: lastStartupErrorPath,
+        }),
+      }
+    : {}),
 };
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
+const vmSlots = new VmSlotReservations();
+/**
+ * VM profiles whose supervisor ended while Lima may still run their VM (a failed shutdown,
+ * or a supervisor killed after its grace). They keep their VM slot until a later supervisor
+ * of the same profile exits after a confirmed shutdown.
+ */
+const strandedVms = new Set<string>();
 const profileByWebContentsId = new Map<number, string>();
 function profileWindows(profileId: string): BrowserWindow[] {
   return BrowserWindow.getAllWindows().filter(
@@ -2293,7 +2343,11 @@ function initializeDesktopLogging(): void {
   }
 }
 
-function captureBackendOutput(child: ChildProcess.ChildProcess, runtime: BackendRuntime): void {
+function captureBackendOutput(
+  child: ChildProcess.ChildProcess,
+  runtime: BackendRuntime,
+  stdoutIsLog: boolean,
+): void {
   const tail = runtime.outputTail;
   const writeChunk = (stream: "stdout" | "stderr") => (chunk: unknown) => {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
@@ -2301,7 +2355,8 @@ function captureBackendOutput(child: ChildProcess.ChildProcess, runtime: Backend
     backendLogSink?.write(Buffer.concat([Buffer.from(`[${runtime.profile.slug}] `), buffer]));
     if (!app.isPackaged) process[stream].write(buffer);
   };
-  child.stdout?.on("data", writeChunk("stdout"));
+  // A guest backend's stdout is its frame channel, never log output.
+  if (stdoutIsLog) child.stdout?.on("data", writeChunk("stdout"));
   child.stderr?.on("data", writeChunk("stderr"));
 }
 
@@ -3320,15 +3375,33 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
   const backendIncarnation = Crypto.randomUUID();
   runtime.outputTail = new BackendOutputTail();
   runtime.startupReady = false;
-  const launch = resolved.launcher.launch({
-    entry: backendEntry,
-    nodeArgs: app.isPackaged ? compileCachePreloadArgs(__dirname) : [],
-    cwd: resolveBackendCwd(),
-    env: backendEnv(runtime),
-    incarnation: backendIncarnation,
-  });
+  let launch: BackendLaunch;
+  try {
+    launch = resolved.launcher.launch({
+      entry: backendEntry,
+      nodeArgs: app.isPackaged ? compileCachePreloadArgs(__dirname) : [],
+      cwd: resolveBackendCwd(),
+      env: backendEnv(runtime),
+      incarnation: backendIncarnation,
+      profileId: runtime.profile.id,
+      profileStateDir: profileStateDir(STATE_DIR, runtime.profile),
+      port: runtime.backendPort,
+      authToken: runtime.backendAuthToken,
+    });
+  } catch (error) {
+    runtime.stopped = true;
+    showStartupRecovery(runtime, error instanceof Error ? error.message : String(error));
+    return;
+  }
   const child = launch.process;
   runtime.backendProcess = child;
+  runtime.backendReachable = launch.reachable === undefined;
+  void launch.reachable?.then(
+    () => {
+      if (runtime.backendProcess === child) runtime.backendReachable = true;
+    },
+    () => undefined,
+  );
   computerSystem?.channel.registerChannel(runtime.profile.id, backendIncarnation, launch.channel);
   stopHealthMonitor(runtime);
   runtime.cancelHealthMonitor = monitorBackendHealth({
@@ -3353,6 +3426,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       runtime.recoveryWindow?.close();
       runtime.recoveryWindow = null;
     },
+    startupTimeoutMs: resolved.launcher.readinessTimeoutMs,
     onStartupTimeout: () =>
       showStartupRecovery(runtime, "The server started but did not become ready in time."),
     onSustainedHealth: () => {
@@ -3382,7 +3456,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     "START",
     `pid=${child.pid ?? "unknown"} port=${runtime.backendPort} cwd=${resolveBackendCwd()}`,
   );
-  captureBackendOutput(child, runtime);
+  captureBackendOutput(child, runtime, launch.stdoutIsLog);
 
   child.on("error", (error) => {
     if (runtime.backendProcess === child) {
@@ -3402,16 +3476,14 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     closeBackendSession(
       `pid=${child.pid ?? "unknown"} code=${code ?? "null"} signal=${signal ?? "null"}`,
     );
+    if (isLinuxVmProfile(runtime.profile)) noteVmSupervisorExit(runtime.profile.id, code, signal);
     if (!current || isQuitting || runtime.stopped) return;
     if (code === 78) {
       runtime.stopped = true;
       let message = "Profile startup failed. Check its registry, lock, and configured port.";
       try {
         message = JSON.parse(
-          FS.readFileSync(
-            Path.join(profilesRootDir(STATE_DIR), `last-startup-error-${runtime.profile.id}.json`),
-            "utf8",
-          ),
+          FS.readFileSync(lastStartupErrorPath(runtime.profile.id), "utf8"),
         ).message;
       } catch {
         /* Startup may have failed before the diagnostic could be written. */
@@ -3424,12 +3496,49 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
   });
 }
 
+/**
+ * A VM supervisor shuts its VM down, confirmed by Lima, before every ordinary exit. It
+ * reports a VM it couldn't shut down with VM_STOP_FAILED_EXIT_CODE, or with
+ * `vmStillRunning` on a refusal; one killed by a signal never got to confirm anything.
+ */
+function noteVmSupervisorExit(
+  profileId: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): void {
+  if (signal !== null || code === VM_STOP_FAILED_EXIT_CODE) {
+    strandedVms.add(profileId);
+    return;
+  }
+  if (code === VM_REFUSED_EXIT_CODE) {
+    // A refusal can also come from a supervisor that never touched the VM (its lock was
+    // held), so only an explicit report changes what main knows.
+    try {
+      const report = JSON.parse(FS.readFileSync(lastStartupErrorPath(profileId), "utf8")) as {
+        vmStillRunning?: unknown;
+      };
+      if (report.vmStillRunning === true) strandedVms.add(profileId);
+    } catch {
+      /* No report: nothing new is known. */
+    }
+    return;
+  }
+  strandedVms.delete(profileId);
+}
+
+/** Counts until the supervisor has exited, not merely been signalled to stop. */
+function vmSupervisorAlive(runtime: BackendRuntime): boolean {
+  const child = runtime.backendProcess;
+  return !!child && child.exitCode === null && child.signalCode === null;
+}
+
 function stopHealthMonitor(runtime: BackendRuntime): void {
   runtime.cancelHealthMonitor?.();
   runtime.cancelHealthMonitor = null;
 }
 
 async function checkBackendReady(runtime: BackendRuntime): Promise<boolean> {
+  if (!runtime.backendReachable) return false;
   try {
     const response = await fetch(
       `${getDesktopBackendHttpOrigin(runtime.backendPort)}/api/bootstrap`,
@@ -3463,8 +3572,14 @@ function stopBackend(runtime: BackendRuntime = defaultBackend): void {
       if (child.exitCode === null && child.signalCode === null) {
         void killProcessTreeAsync(child, { isGroupLeader: false, graceful: false });
       }
-    }, 2_000).unref();
+    }, backendStopGraceMs(runtime)).unref();
   }
+}
+
+/** A VM supervisor shuts its VM down before exiting; host backends get the usual 2 s. */
+function backendStopGraceMs(runtime: BackendRuntime): number {
+  const resolved = resolveProfileBackendLauncher(runtime.profile, backendLaunchers);
+  return resolved.ok ? resolved.launcher.stopGraceMs : HOST_BACKEND_STOP_GRACE_MS;
 }
 
 async function stopBackendAndWaitForExit(
@@ -3485,6 +3600,9 @@ async function stopBackendAndWaitForExit(
     runtime.backendProcess = null;
     return;
   }
+  const graceMs = backendStopGraceMs(runtime);
+  // Never give up on a backend before its own grace period, plus time for the forced kill.
+  const waitMs = Math.max(timeoutMs, graceMs + 3_000);
 
   await new Promise<void>((resolve) => {
     let settled = false;
@@ -3523,12 +3641,12 @@ async function stopBackendAndWaitForExit(
       if (backendChild.exitCode === null && backendChild.signalCode === null) {
         void killProcessTreeAsync(backendChild, { isGroupLeader: false, graceful: false });
       }
-    }, 2_000);
+    }, graceMs);
     forceKillTimer.unref();
 
     exitTimeoutTimer = setTimeout(() => {
       settle();
-    }, timeoutMs);
+    }, waitMs);
     exitTimeoutTimer.unref();
   });
   if (backendChild.exitCode === null && backendChild.signalCode === null)
@@ -3542,6 +3660,21 @@ const bootstrapGate = createBootstrapGate();
 let lastOpenedProfileId = defaultBackend.profile.id;
 
 async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
+  // Held from the synchronous cap check until the profile counts as running (or fails).
+  const vmSlot: { release?: () => void } = {};
+  try {
+    await ensureProfileBackendWithSlot(runtime, (release) => {
+      vmSlot.release = release;
+    });
+  } finally {
+    vmSlot.release?.();
+  }
+}
+
+async function ensureProfileBackendWithSlot(
+  runtime: BackendRuntime,
+  holdVmSlot: (release: () => void) => void,
+): Promise<void> {
   await ensureProfileBackend(runtime, {
     stop: () => stopBackendAndWaitForExit(5000, runtime),
     prepare: async () => {
@@ -3553,6 +3686,22 @@ async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
       );
       if (otherBackends.length >= MAX_ACTIVE_PROFILE_BACKENDS)
         throw new Error("Six profiles are already running. Stop one before opening another.");
+      if (isLinuxVmProfile(runtime.profile))
+        holdVmSlot(
+          vmSlots.reserve(runtime.profile.id, [
+            // A stopping VM counts until its supervisor exits; a crashed one awaiting its
+            // restart counts too, since the restart boots it again without a new check.
+            ...[...backends.values()]
+              .filter(
+                (entry) =>
+                  entry !== runtime &&
+                  isLinuxVmProfile(entry.profile) &&
+                  (!entry.stopped || vmSupervisorAlive(entry)),
+              )
+              .map((entry) => entry.profile.id),
+            ...strandedVms,
+          ]),
+        );
       await ensureProfileConnection(
         runtime,
         () =>
@@ -3577,6 +3726,7 @@ async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
       waitForProfileBackend(
         () => !isQuitting && !runtime.stopped && isProfileBackendRunning(runtime),
         () => checkBackendReady(runtime),
+        requireProfileBackendLauncher(runtime.profile, backendLaunchers).readinessTimeoutMs,
       ),
   });
 }

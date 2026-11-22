@@ -363,6 +363,12 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/changes
         id: changes
+      - name: Linux VM guest tools
+        # Seconds, and nothing to install. As root they also check the frame channel's pipe
+        # ownership and, where nft exists, the egress ruleset.
+        run: |
+          python3 -B -m unittest discover -v apps/desktop/vm-guest/tests
+          sudo python3 -B -m unittest discover -v apps/desktop/vm-guest/tests
       - uses: ./.github/actions/setup
         id: install
         if: steps.changes.outputs.heavy == 'true'

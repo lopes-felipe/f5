@@ -24,4 +24,10 @@ export default defineConfig([
     ...shared,
     entry: ["src/preload.ts", "src/preview/guestPreload.ts"],
   },
+  {
+    ...shared,
+    entry: ["src/vm/vmSupervisorEntry.ts"],
+    clean: false,
+    noExternal: (id) => id.startsWith("@t3tools/"),
+  },
 ]);

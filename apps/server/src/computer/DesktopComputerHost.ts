@@ -23,6 +23,7 @@ import {
   type OpenExternalUrlStatus,
 } from "@t3tools/contracts";
 import { ComputerControlError, isComputerMutation } from "@t3tools/shared/computerControl";
+import { guestFrameIpc } from "./frameStreamIpc";
 
 export interface ComputerIpcProcess {
   readonly connected?: boolean | undefined;
@@ -371,10 +372,20 @@ export class DesktopComputerHost {
     this.ipc.off("message", this.receive);
     this.ipc.off("disconnect", this.disconnect);
   }
-  static fromEnvironment(profileId: string): DesktopComputerHost {
-    return new DesktopComputerHost(
-      profileId,
-      process.env.F5_DESKTOP_BACKEND_INCARNATION ?? randomUUID(),
-    );
+  static fromEnvironment(
+    profileId: string,
+    env: NodeJS.ProcessEnv = process.env,
+    guestIpc: () => ComputerIpcProcess = guestFrameIpc,
+  ): DesktopComputerHost {
+    const incarnation = env.F5_DESKTOP_BACKEND_INCARNATION ?? randomUUID();
+    // A Linux VM guest backend has no host registry; main tells it the profile it launched,
+    // and checks every message against that profile and incarnation anyway.
+    if (env.F5_DESKTOP_COMPUTER_HOST === "frames") {
+      const hostProfileId = env.F5_DESKTOP_PROFILE_ID;
+      if (!hostProfileId || !/^[0-9a-f]{32}$/.test(hostProfileId))
+        return new DesktopComputerHost(profileId, incarnation, process, false);
+      return new DesktopComputerHost(hostProfileId, incarnation, guestIpc(), true);
+    }
+    return new DesktopComputerHost(profileId, incarnation);
   }
 }
