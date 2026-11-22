@@ -368,7 +368,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       options.writeHistory ??
       ((filePath, contents) =>
         Effect.runPromise(
-          writeFileStringAtomically({ filePath, contents }).pipe(
+          // Live scrollback flushes frequently and can use the OS writeback schedule.
+          writeFileStringAtomically({ filePath, contents, durable: false }).pipe(
             Effect.provide(NodeServices.layer),
           ),
         ));

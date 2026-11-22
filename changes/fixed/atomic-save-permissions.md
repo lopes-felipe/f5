@@ -1,0 +1,1 @@
+- Atomic saves of settings and other app state preserve existing file permissions on macOS and Linux and give new files owner-only access. Settings and keybinding saves also sync to disk to reduce data loss after a crash.
