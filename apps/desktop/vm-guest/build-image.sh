@@ -43,11 +43,14 @@ deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/$
 EOF
 
 export LIBGUESTFS_BACKEND=direct
-# GitHub's arm64 runners have no KVM. libguestfs would still ask QEMU for gic-version=host,
-# which needs KVM; force_tcg selects a GIC that pure emulation supports.
-if [ ! -w /dev/kvm ]; then export LIBGUESTFS_BACKEND_SETTINGS=force_tcg; fi
+# KVM doesn't work on GitHub's arm64 runners, even when /dev/kvm looks usable. libguestfs
+# then asks QEMU for gic-version=host and the appliance dies at launch; force_tcg selects
+# pure emulation. A host with working KVM can set LIBGUESTFS_BACKEND_SETTINGS= to skip it.
+export LIBGUESTFS_BACKEND_SETTINGS=${LIBGUESTFS_BACKEND_SETTINGS-force_tcg}
+verbose=()
+if [ "${F5_IMAGE_BUILD_VERBOSE:-}" = 1 ]; then verbose=(-v -x); fi
 rootfs="$here/rootfs"
-virt-customize -a "$work/image.qcow2" --network \
+virt-customize "${verbose[@]}" -a "$work/image.qcow2" --network \
   --run-command 'rm -f /etc/apt/sources.list.d/*' \
   --upload "$work/sources.list:/etc/apt/sources.list" \
   --run-command 'apt-get update' \

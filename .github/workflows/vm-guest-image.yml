@@ -60,7 +60,12 @@ jobs:
             { tail -60 "$RUNNER_TEMP/libguestfs-test.log"; exit 1; }
 
       - name: Build image
-        run: apps/desktop/vm-guest/build-image.sh "$RUNNER_TEMP/vm-guest"
+        # The verbose libguestfs trace is long: keep it in a file, show its end on failure.
+        run: |
+          F5_IMAGE_BUILD_VERBOSE=1 apps/desktop/vm-guest/build-image.sh "$RUNNER_TEMP/vm-guest" \
+            >"$RUNNER_TEMP/build-image.log" 2>&1 ||
+            { tail -200 "$RUNNER_TEMP/build-image.log"; exit 1; }
+          tail -20 "$RUNNER_TEMP/build-image.log"
 
       - uses: actions/upload-artifact@v4
         with:
