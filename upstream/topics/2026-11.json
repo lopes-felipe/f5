@@ -51229,9 +51229,11 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
+      "decidedAt": "2026-11-22T18:12:07.923Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33987",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "keybindings",
