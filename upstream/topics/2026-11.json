@@ -79557,12 +79557,14 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-22T18:09:50.066Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-38348",
       "relatedTopics": [
         "pr-38638"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -83765,12 +83767,14 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-22T18:09:57.407Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39165",
       "relatedTopics": [
         "pr-38864"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
