@@ -1477,7 +1477,10 @@ export const makeWorkflowService = Effect.gen(function* () {
         );
         return { workflow, started: false };
       }
-      yield* orchestrationEngine.dispatch(prepared.command);
+      // The slot was resolved against this catalog read and the prompt sized for it.
+      // Dispatching through the guard would read the catalog again and could swap in
+      // a smaller model than the one that passed the fit check.
+      yield* baseOrchestrationEngine.dispatch(prepared.command);
       return { workflow: input.workflow, started: true };
     });
 
@@ -2621,7 +2624,10 @@ export const makeWorkflowService = Effect.gen(function* () {
         templateVersion: workflow.templateVersion,
       });
 
-      let current = startsFresh
+      // Every candidate is judged against this captured record: a sibling's rejection
+      // rereads and rewrites the workflow, and must not become the baseline another
+      // branch's stale failure is compared with.
+      const current = startsFresh
         ? markBranchRevising(markBranchRevising(workflow, "a", updatedAt), "b", updatedAt)
         : workflow;
 
@@ -2665,7 +2671,7 @@ export const makeWorkflowService = Effect.gen(function* () {
               : null;
             const deliveryError = ensureDeliveryCanResume(existingDelivery, "Plan revision");
             if (deliveryError) {
-              current = yield* rejectRevision(
+              yield* rejectRevision(
                 { workflow: current, branch, createdAt: updatedAt },
                 deliveryError.message,
               );
@@ -2685,7 +2691,6 @@ export const makeWorkflowService = Effect.gen(function* () {
               createdAt: updatedAt,
             });
             if (outcome.started) dispatched.add(branch.authorThreadId);
-            current = outcome.workflow;
           }).pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterruptsOnly(cause)
@@ -2700,7 +2705,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                         ? rejectRevision(
                             { workflow: current, branch: input.branch, createdAt: updatedAt },
                             `Plan revision could not be started: ${errorMessage(Cause.squash(cause))}`,
-                          ).pipe(Effect.map((next) => void (current = next)))
+                          ).pipe(Effect.asVoid)
                         : Effect.void,
                     ),
                   ),
@@ -8093,12 +8098,11 @@ function prepareRevisionTurn({
 }): { readonly command: ThreadTurnStartCommand } | { readonly rejection: string } {
   const budgetError = workflowBudgetError(workflow);
   if (budgetError) return { rejection: budgetError.detail };
-  // Format repairs and interrupted retries run in a thread that still holds the
-  // plan, so only a manual retry after compaction resends it.
+  // Only a manual retry passes the pinned plan's time, and the plan travels again
+  // only when the author thread was compacted past it, format retries included.
+  // Automatic format repair runs in a thread that still holds the plan.
   const includeOriginalPlan =
     retry?.kind === "retry" &&
-    !retry.formatRepair &&
-    !retry.interrupted &&
     originalPlanCreatedAt !== undefined &&
     !!thread?.compaction &&
     thread.compaction.createdAt > originalPlanCreatedAt;

@@ -11477,6 +11477,27 @@ describe("WorkflowService", () => {
       },
     );
 
+    it("dispatches the revision on the model its prompt was sized for, even if the catalog changes", async () => {
+      const fixture = revisionFixture({
+        statusA: "error",
+        statusB: "revising",
+        contextTokens: 5_000,
+      });
+      const { branchB } = fixture.workflow;
+      let reads = 0;
+      harness = await createHarness(makeReadModel(fixture), {
+        // The first read lists the saved model; later reads would swap in a smaller one.
+        getProviders: () => [
+          claudeProvider(++reads === 1 ? [branchB.authorSlot.model] : ["claude-haiku-4-5"]),
+        ],
+      });
+
+      await harness.start();
+
+      const [revision] = turnStartsForThread(harness.dispatched, branchB.authorThreadId);
+      expect(revision?.model).toBe(branchB.authorSlot.model);
+    });
+
     it("resumes the sibling after a revision error was persisted before its dispatch", async () => {
       const fixture = revisionFixture({
         statusA: "error",
