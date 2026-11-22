@@ -15,6 +15,30 @@ import {
 } from "./AcpRuntimeModel.ts";
 
 describe("AcpRuntimeModel", () => {
+  it("bounds notices without creating assistant content", () => {
+    const result = parseSessionUpdateEvent({
+      sessionId: "session",
+      update: {
+        sessionUpdate: "notice",
+        severity: " warning ",
+        title: " Skipped skill ",
+        description: "x".repeat(5000),
+      },
+    });
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]).toMatchObject({
+      _tag: "NoticeReceived",
+      severity: "warning",
+      title: "Skipped skill",
+      description: "x".repeat(4096),
+    });
+    expect(
+      parseSessionUpdateEvent({
+        sessionId: "session",
+        update: { sessionUpdate: "notice", severity: "info", title: "   " },
+      }).events,
+    ).toEqual([]);
+  });
   it("recovers a title-only command from an actually parsed tracked call", () => {
     const parsed = parseSessionUpdateEvent({
       sessionId: "s",

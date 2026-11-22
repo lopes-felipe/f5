@@ -78,7 +78,12 @@ export function normalizeProviderModelOptions(
   // No model is known here, so every valid effort is kept: a model's reported
   // default can differ from the provider-wide one (Sol reports "low"), and only
   // `normalizeCodexModelOptions` knows which effort is the default to omit.
-  const codex = codexReasoningEffort
+  const cyberAccessProgram =
+    typeof codexCandidate?.cyberAccessProgram === "string" &&
+    ["standard", "daybreakBlue", "daybreakRed"].includes(codexCandidate.cyberAccessProgram)
+      ? (codexCandidate?.cyberAccessProgram as NonNullable<CodexModelOptions["cyberAccessProgram"]>)
+      : undefined;
+  const baseCodex = codexReasoningEffort
     ? {
         reasoningEffort: codexReasoningEffort,
         ...(codexFastMode !== undefined ? { fastMode: codexFastMode } : {}),
@@ -86,6 +91,7 @@ export function normalizeProviderModelOptions(
     : codexFastMode !== undefined
       ? { fastMode: codexFastMode }
       : undefined;
+  const codex = cyberAccessProgram ? { ...baseCodex, cyberAccessProgram } : baseCodex;
 
   const claudeThinking = claudeCandidate?.thinking === false ? false : undefined;
   const claudeEffort: ClaudeCodeEffort | undefined =
@@ -185,6 +191,9 @@ export function providerSelectionsToModelOptions(
     case "codex":
       return normalizeProviderModelOptions({
         codex: {
+          ...(stringValue("cyberAccessProgram")
+            ? { cyberAccessProgram: stringValue("cyberAccessProgram") }
+            : {}),
           ...(stringValue("reasoningEffort")
             ? { reasoningEffort: stringValue("reasoningEffort") }
             : {}),
@@ -264,6 +273,7 @@ export function providerModelOptionsToSelections(
       const codexOptions = providerOptions as CodexModelOptions;
       pushString("reasoningEffort", codexOptions.reasoningEffort);
       pushBoolean("fastMode", codexOptions.fastMode);
+      pushString("cyberAccessProgram", codexOptions.cyberAccessProgram);
       break;
     }
     case "claudeAgent": {

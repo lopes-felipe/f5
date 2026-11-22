@@ -1,0 +1,4 @@
+- Server keep-awake preserves Linux screen locking and prevents Windows host sleep when F5 runs in WSL.
+- Approval requests respect the typing guard, retain timeline row reuse, and avoid empty composer-header spacing.
+- Desktop activation and sidebar folder-drop handling load on demand, keeping the initial bundle within its budget and thread file-drop targets visible.
+- Antigravity update output reports the installed version and avoids oversized free-space estimates.

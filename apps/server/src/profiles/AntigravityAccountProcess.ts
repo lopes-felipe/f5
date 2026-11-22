@@ -92,9 +92,16 @@ export function createAntigravityAccountProcess(input: {
       }, NO_RESPONSE_HINT_MS);
     const operation =
       input.action === "install"
-        ? new AntigravityInstallation(input.stateDir).install(controller.signal).then(() => {
-            emit("Antigravity installed. Sign in to continue.\n");
-          })
+        ? (async () => {
+            const installation = new AntigravityInstallation(input.stateDir);
+            const previous = await installation.resolve().catch(() => undefined);
+            const result = await installation.install(controller.signal);
+            emit(
+              previous?.version === result.version
+                ? "Antigravity " + result.version + " is already up to date.\n"
+                : "Antigravity " + result.version + (previous ? " updated.\n" : " installed.\n"),
+            );
+          })()
         : input.action === "login"
           ? codeLogin()
           : Effect.runPromise(

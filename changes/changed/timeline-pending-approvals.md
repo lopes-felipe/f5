@@ -1,0 +1,1 @@
+- Pending approvals appear on their timeline row with the full request and approval actions, keeping the composer free of approval banners.

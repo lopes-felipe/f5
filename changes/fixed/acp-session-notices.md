@@ -1,0 +1,1 @@
+- ACP providers show session notices separately from the assistant's reply, including warnings about skipped skills.

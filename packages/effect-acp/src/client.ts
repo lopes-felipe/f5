@@ -15,7 +15,7 @@ import { BoundedLines } from "./_internal/boundedLines";
 import * as AcpError from "./errors";
 import * as AcpProtocol from "./protocol";
 import * as AcpRpcs from "./rpc";
-import * as AcpSchema from "./_generated/schema.gen";
+import * as AcpSchema from "./schema";
 import { AGENT_METHODS, CLIENT_METHODS } from "./_generated/meta.gen";
 import {
   callRpc,

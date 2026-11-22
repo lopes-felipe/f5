@@ -291,6 +291,19 @@ const program = Effect.gen(function* () {
       if (process.env.ACP_MOCK_NEW_HANG === "1") return yield* Effect.never;
       if (process.env.ACP_MOCK_NEW_FAIL === "1")
         return yield* AcpError.AcpRequestError.internalError("Mock session failed");
+      if (process.env.F5_ACP_STARTUP_NOTICES === "1") {
+        for (const id of ["unrelated-session", sessionId]) {
+          yield* agent.raw.notify("session/update", {
+            sessionId: id,
+            update: {
+              sessionUpdate: "notice",
+              severity: "warning",
+              title: id === sessionId ? "Skipped skill" : "Unrelated notice",
+              description: "Startup details",
+            },
+          });
+        }
+      }
       if (process.env.F5_ACP_STARTUP_COMMANDS === "1") {
         yield* agent.client.sessionUpdate({
           sessionId,

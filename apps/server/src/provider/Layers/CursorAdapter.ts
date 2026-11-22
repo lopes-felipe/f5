@@ -77,6 +77,7 @@ import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
   makeAcpPlanUpdatedEvent,
+  makeAcpNoticeEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
   makeAcpToolCallEvent,
@@ -1131,6 +1132,17 @@ export function makeCursorAdapter(
                     ).pipe(Effect.forkIn(adapterScope));
                     return;
                   case "ModeChanged":
+                    return;
+                  case "NoticeReceived":
+                    yield* offerRuntimeEvent(
+                      makeAcpNoticeEvent({
+                        stamp: yield* makeEventStamp(ctx),
+                        provider: PROVIDER,
+                        threadId: ctx.threadId,
+                        turnId: ctx.activeTurnId,
+                        notice: event,
+                      }),
+                    );
                     return;
                   case "AssistantItemStarted":
                     ctx.assistantReply = new CursorTransportFailure();

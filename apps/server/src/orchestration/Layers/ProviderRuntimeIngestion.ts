@@ -2147,7 +2147,9 @@ export function runtimeEventToActivities(
                 ? "Verification required"
                 : event.payload.category === "protocol"
                   ? "Protocol warning"
-                  : "Runtime warning",
+                  : typeof asRecord(event.payload.detail)?.noticeTitle === "string"
+                    ? String(asRecord(event.payload.detail)!.noticeTitle)
+                    : "Runtime warning",
           payload: {
             message: event.payload.message,
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),

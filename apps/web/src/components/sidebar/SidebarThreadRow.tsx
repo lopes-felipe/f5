@@ -295,10 +295,12 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
   return (
     <SidebarMenuSubItem
       className="group/thread-row w-full"
+      onDragEnter={(event) => {
+        if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+      }}
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes("Files")) {
           event.preventDefault();
-          event.stopPropagation();
           event.dataTransfer.dropEffect = "copy";
         }
       }}

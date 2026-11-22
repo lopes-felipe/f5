@@ -1,0 +1,1 @@
+- Managed Antigravity can update from Google's CLI release channel without waiting for an F5 release. Fresh installations use F5's pinned checksum; later updates trust Google's HTTPS manifest and check downloads against its SHA-512 checksum, rather than an independently signed manifest.

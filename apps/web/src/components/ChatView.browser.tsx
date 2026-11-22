@@ -2100,6 +2100,78 @@ async function mountChatView(options: {
 }
 
 describe("ChatView timeline (full app)", () => {
+  it.each([false, true])(
+    "answers timeline approvals while blocking turn sends (arrives during typing: %s)",
+    async (duringTyping) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("approval-user"),
+        targetText: "Start work",
+        fillerPairCount: 1,
+      });
+      const approval = createThreadActivity({
+        id: "approval-row",
+        createdAt: isoAt(201),
+        kind: "approval.requested",
+        summary: "Permission requested",
+        tone: "approval",
+        payload: {
+          requestId: "timeline-request",
+          requestKind: "command",
+          detail: "cat /private/data",
+          presentation: { decisionReason: "Outside workspace", blockedPath: "/private/data" },
+        },
+      });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: duringTyping
+          ? snapshot
+          : {
+              ...snapshot,
+              threads: snapshot.threads.map((thread) => ({
+                ...thread,
+                messages: [],
+                activities: [approval],
+              })),
+            },
+      });
+      try {
+        if (duringTyping) {
+          const editor = await waitForComposerEditor();
+          await page.elementLocator(editor).fill("Keep this draft");
+          useStore.setState((state) => ({
+            threads: state.threads.map((thread) =>
+              thread.id === THREAD_ID ? { ...thread, activities: [approval] } : thread,
+            ),
+          }));
+          await waitForLayout();
+          expect(
+            page.getByRole("button", { name: "Approve once", exact: true }).all(),
+          ).toHaveLength(0);
+        }
+        await expect
+          .element(page.getByRole("button", { name: "Approval pending · Jump to request" }))
+          .toBeVisible();
+        await page.getByRole("button", { name: "Approval pending · Jump to request" }).click();
+        await expect.element(page.getByText("Reason: Outside workspace")).toBeVisible();
+        expect(document.querySelector('[contenteditable="true"]')).toBeNull();
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+        await page.getByRole("button", { name: "Approve once", exact: true }).click();
+        await vi.waitFor(() =>
+          expect(getDispatchCommandRequests("thread.approval.respond")).toContainEqual(
+            expect.objectContaining({
+              command: expect.objectContaining({
+                requestId: "timeline-request",
+                decision: "accept",
+              }),
+            }),
+          ),
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("opens a side chat beside the main thread with an independent composer", async () => {
     const snapshot = createSnapshotForTargetUser({
       targetMessageId: MessageId.makeUnsafe("side-main-message"),

@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
-import * as AcpSchema from "./_generated/schema.gen";
+import * as AcpSchema from "./schema";
 import { AGENT_METHODS, CLIENT_METHODS } from "./_generated/meta.gen";
 
 export const InitializeRpc = Rpc.make(AGENT_METHODS.initialize, {

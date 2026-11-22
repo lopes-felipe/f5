@@ -5,6 +5,7 @@ import { formatComposerModelMention } from "@t3tools/shared/composerModelMention
 import { useFreshSessionStore } from "../freshSessionStore";
 import { isDiffSearchEditingKey, isEventInFindScope } from "../lib/keyboardFocus";
 import { ThreadTokenUsageProvider } from "./chat/MessageTokenUsage";
+import { withTimelineApprovals, createTimelineApprovalCache } from "./chat/timelineApprovals";
 import { usePublishComposerSelection } from "../activeComposerSelection";
 import { useComposerTypingGuard } from "./chat/useComposerTypingGuard";
 import { settleListScroll } from "./chat/settleListScroll";
@@ -2368,7 +2369,6 @@ export default memo(function ChatView({
     providerStatuses,
   ]);
   const hasComposerHeader =
-    isComposerApprovalState ||
     blockingUserInputs.length > 0 ||
     (showPlanFollowUpPrompt && activeProposedPlan !== null) ||
     pendingProviderHandoff !== null ||
@@ -2534,17 +2534,23 @@ export default memo(function ChatView({
   const timelineEntryCacheRef = useRef<TimelineEntryCache | null>(null);
   timelineEntryCacheRef.current ??= createTimelineEntryCache();
   const timelineEntryCache = timelineEntryCacheRef.current;
+  const [timelineApprovalCache] = useState(createTimelineApprovalCache);
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(
-        timelineMessages,
-        findMatch?.plan &&
-          !activeThread?.proposedPlans.some((plan) => plan.id === findMatch.plan?.id)
-          ? [...(activeThread?.proposedPlans ?? []), findMatch.plan]
-          : (activeThread?.proposedPlans ?? []),
-        workLogEntries,
-        commandExecutions,
-        timelineEntryCache,
+      withTimelineApprovals(
+        deriveTimelineEntries(
+          timelineMessages,
+          findMatch?.plan &&
+            !activeThread?.proposedPlans.some((plan) => plan.id === findMatch.plan?.id)
+            ? [...(activeThread?.proposedPlans ?? []), findMatch.plan]
+            : (activeThread?.proposedPlans ?? []),
+          workLogEntries,
+          commandExecutions,
+          timelineEntryCache,
+        ),
+        pendingApprovals,
+        timelineApprovalCache,
+        typingGuard.heldRequestIds,
       ),
     [
       activeThread?.proposedPlans,
@@ -2553,6 +2559,9 @@ export default memo(function ChatView({
       timelineEntryCache,
       timelineMessages,
       workLogEntries,
+      pendingApprovals,
+      typingGuard.heldRequestIds,
+      timelineApprovalCache,
     ],
   );
   const [announcementTimelineCache] = useState(createTimelineEntryCache);
@@ -2616,10 +2625,12 @@ export default memo(function ChatView({
     window.addEventListener("f5:response-source", onSource);
     return () => window.removeEventListener("f5:response-source", onSource);
   }, [threadId, navigateTimeline]);
-  const shouldRenderTimeline = shouldRenderTimelineContent({
-    detailsLoaded: activeThread?.detailsLoaded ?? false,
-    hasRenderableMessage: timelineMessages.length > 0,
-  });
+  const shouldRenderTimeline =
+    activePendingApproval !== null ||
+    shouldRenderTimelineContent({
+      detailsLoaded: activeThread?.detailsLoaded ?? false,
+      hasRenderableMessage: timelineMessages.length > 0,
+    });
   useEffect(() => {
     if (!activeThread?.detailsLoaded || !shouldRenderTimeline) {
       return;
@@ -6041,6 +6052,11 @@ export default memo(function ChatView({
     [activeThreadId, setStoreThreadError],
   );
 
+  const [focusedApprovalIds] = useState(() => new Set<string>());
+  const timelineApprovalActions = useMemo(
+    () => ({ respondingRequestIds, onRespondToApproval, focusedRequestIds: focusedApprovalIds }),
+    [respondingRequestIds, onRespondToApproval, focusedApprovalIds],
+  );
   const onRespondToUserInput = useCallback(
     async (requestId: ApprovalRequestId, answers: Record<string, unknown>, dismissed = false) => {
       const api = readNativeApi();
@@ -8527,6 +8543,7 @@ export default memo(function ChatView({
                   <ThreadTokenUsageProvider threadId={isServerThread ? activeThread.id : null}>
                     <ThreadFindContext value={threadFind.contextValue}>
                       <MessagesTimeline
+                        approvalActions={timelineApprovalActions}
                         key={activeThread.id}
                         threadId={activeThread.id}
                         hasMessages={timelineEntries.length > 0}
@@ -8625,6 +8642,23 @@ export default memo(function ChatView({
                     redesign={composerRedesign}
                     className={isGitRepo ? "pb-0.5" : "pb-3 sm:pb-4"}
                   >
+                    {activePendingApproval ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          const entry = timelineEntries.find(
+                            (entry) =>
+                              entry.kind === "work" &&
+                              entry.entry.pendingApproval?.requestId ===
+                                activePendingApproval.requestId,
+                          );
+                          if (entry) navigateTimeline(entry.id, { focus: true, position: 0.6 });
+                        }}
+                      >
+                        Approval pending · Jump to request
+                      </Button>
+                    ) : null}
                     <ComposerStatusStripHostProvider>
                       {/* The panel unmounts inside a closed chip popover, so the
                       queue's loading and announcements live here. */}

@@ -164,6 +164,47 @@ function createThreadControlHarness() {
   return { manager, context, requireSession, sendRequest, updateSession };
 }
 
+it.each(["gpt-5.3-codex-spark", undefined])(
+  "applies Cyber Access config to the effective model for request %s",
+  async (model) => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    context.account.type = "chatgpt";
+    context.account.sparkEnabled = false;
+    context.session.model = model ?? "";
+    Object.assign(context, {
+      reportedModelCapabilities: new Map([
+        [
+          DEFAULT_MODEL_BY_PROVIDER.codex,
+          createReportedCodexModelCapabilities({
+            model: DEFAULT_MODEL_BY_PROVIDER.codex,
+            availableAccessPrograms: { cyber: ["daybreakBlue"] },
+          }),
+        ],
+        [
+          "gpt-5.3-codex",
+          createReportedCodexModelCapabilities({
+            model: "gpt-5.3-codex",
+            availableAccessPrograms: { cyber: ["daybreakBlue"] },
+          }),
+        ],
+      ]),
+    });
+    sendRequest.mockImplementation(async (_context, method) =>
+      method === "config/read" ? { config: { daybreak: true } } : { turn: { id: "turn_1" } },
+    );
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Go",
+      ...(model ? { model } : {}),
+    });
+    expect(sendRequest).toHaveBeenCalledWith(
+      context,
+      "turn/start",
+      expect.objectContaining({ cyberAccessProgram: "daybreakBlue" }),
+    );
+  },
+);
+
 function createPendingUserInputHarness() {
   const manager = new CodexAppServerManager();
   const context = {
@@ -1646,6 +1687,21 @@ describe("sendTurn", () => {
       const params = build({});
       expect(params.effort).toBe("high");
       expect(params.collaborationMode?.settings.reasoning_effort).toBe("high");
+    });
+    it("sends Cyber Access each turn only for a reported eligible model", () => {
+      const capabilities = createReportedCodexModelCapabilities({
+        model: "gpt-5.3-codex",
+        availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
+      });
+      const state = { reportedModelCapabilities: new Map([["gpt-5.3-codex", capabilities]]) };
+      expect(build({}, state).cyberAccessProgram).toBe("standard");
+      expect(build({ cyberAccessProgram: "daybreakRed" }, state).cyberAccessProgram).toBe(
+        "standard",
+      );
+      expect(build({ cyberAccessProgram: "daybreakBlue" }, state).cyberAccessProgram).toBe(
+        "daybreakBlue",
+      );
+      expect(build({ cyberAccessProgram: "daybreakBlue" }).cyberAccessProgram).toBeUndefined();
     });
 
     it("uses the reported default effort", () => {

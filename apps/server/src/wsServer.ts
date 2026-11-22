@@ -5,6 +5,7 @@ import {
   resolveAgentSessionHomes,
 } from "./project/AgentSessionImporter";
 import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
+import { startKeepAwake } from "./background/KeepAwake";
 import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
 import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
@@ -3280,6 +3281,10 @@ export const createServer = Effect.fn(function* (
       yield* Scope.provide(pullRequestWatches.start, subscriptionsScope);
       yield* Scope.provide(threadSettlement.start, subscriptionsScope);
       yield* Scope.provide(defaultBranchAutoPull.start, subscriptionsScope);
+      yield* Scope.provide(
+        startKeepAwake(orchestrationEngine, serverSettings, { desktop: mode === "desktop" }),
+        subscriptionsScope,
+      );
       if (diskSpaceMonitor._tag === "Some")
         yield* Scope.provide(
           diskSpaceMonitor.value.start({

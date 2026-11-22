@@ -467,6 +467,7 @@ const makeAcpSessionRuntime = (
       ),
     );
     const startupCommands = new Map<string, EffectAcpSchema.SessionNotification>();
+    const startupNotices: EffectAcpSchema.SessionNotification[] = [];
     yield* acp.handleSessionUpdate((notification) =>
       Effect.gen(function* () {
         if (hardeningEnabled) {
@@ -479,6 +480,13 @@ const makeAcpSessionRuntime = (
               JSON.stringify(notification).length <= 65_536
             )
               startupCommands.set(String(notification.sessionId), notification);
+            if (
+              acceptedSessionId === null &&
+              notification.update.sessionUpdate === "notice" &&
+              startupNotices.length < 16 &&
+              JSON.stringify(notification).length <= 16_384
+            )
+              startupNotices.push(notification);
             return;
           }
         }
@@ -514,6 +522,7 @@ const makeAcpSessionRuntime = (
     );
 
     const initializeClientCapabilities = {
+      session: { notices: {} },
       fs: {
         readTextFile: false,
         writeTextFile: false,
@@ -937,7 +946,16 @@ const makeAcpSessionRuntime = (
 
       const commands = startupCommands.get(sessionId);
       startupCommands.clear();
-      if (commands)
+      const startupUpdates = [
+        ...(commands ? [commands] : []),
+        ...startupNotices.filter((notice) => String(notice.sessionId) === sessionId),
+      ];
+      startupNotices.length = 0;
+      for (const update of startupUpdates) {
+        const normalized = options.normalizeSessionUpdate
+          ? options.normalizeSessionUpdate(update)
+          : update;
+        if (!normalized) continue;
         yield* handleSessionUpdate({
           queue: eventQueue,
           modeStateRef,
@@ -945,8 +963,9 @@ const makeAcpSessionRuntime = (
           toolEmissions,
           shownToolCallIds,
           assistantSegmentRef,
-          params: commands,
+          params: normalized,
         });
+      }
       yield* Ref.set(modeStateRef, parseSessionModeState(sessionSetupResult));
       yield* Ref.set(configOptionsRef, sessionConfigOptionsFromSetup(sessionSetupResult));
 

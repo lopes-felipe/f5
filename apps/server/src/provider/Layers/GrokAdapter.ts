@@ -97,6 +97,7 @@ import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
   makeAcpPlanUpdatedEvent,
+  makeAcpNoticeEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
   makeAcpToolCallEvent,
@@ -1200,6 +1201,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   case "PlanUpdated":
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* emitPlanUpdate(ctx, event.payload, event.rawPayload, "session/update");
+                    return;
+                  case "NoticeReceived":
+                    yield* offerRuntimeEvent(
+                      makeAcpNoticeEvent({
+                        stamp: yield* makeEventStamp(ctx),
+                        provider: PROVIDER,
+                        threadId: ctx.threadId,
+                        turnId: ctx.activeTurnId,
+                        notice: event,
+                      }),
+                    );
                     return;
                   case "ToolCallUpdated":
                     if (ctx.stopped) return;

@@ -161,6 +161,7 @@ function NewThreadDefaults() {
 }
 
 function RuntimeSettings() {
+  const keepAwakeWhileAgentsWork = useSettings((settings) => settings.keepAwakeWhileAgentsWork);
   const resumeActiveTurnsAfterRestart = useSettings(
     (settings) => settings.resumeActiveTurnsAfterRestart,
   );
@@ -175,6 +176,19 @@ function RuntimeSettings() {
       title="Runtime"
       description="What happens to running turns when F5 restarts or a provider limit is hit."
     >
+      <SettingsRow
+        title="Keep the server awake while agents work"
+        description="Keep standalone servers awake during active runs, releasing one minute after the last run ends. Desktop servers use the desktop Keep Awake controls. On Linux, this also blocks manual suspend while active."
+        control={
+          <Switch
+            aria-label="Keep the server awake while agents work"
+            checked={keepAwakeWhileAgentsWork}
+            onCheckedChange={(value) =>
+              void updateServerSettings({ keepAwakeWhileAgentsWork: value })
+            }
+          />
+        }
+      />
       <SettingsRow
         title="Resume active turns after restart"
         description="Continue turns that were running when the app restarted."

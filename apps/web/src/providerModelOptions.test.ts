@@ -12,6 +12,11 @@ import {
 } from "@t3tools/shared/model";
 
 describe("providerModelOptions", () => {
+  it("does not coerce invalid Cyber Access values into strings", () => {
+    expect(
+      normalizeProviderModelOptions({ codex: { cyberAccessProgram: ["standard"] } }),
+    ).toBeNull();
+  });
   it("preserves explicit Codex fast-mode off through draft and selection conversion", () => {
     const options = { codex: { fastMode: false } };
     expect(normalizeProviderModelOptions(options)).toEqual(options);

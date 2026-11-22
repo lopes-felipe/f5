@@ -46,6 +46,38 @@ const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(import.meta.dirname, "../test/fixtures/acp-mock-peer.ts"),
 );
 
+it.effect("delivers session notices through the wire decoder", () =>
+  Effect.gen(function* () {
+    const { stdio, input } = yield* makeInMemoryStdio();
+    const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+      stdio,
+      serverRequestMethods: new Set(),
+    });
+    yield* Queue.offer(
+      input,
+      new TextEncoder().encode(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: "session-1",
+            update: { sessionUpdate: "notice", severity: "warning", title: "Skipped skill" },
+          },
+        }) + "\n",
+      ),
+    );
+    const notifications = yield* transport.incoming.pipe(Stream.take(1), Stream.runCollect);
+    assert.equal(notifications[0]?._tag, "SessionUpdate");
+    if (notifications[0]?._tag === "SessionUpdate") {
+      assert.deepEqual(notifications[0].params.update, {
+        sessionUpdate: "notice",
+        severity: "warning",
+        title: "Skipped skill",
+      });
+    }
+  }).pipe(Effect.scoped),
+);
+
 it.effect("delivers cancelled tool notifications as failed through the wire decoder", () =>
   Effect.gen(function* () {
     const { stdio, input } = yield* makeInMemoryStdio();

@@ -6717,6 +6717,29 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("runtime exploded");
   });
 
+  it("projects ACP notice titles as the warning summary", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("startup-notice"),
+      provider: "antigravity",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      payload: {
+        message: "Skipped skill\n\nStartup details",
+        category: "provider",
+        detail: { noticeTitle: "Skipped skill", severity: "warning" },
+      },
+    });
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some((activity) => activity.id === "startup-notice"),
+    );
+    expect(thread.activities.find((activity) => activity.id === "startup-notice")).toMatchObject({
+      summary: "Skipped skill",
+      payload: { message: "Skipped skill\n\nStartup details" },
+    });
+  });
+
   it("keeps the session running when a runtime.warning arrives during an active turn", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

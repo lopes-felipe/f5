@@ -1,0 +1,5 @@
+- Cyber Access defaults to Standard and drops choices unavailable on the selected model.
+- Pending approvals retain provider explanations and paths, with a composer shortcut to reach off-screen requests.
+- Managed Antigravity recovers from missing active releases and serializes release selection across server processes.
+- Startup ACP notices retain their titles and details, and persistent usage shows short-term limits and stale-data warnings.
+- HTTP MCP schemas preserve each action variant's required fields and keep nullable-only inputs valid.

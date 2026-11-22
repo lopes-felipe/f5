@@ -109,7 +109,13 @@ export function ComposerLimitRow({
 }
 
 /** Reads cached snapshots for the weekly meter, without starting provider probes. */
-export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
+export function ComposerUsageLimits({
+  threadId,
+  persistent = false,
+}: {
+  threadId: ThreadId;
+  persistent?: boolean;
+}) {
   const selection = useActiveComposerSelection(
     (state) =>
       [...state.registrations.values()].findLast((entry) => entry.threadId === threadId) ?? null,
@@ -122,7 +128,10 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
   const account = selection?.instanceId
     ? accountsQuery.data?.find((candidate) => candidate.providerInstanceId === selection.instanceId)
     : undefined;
-  const windows = account ? sidebarUsageWindows(account) : [];
+  const windows = account ? sidebarUsageWindows(account, persistent) : [];
+  const stale = account?.sections.some(
+    (section) => section.snapshot !== null && section.outcome === "unavailable",
+  );
   const weekly = sidebarWeeklyUsageWindow(windows);
   const refresh = useMutation({
     mutationKey: ["usage", "sidebar-refresh", selection?.instanceId],
@@ -142,12 +151,12 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
   }, [selection?.instanceId, resetRefresh]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open && !persistent) return;
     // The clock is idle while the panel is closed; catch up before showing reset times.
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
-  }, [open]);
+  }, [open, persistent]);
 
   const panel = (
     <section aria-label="Conversation usage limits" className="min-w-0 w-full space-y-3">
@@ -224,6 +233,10 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
     </section>
   );
 
+  if (persistent)
+    return (
+      <PersistentUsageLimits windows={windows} now={now} label={label} stale={Boolean(stale)} />
+    );
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
@@ -232,8 +245,8 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
             type="button"
             variant="ghost"
             size="icon-sm"
-            aria-label={`${label} usage limits, ${weeklyDescription}`}
-            title={`${label} usage limits · ${weeklyDescription}`}
+            aria-label={label + " usage limits, " + weeklyDescription}
+            title={label + " usage limits · " + weeklyDescription}
             className="shrink-0 text-muted-foreground"
           />
         }
@@ -249,5 +262,52 @@ export function ComposerUsageLimits({ threadId }: { threadId: ThreadId }) {
         {panel}
       </PopoverPopup>
     </Popover>
+  );
+}
+
+export function PersistentUsageLimits({
+  windows,
+  now,
+  label,
+  stale,
+}: {
+  windows: ReturnType<typeof sidebarUsageWindows>;
+  now: number;
+  label: string;
+  stale: boolean;
+}) {
+  return (
+    <div aria-label="Persistent usage limits" className="grid gap-3 sm:grid-cols-2">
+      <p role="status" aria-live="polite" className="sr-only">
+        {label} limits:{" "}
+        {windows
+          .map(
+            (window) =>
+              window.label +
+              ": " +
+              (window.usedPercent === null
+                ? "unknown"
+                : Math.round(window.usedPercent) + "% used") +
+              (window.resetsAt
+                ? Date.parse(window.resetsAt) <= now
+                  ? ", reset passed; awaiting updated usage"
+                  : ", reset " + formatUsageResumeTime(window.resetsAt)
+                : ""),
+          )
+          .join("; ")}
+        {stale ? ". Collected limits may be stale." : ""}
+      </p>
+      {stale ? (
+        <p className="text-2xs text-muted-foreground sm:col-span-2">
+          Collected limits may be stale.
+        </p>
+      ) : null}
+      {windows.map((window) => (
+        <ComposerLimitRow key={window.windowKey} window={window} now={now} />
+      ))}
+      {windows.length === 0 ? (
+        <span className="text-xs text-muted-foreground">No reported limits available.</span>
+      ) : null}
+    </div>
   );
 }
