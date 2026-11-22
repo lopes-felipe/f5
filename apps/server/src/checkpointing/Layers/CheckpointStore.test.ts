@@ -14,6 +14,12 @@ import { GitService, type ExecuteGitInput } from "../../git/Services/GitService.
 import { copiedIndexTimestampSeconds } from "../../git/copiedIndex.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
 import {
+  checkpointWorkspaceRepositories,
+  nestedCheckpointPaths,
+  restoreCheckpointRepositories,
+  scopedCheckpointRef,
+} from "../checkpointRepositories.ts";
+import {
   AUTHORED_PATHS_MAX_COMMITS,
   CheckpointStoreLiveWithGitService,
   CheckpointStoreLiveWithoutCredentials,
@@ -532,6 +538,131 @@ describe("CheckpointStoreLive", () => {
         writeFileSync(path.join(cwd, "upstream.txt"), "edited by the turn\n");
       });
       expect(changedFiles(filtered)).toEqual(["upstream.txt"]);
+    });
+
+    it("keeps linked checkout snapshots distinct and skips a repository without a baseline", async () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "f5-scopes-"));
+      try {
+        const main = path.join(root, "main");
+        const linked = path.join(main, "linked");
+        const missing = path.join(main, "missing");
+        mkdirSync(main);
+        run(main, "init", "-q", "-b", "main");
+        run(main, "config", "user.email", "test@example.com");
+        run(main, "config", "user.name", "Test");
+        writeFileSync(path.join(main, "file.txt"), "original\n");
+        run(main, "add", "file.txt");
+        run(main, "commit", "-qm", "base");
+        run(main, "worktree", "add", "-qb", "linked", linked);
+        run(main, "worktree", "add", "-qb", "missing", missing);
+        writeFileSync(path.join(main, "file.txt"), "root baseline\n");
+        writeFileSync(path.join(linked, "file.txt"), "linked baseline\n");
+        const external = { path: root, relativePath: "external", externalSource: root };
+        const repositories = checkpointWorkspaceRepositories([
+          { path: main, relativePath: "." },
+          { path: linked, relativePath: "linked" },
+          { path: missing, relativePath: "missing" },
+          external,
+        ]);
+        expect(repositories).toHaveLength(3);
+        const ref = CheckpointRef.makeUnsafe("refs/t3/checkpoints/multi/turn/0");
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const store = yield* CheckpointStore;
+            yield* Effect.forEach(
+              repositories.slice(0, 2),
+              (repository) =>
+                store.captureCheckpoint({
+                  cwd: repository.path,
+                  checkpointRef: scopedCheckpointRef(ref, repository),
+                  excludePaths: nestedCheckpointPaths(repository, repositories, "capture"),
+                }),
+              { concurrency: 2 },
+            );
+            expect(run(main, "show", ref + ":file.txt")).toBe("root baseline\n");
+            expect(run(main, "ls-tree", "--name-only", ref)).toBe("file.txt\n");
+            for (const repository of repositories)
+              writeFileSync(path.join(repository.path, "file.txt"), "edit\n");
+            expect(yield* restoreCheckpointRepositories(store, repositories, ref, true)).toEqual({
+              restored: true,
+              skipped: [repositories[2]],
+            });
+          }).pipe(
+            Effect.provide(
+              CheckpointStoreLiveWithoutCredentials.pipe(Layer.provideMerge(NodeServices.layer)),
+            ),
+          ),
+        );
+        expect(readFileSync(path.join(main, "file.txt"), "utf8")).toBe("root baseline\n");
+        expect(readFileSync(path.join(linked, "file.txt"), "utf8")).toBe("linked baseline\n");
+        expect(readFileSync(path.join(missing, "file.txt"), "utf8")).toBe("edit\n");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("captures the submodule pin in the parent and file edits in the submodule", async () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "f5-pins-"));
+      try {
+        const main = path.join(root, "main");
+        const source = path.join(root, "source");
+        for (const cwd of [main, source]) {
+          mkdirSync(cwd);
+          run(cwd, "init", "-q", "-b", "main");
+          run(cwd, "config", "user.email", "test@example.com");
+          run(cwd, "config", "user.name", "Test");
+          writeFileSync(path.join(cwd, "file.txt"), "base\n");
+          run(cwd, "add", "file.txt");
+          run(cwd, "commit", "-qm", "base");
+        }
+        run(main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "module");
+        run(main, "commit", "-qm", "add submodule");
+        const module = path.join(main, "module");
+        run(module, "config", "user.email", "test@example.com");
+        run(module, "config", "user.name", "Test");
+        const parent = { path: main, relativePath: "." };
+        const child = { path: module, relativePath: "module", submodule: true } as const;
+        const repositories = [parent, child];
+        const from = CheckpointRef.makeUnsafe("refs/t3/checkpoints/multi/turn/0");
+        const to = CheckpointRef.makeUnsafe("refs/t3/checkpoints/multi/turn/1");
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const store = yield* CheckpointStore;
+            const capture = (ref: CheckpointRef) =>
+              Effect.forEach(repositories, (repository) =>
+                store.captureCheckpoint({
+                  cwd: repository.path,
+                  checkpointRef: scopedCheckpointRef(ref, repository),
+                  excludePaths: nestedCheckpointPaths(repository, repositories, "capture"),
+                }),
+              );
+            yield* capture(from);
+            writeFileSync(path.join(module, "file.txt"), "new pin\n");
+            run(module, "commit", "-qam", "change pin");
+            run(main, "add", "module");
+            writeFileSync(path.join(module, "file.txt"), "local edit\n");
+            yield* capture(to);
+            const parentDiff = yield* store.diffCheckpoints({
+              cwd: main,
+              fromCheckpointRef: from,
+              toCheckpointRef: to,
+            });
+            expect(parentDiff).toContain("+Subproject commit");
+            const childDiff = yield* store.diffCheckpoints({
+              cwd: module,
+              fromCheckpointRef: scopedCheckpointRef(from, child),
+              toCheckpointRef: scopedCheckpointRef(to, child),
+            });
+            expect(childDiff).toContain("+local edit");
+          }).pipe(
+            Effect.provide(
+              CheckpointStoreLiveWithoutCredentials.pipe(Layer.provideMerge(NodeServices.layer)),
+            ),
+          ),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     });
 
     it("keeps a nested workspace when restoring removes its last tracked file", async () => {

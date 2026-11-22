@@ -1,6 +1,7 @@
 import type { ProjectId, ProjectRepository } from "@t3tools/contracts";
 import { hasSafeRelativePathShape } from "@t3tools/shared/checkedInProjectFile";
 import { Effect, FileSystem, Option } from "effect";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { makeWorkspaceAssetAuthorizer } from "../WorkspaceAssetAuthorizer.ts";
@@ -28,10 +29,12 @@ export const discoverProjectRepositories = Effect.fn("discoverProjectRepositorie
     realIgnored.some((entry) => isInsideProjectWorkspace(entry, folder));
 
   const children = (folder: string) =>
-    fs.readDirectory(folder).pipe(
+    Effect.tryPromise(() => readdir(folder, { withFileTypes: true })).pipe(
       Effect.orElseSucceed(() => []),
-      Effect.map((names) =>
-        names
+      Effect.map((entries) =>
+        entries
+          .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+          .map((entry) => entry.name)
           .filter((name) => !name.startsWith(".") && name !== "node_modules")
           .sort()
           .map((name) => path.join(folder, name)),
@@ -49,6 +52,8 @@ export const discoverProjectRepositories = Effect.fn("discoverProjectRepositorie
     ) {
       return null;
     }
+    const info = yield* fs.stat(real).pipe(Effect.orElseSucceed(() => null));
+    if (info?.type !== "Directory") return null;
     const gitPath = path.join(real, ".git");
     const marker = yield* fs.stat(gitPath).pipe(Effect.orElseSucceed(() => null));
     if (marker === null) return { path: real, kind: "plain" } as const;
@@ -91,7 +96,10 @@ const readRepositoryConfig = (project: RepositoryProject) => {
       resolveProjectWorkspaceRoot: async (id) => (id === project.id ? project.workspaceRoot : null),
     }),
   );
-  return Effect.promise(() => service.load(project.id));
+  return Effect.tryPromise({
+    try: () => service.load(project.id),
+    catch: (cause) => new Error("Could not load project repository configuration.", { cause }),
+  });
 };
 
 const listExternalRepositories = (
@@ -259,3 +267,26 @@ export const listWorkspaceRepositories = Effect.fn("listWorkspaceRepositories")(
   }
   return [...repositories.values()];
 });
+
+/** Cache read-side discovery only. Rewind and Git mutations validate fresh scopes. */
+export function makeWorkspaceRepositoryReadCache() {
+  const entries = new Map<
+    string,
+    { expiresAt: number; repositories: ReadonlyArray<ProjectRepository> }
+  >();
+  return {
+    clear: () => entries.clear(),
+    list: (...args: Parameters<typeof listWorkspaceRepositories>) =>
+      Effect.gen(function* () {
+        const [project, workspace] = args;
+        const key = JSON.stringify([project.id, project.workspaceRoot, workspace]);
+        const cached = entries.get(key);
+        if (cached && cached.expiresAt > Date.now()) return cached.repositories;
+        const repositories = yield* listWorkspaceRepositories(...args);
+        entries.delete(key);
+        entries.set(key, { expiresAt: Date.now() + 5_000, repositories });
+        if (entries.size > 64) entries.delete(entries.keys().next().value!);
+        return repositories;
+      }),
+  };
+}

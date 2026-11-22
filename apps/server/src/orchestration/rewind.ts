@@ -1,9 +1,11 @@
 import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import {
   checkpointRepositoriesWithRef,
+  checkpointWorkspaceRepositories,
   nestedCheckpointPaths,
   pruneRepositoryCheckpointRefs,
   restoreCheckpointRepositories,
+  scopedCheckpointRef,
 } from "../checkpointing/checkpointRepositories.ts";
 import { requireAttachmentOwner } from "../attachmentOwnership.ts";
 import { randomUUID } from "node:crypto";
@@ -162,15 +164,14 @@ export const makeConversationRewind = Effect.gen(function* () {
               Effect.provideService(FileSystem.FileSystem, fileSystem.value),
             )
           : [];
+      const scoped = checkpointWorkspaceRepositories(discovered);
       const repositories =
-        discovered.length === 0 && workspace
-          ? [{ relativePath: ".", path: workspace }]
-          : discovered;
+        discovered.length === 0 && workspace ? [{ relativePath: ".", path: workspace }] : scoped;
       const nativeFiles =
         request.restoreFiles &&
         thread.session?.providerName === "claudeAgent" &&
         !!workspace &&
-        discovered.length === 0 &&
+        scoped.length === 0 &&
         !(yield* checkpoints.isGitRepository(workspace));
       if (
         nativeFiles &&
@@ -417,8 +418,8 @@ export const makeConversationRewind = Effect.gen(function* () {
               (repository) =>
                 checkpoints.captureCheckpoint({
                   cwd: repository.path,
-                  checkpointRef: keepFilesRef,
-                  excludePaths: nestedCheckpointPaths(repository, repositories),
+                  checkpointRef: scopedCheckpointRef(keepFilesRef, repository),
+                  excludePaths: nestedCheckpointPaths(repository, repositories, "capture"),
                 }),
               { concurrency: 4, discard: true },
             );

@@ -59,13 +59,27 @@ export const makeWorktreePreparations = Effect.gen(function* () {
         Effect.mapError(queryError),
       ),
     setProjectRepositoryRoot: (projectId, path, tracked) =>
-      (tracked
-        ? sql`INSERT INTO project_repository_roots(project_id, path)
+      Effect.gen(function* () {
+        if (!tracked) {
+          yield* sql`DELETE FROM project_repository_roots WHERE project_id = ${projectId} AND path = ${path}`.pipe(
+            Effect.mapError(queryError),
+          );
+          return;
+        }
+        const [row] = yield* sql<{
+          path: string;
+        }>`INSERT INTO project_repository_roots(project_id, path)
             SELECT ${projectId}, ${path}
             WHERE (SELECT COUNT(*) FROM project_repository_roots WHERE project_id = ${projectId}) < 128
-            ON CONFLICT DO NOTHING`
-        : sql`DELETE FROM project_repository_roots WHERE project_id = ${projectId} AND path = ${path}`
-      ).pipe(Effect.asVoid, Effect.mapError(queryError)),
+               OR EXISTS (SELECT 1 FROM project_repository_roots WHERE project_id = ${projectId} AND path = ${path})
+            ON CONFLICT(project_id, path) DO UPDATE SET path = excluded.path
+            RETURNING path`.pipe(Effect.mapError(queryError));
+        if (!row)
+          return yield* new PreparationError({
+            message: "This project already has 128 registered external repositories.",
+            path,
+          });
+      }),
     getGroup: (path) =>
       sql<{
         plan_json: string;

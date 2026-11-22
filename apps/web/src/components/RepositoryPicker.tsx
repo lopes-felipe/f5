@@ -45,13 +45,14 @@ export function projectRepositoriesQueryOptions(
   return queryOptions({
     queryKey: ["projects", projectId, "repositories", threadId, workspaceRoot] as const,
     enabled: projectId !== null,
-    queryFn: () =>
-      projectId
-        ? ensureNativeApi().projects.listRepositories({
-            projectId,
-            ...(threadId ? { threadId } : {}),
-          })
-        : Promise.resolve([]),
+    queryFn: async () => {
+      if (!projectId) return [];
+      const repositories = await ensureNativeApi().projects.listRepositories({
+        projectId,
+        ...(threadId ? { threadId } : {}),
+      });
+      return Array.isArray(repositories) ? repositories : [];
+    },
     staleTime: 5_000,
   });
 }

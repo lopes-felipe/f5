@@ -139,8 +139,9 @@ export function ProjectActionsSettings() {
       <div className="mt-5 space-y-2 border-t border-border pt-4">
         <h3 className="text-sm font-medium">Repository action templates</h3>
         <p className="text-xs text-muted-foreground">
-          Review each command before importing or approving it. Approved layout commands run when
-          the app creates or removes a worktree group.
+          Review each command before importing or approving it. For Git projects, F5 creates the
+          primary checkout before running the create command. Use the command to prepare files or
+          additional checkouts in that workspace.
         </p>
         {fileScripts.isPending ? (
           <p className="text-xs">Checking f5.json and t3.json…</p>

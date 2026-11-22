@@ -13,7 +13,8 @@ import { CheckpointInvariantError, CheckpointUnavailableError } from "../Errors.
 import { checkpointRefForThreadTurn } from "../Utils.ts";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
-import { listWorkspaceRepositories } from "../../project/discoverProjectRepositories.ts";
+import { makeWorkspaceRepositoryReadCache } from "../../project/discoverProjectRepositories.ts";
+import { checkpointWorkspaceRepositories, scopedCheckpointRef } from "../checkpointRepositories.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
 import {
@@ -30,6 +31,7 @@ const make = Effect.gen(function* () {
   const checkpointStore = yield* CheckpointStore;
   const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
   const git = yield* Effect.serviceOption(GitCore);
+  const repositoryCache = makeWorkspaceRepositoryReadCache();
 
   const getTurnDiff: CheckpointDiffQueryShape["getTurnDiff"] = (input) =>
     Effect.gen(function* () {
@@ -121,22 +123,38 @@ const make = Effect.gen(function* () {
 
       const discovered =
         project && !isScratchProject(project) && Option.isSome(fileSystem)
-          ? yield* listWorkspaceRepositories(
-              { id: project.projectId, workspaceRoot: project.workspaceRoot },
-              workspaceCwd,
-              Option.getOrUndefined(git),
-            ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem.value))
+          ? yield* repositoryCache
+              .list(
+                { id: project.projectId, workspaceRoot: project.workspaceRoot },
+                workspaceCwd,
+                Option.getOrUndefined(git),
+              )
+              .pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem.value),
+                Effect.mapError(
+                  (cause) =>
+                    new CheckpointInvariantError({
+                      operation,
+                      detail: cause.message,
+                      cause,
+                    }),
+                ),
+              )
           : [];
       const repositories =
-        discovered.length === 0 ? [{ path: workspaceCwd, relativePath: "." }] : discovered;
+        discovered.length === 0
+          ? [{ path: workspaceCwd, relativePath: "." }]
+          : checkpointWorkspaceRepositories(discovered);
       const sections = yield* Effect.forEach(
         repositories,
         Effect.fnUntraced(function* (repository) {
           const cwd = repository.path;
+          const fromRef = scopedCheckpointRef(fromCheckpointRef, repository);
+          const toRef = scopedCheckpointRef(toCheckpointRef, repository);
           const [fromExists, toExists] = yield* Effect.all(
             [
-              checkpointStore.hasCheckpointRef({ cwd, checkpointRef: fromCheckpointRef }),
-              checkpointStore.hasCheckpointRef({ cwd, checkpointRef: toCheckpointRef }),
+              checkpointStore.hasCheckpointRef({ cwd, checkpointRef: fromRef }),
+              checkpointStore.hasCheckpointRef({ cwd, checkpointRef: toRef }),
             ],
             { concurrency: 2 },
           );
@@ -144,8 +162,8 @@ const make = Effect.gen(function* () {
             fromExists && toExists
               ? yield* checkpointStore.diffCheckpoints({
                   cwd,
-                  fromCheckpointRef,
-                  toCheckpointRef,
+                  fromCheckpointRef: fromRef,
+                  toCheckpointRef: toRef,
                   fallbackFromToHead: false,
                   // Match the turn summary by excluding files only changed by Git imports.
                   options: {

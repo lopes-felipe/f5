@@ -3923,9 +3923,11 @@ export default memo(function ChatView({
     (repository) => repository.relativePath !== "." && !repository.submodule,
   );
   const repositoryChoices = useWorktreeRepositoryChoices(activeProject?.id ?? null);
-  const worktreeRepositoryPaths = repositoryChoices.selection?.filter((entry) =>
-    worktreeRepositories.some((repository) => repository.relativePath === entry),
-  );
+  const worktreeRepositoryPaths = worktreeRepositoriesQuery.data
+    ? repositoryChoices.selection?.filter((entry) =>
+        worktreeRepositories.some((repository) => repository.relativePath === entry),
+      )
+    : repositoryChoices.selection;
   const plainWorktreeDraft =
     isLocalDraftThread &&
     worktreeRepositories.length > 0 &&
@@ -8931,13 +8933,18 @@ export default memo(function ChatView({
                           {envMode === "worktree" ? "Use project folder" : "New worktree"}
                         </button>
                         {envMode === "worktree" && (
-                          <input
-                            aria-label="Base branch"
-                            placeholder="Default branch"
-                            value={plainWorktreeBase}
-                            onChange={(event) => setPlainWorktreeBase(event.target.value)}
-                            className="rounded border bg-transparent px-2 py-1 text-xs"
-                          />
+                          <>
+                            <input
+                              aria-label="Base branch"
+                              placeholder="Default branch"
+                              value={plainWorktreeBase}
+                              onChange={(event) => setPlainWorktreeBase(event.target.value)}
+                              className="rounded border bg-transparent px-2 py-1 text-xs"
+                            />
+                            <span className="text-xs text-muted-foreground">
+                              Files outside repositories link to the original project folder.
+                            </span>
+                          </>
                         )}
                       </div>
                     )}

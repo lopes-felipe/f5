@@ -166,6 +166,7 @@ import { readProjectSettings, isInsideProjectWorkspace } from "./project/project
 import {
   discoverConfiguredProjectRepositories,
   listWorkspaceRepositories,
+  makeWorkspaceRepositoryReadCache,
 } from "./project/discoverProjectRepositories.ts";
 import {
   prepareNestedRepositoryWorktrees,
@@ -4154,6 +4155,7 @@ export const createServer = Effect.fn(function* (
       }),
   });
 
+  const reviewRepositoryCache = makeWorkspaceRepositoryReadCache();
   const switchGitWorkspace =
     (threadId?: ThreadId, operationId?: string): GitWorkspaceSwitchHandler =>
     (input) =>
@@ -4167,49 +4169,62 @@ export const createServer = Effect.fn(function* (
           );
           const project = model.projects.find((entry) => entry.id === thread?.projectId);
           const workspace = threadWorkspaceCwd(thread, project);
-          if (
-            !thread ||
-            !project ||
-            isScratchProject(project) ||
-            !workspace ||
-            (yield* Effect.tryPromise(() => canonicalWorktreePath(input.cwd))) !==
-              (yield* Effect.tryPromise(() => canonicalWorktreePath(workspace)))
-          )
+          if (!thread || !project || isScratchProject(project) || !workspace)
             return yield* Effect.fail(
               new Error("The checkout does not match this conversation's workspace."),
             );
-          const result = yield* workspaceTransition.switchWorkspace({
-            operationId: operationId ?? crypto.randomUUID(),
-            threadId,
-            intent: input.create ? "create_branch_and_checkout" : "checkout_branch",
-            branch: input.branch,
-            expected: {
-              branch: thread.branch,
-              worktreePath: thread.worktreePath,
-              sessionUpdatedAt: thread.session?.updatedAt ?? null,
-            },
-          });
-          if (result.phase !== "completed") {
-            if (result.checkoutConflict)
-              return yield* new GitCommandError({
-                operation: "GitCore.checkoutBranch.checkout",
-                cwd: input.cwd,
-                command: "git checkout",
-                detail: result.error ?? "Local changes block branch switching.",
-                checkoutConflict: result.checkoutConflict,
-              });
-            // Keep the code so clients can offer "Start a new worktree" here too.
-            if (result.errorCode === "WorkspaceRequiresNewWorktree")
-              return yield* Effect.fail(
-                new WorkspaceRequiresNewWorktreeError(
-                  result.error ?? "Start a new worktree instead.",
-                ),
-              );
-            return yield* Effect.fail(
-              new Error(result.error ?? "Inspect and resolve the workspace transition."),
+          const target = yield* Effect.tryPromise(() => canonicalWorktreePath(input.cwd));
+          const root = yield* Effect.tryPromise(() => canonicalWorktreePath(workspace));
+          if (target !== root) {
+            const repositories = yield* listWorkspaceRepositories(project, workspace, git).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
             );
+            const member = repositories.find((repository) => repository.path === input.cwd);
+            if (
+              !member ||
+              member.relativePath === "." ||
+              target !==
+                (member.externalSource === member.path
+                  ? member.path
+                  : path.resolve(root, member.relativePath))
+            )
+              return yield* Effect.fail(
+                new Error("The checkout does not match this conversation's workspace."),
+              );
+          } else {
+            const result = yield* workspaceTransition.switchWorkspace({
+              operationId: operationId ?? crypto.randomUUID(),
+              threadId,
+              intent: input.create ? "create_branch_and_checkout" : "checkout_branch",
+              branch: input.branch,
+              expected: {
+                branch: thread.branch,
+                worktreePath: thread.worktreePath,
+                sessionUpdatedAt: thread.session?.updatedAt ?? null,
+              },
+            });
+            if (result.phase !== "completed") {
+              if (result.checkoutConflict)
+                return yield* new GitCommandError({
+                  operation: "GitCore.checkoutBranch.checkout",
+                  cwd: input.cwd,
+                  command: "git checkout",
+                  detail: result.error ?? "Local changes block branch switching.",
+                  checkoutConflict: result.checkoutConflict,
+                });
+              // Keep the code so clients can offer "Start a new worktree" here too.
+              if (result.errorCode === "WorkspaceRequiresNewWorktree")
+                return yield* Effect.fail(
+                  new WorkspaceRequiresNewWorktreeError(
+                    result.error ?? "Start a new worktree instead.",
+                  ),
+                );
+              return yield* Effect.fail(
+                new Error(result.error ?? "Inspect and resolve the workspace transition."),
+              );
+            }
+            return;
           }
-          return;
         }
         const checkout = yield* git.inspectCheckoutIdentity(input.cwd);
         yield* withWorktreeLifecycleLock(
@@ -4237,7 +4252,7 @@ export const createServer = Effect.fn(function* (
               );
               const model = yield* orchestrationEngine.getReadModel();
               const blockers = inPlaceSwitchBlockers(usage, {
-                requester: null,
+                requester: threadId ?? null,
                 projectCheckout: yield* isProjectCheckout(model, checkout.canonicalRoot),
               });
               if (blockers.length)
@@ -5626,10 +5641,12 @@ export const createServer = Effect.fn(function* (
           return yield* new RouteRequestError({
             message: "Project repository settings are unavailable.",
           });
-        return yield* git.setProjectRepositoryRoot({
+        yield* git.setProjectRepositoryRoot({
           ...body,
           projectRoot: project.value.workspaceRoot,
         });
+        reviewRepositoryCache.clear();
+        return;
       }
 
       case WS_METHODS.projectsListRepositories: {
@@ -6038,14 +6055,26 @@ export const createServer = Effect.fn(function* (
           const project =
             thread && readModel.projects.find((entry) => entry.id === thread.projectId);
           if (thread && project && !isScratchProject(project)) {
-            const repositories = yield* listWorkspaceRepositories(
-              project,
-              threadWorkspaceCwd(thread, project),
-              git,
-            ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
-            repositoryCwd = repositories.find(
+            const workspace = threadWorkspaceCwd(thread, project);
+            const repositories = yield* reviewRepositoryCache
+              .list(project, workspace, git)
+              .pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+            const repository = repositories.find(
               (repository) => repository.relativePath === body.repositoryPath,
-            )?.path;
+            );
+            if (repository && workspace) {
+              const target = yield* fileSystem.realPath(repository.path).pipe(Effect.option);
+              const root = yield* fileSystem.realPath(workspace).pipe(Effect.option);
+              if (
+                Option.isSome(target) &&
+                Option.isSome(root) &&
+                target.value ===
+                  (repository.externalSource === repository.path
+                    ? repository.path
+                    : path.resolve(root.value, repository.relativePath))
+              )
+                repositoryCwd = repository.path;
+            }
           }
           if (repositoryCwd === undefined) {
             return {

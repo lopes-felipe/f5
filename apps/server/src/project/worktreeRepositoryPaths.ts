@@ -175,12 +175,29 @@ export function selectNestedWorktreeRepositories(
   if (paths === undefined)
     return repositories.length <= (rootUsesSlot ? 7 : 8)
       ? Effect.succeed(repositories)
-      : Effect.fail(new Error("Select the repositories to include before creating this worktree."));
+      : rootUsesSlot
+        ? Effect.succeed([])
+        : Effect.fail(
+            new Error("Select the repositories to include before creating this worktree."),
+          );
   const selected = new Set(paths);
   if (paths.some((entry) => !repositories.some(({ relativePath }) => relativePath === entry)))
     return Effect.fail(new Error("A selected repository is no longer in this project."));
   return Effect.succeed(repositories.filter(({ relativePath }) => selected.has(relativePath)));
 }
+
+export const resolveNestedWorktreeBase = (
+  git: Pick<GitCoreShape, "resolveCommit">,
+  cwd: string,
+  branch: string,
+) =>
+  Effect.gen(function* () {
+    return (
+      (yield* git.resolveCommit(cwd, "refs/heads/" + branch)) ??
+      (yield* git.resolveCommit(cwd, "refs/remotes/" + branch)) ??
+      (yield* git.resolveCommit(cwd, "refs/remotes/origin/" + branch))
+    );
+  });
 
 /** The primary checkout has already finished, including any post-checkout hook. */
 export function prepareNestedRepositoryWorktrees(
@@ -218,7 +235,7 @@ export function prepareNestedRepositoryWorktrees(
       }
       const selectedBase = branchExists
         ? yield* git.resolveCommit(repository.path, "refs/heads/" + input.branch)
-        : yield* git.resolveCommit(repository.path, "refs/heads/" + input.baseBranch);
+        : yield* resolveNestedWorktreeBase(git, repository.path, input.baseBranch);
       const defaultBranch = selectedBase ? null : yield* git.readDefaultBranch(repository.path);
       const base =
         selectedBase ?? (yield* git.resolveCommit(repository.path, defaultBranch ?? "HEAD"));

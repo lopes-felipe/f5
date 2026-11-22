@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -35,7 +35,7 @@ const init = async (directory: string, file: string, contents: string) => {
   );
 };
 
-it("defaults to eight eligible repositories and requires a selection above the limit", async () => {
+it("defaults to eight checkouts and keeps the root checkout available above the limit", async () => {
   const repositories = Array.from({ length: 9 }, (_, i) => ({
     path: "/project/repo-" + i,
     relativePath: "repo-" + i,
@@ -48,6 +48,9 @@ it("defaults to eight eligible repositories and requires a selection above the l
   await expect(
     Effect.runPromise(selectNestedWorktreeRepositories(repositories, undefined, false)),
   ).rejects.toThrow("Select the repositories");
+  await expect(
+    Effect.runPromise(selectNestedWorktreeRepositories(repositories, undefined)),
+  ).resolves.toEqual([]);
   expect(
     await Effect.runPromise(selectNestedWorktreeRepositories(repositories, ["repo-8"], false)),
   ).toEqual([repositories[8]]);
@@ -55,7 +58,7 @@ it("defaults to eight eligible repositories and requires a selection above the l
 
 it("prepares and resumes an isolated workspace for a plain project folder", async () => {
   const project = await mkdtemp(path.join(tmpdir(), "f5-plain-worktree-project-"));
-  const external = await mkdtemp(path.join(tmpdir(), "f5-extra-worktree-repo-"));
+  const external = await mkdtemp(path.join(tmpdir(), "f5-ext-"));
   try {
     const repositoryPaths = ["api", "web"].map((name) => path.join(project, name));
     for (const directory of repositoryPaths) {
@@ -122,6 +125,24 @@ it("prepares and resumes an isolated workspace for a plain project folder", asyn
         yield* Effect.promise(() => writeFile(path.join(webCheckout, "app.txt"), "original"));
         yield* git.removeWorktree({ cwd: project, path: worktree });
 
+        for (const [invalidPath, message] of [
+          ["relative", "absolute repository folder"],
+          [repositoryPaths[0]!, "outside the project"],
+          [path.dirname(project), "outside the project"],
+        ]) {
+          const result = yield* Effect.result(
+            git.setProjectRepositoryRoot!({
+              projectId: "project",
+              projectRoot: project,
+              path: invalidPath!,
+              tracked: true,
+            }),
+          );
+          expect(result).toMatchObject({
+            _tag: "Failure",
+            failure: { detail: expect.stringContaining(message!) },
+          });
+        }
         yield* git.setProjectRepositoryRoot!({
           projectId: "project",
           projectRoot: project,
@@ -151,10 +172,15 @@ it("prepares and resumes an isolated workspace for a plain project folder", asyn
             "--show-current",
           ),
         ).toBe("custom");
+        yield* git.removeWorktree({
+          cwd: project,
+          path: customPath,
+          layoutRemove: `"${process.execPath}" -e "require('node:fs').unlinkSync(require('node:path').join(process.env.T3_WORKTREE_PROJECT_PATH, 'stamp'))"`,
+        });
       }).pipe(
         Effect.provide(
           GitCoreTestLive.pipe(
-            Layer.provide(ServerConfig.layerTest(project, { prefix: "f5-plain-worktree-config-" })),
+            Layer.provide(ServerConfig.layerTest(project, { prefix: "f5-wt-" })),
             Layer.provide(GitServiceLive),
             Layer.provide(NodeServices.layer),
           ),
@@ -187,6 +213,84 @@ it("leaves checkout-hook links untouched even when they point at empty folders",
     expect(await readdir(outside)).toEqual([]);
   } finally {
     await rm(temp, { recursive: true, force: true });
+  }
+});
+
+it("keeps the contents and branch created by a primary checkout hook", async () => {
+  const project = await mkdtemp(path.join(tmpdir(), "f5-hook-"));
+  const service = path.join(project, "service");
+  const other = path.join(project, "other");
+  try {
+    await init(project, "README.md", "primary");
+    for (const repo of [service, other]) {
+      await mkdir(repo);
+      await init(repo, "app.txt", "nested");
+    }
+    const main = run(other, "rev-parse", "HEAD");
+    run(other, "update-ref", "refs/remotes/origin/release", main);
+    await writeFile(path.join(other, "app.txt"), "new main");
+    run(
+      other,
+      "-c",
+      "user.name=F5 Test",
+      "-c",
+      "user.email=f5@example.test",
+      "commit",
+      "-qam",
+      "new main",
+    );
+    const hook = path.join(project, ".git", "hooks", "post-checkout");
+    await writeFile(
+      hook,
+      '#!/bin/sh\nset -eu\ncommon=$(git rev-parse --path-format=absolute --git-common-dir)\ngit -C "$common/../service" branch feature\nmkdir -p service\nprintf hook > service/stamp\n',
+    );
+    await chmod(hook, 0o755);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const git = yield* GitCore;
+        const { worktree } = yield* git.createWorktree({
+          cwd: project,
+          branch: "main",
+          newBranch: "feature",
+          path: null,
+          preparation: { owner: "thread:thread", runSetupScript: false, setupIdentity: null },
+        });
+        const plan = {
+          projectId: "project",
+          threadId: "thread",
+          projectRoot: project,
+          path: worktree.path,
+          rooted: true,
+          branch: "feature",
+          baseBranch: "origin/release",
+          repositories: [service, other],
+          selected: [service, other],
+          layoutCreate: `"${process.execPath}" -e "const fs = require('node:fs'); const root = process.env.T3_WORKTREE_PROJECT_PATH; if (fs.readFileSync(require('node:path').join(root, 'README.md'), 'utf8') !== 'primary') process.exit(1)"`,
+        };
+        yield* git.prepareWorktreeGroup!(plan);
+        yield* assertWorktreeReady(git, {
+          projectCwd: project,
+          worktreePath: worktree.path,
+          branch: "feature",
+        });
+        expect(
+          yield* Effect.promise(() =>
+            readFile(path.join(worktree.path, "service", "stamp"), "utf8"),
+          ),
+        ).toBe("hook");
+        expect(run(path.join(worktree.path, "other"), "rev-parse", "HEAD")).toBe(main);
+      }).pipe(
+        Effect.provide(
+          GitCoreTestLive.pipe(
+            Layer.provide(ServerConfig.layerTest(project, { prefix: "f5-wt-" })),
+            Layer.provide(GitServiceLive),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
   }
 });
 

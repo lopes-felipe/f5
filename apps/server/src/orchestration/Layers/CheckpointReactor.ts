@@ -4,6 +4,8 @@ import {
   nestedCheckpointPaths,
   pruneRepositoryCheckpointRefs,
   restoreCheckpointRepositories,
+  scopedCheckpointRef,
+  checkpointWorkspaceRepositories,
 } from "../../checkpointing/checkpointRepositories.ts";
 import { dispatchVerifiedWorkspace } from "../../project/workspaceTransitionContext.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -273,7 +275,7 @@ const make = Effect.gen(function* () {
     const repositories =
       discovered.length === 0 && (yield* checkpointStore.isGitRepository(input.cwd))
         ? [{ path: input.cwd, relativePath: "." }]
-        : discovered;
+        : checkpointWorkspaceRepositories(discovered);
     turnRepositories.delete(input.threadId);
     turnRepositories.set(input.threadId, {
       cwd: input.cwd,
@@ -325,8 +327,8 @@ const make = Effect.gen(function* () {
       (repository) =>
         captureCheckpointIfSupported({
           cwd: repository.path,
-          checkpointRef: targetCheckpointRef,
-          excludePaths: nestedCheckpointPaths(repository, input.repositories),
+          checkpointRef: scopedCheckpointRef(targetCheckpointRef, repository),
+          excludePaths: nestedCheckpointPaths(repository, input.repositories, "capture"),
         }),
       { concurrency: 4 },
     );
@@ -338,7 +340,7 @@ const make = Effect.gen(function* () {
         checkpointStore
           .hasCheckpointRef({
             cwd: repository.path,
-            checkpointRef: fromCheckpointRef,
+            checkpointRef: scopedCheckpointRef(fromCheckpointRef, repository),
           })
           .pipe(
             Effect.catch((error) =>
@@ -416,8 +418,8 @@ const make = Effect.gen(function* () {
         checkpointStore
           .diffCheckpoints({
             cwd: repository.path,
-            fromCheckpointRef,
-            toCheckpointRef: targetCheckpointRef,
+            fromCheckpointRef: scopedCheckpointRef(fromCheckpointRef, repository),
+            toCheckpointRef: scopedCheckpointRef(targetCheckpointRef, repository),
             fallbackFromToHead: false,
             // Only the per-file totals are kept, so the patch needs no minimization.
             options: {
@@ -657,11 +659,14 @@ const make = Effect.gen(function* () {
     const captured = yield* Effect.forEach(
       repositories,
       Effect.fnUntraced(function* (repository) {
-        const input = { cwd: repository.path, checkpointRef };
+        const input = {
+          cwd: repository.path,
+          checkpointRef: scopedCheckpointRef(checkpointRef, repository),
+        };
         if (yield* checkpointStore.hasCheckpointRef(input)) return false;
         return yield* captureCheckpointIfSupported({
           ...input,
-          excludePaths: nestedCheckpointPaths(repository, repositories),
+          excludePaths: nestedCheckpointPaths(repository, repositories, "capture"),
         });
       }),
       { concurrency: 4 },
@@ -844,6 +849,25 @@ const make = Effect.gen(function* () {
       targetCheckpointRef,
       event.payload.turnCount === 0,
     );
+    if (restore.skipped.length > 0) {
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.activity.append",
+          commandId: serverCommandId("checkpoint-revert-skipped"),
+          threadId: thread.id,
+          activity: {
+            id: EventId.makeUnsafe(timeOrderedUuid()),
+            tone: "info",
+            kind: "checkpoint.revert.skipped-repositories",
+            summary: "Some repositories had no checkpoint and kept their files.",
+            payload: { repositories: restore.skipped.map((repository) => repository.relativePath) },
+            turnId: null,
+            createdAt: now,
+          },
+          createdAt: now,
+        })
+        .pipe(Effect.catch(() => Effect.void));
+    }
     if (!restore.restored) {
       yield* appendRevertFailureActivity({
         threadId: event.payload.threadId,

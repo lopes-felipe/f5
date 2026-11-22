@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { CommandId, MessageId, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
+import { layer as nodeFileSystem } from "@effect/platform-node/NodeFileSystem";
 import { Effect, Fiber, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
@@ -40,6 +41,7 @@ const harness = (
     nativeSkippedLinks?: number;
     nativeWorkspace?: string;
     isGit?: boolean;
+    gitCheckpointPath?: string;
     sibling?: "live" | "deleted";
     usePersistedTurns?: boolean;
   } = {},
@@ -69,6 +71,8 @@ const harness = (
     const beforeTurnIds: Array<string | undefined> = [];
     const deletedRefs: string[] = [];
     const activityCommandIds: string[] = [];
+    const activityPayloads: unknown[] = [];
+    const restoredPaths: string[] = [];
     const queueReasonsAtFailure: Array<string | null> = [];
     let rollbackCalls = 0;
     let identity = "provider-session";
@@ -210,7 +214,8 @@ const harness = (
       } as never),
       Effect.provideService(CheckpointStore, {
         isGitRepository: () => Effect.succeed(options.isGit === true),
-        hasCheckpointRef: () => Effect.succeed(false),
+        hasCheckpointRef: ({ cwd }: { cwd: string }) =>
+          Effect.succeed(cwd === options.gitCheckpointPath),
         captureCheckpoint: () =>
           worktreePath
             ? Effect.suspend(() => {
@@ -230,10 +235,11 @@ const harness = (
                   : Effect.void;
               })
             : Effect.die("conversation-only must not access Git"),
-        restoreCheckpoint: () =>
+        restoreCheckpoint: ({ cwd }: { cwd: string }) =>
           worktreePath
             ? Effect.sync(() => {
                 fileActions.push("restore");
+                restoredPaths.push(cwd);
                 return true;
               })
             : Effect.die("conversation-only must not restore files"),
@@ -264,10 +270,11 @@ const harness = (
       ),
       Effect.provideService(OrchestrationEngineService, {
         getReadModel: () => Effect.succeed(model),
-        dispatch: (command: { type: string; commandId: string }) =>
+        dispatch: (command: { type: string; commandId: string; activity?: { payload: unknown } }) =>
           Effect.gen(function* () {
             if (command.type === "thread.activity.append") {
               activityCommandIds.push(command.commandId);
+              activityPayloads.push(command.activity?.payload);
               const rows = yield* sql<{
                 reason: string | null;
               }>`SELECT pause_reason_code AS reason FROM next_turn_queue_state WHERE thread_id = ${threadId}`;
@@ -293,6 +300,8 @@ const harness = (
       fileActions,
       beforeTurnIds,
       activityCommandIds,
+      activityPayloads,
+      restoredPaths,
       queueReasonsAtFailure,
       deletedRefs,
       rollbackCalls: () => rollbackCalls,
@@ -466,6 +475,28 @@ layer("conversation rewind recovery", (it) => {
       assert.equal(h.rollbackCalls(), 1);
       assert.deepEqual(h.fileActions, ["capture", "rollback", "restore"]);
     }),
+  );
+
+  it.effect(
+    "reports the repositories that kept their files when rewinding a partial checkpoint",
+    () =>
+      Effect.gen(function* () {
+        const cwd = yield* Effect.acquireRelease(
+          Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "f5-rewind-scopes-"))),
+          (cwd) => Effect.sync(() => fs.rmSync(cwd, { recursive: true, force: true })),
+        );
+        fs.mkdirSync(path.join(cwd, ".git"));
+        fs.mkdirSync(path.join(cwd, "service", ".git"), { recursive: true });
+        const h = yield* harness("rewind-scopes", null, cwd, {
+          nativeWorkspace: cwd,
+          gitCheckpointPath: cwd,
+          isGit: true,
+        });
+        yield* h.rewind.run({ ...h.request, restoreFiles: true });
+        assert.equal(h.rollbackCalls(), 1);
+        assert.deepEqual(h.restoredPaths, [cwd]);
+        assert.deepEqual(h.activityPayloads, [{ repositories: ["service"] }]);
+      }).pipe(Effect.provide(nodeFileSystem)),
   );
 
   it.effect("missing file checkpoints fail before rollback or draft ownership is changed", () =>

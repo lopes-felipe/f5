@@ -40,6 +40,7 @@ import {
   runApprovedWorktreeLayout,
   linkPlainWorktreeFiles,
   nestedWorktreeOwner,
+  resolveNestedWorktreeBase,
 } from "../../project/worktreeRepositoryPaths.ts";
 import { isRefLockFailure, networkFailureDetail } from "../networkFailureDetail.ts";
 import {
@@ -1837,15 +1838,16 @@ const makeGitCore = Effect.gen(function* () {
         if (
           Option.isNone(checkout) ||
           checkout.value.commonDir !== member.identity ||
-          checkout.value.canonicalRoot !== member.path ||
-          checkout.value.branch !== group.branch
+          checkout.value.canonicalRoot !== member.path
         )
           return { ready: false, recoverable: false };
         const registered = yield* listWorktrees(member.source);
         if (
           !registered.some(
             (entry) =>
-              !entry.isMain && entry.canonicalPath === member.path && entry.branch === group.branch,
+              !entry.isMain &&
+              entry.canonicalPath === member.path &&
+              entry.branch === checkout.value.branch,
           )
         )
           return { ready: false, recoverable: false };
@@ -1879,7 +1881,7 @@ const makeGitCore = Effect.gen(function* () {
             Option.isNone(checkout) ||
             checkout.value.commonDir !== member.identity ||
             checkout.value.canonicalRoot !== member.path ||
-            checkout.value.branch !== group.branch
+            (!receipt && checkout.value.branch !== group.branch)
           )
             if (!receipt && group.root) continue;
             else return yield* groupError(member.path, "The planned checkout path is occupied.");
@@ -2042,9 +2044,11 @@ const makeGitCore = Effect.gen(function* () {
           const inspection = yield* inspectCheckoutIdentity(source);
           if (inspection.canonicalRoot !== source)
             return yield* groupError(source, "The selected path is not a repository root.");
-          if (yield* branchExists(source, input.branch))
-            return yield* groupError(source, "The planned branch already exists.");
-          const chosen = yield* resolveCommit(source, "refs/heads/" + input.baseBranch);
+          const chosen = yield* resolveNestedWorktreeBase(
+            { resolveCommit },
+            source,
+            input.baseBranch,
+          );
           const fallback = chosen ? null : yield* resolveDefaultBranchName(source, "origin");
           const baseOid = chosen ?? (yield* resolveCommit(source, fallback ?? "HEAD"));
           if (baseOid)
@@ -4053,6 +4057,32 @@ const makeGitCore = Effect.gen(function* () {
       ),
     );
 
+  const verifyGroupMemberRemoval = (path: string, identity: string) =>
+    Effect.gen(function* () {
+      if (
+        !(yield* fileSystem
+          .exists(path)
+          .pipe(Effect.mapError((error) => groupError(path, error.message))))
+      )
+        return;
+      const checkout = yield* inspectCheckout(path);
+      if (
+        checkout.canonicalRoot !== path ||
+        checkout.commonDir !== identity ||
+        !checkout.branch ||
+        !checkout.registration ||
+        checkout.registration.isMain ||
+        checkout.registration.locked !== null ||
+        checkout.operation ||
+        checkout.hasInitializedSubmodules ||
+        checkout.hasTrackedChanges ||
+        checkout.hasUntrackedChanges ||
+        checkout.ignoredTruncated ||
+        checkout.ignoredEntries.length > 0
+      )
+        return yield* groupError(path, "Local changes or checkout state prevent safe removal.");
+    });
+
   const removeWorktreeUnlocked: GitCoreShape["removeWorktree"] = (input) =>
     Effect.gen(function* () {
       const target = yield* canonicalPath(resolvePath(input.cwd, input.path));
@@ -4074,9 +4104,6 @@ const makeGitCore = Effect.gen(function* () {
           !managed.some((root) => target !== root && pathContains(root, target))
         )
           return yield* groupError(target, "The workspace group owner could not be verified.");
-        yield* Effect.tryPromise(() => cleanPlainWorktreeLayout(group, false)).pipe(
-          Effect.mapError((error) => groupError(target, error.message)),
-        );
         for (const member of group.members) {
           const owner = yield* preparations
             .latest(member.path)
@@ -4092,39 +4119,18 @@ const makeGitCore = Effect.gen(function* () {
               member.path,
               "Repository worktree ownership could not be verified.",
             );
-          if (
-            yield* fileSystem
-              .exists(member.path)
-              .pipe(Effect.mapError((error) => groupError(member.path, error.message)))
-          ) {
-            const checkout = yield* inspectCheckout(member.path);
-            if (
-              checkout.canonicalRoot !== member.path ||
-              checkout.commonDir !== member.identity ||
-              checkout.branch !== group.branch ||
-              !checkout.registration ||
-              checkout.registration.isMain ||
-              checkout.registration.locked !== null ||
-              checkout.operation ||
-              checkout.hasInitializedSubmodules ||
-              checkout.hasTrackedChanges ||
-              checkout.hasUntrackedChanges ||
-              checkout.ignoredTruncated ||
-              checkout.ignoredEntries.length > 0
-            )
-              return yield* groupError(
-                member.path,
-                "Local changes or checkout state prevent safe removal.",
-              );
-          }
+          yield* verifyGroupMemberRemoval(member.path, member.identity);
         }
-        for (const member of group.members)
-          yield* removeWorktree({ cwd: member.source, path: member.path });
         if (
           runLayoutRemoval &&
           (yield* fileSystem.exists(target).pipe(Effect.orElseSucceed(() => false)))
         )
           yield* runLayoutRemoval;
+        yield* Effect.tryPromise(() => cleanPlainWorktreeLayout(group, false)).pipe(
+          Effect.mapError((error) => groupError(target, error.message)),
+        );
+        for (const member of group.members)
+          yield* removeWorktree({ cwd: member.source, path: member.path });
         yield* Effect.tryPromise(() => cleanPlainWorktreeLayout(group, true)).pipe(
           Effect.mapError((error) => groupError(target, error.message)),
         );
@@ -4185,11 +4191,12 @@ const makeGitCore = Effect.gen(function* () {
         }
         children.push(child);
       }
-      const removeChildren = Effect.forEach(
-        children,
-        (child) => removeWorktree({ cwd: child.projectIdentity, path: child.path }),
-        { discard: true },
-      );
+      const removeChildren = Effect.gen(function* () {
+        for (const child of children)
+          yield* verifyGroupMemberRemoval(child.path, child.repositoryIdentity);
+        for (const child of children)
+          yield* removeWorktree({ cwd: child.projectIdentity, path: child.path });
+      });
       if (!(yield* checkoutExists(target))) {
         yield* removeChildren;
         yield* clearMissingRegistrationUnlocked(input.cwd, target);

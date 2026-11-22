@@ -140,6 +140,59 @@ describe("WebSocket Server", () => {
       expect(run("branch", "--show-current")).toBe("topic");
     });
 
+    it("commits a feature branch in a nested checkout and leaves the thread at the project root", async () => {
+      const { cwd, run } = repoWithTopic();
+      const nested = path.join(cwd, "nested");
+      fs.mkdirSync(nested);
+      run("-C", nested, "init", "-q", "-b", "main");
+      fs.writeFileSync(path.join(nested, "app.txt"), "initial\n");
+      run("-C", nested, "add", "app.txt");
+      run("-C", nested, "commit", "-qm", "init nested");
+      const before = run("-C", nested, "rev-parse", "HEAD");
+      h.server = await createTestServer({ cwd, autoBootstrapProjectFromCwd: true });
+      const address = h.server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const [ws, welcome] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      const threadId = (welcome.data as { bootstrapThreadId: string }).bootstrapThreadId;
+      expect(threadId).toBeTruthy();
+      fs.writeFileSync(path.join(nested, "app.txt"), "edited\n");
+      run("-C", nested, "add", "app.txt");
+
+      const empty = await sendRequest(ws, WS_METHODS.gitRunStackedAction, {
+        threadId,
+        cwd: nested,
+        action: "commit",
+        commitMessage: "Exclude all files",
+        filePaths: [],
+      });
+      expect(empty.error).toBeUndefined();
+      expect(empty.result).toMatchObject({ commit: { status: "skipped_no_changes" } });
+      expect(run("-C", nested, "rev-parse", "HEAD")).toBe(before);
+
+      const result = await sendRequest(ws, WS_METHODS.gitRunStackedAction, {
+        threadId,
+        cwd: nested,
+        action: "commit",
+        commitMessage: "Update nested app",
+        featureBranch: true,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatchObject({
+        branch: { status: "created" },
+        commit: { status: "created" },
+      });
+      expect(run("-C", nested, "branch", "--show-current")).not.toBe("main");
+      expect(run("-C", nested, "log", "-1", "--format=%s")).toBe("Update nested app");
+      expect(run("branch", "--show-current")).toBe("main");
+      const snapshot = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+      expect(
+        (snapshot.result as OrchestrationReadModel).threads.find(
+          (thread) => thread.id === threadId,
+        ),
+      ).toMatchObject({ worktreePath: null });
+    });
+
     it("refuses while a terminal is open in it, naming the conversation", async () => {
       const { cwd, run } = repoWithTopic();
       const terminalManager = new MockTerminalManager();
