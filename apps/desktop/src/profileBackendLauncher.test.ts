@@ -70,6 +70,7 @@ describe("profile backend launchers", () => {
     const vm: ProfileBackendLauncher = {
       environment: "linux-vm",
       readinessTimeoutMs: 1,
+      stopGraceMs: 1,
       launch: vi.fn(),
     };
     expect(

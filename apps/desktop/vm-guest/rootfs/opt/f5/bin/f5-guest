@@ -14,6 +14,7 @@ can't run it or change it.
 
 Every command refuses to run anything when a check fails (exit 78).
 """
+import grp
 import hashlib
 import json
 import os
@@ -25,6 +26,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 
 DATA = "/var/lib/f5"
 DATA_DEVICE_MOUNT = "/mnt/lima-f5-data"
@@ -35,6 +37,9 @@ STATE_DIR = DATA + "/state"
 HOME = DATA + "/home"
 GUEST_USER = "f5"
 KEEP_BACKENDS = 2
+# Membership in any of these is a route to root, or to raw disks and other users' files.
+PRIVILEGED_GROUPS = {"root", "sudo", "admin", "wheel", "adm", "disk", "shadow", "docker", "lxd", "incus"}
+STOP_DEADLINE_SECONDS = 30
 VERSION_PATTERN = r"[0-9A-Za-z][0-9A-Za-z.+-]{0,63}"
 
 
@@ -65,12 +70,26 @@ def guest_user():
         raise Refusal("the f5 user is missing")
     if user.pw_uid == 0 or user.pw_gid == 0:
         raise Refusal("the f5 user is privileged")
-    # `sudo -l -U` lists what a user may run; f5 must have no entry at all.
-    listing = subprocess.run(
-        ["sudo", "-n", "-l", "-U", GUEST_USER], capture_output=True, text=True
-    ).stdout
-    if "may run the following" in listing:
+    groups = set()
+    for gid in os.getgrouplist(GUEST_USER, user.pw_gid):
+        try:
+            groups.add(grp.getgrgid(gid).gr_name)
+        except KeyError:
+            groups.add(str(gid))
+    if groups & PRIVILEGED_GROUPS:
+        raise Refusal("the f5 user is in a privileged group")
+    # Fail closed: only sudo's own "not allowed" answer, in the C locale, counts as no rights.
+    result = subprocess.run(
+        ["sudo", "-n", "-l", "-U", GUEST_USER],
+        capture_output=True,
+        text=True,
+        env={"LC_ALL": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+    )
+    output = result.stdout + result.stderr
+    if "may run the following" in output:
         raise Refusal("the f5 user has sudo rights")
+    if "is not allowed to run sudo" not in output:
+        raise Refusal("could not confirm that the f5 user has no sudo rights")
     return user
 
 
@@ -88,16 +107,23 @@ def root_owned(path):
 
 
 def installed_versions():
+    """Installed backends, oldest install first (version names don't sort by age)."""
     try:
         names = os.listdir(BACKEND_ROOT)
     except FileNotFoundError:
         return []
-    return sorted(
-        name
-        for name in names
-        if re.fullmatch(VERSION_PATTERN, name)
-        and os.path.isfile(os.path.join(BACKEND_ROOT, name, ".installed"))
-    )
+    installed = []
+    for name in names:
+        marker = os.path.join(BACKEND_ROOT, name, ".installed")
+        if re.fullmatch(VERSION_PATTERN, name) and os.path.isfile(marker):
+            installed.append((os.stat(marker).st_mtime_ns, name))
+    return [name for _mtime, name in sorted(installed)]
+
+
+def retired_versions(installed, current):
+    """Every installed version except `current` and the one installed just before it."""
+    others = [name for name in installed if name != current]
+    return others[: max(0, len(others) - (KEEP_BACKENDS - 1))]
 
 
 def check_backend(version):
@@ -196,9 +222,8 @@ def command_install(args):
             os.unlink(archive_path)
         except OSError:
             pass
-    # Keep the new version and the one before it, for a rollback to an older F5.
-    others = [name for name in installed_versions() if name != version]
-    for name in others[: max(0, len(others) - (KEEP_BACKENDS - 1))]:
+    # Keep the new version and the one installed before it, for a rollback to an older F5.
+    for name in retired_versions(installed_versions(), version):
         shutil.rmtree(os.path.join(BACKEND_ROOT, name), ignore_errors=True)
     print(json.dumps({"installed": version}))
     return 0
@@ -267,8 +292,10 @@ def command_launch(args):
     # A bare --setenv NAME copies the value from systemd-run's own environment, so the token
     # never appears in a command line.
     setenv.append("--setenv=T3CODE_AUTH_TOKEN")
-    # fd 3 carries main's frames in, fd 4 the backend's frames out. The backend's stdout
-    # joins stderr, so nothing it or its children print can corrupt the frame stream.
+    # fd 3 carries main's frames in, fd 4 the backend's frames out, both pipes this process
+    # owns: the backend reopens them close-on-exec, so nothing it starts inherits the
+    # channel. Its stdout joins stderr, so nothing it or its children print can corrupt
+    # the frame stream.
     shim = 'exec 3<&0 4>&1 0</dev/null 1>&2; exec "$@"'
     child = subprocess.Popen(
         [
@@ -277,16 +304,28 @@ def command_launch(args):
             "--", "/bin/sh", "-c", shim, "f5-backend", executable,
         ],
         stdin=subprocess.PIPE,
-        stdout=sys.stdout.fileno(),
+        stdout=subprocess.PIPE,
         stderr=sys.stderr.fileno(),
         cwd=HOME,
         env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "T3CODE_AUTH_TOKEN": token},
     )
+    scope = unit + ".scope"
 
-    def stop_scope():
-        quiet("systemctl", "stop", unit + ".scope")
+    def stop_backend():
+        """Stop the scope until it's gone, including a stop that beats its registration."""
+        deadline = time.monotonic() + STOP_DEADLINE_SECONDS
+        while time.monotonic() < deadline:
+            quiet("systemctl", "stop", scope)
+            if child.poll() is not None and quiet("systemctl", "is-active", "--quiet", scope) != 0:
+                return
+            time.sleep(0.5)
+        quiet("systemctl", "kill", "--signal=SIGKILL", scope)
+        try:
+            child.kill()
+        except OSError:
+            pass
 
-    def relay():
+    def relay_in():
         try:
             while True:
                 chunk = os.read(0, 65536)
@@ -296,18 +335,35 @@ def command_launch(args):
                 child.stdin.flush()
         except (OSError, ValueError):
             pass
-        # Main closed the channel: end every process the backend owns.
-        stop_scope()
-        try:
-            child.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
+        # Main closed the channel: end every process the backend owns, then exit.
+        stop_backend()
         os._exit(0)
 
-    threading.Thread(target=relay, daemon=True).start()
+    def relay_out():
+        source = child.stdout.fileno()
+        try:
+            while True:
+                chunk = os.read(source, 65536)
+                if not chunk:
+                    return
+                write_all(1, chunk)
+        except OSError:
+            pass
+
+    threading.Thread(target=relay_in, daemon=True).start()
+    output = threading.Thread(target=relay_out, daemon=True)
+    output.start()
     code = child.wait()
-    stop_scope()
+    output.join(timeout=5)
+    stop_backend()
     return code if code >= 0 else 1
+
+
+def write_all(fd, data):
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
 
 
 COMMANDS = {"status": command_status, "install": command_install, "launch": command_launch}

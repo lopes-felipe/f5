@@ -2,11 +2,18 @@
 Description=F5 guest egress policy
 Wants=network-online.target
 After=network-online.target nftables.service
+# Loaded before Lima's ssh session can start anything; f5-guest also refuses to run
+# without it, and the VM supervisor waits for it on a slow first boot.
+Before=ssh.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/f5/bin/f5-egress-apply
+# Resolver discovery can lose the race with DHCP on first boot; keep trying.
+Restart=on-failure
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target

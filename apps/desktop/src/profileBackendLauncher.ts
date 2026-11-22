@@ -37,8 +37,16 @@ export interface ProfileBackendLauncher {
   readonly environment: ProfileExecutionEnvironment;
   /** How long a new incarnation may take to answer readiness before recovery is offered. */
   readonly readinessTimeoutMs: number;
+  /**
+   * How long main lets a stopping backend process exit on its own before force-killing its
+   * process tree. A VM supervisor shuts its VM down first and must not be killed mid-stop.
+   */
+  readonly stopGraceMs: number;
   launch(request: BackendLaunchRequest): BackendLaunch;
 }
+
+/** Host backends: SIGTERM, then the whole tree is force-killed after this long. */
+export const HOST_BACKEND_STOP_GRACE_MS = 2_000;
 
 type Spawn = (
   command: string,
@@ -59,6 +67,7 @@ export function hostBackendLauncher(options: {
   return {
     environment: "host",
     readinessTimeoutMs: BACKEND_READINESS_TIMEOUT_MS,
+    stopGraceMs: HOST_BACKEND_STOP_GRACE_MS,
     launch: (request) => {
       const isolated = isolatedBackendCommand(
         options.platform,

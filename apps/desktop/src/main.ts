@@ -48,10 +48,15 @@ import {
   hostBackendLauncher,
   requireProfileBackendLauncher,
   resolveProfileBackendLauncher,
+  HOST_BACKEND_STOP_GRACE_MS,
   type BackendLaunch,
   type ProfileBackendLauncher,
 } from "./profileBackendLauncher";
-import { MAX_RUNNING_VMS, resolveVmLaunchAssets, vmBackendLauncher } from "./vm/vmBackendLauncher";
+import {
+  resolveVmLaunchAssets,
+  vmBackendLauncher,
+  VmSlotReservations,
+} from "./vm/vmBackendLauncher";
 import { isLinuxVmProfile } from "@t3tools/shared/profileExecution";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
@@ -409,6 +414,7 @@ const vmLaunchAssets = resolveVmLaunchAssets({
   platform: process.platform,
   arch: process.arch,
   resourcesPath: process.resourcesPath ?? "",
+  packaged: app.isPackaged,
 });
 if (!vmLaunchAssets.ok && process.env.F5_EXPERIMENTAL_LINUX_VM === "1")
   console.warn(`[desktop] Linux VM profiles unavailable: ${vmLaunchAssets.reason}`);
@@ -428,6 +434,7 @@ const backendLaunchers: Partial<Record<"host" | "linux-vm", ProfileBackendLaunch
     : {}),
 };
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
+const vmSlots = new VmSlotReservations();
 const profileByWebContentsId = new Map<number, string>();
 function profileWindows(profileId: string): BrowserWindow[] {
   return BrowserWindow.getAllWindows().filter(
@@ -3497,8 +3504,14 @@ function stopBackend(runtime: BackendRuntime = defaultBackend): void {
       if (child.exitCode === null && child.signalCode === null) {
         void killProcessTreeAsync(child, { isGroupLeader: false, graceful: false });
       }
-    }, 2_000).unref();
+    }, backendStopGraceMs(runtime)).unref();
   }
+}
+
+/** A VM supervisor shuts its VM down before exiting; host backends get the usual 2 s. */
+function backendStopGraceMs(runtime: BackendRuntime): number {
+  const resolved = resolveProfileBackendLauncher(runtime.profile, backendLaunchers);
+  return resolved.ok ? resolved.launcher.stopGraceMs : HOST_BACKEND_STOP_GRACE_MS;
 }
 
 async function stopBackendAndWaitForExit(
@@ -3519,6 +3532,9 @@ async function stopBackendAndWaitForExit(
     runtime.backendProcess = null;
     return;
   }
+  const graceMs = backendStopGraceMs(runtime);
+  // Never give up on a backend before its own grace period, plus time for the forced kill.
+  const waitMs = Math.max(timeoutMs, graceMs + 3_000);
 
   await new Promise<void>((resolve) => {
     let settled = false;
@@ -3557,12 +3573,12 @@ async function stopBackendAndWaitForExit(
       if (backendChild.exitCode === null && backendChild.signalCode === null) {
         void killProcessTreeAsync(backendChild, { isGroupLeader: false, graceful: false });
       }
-    }, 2_000);
+    }, graceMs);
     forceKillTimer.unref();
 
     exitTimeoutTimer = setTimeout(() => {
       settle();
-    }, timeoutMs);
+    }, waitMs);
     exitTimeoutTimer.unref();
   });
   if (backendChild.exitCode === null && backendChild.signalCode === null)
@@ -3576,6 +3592,21 @@ const bootstrapGate = createBootstrapGate();
 let lastOpenedProfileId = defaultBackend.profile.id;
 
 async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
+  // Held from the synchronous cap check until the profile counts as running (or fails).
+  const vmSlot: { release?: () => void } = {};
+  try {
+    await ensureProfileBackendWithSlot(runtime, (release) => {
+      vmSlot.release = release;
+    });
+  } finally {
+    vmSlot.release?.();
+  }
+}
+
+async function ensureProfileBackendWithSlot(
+  runtime: BackendRuntime,
+  holdVmSlot: (release: () => void) => void,
+): Promise<void> {
   await ensureProfileBackend(runtime, {
     stop: () => stopBackendAndWaitForExit(5000, runtime),
     prepare: async () => {
@@ -3587,12 +3618,14 @@ async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
       );
       if (otherBackends.length >= MAX_ACTIVE_PROFILE_BACKENDS)
         throw new Error("Six profiles are already running. Stop one before opening another.");
-      if (
-        isLinuxVmProfile(runtime.profile) &&
-        otherBackends.filter((entry) => isLinuxVmProfile(entry.profile)).length >= MAX_RUNNING_VMS
-      )
-        throw new Error(
-          "Two Linux VM profiles are already running. Stop one before opening another.",
+      if (isLinuxVmProfile(runtime.profile))
+        holdVmSlot(
+          vmSlots.reserve(
+            runtime.profile.id,
+            otherBackends
+              .filter((entry) => isLinuxVmProfile(entry.profile))
+              .map((entry) => entry.profile.id),
+          ),
         );
       await ensureProfileConnection(
         runtime,

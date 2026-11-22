@@ -25,12 +25,22 @@ concurrency:
 
 jobs:
   build:
+    # Runs pull request code, so it gets a read-only token and keeps no credentials.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test guest tools
+        run: |
+          python3 -B -m py_compile apps/desktop/vm-guest/rootfs/opt/f5/bin/f5-guest
+          bash -n apps/desktop/vm-guest/rootfs/opt/f5/bin/f5-egress-apply
+          bash -n apps/desktop/vm-guest/build-image.sh
+          python3 -B -m unittest discover -v apps/desktop/vm-guest/tests
 
       - name: Install image tools
         run: |
@@ -43,13 +53,11 @@ jobs:
           ! command -v passt
 
       - name: Check libguestfs
-        run: LIBGUESTFS_BACKEND=direct libguestfs-test-tool >"$RUNNER_TEMP/libguestfs-test.log" 2>&1 || { tail -60 "$RUNNER_TEMP/libguestfs-test.log"; exit 1; }
-
-      - name: Check guest scripts
+        # No KVM on these runners: the same TCG setting build-image.sh selects.
         run: |
-          python3 -m py_compile apps/desktop/vm-guest/rootfs/opt/f5/bin/f5-guest
-          bash -n apps/desktop/vm-guest/rootfs/opt/f5/bin/f5-egress-apply
-          bash -n apps/desktop/vm-guest/build-image.sh
+          LIBGUESTFS_BACKEND=direct LIBGUESTFS_BACKEND_SETTINGS=force_tcg \
+            libguestfs-test-tool >"$RUNNER_TEMP/libguestfs-test.log" 2>&1 ||
+            { tail -60 "$RUNNER_TEMP/libguestfs-test.log"; exit 1; }
 
       - name: Build image
         run: apps/desktop/vm-guest/build-image.sh "$RUNNER_TEMP/vm-guest"
@@ -61,18 +69,32 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+  publish:
+    # Only a manual run publishes; only this job can write to the repository.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vm-guest-image
+          path: vm-guest
+
       - name: Publish prerelease
-        if: github.event_name == 'workflow_dispatch' && inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          meta=$(ls "$RUNNER_TEMP"/vm-guest/*.json)
+          meta=$(ls vm-guest/*.json)
           source=$(jq -r .source "$meta")
           tag="vm-guest-image-$source"
           gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
             --title "VM guest image $source" \
             --notes "Linux VM profile guest image built from $GITHUB_SHA. Pin it in apps/desktop/vm-guest/image.lock.json." \
-            "$RUNNER_TEMP"/vm-guest/*
+            vm-guest/*
           jq --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$(jq -r .file "$meta")" \
             '{image: {url: $url, sha256, size, imageVersion, source}}' "$meta" | tee -a "$GITHUB_STEP_SUMMARY"

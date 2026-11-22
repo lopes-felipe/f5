@@ -41,7 +41,7 @@ Behind `F5_EXPERIMENTAL_LINUX_VM=1`, on Apple silicon, desktop registers a VM la
 | linux-arm64 CLI archive | `Resources/vm/f5-<version>-linux-arm64.tar.gz`       | `F5_VM_BACKEND_ARCHIVE`, with its `.json` manifest beside it |
 | Guest image pin         | `apps/desktop/vm-guest/image.lock.json` (now `null`) | `F5_VM_IMAGE_URL`, `F5_VM_IMAGE_SHA256`, `F5_VM_IMAGE_SIZE`  |
 
-The archive is what `bun run dist:cli:archive` builds on a linux-arm64 machine. A pin accepts only release assets of this repository; the development override accepts any HTTPS URL.
+The archive is what `bun run dist:cli:archive` builds on a linux-arm64 machine. A pin accepts only release assets of this repository; the development override accepts any HTTPS URL. Packaged builds ignore all three overrides.
 
 **Guest image.** `apps/desktop/vm-guest/build-image.sh` customizes the digest-pinned Debian 13 genericcloud arm64 image offline with `virt-customize`. Packages come from a pinned `snapshot.debian.org` timestamp, and nothing runs apt at runtime. It adds:
 
@@ -50,15 +50,15 @@ The archive is what `bun run dist:cli:archive` builds on a linux-arm64 machine. 
 - user `f5` (uid 1500, no sudo, home on the data disk)
 - `/opt/f5/policy.sha256`, which every guest command checks
 
-The `vm-guest-image` workflow builds it on pull requests that touch `vm-guest/`. A manual run with `publish` attaches it to a `vm-guest-image-<commit>` prerelease and prints the lock entry to copy into `image.lock.json`.
+The `vm-guest-image` workflow builds it on pull requests that touch `vm-guest/`, after running the guest tool tests (`python3 -B -m unittest discover apps/desktop/vm-guest/tests`). The runners have no KVM, so libguestfs runs under TCG. The build job has a read-only token. A manual run with `publish` passes the built image to a separate job, the only one that can write: it attaches the image to a `vm-guest-image-<commit>` prerelease and prints the lock entry to copy into `image.lock.json`.
 
-**Start sequence.** Main spawns the VM supervisor (`vmSupervisorEntry.js`) as the profile's backend process, inside the same `sandbox-exec` GUI-denial profile as host backends. Its environment holds only `PATH`, `HOME`, `TMPDIR`, `LANG` and the supervisor configuration, which contains no secrets. The supervisor then:
+**Start sequence.** Main spawns the VM supervisor (`vmSupervisorEntry.js`) as the profile's backend process, inside the same `sandbox-exec` GUI-denial profile as host backends. Its environment holds only `PATH`, `HOME`, `TMPDIR`, `LANG` and the supervisor configuration, which contains no secrets. Lima and ssh run with a private `HOME` inside LIMA_HOME, so they never read the user's `~/.ssh` configuration or keys. The supervisor takes `<LIMA_HOME>/supervisor.lock` first. If an earlier supervisor of the same VM is still starting or stopping, the new one waits up to 2 minutes, then refuses; a lock whose owner is gone is stale and removed. The supervisor then:
 
 1. Refuses a foreign `_config/default.yaml` or `override.yaml` in LIMA_HOME, which Lima would merge into the instance.
-2. Downloads the pinned image into the installation-wide cache `<state>/vm/images/`. The download resumes, and the whole file is verified by SHA-256.
+2. Downloads the pinned image into the installation-wide cache `<state>/vm/images/`. The download resumes, and the whole file is verified by SHA-256. A lock file next to the image serializes concurrent downloads, so two profiles never write the same partial file. A cached image whose size doesn't match the pin is deleted and downloaded again.
 3. Replaces the instance (the root disk) if the image digest changed, keeping the data disk.
 4. Creates the sparse data disk (40 GiB, raw), then the instance from `buildLimaInstanceConfig`.
-5. Boots the VM and checks `f5-guest status`: data disk mounted at `/var/lib/f5`, policy hashes, the `f5_egress` table loaded, `f5` without sudo.
+5. Boots the VM and checks `f5-guest status`: data disk mounted at `/var/lib/f5`, policy hashes, the `f5_egress` table loaded, `f5` without sudo or privileged groups. While a booting guest reports only that the egress policy isn't loaded or the data disk isn't attached yet, the supervisor polls for up to 90 s. Any other answer refuses at once.
 6. Installs the backend when the guest lacks its version: `limactl copy` into the guest, then `f5-guest install`. That hashes and extracts a single root-owned copy of the archive, keeping the current and previous versions.
 7. Starts an ssh ControlMaster that owns the `127.0.0.1:<port>` forward. `ExitOnForwardFailure` turns an occupied port into an error.
 8. Runs `limactl shell … sudo f5-guest launch <incarnation> <version>` on its own stdin and stdout.
@@ -67,16 +67,21 @@ First start may take up to 15 minutes before recovery is offered; host profiles 
 
 **Channel.** The supervisor's stdin and stdout are main's pipes, and it never reads them. Main writes one boot line, `{port, authToken, profileId}`, followed by frames. `f5-guest launch` reads exactly that line and starts the backend as `f5` in a transient systemd scope. The auth token reaches it through systemd-run's environment, never a command line.
 
-The backend reads frames on fd 3 and writes them on fd 4, and its stdout is redirected to stderr. `F5_DESKTOP_COMPUTER_HOST=frames` selects `frameStreamIpc`. The backend says hello with the host profile id from the boot line; main checks it against the profile and incarnation it launched. Every Lima child except the final `limactl shell` gets fresh stdio. Otherwise the daemonized hostagent would inherit the channel and hold it open.
+The backend reads frames on fd 3 and writes them on fd 4, both pipes that `f5-guest` owns, and its stdout is redirected to stderr. `F5_DESKTOP_COMPUTER_HOST=frames` selects `frameStreamIpc`. The backend first reopens fds 3 and 4 through `/proc/self/fd` and closes the inherited ones. Node opens files close-on-exec, so no agent, shell or tool it starts inherits the channel. The backend says hello with the host profile id from the boot line; main checks it against the profile and incarnation it launched. Every Lima child except the final `limactl shell` gets fresh stdio. Otherwise the daemonized hostagent would inherit the channel and hold it open.
 
-**Lifecycle.** At most two VM profiles run at once, within the six-backend cap. Stop sends SIGTERM to the supervisor. It kills `limactl shell`, so the guest launcher sees EOF and stops the scope, then it runs `limactl stop`. Main waits 5 s before killing the supervisor. A VM still running after that is reused on the next start. A crash restarts the incarnation, and the VM keeps running. Losing the port forward also ends the incarnation. A refusal writes `last-startup-error-<id>.json` and exits 78, so the recovery window shows the reason.
+**Lifecycle.**
+
+- **Cap.** At most two VM profiles run at once, within the six-backend cap. An opening VM profile reserves its slot synchronously at the cap check and holds it until it counts as running, so concurrent opens can't overshoot.
+- **Stop.** Main sends SIGTERM to the supervisor. Any preparation step in flight is abandoned: the image download and every `limactl` command take the stop signal. A running backend's `limactl shell` is killed, so the guest launcher sees EOF and stops the scope, retrying until the scope is gone. Then the supervisor runs `limactl stop` (up to 60 s) and exits. Main gives a VM profile 90 s before force-killing the supervisor's process tree, where host backends get 2 s. The profile therefore keeps its VM slot until the VM is down.
+- **Refusal.** A refusal also stops the VM, because nothing would own it. It writes `last-startup-error-<id>.json` and exits 78, so the recovery window shows the reason.
+- **Crash.** A backend crash ends the incarnation but leaves the VM running for the restart. Losing the port forward does the same.
 
 **Paths.** LIMA_HOME is `<state>/vm/<first 16 hex of the profile id>`, not `<profile-state>/vm/lima`. Under a typical home directory, the profile path leaves no room for ssh's ControlMaster socket within macOS's 104-byte limit. A state directory that is still too long is refused. Main-owned metadata (`lima.yaml`, `instance.json`) stays in `<profile-state>/vm/`.
 
 **Known gaps** before the preview:
 
 - Removing a VM profile moves its host directory to `.trash`, but leaves its LIMA_HOME and data disk. Stopping the VM and moving LIMA_HOME belong to the removal flow in step 5.
-- Quitting F5 doesn't stop running VMs.
+- Quitting F5 sends the same SIGTERM, but doesn't wait for VMs to shut down. A supervisor that outlives F5 keeps running `limactl stop`; one that is killed leaves the VM running until the next start reuses it.
 - Lima's admin user keeps Lima's passwordless sudo. Only main holds its ssh key, and `f5` can't reach it.
 - Nothing has run end to end yet. That needs a published image, a linux-arm64 archive and a real boot, which goes in Terminal per the [gate's two-phase rule](#gate-result-2026-11-22).
 

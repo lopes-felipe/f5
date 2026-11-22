@@ -1,8 +1,12 @@
+import { execFileSync } from "node:child_process";
+import * as FS from "node:fs";
+import * as OS from "node:os";
+import * as Path from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { BackendFrameDecoder, encodeBackendFrame } from "@t3tools/shared/backendFrames";
 import { DesktopComputerHost } from "./DesktopComputerHost";
-import { frameStreamIpc } from "./frameStreamIpc";
+import { frameStreamIpc, reopenCloseOnExec } from "./frameStreamIpc";
 
 function pair() {
   const input = new PassThrough();
@@ -53,6 +57,57 @@ describe("frameStreamIpc", () => {
     await vi.waitFor(() => expect(disconnected).toHaveBeenCalled());
     input.destroy();
     expect(disconnected).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("reopenCloseOnExec", () => {
+  it("reopens the inherited fd through /proc and closes the original", () => {
+    const fs = { openSync: vi.fn(() => 41), closeSync: vi.fn() };
+    expect(reopenCloseOnExec(3, "read", fs as never)).toBe(41);
+    expect(fs.openSync).toHaveBeenCalledWith(
+      "/proc/self/fd/3",
+      FS.constants.O_RDONLY | FS.constants.O_NONBLOCK,
+    );
+    expect(fs.closeSync).toHaveBeenCalledWith(3);
+    reopenCloseOnExec(4, "write", fs as never);
+    expect(fs.openSync).toHaveBeenLastCalledWith(
+      "/proc/self/fd/4",
+      FS.constants.O_WRONLY | FS.constants.O_NONBLOCK,
+    );
+  });
+
+  it("keeps the inherited fd where /proc isn't available", () => {
+    const fs = {
+      openSync: vi.fn(() => {
+        throw new Error("ENOENT");
+      }),
+      closeSync: vi.fn(),
+    };
+    expect(reopenCloseOnExec(3, "read", fs as never)).toBe(3);
+    expect(fs.closeSync).not.toHaveBeenCalled();
+  });
+
+  it.runIf(process.platform === "linux")("reopens real pipe ends on Linux", () => {
+    const dir = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-frames-"));
+    try {
+      const fifo = Path.join(dir, "channel");
+      execFileSync("mkfifo", [fifo]);
+      const read = FS.openSync(fifo, FS.constants.O_RDONLY | FS.constants.O_NONBLOCK);
+      const write = FS.openSync(fifo, FS.constants.O_WRONLY | FS.constants.O_NONBLOCK);
+      const privateRead = reopenCloseOnExec(read, "read");
+      const privateWrite = reopenCloseOnExec(write, "write");
+      expect(privateRead).not.toBe(read);
+      expect(() => FS.fstatSync(read)).toThrow();
+      expect(() => FS.fstatSync(write)).toThrow();
+      FS.writeSync(privateWrite, "frame");
+      const buffer = Buffer.alloc(5);
+      expect(FS.readSync(privateRead, buffer)).toBe(5);
+      expect(buffer.toString()).toBe("frame");
+      FS.closeSync(privateRead);
+      FS.closeSync(privateWrite);
+    } finally {
+      FS.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

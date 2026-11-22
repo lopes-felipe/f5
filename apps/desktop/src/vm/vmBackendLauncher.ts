@@ -9,7 +9,7 @@ import { streamBackendChannel } from "../computer/BackendChannel";
 import type { ProfileBackendLauncher } from "../profileBackendLauncher";
 import { parseGuestImagePin, type GuestImagePin } from "./guestImage";
 import { guestImageCacheDir, limaHomeFor } from "./limaInstanceConfig";
-import type { VmSupervisorConfig } from "./vmSupervisor";
+import { VM_STOP_TIMEOUT_MS, type VmSupervisorConfig } from "./vmSupervisor";
 
 /**
  * Linux VM profiles are behind a hidden flag until the preview ships: without
@@ -22,6 +22,41 @@ export const VM_READINESS_TIMEOUT_MS = 15 * 60_000;
 
 /** Running VMs, within the overall backend cap. Each defaults to 4 GiB of guest memory. */
 export const MAX_RUNNING_VMS = 2;
+
+/**
+ * VM slots held by profiles that are opening but not yet counted as running. Opening awaits
+ * a port and the shell environment before the backend starts, and opens of different
+ * profiles don't serialize, so the cap check alone would let concurrent opens all pass.
+ */
+export class VmSlotReservations {
+  private readonly opening = new Set<string>();
+
+  /**
+   * Takes a slot for `profileId`, or throws when running and opening VMs already fill the
+   * cap. Call it synchronously with the cap check; the returned release is idempotent.
+   */
+  reserve(profileId: string, runningVmProfileIds: Iterable<string>): () => void {
+    const held = new Set([...runningVmProfileIds, ...this.opening]);
+    held.delete(profileId);
+    if (held.size >= MAX_RUNNING_VMS)
+      throw new Error(
+        "Two Linux VM profiles are already running. Stop one before opening another.",
+      );
+    this.opening.add(profileId);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.opening.delete(profileId);
+    };
+  }
+}
+
+/**
+ * Main's patience with a stopping VM supervisor: up to 10 s for the guest backend's scope,
+ * then `limactl stop`, with margin. Killing it earlier would orphan a half-stopped VM.
+ */
+export const VM_STOP_GRACE_MS = 10_000 + VM_STOP_TIMEOUT_MS + 20_000;
 
 export interface VmLaunchAssets {
   readonly limactl: string;
@@ -37,13 +72,15 @@ export type VmLaunchAssetsResolution =
  * The bundled Lima, linux-arm64 backend archive and pinned guest image. Development builds
  * may point at their own with F5_VM_LIMACTL, F5_VM_BACKEND_ARCHIVE (the archive's manifest
  * JSON sits next to it, as `dist:cli:archive` writes it) and F5_VM_IMAGE_URL,
- * F5_VM_IMAGE_SHA256 and F5_VM_IMAGE_SIZE.
+ * F5_VM_IMAGE_SHA256 and F5_VM_IMAGE_SIZE. Packaged builds ignore them: they use only the
+ * bundled Lima and archive and an image pinned to this repository's releases.
  */
 export function resolveVmLaunchAssets(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
   readonly arch: string;
   readonly resourcesPath: string;
+  readonly packaged: boolean;
   readonly lock?: unknown;
   readonly exists?: (path: string) => boolean;
   readonly readFile?: (path: string) => string;
@@ -55,14 +92,15 @@ export function resolveVmLaunchAssets(input: {
     return { ok: false, reason: "Linux VM profiles are not enabled in this build." };
   if (input.platform !== "darwin" || input.arch !== "arm64")
     return { ok: false, reason: "Linux VM profiles need a Mac with Apple silicon." };
+  const override = (name: string) => (input.packaged ? undefined : env[name] || undefined);
 
   const limactl =
-    env.F5_VM_LIMACTL || Path.join(input.resourcesPath, "native", "lima", "bin", "limactl");
+    override("F5_VM_LIMACTL") ?? Path.join(input.resourcesPath, "native", "lima", "bin", "limactl");
   if (!Path.isAbsolute(limactl) || !exists(limactl))
     return { ok: false, reason: `Lima is missing (${limactl}).` };
 
   const vmDir = Path.join(input.resourcesPath, "vm");
-  const archive = env.F5_VM_BACKEND_ARCHIVE || findBundledArchive(vmDir, exists);
+  const archive = override("F5_VM_BACKEND_ARCHIVE") ?? findBundledArchive(vmDir, exists);
   if (!archive || !Path.isAbsolute(archive) || !exists(archive))
     return { ok: false, reason: "The linux-arm64 backend archive is missing." };
   let backend: VmLaunchAssets["backend"];
@@ -81,11 +119,12 @@ export function resolveVmLaunchAssets(input: {
 
   let imagePin: GuestImagePin | null;
   try {
-    imagePin = env.F5_VM_IMAGE_URL
+    const imageUrl = override("F5_VM_IMAGE_URL");
+    imagePin = imageUrl
       ? parseGuestImagePin(
           {
             image: {
-              url: env.F5_VM_IMAGE_URL,
+              url: imageUrl,
               sha256: env.F5_VM_IMAGE_SHA256,
               size: Number(env.F5_VM_IMAGE_SIZE),
             },
@@ -133,6 +172,7 @@ export function vmBackendLauncher(options: {
   return {
     environment: "linux-vm",
     readinessTimeoutMs: VM_READINESS_TIMEOUT_MS,
+    stopGraceMs: VM_STOP_GRACE_MS,
     launch: (request) => {
       const config: VmSupervisorConfig = {
         profileId: request.profileId,

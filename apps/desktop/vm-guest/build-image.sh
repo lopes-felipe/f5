@@ -43,17 +43,24 @@ deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/$
 EOF
 
 export LIBGUESTFS_BACKEND=direct
+# GitHub's arm64 runners have no KVM. libguestfs would still ask QEMU for gic-version=host,
+# which needs KVM; force_tcg selects a GIC that pure emulation supports.
+if [ ! -w /dev/kvm ]; then export LIBGUESTFS_BACKEND_SETTINGS=force_tcg; fi
+rootfs="$here/rootfs"
 virt-customize -a "$work/image.qcow2" --network \
   --run-command 'rm -f /etc/apt/sources.list.d/*' \
   --upload "$work/sources.list:/etc/apt/sources.list" \
   --run-command 'apt-get update' \
   --run-command "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $(echo "$packages" | tr , ' ')" \
   --run-command 'apt-get clean && rm -rf /var/lib/apt/lists/*' \
-  --copy-in "$here/rootfs/opt/f5:/opt" \
-  --copy-in "$here/rootfs/etc/systemd/system/f5-egress.service:/etc/systemd/system" \
+  --mkdir /opt/f5/bin \
+  --upload "$rootfs/opt/f5/bin/f5-guest:/opt/f5/bin/f5-guest" \
+  --upload "$rootfs/opt/f5/bin/f5-egress-apply:/opt/f5/bin/f5-egress-apply" \
+  --upload "$rootfs/etc/systemd/system/f5-egress.service:/etc/systemd/system/f5-egress.service" \
   --upload "$work/image-info.json:/opt/f5/image.json" \
   --run-command 'chown -R root:root /opt/f5 /etc/systemd/system/f5-egress.service' \
-  --run-command 'chmod 0755 /opt/f5 /opt/f5/bin /opt/f5/bin/* && chmod 0644 /opt/f5/image.json /etc/systemd/system/f5-egress.service' \
+  --run-command 'chmod 0755 /opt/f5 /opt/f5/bin /opt/f5/bin/f5-guest /opt/f5/bin/f5-egress-apply' \
+  --run-command 'chmod 0644 /opt/f5/image.json /etc/systemd/system/f5-egress.service' \
   --run-command "useradd --no-create-home --home-dir /var/lib/f5/home --shell /bin/bash --uid $guest_uid --user-group f5" \
   --run-command 'if getent group sudo | grep -qw f5; then gpasswd -d f5 sudo; fi' \
   --run-command 'install -d -o root -g root -m 0755 /var/lib/f5' \

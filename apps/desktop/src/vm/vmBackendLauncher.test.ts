@@ -7,9 +7,12 @@ import { MAC_BACKEND_COMPUTER_SANDBOX } from "../backendComputerIsolation";
 import {
   resolveVmLaunchAssets,
   VM_READINESS_TIMEOUT_MS,
+  VM_STOP_GRACE_MS,
   vmBackendLauncher,
+  VmSlotReservations,
   type VmLaunchAssets,
 } from "./vmBackendLauncher";
+import { VM_STOP_TIMEOUT_MS } from "./vmSupervisor";
 
 const archive = "/res/vm/f5-1.2.3-linux-arm64.tar.gz";
 const manifest = {
@@ -42,6 +45,7 @@ function resolve(overrides: Partial<Parameters<typeof resolveVmLaunchAssets>[0]>
     platform: "darwin",
     arch: "arm64",
     resourcesPath: "/res",
+    packaged: false,
     lock,
     exists: () => true,
     readFile: (path) => {
@@ -98,6 +102,29 @@ describe("resolveVmLaunchAssets", () => {
     });
   });
 
+  it("ignores every development override in packaged builds", () => {
+    const readFile = vi.fn(() => JSON.stringify(manifest));
+    const resolved = resolve({
+      packaged: true,
+      env: {
+        F5_EXPERIMENTAL_LINUX_VM: "1",
+        F5_VM_LIMACTL: "/evil/limactl",
+        F5_VM_BACKEND_ARCHIVE: "/evil/f5-1.2.3-linux-arm64.tar.gz",
+        F5_VM_IMAGE_URL: "https://evil.test/image.qcow2",
+        F5_VM_IMAGE_SHA256: "a".repeat(64),
+        F5_VM_IMAGE_SIZE: "5",
+      },
+      exists: (path) => path === "/res/native/lima/bin/limactl",
+      readFile,
+    });
+    // The bundled archive is absent here, so resolution stops there, never at /evil.
+    expect(resolved).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/archive is missing/),
+    });
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
   it("lets development builds override the image", () => {
     const resolved = resolve({
       env: {
@@ -114,6 +141,35 @@ describe("resolveVmLaunchAssets", () => {
       sha256: "a".repeat(64),
       size: 5,
     });
+  });
+});
+
+describe("VmSlotReservations", () => {
+  it("lets three concurrent opens take only the two VM slots", () => {
+    const slots = new VmSlotReservations();
+    const a = slots.reserve("a", []);
+    slots.reserve("b", []);
+    // Neither a nor b counts as running yet; their reservations alone fill the cap.
+    expect(() => slots.reserve("c", [])).toThrow(/Two Linux VM profiles/);
+    a();
+    expect(() => slots.reserve("c", [])).not.toThrow();
+  });
+
+  it("counts running VMs and doesn't double-count a profile that is both", () => {
+    const slots = new VmSlotReservations();
+    const release = slots.reserve("a", ["running"]);
+    // `a` is now also running: one slot, not two.
+    expect(() => slots.reserve("b", ["running", "a"])).toThrow();
+    release();
+    release();
+    expect(() => slots.reserve("b", ["running"])).not.toThrow();
+  });
+
+  it("lets a profile reopen while it holds its own slot", () => {
+    const slots = new VmSlotReservations();
+    slots.reserve("a", []);
+    slots.reserve("b", []);
+    expect(() => slots.reserve("a", ["b"])).not.toThrow();
   });
 });
 
@@ -161,6 +217,9 @@ describe("vmBackendLauncher", () => {
     });
     expect(launcher.environment).toBe("linux-vm");
     expect(launcher.readinessTimeoutMs).toBe(VM_READINESS_TIMEOUT_MS);
+    // Main must not force-kill the supervisor while `limactl stop` can still be running.
+    expect(launcher.stopGraceMs).toBe(VM_STOP_GRACE_MS);
+    expect(VM_STOP_GRACE_MS).toBeGreaterThan(VM_STOP_TIMEOUT_MS);
     const launch = launcher.launch(request);
     const [command, args, options] = spawn.mock.calls[0] as unknown as [
       string,

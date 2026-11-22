@@ -2,6 +2,7 @@ import * as ChildProcess from "node:child_process";
 import * as FS from "node:fs";
 import * as FSP from "node:fs/promises";
 import * as Path from "node:path";
+import { abortableDelay, acquireFileLock, LockHeld, type FileLockOptions } from "./fileLock";
 import { ensureGuestImage, pruneGuestImages, type GuestImagePin } from "./guestImage";
 import {
   buildLimaInstanceConfig,
@@ -56,14 +57,22 @@ export interface RunResult {
 }
 
 export interface VmSupervisorDeps {
-  run(command: string, args: ReadonlyArray<string>, timeoutMs: number): Promise<RunResult>;
+  /** Runs a command to completion. An aborted `signal` kills it. */
+  run(
+    command: string,
+    args: ReadonlyArray<string>,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<RunResult>;
   spawn(
     command: string,
     args: ReadonlyArray<string>,
     stdio: ChildProcess.StdioOptions,
   ): ChildProcess.ChildProcess;
-  ensureImage(pin: GuestImagePin, cacheDir: string): Promise<string>;
+  ensureImage(pin: GuestImagePin, cacheDir: string, signal: AbortSignal): Promise<string>;
   log(message: string): void;
+  /** Delay between readiness polls; tests shorten it. */
+  readonly pollMs?: number;
 }
 
 interface InstanceRecord {
@@ -72,6 +81,42 @@ interface InstanceRecord {
 
 const GUEST_TOOL = "/opt/f5/bin/f5-guest";
 const MINUTE = 60_000;
+/** `limactl stop`'s budget. Main's stop grace for VM profiles must exceed it. */
+export const VM_STOP_TIMEOUT_MS = MINUTE;
+/** How long a first boot may take to load its policy and mount the data disk. */
+export const GUEST_READY_WAIT_MS = 90_000;
+/** Not-ready reasons a booting guest reports until its units finish; anything else refuses at once. */
+const TRANSIENT_GUEST_REASONS = new Set([
+  "the egress policy is not loaded",
+  "the data disk is not attached",
+]);
+/** How long a new incarnation waits for another one's start or stop of the same VM. */
+export const INSTANCE_LOCK_WAIT_MS = 2 * MINUTE;
+
+export class VmStopped extends Error {
+  override readonly name = "VmStopped";
+}
+
+/**
+ * One supervisor per VM at a time. Main never runs two incarnations of a profile at once,
+ * but a supervisor it gave up on (killed or timed out mid-stop) can still be running
+ * `limactl stop`; a new one waits for it instead of racing it.
+ */
+export async function acquireInstanceLock(
+  path: string,
+  signal: AbortSignal,
+  options: FileLockOptions = {},
+): Promise<() => void> {
+  try {
+    return await acquireFileLock(path, signal, { waitMs: INSTANCE_LOCK_WAIT_MS, ...options });
+  } catch (error) {
+    if (error instanceof LockHeld)
+      throw new VmSupervisorRefusal(
+        "Another start or stop of this VM is still running. Try again when it finishes.",
+      );
+    throw error;
+  }
+}
 
 export function parseVmSupervisorConfig(raw: string | undefined): VmSupervisorConfig {
   if (!raw) throw new VmSupervisorRefusal("Missing VM supervisor configuration.");
@@ -97,10 +142,19 @@ export class VmSupervisor {
   constructor(
     private readonly config: VmSupervisorConfig,
     private readonly deps: VmSupervisorDeps,
+    /** Main asked the profile to stop: abandon preparation and kill what it is running. */
+    private readonly stopSignal: AbortSignal = new AbortController().signal,
   ) {}
 
-  private limactl(args: ReadonlyArray<string>, timeoutMs: number): Promise<RunResult> {
-    return this.deps.run(this.config.limactl, args, timeoutMs);
+  private throwIfStopped(): void {
+    if (this.stopSignal.aborted) throw new VmStopped();
+  }
+
+  private async limactl(args: ReadonlyArray<string>, timeoutMs: number): Promise<RunResult> {
+    this.throwIfStopped();
+    const result = await this.deps.run(this.config.limactl, args, timeoutMs, this.stopSignal);
+    this.throwIfStopped();
+    return result;
   }
 
   private async limactlOk(args: ReadonlyArray<string>, timeoutMs: number, what: string) {
@@ -174,7 +228,12 @@ export class VmSupervisor {
     this.refuseForeignLimaConfig();
 
     this.deps.log("Checking the guest image");
-    const imagePath = await this.deps.ensureImage(config.imagePin, config.imageCacheDir);
+    const imagePath = await this.deps.ensureImage(
+      config.imagePin,
+      config.imageCacheDir,
+      this.stopSignal,
+    );
+    this.throwIfStopped();
 
     let status = await this.instanceStatus();
     const record = this.readInstanceRecord();
@@ -229,23 +288,36 @@ export class VmSupervisor {
     if (!ready.backends.includes(config.backend.version)) await this.installBackend();
   }
 
+  /**
+   * The guest's readiness report. A booting guest may still be loading its egress policy or
+   * mounting its data disk, so those two reasons are polled for a bounded time; any other
+   * failure, or output that isn't a status report, refuses at once.
+   */
   private async guestStatus(): Promise<{ backends: string[] }> {
-    const result = await this.guest(["status"], MINUTE);
-    let status: { ready?: boolean; reason?: string; backends?: unknown } | null = null;
-    try {
-      status = JSON.parse(lastLine(result.stdout));
-    } catch {
-      /* Reported below. */
-    }
-    if (result.code !== 0 || status?.ready !== true)
+    const deadline = Date.now() + GUEST_READY_WAIT_MS;
+    for (;;) {
+      const result = await this.guest(["status"], MINUTE);
+      let status: { ready?: unknown; reason?: unknown; backends?: unknown } | null = null;
+      try {
+        status = JSON.parse(lastLine(result.stdout));
+      } catch {
+        /* Reported below. */
+      }
+      if (result.code === 0 && status?.ready === true)
+        return {
+          backends: Array.isArray(status.backends)
+            ? status.backends.filter((value): value is string => typeof value === "string")
+            : [],
+        };
+      const reason = typeof status?.reason === "string" ? status.reason : null;
+      if (reason && TRANSIENT_GUEST_REASONS.has(reason) && Date.now() < deadline) {
+        await abortableDelay(this.deps.pollMs ?? 3_000, this.stopSignal);
+        continue;
+      }
       throw new VmSupervisorRefusal(
-        `The guest is not ready: ${status?.reason ?? (lastLine(result.stderr) || `exit ${result.code}`)}. F5 won't run anything in it.`,
+        `The guest is not ready: ${reason ?? (lastLine(result.stderr) || `exit ${result.code}`)}. F5 won't run anything in it.`,
       );
-    return {
-      backends: Array.isArray(status.backends)
-        ? status.backends.filter((value): value is string => typeof value === "string")
-        : [],
-    };
+    }
   }
 
   private async installBackend(): Promise<void> {
@@ -318,16 +390,28 @@ export class VmSupervisor {
     );
   }
 
+  /**
+   * Shuts the VM down, keeping its disks. Deliberately not tied to the stop signal: it runs
+   * because main asked to stop. Harmless when the instance is already stopped or absent.
+   */
   async stopVm(): Promise<void> {
-    await this.limactl(["stop", LIMA_INSTANCE_NAME], MINUTE).catch(() => undefined);
+    this.deps.log("Shutting down the VM");
+    await this.deps
+      .run(this.config.limactl, ["stop", LIMA_INSTANCE_NAME], VM_STOP_TIMEOUT_MS)
+      .catch(() => undefined);
   }
 }
 
 const lastLine = (text: string) => text.trim().split("\n").at(-1)?.trim() ?? "";
 
-function waitForExit(child: ChildProcess.ChildProcess): Promise<number> {
+/**
+ * Resolves once with the child's exit code. Call it right after spawning: it also covers a
+ * child that already exited (by code or by signal) and one that failed to spawn.
+ */
+export function waitForExit(child: ChildProcess.ChildProcess): Promise<number> {
   return new Promise((resolve) => {
     if (child.exitCode !== null) return resolve(child.exitCode);
+    if (child.signalCode !== null) return resolve(1);
     child.once("exit", (code, signal) => resolve(code ?? (signal ? 1 : 0)));
     child.once("error", () => resolve(1));
   });
@@ -335,16 +419,19 @@ function waitForExit(child: ChildProcess.ChildProcess): Promise<number> {
 
 /**
  * Runs one incarnation. Resolves with the exit code for this process: the guest backend's,
- * or VM_REFUSED_EXIT_CODE after writing the refusal for main. `stopSignal` is main asking
- * the profile to stop: the backend channel closes, which stops the guest scope, then the
- * VM shuts down and keeps its disks.
+ * 0 after a stop, or VM_REFUSED_EXIT_CODE after writing the refusal for main.
+ *
+ * `stopSignal` is main asking the profile to stop. Preparation is abandoned and whatever it
+ * is running is killed; a running backend's channel closes, which stops the guest scope.
+ * Then the VM shuts down, keeping its disks, before this process exits, so main counts the
+ * profile against the VM cap until the VM is down. A refused start shuts the VM down too:
+ * nothing would own it. Only a backend crash leaves the VM running, for the restart.
  */
 export async function runVmSupervisor(
   config: VmSupervisorConfig,
   deps: VmSupervisorDeps,
   stopSignal: AbortSignal,
 ): Promise<number> {
-  const supervisor = new VmSupervisor(config, deps);
   const refuse = async (message: string) => {
     deps.log(message);
     await FSP.writeFile(config.startupErrorPath, JSON.stringify({ message }) + "\n").catch(
@@ -352,47 +439,92 @@ export async function runVmSupervisor(
     );
     return VM_REFUSED_EXIT_CODE;
   };
+  let release: () => void;
+  try {
+    await FSP.mkdir(config.limaHome, { recursive: true, mode: 0o700 });
+    release = await acquireInstanceLock(
+      Path.join(config.limaHome, "supervisor.lock"),
+      stopSignal,
+      deps.pollMs !== undefined ? { pollMs: deps.pollMs } : {},
+    );
+  } catch (error) {
+    // Another supervisor owns this VM: leave it alone.
+    if (stopSignal.aborted) return 0;
+    return refuse(error instanceof Error ? error.message : "The VM could not be locked.");
+  }
+  try {
+    return await runLocked(new VmSupervisor(config, deps, stopSignal), deps, stopSignal, refuse);
+  } finally {
+    release();
+  }
+}
+
+async function runLocked(
+  supervisor: VmSupervisor,
+  deps: VmSupervisorDeps,
+  stopSignal: AbortSignal,
+  refuse: (message: string) => Promise<number>,
+): Promise<number> {
   try {
     await supervisor.prepare();
   } catch (error) {
+    await supervisor.stopVm();
     if (stopSignal.aborted) return 0;
     return refuse(error instanceof Error ? error.message : "The VM could not start.");
   }
-  if (stopSignal.aborted) {
-    await supervisor.stopVm();
-    return 0;
-  }
 
+  // Exit tracking starts at spawn, so an early exit (or a failed spawn) is never missed.
   const forwards = supervisor.startForwards();
+  const forwardsExit = waitForExit(forwards);
   const backend = supervisor.launchBackend();
+  const backendExit = waitForExit(backend);
   const stop = () => {
     backend.kill("SIGTERM");
     forwards.kill("SIGTERM");
   };
-  stopSignal.addEventListener("abort", stop, { once: true });
-  // Losing the forward makes the backend unreachable; restart the incarnation.
-  forwards.once("exit", () => backend.kill("SIGTERM"));
-  const code = await waitForExit(backend);
+  if (stopSignal.aborted) stop();
+  else stopSignal.addEventListener("abort", stop, { once: true });
+  // Losing the forward makes the backend unreachable; end the incarnation.
+  void forwardsExit.then(() => backend.kill("SIGTERM"));
+  const code = await backendExit;
   forwards.kill("SIGTERM");
-  await waitForExit(forwards);
+  await forwardsExit;
   stopSignal.removeEventListener("abort", stop);
   if (stopSignal.aborted) {
-    deps.log("Shutting down the VM");
     await supervisor.stopVm();
     return 0;
   }
-  return code === VM_REFUSED_EXIT_CODE ? refuse("The guest refused to start the backend.") : code;
+  if (code === VM_REFUSED_EXIT_CODE) {
+    await supervisor.stopVm();
+    return refuse("The guest refused to start the backend.");
+  }
+  deps.log(`The backend exited (${code}); the VM keeps running for the restart.`);
+  return code;
 }
 
 export function defaultVmSupervisorDeps(config: VmSupervisorConfig): VmSupervisorDeps {
-  const env = { ...process.env, LIMA_HOME: config.limaHome };
+  // A private HOME: Lima and ssh never read the user's ~/.ssh/config, keys or caches.
+  const home = Path.join(config.limaHome, ".home");
+  FS.mkdirSync(home, { recursive: true, mode: 0o700 });
+  const env = {
+    PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
+    HOME: home,
+    TMPDIR: process.env.TMPDIR ?? "/tmp",
+    LANG: "C.UTF-8",
+    LIMA_HOME: config.limaHome,
+  };
   return {
-    run: (command, args, timeoutMs) =>
+    run: (command, args, timeoutMs, signal) =>
       new Promise((resolve) => {
         ChildProcess.execFile(
           command,
           [...args],
-          { env, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 },
+          {
+            env,
+            timeout: timeoutMs,
+            maxBuffer: 16 * 1024 * 1024,
+            ...(signal ? { signal } : {}),
+          },
           (error, stdout, stderr) => {
             // A non-zero exit carries its code; a timeout or spawn failure doesn't.
             const exitCode = (error as { code?: unknown } | null)?.code;
@@ -402,10 +534,11 @@ export function defaultVmSupervisorDeps(config: VmSupervisorConfig): VmSuperviso
         );
       }),
     spawn: (command, args, stdio) => ChildProcess.spawn(command, [...args], { env, stdio }),
-    ensureImage: (pin, cacheDir) =>
+    ensureImage: (pin, cacheDir, signal) =>
       ensureGuestImage({
         pin,
         cacheDir,
+        signal,
         onProgress: throttleProgress((received, total) =>
           console.error(
             `[vm] Downloading the guest image: ${Math.floor((received / total) * 100)}%`,

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import * as FS from "node:fs";
 import * as Net from "node:net";
 import type { Readable, Writable } from "node:stream";
 import { BackendFrameDecoder, encodeBackendFrame } from "@t3tools/shared/backendFrames";
@@ -66,10 +67,35 @@ export function frameStreamIpc(input: Readable, output: Writable): ComputerIpcPr
   };
 }
 
+/**
+ * A private, close-on-exec descriptor for an inherited pipe. The inherited fd has no
+ * FD_CLOEXEC, so every agent, shell and tool the backend spawns would inherit the channel
+ * and could read or write frames. Node can't set the flag directly, but every file it opens
+ * gets O_CLOEXEC, and on Linux opening `/proc/self/fd/<n>` reopens the same pipe. The
+ * original is closed. Off Linux (tests) the inherited fd is used as is.
+ */
+export function reopenCloseOnExec(
+  fd: number,
+  direction: "read" | "write",
+  fs: Pick<typeof FS, "openSync" | "closeSync"> = FS,
+): number {
+  const flags =
+    (direction === "read" ? FS.constants.O_RDONLY : FS.constants.O_WRONLY) |
+    FS.constants.O_NONBLOCK;
+  let reopened: number;
+  try {
+    reopened = fs.openSync(`/proc/self/fd/${fd}`, flags);
+  } catch {
+    return fd;
+  }
+  fs.closeSync(fd);
+  return reopened;
+}
+
 /** Frames on fds 3 (in) and 4 (out), as `f5-guest launch` arranges them. */
 export function guestFrameIpc(): ComputerIpcProcess {
   return frameStreamIpc(
-    new Net.Socket({ fd: 3, readable: true, writable: false }),
-    new Net.Socket({ fd: 4, readable: false, writable: true }),
+    new Net.Socket({ fd: reopenCloseOnExec(3, "read"), readable: true, writable: false }),
+    new Net.Socket({ fd: reopenCloseOnExec(4, "write"), readable: false, writable: true }),
   );
 }

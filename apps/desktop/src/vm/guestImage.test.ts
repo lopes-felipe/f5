@@ -140,6 +140,40 @@ describe("ensureGuestImage", () => {
     expect(FS.existsSync(guestImagePath(dir, sha256))).toBe(false);
   });
 
+  it("lets one of several concurrent callers download, and the rest reuse its file", async () => {
+    const { fetch, requests } = server(content);
+    const paths = await Promise.all([
+      ensureGuestImage({ pin, cacheDir: dir, fetch }),
+      ensureGuestImage({ pin, cacheDir: dir, fetch }),
+      ensureGuestImage({ pin, cacheDir: dir, fetch }),
+    ]);
+    expect(new Set(paths)).toEqual(new Set([guestImagePath(dir, sha256)]));
+    expect(requests).toHaveLength(1);
+    expect(FS.readFileSync(paths[0]!).equals(content)).toBe(true);
+    expect(FS.existsSync(guestImagePath(dir, sha256) + ".lock")).toBe(false);
+  });
+
+  it("waits for a download another process holds, then uses its result", async () => {
+    const lock = guestImagePath(dir, sha256) + ".lock";
+    // A live holder (this process stands in for another supervisor).
+    FS.writeFileSync(lock, String(process.pid));
+    const { fetch, requests } = server(content);
+    const waiting = ensureGuestImage({ pin, cacheDir: dir, fetch });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    FS.writeFileSync(guestImagePath(dir, sha256), content);
+    FS.rmSync(lock);
+    await expect(waiting).resolves.toBe(guestImagePath(dir, sha256));
+    expect(requests).toHaveLength(0);
+  });
+
+  it("replaces a cached file whose size doesn't match the pin", async () => {
+    FS.writeFileSync(guestImagePath(dir, sha256), "truncated");
+    const { fetch, requests } = server(content);
+    const path = await ensureGuestImage({ pin, cacheDir: dir, fetch });
+    expect(requests).toHaveLength(1);
+    expect(FS.readFileSync(path).equals(content)).toBe(true);
+  });
+
   it("prunes other cached images", async () => {
     const other = "b".repeat(64);
     FS.writeFileSync(guestImagePath(dir, other), "");
