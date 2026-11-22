@@ -18213,9 +18213,11 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
+      "decidedAt": "2026-11-22T18:12:51.037Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28027",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "preview browser",
