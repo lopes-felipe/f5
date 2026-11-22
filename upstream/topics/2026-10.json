@@ -52638,9 +52638,11 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-22T18:12:39.541Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24788",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings"
