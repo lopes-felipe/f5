@@ -11,8 +11,9 @@ F5 installs it only when you ask. In **Add provider**, searching for "Gemini" or
    - **Google account** uses your Google subscription. Click **Sign in** and follow the Google
      link.
    - **Gemini API key** is billed per token by Google. Paste the key, save, then click
-     **Connect** in the account panel. Threads start only after Antigravity accepts the key on
-     Connect, and a changed key needs a new Connect.
+     **Connect** in the account panel. Threads start only after a successful Connect, and a
+     changed key needs a new Connect. It isn't confirmed yet that Antigravity checks the key with
+     Google on Connect, so a revoked key may show as connected until the first prompt fails.
 4. Pick a Gemini model in the composer, and a **Thinking** level if the model offers one.
 
 Status checks and new threads never download software or open a browser on their own.
