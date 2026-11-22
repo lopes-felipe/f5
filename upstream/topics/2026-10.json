@@ -66568,9 +66568,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-22T18:13:22.456Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27104",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "observability",
