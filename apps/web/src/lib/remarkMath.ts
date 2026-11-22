@@ -1,4 +1,5 @@
-import type { InlineCode } from "mdast";
+import type { InlineCode, Root, RootContent } from "mdast";
+const whitespace = (code: Code) => code === 32 || code === 9 || code === 44;
 
 type Code = number | null;
 type State = (code: Code) => State | undefined;
@@ -17,10 +18,21 @@ const tokenize: Tokenizer = (effects, ok, nok) => {
   let display = false;
   let hasContent = false;
   let dataOpen = false;
+  let previous: Code = null;
+  let beforePrevious: Code = null;
+  let substantive = false;
+  let openWhitespace = false;
+  let first = true;
+  let invalidClose = false;
   const end: Tokenizer = (inner, done, fail) => {
+    invalidClose = false;
     let index = 0;
     const next: State = (code) => {
       if (index === close.length) {
+        if (!substantive || (close[0] === 36 && openWhitespace !== whitespace(previous))) {
+          invalidClose = true;
+          return fail(code);
+        }
         if (!display && close.length === 1 && code !== null && code >= 48 && code <= 57)
           return fail(code);
         inner.exit("f5MathClose");
@@ -35,19 +47,46 @@ const tokenize: Tokenizer = (effects, ok, nok) => {
     return next;
   };
   const content: State = (code) => {
+    if (first) {
+      openWhitespace = whitespace(code);
+      first = false;
+    }
     if (code === null || (!display && code < 0)) return nok(code);
+    if (code === 96 || (code === 47 && previous === 47 && beforePrevious === 58)) return nok(code);
     if (code === close[0] && hasContent) {
       if (dataOpen) {
         effects.exit("f5MathData");
         dataOpen = false;
       }
-      return effects.attempt({ tokenize: end }, finished, consume)(code);
+      return effects.attempt({ tokenize: end }, finished, (current) =>
+        code === 92 && !invalidClose ? escape(current) : nok(current),
+      )(code);
     }
+    if (code === 92) return escape(code);
     return consume(code);
+  };
+  const escaped: State = (code) => {
+    if (code === null) return nok(code);
+    consume(code);
+    return content;
+  };
+  const escape: State = (code) => {
+    consume(code);
+    return escaped;
   };
   const consume: State = (code) => {
     if (code === null) return nok(code);
     hasContent = true;
+    beforePrevious = previous;
+    previous = code;
+    if (
+      code !== 92 &&
+      code !== null &&
+      code >= 0 &&
+      !whitespace(code) &&
+      (close[1] !== 93 || !(code >= 48 && code <= 57))
+    )
+      substantive = true;
     if (code < 0) {
       if (dataOpen) {
         effects.exit("f5MathData");
@@ -76,7 +115,7 @@ const tokenize: Tokenizer = (effects, ok, nok) => {
       close = [36, 36];
       return content;
     }
-    if (code === 32 || code === 9 || code === null || code < 0) return nok(code);
+    if (whitespace(code) || code === null || code < 0) return nok(code);
     return content(code);
   };
   const afterSlash: State = (code) => {
@@ -100,6 +139,14 @@ interface CompileContext {
 }
 
 export function remarkMath(this: unknown) {
+  const processor = this as {
+    parser: (source: string) => Root;
+    data(): {
+      micromarkExtensions?: unknown[];
+      fromMarkdownExtensions?: unknown[];
+    };
+  };
+  let authoredSource: string | undefined;
   const data = (
     this as {
       data(): {
@@ -117,7 +164,10 @@ export function remarkMath(this: unknown) {
   (data.fromMarkdownExtensions ??= []).push({
     enter: {
       f5Math(this: CompileContext, token: unknown) {
-        const source = this.sliceSerialize(token);
+        const position = token as { start: { offset: number }; end: { offset: number } };
+        const source =
+          authoredSource?.slice(position.start.offset, position.end.offset) ??
+          this.sliceSerialize(token);
         const display = source.startsWith("$$") || source.startsWith("\\[");
         const width = source.startsWith("$") && !display ? 1 : 2;
         this.enter(
@@ -140,4 +190,48 @@ export function remarkMath(this: unknown) {
       },
     },
   });
+  const parse = processor.parser;
+  processor.parser = (source) => {
+    authoredSource = source;
+    if (!source.includes("|") || !/[$\\]/.test(source)) return parse(source);
+    // Read math with table splitting disabled, then protect only its pipes for GFM.
+    // This keeps code, link destinations and raw HTML owned by CommonMark.
+    const extensions = data.micromarkExtensions;
+    type Construct = { name?: string };
+    type Extension = { flow?: Record<string, Construct | Construct[] | undefined> };
+    data.micromarkExtensions =
+      extensions?.map((value) => {
+        const extension = value as Extension;
+        const flow = extension.flow?.null;
+        if (!flow) return value;
+        const remaining = (Array.isArray(flow) ? flow : [flow]).filter(
+          (item) => item.name !== "table",
+        );
+        return { ...extension, flow: { ...extension.flow, null: remaining } };
+      }) ?? [];
+    let tree: Root;
+    try {
+      tree = parse(source);
+    } finally {
+      data.micromarkExtensions = extensions ?? [];
+    }
+    const pipes = new Set<number>();
+    const visit = (node: Root | RootContent) => {
+      if (
+        node.type === "inlineCode" &&
+        String(node.data?.hProperties?.className).includes("language-math")
+      ) {
+        const start = node.position?.start.offset;
+        const end = node.position?.end.offset;
+        if (start !== undefined && end !== undefined)
+          for (let index = start; index < end; index++) if (source[index] === "|") pipes.add(index);
+      } else if ("children" in node) node.children.forEach(visit);
+    };
+    visit(tree);
+    const protectedSource = source
+      .split("")
+      .map((char, index) => (pipes.has(index) ? "\uE000" : char))
+      .join("");
+    return parse(protectedSource);
+  };
 }

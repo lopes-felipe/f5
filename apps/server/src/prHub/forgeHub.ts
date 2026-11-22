@@ -1,5 +1,6 @@
 import { Effect, Option, PubSub, Schema, Semaphore, Stream } from "effect";
 import { readChangeBreakdown } from "./changeBreakdown";
+import { makeChangeBreakdownCache } from "./changeBreakdownCache";
 import { SqlClient } from "effect/unstable/sql";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -60,6 +61,7 @@ interface Cached<A> {
 /** One immutable account generation owns each service, cache and durable row namespace. */
 export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProvider) =>
   Effect.gen(function* () {
+    const cachedBreakdown = yield* makeChangeBreakdownCache;
     const sql = yield* SqlClient.SqlClient,
       settings = yield* ServerSettingsService,
       scope = yield* Effect.scope;
@@ -687,11 +689,20 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
       getDetail,
       getFiles,
       getChangeBreakdown: (input) =>
-        readChangeBreakdown((cursor) =>
-          getFiles({
-            key: input.key,
-            ...(cursor ? { cursor } : {}),
-          }),
+        cachedBreakdown(
+          JSON.stringify([
+            account.generation,
+            input.key,
+            state.get(input.key)?.pr.headRefOid,
+            state.get(input.key)?.pr.updatedAt,
+            state.get(input.key)?.comparison,
+          ]),
+          readChangeBreakdown((cursor) =>
+            getFiles({
+              key: input.key,
+              ...(cursor ? { cursor } : {}),
+            }),
+          ),
         ),
       getTimeline,
       getReviewThreads: (input) =>

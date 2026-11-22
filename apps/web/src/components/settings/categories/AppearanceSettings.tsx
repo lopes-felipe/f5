@@ -21,6 +21,7 @@ import { buildAppSettingsPatch } from "../../../appSettings";
 import { cn } from "../../../lib/utils";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
+import { Switch } from "../../ui/switch";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { SettingsCard, SettingsRow } from "../SettingsCard";
 import { ThemeSettings } from "../ThemeSettings";
@@ -219,23 +220,21 @@ export function AppearanceSettings() {
 
   return (
     <>
-      <section className="space-y-2 rounded-lg border p-4">
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            aria-label="Render LaTeX math in chat"
-            type="checkbox"
-            checked={settings.mathRenderingEnabled}
-            onChange={(event) => {
-              void updateSettings({ mathRenderingEnabled: event.target.checked });
-            }}
-          />
-          Render LaTeX math in chat
-        </label>
-        <p className="text-xs text-muted-foreground">
-          Render inline and display equations. Use the TeX button beside a formula to copy its
-          source.
-        </p>
-      </section>
+      <SettingsCard title="Chat math" description="Optional equation rendering.">
+        <SettingsRow
+          title="Render LaTeX math in chat"
+          description="Render inline and display equations. Use the TeX button beside a formula to copy its source."
+          control={
+            <Switch
+              aria-label="Render LaTeX math in chat"
+              checked={settings.mathRenderingEnabled}
+              onCheckedChange={(checked) => {
+                void updateSettings({ mathRenderingEnabled: checked });
+              }}
+            />
+          }
+        />
+      </SettingsCard>
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Theme</h2>

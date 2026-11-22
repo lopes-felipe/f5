@@ -44,6 +44,7 @@ import remarkGfm from "remark-gfm";
 import { useDiffWordWrap, useAppSettingsSelector } from "../appSettings";
 import { remarkMath } from "../lib/remarkMath";
 import { MarkdownMath } from "./chat/MarkdownMath";
+import { readSelectedMarkdownText } from "../lib/assistantQuoteSelection";
 import { openMarkdownFileLink } from "../lib/openMarkdownFileLink";
 import { showLocalPathContextMenu } from "../lib/localPathContextMenu";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
@@ -736,6 +737,22 @@ const MarkdownContainer = memo(function MarkdownContainer(props: {
     <div
       className="chat-markdown w-full min-w-0 leading-relaxed text-foreground"
       data-streaming={props.streaming ? "true" : undefined}
+      onCopy={(event) => {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return;
+        const range = selection.getRangeAt(0);
+        const root =
+          event.currentTarget.closest('[data-message-role="assistant"]') ?? event.currentTarget;
+        if (!root.contains(range.commonAncestorContainer)) return;
+        if (
+          !Array.from(root.querySelectorAll("[data-markdown-copy]")).some((node) =>
+            range.intersectsNode(node),
+          )
+        )
+          return;
+        event.clipboardData.setData("text/plain", readSelectedMarkdownText(root, range));
+        event.preventDefault();
+      }}
     >
       {props.children}
     </div>

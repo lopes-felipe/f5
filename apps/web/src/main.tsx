@@ -12,7 +12,6 @@ import "./index.css";
 import { isElectron } from "./env";
 import { getRouter } from "./router";
 import { APP_DISPLAY_NAME } from "./branding";
-import { showBootError } from "./lib/bootError";
 
 // Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
 const history = isElectron ? createHashHistory() : createBrowserHistory();
@@ -21,9 +20,7 @@ const router = getRouter(history);
 
 document.title = APP_DISPLAY_NAME;
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement, {
-  onUncaughtError: showBootError,
-}).render(
+ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <RouterProvider router={router} />
   </React.StrictMode>,

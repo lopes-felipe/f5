@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { TrackedPullRequest } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
@@ -13,6 +13,9 @@ export function PrChangeStat({
   eager?: boolean;
 }) {
   const [requested, setRequested] = useState(false);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const cancelHover = () => clearTimeout(hoverTimer.current);
+  useEffect(() => cancelHover, []);
   const accountGeneration = getPrHubAccountGeneration();
   const query = useQuery({
     queryKey: [
@@ -45,7 +48,11 @@ export function PrChangeStat({
     <Tooltip>
       <TooltipTrigger
         render={<span tabIndex={0} />}
-        onPointerEnter={() => setRequested(true)}
+        onPointerEnter={() => {
+          cancelHover();
+          hoverTimer.current = setTimeout(() => setRequested(true), 250);
+        }}
+        onPointerLeave={cancelHover}
         onFocus={() => setRequested(true)}
         className="inline-flex gap-1.5 font-mono tabular-nums"
       >

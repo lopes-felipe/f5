@@ -41,7 +41,7 @@ export function MarkdownMath({ tex, display }: { tex: string; display: boolean }
       </span>
       <button
         type="button"
-        className="ml-1 text-xs text-muted-foreground"
+        className="ml-1 select-none text-xs text-muted-foreground"
         aria-label="Copy TeX source"
         title="Copy TeX source"
         onClick={() => {

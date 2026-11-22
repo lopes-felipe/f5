@@ -27,6 +27,7 @@ describe("created change requests", () => {
     expect(changeRequestsCreatedBy(command, url)).toEqual([]);
   });
   it("requires a URL on its own line and the matching forge", () => {
+    expect(changeRequestsCreatedBy("gh pr create", "https://ghe.example/o/r/pull/12")).toEqual([]);
     expect(changeRequestsCreatedBy("gh pr create", "Opened " + url)).toEqual([]);
     expect(changeRequestsCreatedBy("gh pr create", url + "/files")).toEqual([]);
     expect(

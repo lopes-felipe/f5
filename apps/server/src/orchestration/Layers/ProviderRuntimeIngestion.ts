@@ -4149,12 +4149,12 @@ const make = Effect.gen(function* () {
       output: commandExecution.pullRequestCreateOutput,
     });
     if (!pullRequest) return;
+    commandExecution.pullRequestCreateOutput = null;
     if (
       pullRequest.provider === "gitlab" &&
       !(yield* serverSettings.getSettings).autoLinkShellCreatedMergeRequests
     )
       return;
-    commandExecution.pullRequestCreateOutput = null;
     yield* orchestrationEngine
       .dispatch({
         type: "thread.meta.update",

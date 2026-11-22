@@ -10,13 +10,17 @@
   <body>
     <style>
       #boot-shell {
+        color-scheme: light;
         position: fixed;
         inset: 0;
         overflow: auto;
-        background: Canvas;
-        color: CanvasText;
+        background: var(--background, Canvas);
+        color: var(--foreground, CanvasText);
         z-index: 9999;
         font: 14px system-ui;
+      }
+      html.dark #boot-shell {
+        color-scheme: dark;
       }
       #boot-error {
         max-width: 540px;
@@ -45,7 +49,7 @@
         margin-top: 24px;
       }
     </style>
-    <div id="boot-shell" aria-live="polite"></div>
+    <div id="boot-shell" aria-live="polite" hidden></div>
     <div id="root"></div>
     <script type="module" src="/src/themeBoot.ts"></script>
     <script type="module" src="/src/boot.ts"></script>

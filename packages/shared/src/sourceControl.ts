@@ -175,7 +175,7 @@ export function detectCreatedPullRequest(input: {
       : null;
   if (commandText === null) return null;
   const created = changeRequestsCreatedBy(
-    commandText,
+    commandText.replace(/^Bash:\s*/, ""),
     input.output,
     parseSourceControlPullRequestUrl,
   );

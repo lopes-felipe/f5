@@ -18,7 +18,12 @@ import { PrHubJobCoordinator } from "../Services/PrHubJobCoordinator.ts";
 import { PrHubReviewOperations } from "../Services/PrHubReviewOperations.ts";
 import { readPrDetailCache, type CachedPrDetailRead } from "../detailCache.ts";
 import { fetchGitHubPrFiles } from "../githubPrFiles.ts";
-import { readChangeBreakdown } from "../changeBreakdown.ts";
+import {
+  readGitHubFileStats,
+  PR_FILE_STATS_QUERY,
+  gitHubStatsComparison,
+} from "../githubPrFileStats.ts";
+import { makeChangeBreakdownCache } from "../changeBreakdownCache.ts";
 import { readViewerReviewedHead } from "../viewerReviewedHead.ts";
 
 import { GitHubCredentialScope } from "../../git/githubApi.ts";
@@ -106,6 +111,49 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
     const providerKind = "github" as const;
     const cwd = accountCwd(serverConfig.cwd);
     const snapshotRef = yield* Ref.make<PrHubSnapshot | null>(null);
+    const cachedBreakdown = yield* makeChangeBreakdownCache;
+    const getChangeBreakdown: PrHubServiceShape["getChangeBreakdown"] = (input) =>
+      trackedPrByKey(input.key).pipe(
+        Effect.flatMap((pr) =>
+          Effect.gen(function* () {
+            const capture = yield* Effect.serviceOption(GitHubCredentialScope);
+            if (Option.isNone(capture))
+              return yield* new SourceControlProviderError({
+                provider: pr.provider,
+                host: pr.host,
+                operation: "prHub.getChangeBreakdown",
+                kind: "unauthenticated",
+                detail: "A verified account is required to read PR statistics.",
+              });
+            const context = capture.value;
+            const { owner, repo } = yield* repositoryParts(pr);
+            const read = (cursor: string | null) =>
+              githubCli
+                .request({
+                  cwd,
+                  context,
+                  endpoint: "graphql",
+                  method: "POST",
+                  body: {
+                    query: PR_FILE_STATS_QUERY,
+                    variables: { owner, repo, number: pr.number, cursor },
+                  },
+                })
+                .pipe(Effect.mapError(mapGitHubCliError));
+            // The first stats page verifies the actual comparison before reusing the sum.
+            const initial = yield* read(null);
+            const comparison = gitHubStatsComparison(initial);
+            if (comparison === null) return null;
+            const key = JSON.stringify([context.host, context.generation, pr.key, comparison]);
+            return yield* cachedBreakdown(
+              key,
+              readGitHubFileStats((cursor) =>
+                cursor === null ? Effect.succeed(initial) : read(cursor),
+              ),
+            );
+          }),
+        ),
+      );
     // Room for a burst. Events that still do not fit are dropped oldest first, which the
     // reader sees as a jump in their sequence numbers.
     const changePubSub = yield* PubSub.sliding<PrHubChanged>(16);
@@ -827,13 +875,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       getDetail,
       getTimeline,
       getFiles,
-      getChangeBreakdown: (input) =>
-        readChangeBreakdown((cursor) =>
-          getFiles({
-            key: input.key,
-            ...(cursor ? { cursor } : {}),
-          }),
-        ),
+      getChangeBreakdown,
       getUnresolvedThreads,
       replyReviewThread,
       getReplyOperation,

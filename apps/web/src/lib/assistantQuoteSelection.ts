@@ -25,7 +25,8 @@ function selectedTextBoundary(range: Range, node: Node, last: boolean): Text | n
     const start = node === range.startContainer ? range.startOffset : 0;
     const end = node === range.endContainer ? range.endOffset : text.length;
     const element = text.parentElement;
-    return start < end && element && !excluded(element) ? text : null;
+    const math = element?.closest("[data-markdown-copy]");
+    return start < end && element && !excluded(math ?? element) ? text : null;
   }
   for (
     let child = last ? node.lastChild : node.firstChild;
@@ -39,7 +40,7 @@ function selectedTextBoundary(range: Range, node: Node, last: boolean): Text | n
 }
 
 /** Read selected display text without changing the native selection or including row metadata. */
-function readQuoteText(source: Element, range: Range): string {
+export function readSelectedMarkdownText(source: Element, range: Range): string {
   let result = "";
   let pendingBreaks = 0;
   const separate = (count: number) => {
@@ -66,6 +67,13 @@ function readQuoteText(source: Element, range: Range): string {
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const element = node as Element;
     if (excluded(element)) return;
+    const mathSource = element.getAttribute("data-markdown-copy");
+    if (mathSource !== null) {
+      if (result && pendingBreaks) result = result.trimEnd() + "\n".repeat(pendingBreaks);
+      pendingBreaks = 0;
+      result += mathSource;
+      return;
+    }
     if (element.tagName === "BR") {
       result += "\n";
       return;
@@ -94,7 +102,7 @@ export function captureAssistantQuoteSelection(selection: Selection | null) {
   // Validate the text actually selected, rather than empty or unselectable endpoints.
   range.setStart(first, first === range.startContainer ? range.startOffset : 0);
   range.setEnd(last, last === range.endContainer ? range.endOffset : last.length);
-  const text = readQuoteText(source, range);
+  const text = readSelectedMarkdownText(source, range);
   if (!text) return null;
   return { source, range, text: text.slice(0, 4000) };
 }

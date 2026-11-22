@@ -8290,8 +8290,11 @@ describe("ProviderRuntimeIngestion", () => {
       readonly status: "completed" | "failed";
       readonly output: string;
       readonly outputAfterCompletion?: boolean;
+      readonly gitLabLinking?: boolean;
     }) => {
-      const harness = await createHarness();
+      const harness = await createHarness({
+        settings: { autoLinkShellCreatedMergeRequests: input.gitLabLinking ?? false },
+      });
       const now = new Date().toISOString();
       const base = {
         provider: input.provider,
@@ -8365,6 +8368,19 @@ describe("ProviderRuntimeIngestion", () => {
           url: prUrl,
         },
       ]);
+    });
+    it.each([false, true])("honors the GitLab linking preference: %s", async (enabled) => {
+      const harness = await runCommand({
+        key: "gitlab-" + enabled,
+        provider: "claudeAgent",
+        detail: "Bash: glab mr create --fill",
+        status: "completed",
+        output: "https://gitlab.com/team/repo/-/merge_requests/7\n",
+        outputAfterCompletion: true,
+        gitLabLinking: enabled,
+      });
+      const links = await linksOf(harness);
+      expect(links.map((link) => link.number)).toEqual(enabled ? [7] : []);
     });
 
     it("links a PR whose URL arrives after the command completed", async () => {

@@ -5,6 +5,10 @@ it.each([
   ["<p>First paragraph.</p><p>Second paragraph.</p>", "First paragraph.\n\nSecond paragraph."],
   ["<ul><li>item one</li><li>item two</li></ul>", "item one\nitem two"],
   ["<p>First<br>Second</p>", "First\nSecond"],
+  [
+    '<p>Before <span data-markdown-copy="\\(x^2\\)"><span class="katex-mathml">x2 annotation</span><span aria-hidden="true">x²</span><button>TeX</button></span> after</p>',
+    "Before \\(x^2\\) after",
+  ],
   ['<pre style="white-space: pre"><code>one\n  two</code></pre>', "one\n  two"],
   [
     '<p>Visible<span hidden>hidden</span><span style="display:none">hidden</span><span class="sr-only">hidden</span><span aria-hidden="true">hidden</span> text</p>',

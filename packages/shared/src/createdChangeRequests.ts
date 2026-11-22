@@ -105,6 +105,7 @@ export function changeRequestsCreatedBy(
   for (const [, url = ""] of output.matchAll(URL_LINE)) {
     const kind = url.includes("/-/merge_requests/") ? "gitlab" : "github";
     const link = parseUrl(url, kind);
+    if (link?.provider === "github" && link.host !== "github.com") continue;
     if (link === null || !creators.has(link.provider)) continue;
     const expectedPath = link.provider === "github" ? "/pull/" : "/-/merge_requests/";
     if (!url.endsWith(expectedPath + link.number)) continue;

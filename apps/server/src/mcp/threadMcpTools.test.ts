@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
+import { THEME_TOKEN_NAMES } from "@t3tools/shared/themeTokens";
 import { Effect, Exit, Scope } from "effect";
 import { makePreviewAutomationBroker, PreviewAutomationBroker } from "./PreviewAutomationBroker.ts";
 import { makePreviewMcpHttpServer } from "./PreviewMcpHttpServer.ts";
@@ -154,7 +155,7 @@ it("guides agents to chart data, follow the theme and leave the page unannounced
   );
   assert.include(render.description, "Do not restate the page.");
   assert.include(render.description, "height cap 20000px");
-  assert.include(render.description, "matching -foreground for text");
+  for (const token of THEME_TOKEN_NAMES) assert.include(render.description, "--" + token);
   for (const variable of ["--chart-1", "--chart-6", "--radius", "--font-sans", "--font-mono"])
     assert.include(render.description, variable);
   assert.deepStrictEqual(preview.annotations, {

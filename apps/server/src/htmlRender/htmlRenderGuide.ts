@@ -1,7 +1,10 @@
 import { HTML_RENDER_COLUMN_WIDTH, HTML_RENDER_MAX_FIT_HEIGHT } from "@t3tools/shared/htmlRender";
+import { THEME_TOKEN_NAMES } from "@t3tools/shared/themeTokens";
 
 export const HTML_RENDER_THEME_GUIDE =
-  "Use theme CSS variables: --background/--foreground, --card, --popover, --muted, --secondary, --primary, --accent, --destructive, --warning, --success, --info (matching -foreground for text); --border, --ring, --chart-1 to --chart-6, --radius, --font-sans, --font-mono.";
+  "Use theme CSS variables: " +
+  THEME_TOKEN_NAMES.map((name) => "--" + name).join(", ") +
+  "; --chart-1 to --chart-6, --radius, --font-sans, --font-mono.";
 
 export const HTML_RENDER_LAYOUT_GUIDE =
   "Fluid reply width (default " +

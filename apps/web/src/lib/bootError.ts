@@ -1,7 +1,9 @@
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 
 // Deliberately independent of React, the router and application state.
-export async function resolveDebugCommand(bridge: DesktopBridge | undefined): Promise<string> {
+export async function resolveDebugCommand(
+  bridge: DesktopBridge | undefined,
+): Promise<string | null> {
   try {
     const state = await bridge?.cliCommand?.state();
     const installed = state?.installedPaths.f5;
@@ -9,7 +11,7 @@ export async function resolveDebugCommand(bridge: DesktopBridge | undefined): Pr
   } catch {
     // Broken IPC must not hide recovery actions.
   }
-  return "f5";
+  return null;
 }
 
 export function buildBootErrorReport(error: unknown): string {
@@ -27,7 +29,8 @@ export function buildBootErrorReport(error: unknown): string {
   return (
     parts
       .join("\nCaused by: ")
-      .replace(/\b[a-z][\w+.-]*:\/\/[^\s)'"]+/gi, "[URL redacted]")
+      .replace(/\b[a-z][\w+.-]*:\/\/[^\s/?#)'"]+/gi, "")
+      .replace(/[?#][^\s)'"]+/g, "")
       .slice(0, 6000) +
     "\n\nF5 " +
     import.meta.env.APP_VERSION +
@@ -129,13 +132,10 @@ export function showBootError(error: unknown): void {
   more.append(
     make(
       "p",
-      "Run F5 in a terminal on the computer hosting it to inspect startup output. Ask your agent to inspect the local server logs if it still fails.",
+      "Ask your agent to inspect the local server logs on the computer hosting F5. If a terminal command is installed, run it there to inspect startup output.",
     ),
   );
-  const command = make("code", "f5");
-  void resolveDebugCommand(bridge).then((value) => {
-    command.textContent = value;
-  });
+  const command = make("code");
   const copy = (target: HTMLElement) => {
     const fallback = () => {
       const range = document.createRange();
@@ -149,10 +149,19 @@ export function showBootError(error: unknown): void {
       status.textContent = "Copied";
     }, fallback);
   };
-  more.append(
+  const commandRow = make("div");
+  commandRow.hidden = true;
+  commandRow.append(
     command,
     button("Copy command", () => copy(command)),
   );
+  void resolveDebugCommand(bridge).then((value) => {
+    if (value) {
+      command.textContent = value;
+      commandRow.hidden = false;
+    }
+  });
+  more.append(commandRow);
   const report = make("pre", buildBootErrorReport(error));
   report.tabIndex = 0;
   more.append(
