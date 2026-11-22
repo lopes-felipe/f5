@@ -216,6 +216,7 @@ import {
   OrchestrationGetThreadPeeksInput,
   OrchestrationGetSnapshotInput,
   OrchestrationGetStartupSnapshotInput,
+  OrchestrationGetLatestSequenceInput,
   OrchestrationGetThreadCommandExecutionInput,
   OrchestrationGetThreadCommandExecutionsInput,
   OrchestrationGetThreadDetailsInput,
@@ -445,7 +446,7 @@ const WebSocketRequestBody = Schema.Union([
     ORCHESTRATION_WS_METHODS.dispatchCommand,
     Schema.Struct({ command: ClientOrchestrationCommand }),
   ),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.getLatestSequence, Schema.Struct({})),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.getLatestSequence, OrchestrationGetLatestSequenceInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getSnapshot, OrchestrationGetSnapshotInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getStartupSnapshot, OrchestrationGetStartupSnapshotInput),
   tagRequestBody(

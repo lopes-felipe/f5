@@ -278,6 +278,11 @@ export function onPrHubAdvisoriesUpdated(
   };
 }
 
+export function resetWsNativeApiForTests(): void {
+  instance?.transport.dispose();
+  instance = null;
+}
+
 export function createWsNativeApi(): NativeApi {
   if (instance) return instance.api;
 
@@ -1237,7 +1242,8 @@ export function createWsNativeApi(): NativeApi {
       onAdvisoriesUpdated: (callback) => onPrHubAdvisoriesUpdated(callback),
     },
     orchestration: {
-      getLatestSequence: () => transport.request(ORCHESTRATION_WS_METHODS.getLatestSequence),
+      getLatestSequence: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.getLatestSequence, input),
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),
       getStartupSnapshot: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getStartupSnapshot, input),

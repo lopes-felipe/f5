@@ -3666,15 +3666,26 @@ export const OrchestrationStartImplementationInput = Schema.Struct({
 export type OrchestrationStartImplementationInput =
   typeof OrchestrationStartImplementationInput.Type;
 
+export const OrchestrationGetLatestSequenceInput = Schema.Struct({
+  resume: Schema.optional(
+    Schema.Struct({
+      afterSequence: NonNegativeInt,
+      backendIncarnation: Schema.String,
+    }),
+  ),
+});
+export type OrchestrationGetLatestSequenceInput = typeof OrchestrationGetLatestSequenceInput.Type;
+
 export const OrchestrationGetLatestSequenceResult = Schema.Struct({
   latestSequence: NonNegativeInt,
   backendIncarnation: Schema.String,
+  /** Present when the entire requested range can be replayed, including an empty range. */
+  events: Schema.optional(Schema.Array(OrchestrationEvent)),
 });
 export type OrchestrationGetLatestSequenceResult = typeof OrchestrationGetLatestSequenceResult.Type;
 
-export const OrchestrationRpcSchemas = {
+const orchestrationRpcSchemas = {
   searchThread: { input: ThreadSearchInput, output: ThreadSearchResult },
-  getLatestSequence: { input: Schema.Struct({}), output: OrchestrationGetLatestSequenceResult },
   getSnapshot: {
     input: OrchestrationGetSnapshotInput,
     output: OrchestrationGetSnapshotResult,
@@ -3808,3 +3819,18 @@ export const OrchestrationRpcSchemas = {
     output: Schema.Void,
   },
 } as const;
+
+// Refer to the replay schema by name rather than expanding its event union
+// into the already large declaration for the table.
+export const OrchestrationRpcSchemas: typeof orchestrationRpcSchemas & {
+  readonly getLatestSequence: {
+    readonly input: typeof OrchestrationGetLatestSequenceInput;
+    readonly output: typeof OrchestrationGetLatestSequenceResult;
+  };
+} = {
+  ...orchestrationRpcSchemas,
+  getLatestSequence: {
+    input: OrchestrationGetLatestSequenceInput,
+    output: OrchestrationGetLatestSequenceResult,
+  },
+};

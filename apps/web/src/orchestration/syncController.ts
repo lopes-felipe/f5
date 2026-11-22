@@ -4,7 +4,10 @@ import {
   cleanupDeletedThreadsFromSnapshot,
 } from "../lib/deletedThreadCleanup";
 import type { AppSettings } from "../appSettings";
-import { startSequenceReconciliation } from "./sequenceReconciliation";
+import {
+  FULL_RECONCILIATION_INTERVAL_MS,
+  startSequenceReconciliation,
+} from "./sequenceReconciliation";
 import { getWsConnectionState, subscribeWsConnectionState } from "../wsConnectionState";
 import { createOrchestrationEventRouter, type RouterSnapshot } from "../orchestration/eventRouter";
 import { invalidateWorkflowQueries } from "../lib/workflowQueries";
@@ -307,6 +310,9 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
   const poisonedLoadedThreadIds = new Set<ThreadId>();
   let nextWelcomeRecoveryId = 0;
   let pendingWelcomeRecovery: { id: number; payload: WsWelcomePayload } | null = null;
+  let synchronizedIncarnation: string | undefined;
+  let resumeIncarnation: string | undefined;
+  let authoritativeSnapshotAtMs = -Infinity;
   let pendingCommandExecutionDetailInvalidation = false;
   let latestWelcomeReceivedAtMs: number | null = null;
   let hasPreloadedRecentThreads = false;
@@ -558,6 +564,36 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
   };
 
   const readSnapshot = async (): Promise<RouterSnapshot> => {
+    const incarnation = resumeIncarnation;
+    resumeIncarnation = undefined;
+    if (incarnation !== undefined) {
+      const afterSequence = router.committedSequence;
+      const resumed = await api.orchestration
+        .getLatestSequence({
+          resume: { afterSequence, backendIncarnation: incarnation },
+        })
+        .catch(() => undefined);
+      if (
+        resumed?.backendIncarnation === incarnation &&
+        resumed.events !== undefined &&
+        resumed.events.length === resumed.latestSequence - afterSequence &&
+        resumed.events.every((event, index) => event.sequence === afterSequence + index + 1)
+      ) {
+        return {
+          sequence: resumed.latestSequence,
+          provisional: false,
+          replay: resumed.events,
+          merge: () => {
+            invalidateAllWorkspaceQueries(queryClient);
+            pendingCommandExecutionDetailInvalidation = false;
+            void invalidateThreadCommandExecutionDetailQueries(queryClient);
+          },
+          finish: async () => {
+            await completeWelcomeRecovery();
+          },
+        };
+      }
+    }
     const pendingBootstrapThreadId =
       pathnameRef.current === "/"
         ? (pendingWelcomeRecovery?.payload.bootstrapThreadId ?? null)
@@ -635,6 +671,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
         syncStartupSnapshot(snapshot, { rewindDraftReadTicket });
         void invalidateWorkflowQueries(queryClient);
         if (!snapshotIsProvisional) {
+          authoritativeSnapshotAtMs = environment.now();
           void cleanupDeletedThreadsFromSnapshot(snapshot.threads);
           useComposerMentionHistoryStore
             .getState()
@@ -745,11 +782,13 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
       onGap: () => invalidateAllWorkspaceQueries(queryClient),
       onResynchronizing: noteWsResynchronizing,
       onSynchronized: () => {
+        synchronizedIncarnation = useStore.getState().backendIncarnation;
         noteWsSynchronized();
         void queryClient.invalidateQueries({ queryKey: ["worktrees"] });
       },
       onRecoveryError: noteWsSynchronizationError,
       logPoison: (batch, error) => {
+        synchronizedIncarnation = undefined;
         abortActiveDetailPrefetches();
         const ids = new Set(
           batch
@@ -874,8 +913,16 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     router.invalidateSnapshot();
     noteWsResynchronizing();
     const previous = useStore.getState().backendIncarnation;
+    resumeIncarnation =
+      getWsConnectionState().phase === "connected" &&
+      previous === synchronizedIncarnation &&
+      previous === payload.backendIncarnation &&
+      environment.now() - authoritativeSnapshotAtMs < FULL_RECONCILIATION_INTERVAL_MS
+        ? synchronizedIncarnation
+        : undefined;
     if (payload.backendIncarnation && previous !== payload.backendIncarnation) {
       if (previous !== undefined) {
+        authoritativeSnapshotAtMs = -Infinity;
         abortActiveDetailPrefetches();
         clearInFlightOrchestrationRpcRequests();
         router.resetStream();
@@ -884,6 +931,9 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
       } else useStore.setState({ backendIncarnation: payload.backendIncarnation });
     }
     pendingWelcomeRecovery = { id: ++nextWelcomeRecoveryId, payload };
+    if (previous !== undefined) {
+      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.all });
+    }
     pendingCommandExecutionDetailInvalidation = true;
     latestWelcomeReceivedAtMs = environment.now();
     clearSnapshotRetry();
@@ -894,6 +944,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     committedSequence: () => router.committedSequence,
     incarnation: () => useStore.getState().backendIncarnation,
     recoverIncarnation: async (incarnation) => {
+      authoritativeSnapshotAtMs = -Infinity;
       abortActiveDetailPrefetches();
       router.resetStream();
       useStore.getState().resetBackendState(incarnation);

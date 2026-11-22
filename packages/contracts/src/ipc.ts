@@ -507,6 +507,7 @@ import type {
   OrchestrationGetStartupSnapshotInput,
   OrchestrationGetStartupSnapshotResult,
   OrchestrationGetLatestSequenceResult,
+  OrchestrationGetLatestSequenceInput,
   OrchestrationGetThreadCommandExecutionInput,
   OrchestrationGetThreadCommandExecutionResult,
   OrchestrationGetThreadCommandExecutionsInput,
@@ -1628,7 +1629,9 @@ export interface NativeApi {
   };
   orchestration: {
     searchThread: (input: ThreadSearchInput) => Promise<ThreadSearchResult>;
-    getLatestSequence: () => Promise<OrchestrationGetLatestSequenceResult>;
+    getLatestSequence: (
+      input?: OrchestrationGetLatestSequenceInput,
+    ) => Promise<OrchestrationGetLatestSequenceResult>;
     getSnapshot: () => Promise<OrchestrationReadModel>;
     getStartupSnapshot: (
       input?: OrchestrationGetStartupSnapshotInput,

@@ -58,6 +58,49 @@ describe("WebSocket Server", () => {
     closeTestServer,
   } = h;
 
+  it("replays a short orchestration gap only for the current backend", async () => {
+    h.server = await createTestServer({ cwd: "/test" });
+    const addr = h.server.address();
+    const [ws, welcome] = await connectAndAwaitWelcome(
+      typeof addr === "object" && addr !== null ? addr.port : 0,
+    );
+    connections.push(ws);
+    const backendIncarnation = welcome.data.backendIncarnation;
+    const initial = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {});
+    const afterSequence = (initial.result as { latestSequence: number }).latestSequence;
+    const created = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "cmd-ws-replay-project-create",
+      projectId: "replay-project",
+      title: "Replay project",
+      workspaceRoot: makeTempDir("t3code-ws-replay-project-"),
+      defaultModel: "gpt-5-codex",
+      createdAt: new Date().toISOString(),
+    });
+    expect(created.error).toBeUndefined();
+
+    const replay = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence, backendIncarnation },
+    });
+    expect(replay.result).toMatchObject({
+      backendIncarnation,
+      latestSequence: afterSequence + 1,
+      events: [{ sequence: afterSequence + 1, type: "project.created" }],
+    });
+    const current = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence: afterSequence + 1, backendIncarnation },
+    });
+    expect(current.result).toEqual({
+      backendIncarnation,
+      latestSequence: afterSequence + 1,
+      events: [],
+    });
+    const stale = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence, backendIncarnation: "previous-backend" },
+    });
+    expect(stale.result).toEqual({ backendIncarnation, latestSequence: afterSequence + 1 });
+  });
+
   it("returns error when requesting turn diff for unknown thread", async () => {
     h.server = await createTestServer({ cwd: "/test" });
     const addr = h.server.address();

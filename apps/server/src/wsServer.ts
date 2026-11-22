@@ -491,6 +491,8 @@ type SubmissionSource = "human" | "automation";
 
 const clientDiagnosticsReporter = makeClientDiagnosticsReporter();
 const BACKEND_INCARNATION = process.env.F5_DESKTOP_BACKEND_INCARNATION || crypto.randomUUID();
+const MAX_RECONNECT_REPLAY_EVENTS = 128;
+const MAX_RECONNECT_REPLAY_BYTES = 512 * 1024;
 
 const DESKTOP_RENDERER_ORIGIN = "t3://app";
 const PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
@@ -4879,10 +4881,30 @@ export const createServer = Effect.fn(function* (
 
       case ORCHESTRATION_WS_METHODS.getLatestSequence: {
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        return {
+        const response = {
           latestSequence: (yield* orchestrationEngine.getReadModel()).snapshotSequence,
           backendIncarnation: BACKEND_INCARNATION,
         };
+        const resume = request.body.resume;
+        if (resume?.backendIncarnation !== BACKEND_INCARNATION) return response;
+        const gap = response.latestSequence - resume.afterSequence;
+        if (gap < 0 || gap > MAX_RECONNECT_REPLAY_EVENTS) return response;
+        if (gap === 0) return { ...response, events: [] };
+
+        const events = yield* orchestrationEngine
+          .readEvents(resume.afterSequence, { limit: gap })
+          .pipe(
+            Stream.runCollect,
+            Effect.orElseSucceed(() => []),
+          );
+        if (events.length !== gap) return response;
+        let bytes = 0;
+        for (const [index, event] of events.entries()) {
+          if (event.sequence !== resume.afterSequence + index + 1) return response;
+          bytes += Buffer.byteLength(JSON.stringify(event));
+          if (bytes > MAX_RECONNECT_REPLAY_BYTES) return response;
+        }
+        return { ...response, events };
       }
       case ORCHESTRATION_WS_METHODS.getSnapshot: {
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
@@ -8279,6 +8301,7 @@ export const createServer = Effect.fn(function* (
   });
 
   wss.on("connection", (ws) => {
+    let disconnectRecorded = false;
     socketLiveness.add(ws);
     logger.info("websocket transport negotiated", {
       runtime: webSocketRuntimeName(),
@@ -8335,7 +8358,16 @@ export const createServer = Effect.fn(function* (
         ),
         Effect.flatMap((delivered) =>
           delivered
-            ? Ref.update(clients, (clients) => clients.add(ws)).pipe(
+            ? Ref.modify(clients, (clients) =>
+                ws.readyState === ws.OPEN && !disconnectRecorded
+                  ? [true, clients.add(ws)]
+                  : [false, clients],
+              )
+            : Effect.succeed(false),
+        ),
+        Effect.flatMap((joined) =>
+          joined
+            ? Effect.void.pipe(
                 // Readiness that changed between the welcome and joining the
                 // broadcast set would otherwise be lost for this client.
                 Effect.andThen(
@@ -8402,7 +8434,6 @@ export const createServer = Effect.fn(function* (
       void runPromise(handleMessage(ws, raw).pipe(Effect.ignoreCause({ log: true })));
     });
 
-    let disconnectRecorded = false;
     const recordDisconnect = () => {
       if (disconnectRecorded) {
         return;
