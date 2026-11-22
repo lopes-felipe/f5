@@ -2,7 +2,7 @@ import { McpAppFrame } from "./McpAppFrame";
 import { settleListScroll } from "./settleListScroll";
 import { AttachmentImage } from "../AttachmentImage";
 import { ThreadFindContext } from "./threadFindContext";
-import { highlightThreadFind } from "./threadFindHighlights";
+import { watchThreadFindHighlights } from "./threadFindHighlights";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
 import { recordTimelineRowRender } from "../../lib/performanceCounters";
 import { messageTextRevision, messageReasoningContent } from "../../lib/streamingTextRevision";
@@ -676,6 +676,27 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [enteringRowIds]);
 
   const rowCount = rows.length;
+  const find = useContext(ThreadFindContext);
+  const findQuery = find?.query;
+  const hasTimelineList = hasMessages || isWorking;
+  const findSelectionRef = useRef<typeof find>(null);
+  const refreshFindRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (!findQuery || !hasTimelineList) return;
+    const node = listRef.current?.getScrollableNode?.();
+    if (!(node instanceof HTMLElement)) return;
+    const highlights = watchThreadFindHighlights(node, findQuery, () => findSelectionRef.current);
+    refreshFindRef.current = highlights.refresh;
+    return () => {
+      refreshFindRef.current = null;
+      highlights.clear();
+    };
+  }, [findQuery, hasTimelineList, listRef, threadId]);
+  useEffect(() => {
+    findSelectionRef.current = find;
+    refreshFindRef.current?.();
+  }, [find]);
+
   useEffect(() => {
     // The empty pane has no list. Keep its initial measured end target armed
     // until LegendList actually mounts, including after loading a thread.
@@ -1227,6 +1248,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     scheduleEndSettle();
   }, [scheduleEndSettle]);
   const handleItemSizeChanged = useCallback(() => {
+    refreshFindRef.current?.();
     if (!liveFollowEnabledRef.current && !disclosurePinsEndRef.current) return;
     queueMicrotask(pinTimelineToEnd);
     scheduleEndSettle();
@@ -1996,47 +2018,10 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
   // A freshly appended row rises in (a transform, so list measurement is unaffected).
   const entering = useContext(RowEnteringContext).has(row.id);
   const find = useContext(ThreadFindContext);
-  const element = useRef<HTMLDivElement>(null);
   const active = find?.entryId === row.id;
-  useEffect(() => {
-    const root = element.current;
-    if (!active || !find || !root) return;
-    let clear = () => {};
-    let frame = 0;
-    let reported = false;
-    // Streaming and highlighter mutations only refresh the highlights; the
-    // range is reported once so the navigation owner places it a single time.
-    const refresh = () => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        frame = window.requestAnimationFrame(() => {
-          clear();
-          const highlight = highlightThreadFind(root, find.query, find.occurrence);
-          clear = highlight.clear;
-          // Only the requested occurrence is reported; a stand-in (the first
-          // match, while a later block is still rendering) would place the
-          // wrong text, and the report happens once.
-          if (reported || !highlight.exact || !highlight.selected || find.requestId == null) {
-            return;
-          }
-          reported = true;
-          find.onSelectedRange?.(find.requestId, highlight.selected);
-        });
-      });
-    };
-    const observer = new MutationObserver(refresh);
-    observer.observe(root, { childList: true, subtree: true, characterData: true });
-    refresh();
-    return () => {
-      observer.disconnect();
-      window.cancelAnimationFrame(frame);
-      clear();
-    };
-  }, [active, find]);
   recordTimelineRowRender(row.id);
   return (
     <div
-      ref={element}
       data-thread-find-active={active ? "true" : undefined}
       data-row-entering={entering ? "" : undefined}
       className={cn(
@@ -2458,13 +2443,15 @@ const TimelineUserMessageBody = memo(function TimelineUserMessageBody(props: {
     [props.text, props.skillCall, props.terminalContexts, props.markup],
   );
   return (
-    <CollapsibleUserMessageBody
-      text={props.text}
-      collapseAllowed={props.terminalContexts.length === 0}
-      preservesCollapsedPrefix={preservesCollapsedPrefix}
-      renderBody={renderBody}
-      forceExpandedForFind={props.forceExpandedForFind}
-    />
+    <div data-thread-find-text>
+      <CollapsibleUserMessageBody
+        text={props.text}
+        collapseAllowed={props.terminalContexts.length === 0}
+        preservesCollapsedPrefix={preservesCollapsedPrefix}
+        renderBody={renderBody}
+        forceExpandedForFind={props.forceExpandedForFind}
+      />
+    </div>
   );
 });
 
@@ -5077,6 +5064,7 @@ function AssistantMessageRowContent(props: {
           />
         ) : null}
         <div
+          data-thread-find-text={rawText ? "" : undefined}
           className={
             /^★ Insight(?:\s|─)/mu.test(messageText)
               ? "[&_.chat-markdown_p]:whitespace-pre-line"
@@ -5268,7 +5256,7 @@ function ProposedPlanRowContent(props: { row: ProposedPlanTimelineRow }) {
   const { markdownCwd, workspaceRoot } = useTimelineRowContext();
   const find = useContext(ThreadFindContext);
   return (
-    <div className="min-w-0 px-1 py-0.5">
+    <div className="min-w-0 px-1 py-0.5" data-thread-find-text>
       <ProposedPlanCard
         forceExpanded={find?.entryId === row.id}
         planMarkdown={row.proposedPlan.planMarkdown}

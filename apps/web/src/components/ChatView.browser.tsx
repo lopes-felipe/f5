@@ -2286,6 +2286,87 @@ describe("ChatView timeline (full app)", () => {
       }
     },
   );
+  it("keeps the full find count while painting only the nearby matches of a long message", async () => {
+    const targetMessageId = "find-long-message" as MessageId;
+    const totalMatches = 30_000;
+    const targetText = Array.from({ length: totalMatches / 10 }, () => "needle ".repeat(10)).join(
+      "\n",
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({ targetMessageId, targetText }),
+      configureFixture: (next) => {
+        next.serverConfig = {
+          ...next.serverConfig,
+          keybindings: [createModKeybinding("chat.find", "f")],
+        };
+        next.resolveWsRequest = (body) =>
+          body._tag === ORCHESTRATION_WS_METHODS.searchThread
+            ? {
+                type: "result",
+                result: {
+                  totalMatches,
+                  activeIndex: 0,
+                  match: {
+                    entryId: targetMessageId,
+                    kind: "message",
+                    occurrence: 0,
+                    snippet: "needle",
+                  },
+                },
+              }
+            : null;
+      },
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "f",
+          metaKey: /Mac/.test(navigator.platform),
+          ctrlKey: !/Mac/.test(navigator.platform),
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await page.getByRole("textbox", { name: "Find in thread" }).fill("needle");
+      await expect
+        .element(page.getByRole("status").filter({ hasText: "1 of 30000" }))
+        .toBeVisible();
+      const highlights = () => [...(CSS.highlights.get("f5-thread-find") ?? [])] as Range[];
+      const active = () => [...(CSS.highlights.get("f5-thread-find-active") ?? [])][0] as Range;
+      const scroller = document.querySelector<HTMLElement>(
+        '[data-slot="messages-scroll-container"]',
+      )!;
+      await vi.waitFor(
+        () => {
+          expect(active()?.toString()).toBe("needle");
+          const firstRect = active().getBoundingClientRect();
+          const viewport = scroller.getBoundingClientRect();
+          expect(firstRect.top).toBeGreaterThanOrEqual(viewport.top);
+          expect(firstRect.bottom).toBeLessThanOrEqual(viewport.bottom);
+          expect(highlights().length).toBeGreaterThan(0);
+        },
+        { timeout: 5_000 },
+      );
+      const first = active();
+      const initial = highlights()[0]!;
+      const viewport = scroller.getBoundingClientRect();
+      expect(highlights().length).toBeLessThan(5_000);
+
+      scroller.scrollTop += viewport.height * 5;
+      await vi.waitFor(() => {
+        expect(highlights().length).toBeGreaterThan(0);
+        expect(highlights()).not.toContain(initial);
+        expect(initial.getBoundingClientRect().bottom).toBeLessThan(viewport.top - viewport.height);
+      });
+      expect(highlights().length).toBeLessThan(5_000);
+      expect(active()).toBe(first);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   beforeAll(async () => {
     fixture = buildFixture(
       createSnapshotForTargetUser({
