@@ -22943,14 +22943,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:16:41.149Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19196",
+      "reason": "F5 starts a Claude wake turn only after root assistant output arrives.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-15816"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -24637,14 +24639,24 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:16:41.149Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:5877",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:5908"
+        ],
+        "f5Refs": [
+          "d1bad8ea9c3bb8b7da247266291cefe0f8baec8c"
+        ]
+      },
       "id": "pr-19543",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-15816"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -25837,11 +25849,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:16:41.149Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19771",
-      "status": "port",
+      "reason": "F5 uses Cursor’s local CLI and ACP, outside the SDK catalog and sign-in flow that reports `plan_required`.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
@@ -44262,11 +44276,22 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:16:41.148Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/acp/AcpSessionRuntime.ts:1256",
+          "apps/server/src/provider/Layers/CursorAdapter.ts:1147",
+          "apps/server/src/provider/Layers/CursorAdapter.ts:1521"
+        ],
+        "f5Refs": [
+          "d1bad8ea9c3bb8b7da247266291cefe0f8baec8c"
+        ]
+      },
       "id": "pr-23273",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
