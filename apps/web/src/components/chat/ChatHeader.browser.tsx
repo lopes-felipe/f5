@@ -68,6 +68,7 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
     previewAvailable: false,
     liveAgentCount: 0,
     terminalToggleShortcutLabel: null,
+    agentsToggleShortcutLabel: null,
     diffToggleShortcutLabel: null,
     gitCwd: null,
     diffState: "closed",

@@ -440,17 +440,23 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
   it.effect("does not persist defaults when a custom shortcut conflicts with a default", () =>
     Effect.gen(function* () {
       const { keybindingsConfigPath } = yield* ServerConfig;
-      yield* writeKeybindingsConfig(keybindingsConfigPath, [
-        { key: "mod+j", command: "script.custom-action.run" },
-      ]);
+      const custom = [
+        { key: "mod+shift+b", command: "script.custom-action.run" },
+        { key: "mod+shift+b", command: "script.custom-composer.run", when: "composerFocus" },
+      ] as const;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, custom);
 
-      yield* Effect.gen(function* () {
-        const keybindings = yield* Keybindings;
-        yield* keybindings.syncDefaultKeybindingsOnStartup;
-      });
+      const keybindings = yield* Keybindings;
+      yield* keybindings.syncDefaultKeybindingsOnStartup;
 
-      const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
-      assert.deepEqual(persisted, [{ key: "mod+j", command: "script.custom-action.run" }]);
+      assert.deepEqual(yield* readKeybindingsConfig(keybindingsConfigPath), custom);
+      const state = yield* keybindings.loadConfigState;
+      assert.deepEqual(
+        state.keybindings
+          .filter(({ shortcut }) => shortcut.key === "b" && shortcut.modKey && shortcut.shiftKey)
+          .map(({ command }) => command),
+        ["agents.toggle", "script.custom-action.run", "script.custom-composer.run"],
+      );
     }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
