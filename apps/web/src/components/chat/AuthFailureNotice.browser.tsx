@@ -14,6 +14,7 @@ import { AuthFailureNotice } from "./AuthFailureNotice";
 
 const mocks = vi.hoisted(() => ({
   loginStart: vi.fn(),
+  cancel: vi.fn(async (_input: { handle: string }) => {}),
   resend: vi.fn(),
   toast: vi.fn(),
   listener: null as null | ((event: typeof ProviderAccountEvent.Type) => void),
@@ -22,7 +23,7 @@ vi.mock("../../nativeApi", async (importOriginal) => {
   const api = {
     profiles: {
       loginStart: mocks.loginStart,
-      cancel: vi.fn(async () => {}),
+      cancel: mocks.cancel,
       input: vi.fn(async () => {}),
       logout: vi.fn(),
       accountStatus: vi.fn(),
@@ -153,8 +154,7 @@ describe("AuthFailureNotice", () => {
   });
 
   it("cancels its running login when the dialog closes mid-sign-in", async () => {
-    const { readNativeApi } = await import("../../nativeApi");
-    const cancel = readNativeApi()!.profiles.cancel as ReturnType<typeof vi.fn>;
+    const cancel = mocks.cancel;
     cancel.mockClear();
     const screen = await render(
       <AuthFailureNotice
