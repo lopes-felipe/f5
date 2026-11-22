@@ -28362,14 +28362,16 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-22T20:33:46.091Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:47:49.750Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29652",
+      "reason": "F5 has no MCP cancellation path for app-owned delegated threads, and its existing task controls do not load parent or child conversation history.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-27032"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp",
