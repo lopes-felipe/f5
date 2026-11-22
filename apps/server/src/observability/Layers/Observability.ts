@@ -74,7 +74,8 @@ export const ObservabilityLive = Layer.unwrap(
           batchWindowMs: TRACE_BATCH_WINDOW_MS,
         });
         let tracer = baseTracer;
-        if (local || external) {
+        // Bun's V8 compatibility API walks the JavaScriptCore heap on every read.
+        if ((local || external) && !process.versions.bun) {
           const heapAttribution = makeHeapAttribution(baseTracer);
           yield* heapAttribution.run;
           tracer = heapAttribution.tracer;

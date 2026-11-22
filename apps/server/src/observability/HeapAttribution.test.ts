@@ -59,12 +59,14 @@ it.effect("exports growth and ranks recently active spans as spike suspects", ()
 
     const subscription = fixture.open("subscription");
     const old = fixture.open("old-query");
+    const recentlyClosedSubscription = fixture.open("closed-subscription");
     for (let step = 0; step < 5; step++) {
       fixture.grow(80);
       yield* TestClock.adjust("11 seconds");
       if (step === 1) old.end(1n, Exit.void);
     }
     assert.deepEqual(fixture.spikes(), []);
+    recentlyClosedSubscription.end(1n, Exit.void);
 
     const small = fixture.open("small-query");
     fixture.grow(2);
@@ -88,9 +90,27 @@ it.effect("exports growth and ranks recently active spans as spike suspects", ()
     subscription.end(3n, Exit.void);
     assert.equal(fixture.growthFor("large-query"), 120 * MB);
     assert.equal(fixture.growthFor("subscription"), 530 * MB);
+    assert.equal(fixture.growthFor("closed-subscription"), 400 * MB);
     assert.equal(fixture.growthFor("old-query"), 160 * MB);
     assert.equal(fixture.growthFor("completed-query"), 8 * MB);
     assert.isUndefined(fixture.growthFor("small-query"));
+  }),
+);
+
+it.effect("compares the current heap with the reading from ten seconds ago", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeFixture;
+    yield* fixture.run;
+    yield* TestClock.adjust("1 second");
+    for (let second = 0; second < 9; second++) {
+      fixture.grow(13);
+      yield* TestClock.adjust("1 second");
+    }
+    assert.lengthOf(fixture.spikes(), 0);
+    fixture.grow(13);
+    yield* TestClock.adjust("1 second");
+    assert.lengthOf(fixture.spikes(), 1);
+    assert.equal(fixture.spikes()[0]?.attributes["growthMb"], 130);
   }),
 );
 
@@ -108,14 +128,15 @@ it.effect("rate limits spikes and stops sampling when its scope closes", () =>
         yield* TestClock.adjust("1 second");
         assert.lengthOf(fixture.spikes(), 1);
         assert.equal(fixture.spikes()[0]?.attributes["growthMb"], 128);
-        yield* TestClock.adjust("55 seconds");
         fixture.grow(128);
         yield* TestClock.adjust("1 second");
         assert.lengthOf(fixture.spikes(), 1);
-        yield* TestClock.adjust("10 seconds");
-        fixture.grow(128);
+        yield* TestClock.adjust("60 seconds");
+        assert.lengthOf(fixture.spikes(), 1);
+        fixture.grow(130);
         yield* TestClock.adjust("1 second");
         assert.lengthOf(fixture.spikes(), 2);
+        assert.equal(fixture.spikes()[1]?.attributes["growthMb"], 130);
       }),
     );
     const reads = fixture.reads();

@@ -4,7 +4,7 @@ import { Effect, Tracer } from "effect";
 const MEBIBYTE = 1024 * 1024;
 const SPAN_GROWTH_BYTES = 8 * MEBIBYTE;
 const SPIKE_GROWTH_BYTES = 128 * MEBIBYTE;
-const SPIKE_WINDOW_SAMPLES = 10;
+const SPIKE_WINDOW_SECONDS = 10;
 const SPIKE_COOLDOWN_SAMPLES = 60;
 const MAX_RECENT_SPANS = 32;
 const MAX_SUSPECTS = 8;
@@ -20,7 +20,7 @@ export function makeHeapAttribution(
   heapUsed = () => getHeapStatistics().used_heap_size,
 ) {
   const open = new Set<{ name: string; startHeap: number; startTick: number }>();
-  const recent: Array<SpanGrowth & { readonly endTick: number }> = [];
+  const recent: Array<SpanGrowth & { readonly startTick: number }> = [];
   const samples: number[] = [];
   let tick = 0;
   let cooldown = 0;
@@ -33,12 +33,14 @@ export function makeHeapAttribution(
       open.add(started);
       const end = span.end;
       span.end = (endTime, exit) => {
-        open.delete(started);
+        const wasRecent = open.delete(started);
         const growthBytes = heapUsed() - started.startHeap;
         if (growthBytes >= SPAN_GROWTH_BYTES) {
           span.attribute("memory.heap_growth_bytes", growthBytes);
-          recent.push({ name: started.name, growthBytes, endTick: tick });
-          if (recent.length > MAX_RECENT_SPANS) recent.shift();
+          if (wasRecent) {
+            recent.push({ name: started.name, growthBytes, startTick: started.startTick });
+            if (recent.length > MAX_RECENT_SPANS) recent.shift();
+          }
         }
         end.call(span, endTime, exit);
       };
@@ -50,9 +52,10 @@ export function makeHeapAttribution(
     const heap = heapUsed();
     tick++;
     samples.push(heap);
-    if (samples.length > SPIKE_WINDOW_SAMPLES) samples.shift();
+    // Ten one-second intervals need eleven readings, including the current heap.
+    if (samples.length > SPIKE_WINDOW_SECONDS + 1) samples.shift();
 
-    const oldestTick = tick - samples.length;
+    const oldestTick = tick - SPIKE_WINDOW_SECONDS;
     // Drop old subscriptions from the suspect set while still measuring them at completion.
     for (const started of open) {
       if (started.startTick >= oldestTick) break;
@@ -72,7 +75,7 @@ export function makeHeapAttribution(
       candidates.push({ name: started.name, growthBytes: heap - started.startHeap });
     }
     for (const ended of recent) {
-      if (ended.endTick >= oldestTick) candidates.push(ended);
+      if (ended.startTick >= oldestTick) candidates.push(ended);
     }
     const suspects = candidates
       .filter((span) => span.growthBytes >= SPAN_GROWTH_BYTES)
