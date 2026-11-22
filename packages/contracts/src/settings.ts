@@ -542,7 +542,8 @@ export const TextGeneratorConfig = Schema.Struct({
 export type TextGeneratorConfig = typeof TextGeneratorConfig.Type;
 const TextGeneratorId = ProviderInstanceId.check(Schema.isPattern(/^textgen_/));
 
-export const DEFAULT_USAGE_HISTORY_RETENTION_DAYS = 92;
+// The current and previous 90-day comparison windows, with slack for timezone boundaries.
+export const DEFAULT_USAGE_HISTORY_RETENTION_DAYS = 182;
 export const UsageHistoryRetention = Schema.Union([PositiveInt, Schema.Literal("unlimited")]);
 export type UsageHistoryRetention = typeof UsageHistoryRetention.Type;
 

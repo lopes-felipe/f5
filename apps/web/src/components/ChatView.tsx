@@ -1066,7 +1066,11 @@ export default memo(function ChatView({
   const pendingTurnDispatchRef = useRef<PendingTurnDispatch | null>(null);
   pendingTurnDispatchRef.current = pendingTurnDispatch;
   const sendInFlightRef = useRef(false);
-  const sideChatRetryRef = useRef<{ parentId: ThreadId; childId: ThreadId } | null>(null);
+  const sideChatRetryRef = useRef<{
+    parentId: ThreadId;
+    childId: ThreadId;
+    draftKey: string;
+  } | null>(null);
 
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
   const endScrollGenerationRef = useRef(0);
@@ -5406,7 +5410,7 @@ export default memo(function ChatView({
     e?: { preventDefault: () => void },
     intent: SendIntent = "auto",
     onAdmittedCallback?: () => void,
-  ) => {
+  ): Promise<void> => {
     e?.preventDefault();
     const sideChatCommand = /^\/(?:side|btw)(?:\s+([\s\S]*))?$/i.exec(promptRef.current.trim());
     if (
@@ -5465,11 +5469,10 @@ export default memo(function ChatView({
     if (
       !api ||
       !activeThread ||
-      hasPendingTurnDispatch ||
       isConnecting ||
       sendInFlightRef.current ||
       // The server rejects sends while a revert is open; keep the draft instead.
-      isRevertingCheckpoint
+      (!sideChatCommand && (hasPendingTurnDispatch || isRevertingCheckpoint))
     ) {
       return;
     }
@@ -5481,11 +5484,11 @@ export default memo(function ChatView({
       });
       return;
     }
-    if (activePendingProgress) {
+    if (!sideChatCommand && activePendingProgress) {
       onAdvanceActivePendingUserInput();
       return;
     }
-    if (noProviderAvailable) return;
+    if (!sideChatCommand && noProviderAvailable) return;
     if (
       /^\/aside(?:\s|$)/u.test(promptRef.current.trim()) &&
       activeThread.session?.provider === "codex" &&
@@ -5596,11 +5599,17 @@ export default memo(function ChatView({
       return;
     }
     const promptForSend = promptRef.current;
-    const replyToForSend =
-      useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null;
-    const composerImagesSnapshot = [...composerImages];
-    const composerFilePathsSnapshotBeforePreflight = [...composerFilePaths];
-    const composerTerminalContextsSnapshotBeforePreflight = [...composerTerminalContexts];
+    const pendingSideQuestion = sideChatCommand ? activePendingProgress?.activeQuestion : undefined;
+    const replyToForSend = pendingSideQuestion
+      ? null
+      : (useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null);
+    const composerImagesSnapshot = pendingSideQuestion ? [] : [...composerImages];
+    const composerFilePathsSnapshotBeforePreflight = pendingSideQuestion
+      ? []
+      : [...composerFilePaths];
+    const composerTerminalContextsSnapshotBeforePreflight = pendingSideQuestion
+      ? []
+      : [...composerTerminalContexts];
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -5667,13 +5676,20 @@ export default memo(function ChatView({
       setThreadError(activeThread.id, error instanceof Error ? error.message : String(error));
       return;
     }
-    const attachmentIssue = composerAttachmentStatus(composerImages, selectedProvider).error;
+    const attachmentIssue = composerAttachmentStatus(
+      composerImagesSnapshot,
+      selectedProvider,
+    ).error;
     if (attachmentIssue) {
       setThreadError(activeThread.id, attachmentIssue);
       return;
     }
     sendInFlightRef.current = true;
-    const mentionsForSend = [...composerMentionsRef.current];
+    const mentionsForSend = [
+      ...(pendingSideQuestion
+        ? (activePendingProgress?.activeDraft?.mentions ?? [])
+        : composerMentionsRef.current),
+    ];
     const mentionedPaths = collectComposerMentionPaths(promptForSend, mentionsForSend);
     if (mentionedPaths.length > 0) {
       try {
@@ -5883,13 +5899,37 @@ export default memo(function ChatView({
     };
     if (sideChatCommand) {
       try {
+        const draftKey = JSON.stringify([
+          promptForSend,
+          outgoingMessageText,
+          composerImagesSnapshot.map(({ id }) => id),
+        ]);
         const retry = sideChatRetryRef.current;
         const retryChild =
-          retry?.parentId === threadIdForSend
-            ? useStore.getState().threads.find((thread) => thread.id === retry.childId)
+          retry?.parentId === threadIdForSend &&
+          retry.draftKey === draftKey &&
+          selectThreadRightPanelState(
+            useRightPanelStore.getState().byThreadId,
+            threadIdForSend,
+          ).surfaces.some((surface) => surface.id === `side:${retry.childId}`)
+            ? useStore
+                .getState()
+                .threads.find(
+                  (thread) =>
+                    thread.id === retry.childId &&
+                    thread.sideChatOf === threadIdForSend &&
+                    thread.messages.length === 0 &&
+                    !thread.latestTurn,
+                )
             : undefined;
+        sideChatRetryRef.current = null;
+        if (retry?.parentId === threadIdForSend && retry.draftKey === draftKey && !retryChild) {
+          throw new Error(
+            "The previous side chat is no longer empty or available. Check it before sending again.",
+          );
+        }
         const childId = retryChild?.id ?? (await openNewSideChat(threadIdForSend));
-        sideChatRetryRef.current = { parentId: threadIdForSend, childId };
+        sideChatRetryRef.current = { parentId: threadIdForSend, childId, draftKey };
         if (
           sideChatCommand[1]?.trim() ||
           messageTextForSend ||
@@ -5905,7 +5945,12 @@ export default memo(function ChatView({
           });
         }
         sideChatRetryRef.current = null;
-        clearCapturedDraft();
+        if (pendingSideQuestion) {
+          if (promptRef.current === promptForSend)
+            onChangeActivePendingUserInputCustomAnswer(pendingSideQuestion.id, "", 0, 0, false, []);
+        } else {
+          clearCapturedDraft();
+        }
         onAdmittedCallback?.();
       } catch (cause) {
         toastManager.add({
@@ -6283,6 +6328,10 @@ export default memo(function ChatView({
     if (activePendingIsResponding || !activePendingUserInput || !activePendingProgress) {
       return;
     }
+    if (/^\/(?:side|btw)(?:\s|$)/i.test(promptRef.current.trim())) {
+      void onSend();
+      return;
+    }
     if (activePendingProgress.isLastQuestion) {
       if (activePendingResolvedAnswers) {
         void onRespondToUserInput(activePendingUserInput.requestId, activePendingResolvedAnswers);
@@ -6297,6 +6346,7 @@ export default memo(function ChatView({
     activePendingResolvedAnswers,
     activePendingUserInput,
     onRespondToUserInput,
+    onSend,
     setActivePendingUserInputQuestionIndex,
   ]);
 

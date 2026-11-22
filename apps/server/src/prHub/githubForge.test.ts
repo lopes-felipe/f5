@@ -97,6 +97,29 @@ function fixture(
   };
 }
 describe("typed GitHub forge", () => {
+  it("sends inline comments with the verdict in one GitHub review write", async () => {
+    const { provider, calls } = fixture();
+    await Effect.runPromise(
+      provider.submitReview({
+        ref,
+        body: "Review",
+        verdict: "request-changes",
+        headSha: "head-sha",
+        comments: [{ path: "src/test.ts", line: 5, side: "old", body: "Fix this" }],
+      }),
+    );
+    expect(calls).toMatchObject([
+      {
+        endpoint: "repos/team/repo/pulls/7/reviews",
+        method: "POST",
+        body: {
+          event: "REQUEST_CHANGES",
+          commit_id: "head-sha",
+          comments: [{ path: "src/test.ts", line: 5, side: "LEFT", body: "Fix this" }],
+        },
+      },
+    ]);
+  });
   it("opens a draft from a pushed branch and returns an existing PR without another write", async () => {
     const { provider, calls } = fixture([[], { default_branch: "main" }, pr, [pr]]);
     const open = () =>

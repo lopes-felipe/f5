@@ -36,6 +36,52 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("finds an existing Forgejo pull request beyond the first page", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => ({
+      number: index + 1,
+      head: { ref: "unrelated" },
+    }));
+    const { provider, ref, calls } = fixture("forgejo", [
+      first,
+      [{ number: 101, head: { ref: "feature" } }],
+    ]);
+    const opened = await Effect.runPromise(
+      provider.openChangeRequest!({
+        ref,
+        head: "feature",
+        title: "Test",
+        body: "",
+        draft: false,
+      }),
+    );
+    expect(opened.number).toBe(101);
+    expect(calls.map(({ url }) => new URL(url).searchParams.get("page"))).toEqual(["1", "2"]);
+    expect(calls.every(({ init }) => init.method === "GET")).toBe(true);
+  });
+
+  it.each([
+    ["gitlab", [], { iid: 11 }],
+    ["bitbucket", { values: [] }, { id: 11 }],
+    ["azure-devops", { value: [] }, { pullRequestId: 11 }],
+    ["forgejo", [], { number: 11 }],
+  ] as const)(
+    "opens a pull request on %s through the routed repository",
+    async (kind, empty, response) => {
+      const { provider, ref, calls } = fixture(kind, [empty, response]);
+      const opened = await Effect.runPromise(
+        provider.openChangeRequest!({
+          ref,
+          head: "feature",
+          base: "main",
+          title: "Test",
+          body: "",
+          draft: false,
+        }),
+      );
+      expect(opened.number).toBe(11);
+      expect(calls.map(({ init }) => init.method)).toEqual(["GET", "POST"]);
+    },
+  );
   it("completes GitLab issue and MR numbers within the selected project", async () => {
     const { provider, ref, calls } = fixture("gitlab", [
       [{ iid: 123, title: "Exact merge request" }],

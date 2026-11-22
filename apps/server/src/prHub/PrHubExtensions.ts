@@ -367,7 +367,10 @@ export const makePrHubExtensions = Effect.gen(function* () {
           (!p.replyTo || caps.review.reply);
         break;
       case "review":
-        supported = caps.review.verdicts.includes(p.verdict);
+        supported =
+          caps.review.verdicts.includes(p.verdict) &&
+          (!p.comments?.length ||
+            (runtime.account.provider === "github" && caps.review.inlineComment));
         break;
       case "edit":
         supported = caps.edit.changeRequest;
@@ -681,6 +684,38 @@ export const makePrHubExtensions = Effect.gen(function* () {
                   );
                 }
                 case "review": {
+                  if (p.comments?.length) {
+                    if (!p.baseOid || forgeComparison(ref, detail)?.baseOid !== p.baseOid)
+                      return yield* failure("The inline review comparison changed.", "forbidden");
+                    const files = yield* runtime.provider.getFiles(ref);
+                    for (const comment of p.comments) {
+                      const patch = files.find((file) => file.path === comment.path)?.patch;
+                      if (
+                        !patch ||
+                        !resolvePrReviewPosition(
+                          {
+                            path: comment.path,
+                            line: comment.line,
+                            side: comment.side === "old" ? "LEFT" : "RIGHT",
+                          },
+                          patch,
+                        )
+                      )
+                        return yield* failure(
+                          "An inline review line is outside the complete diff.",
+                          "forbidden",
+                        );
+                    }
+                    const latest = yield* runtime.provider.getDetail(ref);
+                    if (
+                      latest.headRefOid !== saved.operation.expectedHeadOid ||
+                      forgeComparison(ref, latest)?.baseOid !== p.baseOid
+                    )
+                      return yield* failure(
+                        "The inline review comparison changed while loading files.",
+                        "forbidden",
+                      );
+                  }
                   const separated = ref.provider === "gitlab" || ref.provider === "bitbucket";
                   if (
                     separated &&
@@ -702,6 +737,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
                       body: separated && p.verdict !== "comment" ? "" : commentBody(p.body),
                       verdict: p.verdict,
                       headSha: saved.operation.expectedHeadOid,
+                      ...(p.comments?.length ? { comments: p.comments } : {}),
                     }),
                   );
                 }

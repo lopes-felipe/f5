@@ -2240,9 +2240,13 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it.each([false, true])(
-    "sends /btw context to the child and keeps a refused draft (%s)",
-    async (refused) => {
+  it.each([
+    { refused: false, pending: false },
+    { refused: true, pending: false },
+    { refused: false, pending: true },
+  ])(
+    "sends /btw to the child (refused=$refused, pending answer=$pending)",
+    async ({ refused, pending }) => {
       const snapshot = createSnapshotForTargetUser({
         targetMessageId: MessageId.makeUnsafe("side-chat-context"),
         targetText: "Main conversation",
@@ -2251,7 +2255,8 @@ describe("ChatView timeline (full app)", () => {
       const prompt = "/btw Review this file";
       const filePath = "/repo/project/src/example.ts";
       const image = createComposerImageAttachment({ id: "side-chat-image", name: "example.svg" });
-      useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt);
+      const original = pending ? "Main draft before the question" : prompt;
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, original);
       useComposerDraftStore.getState().addFilePaths(THREAD_ID, [filePath]);
       useComposerDraftStore.getState().addImage(THREAD_ID, image);
       let childId: ThreadId | undefined;
@@ -2262,6 +2267,31 @@ describe("ChatView timeline (full app)", () => {
           threads: [
             {
               ...parent,
+              ...(pending
+                ? {
+                    activities: [
+                      createThreadActivity({
+                        id: "side-pending-question",
+                        createdAt: isoAt(201),
+                        kind: "user-input.requested",
+                        summary: "Answer",
+                        payload: {
+                          requestId: "side-pending-request",
+                          questions: [
+                            {
+                              id: "answer",
+                              header: "Answer",
+                              question: "Respond",
+                              options: [],
+                              initialAnswer: prompt,
+                              optional: true,
+                            },
+                          ],
+                        },
+                      }),
+                    ],
+                  }
+                : {}),
               session: {
                 ...parent.session!,
                 capabilities: {
@@ -2291,6 +2321,8 @@ describe("ChatView timeline (full app)", () => {
                       sideChatOf: THREAD_ID,
                       session: null,
                       messages: [],
+                      activities: [],
+                      latestTurn: null,
                     },
                   ],
                 };
@@ -2315,15 +2347,23 @@ describe("ChatView timeline (full app)", () => {
         },
       });
       try {
-        (await waitForSendButton()).click();
+        if (pending) {
+          const editor = await waitForComposerEditor();
+          await vi.waitFor(() => expect(editor.textContent).toBe(prompt));
+          await page.getByRole("button", { name: "Submit answers", exact: true }).click();
+        } else {
+          (await waitForSendButton()).click();
+        }
         await vi.waitFor(() =>
           expect(getDispatchCommandRequests("thread.turn.start")).toEqual([
             expect.objectContaining({
               command: expect.objectContaining({
                 threadId: childId,
                 message: expect.objectContaining({
-                  text: appendAttachedFilesToPrompt("Review this file", ["src/example.ts"]),
-                  attachments: [expect.objectContaining({ type: "upload" })],
+                  text: pending
+                    ? "Review this file"
+                    : appendAttachedFilesToPrompt("Review this file", ["src/example.ts"]),
+                  attachments: pending ? [] : [expect.objectContaining({ type: "upload" })],
                 }),
               }),
             }),
@@ -2331,16 +2371,20 @@ describe("ChatView timeline (full app)", () => {
         );
         const readDraft = () => useComposerDraftStore.getState().draftsByThreadId[THREAD_ID];
         await vi.waitFor(() => {
-          expect(readDraft()?.prompt ?? "").toBe(refused ? prompt : "");
-          expect(readDraft()?.filePaths ?? []).toEqual(refused ? [filePath] : []);
-          expect(readDraft()?.images.map(({ id }) => id) ?? []).toEqual(refused ? [image.id] : []);
+          expect(readDraft()?.prompt ?? "").toBe(refused || pending ? original : "");
+          expect(readDraft()?.filePaths ?? []).toEqual(refused || pending ? [filePath] : []);
+          expect(readDraft()?.images.map(({ id }) => id) ?? []).toEqual(
+            refused || pending ? [image.id] : [],
+          );
         });
         const submission = getDispatchCommandRequests("thread.turn.start")[0]?.command as {
           message: { attachments: Array<{ uploadId: string }> };
         };
-        expect(uploadedFiles.get(submission.message.attachments[0]!.uploadId)?.draftThreadId).toBe(
-          childId,
-        );
+        if (!pending)
+          expect(
+            uploadedFiles.get(submission.message.attachments[0]!.uploadId)?.draftThreadId,
+          ).toBe(childId);
+        expect(getDispatchCommandRequests("thread.user-input.respond")).toHaveLength(0);
       } finally {
         useRightPanelStore.setState({ byThreadId: {} });
         await mounted.cleanup();

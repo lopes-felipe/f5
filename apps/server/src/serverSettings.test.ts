@@ -918,7 +918,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
   it.effect("defaults history retention and persists an unlimited setting", () =>
     Effect.gen(function* () {
       const settings = yield* ServerSettingsService;
-      assert.equal(yield* settings.getUsageHistoryRetention!, 92);
+      assert.equal(yield* settings.getUsageHistoryRetention!, 182);
       yield* settings.updateSettings({ usageHistoryRetentionDays: "unlimited" });
       assert.equal(yield* settings.getUsageHistoryRetention!, "unlimited");
     }).pipe(Effect.provide(makeServerSettingsLayer())),

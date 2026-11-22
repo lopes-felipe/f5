@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import {
   CommandId,
   PullRequestKey,
@@ -26,10 +25,48 @@ import { ThreadToolError } from "./threadMcpTools";
 
 type Extensions = Pick<
   PrHubExtensions["Service"],
-  "getCheckLog" | "getChecks" | "getOperation" | "getStack" | "prepareOperation" | "submitOperation"
+  | "getCheckLog"
+  | "getChecks"
+  | "getOperation"
+  | "getStack"
+  | "prepareOperation"
+  | "recoverOperation"
+  | "submitOperation"
 >;
 const failure = (message: string) => new ThreadToolError({ message });
 const limitText = (text: string, max: number) => truncateUtf8(text, max).text;
+
+function logTail(excerpt: string, lines: number) {
+  const all = excerpt.split("\n");
+  const tail = Buffer.from(all.slice(-lines).join("\n"));
+  let offset = Math.max(0, tail.length - 3000);
+  while (offset < tail.length && (tail[offset]! & 0xc0) === 0x80) offset++;
+  const text = tail.subarray(offset).toString("utf8");
+  return {
+    excerpt: text,
+    skippedLines:
+      Math.max(0, all.length - lines) +
+      tail.subarray(0, offset).toString("utf8").split("\n").length -
+      1,
+    truncated: all.length > lines || offset > 0,
+  };
+}
+
+function requestFingerprint(request: PullRequestMcpRequest) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(request, (key, value: unknown) => {
+        if (["addLabels", "removeLabels", "requestReviewers"].includes(key) && Array.isArray(value))
+          return [...new Set(value as string[])].sort();
+        if (value && typeof value === "object" && !Array.isArray(value))
+          return Object.fromEntries(
+            Object.entries(value).sort(([left], [right]) => left.localeCompare(right)),
+          );
+        return value;
+      }),
+    )
+    .digest("hex");
+}
 
 function pageWindow<T>(input: {
   readonly items: readonly T[];
@@ -213,41 +250,94 @@ export function makePullRequestMcpHandler(deps: {
         if (branchPr) ref = yield* deps.federation.parseUrl(branchPr.url);
       }
       if (!ref) return yield* failure("Specify a pull request URL or number.");
+      const home = yield* repositoryRef();
+      const readOnly = name === "pull_request_read" || name === "ci_logs";
+      const sameRepository =
+        home.provider === "github"
+          ? ref.repository.toLowerCase() === home.repository.toLowerCase()
+          : ref.repository === home.repository;
+      if (
+        ref.provider !== home.provider ||
+        ref.host.toLowerCase() !== home.host.toLowerCase() ||
+        (!readOnly && !sameRepository)
+      )
+        return yield* failure(
+          "This pull request is outside the thread's forge or writable repository.",
+        );
       const key = PullRequestKey.makeUnsafe(formatSourceControlPullRequestKey(ref));
       const runtime = yield* resolve(ref);
       const provider = runtime.provider;
       const target = { key, accountGeneration: runtime.account.generation };
       if (name === "pull_request_read") {
+        const conversationPaging =
+          input.cursor || input.commentCursor || input.reviewThreadId || input.replyCursor;
+        if (input.replyCursor && !input.reviewThreadId)
+          return yield* failure("A reply cursor needs its review thread ID.");
         const sections =
-          input.sections ?? (input.cursor ? ["conversation"] : ["summary", "checks"]);
+          input.sections ??
+          (input.diffCursor
+            ? ["diff"]
+            : conversationPaging
+              ? ["conversation"]
+              : ["summary", "checks"]);
+        if (
+          (conversationPaging && !sections.includes("conversation")) ||
+          (input.diffCursor && !sections.includes("diff"))
+        )
+          return yield* failure("Request the section the cursor belongs to.");
         const summary = sections.includes("summary") ? yield* provider.getDetail(ref) : undefined;
         const checks = sections.includes("checks")
           ? yield* deps.extensions.getChecks(target)
           : undefined;
+        const scope = [runtime.account.generation, key];
         const conversation = sections.includes("conversation")
           ? yield* Effect.gen(function* () {
-              const rawThreads = yield* provider.getReviewThreads(ref);
-              const threads = forgeReviewThreads(rawThreads, provider)
-                .filter((item) => input.includeResolved || !item.isResolved)
-                .map(({ comments, ...item }) => ({
-                  ...item,
-                  comments: comments.slice(0, 4).map(({ id, author, bodyText, url }) => ({
-                    id,
-                    author,
-                    url,
-                    body: limitText(bodyText, 500),
-                  })),
-                  moreComments: comments.length > 4 || item.commentsPageInfo?.hasNextPage === true,
-                }));
+              const serialize = ({
+                id,
+                author,
+                bodyText,
+                url,
+              }: {
+                id: string;
+                author: string | null;
+                bodyText: string;
+                url: string;
+              }) => ({ id, author, url, body: limitText(bodyText, 500) });
+              if (input.reviewThreadId) {
+                const threads = forgeReviewThreads(yield* provider.getReviewThreads(ref), provider);
+                const item = threads.find((thread) => thread.id === input.reviewThreadId);
+                if (!item) return yield* failure("The requested review thread is unavailable.");
+                const page = pageWindow({
+                  items: item.comments,
+                  cursor: input.replyCursor,
+                  limit: 12,
+                  scope: [...scope, "replies", item.id, item.comments.map(({ id }) => id)],
+                });
+                if (!page)
+                  return yield* failure(
+                    "The review replies changed. Start again without a cursor.",
+                  );
+                return {
+                  reviewThreadId: item.id,
+                  replies: page.values.map(serialize),
+                  nextReplyCursor: page.nextCursor,
+                };
+              }
+              const threads =
+                input.commentCursor && !input.cursor
+                  ? []
+                  : forgeReviewThreads(yield* provider.getReviewThreads(ref), provider).filter(
+                      (item) => input.includeResolved || !item.isResolved,
+                    );
               const page = pageWindow({
                 items: threads,
                 cursor: input.cursor,
                 limit: 6,
                 scope: [
-                  runtime.account.generation,
-                  key,
+                  ...scope,
+                  "threads",
                   input.includeResolved ?? false,
-                  threads.map((item) => item.id),
+                  threads.map(({ id }) => id),
                 ],
               });
               if (!page)
@@ -255,23 +345,55 @@ export function makePullRequestMcpHandler(deps: {
                   "The review conversation changed. Start again without a cursor.",
                 );
               const comments =
-                page.offset === 0
-                  ? forgeComments(yield* provider.getComments(ref))
-                      .slice(0, 12)
+                input.cursor && !input.commentCursor
+                  ? []
+                  : forgeComments(yield* provider.getComments(ref))
+                      .filter((item) => item.kind !== "review-comment")
                       .map((item) => ({
                         id: String(item.id),
                         author: record(item.author ?? item.user).login ?? null,
                         body: limitText(String(item.body ?? item.bodyText ?? ""), 500),
-                      }))
-                  : [];
+                      }));
+              const commentPage = pageWindow({
+                items: comments,
+                cursor: input.commentCursor,
+                limit: 12,
+                scope: [...scope, "comments", comments.map(({ id }) => id)],
+              });
+              if (!commentPage)
+                return yield* failure("The PR comments changed. Start again without a cursor.");
               return {
-                comments,
-                reviewThreads: page.values,
+                comments: commentPage.values,
+                nextCommentCursor: commentPage.nextCursor,
+                reviewThreads: page.values.map(({ comments, ...item }) => ({
+                  ...item,
+                  comments: comments.slice(0, 4).map(serialize),
+                  moreComments: comments.length > 4,
+                })),
                 nextCursor: page.nextCursor,
               };
             })
           : undefined;
         const diff = sections.includes("diff") ? yield* provider.getDiff(ref) : undefined;
+        let diffPage: { values: string[]; nextCursor: string | null } | undefined;
+        if (diff !== undefined) {
+          const chunks: string[] = [];
+          const bytes = Buffer.from(diff);
+          for (let start = 0; start < bytes.length; ) {
+            let end = Math.min(start + 12_000, bytes.length);
+            while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
+            chunks.push(bytes.subarray(start, end).toString("utf8"));
+            start = end;
+          }
+          const page = pageWindow({
+            items: chunks,
+            cursor: input.diffCursor,
+            limit: 1,
+            scope: [...scope, "diff", createHash("sha256").update(bytes).digest("hex")],
+          });
+          if (!page) return yield* failure("The PR diff changed. Start again without a cursor.");
+          diffPage = page;
+        }
         return {
           key,
           ...(summary
@@ -279,8 +401,12 @@ export function makePullRequestMcpHandler(deps: {
             : {}),
           ...(checks ? { checks } : {}),
           ...(conversation ? { conversation } : {}),
-          ...(diff !== undefined
-            ? { diff: limitText(diff, 12_000), diffTruncated: Buffer.byteLength(diff) > 12_000 }
+          ...(diffPage
+            ? {
+                diff: diffPage.values[0] ?? "",
+                diffTruncated: diffPage.nextCursor !== null,
+                nextDiffCursor: diffPage.nextCursor,
+              }
             : {}),
         };
       }
@@ -295,20 +421,16 @@ export function makePullRequestMcpHandler(deps: {
           failed.slice(0, 6),
           (item) =>
             deps.extensions.getCheckLog({ ...target, checkId: item.id }).pipe(
-              Effect.map(({ excerpt, ...log }) => ({
-                ...log,
-                name: item.name,
-                excerpt:
-                  excerpt === null
-                    ? null
-                    : limitText(
-                        excerpt
-                          .split("\n")
-                          .slice(-(input.tailLines ?? 200))
-                          .join("\n"),
-                        3000,
-                      ),
-              })),
+              Effect.map(({ excerpt, ...log }) => {
+                const tail = excerpt === null ? null : logTail(excerpt, input.tailLines ?? 200);
+                return {
+                  ...log,
+                  name: item.name,
+                  excerpt: tail?.excerpt ?? null,
+                  startLine: log.startLine + (tail?.skippedLines ?? 0),
+                  truncated: log.truncated || tail?.truncated === true,
+                };
+              }),
             ),
           { concurrency: 2 },
         );
@@ -329,7 +451,8 @@ export function makePullRequestMcpHandler(deps: {
       const operationKey = createHash("sha256")
         .update(JSON.stringify([thread.id, operationId]))
         .digest("hex");
-      const run = (payload: ForgeMutationPayload) =>
+      const fingerprint = requestFingerprint(request);
+      const run = <E>(makePayload: () => Effect.Effect<ForgeMutationPayload, E>) =>
         Effect.gen(function* () {
           const args = { ...target, operationId: operationKey + ":" + operations.length };
           const prior = yield* deps.extensions.getOperation(args);
@@ -337,14 +460,25 @@ export function makePullRequestMcpHandler(deps: {
             prior &&
             (prior.operationId !== args.operationId ||
               prior.expectedHeadOid !== headSha ||
-              !isDeepStrictEqual(prior.payload, payload))
+              prior.requestFingerprint !== fingerprint)
           )
             return yield* failure(
               "This operation ID already belongs to a different revision or change.",
             );
-          if (!prior)
-            yield* deps.extensions.prepareOperation({ ...args, expectedHeadOid: headSha, payload });
-          const operation = yield* deps.extensions.submitOperation(args);
+          if (!prior) {
+            const payload = yield* makePayload();
+            const prepared = yield* deps.extensions.prepareOperation({
+              ...args,
+              expectedHeadOid: headSha,
+              payload,
+              requestFingerprint: fingerprint,
+            });
+            if (prepared.requestFingerprint !== fingerprint)
+              return yield* failure("This operation ID already belongs to a different change.");
+          }
+          let operation = yield* deps.extensions.submitOperation(args);
+          if (operation.status === "outcome_unknown" || operation.status === "running")
+            operation = yield* deps.extensions.recoverOperation(args);
           operations.push({
             id: operation.operationId,
             status: operation.status,
@@ -359,6 +493,7 @@ export function makePullRequestMcpHandler(deps: {
                 " to check the outcome.",
             );
         });
+      const runPayload = (payload: ForgeMutationPayload) => run(() => Effect.succeed(payload));
 
       if (name === "pull_request_merge") {
         if (input.expectedHeadSha !== headSha)
@@ -367,82 +502,147 @@ export function makePullRequestMcpHandler(deps: {
           );
         if (input.stack) {
           if (input.auto) return yield* failure("Automatic merging is unavailable for a stack.");
-          const stack = yield* deps.extensions.getStack(target);
-          if (!stack) return yield* failure("This pull request has no available GitHub stack.");
-          yield* run({
-            kind: "stack",
-            action: "merge",
-            method: input.method ?? "merge",
-            fingerprint: stack.fingerprint,
-          });
+          yield* run(() =>
+            Effect.gen(function* () {
+              const stack = yield* deps.extensions.getStack(target);
+              if (!stack) return yield* failure("This pull request has no available GitHub stack.");
+              return {
+                kind: "stack",
+                action: "merge",
+                method: input.method ?? "merge",
+                fingerprint: stack.fingerprint,
+              } as const;
+            }),
+          );
         } else {
-          yield* run({
+          yield* runPayload({
             kind: "action",
             action: input.auto ? "enable-auto-merge" : "merge",
             ...(input.method ? { method: input.method } : {}),
           });
         }
       } else if (name === "ci_rerun") {
-        let workflowRunId: number | undefined;
-        if (input.check) {
-          const checks = yield* deps.extensions.getChecks({ ...target, mode: "force" });
-          const matching = checks.checks.filter(
-            (item) =>
-              (item.name === input.check || item.id === input.check) && item.status === "failure",
-          );
-          const ids = new Set(matching.map((item) => Number(item.workflowRunId)));
-          if (
-            checks.headOid !== headSha ||
-            ids.size !== 1 ||
-            ![...ids].every((id) => Number.isSafeInteger(id) && id > 0)
-          )
-            return yield* failure("Choose one failed GitHub Actions check on the current head.");
-          workflowRunId = [...ids][0];
-        }
-        yield* run({
-          kind: "action",
-          action: "rerun-failed-checks",
-          ...(workflowRunId ? { workflowRunId } : {}),
-        });
+        yield* run(() =>
+          Effect.gen(function* () {
+            if (!input.check) return { kind: "action", action: "rerun-failed-checks" } as const;
+            const checks = yield* deps.extensions.getChecks({ ...target, mode: "force" });
+            const ids = new Set(
+              checks.checks
+                .filter(
+                  (item) =>
+                    (item.name === input.check || item.id === input.check) &&
+                    item.status === "failure",
+                )
+                .map((item) => Number(item.workflowRunId)),
+            );
+            const id = [...ids][0];
+            if (
+              checks.headOid !== headSha ||
+              ids.size !== 1 ||
+              id === undefined ||
+              !Number.isSafeInteger(id) ||
+              id < 1
+            )
+              return yield* failure("Choose one failed GitHub Actions check on the current head.");
+            return { kind: "action", action: "rerun-failed-checks", workflowRunId: id } as const;
+          }),
+        );
       } else if (name === "pull_request_update") {
         if (input.title !== undefined || input.body !== undefined)
-          yield* run({
+          yield* runPayload({
             kind: "edit",
             ...(input.title === undefined ? {} : { title: input.title }),
             ...(input.body === undefined ? {} : { body: input.body }),
           });
         if (input.addLabels || input.removeLabels) {
-          const raw = detail.raw.labels;
-          if (!Array.isArray(raw))
-            return yield* failure("The forge did not return the existing labels.");
-          const current = raw
-            .map((item) => (typeof item === "string" ? item : record(item).name))
-            .filter((item): item is string => typeof item === "string");
-          const labels = [...new Set([...current, ...(input.addLabels ?? [])])].filter(
-            (item) => !input.removeLabels?.includes(item),
+          yield* run(() =>
+            Effect.gen(function* () {
+              const raw = (yield* provider.getDetail(ref)).raw.labels;
+              if (!Array.isArray(raw))
+                return yield* failure("The forge did not return the existing labels.");
+              const current = raw
+                .map((item) => (typeof item === "string" ? item : record(item).name))
+                .filter((item): item is string => typeof item === "string");
+              const labels = [...new Set([...current, ...(input.addLabels ?? [])])].filter(
+                (item) => !input.removeLabels?.includes(item),
+              );
+              return { kind: "labels", labels } as const;
+            }),
           );
-          yield* run({ kind: "labels", labels });
         }
         if (input.requestReviewers) {
-          const current = detail.raw.requested_reviewers ?? detail.raw.reviewers;
-          if (!Array.isArray(current))
-            return yield* failure("The forge did not return the existing reviewers.");
-          const identities = current.flatMap((item) => {
-            const reviewer = record(item);
-            const identity = reviewer.login ?? reviewer.uuid ?? reviewer.id;
-            return typeof identity === "string" || typeof identity === "number"
-              ? [String(identity)]
-              : [];
-          });
-          yield* run({
-            kind: "reviewers",
-            reviewers: [...new Set([...identities, ...input.requestReviewers])],
-          });
+          const requested = input.requestReviewers;
+          yield* run(() =>
+            Effect.gen(function* () {
+              const { raw } = yield* provider.getDetail(ref);
+              const current = raw.requested_reviewers ?? raw.reviewers ?? raw.participants;
+              if (!Array.isArray(current))
+                return yield* failure("The forge did not return the existing reviewers.");
+              const reviewerId = (item: unknown) => {
+                const entry = record(item);
+                const user = record(entry.user ?? item);
+                const id =
+                  ref.provider === "bitbucket"
+                    ? user.uuid
+                    : ref.provider === "github" || ref.provider === "forgejo"
+                      ? user.login
+                      : user.id;
+                return typeof id === "string" || typeof id === "number" ? String(id) : null;
+              };
+              const existing = current
+                .filter((item) => !record(item).role || record(item).role === "REVIEWER")
+                .map(reviewerId);
+              if (existing.some((id) => id === null))
+                return yield* failure("The forge did not identify every existing reviewer.");
+              let ids = requested;
+              if (ref.provider !== "github" && ref.provider !== "forgejo") {
+                const response = yield* provider.listReviewerCandidates(ref);
+                const collection = Array.isArray(response)
+                  ? response
+                  : (record(response).values ?? record(response).value);
+                if (!Array.isArray(collection))
+                  return yield* failure("The forge did not return reviewer candidates.");
+                ids = [];
+                for (const name of requested) {
+                  const matches = collection.filter((item) => {
+                    const user = record(record(item).user ?? item);
+                    return [
+                      reviewerId(item),
+                      user.username,
+                      user.login,
+                      user.nickname,
+                      user.display_name,
+                      user.displayName,
+                      user.name,
+                    ].some(
+                      (value) =>
+                        typeof value === "string" && value.toLowerCase() === name.toLowerCase(),
+                    );
+                  });
+                  const candidates = [
+                    ...new Set(matches.map(reviewerId).filter((id) => id !== null)),
+                  ];
+                  if (candidates.length !== 1)
+                    return yield* failure(
+                      "Choose an unambiguous reviewer from the forge's candidates.",
+                    );
+                  ids.push(candidates[0]!);
+                }
+              }
+              return {
+                kind: "reviewers",
+                reviewers: [...new Set([...existing.filter((id) => id !== null), ...ids])],
+              } as const;
+            }),
+          );
         }
         if (input.state)
-          yield* run({ kind: "action", action: input.state === "open" ? "reopen" : "close" });
+          yield* runPayload({
+            kind: "action",
+            action: input.state === "open" ? "reopen" : "close",
+          });
         if (input.ready !== undefined)
-          yield* run({ kind: "action", action: input.ready ? "ready" : "draft" });
+          yield* runPayload({ kind: "action", action: input.ready ? "ready" : "draft" });
       } else if (name === "pull_request_respond") {
         let replyTo: string | undefined;
         if (input.reviewThreadId) {
@@ -465,22 +665,44 @@ export function makePullRequestMcpHandler(deps: {
           return yield* failure("Give the review thread ID when changing its resolution.");
         }
         if (input.body?.trim())
-          yield* run({ kind: "comment", body: input.body, ...(replyTo ? { replyTo } : {}) });
+          yield* runPayload({ kind: "comment", body: input.body, ...(replyTo ? { replyTo } : {}) });
         if (input.reviewThreadId && input.resolved !== undefined)
-          yield* run({
+          yield* runPayload({
             kind: "thread-state",
             threadId: input.reviewThreadId,
             resolved: input.resolved,
           });
       } else if (name === "pull_request_review") {
-        if (input.comments?.length) {
-          const baseOid = forgeComparison(ref, detail)?.baseOid;
-          if (!baseOid) return yield* failure("The current diff comparison is unavailable.");
-          for (const comment of input.comments)
-            yield* run({ kind: "comment", ...comment, side: comment.side ?? "new", baseOid });
+        if (input.comments?.length && ref.provider === "github") {
+          const comments = input.comments;
+          yield* run(() =>
+            Effect.gen(function* () {
+              const baseOid = forgeComparison(ref, detail)?.baseOid;
+              if (!baseOid) return yield* failure("The current diff comparison is unavailable.");
+              return {
+                kind: "review",
+                body: input.body ?? "",
+                verdict: input.verdict,
+                baseOid,
+                comments: comments.map((comment) => ({ ...comment, side: comment.side ?? "new" })),
+              } as const;
+            }),
+          );
+        } else {
+          if (input.comments?.length) {
+            const baseOid = forgeComparison(ref, detail)?.baseOid;
+            if (!baseOid) return yield* failure("The current diff comparison is unavailable.");
+            for (const comment of input.comments)
+              yield* runPayload({
+                kind: "comment",
+                ...comment,
+                side: comment.side ?? "new",
+                baseOid,
+              });
+          }
+          if (input.verdict !== "comment" || input.body?.trim())
+            yield* runPayload({ kind: "review", body: input.body ?? "", verdict: input.verdict });
         }
-        if (input.verdict !== "comment" || input.body?.trim())
-          yield* run({ kind: "review", body: input.body ?? "", verdict: input.verdict });
       }
       if (!operations.length) return yield* failure("Provide at least one change.");
       return { ...summarize(detail), key, operationId, operations };

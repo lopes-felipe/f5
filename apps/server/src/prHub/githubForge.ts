@@ -422,6 +422,16 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
               ? "REQUEST_CHANGES"
               : "COMMENT",
         ...(input.headSha ? { commit_id: input.headSha } : {}),
+        ...(input.comments?.length
+          ? {
+              comments: input.comments.map(({ path, line, side, body }) => ({
+                path,
+                line,
+                side: side === "old" ? "LEFT" : "RIGHT",
+                body,
+              })),
+            }
+          : {}),
       }),
     performAction: (input) =>
       Effect.gen(function* () {

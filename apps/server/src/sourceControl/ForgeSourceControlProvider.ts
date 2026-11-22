@@ -106,7 +106,13 @@ export interface ForgeProvider extends SourceControlProvider {
     input: ForgeCommentInput,
   ) => Effect.Effect<unknown, SourceControlProviderError>;
   readonly submitReview: (
-    input: ForgeCommentInput & { readonly verdict: "comment" | "approve" | "request-changes" },
+    input: ForgeCommentInput & {
+      readonly verdict: "comment" | "approve" | "request-changes";
+      readonly comments?: Extract<
+        import("@t3tools/contracts").ForgeMutationPayload,
+        { kind: "review" }
+      >["comments"];
+    },
   ) => Effect.Effect<unknown, SourceControlProviderError>;
   readonly performAction: (input: {
     readonly ref: SourceControlPullRequestRef;
@@ -1175,8 +1181,8 @@ export function makeForgeSourceControlProvider(options: {
                 enc("refs/heads/" + head)
               : kind === "bitbucket"
                 ? "/pullrequests?state=OPEN&q=" + enc("source.branch.name=" + JSON.stringify(head))
-                : "/pulls?state=open&head=" + enc(head);
-        const existing = rows(yield* request(ref, undefined, query))
+                : "/pulls?state=open";
+        const existing = (yield* pagedRows(ref, query))
           .map((item) => summary(item, ref))
           .filter((item) => item.headRefName === head && item.isCrossRepository !== true);
         if (existing.length > 1)

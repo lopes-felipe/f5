@@ -7,7 +7,7 @@ const pr = {
     .min(1)
     .max(2048)
     .optional()
-    .describe("PR URL or F5 key. Defaults to the linked or current branch PR."),
+    .describe("PR URL or F5 key on the thread's forge. Writes require the thread's repository."),
   number: z.number().int().positive().optional(),
   repository: z
     .string()
@@ -67,6 +67,10 @@ export const PULL_REQUEST_MCP_TOOLS = [
         .optional(),
       includeResolved: z.boolean().optional(),
       cursor: z.string().min(1).max(4096).optional(),
+      commentCursor: z.string().min(1).max(4096).optional(),
+      reviewThreadId: z.string().min(1).max(256).optional(),
+      replyCursor: z.string().min(1).max(4096).optional(),
+      diffCursor: z.string().min(1).max(4096).optional(),
     },
     true,
   ),
