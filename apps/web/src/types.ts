@@ -133,6 +133,7 @@ export interface ProposedPlan {
 
 export interface TurnDiffFileChange {
   path: string;
+  repositoryPath?: string;
   kind?: string | undefined;
   additions?: number | undefined;
   deletions?: number | undefined;

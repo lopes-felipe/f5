@@ -85,6 +85,9 @@ export type WorktreeSetupPhase = typeof WorktreeSetupPhase.Type;
 export const WorktreeSetupRequest = Schema.Struct({
   projectCwd: FilesystemPath,
   baseBranch: TrimmedNonEmptyString,
+  repositoryPaths: Schema.optionalKey(
+    Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(128)),
+  ),
   branch: TrimmedNonEmptyString,
   runSetupScript: Schema.Boolean,
   requireWorktree: Schema.Boolean,

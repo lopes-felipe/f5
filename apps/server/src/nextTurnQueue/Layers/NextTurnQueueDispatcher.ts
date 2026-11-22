@@ -378,7 +378,20 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           if (recreate || requireExisting) inspectionRetries.delete(item.threadId);
           return gate;
         }
-        if (thread.branch && !(yield* git.branchExists(project.workspaceRoot, thread.branch))) {
+        const group =
+          thread.worktreePath && git.inspectWorktreeGroup
+            ? yield* git.inspectWorktreeGroup({
+                projectRoot: project.workspaceRoot,
+                path: thread.worktreePath,
+                branch: thread.branch,
+                threadId: thread.threadId,
+              })
+            : null;
+        if (
+          !group &&
+          thread.branch &&
+          !(yield* git.branchExists(project.workspaceRoot, thread.branch))
+        ) {
           return {
             kind: "autoPause" as const,
             reasonCode: "worktree_missing" as const,

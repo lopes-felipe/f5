@@ -58,6 +58,8 @@ export const WS_METHODS = {
   projectsIssueAssetUrl: "projects.issueAssetUrl",
   projectsAuthorizeEntry: "projects.authorizeEntry",
   projectsGetCheckedInConfig: "projects.getCheckedInConfig",
+  projectsListRepositories: "projects.listRepositories",
+  projectsSetRepository: "projects.setRepository",
 
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",

@@ -456,13 +456,14 @@ export function getReviewPreviewDiff(
   input: {
     readonly request: ReviewPreviewDiffInput;
     readonly readModel: OrchestrationReadModel;
+    readonly repositoryCwd?: string;
   },
   execution: ReviewDiffExecutionOptions = {},
 ): Effect.Effect<ReviewPreviewDiffResult> {
   return Effect.gen(function* () {
     const cwdResult = yield* Effect.result(resolveThreadCwd(input.readModel, input.request));
     if (cwdResult._tag === "Failure") return cwdResult.failure;
-    const cwd = cwdResult.success;
+    const cwd = input.repositoryCwd ?? cwdResult.success;
 
     const repositoryProbe = yield* runGit(
       cwd,

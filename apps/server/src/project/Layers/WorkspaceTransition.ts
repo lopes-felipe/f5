@@ -577,6 +577,15 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
           if (record.intent === "move_to_new_worktree") return yield* applyMove(record);
           const inPlace =
             record.intent === "checkout_branch" || record.intent === "create_branch_and_checkout";
+          if (
+            inPlace &&
+            (yield* git.readWorktreeGroup?.(record.source.path) ?? Effect.succeed(null))
+          )
+            return yield* Effect.fail(
+              new WorkspaceRequiresNewWorktreeError(
+                "The primary branch belongs to a worktree group. Create a new worktree to change it.",
+              ),
+            );
           if (thread.session && thread.session.status !== "stopped")
             return yield* Effect.fail(new Error("The provider session did not stop."));
           yield* validateClaims(record, record.target.path, inPlace);
@@ -865,6 +874,16 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
       // Branches and worktrees belong to a Git checkout; a thread without a project has neither.
       if (isScratchProject(project))
         return yield* Effect.fail(new Error("Threads without a project have no branch to switch."));
+      if (
+        thread.worktreePath &&
+        (input.intent === "checkout_branch" || input.intent === "create_branch_and_checkout") &&
+        (yield* git.readWorktreeGroup?.(thread.worktreePath) ?? Effect.succeed(null))
+      )
+        return yield* Effect.fail(
+          new WorkspaceRequiresNewWorktreeError(
+            "The primary branch belongs to a worktree group. Create a new worktree to change it.",
+          ),
+        );
       const queueState = (yield* queue.listByThread(thread.id)).state;
       if (
         setupOwnerToken &&

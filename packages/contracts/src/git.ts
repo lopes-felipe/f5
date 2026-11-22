@@ -59,7 +59,8 @@ export const GitRunStackedActionInput = Schema.Struct({
   action: GitStackedAction,
   commitMessage: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(10_000))),
   featureBranch: Schema.optional(Schema.Boolean),
-  filePaths: Schema.optional(Schema.Array(FilesystemPath).check(Schema.isMinLength(1))),
+  /** An explicit empty selection runs requested push/PR steps without committing files. */
+  filePaths: Schema.optional(Schema.Array(FilesystemPath)),
   textGenerationModel: Schema.optional(TrimmedNonEmptyStringSchema).pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_GIT_TEXT_GENERATION_MODEL)),
   ),

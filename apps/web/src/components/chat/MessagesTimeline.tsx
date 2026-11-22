@@ -5296,6 +5296,14 @@ function AssistantChangedFiles(props: { externals: TimelineRowExternalsOf<"assis
   });
   const presentation = externals.presentationOverride ?? defaultPresentation;
   const isExpanded = presentation === "expanded";
+  const repositories = new Map<string | undefined, Array<(typeof checkpointFiles)[number]>>();
+  if (isExpanded) {
+    for (const file of checkpointFiles) {
+      const group = repositories.get(file.repositoryPath);
+      if (group) group.push(file);
+      else repositories.set(file.repositoryPath, [file]);
+    }
+  }
   const togglePresentation = () => {
     actions.setChangedFilesPresentationOverrides((current) => ({
       ...current,
@@ -5358,14 +5366,22 @@ function AssistantChangedFiles(props: { externals: TimelineRowExternalsOf<"assis
         </div>
       </div>
       {presentation === "expanded" ? (
-        <ChangedFilesTree
-          key={`changed-files-tree:${turnSummary.turnId}`}
-          turnId={turnSummary.turnId}
-          files={checkpointFiles}
-          allDirectoriesExpanded={allDirectoriesExpanded}
-          resolvedTheme={resolvedTheme}
-          onOpenTurnDiff={actions.onOpenTurnDiff}
-        />
+        Array.from(repositories).map(([repository, files]) => (
+          <div key={repository ?? ""}>
+            {repository !== undefined && (
+              <div className="px-2 pt-2 text-xs font-medium">
+                {repository === "." ? "Project root" : repository}
+              </div>
+            )}
+            <ChangedFilesTree
+              turnId={turnSummary.turnId}
+              files={files}
+              allDirectoriesExpanded={allDirectoriesExpanded}
+              resolvedTheme={resolvedTheme}
+              onOpenTurnDiff={actions.onOpenTurnDiff}
+            />
+          </div>
+        ))
       ) : presentation === "compact" ? (
         <div className="flex flex-wrap gap-1 pt-0.5">
           {checkpointFiles.slice(0, CHANGED_FILES_COMPACT_PREVIEW_COUNT).map((file) => (

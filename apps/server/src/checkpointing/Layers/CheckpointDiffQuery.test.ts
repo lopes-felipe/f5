@@ -5,7 +5,9 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { Effect, Layer, Option } from "effect";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Effect, FileSystem, Layer, Option } from "effect";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -147,6 +149,46 @@ function buildLayer(input: {
 }
 
 describe("CheckpointDiffQueryLive", () => {
+  it("diffs the repositories in a plain project and skips repositories without a baseline", async () => {
+    const projectId = ProjectId.makeUnsafe("project-1");
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const toRef = checkpointRefForThreadTurn(threadId, 1);
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workspaceRoot = yield* fs.makeTempDirectoryScoped();
+        for (const directory of ["api", "late", "packages/web"]) {
+          yield* fs.makeDirectory(path.join(workspaceRoot, directory, ".git"), {
+            recursive: true,
+          });
+        }
+        const checkpointStore: CheckpointStoreShape = {
+          isGitRepository: () => Effect.succeed(true),
+          captureCheckpoint: () => Effect.void,
+          hasCheckpointRef: ({ cwd, checkpointRef }) =>
+            Effect.succeed(path.basename(cwd) !== "late" || checkpointRef === toRef),
+          restoreCheckpoint: () => Effect.succeed(true),
+          diffCheckpoints: ({ options }) => Effect.succeed(options?.repositoryPath + "\n"),
+          readCheckpointRefs: () => Effect.succeed({}),
+          deleteCheckpointRefs: () => Effect.void,
+        };
+        const layer = buildLayer({
+          thread: Option.some(makeThreadRow({ threadId, projectId, worktreePath: null })),
+          project: Option.some(makeProjectRow({ projectId, workspaceRoot })),
+          checkpoints: [
+            makeCheckpointRow({ threadId, checkpointTurnCount: 1, checkpointRef: toRef }),
+          ],
+          checkpointStore,
+        }).pipe(Layer.provide(NodeServices.layer));
+        return yield* Effect.gen(function* () {
+          const query = yield* CheckpointDiffQuery;
+          return yield* query.getTurnDiff({ threadId, fromTurnCount: 0, toTurnCount: 1 });
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
+    expect(result.diff).toBe("api\npackages/web\n");
+  });
+
   it("computes diffs using canonical turn-0 checkpoint refs", async () => {
     const projectId = ProjectId.makeUnsafe("project-1");
     const threadId = ThreadId.makeUnsafe("thread-1");

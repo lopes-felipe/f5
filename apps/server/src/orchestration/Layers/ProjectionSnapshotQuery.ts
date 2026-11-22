@@ -2918,7 +2918,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         readonly number: number;
         readonly title: string;
         readonly url: string;
-      }>`SELECT thread_id AS "threadId", provider, host, repository, number, title, url
+        readonly repositoryPath: string | null;
+      }>`SELECT thread_id AS "threadId", provider, host, repository, number, title, url, repository_path AS "repositoryPath"
         FROM (
           SELECT *, ROW_NUMBER() OVER (
             PARTITION BY thread_id ORDER BY updated_at DESC, link_id DESC
@@ -2935,8 +2936,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
       const pullRequestsByThread = new Map<string, ThreadPullRequestLink[]>();
-      for (const { threadId, ...row } of pullRequestRows) {
-        const decoded = Schema.decodeUnknownOption(ThreadPullRequestLink)(row);
+      for (const { threadId, repositoryPath, ...row } of pullRequestRows) {
+        const decoded = Schema.decodeUnknownOption(ThreadPullRequestLink)({
+          ...row,
+          ...(repositoryPath ? { repositoryPath } : {}),
+        });
         if (Option.isNone(decoded)) {
           yield* Effect.logWarning("Skipping invalid thread pull request link in snapshot", {
             threadId,

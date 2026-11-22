@@ -75,6 +75,7 @@ export function ScriptIcon({
 }
 
 export interface NewProjectScriptInput {
+  readonly worktreeLayout?: "create" | "remove";
   name: string;
   command: string;
   icon: ProjectScriptIcon;

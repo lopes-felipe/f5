@@ -1,5 +1,6 @@
 import {
   ProjectSettingsOverrides,
+  ProjectIgnoredRepositories,
   CheckedInProjectIconPath,
   ThreadEnvMode,
   UpstreamProjectConfig,
@@ -14,6 +15,7 @@ import { fromLenientJson } from "./schemaJson";
 
 export interface ParsedCheckedInProjectFile {
   readonly settings?: ProjectSettingsOverrides;
+  readonly ignoreRepositories?: ProjectIgnoredRepositories;
   readonly defaultThreadEnvMode: ThreadEnvModeType | null;
   readonly iconPath: CheckedInProjectIconPathType | null;
   readonly upstream: UpstreamProjectConfigType | null;
@@ -24,6 +26,7 @@ const decodeUnknownJson = Schema.decodeUnknownExit(fromLenientJson(Schema.Unknow
 const decodeThreadEnvMode = Schema.decodeUnknownExit(ThreadEnvMode);
 const decodeIconPath = Schema.decodeUnknownExit(CheckedInProjectIconPath);
 const decodeUpstream = Schema.decodeUnknownExit(UpstreamProjectConfig);
+const decodeIgnoredRepositories = Schema.decodeUnknownExit(ProjectIgnoredRepositories);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -54,6 +57,7 @@ export function parseCheckedInProjectFile(raw: string): ParsedCheckedInProjectFi
   let defaultThreadEnvMode: ThreadEnvModeType | null = null;
   let iconPath: CheckedInProjectIconPathType | null = null;
   let upstream: UpstreamProjectConfigType | null = null;
+  let ignoreRepositories: ProjectIgnoredRepositories | undefined;
 
   if (
     decoded.value.$schema !== undefined &&
@@ -102,6 +106,18 @@ export function parseCheckedInProjectFile(raw: string): ParsedCheckedInProjectFi
     }
   }
 
+  if (decoded.value.ignoreRepositories !== undefined) {
+    const field = decodeIgnoredRepositories(decoded.value.ignoreRepositories);
+    if (Exit.isSuccess(field) && field.value.every(hasSafeRelativePathShape)) {
+      ignoreRepositories = field.value;
+    } else {
+      diagnostics.push({
+        field: "ignoreRepositories",
+        message: "ignoreRepositories must contain up to 128 workspace-relative paths.",
+      });
+    }
+  }
+
   if (decoded.value.scripts !== undefined) {
     diagnostics.push({
       field: "scripts",
@@ -126,5 +142,12 @@ export function parseCheckedInProjectFile(raw: string): ParsedCheckedInProjectFi
     else if (key !== "defaultThreadEnvMode")
       diagnostics.push({ field: "settings", message: `Invalid value for ${key}.` });
   }
-  return { defaultThreadEnvMode, iconPath, upstream, diagnostics, settings };
+  return {
+    defaultThreadEnvMode,
+    iconPath,
+    upstream,
+    diagnostics,
+    settings,
+    ...(ignoreRepositories ? { ignoreRepositories } : {}),
+  };
 }

@@ -9,6 +9,8 @@ import { describe, expect, it } from "vitest";
 
 import { repairUnreleasedScheduledTaskMigrations } from "./repairUnreleasedScheduledTaskMigrations.ts";
 import { LATEST_MIGRATION_ID, MIGRATIONS, runMigrations } from "./Migrations.ts";
+import { WorktreePreparationsLive } from "./Layers/WorktreePreparations.ts";
+import { WorktreePreparations } from "./Services/WorktreePreparations.ts";
 import * as SqliteClient from "./NodeSqliteClient.ts";
 import quarantineMigration from "./Migrations/139_ScheduledTaskQuarantine.ts";
 import scheduledMigration from "./Migrations/138_ScheduledTasks.ts";
@@ -24,6 +26,62 @@ describe("MIGRATIONS", () => {
     expect(ids).toEqual(Array.from({ length: LATEST_MIGRATION_ID }, (_, index) => index + 1));
   });
 });
+
+effectIt.effect("upgrades a version 173 database for managed workspace groups", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const oldMigrations = Object.fromEntries(
+      Object.entries(MIGRATIONS).filter(([key]) => Number.parseInt(key, 10) <= 173),
+    );
+    yield* Migrator.make({})({ loader: Migrator.fromRecord(oldMigrations) });
+    expect(
+      yield* sql`SELECT name FROM pragma_table_info('projection_thread_pull_requests')
+      WHERE name = 'repository_path'`,
+    ).toEqual([]);
+    yield* runMigrations;
+    expect(
+      yield* sql`SELECT name FROM pragma_table_info('projection_thread_pull_requests')
+      WHERE name = 'repository_path'`,
+    ).toEqual([{ name: "repository_path" }]);
+    yield* Effect.gen(function* () {
+      const preparations = yield* WorktreePreparations;
+      const group = {
+        projectId: "project",
+        threadId: "thread",
+        projectRoot: "/project",
+        path: "/worktree",
+        branch: "work",
+        repositories: ["/project/api"],
+        members: [
+          {
+            path: "/worktree/api",
+            source: "/project/api",
+            identity: "/project/api/.git",
+            baseOid: "a".repeat(40),
+          },
+        ],
+      };
+      yield* preparations.saveGroup(group);
+      expect(yield* preparations.getGroup(group.path)).toEqual(group);
+      expect(yield* preparations.getGroupLayoutPhase(group.path)).toBe("pending");
+      yield* preparations.deleteGroup({ ...group, threadId: "other-thread" });
+      expect(yield* preparations.getGroup(group.path)).toEqual(group);
+      yield* preparations.deleteGroup(group);
+      expect(yield* preparations.getGroup(group.path)).toBeNull();
+      yield* sql`WITH RECURSIVE paths(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM paths WHERE i < 128)
+        INSERT INTO project_repository_roots(project_id, path)
+        SELECT 'project', '/extra-' || i FROM paths`;
+      yield* preparations.setProjectRepositoryRoot("project", "/extra-1", true);
+      const result = yield* Effect.result(
+        preparations.setProjectRepositoryRoot("project", "/too-many", true),
+      );
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { message: expect.stringContaining("128 registered external repositories") },
+      });
+    }).pipe(Effect.provide(WorktreePreparationsLive));
+  }).pipe(Effect.provide(SqliteClient.layerMemory()), Effect.scoped),
+);
 
 type PrecedingVersion =
   | "main126"
@@ -150,6 +208,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 171, name: "SessionAutoCompactThreshold" },
       { migration_id: 172, name: "ThreadSideChat" },
       { migration_id: 173, name: "SessionAuthFailure" },
+      { migration_id: 174, name: "WorktreeGroups" },
     ]);
     // The queue reads linked threads by pull request; the lookup uses its own index.
     const linkLookup = yield* sql<{

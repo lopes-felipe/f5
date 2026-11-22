@@ -1,5 +1,29 @@
 import { Effect, Schema, ServiceMap } from "effect";
 
+export const WorktreeGroupPlan = Schema.Struct({
+  path: Schema.String,
+  projectId: Schema.String,
+  projectRoot: Schema.String,
+  threadId: Schema.String,
+  branch: Schema.String,
+  root: Schema.optionalKey(
+    Schema.Struct({
+      identity: Schema.String,
+      baseOid: Schema.String,
+    }),
+  ),
+  repositories: Schema.Array(Schema.String),
+  members: Schema.Array(
+    Schema.Struct({
+      source: Schema.String,
+      identity: Schema.String,
+      path: Schema.String,
+      baseOid: Schema.String,
+    }),
+  ),
+});
+export type WorktreeGroupPlan = typeof WorktreeGroupPlan.Type;
+
 export type PreparationPhase =
   | "allocated"
   | "checkout_created"
@@ -39,7 +63,26 @@ export class PreparationError extends Schema.TaggedErrorClass<PreparationError>(
   },
 ) {}
 export interface WorktreePreparationsShape {
+  readonly getGroupLayoutPhase: (path: string) => Effect.Effect<string | null, PreparationError>;
+  readonly setGroupLayoutPhase: (
+    path: string,
+    phase: "running" | "done",
+  ) => Effect.Effect<void, PreparationError>;
+  readonly listProjectRepositoryRoots: (
+    projectId: string,
+  ) => Effect.Effect<ReadonlyArray<string>, PreparationError>;
+  readonly setProjectRepositoryRoot: (
+    projectId: string,
+    path: string,
+    tracked: boolean,
+  ) => Effect.Effect<void, PreparationError>;
+  readonly getGroup: (path: string) => Effect.Effect<WorktreeGroupPlan | null, PreparationError>;
+  readonly saveGroup: (group: WorktreeGroupPlan) => Effect.Effect<void, PreparationError>;
+  readonly deleteGroup: (group: WorktreeGroupPlan) => Effect.Effect<void, PreparationError>;
   readonly unfinished: Effect.Effect<ReadonlyArray<WorktreePreparationReceipt>, PreparationError>;
+  readonly listByOwner: (
+    owner: string,
+  ) => Effect.Effect<ReadonlyArray<WorktreePreparationReceipt>, PreparationError>;
   readonly allocate: (
     input: PreparationAllocation,
   ) => Effect.Effect<WorktreePreparationReceipt, PreparationError>;

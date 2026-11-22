@@ -140,6 +140,68 @@ describe("WebSocket Server", () => {
       expect(run("branch", "--show-current")).toBe("topic");
     });
 
+    it("commits a feature branch in a nested checkout and leaves the thread at the project root", async () => {
+      const { cwd, run } = repoWithTopic();
+      const nested = path.join(cwd, "nested");
+      fs.mkdirSync(nested);
+      run("-C", nested, "init", "-q", "-b", "main");
+      run("-C", nested, "config", "user.name", "F5 Test");
+      run("-C", nested, "config", "user.email", "f5@example.test");
+      fs.writeFileSync(path.join(nested, "app.txt"), "initial\n");
+      run("-C", nested, "add", "app.txt");
+      run("-C", nested, "commit", "-qm", "init nested");
+      const before = run("-C", nested, "rev-parse", "HEAD");
+      h.server = await createTestServer({ cwd, autoBootstrapProjectFromCwd: true });
+      const address = h.server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const [ws, welcome] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      const threadId = (welcome.data as { bootstrapThreadId: string }).bootstrapThreadId;
+      expect(threadId).toBeTruthy();
+      const nonMember = makeTempDir("f5-nonmember-");
+      const rejected = await sendRequest(ws, WS_METHODS.gitCheckout, {
+        threadId,
+        cwd: nonMember,
+        branch: "topic",
+      });
+      expect(rejected.error?.message).toContain("does not match this conversation's workspace");
+      fs.writeFileSync(path.join(nested, "app.txt"), "edited\n");
+      run("-C", nested, "add", "app.txt");
+
+      const empty = await sendRequest(ws, WS_METHODS.gitRunStackedAction, {
+        threadId,
+        cwd: nested,
+        action: "commit",
+        commitMessage: "Exclude all files",
+        filePaths: [],
+      });
+      expect(empty.error).toBeUndefined();
+      expect(empty.result).toMatchObject({ commit: { status: "skipped_no_changes" } });
+      expect(run("-C", nested, "rev-parse", "HEAD")).toBe(before);
+
+      const result = await sendRequest(ws, WS_METHODS.gitRunStackedAction, {
+        threadId,
+        cwd: nested,
+        action: "commit",
+        commitMessage: "Update nested app",
+        featureBranch: true,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatchObject({
+        branch: { status: "created" },
+        commit: { status: "created" },
+      });
+      expect(run("-C", nested, "branch", "--show-current")).not.toBe("main");
+      expect(run("-C", nested, "log", "-1", "--format=%s")).toBe("Update nested app");
+      expect(run("branch", "--show-current")).toBe("main");
+      const snapshot = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+      expect(
+        (snapshot.result as OrchestrationReadModel).threads.find(
+          (thread) => thread.id === threadId,
+        ),
+      ).toMatchObject({ worktreePath: null });
+    });
+
     it("refuses while a terminal is open in it, naming the conversation", async () => {
       const { cwd, run } = repoWithTopic();
       const terminalManager = new MockTerminalManager();
@@ -601,7 +663,11 @@ describe("WebSocket Server", () => {
     const workspace = makeTempDir("f5-ws-project-config-");
     fs.writeFileSync(
       path.join(workspace, "f5.json"),
-      JSON.stringify({ defaultThreadEnvMode: "worktree", scripts: [{ command: "ignored" }] }),
+      JSON.stringify({
+        defaultThreadEnvMode: "worktree",
+        ignoreRepositories: ["vendor"],
+        scripts: [{ command: "ignored" }],
+      }),
       "utf8",
     );
     h.server = await createTestServer({ cwd: "/test" });
@@ -629,9 +695,18 @@ describe("WebSocket Server", () => {
       projectId,
       sourceFile: "f5.json",
       defaultThreadEnvMode: "worktree",
+      ignoreRepositories: ["vendor"],
       iconPath: null,
       diagnostics: [expect.objectContaining({ field: "scripts" })],
     });
+
+    fs.mkdirSync(path.join(workspace, "packages", "app", ".git"), { recursive: true });
+    fs.mkdirSync(path.join(workspace, "vendor", "lib", ".git"), { recursive: true });
+    const repositories = await sendRequest(ws, WS_METHODS.projectsListRepositories, { projectId });
+    expect(repositories.error).toBeUndefined();
+    expect(repositories.result).toEqual([
+      { path: path.join(workspace, "packages", "app"), relativePath: "packages/app" },
+    ]);
   });
 
   it("searches project contents through registered identities", async () => {

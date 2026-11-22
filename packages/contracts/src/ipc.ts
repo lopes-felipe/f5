@@ -209,6 +209,9 @@ import type {
 import type {
   ProjectCheckedInConfig,
   ProjectGetCheckedInConfigInput,
+  ProjectListRepositoriesInput,
+  ProjectSetRepositoryInput,
+  ProjectRepository,
 } from "./checkedInProjectFile";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem";
 import type {
@@ -1167,6 +1170,10 @@ export interface NativeApi {
     scanAgentSessions: () => Promise<AgentSessionScanResult>;
     importAgentSessions: (input: AgentSessionImportInput) => Promise<AgentSessionImportResult>;
     getCheckedInConfig: (input: ProjectGetCheckedInConfigInput) => Promise<ProjectCheckedInConfig>;
+    listRepositories: (
+      input: ProjectListRepositoriesInput,
+    ) => Promise<ReadonlyArray<ProjectRepository>>;
+    setRepository: (input: ProjectSetRepositoryInput) => Promise<void>;
     authorizeEntry: (input: ProjectAuthorizeEntryInput) => Promise<ProjectAuthorizeEntryResult>;
     clone: (input: ProjectCloneInput) => Promise<ProjectCloneJob>;
     cloneList: () => Promise<ReadonlyArray<ProjectCloneJob>>;

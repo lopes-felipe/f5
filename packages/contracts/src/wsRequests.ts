@@ -130,7 +130,11 @@ import {
   AgentsGetSnapshotInput,
   AgentsReadTranscriptInput,
 } from "./backgroundWork";
-import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
+import {
+  ProjectGetCheckedInConfigInput,
+  ProjectListRepositoriesInput,
+  ProjectSetRepositoryInput,
+} from "./checkedInProjectFile";
 import { OpenInEditorInput, RevealInFileManagerInput } from "./editor";
 import { ELICITATION_WS_METHODS, ElicitationSubmitInput } from "./elicitation";
 import { FilesystemBrowseInput } from "./filesystem";
@@ -534,6 +538,8 @@ const WebSocketRequestBody = Schema.Union([
 
   // Project Search
   tagRequestBody(WS_METHODS.projectsGetCheckedInConfig, ProjectGetCheckedInConfigInput),
+  tagRequestBody(WS_METHODS.projectsListRepositories, ProjectListRepositoriesInput),
+  tagRequestBody(WS_METHODS.projectsSetRepository, ProjectSetRepositoryInput),
   tagRequestBody(WS_METHODS.projectsListEntries, ProjectListEntriesInput),
   tagRequestBody(WS_METHODS.projectsClone, ProjectCloneInput),
   tagRequestBody(WS_METHODS.projectsCloneCancel, ProjectCloneCancelInput),

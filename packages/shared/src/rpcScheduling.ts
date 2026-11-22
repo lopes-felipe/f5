@@ -324,6 +324,8 @@ export const RPC_METHOD_POLICY = {
   "projects.ensureScratch": MUTATION_RT,
   "projects.findByRepository": MUTATION_RT,
   "projects.getCheckedInConfig": READ,
+  "projects.listRepositories": READ,
+  "projects.setRepository": MUTATION,
   "projects.issueAssetUrl": MUTATION,
   "projects.listDirectory": READ,
   "projects.listEntries": READ,

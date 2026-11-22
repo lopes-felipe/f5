@@ -766,6 +766,8 @@ export function createWsNativeApi(): NativeApi {
         ),
       getCheckedInConfig: (input) =>
         transport.request(WS_METHODS.projectsGetCheckedInConfig, input),
+      listRepositories: (input) => transport.request(WS_METHODS.projectsListRepositories, input),
+      setRepository: (input) => transport.request(WS_METHODS.projectsSetRepository, input),
       authorizeEntry: requestMethod(WS_METHODS.projectsAuthorizeEntry),
       listDirectory: requestMethod(WS_METHODS.projectsListDirectory),
       listEntries: requestMethod(WS_METHODS.projectsListEntries),

@@ -1000,7 +1000,11 @@ const make = Effect.gen(function* () {
       cwd: effectiveCwd,
       workflowExecutionProfile,
     });
-    return { thread, instructionContext, effectiveCwd };
+    return {
+      thread,
+      instructionContext,
+      effectiveCwd,
+    };
   });
 
   const resolveThreadSessionStartContext = Effect.fnUntraced(function* (
