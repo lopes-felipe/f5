@@ -1223,16 +1223,21 @@ describe("WebSocket Server", () => {
             : never
           : never;
         readonly sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]>;
+        readonly startedCwds?: Array<string | undefined>;
         readonly generateBranchName?: ProviderInstance["textGeneration"]["generateBranchName"];
       }) {
+        const provider = makeTurnCapturingProviderService(options.sentTurns);
         h.server = await createTestServer({
           cwd: options.repo,
           ...(options.stateDir ? { stateDir: options.stateDir } : {}),
           ...(options.persistenceLayer ? { persistenceLayer: options.persistenceLayer } : {}),
-          providerLayer: Layer.succeed(
-            ProviderService,
-            makeTurnCapturingProviderService(options.sentTurns),
-          ),
+          providerLayer: Layer.succeed(ProviderService, {
+            ...provider,
+            startSession: (threadId, input) =>
+              Effect.sync(() => {
+                options.startedCwds?.push(input.cwd);
+              }).pipe(Effect.andThen(provider.startSession(threadId, input))),
+          }),
           ...(options.generateBranchName
             ? {
                 providerInstanceRegistryLayer: Layer.succeed(ProviderInstanceRegistry, {
@@ -1371,6 +1376,57 @@ describe("WebSocket Server", () => {
           return false;
         }
       };
+
+      it("delivers the first turn in a plain project worktree group", async () => {
+        const repo = makeTempDir("f5-ws-plain-worktree-");
+        for (const name of ["api", "web"]) {
+          const member = path.join(repo, name);
+          fs.mkdirSync(member);
+          execFileSync("git", ["init", "--initial-branch=main"], { cwd: member, stdio: "pipe" });
+          execFileSync(
+            "git",
+            [
+              "-c",
+              "user.email=test@example.com",
+              "-c",
+              "user.name=Test",
+              "commit",
+              "--allow-empty",
+              "-m",
+              "Initial",
+            ],
+            { cwd: member, stdio: "pipe" },
+          );
+        }
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const startedCwds: Array<string | undefined> = [];
+        const ws = await startServer({ repo, sentTurns, startedCwds });
+        await createProject(ws, repo);
+        const response = await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "plain-worktree", requireWorktree: true }),
+        );
+        expect(response.error).toBeUndefined();
+        const done = await waitForSetup(
+          ws,
+          "plain-worktree",
+          (snapshot) => snapshot?.phase === "done" || snapshot?.phase === "failed",
+        );
+        expect(done?.phase, JSON.stringify(done)).toBe("done");
+        const workspace = done!.worktreePath!;
+        expect(workspace).not.toBe(repo);
+        for (const name of ["api", "web"]) {
+          expect(
+            execFileSync("git", ["branch", "--show-current"], {
+              cwd: path.join(workspace, name),
+              encoding: "utf8",
+            }).trim(),
+          ).toBe("f5/plain-worktree");
+        }
+        await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+        expect(startedCwds).toContain(workspace);
+      });
 
       it("rejects a required worktree before creating the thread", async () => {
         const repo = makeTempDir("t3code-ws-setup-required-");

@@ -2591,9 +2591,10 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
         link.repository,
         link.number,
       ]);
-      yield* sql`INSERT INTO projection_thread_pull_requests(link_id, thread_id, provider, host, repository, number, title, url, updated_at)
-      VALUES (${linkId}, ${threadId}, ${link.provider}, ${link.host}, ${link.repository}, ${link.number}, ${link.title}, ${link.url}, ${event.occurredAt})
-      ON CONFLICT(link_id) DO UPDATE SET title = excluded.title, url = excluded.url, updated_at = excluded.updated_at`.pipe(
+      yield* sql`INSERT INTO projection_thread_pull_requests(link_id, thread_id, provider, host, repository, number, title, url, updated_at, repository_path)
+      VALUES (${linkId}, ${threadId}, ${link.provider}, ${link.host}, ${link.repository}, ${link.number}, ${link.title}, ${link.url}, ${event.occurredAt}, ${link.repositoryPath ?? null})
+      ON CONFLICT(link_id) DO UPDATE SET title = excluded.title, url = excluded.url, updated_at = excluded.updated_at,
+        repository_path = COALESCE(excluded.repository_path, projection_thread_pull_requests.repository_path)`.pipe(
         Effect.mapError(toPersistenceSqlError("ProjectionPipeline.threadPullRequests:upsert")),
       );
     });

@@ -312,6 +312,7 @@ export const ProjectScript = Schema.Struct({
   command: TrimmedNonEmptyString,
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
+  worktreeLayout: Schema.optionalKey(Schema.Literals(["create", "remove"])),
   runOnWorktreeSettle: Schema.optional(Schema.Boolean),
   stopOnSettle: Schema.optional(Schema.Boolean),
   /**
@@ -721,6 +722,7 @@ export type OrchestrationSession = typeof OrchestrationSession.Type;
 
 export const OrchestrationCheckpointFile = Schema.Struct({
   path: FilesystemPath,
+  repositoryPath: Schema.optionalKey(FilesystemPath),
   kind: TrimmedNonEmptyString,
   additions: NonNegativeInt,
   deletions: NonNegativeInt,
@@ -1006,6 +1008,7 @@ export type ThreadSettledBy = typeof ThreadSettledBy.Type;
 
 export const ThreadPullRequestLink = Schema.Struct({
   ...SourceControlPullRequestRef.fields,
+  repositoryPath: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(2048))),
   title: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
   url: TrimmedNonEmptyString.check(Schema.isMaxLength(2048), Schema.isPattern(/^https?:\/\//)),
 });
@@ -1506,6 +1509,9 @@ export const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
   projectCwd: FilesystemPath,
   baseBranch: TrimmedNonEmptyString,
   branch: Schema.optional(TrimmedNonEmptyString),
+  repositoryPaths: Schema.optionalKey(
+    Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(128)),
+  ),
   /**
    * Reject the send, before the thread exists, when no separate worktree can
    * be prepared, instead of falling back to the project checkout. Multi-model

@@ -435,7 +435,11 @@ describe("CheckpointStoreLive", () => {
     const changedFiles = (diff: string) =>
       [...diff.matchAll(/^diff --git a\/(\S+) b\//gm)].map((match) => match[1]);
 
-    async function scenario(turn: (cwd: string) => void, before?: (cwd: string) => void) {
+    async function scenario(
+      turn: (cwd: string) => void,
+      before?: (cwd: string) => void,
+      repositoryPath?: string,
+    ) {
       const cwd = mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-imports-"));
       try {
         run(cwd, "init", "-q", "-b", "main");
@@ -464,7 +468,7 @@ describe("CheckpointStoreLive", () => {
                 cwd,
                 fromCheckpointRef: from,
                 toCheckpointRef: to,
-                options: { excludeGitImports },
+                options: { excludeGitImports, ...(repositoryPath ? { repositoryPath } : {}) },
               });
             return { filtered: yield* diff(true), full: yield* diff(false) };
           }).pipe(
@@ -477,6 +481,16 @@ describe("CheckpointStoreLive", () => {
         rmSync(cwd, { recursive: true, force: true });
       }
     }
+
+    it("qualifies identically named files by repository in a combined turn patch", async () => {
+      const edit = (cwd: string) => writeFileSync(path.join(cwd, "mine.txt"), "two\n");
+      const api = await scenario(edit, undefined, "api");
+      const web = await scenario(edit, undefined, "packages/web");
+      expect(changedFiles(api.filtered + web.filtered)).toEqual([
+        "api/mine.txt",
+        "packages/web/mine.txt",
+      ]);
+    });
 
     it("leaves out files a pull brought in and keeps the turn's own edits", async () => {
       const { filtered, full } = await scenario((cwd) => {

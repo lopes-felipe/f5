@@ -688,15 +688,31 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
     blockedReasons.push(
       "a preparation operation owns this checkout; finish or explicitly recover it first",
     );
-  const entries = yield* git.listWorktrees(input.projectCwd).pipe(
-    Effect.orElseSucceed(() => {
-      blockedReasons.push("worktree registrations could not be read");
-      return [];
-    }),
-  );
+  const manifest = git.readWorktreeGroup ? yield* git.readWorktreeGroup(input.path) : null;
+  const group = manifest?.root ? null : manifest;
+  if (group) {
+    const ownedRollback =
+      input.policy.kind === "ownedRollback" && input.policy.ownThreadId === group.threadId;
+    if (
+      (yield* canonical(input.projectCwd)) !== group.projectRoot ||
+      (!ownedRollback && input.policy.kind !== "manual")
+    )
+      blockedReasons.push(
+        "Worktree group cleanup requires verified ownership and an explicit request.",
+      );
+  }
+  const entries = group
+    ? []
+    : yield* git.listWorktrees(input.projectCwd).pipe(
+        Effect.orElseSucceed(() => {
+          blockedReasons.push("worktree registrations could not be read");
+          return [];
+        }),
+      );
   const registration: RegisteredWorktree | null =
     entries.find((entry) => entry.canonicalPath === target) ?? null;
-  if (!registration && exists) blockedReasons.push("not registered in the expected repository");
+  if (!group && !registration && exists)
+    blockedReasons.push("not registered in the expected repository");
   if (registration?.isMain) blockedReasons.push("the main checkout cannot be removed");
   if (registration?.locked !== null && registration?.locked !== undefined)
     blockedReasons.push("the worktree is locked");
@@ -998,6 +1014,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
 
 /** Every caller uses the same preview and locked re-evaluation, including rollback. */
 export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* (input: {
+  readonly layoutRemove?: string;
   readonly projectCwd: string;
   readonly path: string;
   readonly policy: WorktreeRemovalPolicy;
@@ -1028,6 +1045,28 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
     };
   const preview = yield* evaluateWorktreeRemoval(input);
   if (preview.blockedReasons.length) return preview;
+  const group = git.readWorktreeGroup ? yield* git.readWorktreeGroup(input.path) : null;
+  if (group && !group.root) {
+    return yield* withWorktreeLifecycleLock(
+      input.path,
+      Effect.gen(function* () {
+        const checked = yield* evaluateWorktreeRemoval(input);
+        if (checked.blockedReasons.length) return checked;
+        if (input.isCancelled?.())
+          return { ...checked, blockedReasons: ["Cleanup was cancelled."] };
+        const removed = yield* git
+          .removeWorktree({
+            cwd: input.projectCwd,
+            path: input.path,
+            ...(input.layoutRemove ? { layoutRemove: input.layoutRemove } : {}),
+          })
+          .pipe(Effect.result);
+        if (removed._tag === "Failure")
+          return { ...checked, blockedReasons: [removed.failure.detail] };
+        return checked;
+      }),
+    );
+  }
   const common = yield* git.resolveCommonDir(input.projectCwd);
   return yield* withWorktreeLifecycleLock(
     input.path,
@@ -1154,6 +1193,7 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
               return checked;
             }
             yield* git.removeWorktree({
+              ...(input.layoutRemove ? { layoutRemove: input.layoutRemove } : {}),
               cwd: input.projectCwd,
               path: input.path,
               ignoredFiles: ignoredRemovalPolicy(input.policy),

@@ -52,7 +52,7 @@ const STATE_RANK: Record<ThreadPullRequestState, number> = { open: 0, merged: 1,
 export function resolveThreadPullRequests(input: {
   readonly branchPr: BranchPullRequest | null;
   readonly links: ReadonlyArray<ThreadPullRequestLink> | undefined;
-  readonly linkState: (url: string) => LinkedPullRequestState | undefined;
+  readonly linkState: (url: string, repositoryPath?: string) => LinkedPullRequestState | undefined;
 }): ThreadPullRequestItem[] {
   const items: Array<ThreadPullRequestItem & { readonly recency: number }> = [];
   const branchRef = input.branchPr ? parseSourceControlPullRequestUrl(input.branchPr.url) : null;
@@ -80,7 +80,7 @@ export function resolveThreadPullRequests(input: {
   links.forEach((link, index) => {
     const key = formatSourceControlPullRequestKey(link);
     if (key.toLowerCase() === branchKey) return;
-    const resolved = input.linkState(link.url);
+    const resolved = input.linkState(link.url, link.repositoryPath);
     if (!resolved) return;
     items.push({
       key,

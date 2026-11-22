@@ -25,6 +25,7 @@ export type SharedInstructionInput = {
   readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
   readonly runtimeMode?: RuntimeMode;
   readonly projectTitle?: string;
+  readonly externalRepositoryRoots?: ReadonlyArray<string>;
   readonly threadTitle?: string;
   readonly turnCount?: number;
   readonly priorWorkSummary?: string;
@@ -438,6 +439,9 @@ function buildRuntimeContextSection(input: SharedInstructionInput): string | und
       ? `- Recorded turns in this thread before this session: ${input.turnCount}`
       : null,
     input.cwd ? `- Working directory: ${formatClaudeRuntimeString(input.cwd)}` : null,
+    input.externalRepositoryRoots?.length
+      ? `- Additional repositories registered for this project: ${input.externalRepositoryRoots.map(formatClaudeRuntimeString).join(", ")}`
+      : null,
     input.runtimeMode
       ? `- Runtime mode: ${input.runtimeMode} (${runtimeModeGloss(input.runtimeMode)})`
       : null,

@@ -321,6 +321,11 @@ import {
 } from "./chat/useFavoritePresetShortcuts";
 import { useWsConnectionState } from "../wsConnectionState";
 import BranchToolbar from "./BranchToolbar";
+import {
+  projectRepositoriesQueryOptions,
+  useWorktreeRepositoryChoices,
+  WorktreeRepositoryPicker,
+} from "./RepositoryPicker";
 import { useChatViewBranchDriftGuard } from "./ChatViewBranchDriftGuard";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import {
@@ -3911,6 +3916,21 @@ export default memo(function ChatView({
     : isLocalDraftThread
       ? (draftThread?.envMode ?? "local")
       : "local";
+  const worktreeRepositoriesQuery = useQuery(
+    projectRepositoriesQueryOptions(isLocalDraftThread ? (activeProject?.id ?? null) : null),
+  );
+  const worktreeRepositories = (worktreeRepositoriesQuery.data ?? []).filter(
+    (repository) => repository.relativePath !== "." && !repository.submodule,
+  );
+  const repositoryChoices = useWorktreeRepositoryChoices(activeProject?.id ?? null);
+  const worktreeRepositoryPaths = repositoryChoices.selection?.filter((entry) =>
+    worktreeRepositories.some((repository) => repository.relativePath === entry),
+  );
+  const plainWorktreeDraft =
+    isLocalDraftThread &&
+    worktreeRepositories.length > 0 &&
+    !worktreeRepositoriesQuery.data?.some((repository) => repository.relativePath === ".");
+  const [plainWorktreeBase, setPlainWorktreeBase] = useState("");
   const activeProjectName = activeProject?.name ?? null;
   const activeThreadBranch = activeThread?.branch ?? null;
   const timelineEmptyState = useMemo<MessagesTimelineEmptyState>(
@@ -5710,12 +5730,16 @@ export default memo(function ChatView({
     // stale cached value silently skipped worktree creation and caused the
     // agent to run in the project root (main branch).
     const baseBranchForWorktree =
-      isFirstMessage && envMode === "worktree" ? activeThread.branch : null;
+      isFirstMessage && envMode === "worktree"
+        ? plainWorktreeDraft
+          ? plainWorktreeBase.trim() || "HEAD"
+          : activeThread.branch
+        : null;
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
     const shouldCreateWorktree = isFirstMessage && envMode === "worktree";
-    if (shouldCreateWorktree && !activeThread.branch) {
+    if (shouldCreateWorktree && !baseBranchForWorktree) {
       setStoreThreadError(
         threadIdForSend,
         "Select a base branch before sending in New worktree mode.",
@@ -5906,6 +5930,7 @@ export default memo(function ChatView({
 
     try {
       const bootstrap = buildFirstSendBootstrap({
+        repositoryPaths: worktreeRepositoryPaths,
         worktreeBranchName:
           useComposerDraftStore.getState().getDraftThread(threadIdForSend)?.worktreeBranchName ??
           null,
@@ -6973,6 +6998,7 @@ export default memo(function ChatView({
         );
         const modelSelection = createModelSelection(target.instanceId, target.model);
         const bootstrap = buildFirstSendBootstrap({
+          repositoryPaths: worktreeRepositoryPaths,
           runSetupScript:
             useComposerDraftStore.getState().getDraftThread(input.draftThreadId)?.runSetupScript ??
             null,
@@ -8878,7 +8904,7 @@ export default memo(function ChatView({
                       attachments={composerAttachments}
                       projectPicker={draftProjectPicker}
                     />
-                    {isGitRepo && (
+                    {isGitRepo && !plainWorktreeDraft && (
                       <BranchToolbar
                         threadId={activeThread.id}
                         disabled={isPendingTurnDispatchBlocked}
@@ -8891,6 +8917,36 @@ export default memo(function ChatView({
                         {...(canCheckoutPullRequestIntoThread
                           ? { onCheckoutPullRequestRequest: openPullRequestDialog }
                           : {})}
+                      />
+                    )}
+                    {plainWorktreeDraft && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="rounded border px-2 py-1 text-xs"
+                          onClick={() =>
+                            onEnvModeChange(envMode === "worktree" ? "local" : "worktree")
+                          }
+                        >
+                          {envMode === "worktree" ? "Use project folder" : "New worktree"}
+                        </button>
+                        {envMode === "worktree" && (
+                          <input
+                            aria-label="Base branch"
+                            placeholder="Default branch"
+                            value={plainWorktreeBase}
+                            onChange={(event) => setPlainWorktreeBase(event.target.value)}
+                            className="rounded border bg-transparent px-2 py-1 text-xs"
+                          />
+                        )}
+                      </div>
+                    )}
+                    {isLocalDraftThread && envMode === "worktree" && (
+                      <WorktreeRepositoryPicker
+                        plain={plainWorktreeDraft}
+                        repositories={worktreeRepositories}
+                        selected={worktreeRepositoryPaths}
+                        onChange={repositoryChoices.select}
                       />
                     )}
                   </ComposerDockColumn>

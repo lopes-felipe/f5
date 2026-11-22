@@ -90,6 +90,11 @@ export function ProjectActionsSettings() {
                         Setup
                       </Badge>
                     ) : null}
+                    {script.worktreeLayout && (
+                      <Badge size="sm" variant="secondary">
+                        {script.worktreeLayout === "create" ? "Layout creation" : "Layout removal"}
+                      </Badge>
+                    )}
                     {script.runOnWorktreeSettle ? (
                       <Badge size="sm" variant="secondary">
                         On settle
@@ -134,8 +139,8 @@ export function ProjectActionsSettings() {
       <div className="mt-5 space-y-2 border-t border-border pt-4">
         <h3 className="text-sm font-medium">Repository action templates</h3>
         <p className="text-xs text-muted-foreground">
-          Review each command before importing it. Imported actions have automatic execution turned
-          off.
+          Review each command before importing or approving it. Approved layout commands run when
+          the app creates or removes a worktree group.
         </p>
         {fileScripts.isPending ? (
           <p className="text-xs">Checking f5.json and t3.json…</p>
@@ -151,7 +156,10 @@ export function ProjectActionsSettings() {
         ) : (
           fileScripts.data.scripts.map((script, index) => {
             const imported = scripts.some(
-              (entry) => entry.name === script.name && entry.command === script.command,
+              (entry) =>
+                entry.name === script.name &&
+                entry.command === script.command &&
+                entry.worktreeLayout === script.worktreeLayout,
             );
             return (
               <div key={index} className="rounded-md border border-border p-3">
@@ -178,7 +186,13 @@ export function ProjectActionsSettings() {
                       .finally(() => setImporting(false));
                   }}
                 >
-                  {imported ? "Imported" : "Import action"}
+                  {imported
+                    ? script.worktreeLayout
+                      ? "Approved"
+                      : "Imported"
+                    : script.worktreeLayout
+                      ? "Approve layout command"
+                      : "Import action"}
                 </Button>
               </div>
             );

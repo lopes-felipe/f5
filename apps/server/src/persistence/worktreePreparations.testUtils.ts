@@ -3,16 +3,47 @@ import {
   PreparationError,
   WorktreePreparations,
   type WorktreePreparationReceipt,
+  type WorktreeGroupPlan,
 } from "./Services/WorktreePreparations.ts";
 
 /** In-memory test double; production uses the mandatory SQL repository. */
 export function makeMemoryWorktreePreparations() {
   const rows: WorktreePreparationReceipt[] = [];
+  const groups = new Map<string, WorktreeGroupPlan>();
+  const layoutPhases = new Map<string, string>();
+  const roots = new Map<string, Set<string>>();
   return WorktreePreparations.of({
+    getGroupLayoutPhase: (path) =>
+      Effect.sync(() => layoutPhases.get(path) ?? (groups.has(path) ? "pending" : null)),
+    setGroupLayoutPhase: (path, phase) =>
+      Effect.sync(() => {
+        layoutPhases.set(path, phase);
+      }),
+    listProjectRepositoryRoots: (id) => Effect.sync(() => [...(roots.get(id) ?? [])].sort()),
+    setProjectRepositoryRoot: (id, path, tracked) =>
+      Effect.sync(() => {
+        const selected = roots.get(id) ?? new Set<string>();
+        if (tracked) selected.add(path);
+        else selected.delete(path);
+        roots.set(id, selected);
+      }),
+    getGroup: (path) => Effect.sync(() => groups.get(path) ?? null),
+    saveGroup: (group) =>
+      Effect.suspend(() => {
+        const existing = groups.get(group.path);
+        if (existing && JSON.stringify(existing) !== JSON.stringify(group))
+          return Effect.fail(
+            new PreparationError({ message: "Worktree group ownership changed." }),
+          );
+        groups.set(group.path, group);
+        return Effect.void;
+      }),
     unfinished: Effect.sync(() =>
       rows.filter((row) => !["completed", "skipped"].includes(row.phase)),
     ),
     latest: (path) => Effect.sync(() => rows.findLast((row) => row.path === path) ?? null),
+    listByOwner: (owner) =>
+      Effect.sync(() => rows.filter((row) => row.owner === owner).toReversed()),
     branchReserved: (repositoryIdentity, branch) =>
       Effect.sync(() =>
         rows.some(

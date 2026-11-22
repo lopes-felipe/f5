@@ -163,6 +163,14 @@ import { MessageId } from "@t3tools/contracts";
 import { makeAttachmentUploads, AttachmentUploadError } from "./attachmentUploads";
 import { GitCommandError } from "./git/Errors";
 import { readProjectSettings, isInsideProjectWorkspace } from "./project/projectSettings";
+import {
+  discoverConfiguredProjectRepositories,
+  listWorkspaceRepositories,
+} from "./project/discoverProjectRepositories.ts";
+import {
+  prepareNestedRepositoryWorktrees,
+  selectNestedWorktreeRepositories,
+} from "./project/worktreeRepositoryPaths.ts";
 import { makeProjectCloneTracker } from "./project/ProjectCloneTracker.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { protocolMatches, SERVER_BOOTSTRAP, UPGRADE_REQUIRED } from "./wsServer/protocol";
@@ -1897,6 +1905,57 @@ export const createServer = Effect.fn(function* (
         dispatch: (command) => dispatchWithCreationAttachment(input.orchestrationEngine, command),
       },
       git: { ...git, createWorktree: createConfiguredWorktree },
+      prepareNestedWorktrees: (worktree) =>
+        Effect.gen(function* () {
+          const model = yield* input.orchestrationEngine.getReadModel();
+          const project = model.projects.find(
+            (entry) => entry.workspaceRoot === worktree.cwd && entry.deletedAt === null,
+          );
+          if (!project) return;
+          const repositories = yield* discoverConfiguredProjectRepositories(project, git).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+          );
+          const selected = yield* selectNestedWorktreeRepositories(
+            repositories,
+            worktree.repositoryPaths,
+          );
+          const layoutCreate = project.scripts.find(
+            (script) => script.worktreeLayout === "create",
+          )?.command;
+          if (selected.length === 0 && !layoutCreate) return;
+          yield* withWorktreeLifecycleLock(
+            worktree.path,
+            git.prepareWorktreeGroup
+              ? git.prepareWorktreeGroup({
+                  ...(layoutCreate ? { layoutCreate } : {}),
+                  rooted: true,
+                  projectId: project.id,
+                  threadId: prepared.command.threadId,
+                  projectRoot: worktree.cwd,
+                  path: worktree.path,
+                  branch: worktree.branch,
+                  baseBranch: worktree.baseBranch,
+                  repositories: repositories.map(({ path }) => path),
+                  selected: selected.map(({ path }) => path),
+                })
+              : prepareNestedRepositoryWorktrees(git, {
+                  worktreeRoot: worktree.path,
+                  repositories: selected,
+                  branch: worktree.branch,
+                  baseBranch: worktree.baseBranch,
+                }),
+          );
+        }).pipe(
+          Effect.mapError(
+            (error) =>
+              new GitCommandError({
+                operation: "bootstrap",
+                cwd: worktree.cwd,
+                command: "prepare nested worktrees",
+                detail: error.message,
+              }),
+          ),
+        ),
       rollbackWorktree: (receipt, ownedTerminalId) =>
         Effect.gen(function* () {
           if (ownedTerminalId)
@@ -5556,6 +5615,42 @@ export const createServer = Effect.fn(function* (
         });
       }
 
+      case WS_METHODS.projectsSetRepository: {
+        const body = stripRequestTag(request.body);
+        const project = yield* projectionWorkspaceQuery.getProjectWorkspace(body.projectId);
+        if (
+          Option.isNone(project) ||
+          isScratchProject(project.value) ||
+          !git.setProjectRepositoryRoot
+        )
+          return yield* new RouteRequestError({
+            message: "Project repository settings are unavailable.",
+          });
+        return yield* git.setProjectRepositoryRoot({
+          ...body,
+          projectRoot: project.value.workspaceRoot,
+        });
+      }
+
+      case WS_METHODS.projectsListRepositories: {
+        const body = stripRequestTag(request.body);
+        const project = yield* projectionWorkspaceQuery.getProjectWorkspace(body.projectId);
+        if (Option.isNone(project) || isScratchProject(project.value)) return [];
+        const thread = body.threadId
+          ? yield* projectionWorkspaceQuery.getThreadWorkspace(body.threadId)
+          : Option.none();
+        if (body.threadId && (Option.isNone(thread) || thread.value.projectId !== body.projectId)) {
+          return yield* new RouteRequestError({
+            message: "Thread is unavailable for this project.",
+          });
+        }
+        return yield* listWorkspaceRepositories(
+          { id: body.projectId, workspaceRoot: project.value.workspaceRoot },
+          Option.getOrUndefined(thread)?.workspaceRoot,
+          git,
+        ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+      }
+
       case WS_METHODS.projectsSearchContents: {
         const body = stripRequestTag(request.body);
         const projectWorkspace = yield* projectionWorkspaceQuery.getProjectWorkspace(
@@ -5937,7 +6032,35 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
         const readModel = yield* orchestrationEngine.getReadModel();
-        return yield* getReviewPreviewDiff({ request: body, readModel });
+        let repositoryCwd: string | undefined;
+        if (body.repositoryPath !== undefined) {
+          const thread = readModel.threads.find((entry) => entry.id === body.threadId);
+          const project =
+            thread && readModel.projects.find((entry) => entry.id === thread.projectId);
+          if (thread && project && !isScratchProject(project)) {
+            const repositories = yield* listWorkspaceRepositories(
+              project,
+              threadWorkspaceCwd(thread, project),
+              git,
+            ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+            repositoryCwd = repositories.find(
+              (repository) => repository.relativePath === body.repositoryPath,
+            )?.path;
+          }
+          if (repositoryCwd === undefined) {
+            return {
+              kind: "error",
+              code: "workspace_invalid",
+              message: "Repository is unavailable for this thread.",
+              retryable: false,
+            } as const;
+          }
+        }
+        return yield* getReviewPreviewDiff({
+          request: body,
+          readModel,
+          ...(repositoryCwd ? { repositoryCwd } : {}),
+        });
       }
 
       case PR_HUB_WS_METHODS.claimNotifications:

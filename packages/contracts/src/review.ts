@@ -7,6 +7,7 @@ export type ReviewDiffScope = typeof ReviewDiffScope.Type;
 export const ReviewPreviewDiffInput = Schema.Struct({
   threadId: ThreadId,
   scope: ReviewDiffScope,
+  repositoryPath: Schema.optionalKey(TrimmedNonEmptyString),
   baseRef: Schema.optionalKey(TrimmedNonEmptyString),
   ignoreWhitespace: Schema.optionalKey(Schema.Boolean),
 });

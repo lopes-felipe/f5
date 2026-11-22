@@ -25,6 +25,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { useQueries, useQuery } from "@tanstack/react-query";
+import { projectRepositoriesQueryOptions } from "./RepositoryPicker";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { projectChoices } from "../lib/projectChoices";
@@ -40,6 +41,7 @@ import { gitStatusQueryOptions } from "../lib/gitReactQuery";
 import { resolveThreadPullRequests, threadBranchPullRequest } from "../lib/threadPullRequests";
 import {
   linkedPullRequestLookupCwd,
+  linkedRepositoryCwd,
   useLinkedPullRequestStates,
 } from "../hooks/useLinkedPullRequestStates";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
@@ -369,6 +371,42 @@ export default function Sidebar() {
       ),
     [projectById, threads],
   );
+  const projectsWithExternalLinks = useMemo(
+    () => [
+      ...new Set(
+        threads.flatMap((thread) =>
+          thread.pullRequests?.some((link) => link.repositoryPath?.startsWith(".f5-repositories/"))
+            ? [thread.projectId]
+            : [],
+        ),
+      ),
+    ],
+    [threads],
+  );
+  const externalRepositoryQueries = useQueries({
+    queries: projectsWithExternalLinks.map((projectId) =>
+      projectRepositoriesQueryOptions(projectId),
+    ),
+  });
+  const externalCwdsByProject = useMemo(
+    () =>
+      new Map(
+        projectsWithExternalLinks.map(
+          (projectId, index) =>
+            [
+              projectId,
+              Object.fromEntries(
+                (externalRepositoryQueries[index]?.data ?? []).flatMap((repository) =>
+                  repository.externalSource
+                    ? [[repository.relativePath, repository.externalSource]]
+                    : [],
+                ),
+              ),
+            ] as const,
+        ),
+      ),
+    [externalRepositoryQueries, projectsWithExternalLinks],
+  );
   const linkedPullRequestTargets = useMemo(
     () =>
       sidebarPullRequestLinkTargets(
@@ -376,11 +414,12 @@ export default function Sidebar() {
           id: thread.id,
           archived: thread.archivedAt !== null,
           lookupCwd: threadPullRequestLookupCwds.get(thread.id) ?? null,
+          externalCwds: externalCwdsByProject.get(thread.projectId),
           pullRequests: thread.pullRequests,
         })),
         routeThreadId,
       ),
-    [routeThreadId, threadPullRequestLookupCwds, threads],
+    [externalCwdsByProject, routeThreadId, threadPullRequestLookupCwds, threads],
   );
   const linkedPullRequestState = useLinkedPullRequestStates(linkedPullRequestTargets);
   // The branch PR and the thread's links, merged once per change instead of once per row render.
@@ -395,13 +434,27 @@ export default function Sidebar() {
               resolveThreadPullRequests({
                 branchPr: prByThreadId.get(thread.id) ?? null,
                 links: thread.pullRequests,
-                linkState: (url) => linkedPullRequestState(lookupCwd, url),
+                linkState: (url, path) =>
+                  linkedPullRequestState(
+                    linkedRepositoryCwd(
+                      lookupCwd,
+                      path,
+                      externalCwdsByProject.get(thread.projectId),
+                    ),
+                    url,
+                  ),
               }),
             ),
           ] as const;
         }),
       ),
-    [linkedPullRequestState, prByThreadId, threadPullRequestLookupCwds, threads],
+    [
+      externalCwdsByProject,
+      linkedPullRequestState,
+      prByThreadId,
+      threadPullRequestLookupCwds,
+      threads,
+    ],
   );
   const indicatorsForThread: SidebarIndicatorsForThread = (thread) => ({
     threadStatus: pillForStatus(threadStatusById.get(thread.id) ?? "none"),

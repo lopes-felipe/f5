@@ -601,7 +601,11 @@ describe("WebSocket Server", () => {
     const workspace = makeTempDir("f5-ws-project-config-");
     fs.writeFileSync(
       path.join(workspace, "f5.json"),
-      JSON.stringify({ defaultThreadEnvMode: "worktree", scripts: [{ command: "ignored" }] }),
+      JSON.stringify({
+        defaultThreadEnvMode: "worktree",
+        ignoreRepositories: ["vendor"],
+        scripts: [{ command: "ignored" }],
+      }),
       "utf8",
     );
     h.server = await createTestServer({ cwd: "/test" });
@@ -629,9 +633,18 @@ describe("WebSocket Server", () => {
       projectId,
       sourceFile: "f5.json",
       defaultThreadEnvMode: "worktree",
+      ignoreRepositories: ["vendor"],
       iconPath: null,
       diagnostics: [expect.objectContaining({ field: "scripts" })],
     });
+
+    fs.mkdirSync(path.join(workspace, "packages", "app", ".git"), { recursive: true });
+    fs.mkdirSync(path.join(workspace, "vendor", "lib", ".git"), { recursive: true });
+    const repositories = await sendRequest(ws, WS_METHODS.projectsListRepositories, { projectId });
+    expect(repositories.error).toBeUndefined();
+    expect(repositories.result).toEqual([
+      { path: path.join(workspace, "packages", "app"), relativePath: "packages/app" },
+    ]);
   });
 
   it("searches project contents through registered identities", async () => {

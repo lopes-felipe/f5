@@ -1,6 +1,10 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { AcceptedShutdownWork, registerShutdown } from "../../shutdown.ts";
-import { pruneCheckpointRefs } from "../../checkpointing/pruneCheckpointRefs.ts";
+import {
+  nestedCheckpointPaths,
+  pruneRepositoryCheckpointRefs,
+  restoreCheckpointRepositories,
+} from "../../checkpointing/checkpointRepositories.ts";
 import { dispatchVerifiedWorkspace } from "../../project/workspaceTransitionContext.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -8,24 +12,25 @@ import { makeConversationRewind } from "../rewind.ts";
 import { followsCheckoutBranchAtTurnEnd } from "../../project/worktreeReadiness.ts";
 import { GitService } from "../../git/Services/GitService.ts";
 import { branchNameFromHeadRef } from "../../git/headBranch.ts";
-import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
+import type { CaptureCheckpointInput } from "../../checkpointing/Services/CheckpointStore.ts";
 import {
-  type CheckpointRef,
   CommandId,
   EventId,
   MessageId,
   type ProjectId,
+  type ProjectRepository,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Option, Stream } from "effect";
+import { Cause, Effect, FileSystem, Layer, Option, Stream } from "effect";
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
-import { resolveThreadWorkspaceCwd, threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { clearWorkspaceIndexCache } from "../../workspaceEntries.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -34,6 +39,7 @@ import { CheckpointReactor, type CheckpointReactorShape } from "../Services/Chec
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
 import { resolveTurnAssistantMessage } from "../turnAssistantMessage.ts";
+import { listWorkspaceRepositories } from "../../project/discoverProjectRepositories.ts";
 
 type ReactorInput =
   | {
@@ -76,6 +82,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const checkpointStore = yield* CheckpointStore;
+  const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
   const git = yield* GitService;
   const workspaceGit = yield* Effect.serviceOption(GitCore);
   const receiptBus = yield* RuntimeReceiptBus;
@@ -200,14 +207,13 @@ const make = Effect.gen(function* () {
 
   // Resolves the workspace CWD for checkpoint operations, preferring the
   // active provider session CWD and falling back to the thread/project config.
-  // Returns undefined when no CWD can be determined or the workspace is not
-  // a git repository.
+  // A plain workspace may still contain repositories.
   const resolveCheckpointCwd = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly thread: { readonly projectId: ProjectId; readonly worktreePath: string | null };
     readonly projects: ReadonlyArray<{ readonly id: ProjectId; readonly workspaceRoot: string }>;
     readonly preferSessionRuntime: boolean;
-  }): Effect.fn.Return<string | undefined, CheckpointStoreError> {
+  }): Effect.fn.Return<string | undefined> {
     const fromSession = yield* resolveSessionRuntimeForThread(input.threadId);
     const fromThread = resolveThreadWorkspaceCwd({
       thread: input.thread,
@@ -225,21 +231,62 @@ const make = Effect.gen(function* () {
           onSome: (runtime) => runtime.cwd,
         }));
 
-    if (!cwd) {
-      return undefined;
-    }
-    if (!(yield* checkpointStore.isGitRepository(cwd))) {
-      return undefined;
-    }
     return cwd;
+  });
+
+  const turnRepositories = new Map<
+    ThreadId,
+    { cwd: string; turnCount: number; repositories: ReadonlyArray<ProjectRepository> }
+  >();
+  const resolveCheckpointRepositories = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnCount: number;
+    readonly cwd: string;
+    readonly terminal?: boolean;
+    readonly project:
+      | {
+          readonly id: ProjectId;
+          readonly workspaceRoot: string;
+          readonly kind?: string | undefined;
+        }
+      | undefined;
+  }) {
+    const cached = turnRepositories.get(input.threadId);
+    if (cached?.cwd === input.cwd && cached.turnCount === input.turnCount) {
+      if (
+        input.terminal &&
+        cached.repositories.length === 0 &&
+        (yield* checkpointStore.isGitRepository(input.cwd))
+      ) {
+        return [{ path: input.cwd, relativePath: "." }];
+      }
+      return cached.repositories;
+    }
+    const discovered =
+      input.project && !isScratchProject(input.project) && Option.isSome(fileSystem)
+        ? yield* listWorkspaceRepositories(
+            input.project,
+            input.cwd,
+            Option.getOrUndefined(workspaceGit),
+          ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem.value))
+        : [];
+    const repositories =
+      discovered.length === 0 && (yield* checkpointStore.isGitRepository(input.cwd))
+        ? [{ path: input.cwd, relativePath: "." }]
+        : discovered;
+    turnRepositories.delete(input.threadId);
+    turnRepositories.set(input.threadId, {
+      cwd: input.cwd,
+      turnCount: input.turnCount,
+      repositories,
+    });
+    if (turnRepositories.size > 256) turnRepositories.delete(turnRepositories.keys().next().value!);
+    return repositories;
   });
 
   // Like a non-Git workspace, one its repository ignores gets no checkpoint
   // instead of a capture failure on every turn.
-  const captureCheckpointIfSupported = (input: {
-    readonly cwd: string;
-    readonly checkpointRef: CheckpointRef;
-  }) =>
+  const captureCheckpointIfSupported = (input: CaptureCheckpointInput) =>
     checkpointStore.captureCheckpoint(input).pipe(
       Effect.as(true),
       Effect.catchTag("CheckpointUnsupportedError", () => Effect.succeed(false)),
@@ -263,6 +310,7 @@ const make = Effect.gen(function* () {
       }>;
     };
     readonly cwd: string;
+    readonly repositories: ReadonlyArray<ProjectRepository>;
     readonly turnCount: number;
     readonly status: "ready" | "missing" | "error";
     readonly assistantMessageId: MessageId | undefined;
@@ -272,40 +320,40 @@ const make = Effect.gen(function* () {
     const fromCheckpointRef = checkpointRefForThreadTurn(input.threadId, fromTurnCount);
     const targetCheckpointRef = checkpointRefForThreadTurn(input.threadId, input.turnCount);
 
-    // An unsupported workspace never has a baseline; skip it before warning about one.
-    if (
-      !(yield* captureCheckpointIfSupported({
-        cwd: input.cwd,
-        checkpointRef: targetCheckpointRef,
-      }))
-    ) {
-      return false;
-    }
+    const captured = yield* Effect.filter(
+      input.repositories,
+      (repository) =>
+        captureCheckpointIfSupported({
+          cwd: repository.path,
+          checkpointRef: targetCheckpointRef,
+          excludePaths: nestedCheckpointPaths(repository, input.repositories),
+        }),
+      { concurrency: 4 },
+    );
+    if (captured.length === 0) return false;
 
-    const fromCheckpointExists = yield* checkpointStore
-      .hasCheckpointRef({
-        cwd: input.cwd,
-        checkpointRef: fromCheckpointRef,
-      })
-      .pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("checkpoint baseline lookup failed", {
-            threadId: input.threadId,
+    const withBaseline = yield* Effect.filter(
+      captured,
+      (repository) =>
+        checkpointStore
+          .hasCheckpointRef({
+            cwd: repository.path,
             checkpointRef: fromCheckpointRef,
-            category: error._tag,
-            detail: error.message,
-          }).pipe(Effect.as(false)),
-        ),
-      );
-    if (!fromCheckpointExists) {
-      yield* Effect.logWarning("checkpoint capture missing pre-turn baseline", {
-        threadId: input.threadId,
-        turnId: input.turnId,
-        fromTurnCount,
-      });
-    }
-
-    if (!fromCheckpointExists) {
+          })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("checkpoint baseline lookup failed", {
+                threadId: input.threadId,
+                checkpointRef: fromCheckpointRef,
+                repository: repository.relativePath,
+                category: error._tag,
+                detail: error.message,
+              }).pipe(Effect.as(false)),
+            ),
+          ),
+      { concurrency: 4 },
+    );
+    if (captured.length !== withBaseline.length) {
       yield* appendCaptureFailureActivity({
         threadId: input.threadId,
         turnId: input.turnId,
@@ -362,26 +410,40 @@ const make = Effect.gen(function* () {
     // reflects files created or deleted during this turn.
     clearWorkspaceIndexCache(input.cwd);
 
-    const files = yield* (
-      fromCheckpointExists
-        ? checkpointStore.diffCheckpoints({
-            cwd: input.cwd,
+    const files = yield* Effect.forEach(
+      withBaseline,
+      (repository) =>
+        checkpointStore
+          .diffCheckpoints({
+            cwd: repository.path,
             fromCheckpointRef,
             toCheckpointRef: targetCheckpointRef,
             fallbackFromToHead: false,
             // Only the per-file totals are kept, so the patch needs no minimization.
-            options: { excludeGitImports: true, minimal: false },
+            options: {
+              excludeGitImports: true,
+              minimal: false,
+              ...(repository.relativePath === "."
+                ? {}
+                : { repositoryPath: repository.relativePath }),
+            },
           })
-        : Effect.succeed("")
+          .pipe(
+            Effect.map((diff) =>
+              parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
+                path: file.path,
+                kind: "modified" as const,
+                additions: file.additions,
+                deletions: file.deletions,
+                ...(input.repositories.length > 1
+                  ? { repositoryPath: repository.relativePath }
+                  : {}),
+              })),
+            ),
+          ),
+      { concurrency: 4 },
     ).pipe(
-      Effect.map((diff) =>
-        parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
-          path: file.path,
-          kind: "modified" as const,
-          additions: file.additions,
-          deletions: file.deletions,
-        })),
-      ),
+      Effect.map((files) => files.flat()),
       Effect.tapError((error) =>
         appendCaptureFailureActivity({
           threadId: input.threadId,
@@ -503,17 +565,26 @@ const make = Effect.gen(function* () {
     const nextTurnCount = existingPlaceholder
       ? existingPlaceholder.checkpointTurnCount
       : currentTurnCount + 1;
+    const repositories = yield* resolveCheckpointRepositories({
+      cwd: checkpointCwd,
+      threadId: thread.id,
+      turnCount: nextTurnCount - 1,
+      terminal: true,
+      project: readModel.projects.find((project) => project.id === thread.projectId),
+    });
 
     const supported = yield* captureAndDispatchCheckpoint({
       threadId: thread.id,
       turnId,
       thread,
       cwd: checkpointCwd,
+      repositories,
       turnCount: nextTurnCount,
       status: input.status,
       assistantMessageId: existingPlaceholder?.assistantMessageId ?? undefined,
       createdAt: input.createdAt,
     });
+    turnRepositories.delete(input.threadId);
     return supported ? nextTurnCount : undefined;
   });
 
@@ -558,6 +629,53 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const ensurePreTurnBaseline = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    createdAt: string,
+  ) {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    if (!thread) return;
+    const cwd = yield* resolveCheckpointCwd({
+      threadId,
+      thread,
+      projects: readModel.projects,
+      preferSessionRuntime: false,
+    });
+    if (!cwd) return;
+    const turnCount = thread.checkpoints.reduce(
+      (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
+      0,
+    );
+    const repositories = yield* resolveCheckpointRepositories({
+      cwd,
+      threadId,
+      turnCount,
+      project: readModel.projects.find((project) => project.id === thread.projectId),
+    });
+    const checkpointRef = checkpointRefForThreadTurn(threadId, turnCount);
+    const captured = yield* Effect.forEach(
+      repositories,
+      Effect.fnUntraced(function* (repository) {
+        const input = { cwd: repository.path, checkpointRef };
+        if (yield* checkpointStore.hasCheckpointRef(input)) return false;
+        return yield* captureCheckpointIfSupported({
+          ...input,
+          excludePaths: nestedCheckpointPaths(repository, repositories),
+        });
+      }),
+      { concurrency: 4 },
+    );
+    if (!captured.some(Boolean)) return;
+    yield* receiptBus.publish({
+      type: "checkpoint.baseline.captured",
+      threadId,
+      checkpointTurnCount: turnCount,
+      checkpointRef,
+      createdAt,
+    });
+  });
+
   const ensurePreTurnBaselineFromTurnStart = Effect.fnUntraced(function* (
     event: Extract<ProviderRuntimeEvent, { type: "turn.started" }>,
   ) {
@@ -566,50 +684,7 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === event.threadId);
-    if (!thread) {
-      return;
-    }
-
-    const checkpointCwd = yield* resolveCheckpointCwd({
-      threadId: thread.id,
-      thread,
-      projects: readModel.projects,
-      preferSessionRuntime: false,
-    });
-    if (!checkpointCwd) {
-      return;
-    }
-
-    const currentTurnCount = thread.checkpoints.reduce(
-      (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
-      0,
-    );
-    const baselineCheckpointRef = checkpointRefForThreadTurn(thread.id, currentTurnCount);
-    const baselineExists = yield* checkpointStore.hasCheckpointRef({
-      cwd: checkpointCwd,
-      checkpointRef: baselineCheckpointRef,
-    });
-    if (baselineExists) {
-      return;
-    }
-
-    if (
-      !(yield* captureCheckpointIfSupported({
-        cwd: checkpointCwd,
-        checkpointRef: baselineCheckpointRef,
-      }))
-    ) {
-      return;
-    }
-    yield* receiptBus.publish({
-      type: "checkpoint.baseline.captured",
-      threadId: thread.id,
-      checkpointTurnCount: currentTurnCount,
-      checkpointRef: baselineCheckpointRef,
-      createdAt: event.createdAt,
-    });
+    yield* ensurePreTurnBaseline(event.threadId, event.createdAt);
   });
 
   const ensurePreTurnBaselineFromDomainTurnStart = Effect.fnUntraced(function* (
@@ -629,51 +704,7 @@ const make = Effect.gen(function* () {
       }
     }
 
-    const threadId = event.payload.threadId;
-    const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === threadId);
-    if (!thread) {
-      return;
-    }
-
-    const checkpointCwd = yield* resolveCheckpointCwd({
-      threadId,
-      thread,
-      projects: readModel.projects,
-      preferSessionRuntime: false,
-    });
-    if (!checkpointCwd) {
-      return;
-    }
-
-    const currentTurnCount = thread.checkpoints.reduce(
-      (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
-      0,
-    );
-    const baselineCheckpointRef = checkpointRefForThreadTurn(threadId, currentTurnCount);
-    const baselineExists = yield* checkpointStore.hasCheckpointRef({
-      cwd: checkpointCwd,
-      checkpointRef: baselineCheckpointRef,
-    });
-    if (baselineExists) {
-      return;
-    }
-
-    if (
-      !(yield* captureCheckpointIfSupported({
-        cwd: checkpointCwd,
-        checkpointRef: baselineCheckpointRef,
-      }))
-    ) {
-      return;
-    }
-    yield* receiptBus.publish({
-      type: "checkpoint.baseline.captured",
-      threadId,
-      checkpointTurnCount: currentTurnCount,
-      checkpointRef: baselineCheckpointRef,
-      createdAt: event.occurredAt,
-    });
+    yield* ensurePreTurnBaseline(event.payload.threadId, event.occurredAt);
   });
 
   const handleRevertRequested = Effect.fnUntraced(function* (
@@ -703,7 +734,14 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
-    if (!(yield* checkpointStore.isGitRepository(sessionRuntime.value.cwd))) {
+    const repositories = yield* resolveCheckpointRepositories({
+      threadId: thread.id,
+      turnCount: -1,
+      cwd: sessionRuntime.value.cwd,
+      project: readModel.projects.find((project) => project.id === thread.projectId),
+    });
+    turnRepositories.delete(thread.id);
+    if (repositories.length === 0) {
       if (thread.session?.providerName === "claudeAgent" && Option.isSome(sqlOption)) {
         yield* Effect.gen(function* () {
           const history = (yield* turns.listByThreadId({ threadId: thread.id }))
@@ -800,12 +838,13 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const restored = yield* checkpointStore.restoreCheckpoint({
-      cwd: sessionRuntime.value.cwd,
-      checkpointRef: targetCheckpointRef,
-      fallbackToHead: event.payload.turnCount === 0,
-    });
-    if (!restored) {
+    const restore = yield* restoreCheckpointRepositories(
+      checkpointStore,
+      repositories,
+      targetCheckpointRef,
+      event.payload.turnCount === 0,
+    );
+    if (!restore.restored) {
       yield* appendRevertFailureActivity({
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
@@ -831,12 +870,8 @@ const make = Effect.gen(function* () {
       .filter((checkpoint) => checkpoint.checkpointTurnCount > event.payload.turnCount)
       .map((checkpoint) => checkpoint.checkpointRef);
 
-    if (staleCheckpointRefs.length > 0) {
-      yield* pruneCheckpointRefs(checkpointStore, {
-        cwd: sessionRuntime.value.cwd,
-        checkpointRefs: staleCheckpointRefs,
-      });
-    }
+    if (staleCheckpointRefs.length > 0)
+      yield* pruneRepositoryCheckpointRefs(checkpointStore, repositories, staleCheckpointRefs);
 
     yield* orchestrationEngine
       .dispatch({

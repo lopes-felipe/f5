@@ -101,9 +101,8 @@ export const listWorktreeInventory = (
                   : Effect.fail(error),
               ),
             );
-          if (registrations === null) return null;
           const root = yield* canonical(project.workspaceRoot);
-          if (!registrations.some((entry) => entry.canonicalPath === root)) {
+          if (registrations && !registrations.some((entry) => entry.canonicalPath === root)) {
             const checkout = registrations.find((entry) => pathContains(entry.canonicalPath, root));
             if (checkout)
               return yield* Effect.fail(
@@ -116,7 +115,7 @@ export const listWorktreeInventory = (
             string,
             { path: string; registration: WorktreeListEntry["registration"]; branch: string | null }
           >(
-            registrations.map((entry) => [
+            (registrations ?? []).map((entry) => [
               entry.canonicalPath,
               {
                 path: entry.path,
@@ -127,6 +126,14 @@ export const listWorktreeInventory = (
           );
           for (const thread of threads) {
             const recordedPath = workspaceOf(thread);
+            if (thread.projectId !== project.id) continue;
+            if (
+              !registrations &&
+              (!thread.worktreePath ||
+                !git.readWorktreeGroup ||
+                !(yield* git.readWorktreeGroup(thread.worktreePath)))
+            )
+              continue;
             const resolved = paths.get(recordedPath);
             if (thread.projectId === project.id && !resolved)
               return yield* Effect.fail(
@@ -139,6 +146,7 @@ export const listWorktreeInventory = (
                 branch: thread.branch,
               });
           }
+          if (!registrations && entries.size === 0) return null;
           const rows = yield* Effect.forEach(
             [...entries],
             ([canonicalPath, entry]) =>
@@ -155,6 +163,25 @@ export const listWorktreeInventory = (
                         ? "managed"
                         : "external";
                   const displayPath = path.normalize(entry.path);
+                  const group =
+                    !entry.registration && git.readWorktreeGroup
+                      ? yield* git.readWorktreeGroup(entry.path)
+                      : null;
+                  const hasChanges = missing
+                    ? null
+                    : group
+                      ? (yield* Effect.forEach(group.members, (member) =>
+                          git.isDirty(member.path),
+                        )).reduce<boolean | null>(
+                          (combined, dirty) =>
+                            combined === true || dirty === true
+                              ? true
+                              : combined === null || dirty === null
+                                ? null
+                                : false,
+                          false,
+                        )
+                      : yield* git.isDirty(entry.path);
                   return {
                     ...entry,
                     path: displayPath,
@@ -168,7 +195,7 @@ export const listWorktreeInventory = (
                       entry.registration?.locked !== null &&
                       entry.registration?.locked !== undefined,
                     detached: entry.registration?.detached ?? entry.branch === null,
-                    hasChanges: missing ? null : yield* git.isDirty(entry.path),
+                    hasChanges,
                     linkedThreads: linkedByPath.get(canonicalPath) ?? [],
                   } satisfies WorktreeListEntry;
                 }),

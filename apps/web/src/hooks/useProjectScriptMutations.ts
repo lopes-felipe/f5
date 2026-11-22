@@ -69,18 +69,24 @@ export function useProjectScriptMutations(project: ProjectScriptMutationTarget |
         command: input.command,
         icon: input.icon,
         runOnWorktreeCreate: input.runOnWorktreeCreate,
+        ...(input.worktreeLayout ? { worktreeLayout: input.worktreeLayout } : {}),
         ...(input.runOnWorktreeSettle ? { runOnWorktreeSettle: true } : {}),
         ...(input.stopOnSettle ? { stopOnSettle: true } : {}),
         ...(input.runOnWorktreeCreate && !input.async ? { async: false } : {}),
       };
+      const existing = project.scripts.map((script) => {
+        if (!input.worktreeLayout || script.worktreeLayout !== input.worktreeLayout) return script;
+        const { worktreeLayout: _previousRole, ...action } = script;
+        return action;
+      });
       const nextScripts = input.runOnWorktreeCreate
         ? [
-            ...project.scripts.map((script) =>
+            ...existing.map((script) =>
               script.runOnWorktreeCreate ? { ...script, runOnWorktreeCreate: false } : script,
             ),
             nextScript,
           ]
-        : [...project.scripts, nextScript];
+        : [...existing, nextScript];
 
       await persistProjectScripts({
         projectId: project.id,

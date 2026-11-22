@@ -994,13 +994,24 @@ const make = Effect.gen(function* () {
       projectWorkspaceRoot: project?.workspaceRoot ?? null,
       effectiveCwd: effectiveCwd ?? null,
     });
+    const externalRepositoryRoots =
+      project && !thread.worktreePath && git.listProjectRepositoryRoots
+        ? yield* git.listProjectRepositoryRoots(project.id).pipe(Effect.orElseSucceed(() => []))
+        : [];
     const instructionContext = buildThreadInstructionContext({
       thread,
       project,
       cwd: effectiveCwd,
       workflowExecutionProfile,
     });
-    return { thread, instructionContext, effectiveCwd };
+    return {
+      thread,
+      instructionContext: {
+        ...instructionContext,
+        ...(externalRepositoryRoots.length > 0 ? { externalRepositoryRoots } : {}),
+      },
+      effectiveCwd,
+    };
   });
 
   const resolveThreadSessionStartContext = Effect.fnUntraced(function* (

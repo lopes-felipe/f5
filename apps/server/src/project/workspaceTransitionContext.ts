@@ -19,7 +19,7 @@ export const WorkspaceWriteContext = ServiceMap.Reference<WorkspaceWrite | null>
 /** Trusted branch observers and creation handoffs must prove the checkout and CAS its old reference. */
 export const dispatchVerifiedWorkspace = (
   engine: Pick<OrchestrationEngineShape, "dispatch" | "getReadModel">,
-  git: Pick<GitCoreShape, "inspectCheckoutIdentity">,
+  git: Pick<GitCoreShape, "inspectCheckoutIdentity" | "inspectWorktreeGroup">,
   command: Extract<OrchestrationCommand, { type: "thread.meta.update" }>,
   options: { allowMissing?: boolean; observation?: boolean } = {},
 ) =>
@@ -44,8 +44,19 @@ export const dispatchVerifiedWorkspace = (
         }),
       );
     if (!options.allowMissing) {
-      const identity = yield* git.inspectCheckoutIdentity(path ?? project!.workspaceRoot);
-      if (identity.branch !== branch)
+      const group =
+        path && git.inspectWorktreeGroup
+          ? yield* git.inspectWorktreeGroup({
+              path,
+              branch,
+              projectRoot: project!.workspaceRoot,
+              threadId: thread.id,
+            })
+          : null;
+      const matches = group
+        ? group.ready
+        : (yield* git.inspectCheckoutIdentity(path ?? project!.workspaceRoot)).branch === branch;
+      if (!matches)
         return yield* Effect.fail(
           new OrchestrationCommandInvariantError({
             commandType: command.type,

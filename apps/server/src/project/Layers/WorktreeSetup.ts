@@ -12,7 +12,14 @@ import {
 } from "../../persistence/Services/WorktreePreparations.ts";
 import { WorktreePreparation } from "../Services/WorktreePreparation.ts";
 import { readProjectSettings } from "../projectSettings.ts";
+import { discoverConfiguredProjectRepositories } from "../discoverProjectRepositories.ts";
+import {
+  prepareNestedRepositoryWorktrees,
+  selectNestedWorktreeRepositories,
+  nestedWorktreeOwner,
+} from "../worktreeRepositoryPaths.ts";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
@@ -45,7 +52,18 @@ import { parseCheckedInProjectFile } from "@t3tools/shared/checkedInProjectFile"
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { projectScriptRuntimeEnv, setupProjectScript } from "@t3tools/shared/projectScripts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
-import { Cause, Effect, Fiber, Layer, Option, PubSub, Schema, Semaphore, Stream } from "effect";
+import {
+  Cause,
+  Effect,
+  Fiber,
+  FileSystem,
+  Layer,
+  Option,
+  PubSub,
+  Schema,
+  Semaphore,
+  Stream,
+} from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
@@ -219,6 +237,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
   const store = yield* NextTurnQueueStore;
   const dispatcher = yield* NextTurnQueueDispatcher;
   const git = yield* GitCore;
+  const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
   const transitions = yield* Effect.serviceOption(WorkspaceTransition);
   const transitionStore = yield* Effect.serviceOption(WorkspaceTransitions);
   const config = yield* ServerConfig;
@@ -500,11 +519,29 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       let request = initial.request;
       const started = Date.now();
       const project = yield* projectFor(request.projectCwd);
+      const layoutCreate = project?.scripts.find(
+        (script) => script.worktreeLayout === "create",
+      )?.command;
+      const nestedRepositories =
+        project && Option.isSome(fileSystem)
+          ? yield* discoverConfiguredProjectRepositories(project, git).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem.value),
+            )
+          : [];
+      const plainGroup =
+        project && nestedRepositories.length > 0 && !existsSync(join(request.projectCwd, ".git"));
+      const selectedRepositories = yield* selectNestedWorktreeRepositories(
+        nestedRepositories,
+        request.repositoryPaths,
+        !plainGroup,
+      );
       const queued = yield* queueItem(initial);
       const namingSettings = project
         ? (yield* readProjectSettings(yield* settings.getSettings, project)).settings
         : null;
       const naming =
+        !plainGroup &&
+        !layoutCreate &&
         !initial.createdWorktree &&
         isTemporaryWorktreeBranch(request.branch) &&
         queued &&
@@ -535,7 +572,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       const namingEntry = tracked.get(threadId);
       if (namingEntry) namingEntry.naming = naming;
       let worktreePath = initial.worktreePath;
-      if (worktreePath && existsSync(worktreePath)) {
+      if (!plainGroup && worktreePath && existsSync(worktreePath)) {
         const receipt = yield* git.readWorktreePreparation(worktreePath);
         if (receipt && receipt.owner === `thread:${threadId}`) {
           const inspected = yield* git.inspectCheckout(worktreePath);
@@ -572,6 +609,43 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         }
       }
       yield* Effect.gen(function* () {
+        if (plainGroup) {
+          const first = selectedRepositories[0];
+          if (!first || !git.prepareWorktreeGroup)
+            return yield* failFor("Select at least one repository to create a worktree.");
+          if (worktreePath === null)
+            worktreePath = yield* git.allocateWorktreePath({
+              cwd: first.path,
+              branch: request.branch,
+            });
+          const destination = worktreePath;
+          yield* commit(threadId, (snapshot) => ({ ...snapshot, worktreePath: destination }), true);
+          update(threadId, (snapshot) => stageStatus(snapshot, "checkout", "running"));
+          yield* git.prepareWorktreeGroup({
+            ...(layoutCreate ? { layoutCreate, retryLayout: initial.generation > 1 } : {}),
+            projectId: project.id,
+            threadId,
+            projectRoot: request.projectCwd,
+            path: destination,
+            branch: request.branch,
+            baseBranch: request.baseBranch,
+            repositories: nestedRepositories.map((repository) => repository.path),
+            selected: selectedRepositories.map((repository) => repository.path),
+          });
+          yield* commit(
+            threadId,
+            (snapshot) => stageStatus({ ...snapshot, createdWorktree: true }, "checkout", "done"),
+            true,
+          );
+          yield* dispatchVerifiedWorkspace(engine, git, {
+            type: "thread.meta.update",
+            commandId: serverCommandId("meta"),
+            threadId,
+            branch: request.branch,
+            worktreePath: destination,
+          });
+          return;
+        }
         const alreadyPrepared =
           worktreePath !== null &&
           existsSync(worktreePath) &&
@@ -795,6 +869,29 @@ export const makeWorktreeSetup = Effect.gen(function* () {
             return next;
           });
         }
+        if (worktreePath && (selectedRepositories.length > 0 || layoutCreate))
+          yield* withWorktreeLifecycleLock(
+            worktreePath,
+            project && git.prepareWorktreeGroup
+              ? git.prepareWorktreeGroup({
+                  ...(layoutCreate ? { layoutCreate, retryLayout: initial.generation > 1 } : {}),
+                  rooted: true,
+                  projectId: project.id,
+                  threadId,
+                  projectRoot: request.projectCwd,
+                  path: worktreePath,
+                  branch: request.branch,
+                  baseBranch: request.baseBranch,
+                  repositories: nestedRepositories.map(({ path }) => path),
+                  selected: selectedRepositories.map(({ path }) => path),
+                })
+              : prepareNestedRepositoryWorktrees(git, {
+                  worktreeRoot: worktreePath,
+                  repositories: selectedRepositories,
+                  branch: request.branch,
+                  baseBranch: request.baseBranch,
+                }),
+          );
         yield* dispatchVerifiedWorkspace(engine, git, {
           type: "thread.meta.update",
           commandId: serverCommandId("meta"),
@@ -810,7 +907,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         });
       const receiptPath = yield* Effect.promise(() => canonicalWorktreePath(worktreePath!));
       let receipt = yield* preparations.latest(receiptPath);
-      if (!receipt) {
+      if (!receipt && !plainGroup) {
         // Legacy retries are explicit confirmation, but never confer deletion ownership.
         const inspected = yield* git.inspectCheckout(worktreePath);
         const expectedBase = initial.checkoutSha ?? initial.baseSha;
@@ -963,7 +1060,13 @@ export const makeWorktreeSetup = Effect.gen(function* () {
 
       if (naming) {
         const late = yield* Fiber.join(naming).pipe(Effect.timeoutOption(1));
-        if (Option.isSome(late) && late.value && isTemporaryWorktreeBranch(request.branch)) {
+        if (
+          selectedRepositories.length === 0 &&
+          !layoutCreate &&
+          Option.isSome(late) &&
+          late.value &&
+          isTemporaryWorktreeBranch(request.branch)
+        ) {
           yield* withWorktreeLifecycleLock(
             worktreePath,
             withRepositoryLifecycleLock(
@@ -1096,6 +1199,33 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       return yield* withWorktreeLifecycleLock(
         worktreePath,
         Effect.gen(function* () {
+          const group = git.readWorktreeGroup ? yield* git.readWorktreeGroup(worktreePath) : null;
+          if (group && !group.root && group.threadId === snapshot.threadId) {
+            const result = yield* removeWorktreeSafely({
+              projectCwd: request.projectCwd,
+              path: worktreePath,
+              policy: { kind: "ownedRollback", ownThreadId: snapshot.threadId },
+            }).pipe(Effect.provideServices(services));
+            if (result.blockedReasons.length) return { kept: result.blockedReasons.join("; ") };
+            for (const member of group.members) {
+              const receipt = yield* git.readWorktreePreparation(member.path);
+              if (
+                receipt?.createdCheckout &&
+                receipt.namingIntent !== "existing" &&
+                receipt.owner === nestedWorktreeOwner(group.path) &&
+                receipt.baseOid
+              ) {
+                yield* git
+                  .deleteBranchIfAt({
+                    cwd: member.source,
+                    branch: group.branch,
+                    expectedSha: receipt.baseOid,
+                  })
+                  .pipe(Effect.ignore);
+              }
+            }
+            return { kept: null };
+          }
           const proof = yield* git.readWorktreePreparation(worktreePath);
           if (
             !proof?.createdCheckout ||
@@ -1195,6 +1325,15 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         return yield* failFor("Worktree setup needs a new thread and a base branch.");
       }
       const projectCwd = prepareWorktree.projectCwd;
+      const registeredProject = yield* projectFor(projectCwd);
+      const plainGroup =
+        registeredProject &&
+        git.prepareWorktreeGroup &&
+        !existsSync(join(projectCwd, ".git")) &&
+        Option.isSome(fileSystem) &&
+        (yield* discoverConfiguredProjectRepositories(registeredProject, git).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem.value),
+        )).length > 0;
       const isRepo = yield* git.resolveCommonDir(projectCwd).pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
@@ -1207,7 +1346,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       const hasRemote = isRepo
         ? yield* git.hasRemote(projectCwd).pipe(Effect.orElseSucceed(() => false))
         : false;
-      if (!isRepo || (localBase === null && !hasRemote)) {
+      if (!plainGroup && (!isRepo || (localBase === null && !hasRemote))) {
         return {
           kind: "unavailable" as const,
           detail: !isRepo
@@ -1230,6 +1369,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         });
       if (
         explicit &&
+        !plainGroup &&
         ((yield* git.branchExists(projectCwd, branch)) ||
           (yield* preparations.branchReserved(yield* git.resolveCommonDir(projectCwd), branch)))
       )
@@ -1248,7 +1388,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       let nameReservation:
         | import("../../persistence/Services/WorktreePreparations.ts").WorktreePreparationReceipt
         | null = null;
-      if (explicit) {
+      if (explicit && !plainGroup) {
         const common = yield* git.resolveCommonDir(projectCwd);
         nameReservation = yield* withRepositoryLifecycleLock(
           config.baseDir,
@@ -1356,6 +1496,9 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         request: {
           projectCwd,
           baseBranch: prepareWorktree.baseBranch,
+          ...(prepareWorktree.repositoryPaths
+            ? { repositoryPaths: prepareWorktree.repositoryPaths }
+            : {}),
           branch,
           runSetupScript,
           namingIntent: explicit ? "explicit" : "temporary",
@@ -1627,20 +1770,8 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       return entry.snapshot;
     });
 
-  const finishLocalHandoff = (threadId: ThreadId) =>
+  const settleLocalHandoff = (threadId: ThreadId, entry: Tracked) =>
     Effect.gen(function* () {
-      const existing = tracked.get(threadId);
-      const snapshot = existing?.snapshot ?? (yield* readPersisted(threadId));
-      if (!snapshot || Option.isNone(transitionStore)) return null;
-      const transition = yield* transitionStore.value.get(`work-locally:${snapshot.operationId}`);
-      if (
-        transition?.phase !== "completed" ||
-        transition.intent !== "use_project_checkout" ||
-        transition.setupOwnerOperationId !== snapshot.operationId ||
-        transition.result?.worktreePath !== null
-      )
-        return null;
-      const entry = existing ?? track(snapshot);
       if (["cancelled", "cancelled_kept"].includes(entry.snapshot.phase)) return entry.snapshot;
       const currentThread = (yield* engine.getReadModel()).threads.find(
         (thread) => thread.id === threadId,
@@ -1679,6 +1810,22 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           .pipe(Effect.mapError((error) => failFor(error.message)));
       yield* dispatcher.notify(threadId);
       return settled;
+    }).pipe(Effect.mapError((error) => failFor(error.message)));
+
+  const finishLocalHandoff = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const existing = tracked.get(threadId);
+      const snapshot = existing?.snapshot ?? (yield* readPersisted(threadId));
+      if (!snapshot || Option.isNone(transitionStore)) return null;
+      const transition = yield* transitionStore.value.get(`work-locally:${snapshot.operationId}`);
+      if (
+        transition?.phase !== "completed" ||
+        transition.intent !== "use_project_checkout" ||
+        transition.setupOwnerOperationId !== snapshot.operationId ||
+        transition.result?.worktreePath !== null
+      )
+        return null;
+      return yield* settleLocalHandoff(threadId, existing ?? track(snapshot));
     }).pipe(Effect.mapError((error) => failFor(error.message)));
 
   const workLocally = (threadId: ThreadId) =>
@@ -1721,12 +1868,41 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         }));
         return yield* failFor("The agent already started in the worktree.");
       }
-      if (Option.isNone(transitions))
-        return yield* failFor("Workspace transitions are unavailable.");
       const thread = (yield* engine.getReadModel()).threads.find(
         (entry) => entry.id === threadId && entry.deletedAt === null,
       );
       if (!thread) return yield* failFor("The conversation is unavailable.");
+      const group =
+        entry.snapshot.worktreePath && git.readWorktreeGroup
+          ? yield* git.readWorktreeGroup(entry.snapshot.worktreePath)
+          : null;
+      if (group && !group.root && group.threadId === threadId) {
+        if (
+          thread.session ||
+          (thread.worktreePath !== null && thread.worktreePath !== entry.snapshot.worktreePath)
+        )
+          return yield* failFor(
+            "The conversation changed workspace. Refresh before switching locally.",
+          );
+        if (thread.worktreePath !== null)
+          yield* dispatchVerifiedWorkspace(
+            engine,
+            git,
+            {
+              type: "thread.meta.update",
+              commandId: serverCommandId("plain-local-handoff"),
+              threadId,
+              worktreePath: null,
+              branch: null,
+              expectedWorktreePath: thread.worktreePath,
+              expectedBranch: thread.branch,
+            },
+            { allowMissing: true },
+          );
+        return yield* settleLocalHandoff(threadId, entry);
+      }
+      if (Option.isNone(transitions))
+        return yield* failFor("Workspace transitions are unavailable.");
       const switched = yield* transitions.value
         .switchWorkspace(
           {
