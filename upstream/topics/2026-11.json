@@ -15053,12 +15053,14 @@
     },
     {
       "createdAt": "2026-11-22T20:32:34.048Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27391",
       "relatedTopics": [
         "pr-40634"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
@@ -17058,9 +17060,11 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27798",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr hub"
@@ -21186,12 +21190,14 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28487",
       "relatedTopics": [
         "pr-23758"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "connection",
@@ -21826,12 +21832,14 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28582",
       "relatedTopics": [
         "pr-21337"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "worktrees",
@@ -26398,9 +26406,11 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29429",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
@@ -28160,9 +28170,11 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29644",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
@@ -28231,12 +28243,14 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29648",
       "relatedTopics": [
         "pr-28102"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
@@ -28321,12 +28335,14 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29652",
       "relatedTopics": [
         "pr-27032"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "mcp",
@@ -89566,9 +89582,11 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-40211",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
@@ -89591,9 +89609,11 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-40215",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
@@ -89617,9 +89637,11 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-40216",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
@@ -91222,12 +91244,14 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T20:33:46.091Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-40634",
       "relatedTopics": [
         "pr-40109"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "performance",
