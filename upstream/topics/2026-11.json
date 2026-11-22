@@ -37538,11 +37538,21 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:42:59.697Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/wsServer.ts:4715",
+          "apps/web/src/lib/sendThreadReply.ts:62"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-31114",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "threads",
@@ -38028,11 +38038,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:42:59.697Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-31226",
-      "status": "port",
+      "reason": "F5’s provider registry has no vault-backed instance secrets to retry on settings saves.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
