@@ -833,6 +833,7 @@ export default memo(function ChatView({
     identity: ProjectIssueAssetUrlInput["identity"];
     path: string;
     name: string;
+    cwd?: string | undefined;
   } | null>(null);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
@@ -7707,7 +7708,17 @@ export default memo(function ChatView({
           roots.threads,
         );
         if (target) {
-          setReferencedAsset({ ...target, name: target.path });
+          const { identity } = target;
+          const cwd =
+            identity.kind === "thread"
+              ? threadWorkspaceCwd(
+                  roots.threads.find((thread) => thread.id === identity.threadId),
+                  undefined,
+                )
+              : identity.kind === "project"
+                ? roots.projects.find((project) => project.id === identity.projectId)?.cwd
+                : undefined;
+          setReferencedAsset({ ...target, name: target.path, cwd });
           return true;
         }
         const basename = parsed.path.split(/[\\/]/u).at(-1);
@@ -8471,6 +8482,7 @@ export default memo(function ChatView({
                 name={referencedAsset.name}
                 relativePath={referencedAsset.path}
                 identity={referencedAsset.identity}
+                cwd={referencedAsset.cwd}
               />
             )}
           </DialogPopup>

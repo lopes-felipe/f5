@@ -1,0 +1,1 @@
+- The Forgejo and Gitea reviewer picker loads the repository's eligible assignees in a single request and shows each candidate once.

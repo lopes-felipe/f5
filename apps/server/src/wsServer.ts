@@ -5902,8 +5902,16 @@ export const createServer = Effect.fn(function* (
                 const relativePath = stored ? path.basename(stored) : entry.relativePath;
                 const file = await reader.openFile(relativePath);
                 let dimensions;
+                let fileRevision: string | undefined;
                 try {
-                  dimensions = await readAssetImageDimensions(file);
+                  if (path.extname(relativePath).toLowerCase() === ".pdf") {
+                    const stat = await file.stat({ bigint: true });
+                    fileRevision = createHash("sha256")
+                      .update([stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":"))
+                      .digest("hex");
+                  } else {
+                    dimensions = await readAssetImageDimensions(file);
+                  }
                 } finally {
                   await file.close();
                 }
@@ -5913,6 +5921,7 @@ export const createServer = Effect.fn(function* (
                   relativePath: entry.relativePath,
                   url: `/api/workspace-assets/${issued.handle}/${encodeURIComponent(name)}`,
                   expiresAt: issued.expiresAt,
+                  ...(fileRevision === undefined ? {} : { fileRevision }),
                   ...dimensions,
                 };
               }),

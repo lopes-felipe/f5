@@ -440,6 +440,64 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
     );
   });
 
+  it.each(["automatic resume", "snooze", "expired reset", "disabled"] as const)(
+    "checks usage-limit recovery before cleaning a shared worktree (%s)",
+    async (recovery) => {
+      await Effect.runPromise(
+        withWorktree(
+          { ...unchangedRule, autoResumeUsageLimitedThreads: recovery === "automatic resume" },
+          ({ worker, world, worktreePath }) =>
+            Effect.gen(function* () {
+              const nextHour = new Date(Date.now() + HOUR_MS).toISOString();
+              const resetsAt =
+                recovery === "expired reset"
+                  ? new Date(Date.now() - HOUR_MS).toISOString()
+                  : nextHour;
+              const waitingThread = thread({
+                id: "waiting-thread",
+                projectId: "project-1",
+                worktreePath,
+                branch: "feature",
+                lastInteractionAt: idleSince(),
+              });
+              world.threads.push({
+                ...waitingThread,
+                snoozedUntil:
+                  recovery === "snooze" || recovery === "expired reset" ? nextHour : null,
+                session: {
+                  threadId: waitingThread.id,
+                  status: "error",
+                  providerName: "codex",
+                  providerInstanceId: "codex" as never,
+                  activeTurnId: null,
+                  usageLimit: {
+                    providerInstanceId: "codex" as never,
+                    turnId: "interrupted-turn" as never,
+                    deliveryId: null,
+                    resetsAt,
+                    resetSource: "provider",
+                    evidence: "typed",
+                    windows: [],
+                  },
+                } as NonNullable<typeof waitingThread.session>,
+              });
+              const dryRun = yield* worker.dryRun;
+              if (recovery === "disabled" || recovery === "expired reset") {
+                expect(dryRun.targets[0]?.action).toBe("remove");
+              } else {
+                expect(dryRun.targets).toHaveLength(2);
+                expect(
+                  dryRun.targets.every(({ reason }) => reason.includes("usage limit to reset")),
+                ).toBe(true);
+                expect((yield* worker.runOnce).every(({ action }) => action === "skip")).toBe(true);
+                expect(yield* Effect.promise(() => exists(worktreePath))).toBe(true);
+              }
+            }),
+        ),
+      );
+    },
+  );
+
   it("skips worktrees with uncommitted, untracked or ignored files", async () => {
     await Effect.runPromise(
       withWorktree(unchangedRule, ({ worker, worktreePath }) =>

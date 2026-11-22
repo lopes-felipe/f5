@@ -158,6 +158,7 @@ export interface ForgeProvider extends SourceControlProvider {
   }) => Effect.Effect<unknown, SourceControlProviderError>;
   readonly listReviewerCandidates: (
     ref: SourceControlPullRequestRef,
+    detail?: ForgeDetail,
   ) => Effect.Effect<unknown, SourceControlProviderError>;
   readonly setLabels: (input: {
     readonly ref: SourceControlPullRequestRef;
@@ -1397,18 +1398,29 @@ export function makeForgeSourceControlProvider(options: {
             : { [kind === "forgejo" ? "body" : "description"]: input.body }),
         },
       ),
-    listReviewerCandidates: (ref) =>
+    listReviewerCandidates: (ref, detail) =>
       !caps.reviewers.listCandidates
         ? unsupported("reviewer-candidates")
-        : request(
-            ref,
-            undefined,
-            kind === "gitlab"
-              ? "/members/all"
-              : kind === "bitbucket"
-                ? "/default-reviewers"
-                : "/collaborators",
-          ),
+        : kind === "forgejo"
+          ? Effect.gen(function* () {
+              const pr = detail ?? (yield* getDetail(ref));
+              // Forgejo returns the full assignee list on every page.
+              const users = yield* request(ref, undefined, "/assignees");
+              if (!Array.isArray(users))
+                return yield* error(
+                  "reviewer-candidates",
+                  "Invalid Forgejo assignee list.",
+                  "invalid_response",
+                );
+              const seen = new Set([text(object(pr.raw.user).login).toLowerCase()]);
+              return users.filter((user) => {
+                const login = text(object(user).login).trim().toLowerCase();
+                if (seen.has(login)) return false;
+                seen.add(login);
+                return true;
+              });
+            })
+          : request(ref, undefined, kind === "gitlab" ? "/members/all" : "/default-reviewers"),
     completions: (ref, input) => {
       if (kind !== "gitlab" && kind !== "forgejo") return Effect.succeed([]);
       if (kind === "forgejo" && input.sigil !== "@") return Effect.succeed([]);

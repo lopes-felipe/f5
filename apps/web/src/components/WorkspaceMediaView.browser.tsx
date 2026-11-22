@@ -2,12 +2,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
+import { applyWatchedPathsChanged } from "../lib/workspaceWatch";
+
+const issueAssetUrl = vi.hoisted(() =>
+  vi.fn(async () => [
+    { url: "/api/workspace-assets/security-fixture/index.html", fileRevision: "one" },
+  ]),
+);
 
 vi.mock("../nativeApi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../nativeApi")>()),
   readNativeApi: () => ({
     projects: {
-      issueAssetUrl: async () => [{ url: "/api/workspace-assets/security-fixture/index.html" }],
+      issueAssetUrl,
     },
   }),
 }));
@@ -40,6 +47,41 @@ it("renders HTML in a sandbox and the production CSP blocks active content and e
     expect(await (await fetch("/__asset-security-count")).json()).toEqual({ attempts: 0 });
   } finally {
     window.removeEventListener("message", listener);
+    await view.unmount();
+    client.clear();
+  }
+});
+
+it("keeps the same PDF document on grant renewal and reloads after an edit", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const cwd = "/workspace";
+  const original = "/api/workspace-assets/original/document.pdf";
+  const renewed = "/api/workspace-assets/renewed/document.pdf";
+  const edited = "/api/workspace-assets/edited/document.pdf";
+  issueAssetUrl
+    .mockResolvedValueOnce([{ url: original, fileRevision: "one" }])
+    .mockResolvedValueOnce([{ url: renewed, fileRevision: "one" }])
+    .mockResolvedValueOnce([{ url: edited, fileRevision: "two" }]);
+  const view = await render(
+    <QueryClientProvider client={client}>
+      <WorkspaceMediaView name="document.pdf" cwd={cwd} projectId={"project" as never} />
+    </QueryClientProvider>,
+  );
+  const frame = () => view.container.querySelector('iframe[title="document.pdf"]');
+  try {
+    await vi.waitFor(() => expect(frame()?.getAttribute("src")).toBe(location.origin + original));
+    const opened = frame();
+    await client.refetchQueries();
+    expect(frame()).toBe(opened);
+    expect(frame()?.getAttribute("src")).toBe(location.origin + original);
+    applyWatchedPathsChanged(client, {
+      cwd,
+      degraded: false,
+      changes: [{ relativePath: "document.pdf", kind: "file", change: "changed", revision: 1 }],
+    });
+    await vi.waitFor(() => expect(frame()?.getAttribute("src")).toBe(location.origin + edited));
+    expect(frame()).not.toBe(opened);
+  } finally {
     await view.unmount();
     client.clear();
   }

@@ -1,0 +1,1 @@
+- Open PDF previews keep their reading position while the agent works and while the preview URL renews. Editing the PDF refreshes the preview.

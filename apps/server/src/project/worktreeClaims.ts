@@ -1,4 +1,5 @@
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { canResumeAtUsageReset, USAGE_RESUME_BUFFER_MS } from "@t3tools/shared/usageLimit";
 import { readManagedWorktreesDirectories } from "../worktreesDirectory.ts";
 import { WorkspaceTransitions } from "../persistence/Services/WorkspaceTransitions.ts";
 import { sameMoveSnapshot, isMoveCopySnapshot, type MoveSnapshot } from "../git/moveSnapshot.ts";
@@ -8,6 +9,7 @@ import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 import { legacyT3BaseDir } from "@t3tools/shared/appStatePaths";
 import { ServerConfig } from "../config.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import {
   ProjectionTurnRepository,
   type ProjectionTurnRepositoryShape,
@@ -15,6 +17,7 @@ import {
 import { WorktreeSetupGate, type WorktreeSetupGateShape } from "./Services/WorktreeSetupGate.ts";
 import {
   type InPlaceSwitchBlockerKind,
+  type OrchestrationThread,
   ThreadId,
   WorktreeSetupSnapshot,
   worktreeSetupGatesTurn,
@@ -548,6 +551,44 @@ const isStorageCleanupPolicy = (
 ): policy is Extract<WorktreeRemovalPolicy, { kind: "storageMaintenance" | "externalCleanup" }> =>
   policy.kind === "storageMaintenance" || policy.kind === "externalCleanup";
 
+const worktreeHasUsageLimitRecovery = Effect.fn("worktreeHasUsageLimitRecovery")(function* (
+  threads: ReadonlyArray<OrchestrationThread>,
+  claims: WorktreeClaims,
+) {
+  const waiting = threads.filter(
+    (thread) =>
+      claims.threadIds.includes(thread.id) &&
+      !thread.archivedAt &&
+      !thread.settledAt &&
+      thread.session?.usageLimit?.resetsAt,
+  );
+  if (waiting.length === 0) return false;
+  const settingsService = yield* Effect.serviceOption(ServerSettingsService);
+  const settings = Option.isSome(settingsService)
+    ? yield* settingsService.value.getSettings.pipe(Effect.orElseSucceed(() => null))
+    : null;
+  const now = Date.now();
+  // A reset can be known before the dispatcher creates a queue claim.
+  // Once queued, the continuation is protected by the queue checks.
+  return waiting.some((thread) => {
+    const limit = thread.session?.usageLimit;
+    if (!limit?.resetsAt) return false;
+    const resetAt = Date.parse(limit.resetsAt);
+    if (resetAt > now && thread.snoozedUntil && Date.parse(thread.snoozedUntil) > now) return true;
+    return (
+      !!limit.turnId &&
+      !limit.deliveryId &&
+      (settings?.projectSettingsOverrides[thread.projectId]?.autoResumeUsageLimitedThreads ??
+        settings?.autoResumeUsageLimitedThreads ??
+        true) &&
+      resetAt + USAGE_RESUME_BUFFER_MS > now &&
+      canResumeAtUsageReset(limit.resetsAt, now)
+    );
+  });
+});
+
+const USAGE_LIMIT_CLEANUP_BLOCK = "a thread is waiting for its usage limit to reset";
+
 const ignoredRemovalPolicy = (policy: WorktreeRemovalPolicy): IgnoredFilesRemovalPolicy =>
   policy.kind === "manual"
     ? { kind: "manual", approvedEntries: policy.approvedIgnoredEntries }
@@ -887,6 +928,9 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       !claims.deletedThreadIds.includes(input.policy.ownThreadId)
     )
       blockedReasons.push("an agent session is open in it");
+    const model = yield* engine.getReadModel();
+    if (yield* worktreeHasUsageLimitRecovery(model.threads, claims))
+      blockedReasons.push(USAGE_LIMIT_CLEANUP_BLOCK);
   }
   if (exists && registration) {
     const common = yield* git.resolveCommonDir(input.projectCwd).pipe(
@@ -1163,6 +1207,12 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
             yield* Effect.addFinalizer(() => Scope.close(maintenanceGate, Exit.void));
           const finalModel = yield* engine.getReadModel();
           const claims = yield* readWorktreeClaims(input.path);
+          if (
+            input.policy.kind === "autoCleanup" &&
+            checked.blockedReasons.length === 0 &&
+            (yield* worktreeHasUsageLimitRecovery(finalModel.threads, claims))
+          )
+            checked.blockedReasons.push(USAGE_LIMIT_CLEANUP_BLOCK);
           if (isStorageCleanupPolicy(input.policy)) {
             if (
               finalModel.threads.some(

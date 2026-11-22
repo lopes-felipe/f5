@@ -1,5 +1,10 @@
 import { describe, it, assert } from "@effect/vitest";
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ServerSettingsError,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { Deferred, Effect, Fiber, PubSub, Ref, Stream } from "effect";
 
@@ -162,6 +167,55 @@ describe("makeManagedServerProvider", () => {
         assert.deepStrictEqual(updates, [refreshedSnapshot, refreshedSnapshotSecond]);
         assert.deepStrictEqual(latest, refreshedSnapshotSecond);
         assert.strictEqual(yield* Ref.get(checkCalls), 2);
+      }),
+    ),
+  );
+
+  it.effect("applies later settings after a streamed provider check fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const settingsChanges = yield* PubSub.unbounded<number>();
+        const checks = yield* Ref.make(0);
+        const initialCheck = yield* Deferred.make<void>();
+        const failedCheck = yield* Deferred.make<void>();
+        const provider = yield* makeManagedServerProvider({
+          getSettings: Effect.succeed(0),
+          streamSettings: Stream.fromPubSub(settingsChanges),
+          haveSettingsChanged: (previous, next) => previous !== next,
+          initialSnapshot: () => initialSnapshot,
+          checkProvider: Ref.updateAndGet(checks, (count) => count + 1).pipe(
+            Effect.flatMap((count) => {
+              if (count === 1)
+                return Deferred.succeed(initialCheck, undefined).pipe(Effect.as(refreshedSnapshot));
+              if (count === 2)
+                return Deferred.succeed(failedCheck, undefined).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new ServerSettingsError({
+                        settingsPath: "settings.json",
+                        detail: "Temporary provider check failure",
+                      }),
+                    ),
+                  ),
+                );
+              return Effect.succeed(refreshedSnapshotSecond);
+            }),
+          ),
+          refreshInterval: "1 hour",
+        });
+        yield* Deferred.await(initialCheck);
+        const updates = yield* provider.streamChanges.pipe(
+          Stream.filter((snapshot) => snapshot.checkedAt === refreshedSnapshotSecond.checkedAt),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* PubSub.publish(settingsChanges, 1);
+        yield* Deferred.await(failedCheck);
+        yield* PubSub.publish(settingsChanges, 2);
+        assert.deepStrictEqual(Array.from(yield* Fiber.join(updates)), [refreshedSnapshotSecond]);
+        assert.strictEqual(yield* Ref.get(checks), 3);
       }),
     ),
   );
