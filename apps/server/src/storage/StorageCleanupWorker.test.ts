@@ -2,7 +2,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  DEFAULT_RUNTIME_MODE,
+  ProviderInstanceId,
+  TurnId,
+  type ProjectId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { afterEach, describe, expect, it } from "vitest";
@@ -460,6 +466,7 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
                 branch: "feature",
                 lastInteractionAt: idleSince(),
               });
+              const providerInstanceId = ProviderInstanceId.makeUnsafe("codex");
               world.threads.push({
                 ...waitingThread,
                 snoozedUntil:
@@ -468,18 +475,24 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
                   threadId: waitingThread.id,
                   status: "error",
                   providerName: "codex",
-                  providerInstanceId: "codex" as never,
+                  providerInstanceId,
+                  runtimeMode: DEFAULT_RUNTIME_MODE,
                   activeTurnId: null,
+                  lastError: "Usage limit reached",
+                  lastErrorId: null,
+                  lastErrorOccurredAt: null,
+                  lastErrorRetryability: null,
+                  updatedAt: idleSince(),
                   usageLimit: {
-                    providerInstanceId: "codex" as never,
-                    turnId: "interrupted-turn" as never,
+                    providerInstanceId,
+                    turnId: TurnId.makeUnsafe("interrupted-turn"),
                     deliveryId: null,
                     resetsAt,
                     resetSource: "provider",
                     evidence: "typed",
                     windows: [],
                   },
-                } as NonNullable<typeof waitingThread.session>,
+                },
               });
               const dryRun = yield* worker.dryRun;
               if (recovery === "disabled" || recovery === "expired reset") {
