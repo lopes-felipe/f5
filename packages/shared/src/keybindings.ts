@@ -1,4 +1,5 @@
 import {
+  type KeybindingCommand,
   type KeybindingRule,
   type KeybindingShortcut,
   type KeybindingWhenNode,
@@ -485,9 +486,23 @@ export function mergeWithDefaultKeybindings(
     return [...DEFAULT_RESOLVED_KEYBINDINGS];
   }
 
-  const overriddenCommands = new Set(custom.map((binding) => binding.command));
+  const unassigned = new Map<KeybindingCommand, KeybindingShortcut[]>();
+  const overriddenCommands = new Set<KeybindingCommand>();
+  for (const binding of custom) {
+    if (binding.whenAst?.type === "identifier" && binding.whenAst.name === "false") {
+      const shortcuts = unassigned.get(binding.command) ?? [];
+      shortcuts.push(binding.shortcut);
+      unassigned.set(binding.command, shortcuts);
+    } else {
+      overriddenCommands.add(binding.command);
+    }
+  }
   const retainedDefaults = DEFAULT_RESOLVED_KEYBINDINGS.filter(
-    (binding) => !overriddenCommands.has(binding.command),
+    (binding) =>
+      !overriddenCommands.has(binding.command) &&
+      !unassigned
+        .get(binding.command)
+        ?.some((shortcut) => shortcutEquals(binding.shortcut, shortcut)),
   );
   const merged = [...retainedDefaults, ...custom];
 

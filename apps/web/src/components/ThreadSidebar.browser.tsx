@@ -3461,6 +3461,7 @@ describe("Thread sidebar", () => {
         () => document.querySelector('[aria-label="Regenerating thread title"]'),
         "Pending title regeneration indicator should render.",
       );
+      expect(document.querySelector(".sidebar-title-regenerating")).not.toBeNull();
     } finally {
       await pendingMounted.cleanup();
     }

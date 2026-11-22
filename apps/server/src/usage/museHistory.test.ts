@@ -86,6 +86,10 @@ describe("Muse native usage", () => {
       expect(await reader.read()).toBe(grown);
       await writeFile(filename, JSON.stringify(entry("rotated")) + "\n");
       expect((await reader.read()).map((record) => record.key)).toEqual(["rotated"]);
+      const narrow = reader.read(undefined, 7);
+      const wide = reader.read(undefined, "unlimited");
+      expect(await narrow).toEqual([]);
+      expect((await wide).map((record) => record.key)).toEqual(["rotated"]);
       now = Date.parse("2027-08-01T00:00:00.000Z");
       expect(await reader.read()).toEqual([]);
     } finally {

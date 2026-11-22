@@ -23,7 +23,7 @@ import { buildQuotaHistory, QUOTA_HISTORY_LOOKBACK_MS } from "../quotaHistory.ts
 import { makeQuotaSampler } from "../quotaSampler.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
 import type { AccountUsageErrorCode } from "@t3tools/contracts";
-import { externalMuseHistory, museHistoryBuckets } from "../museHistory.ts";
+import { externalMuseHistory, museHistoryBuckets, usageHistoryCutoff } from "../museHistory.ts";
 import { recordedMusePredicate } from "../museRecordedIntervals.ts";
 
 const CLAUDE_USAGE_ANALYSIS_ERRORS: Partial<Record<AccountUsageErrorCode, string>> = {
@@ -246,8 +246,13 @@ const make = Effect.gen(function* () {
           : instances.flatMap((instance) =>
               instance.enabled && instance.usageHistory ? [instance.usageHistory] : [],
             );
-      if (!request.projectId)
-        yield* Effect.forEach(capabilities, (capability) => capability.refresh);
+      const retention = yield* (
+        settingsService.getUsageHistoryRetention ??
+        Effect.succeed(settings.usageHistoryRetentionDays)
+      ).pipe(Effect.orElseSucceed(() => null));
+      const cutoff = retention === null ? null : usageHistoryCutoff(now.getTime(), retention);
+      if (!request.projectId && retention !== null)
+        yield* Effect.forEach(capabilities, (capability) => capability.refresh(retention));
       const snapshots = yield* Effect.forEach(capabilities, (capability) => capability.getSnapshot);
       const sources = new Set<string>();
       const cachedHistory = snapshots
@@ -255,7 +260,9 @@ const make = Effect.gen(function* () {
         .flatMap((snapshot) => {
           if (!snapshot.source || sources.has(snapshot.source)) return [];
           sources.add(snapshot.source);
-          return snapshot.records;
+          return cutoff === null
+            ? snapshot.records
+            : snapshot.records.filter((record) => record.timestamp >= cutoff);
         });
       // Reconcile every summary against fresh facts. A turn may have completed
       // since this snapshot was scanned, including while later refreshes fail.

@@ -1,0 +1,1 @@
+- Agents can work with pull requests and CI through F5's forge sign-in, including reading failing checks, re-running jobs, and merging GitHub stacks.

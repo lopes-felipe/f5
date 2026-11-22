@@ -73,7 +73,7 @@ it.effect("discovers the configured native home and closes without opening a ses
       { XDG_DATA_HOME: "/configured/data", MUSE_NO_AUTO_UPDATE: "0" },
       true,
     );
-    yield* capability.refresh;
+    yield* capability.refresh();
     while ((yield* capability.getSnapshot).status === "refreshing") yield* Effect.yieldNow;
     const snapshot = yield* capability.getSnapshot;
     assert.equal(snapshot.source, yield* Effect.promise(() => realpath(process.cwd())));
@@ -90,7 +90,7 @@ it.effect("discovers the configured native home and closes without opening a ses
       { XDG_DATA_HOME: "/configured/data" },
       true,
     );
-    yield* alias.refresh;
+    yield* alias.refresh();
     while ((yield* alias.getSnapshot).status === "refreshing") yield* Effect.yieldNow;
     assert.strictEqual((yield* alias.getSnapshot).records, snapshot.records);
   }).pipe(Effect.provide(NodeServices.layer)),
@@ -118,7 +118,7 @@ it.effect("closes discovery transport when the Muse handshake never resolves", (
       {},
       true,
     );
-    yield* capability.refresh;
+    yield* capability.refresh();
     yield* TestClock.adjust("5 seconds");
     while ((yield* capability.getSnapshot).status === "refreshing") yield* Effect.yieldNow;
     assert.equal((yield* capability.getSnapshot).status, "error");

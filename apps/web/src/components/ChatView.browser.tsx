@@ -2239,6 +2239,114 @@ describe("ChatView timeline (full app)", () => {
       await mounted.cleanup();
     }
   });
+
+  it.each([false, true])(
+    "sends /btw context to the child and keeps a refused draft (%s)",
+    async (refused) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("side-chat-context"),
+        targetText: "Main conversation",
+      });
+      const parent = snapshot.threads[0]!;
+      const prompt = "/btw Review this file";
+      const filePath = "/repo/project/src/example.ts";
+      const image = createComposerImageAttachment({ id: "side-chat-image", name: "example.svg" });
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt);
+      useComposerDraftStore.getState().addFilePaths(THREAD_ID, [filePath]);
+      useComposerDraftStore.getState().addImage(THREAD_ID, image);
+      let childId: ThreadId | undefined;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          threads: [
+            {
+              ...parent,
+              session: {
+                ...parent.session!,
+                capabilities: {
+                  generation: 1,
+                  discovery: "discovered",
+                  checkedAt: NOW_ISO,
+                  actions: [],
+                },
+              },
+            },
+          ],
+        },
+        configureFixture: (next) => {
+          next.resolveWsRequest = (body) => {
+            if (body._tag === NATIVE_OPERATION_WS_METHODS.fork) {
+              const operationId = String(body.operationId);
+              const target = ThreadId.makeUnsafe("fork-" + operationId);
+              childId = target;
+              useStore.setState((state) => {
+                const main = state.threads.find((thread) => thread.id === THREAD_ID)!;
+                return {
+                  threads: [
+                    ...state.threads,
+                    {
+                      ...main,
+                      id: target,
+                      sideChatOf: THREAD_ID,
+                      session: null,
+                      messages: [],
+                    },
+                  ],
+                };
+              });
+              return {
+                type: "result",
+                result: {
+                  threadId: THREAD_ID,
+                  operationId,
+                  generation: 1,
+                  command: { kind: "fork" },
+                  state: "completed",
+                  createdAt: NOW_ISO,
+                  updatedAt: NOW_ISO,
+                },
+              };
+            }
+            if (refused && body._tag === WS_METHODS.nextTurnQueueSubmit)
+              return { type: "result", result: { disposition: "rejected", detail: "Try again" } };
+            return null;
+          };
+        },
+      });
+      try {
+        (await waitForSendButton()).click();
+        await vi.waitFor(() =>
+          expect(getDispatchCommandRequests("thread.turn.start")).toEqual([
+            expect.objectContaining({
+              command: expect.objectContaining({
+                threadId: childId,
+                message: expect.objectContaining({
+                  text: appendAttachedFilesToPrompt("Review this file", ["src/example.ts"]),
+                  attachments: [expect.objectContaining({ type: "upload" })],
+                }),
+              }),
+            }),
+          ]),
+        );
+        const readDraft = () => useComposerDraftStore.getState().draftsByThreadId[THREAD_ID];
+        await vi.waitFor(() => {
+          expect(readDraft()?.prompt ?? "").toBe(refused ? prompt : "");
+          expect(readDraft()?.filePaths ?? []).toEqual(refused ? [filePath] : []);
+          expect(readDraft()?.images.map(({ id }) => id) ?? []).toEqual(refused ? [image.id] : []);
+        });
+        const submission = getDispatchCommandRequests("thread.turn.start")[0]?.command as {
+          message: { attachments: Array<{ uploadId: string }> };
+        };
+        expect(uploadedFiles.get(submission.message.attachments[0]!.uploadId)?.draftThreadId).toBe(
+          childId,
+        );
+      } finally {
+        useRightPanelStore.setState({ byThreadId: {} });
+        await mounted.cleanup();
+      }
+    },
+  );
   it("focuses search when the add-project intent opens the real palette submenu", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

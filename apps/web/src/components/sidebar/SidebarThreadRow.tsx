@@ -469,7 +469,10 @@ export function SidebarThreadTitle({
   const fullTitle = displayTitle && displayTitle !== thread.title ? thread.title : visibleTitle;
   return (
     <span
-      className="min-w-0 flex-1 truncate"
+      className={cn(
+        "min-w-0 flex-1 truncate",
+        thread.titleRegeneration && "sidebar-title-regenerating",
+      )}
       {...(withTestId ? { "data-testid": `thread-title-${thread.id}` } : {})}
     >
       {visibleTitle}

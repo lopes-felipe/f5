@@ -53,6 +53,7 @@ export const makeMuseUsageHistory = (
     return yield* makeNativeHistoryCapability({
       enabled,
       discover,
-      scan: (home) => Effect.tryPromise((signal) => readerFor(spawner, home).read(signal)),
+      scan: (home, retention) =>
+        Effect.tryPromise((signal) => readerFor(spawner, home).read(signal, retention)),
     });
   });

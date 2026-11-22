@@ -167,6 +167,22 @@ describe("KeybindingEditor", () => {
     }
   });
 
+  it("unassigns the original default even after editing the shortcut field", async () => {
+    addKeybinding.mockResolvedValue(mutationResult());
+    nativeApiRef.current = { server: { addKeybinding } } as unknown as NativeApi;
+    const screen = await renderEditor();
+    try {
+      await page.getByLabelText("Edit Toggle command palette").click();
+      await page.getByLabelText("Shortcut").fill("mod+t");
+      await page.getByRole("button", { name: "Unassign" }).click();
+      expect(addKeybinding).toHaveBeenCalledWith({
+        rule: { key: "mod+k", command: "commandPalette.toggle", when: "false" },
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("submits exact update and reset RPCs", async () => {
     updateKeybinding.mockResolvedValue(mutationResult());
     resetKeybindings.mockResolvedValue(mutationResult());

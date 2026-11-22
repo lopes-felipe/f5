@@ -1,0 +1,1 @@
+- Hover or focus the conversation header's Diff button to see how the working tree's changes break down across code, tests, mocks, generated files, and docs.

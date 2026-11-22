@@ -352,6 +352,8 @@ export const makePrHubExtensions = Effect.gen(function* () {
               !!runtime.provider.deletePullRequestBranch)) &&
           (p.action !== "delete-branch" || !!runtime.provider.deletePullRequestBranch) &&
           (p.action !== "rerun-failed-checks" || caps.checks.rerun) &&
+          (p.workflowRunId === undefined ||
+            (p.action === "rerun-failed-checks" && !!runtime.provider.workflowRuns)) &&
           caps.actions.includes(p.action) &&
           (!p.method ||
             (p.action === "update-branch" ? caps.updateMethods : caps.mergeMethods).includes(
@@ -719,10 +721,14 @@ export const makePrHubExtensions = Effect.gen(function* () {
                   }
                   const workflowRuns = runtime.provider.workflowRuns;
                   if (p.action === "rerun-failed-checks" && workflowRuns) {
-                    const failed = yield* workflowRuns.listFailed({
+                    const failedRuns = yield* workflowRuns.listFailed({
                       ref,
                       expectedHeadOid: saved.operation.expectedHeadOid,
                     });
+                    const failed =
+                      p.workflowRunId === undefined
+                        ? failedRuns
+                        : failedRuns.filter((run) => run.id === p.workflowRunId);
                     const reruns: Array<{ id: number; attempt: number }> = [];
                     const refused: string[] = [];
                     for (const target of failed) {

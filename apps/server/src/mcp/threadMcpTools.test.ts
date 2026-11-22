@@ -73,6 +73,43 @@ it.effect("never sends raw provider defects through the catalog", () =>
   ),
 );
 
+it.effect("validates PR and CI tool arguments and keeps writes out of read-only turns", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeThreadMcpBroker;
+      const seen: unknown[] = [];
+      yield* broker.register((id, request) =>
+        Effect.sync(() => {
+          seen.push([id, request]);
+          return { ok: true };
+        }),
+      );
+      const threadId = ThreadId.makeUnsafe("pr-tools");
+      const context = { broker, threadId };
+      const read = yield* Effect.promise(() => callThreadTool(context, "ci_logs", { number: 42 }));
+      assert.isUndefined(read.isError);
+      assert.deepStrictEqual(seen, [
+        [
+          threadId,
+          {
+            name: "forge_pull_request",
+            request: { name: "ci_logs", input: { number: 42 } },
+          },
+        ],
+      ]);
+      const invalid = yield* Effect.promise(() =>
+        callThreadTool(context, "pull_request_merge", { number: 42 }),
+      );
+      assert.isTrue(invalid.isError);
+      const refused = yield* Effect.promise(() =>
+        callThreadTool({ ...context, access: "read-only" }, "ci_rerun", { number: 42 }),
+      );
+      assert.isTrue(refused.isError);
+      assert.lengthOf(seen, 1);
+    }),
+  ),
+);
+
 it.effect(
   "keeps HTTP thread credentials separate from preview credentials and revokes them on disposal",
   () =>
@@ -124,6 +161,15 @@ it.effect(
         assert.deepStrictEqual(
           tools.body.result?.tools?.map((tool) => tool.name),
           [
+            "pull_request_read",
+            "pull_request_list",
+            "pull_request_create",
+            "pull_request_update",
+            "pull_request_respond",
+            "pull_request_review",
+            "pull_request_merge",
+            "ci_logs",
+            "ci_rerun",
             "image_publish",
             "thread_read",
             "thread_settle",

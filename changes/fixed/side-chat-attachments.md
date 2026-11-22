@@ -1,0 +1,1 @@
+- Side chats started with /side or /btw carry along the first message's attachments and context. If the send fails, the original draft stays in the main chat.

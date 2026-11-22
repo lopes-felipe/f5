@@ -134,6 +134,7 @@ export const ForgeMutationPayload = Schema.Union([
     action: ForgeAction,
     deleteBranch: Schema.optional(Schema.Boolean),
     method: Schema.optional(Schema.Literals(["merge", "squash", "rebase"])),
+    workflowRunId: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
   }),
   Schema.Struct({
     kind: Schema.Literal("comment"),

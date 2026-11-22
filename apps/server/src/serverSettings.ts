@@ -26,6 +26,7 @@ import {
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
+  type UsageHistoryRetention,
 } from "@t3tools/contracts";
 import {
   Cache,
@@ -176,6 +177,11 @@ export interface ServerSettingsShape {
 
   /** Read the current settings. */
   readonly getSettings: Effect.Effect<ServerSettings, ServerSettingsError>;
+  /** A malformed file falls back for ordinary reads, but must not trigger history pruning. */
+  readonly getUsageHistoryRetention?: Effect.Effect<
+    UsageHistoryRetention | null,
+    ServerSettingsError
+  >;
 
   /** Patch settings and persist. Returns the new full settings object. */
   readonly updateSettings: (
@@ -819,6 +825,14 @@ const makeServerSettings = Effect.gen(function* () {
         Effect.flatMap(materializeProviderEnvironmentSecrets),
         Effect.map(resolveTextGenerationProvider),
       ),
+    ),
+    getUsageHistoryRetention: writeSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const settings = yield* getSettingsFromCache;
+        return (yield* Ref.get(decodeFailureRef)) === null
+          ? settings.usageHistoryRetentionDays
+          : null;
+      }),
     ),
     migrateClientSetting: ({ key, value }) =>
       writeSemaphore.withPermits(1)(
