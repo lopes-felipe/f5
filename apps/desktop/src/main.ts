@@ -61,7 +61,8 @@ import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
 import { capturePreviewSnapshotPage } from "./preview/snapshotScript";
-import { buildPreviewPickScript } from "./preview/pickScript";
+import { PreviewPicker } from "./preview/PreviewPicker";
+import { previewLocationPromptOptions } from "./preview/locationPrompt";
 import {
   PreviewAutomationControl,
   PreviewDiagnostics,
@@ -130,7 +131,7 @@ import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCerti
 import { registerComputerIpc } from "./computer/registerComputerIpc";
 import { applyComputerPause } from "./computer/computerPause";
 import { capturePermissions, openComputerPermissionSettings } from "./computer/permissions";
-import { clickPreviewGuest } from "./preview/guestFocus";
+import { clickPreviewGuest, hasPendingPreviewInput } from "./preview/guestFocus";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
 import {
@@ -1058,10 +1059,13 @@ function hostOfUrl(url: string): string | undefined {
  * that start in this window keep agent provenance until they settle, however slow.
  */
 const AGENT_NAVIGATION_GRACE_MS = 10_000;
+const locationPromptsByGuest = new WeakMap<Electron.WebContents, AbortController>();
 
 function markAgentNavigation(tabId: string): void {
   const entry = lookupPreviewTabEntry(tabId);
   if (entry) entry.agentNavigationUntil = Date.now() + AGENT_NAVIGATION_GRACE_MS;
+  const guest = getPreviewWebContents(tabId);
+  if (guest) locationPromptsByGuest.get(guest)?.abort();
 }
 
 /** Agent-driven navigations are blocked with `external-blocked`, never handed to the system browser. */
@@ -1675,12 +1679,17 @@ function isPickedElementResult(value: unknown): value is {
   );
 }
 
+const previewPicker = new PreviewPicker();
+
 async function pickPreviewElement(tabId: string): Promise<PreviewAnnotationPayload | null> {
   const guest = getPreviewWebContents(tabId);
   if (!guest) {
     throw new Error("Preview webview is not attached.");
   }
-  const rawResult = await guest.executeJavaScript(buildPreviewPickScript(), true);
+  const rawResult = await previewPicker.pick(
+    guest,
+    previewAutomationControl.isActive(tabId) || hasPendingPreviewInput(guest),
+  );
   if (!isPickedElementResult(rawResult)) {
     return null;
   }
@@ -1768,6 +1777,7 @@ async function runPreviewAutomationAction<T>(
   try {
     const result = await previewAutomationControl.run(tabId, async (checkpoint) => {
       const guest = requirePreviewWebContents(tabId);
+      previewPicker.assertAutomationAllowed(guest);
       requireAllowedPreviewPage(tabId, guest);
       markAgentNavigation(tabId);
       try {
@@ -4326,18 +4336,21 @@ function registerIpcHandlers(): void {
         const guest = getPreviewWebContents(scopedTabId);
         const url = getSafePreviewUrl(rawUrl, previewTabExternalHosts(scopedTabId));
         if (!guest || !url) throw new Error("Preview navigation target is invalid.");
-        // Redirects from an agent's navigation are blocked, never opened externally.
-        if (agent) markAgentNavigation(scopedTabId);
-        // Take over stops a pending agent load (as ERR_FAILED); tell the agent it was
-        // interrupted rather than report success or a load failure.
-        const takeover = agent ? previewAutomationControl.checkpoint(scopedTabId) : null;
-        try {
-          await loadPreviewURL(guest, url);
-        } catch (error) {
-          takeover?.check();
-          throw error;
-        }
-        takeover?.check();
+        if (!agent) return loadPreviewURL(guest, url);
+        await previewAutomationControl.run(scopedTabId, async (takeover) => {
+          if (getPreviewWebContents(scopedTabId) !== guest)
+            throw new Error("Preview navigation target changed.");
+          previewPicker.assertAutomationAllowed(guest);
+          // Redirects from an agent's navigation are blocked, never opened externally.
+          markAgentNavigation(scopedTabId);
+          try {
+            await loadPreviewURL(guest, url);
+          } catch (error) {
+            takeover.check();
+            throw error;
+          }
+          takeover.check();
+        });
       },
       goBack: (tabId) => {
         const guest = getPreviewWebContents(scopeTabId(tabId));
@@ -4353,9 +4366,8 @@ function registerIpcHandlers(): void {
         getPreviewWebContents(scopeTabId(tabId))?.openDevTools({ mode: "detach" }),
       pickElement: (tabId) => pickPreviewElement(scopeTabId(tabId)),
       cancelPickElement: async (tabId) => {
-        await getPreviewWebContents(scopeTabId(tabId))
-          ?.executeJavaScript("window.__f5PreviewPickCancel?.()", true)
-          .catch(() => null);
+        const guest = getPreviewWebContents(scopeTabId(tabId));
+        if (guest) await previewPicker.cancel(guest);
       },
       automationStatus: (tabId) => previewAutomationStatus(scopeTabId(tabId)),
       automationSnapshot: (tabId, save) => previewAutomationSnapshot(scopeTabId(tabId), save),
@@ -4483,10 +4495,36 @@ function createWindow(
     params.src = "about:blank";
     installPreviewPermissionPolicy(electronSession.fromPartition(partition), {
       isUserDriven: (guest) => {
-        const id = (guest as { readonly id?: unknown }).id;
-        return [...previewTabs.entries()].some(
-          ([tabId, tab]) => tab.webContentsId === id && !isAgentPreviewNavigation(tabId),
+        return (
+          !guest.isDestroyed() &&
+          [...previewTabs.entries()].some(
+            ([tabId, tab]) => tab.webContentsId === guest.id && !isAgentPreviewNavigation(tabId),
+          )
         );
+      },
+      confirmGeolocation: async (guest, origin) => {
+        const host = guest.isDestroyed() ? null : guest.hostWebContents;
+        const parent = host && !host.isDestroyed() ? BrowserWindow.fromWebContents(host) : null;
+        if (!parent || parent.isDestroyed()) return undefined;
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        locationPromptsByGuest.set(guest, controller);
+        guest.once("did-start-navigation", cancel);
+        guest.once("destroyed", cancel);
+        guest.once("render-process-gone", cancel);
+        try {
+          const options = previewLocationPromptOptions(origin, controller.signal);
+          const { response } =
+            process.platform === "win32"
+              ? await dialog.showMessageBox(options)
+              : await dialog.showMessageBox(parent, options);
+          return controller.signal.aborted ? undefined : response === 0;
+        } finally {
+          locationPromptsByGuest.delete(guest);
+          guest.off("did-start-navigation", cancel);
+          guest.off("destroyed", cancel);
+          guest.off("render-process-gone", cancel);
+        }
       },
     });
     // A page that goes fullscreen fills its own webview instead of the whole F5 window.

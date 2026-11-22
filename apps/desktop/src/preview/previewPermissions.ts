@@ -22,69 +22,128 @@ export const ALLOWED_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
 
 /**
  * Also granted to a local app (a loopback origin) in a tab the user is driving, so the user's
- * own development server can use its camera, location or file pickers. A page the agent is
- * driving, or any other origin, keeps only the permissions above.
+ * own development server can use its camera or file pickers. Location additionally requires
+ * consent. A page the agent is driving, or any other origin, keeps only the permissions above.
  */
 export const LOCAL_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
   "media",
-  "geolocation",
   "pointerLock",
   "fileSystem",
   "clipboard-read",
 ]);
 
-interface PermissionSessionLike {
+interface PermissionSessionLike<Contents> {
   setPermissionRequestHandler(
     handler: (
-      webContents: unknown,
+      webContents: Contents,
       permission: string,
       callback: (granted: boolean) => void,
       details?: { readonly requestingUrl?: string },
     ) => void,
   ): void;
   setPermissionCheckHandler(
-    handler: (webContents: unknown, permission: string, requestingOrigin?: string) => boolean,
+    handler: (
+      webContents: Contents | null,
+      permission: string,
+      requestingOrigin?: string,
+    ) => boolean,
   ): void;
 }
 
-function isLoopbackOrigin(url: string | undefined): boolean {
-  if (!url) return false;
+function loopbackOrigin(url: string | undefined): string | null {
+  if (!url) return null;
   try {
     const parsed = new URL(url);
-    return (
-      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") &&
       isLoopbackPreviewHost(parsed.hostname)
-    );
+      ? parsed.origin
+      : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
 const installedSessions = new WeakSet<object>();
+// Keep pages from stacking native location dialogs across origins or profiles.
+let activeGeolocationPrompt:
+  | {
+      readonly session: object;
+      readonly origin: string;
+      readonly result: Promise<boolean | undefined>;
+    }
+  | undefined;
 
 /** Installed once per preview session, before its first guest loads a page. */
-export function installPreviewPermissionPolicy(
-  session: PermissionSessionLike,
+export function installPreviewPermissionPolicy<Contents>(
+  session: PermissionSessionLike<Contents>,
   options: {
     /** Whether the page is in a tab the user, not the agent, is driving. Unknown is not. */
-    readonly isUserDriven?: (webContents: unknown) => boolean;
+    readonly isUserDriven?: (webContents: Contents) => boolean;
+    /** Undefined means the prompt could not be presented. */
+    readonly confirmGeolocation?: (
+      webContents: Contents,
+      origin: string,
+    ) => Promise<boolean | undefined>;
   } = {},
 ): void {
   if (installedSessions.has(session)) return;
   installedSessions.add(session);
-  const allows = (webContents: unknown, permission: string, url: string | undefined) =>
+  const geolocationDecisions = new Map<string, boolean>();
+  const isUserDriven = (webContents: Contents | null): webContents is Contents =>
+    webContents !== null && options.isUserDriven?.(webContents) === true;
+  const allows = (webContents: Contents | null, permission: string, url: string | undefined) =>
     ALLOWED_PREVIEW_PERMISSIONS.has(permission) ||
     (LOCAL_PREVIEW_PERMISSIONS.has(permission) &&
-      isLoopbackOrigin(url) &&
-      webContents !== null &&
-      options.isUserDriven?.(webContents) === true);
-  session.setPermissionRequestHandler((webContents, permission, callback, details) =>
-    callback(allows(webContents, permission, details?.requestingUrl)),
-  );
-  session.setPermissionCheckHandler(
-    (webContents, permission, requestingOrigin) =>
-      // The pinned Electron disables LNA enforcement. An upgrade regression test forces
-      // reassessment: a granted check can itself authorize APIs without a later request.
-      permission === "loopback-network" || allows(webContents, permission, requestingOrigin),
-  );
+      loopbackOrigin(url) !== null &&
+      isUserDriven(webContents));
+
+  session.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (permission !== "geolocation") {
+      callback(allows(webContents, permission, details?.requestingUrl));
+      return;
+    }
+    // An opaque frame URL cannot establish an origin eligible for consent.
+    const origin = loopbackOrigin(details?.requestingUrl);
+    if (origin === null || !isUserDriven(webContents)) {
+      callback(false);
+      return;
+    }
+    const remembered = geolocationDecisions.get(origin);
+    if (remembered !== undefined) {
+      callback(remembered);
+      return;
+    }
+    const active = activeGeolocationPrompt;
+    if (active && (active.session !== session || active.origin !== origin)) {
+      callback(false);
+      return;
+    }
+    let prompt = active?.result;
+    if (prompt === undefined) {
+      prompt = Promise.resolve()
+        .then(() =>
+          isUserDriven(webContents) ? options.confirmGeolocation?.(webContents, origin) : undefined,
+        )
+        .catch(() => undefined)
+        .then((decision) => {
+          activeGeolocationPrompt = undefined;
+          if (decision === undefined || !isUserDriven(webContents)) return undefined;
+          geolocationDecisions.set(origin, decision);
+          return decision;
+        });
+      activeGeolocationPrompt = { session, origin, result: prompt };
+    }
+    void prompt.then((decision) => callback(decision === true && isUserDriven(webContents)));
+  });
+  session.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    if (permission === "geolocation") {
+      const origin = loopbackOrigin(requestingOrigin);
+      return (
+        origin !== null && geolocationDecisions.get(origin) === true && isUserDriven(webContents)
+      );
+    }
+    // The pinned Electron disables LNA enforcement. An upgrade regression test forces
+    // reassessment: a granted check can itself authorize APIs without a later request.
+    return permission === "loopback-network" || allows(webContents, permission, requestingOrigin);
+  });
 }
