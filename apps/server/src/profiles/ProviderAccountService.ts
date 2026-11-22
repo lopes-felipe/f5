@@ -125,7 +125,7 @@ export class ProviderAccountService {
       };
     }
     const resolved = await this.resolve(instanceId);
-    const command = resolved.invocation(
+    const command = await resolved.invocation(
       resolved.instance.driver === "codex" ? ["login", "status"] : ["auth", "status"],
     );
     const result = await runProcess(command.file, command.args, {
@@ -232,7 +232,7 @@ export class ProviderAccountService {
                     ...(!logout && method === "device-code" ? ["--device-auth"] : []),
                   ]
                 : ["auth", logout ? "logout" : "login"];
-            const command = resolved!.invocation(args);
+            const command = await resolved!.invocation(args);
             return Effect.runPromise(
               createProcess!({
                 shell: command.file,

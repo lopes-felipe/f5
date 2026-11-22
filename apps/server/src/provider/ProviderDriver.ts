@@ -68,7 +68,7 @@ export interface ProviderInstance {
   readonly continuationIdentity: ProviderContinuationIdentity;
   /** Opaque server-side identity for executable, argv, and environment defaults. */
   readonly launchIdentity?: string;
-  readonly resolveInstallTarget?: () => ProviderInstallTarget | null;
+  readonly resolveInstallTarget?: () => Promise<ProviderInstallTarget | null>;
   /** Stable identity for the complete decoded provider-instance configuration. */
   readonly configurationFingerprint?: string;
   readonly displayName: string | undefined;

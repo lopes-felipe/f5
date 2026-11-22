@@ -24,7 +24,7 @@ export interface ProviderInstanceRoutingInfo {
   readonly enabled: boolean;
   readonly continuationIdentity: ProviderContinuationIdentity;
   readonly launchIdentity?: string;
-  readonly resolveInstallTarget?: (() => ProviderInstallTarget | null) | undefined;
+  readonly resolveInstallTarget?: (() => Promise<ProviderInstallTarget | null>) | undefined;
 }
 
 /**

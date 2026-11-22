@@ -1680,8 +1680,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           let installKey: string | undefined;
           if (hasProviderUpdate(stateDir) && instanceId) {
             const info = yield* registry.getInstanceInfo(ProviderInstanceId.make(instanceId));
-            const target = yield* Effect.try({
-              try: () => info.resolveInstallTarget?.(),
+            const target = yield* Effect.tryPromise({
+              try: async () => info.resolveInstallTarget?.(),
               catch: () =>
                 toValidationError(
                   operation,

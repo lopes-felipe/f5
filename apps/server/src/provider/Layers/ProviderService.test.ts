@@ -3819,7 +3819,7 @@ it.effect(
                 driverKind: ProviderDriverKind.make("codex"),
                 continuationKey: String(instanceId),
               },
-              resolveInstallTarget: () => (targetAvailable ? physical : null),
+              resolveInstallTarget: async () => (targetAvailable ? physical : null),
             }),
         }),
       ),

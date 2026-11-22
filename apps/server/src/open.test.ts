@@ -505,7 +505,7 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
       // Model an unavailable editor without launching an application on the test host.
       const availability = vi
         .spyOn(commandResolution, "isCommandAvailable")
-        .mockImplementation((command, options) =>
+        .mockImplementation(async (command, options) =>
           process.env.PATH === "" ? false : isAvailable(command, options),
         );
       try {
@@ -737,16 +737,22 @@ it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
         PATH: dir,
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
       } satisfies NodeJS.ProcessEnv;
-      assert.equal(isCommandAvailable("code", { platform: "win32", env }), true);
+      assert.equal(
+        yield* Effect.promise(() => isCommandAvailable("code", { platform: "win32", env })),
+        true,
+      );
     }),
   );
 
-  it("returns false when a command is not on PATH", () => {
+  it("returns false when a command is not on PATH", async () => {
     const env = {
       PATH: "",
       PATHEXT: ".COM;.EXE;.BAT;.CMD",
     } satisfies NodeJS.ProcessEnv;
-    assert.equal(isCommandAvailable("definitely-not-installed", { platform: "win32", env }), false);
+    assert.equal(
+      await isCommandAvailable("definitely-not-installed", { platform: "win32", env }),
+      false,
+    );
   });
 
   it.effect("does not treat bare files without executable extension as available on win32", () =>
@@ -759,7 +765,10 @@ it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
         PATH: dir,
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
       } satisfies NodeJS.ProcessEnv;
-      assert.equal(isCommandAvailable("npm", { platform: "win32", env }), false);
+      assert.equal(
+        yield* Effect.promise(() => isCommandAvailable("npm", { platform: "win32", env })),
+        false,
+      );
     }),
   );
 
@@ -773,7 +782,10 @@ it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
         PATH: dir,
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
       } satisfies NodeJS.ProcessEnv;
-      assert.equal(isCommandAvailable("my.tool", { platform: "win32", env }), true);
+      assert.equal(
+        yield* Effect.promise(() => isCommandAvailable("my.tool", { platform: "win32", env })),
+        true,
+      );
     }),
   );
 
@@ -789,7 +801,10 @@ it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
         PATH: `${firstDir};${secondDir}`,
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
       } satisfies NodeJS.ProcessEnv;
-      assert.equal(isCommandAvailable("code", { platform: "win32", env }), true);
+      assert.equal(
+        yield* Effect.promise(() => isCommandAvailable("code", { platform: "win32", env })),
+        true,
+      );
     }),
   );
 });
@@ -806,10 +821,12 @@ it.layer(NodeServices.layer)("resolveAvailableEditors", (it) => {
       yield* fs.writeFileString(path.join(dir, "codium.CMD"), "@echo off\r\n");
       yield* fs.writeFileString(path.join(dir, "idea64.exe"), "MZ");
       yield* fs.writeFileString(path.join(dir, "explorer.CMD"), "MZ");
-      const editors = resolveAvailableEditors("win32", {
-        PATH: dir,
-        PATHEXT: ".COM;.EXE;.BAT;.CMD",
-      });
+      const editors = yield* Effect.promise(() =>
+        resolveAvailableEditors("win32", {
+          PATH: dir,
+          PATHEXT: ".COM;.EXE;.BAT;.CMD",
+        }),
+      );
       assert.deepEqual(editors, ["trae", "vscode-insiders", "vscodium", "idea", "file-manager"]);
     }),
   );
@@ -825,7 +842,7 @@ vitestIt("detects and launches a macOS app-bundled editor without PATH installat
     fs.mkdirSync(path.dirname(command), { recursive: true });
     fs.writeFileSync(command, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     const env = { HOME: home, PATH: "/nonexistent" };
-    expect(resolveAvailableEditors("darwin", env)).toContain("vscode");
+    expect(await resolveAvailableEditors("darwin", env)).toContain("vscode");
     expect(
       await Effect.runPromise(
         resolveEditorLaunch({ editor: "vscode", cwd: "/repo/file.ts:4" }, "darwin", env),
@@ -870,27 +887,27 @@ fi
   // cannot express a Windows temp directory such as C:\Users\...
   const posixIt = vitestIt.skipIf(process.platform === "win32");
 
-  posixIt("does not offer Cursor when only the Cursor Agent shim is on PATH", () => {
+  posixIt("does not offer Cursor when only the Cursor Agent shim is on PATH", async () => {
     writeExecutable(path.join(root, "shim/cursor"), CURSOR_AGENT_SHIM);
     const env = { HOME: path.join(root, "home"), PATH: path.join(root, "shim") };
-    expect(resolveAvailableEditors("linux", env)).not.toContain("cursor");
+    expect(await resolveAvailableEditors("linux", env)).not.toContain("cursor");
   });
 
   vitestIt.skipIf(
     process.platform === "win32" ||
       fs.existsSync("/Applications/Cursor.app") ||
       fs.existsSync(path.join(os.homedir(), "Applications/Cursor.app")),
-  )("does not offer Cursor on macOS when only the shim is installed", () => {
+  )("does not offer Cursor on macOS when only the shim is installed", async () => {
     writeExecutable(path.join(root, "shim/cursor"), CURSOR_AGENT_SHIM);
     const env = { HOME: path.join(root, "home"), PATH: path.join(root, "shim") };
-    expect(resolveAvailableEditors("darwin", env)).not.toContain("cursor");
+    expect(await resolveAvailableEditors("darwin", env)).not.toContain("cursor");
   });
 
   posixIt("launches a real cursor later on PATH by its absolute path", async () => {
     writeExecutable(path.join(root, "shim/cursor"), CURSOR_AGENT_SHIM);
     const real = writeExecutable(path.join(root, "real/cursor"), "#!/bin/sh\nexit 0\n");
     const env = { PATH: `${path.join(root, "shim")}:${path.join(root, "real")}` };
-    expect(resolveAvailableEditors("linux", env)).toContain("cursor");
+    expect(await resolveAvailableEditors("linux", env)).toContain("cursor");
     expect(await launch(env, "linux")).toEqual({
       command: real,
       args: ["--classic", "--goto", "/repo/file.ts:4"],
@@ -905,28 +922,28 @@ fi
       "#!/bin/sh\nexit 0\n",
     );
     const env = { HOME: home, PATH: path.join(root, "shim") };
-    expect(resolveAvailableEditors("darwin", env)).toContain("cursor");
+    expect(await resolveAvailableEditors("darwin", env)).toContain("cursor");
     expect((await launch(env, "darwin")).command).toBe(bundled);
   });
 
-  vitestIt("only treats small scripts with the marker as shims", () => {
+  vitestIt("only treats small scripts with the marker as shims", async () => {
     const shim = writeExecutable(path.join(root, "a/cursor"), CURSOR_AGENT_SHIM);
     const oversized = writeExecutable(
       path.join(root, "b/cursor"),
       `${CURSOR_AGENT_SHIM}${"#".repeat(8192)}\n`,
     );
-    expect(isEditorShim("cursor", shim)).toBe(true);
-    expect(isEditorShim("vscode", shim)).toBe(false);
-    expect(isEditorShim("cursor", oversized)).toBe(false);
-    expect(isEditorShim("cursor", path.join(root, "missing"))).toBe(false);
+    expect(await isEditorShim("cursor", shim)).toBe(true);
+    expect(await isEditorShim("vscode", shim)).toBe(false);
+    expect(await isEditorShim("cursor", oversized)).toBe(false);
+    expect(await isEditorShim("cursor", path.join(root, "missing"))).toBe(false);
   });
 
   // Windows ignores mode bits, so only POSIX can make the file unreadable.
   vitestIt.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "does not treat an unreadable script as a shim",
-    () => {
+    async () => {
       const unreadable = writeExecutable(path.join(root, "c/cursor"), CURSOR_AGENT_SHIM, 0o111);
-      expect(isEditorShim("cursor", unreadable)).toBe(false);
+      expect(await isEditorShim("cursor", unreadable)).toBe(false);
     },
   );
 });

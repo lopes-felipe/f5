@@ -98,10 +98,10 @@ export interface InstallTargetDependencies {
 }
 
 /** Classification has no process side effects. Registry ownership is checked privately by the advisor. */
-export function detectProviderInstallTarget(
+export async function detectProviderInstallTarget(
   input: DetectProviderInstallTargetInput,
   dependencies: Partial<InstallTargetDependencies> = {},
-): ProviderInstallTarget | null {
+): Promise<ProviderInstallTarget | null> {
   const deps: InstallTargetDependencies = {
     resolveExecutable,
     resolveInvocation,
@@ -184,7 +184,7 @@ export function detectProviderInstallTarget(
   }
   const command =
     input.binaryPath?.trim() || (input.driver === "claudeAgent" ? "claude" : input.driver);
-  const executable = deps.resolveExecutable(command, input.resolutionEnvironment, {
+  const executable = await deps.resolveExecutable(command, input.resolutionEnvironment, {
     platform: deps.platform,
     useCache: false,
   });
@@ -192,7 +192,7 @@ export function detectProviderInstallTarget(
   let resolved = executable;
   try {
     if (deps.platform === "win32" && /\.cmd$/i.test(executable)) {
-      const invocation = deps.resolveInvocation(executable, [], input.resolutionEnvironment, {
+      const invocation = await deps.resolveInvocation(executable, [], input.resolutionEnvironment, {
         platform: deps.platform,
         useCache: false,
       });
@@ -309,7 +309,7 @@ export function detectProviderInstallTarget(
       // Windows separates the global package prefix from the Node installation; copy-only uses its npm.
       const npmPath =
         deps.platform === "win32" && !deps.exists(prefixNpm)
-          ? deps.resolveExecutable("npm", input.resolutionEnvironment, {
+          ? await deps.resolveExecutable("npm", input.resolutionEnvironment, {
               platform: deps.platform,
               useCache: false,
             })
@@ -436,7 +436,7 @@ export function makeInstanceInstallTargetResolver(
     readonly claudeConfigDir?: string | undefined;
   },
   dependencies: Partial<InstallTargetDependencies> = {},
-): () => ProviderInstallTarget | null {
+): () => Promise<ProviderInstallTarget | null> {
   return () => {
     const base = { ...process.env };
     for (const key of Object.keys(base))

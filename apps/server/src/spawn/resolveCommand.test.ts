@@ -1,14 +1,6 @@
 import { spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  utimesSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -18,7 +10,7 @@ import { Effect } from "effect";
 
 import {
   clearCommandResolutionCache,
-  PathDirectoryListings,
+  isCommandAvailable,
   CommandNotFoundError,
   npmShimExecutable,
   preferGitForWindowsBinary,
@@ -29,9 +21,9 @@ import {
 } from "./resolveCommand.ts";
 import { runProviderCliCommand } from "../provider/providerCli.ts";
 
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, statSync: vi.fn(actual.statSync), readdirSync: vi.fn(actual.readdirSync) };
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, stat: vi.fn(actual.stat), readdir: vi.fn(actual.readdir) };
 });
 
 function tempDir(prefix: string): string {
@@ -47,41 +39,48 @@ function writeExecutable(filePath: string): void {
 afterEach(clearCommandResolutionCache);
 
 describe("resolveExecutable", () => {
-  it("lists PATH directories once per scan and refreshes changed directories", () => {
+  it("shares PATH listings across availability checks and invocations until the directory changes", async () => {
     const directory = tempDir("f5-listings-");
     try {
       writeExecutable(path.join(directory, "cursor.CMD"));
-      const pathDirectoryListings = new PathDirectoryListings();
+      utimesSync(directory, 946684800, 946684800);
       const env = { PATH: directory, PATHEXT: ".EXE;.CMD" };
-      const options = { platform: "win32" as const, pathDirectoryListings };
-      vi.mocked(readdirSync).mockClear();
-      vi.mocked(statSync).mockClear();
-      expect(resolveExecutables("cursor", env, options)).toEqual([
-        path.join(directory, "cursor.CMD"),
+      const options = { platform: "win32" as const };
+      vi.mocked(readdir).mockClear();
+      vi.mocked(stat).mockClear();
+      const [executables, available] = await Promise.all([
+        resolveExecutables("cursor", env, options),
+        isCommandAvailable("absent", { ...options, env }),
       ]);
-      expect(resolveExecutables("absent", env, options)).toEqual([]);
-      expect(readdirSync).toHaveBeenCalledTimes(1);
+      expect(executables).toEqual([path.join(directory, "cursor.CMD")]);
+      expect(available).toBe(false);
+      await expect(resolveInvocation("missing", [], env, options)).rejects.toThrow(
+        CommandNotFoundError,
+      );
+      expect(readdir).toHaveBeenCalledTimes(1);
       expect(
         vi
-          .mocked(statSync)
+          .mocked(stat)
           .mock.calls.map(([file]) => file)
           .filter((file) => file !== directory),
       ).toEqual([path.join(directory, "cursor.CMD")]);
       writeExecutable(path.join(directory, "late.EXE"));
-      utimesSync(directory, 4102444800, 4102444800);
-      expect(resolveExecutables("late", env, options)).toEqual([path.join(directory, "late.EXE")]);
-      expect(readdirSync).toHaveBeenCalledTimes(2);
+      utimesSync(directory, 946684830, 946684830);
+      expect(await resolveExecutables("late", env, options)).toEqual([
+        path.join(directory, "late.EXE"),
+      ]);
+      expect(readdir).toHaveBeenCalledTimes(2);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
   });
-  it("honors case-insensitive Path/PATHEXT keys, quoted entries, and extension order", () => {
+  it("honors case-insensitive Path/PATHEXT keys, quoted entries, and extension order", async () => {
     const directory = tempDir("f5 resolve command ");
     writeExecutable(path.join(directory, "agent.CMD"));
     writeExecutable(path.join(directory, "agent.EXE"));
 
     expect(
-      resolveExecutable(
+      await resolveExecutable(
         "agent",
         { Path: `"${directory}"`, PathExt: ".CMD;.EXE" },
         { platform: "win32", useCache: false },
@@ -89,68 +88,113 @@ describe("resolveExecutable", () => {
     ).toBe(path.join(directory, "agent.CMD"));
   });
 
-  it("rejects directories and does not treat drive-relative paths as PATH lookups", () => {
+  it("rejects directories and does not treat drive-relative paths as PATH lookups", async () => {
     const directory = tempDir("f5-resolve-command-");
     mkdirSync(path.join(directory, "tool.EXE"));
     expect(
-      resolveExecutable("tool", { PATH: directory }, { platform: "win32", useCache: false }),
+      await resolveExecutable("tool", { PATH: directory }, { platform: "win32", useCache: false }),
     ).toBeNull();
     expect(
-      resolveExecutable("C:tool", { PATH: directory }, { platform: "win32", useCache: false }),
+      await resolveExecutable(
+        "C:tool",
+        { PATH: directory },
+        { platform: "win32", useCache: false },
+      ),
     ).toBeNull();
   });
 
-  it("does not cache misses after a command is installed into the same PATH", () => {
+  it("does not cache misses after a command is installed into the same PATH", async () => {
     const directory = tempDir("f5-resolve-command-");
     const executable = path.join(directory, "late-agent.EXE");
     const env = { PATH: directory, PATHEXT: ".EXE" };
-    expect(resolveExecutable("late-agent", env, { platform: "win32" })).toBeNull();
+    expect(await resolveExecutable("late-agent", env, { platform: "win32" })).toBeNull();
     writeExecutable(executable);
-    expect(resolveExecutable("late-agent", env, { platform: "win32" })).toBe(executable);
+    expect(await resolveExecutable("late-agent", env, { platform: "win32" })).toBe(executable);
+  });
+
+  it("rereads recently modified directories even if their mtime is unchanged", async () => {
+    const directory = tempDir("f5-path-recent-");
+    try {
+      const recent = Date.now() / 1000;
+      utimesSync(directory, recent, recent);
+      const executable = path.join(directory, "late.EXE");
+      const options = { platform: "win32" as const, env: { PATH: directory, PATHEXT: ".EXE" } };
+      vi.mocked(readdir).mockClear();
+      expect(await isCommandAvailable("late", options)).toBe(false);
+      writeExecutable(executable);
+      utimesSync(directory, recent, recent);
+      expect(await isCommandAvailable("late", options)).toBe(true);
+      expect(readdir).toHaveBeenCalledTimes(2);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("probes Windows short names even when the directory listing omits them", async () => {
+    const directory = tempDir("f5-path-short-name-");
+    const alias = path.join(directory, "MYTOOL~1.CMD");
+    const executable = path.join(directory, "MyToolLongName.cmd");
+    const actualStat = (
+      await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+    ).stat;
+    vi.mocked(stat).mockImplementation((file) => actualStat(file === alias ? executable : file));
+    try {
+      writeExecutable(executable);
+      expect(
+        await resolveExecutable(
+          "MYTOOL~1",
+          { PATH: directory, PATHEXT: ".CMD" },
+          { platform: "win32" },
+        ),
+      ).toBe(alias);
+    } finally {
+      vi.mocked(stat).mockImplementation(actualStat);
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   describe("PATH entry deduplication", () => {
     // Records the files a miss stats, so the walk runs over every PATH entry.
     // Assertions compare against a lookup over the distinct entries rather
     // than a fixed count, so they don't depend on how candidates are spelled.
-    function probedPaths(pathValue: string): string[] {
-      vi.mocked(statSync).mockClear();
+    async function probedPaths(pathValue: string): Promise<string[]> {
+      vi.mocked(stat).mockClear();
       expect(
-        resolveExecutable(
+        await resolveExecutable(
           "definitely-not-installed",
           { PATH: pathValue, PATHEXT: ".COM;.EXE" },
           { platform: "win32", useCache: false },
         ),
       ).toBeNull();
-      return vi.mocked(statSync).mock.calls.map(([filePath]) => String(filePath));
+      return vi.mocked(stat).mock.calls.map(([filePath]) => String(filePath));
     }
 
-    it("visits a repeated PATH directory only once", () => {
+    it("visits a repeated PATH directory only once", async () => {
       const first = tempDir("f5-resolve-command-");
       const second = tempDir("f5-resolve-command-");
-      const distinct = probedPaths([first, second].join(";"));
-      const probed = probedPaths([first, second, first, `"${second}"`].join(";"));
+      const distinct = await probedPaths([first, second].join(";"));
+      const probed = await probedPaths([first, second, first, `"${second}"`].join(";"));
 
       expect(distinct.length).toBeGreaterThan(0);
       expect(probed).toEqual(distinct);
       expect(new Set(probed).size).toBe(probed.length);
     });
 
-    it("still visits PATH entries that differ only in case", () => {
+    it("still visits PATH entries that differ only in case", async () => {
       // Windows can mark a directory case-sensitive, so the two spellings are
       // not provably one directory.
-      const lower = probedPaths("C:\\bin");
-      const upper = probedPaths("C:\\BIN");
+      const lower = await probedPaths("C:\\bin");
+      const upper = await probedPaths("C:\\BIN");
 
       expect(lower.length).toBeGreaterThan(0);
-      expect(probedPaths("C:\\bin;C:\\BIN")).toEqual([...lower, ...upper]);
+      expect(await probedPaths("C:\\bin;C:\\BIN")).toEqual([...lower, ...upper]);
     });
   });
 
-  it("resolves extension-less absolute POSIX executables", () => {
+  it("resolves extension-less absolute POSIX executables", async () => {
     const executable = path.join(tempDir("f5-resolve-command-"), "agent");
     writeExecutable(executable);
-    expect(resolveExecutable(executable, {}, { platform: "linux", useCache: false })).toBe(
+    expect(await resolveExecutable(executable, {}, { platform: "linux", useCache: false })).toBe(
       executable,
     );
   });
@@ -160,7 +204,7 @@ describe("resolveExecutables", () => {
   // POSIX PATH splitting on ":" cannot express a Windows temp directory (C:\...).
   it.skipIf(process.platform === "win32")(
     "returns every PATH match in order, once per directory",
-    () => {
+    async () => {
       const first = tempDir("f5-resolve-all-");
       const second = tempDir("f5-resolve-all-");
       const empty = tempDir("f5-resolve-all-");
@@ -168,18 +212,18 @@ describe("resolveExecutables", () => {
       writeExecutable(path.join(second, "tool"));
       const env = { PATH: [first, empty, second, first].join(":") };
       try {
-        expect(resolveExecutables("tool", env, { platform: "linux" })).toEqual([
+        expect(await resolveExecutables("tool", env, { platform: "linux" })).toEqual([
           path.join(first, "tool"),
           path.join(second, "tool"),
         ]);
-        expect(resolveExecutables("missing", env, { platform: "linux" })).toEqual([]);
+        expect(await resolveExecutables("missing", env, { platform: "linux" })).toEqual([]);
       } finally {
         for (const directory of [first, second, empty]) rmSync(directory, { recursive: true });
       }
     },
   );
 
-  it("takes the first PATHEXT match in each Windows PATH directory", () => {
+  it("takes the first PATHEXT match in each Windows PATH directory", async () => {
     const first = tempDir("f5-resolve-all-");
     const second = tempDir("f5-resolve-all-");
     writeExecutable(path.join(first, "tool.CMD"));
@@ -187,7 +231,7 @@ describe("resolveExecutables", () => {
     writeExecutable(path.join(second, "tool.CMD"));
     const env = { Path: `${first};${second}`, PATHEXT: ".EXE;.CMD" };
     try {
-      expect(resolveExecutables("tool", env, { platform: "win32" })).toEqual([
+      expect(await resolveExecutables("tool", env, { platform: "win32" })).toEqual([
         path.join(first, "tool.EXE"),
         path.join(second, "tool.CMD"),
       ]);
@@ -196,12 +240,14 @@ describe("resolveExecutables", () => {
     }
   });
 
-  it("returns a qualified command only when it is executable", () => {
+  it("returns a qualified command only when it is executable", async () => {
     const executable = path.join(tempDir("f5-resolve-all-"), "agent");
     writeExecutable(executable);
     try {
-      expect(resolveExecutables(executable, {}, { platform: "linux" })).toEqual([executable]);
-      expect(resolveExecutables(`${executable}-missing`, {}, { platform: "linux" })).toEqual([]);
+      expect(await resolveExecutables(executable, {}, { platform: "linux" })).toEqual([executable]);
+      expect(await resolveExecutables(`${executable}-missing`, {}, { platform: "linux" })).toEqual(
+        [],
+      );
     } finally {
       rmSync(path.dirname(executable), { recursive: true });
     }
@@ -214,10 +260,10 @@ describe("preferGitForWindowsBinary", () => {
     (filePath: string) =>
       paths.includes(filePath);
 
-  it("runs the git.exe Git for Windows' launcher would start", () => {
+  it("runs the git.exe Git for Windows' launcher would start", async () => {
     // 2.56+ on x64. The PATHEXT scan returns the extension in PATHEXT's case.
     expect(
-      preferGitForWindowsBinary(
+      await preferGitForWindowsBinary(
         "C:\\Program Files\\Git\\cmd\\git.EXE",
         {},
         files(
@@ -228,14 +274,14 @@ describe("preferGitForWindowsBinary", () => {
     ).toBe("C:\\Program Files\\Git\\ucrt64\\bin\\git.exe");
     // Before 2.56, and the portable build's bin launcher.
     expect(
-      preferGitForWindowsBinary(
+      await preferGitForWindowsBinary(
         "D:\\PortableGit\\bin\\git.exe",
         {},
         files("D:\\PortableGit\\mingw64\\bin\\git.exe"),
       ),
     ).toBe("D:\\PortableGit\\mingw64\\bin\\git.exe");
     expect(
-      preferGitForWindowsBinary(
+      await preferGitForWindowsBinary(
         "C:\\Program Files\\Git\\cmd\\git.exe",
         {},
         files("C:\\Program Files\\Git\\clangarm64\\bin\\git.exe"),
@@ -243,11 +289,11 @@ describe("preferGitForWindowsBinary", () => {
     ).toBe("C:\\Program Files\\Git\\clangarm64\\bin\\git.exe");
   });
 
-  it("keeps the launcher when MSYSTEM is set", () => {
+  it("keeps the launcher when MSYSTEM is set", async () => {
     // The real git.exe only adds its own folders to PATH when MSYSTEM is unset;
     // without them a `#!/bin/sh` hook cannot start.
     expect(
-      preferGitForWindowsBinary(
+      await preferGitForWindowsBinary(
         "C:\\Program Files\\Git\\cmd\\git.exe",
         { MSYSTEM: "MINGW64" },
         files("C:\\Program Files\\Git\\mingw64\\bin\\git.exe"),
@@ -255,26 +301,26 @@ describe("preferGitForWindowsBinary", () => {
     ).toBe("C:\\Program Files\\Git\\cmd\\git.exe");
   });
 
-  it("keeps the launcher when no git.exe sits beside it", () => {
-    expect(preferGitForWindowsBinary("C:\\Program Files\\Git\\cmd\\git.exe", {}, () => false)).toBe(
-      "C:\\Program Files\\Git\\cmd\\git.exe",
-    );
+  it("keeps the launcher when no git.exe sits beside it", async () => {
+    expect(
+      await preferGitForWindowsBinary("C:\\Program Files\\Git\\cmd\\git.exe", {}, () => false),
+    ).toBe("C:\\Program Files\\Git\\cmd\\git.exe");
   });
 
-  it("leaves other gits and other launchers alone", () => {
+  it("leaves other gits and other launchers alone", async () => {
     const everything = () => true;
-    expect(preferGitForWindowsBinary("C:\\Users\\me\\scoop\\shims\\git.exe", {}, everything)).toBe(
-      "C:\\Users\\me\\scoop\\shims\\git.exe",
-    );
-    expect(preferGitForWindowsBinary("C:\\Program Files\\Git\\cmd\\gitk.exe", {}, everything)).toBe(
-      "C:\\Program Files\\Git\\cmd\\gitk.exe",
-    );
+    expect(
+      await preferGitForWindowsBinary("C:\\Users\\me\\scoop\\shims\\git.exe", {}, everything),
+    ).toBe("C:\\Users\\me\\scoop\\shims\\git.exe");
+    expect(
+      await preferGitForWindowsBinary("C:\\Program Files\\Git\\cmd\\gitk.exe", {}, everything),
+    ).toBe("C:\\Program Files\\Git\\cmd\\gitk.exe");
   });
 });
 
 describe("resolveGitExecutable", () => {
-  it("leaves the lookup to the platform on Linux", () => {
-    expect(resolveGitExecutable({ PATH: "/usr/bin" }, "linux")).toBe("git");
+  it("leaves the lookup to the platform on Linux", async () => {
+    expect(await resolveGitExecutable({ PATH: "/usr/bin" }, "linux")).toBe("git");
   });
 
   // The fixtures are real temp files on a `:`-separated PATH, which a Windows
@@ -292,70 +338,76 @@ describe("resolveGitExecutable", () => {
         host.calls += 1;
         return host.located;
       };
-      const resolve = (env: NodeJS.ProcessEnv = { PATH: shimDirectory }) =>
-        resolveGitExecutable(env, "darwin", { macosGitShim: shim, locateXcodeGit });
+      const resolve = async (env: NodeJS.ProcessEnv = { PATH: shimDirectory }) =>
+        await resolveGitExecutable(env, "darwin", { macosGitShim: shim, locateXcodeGit });
       return { host, resolve, shimDirectory, xcodeGit };
     };
 
-    it("runs the git behind the xcrun shim and looks it up once", () => {
+    it("runs the git behind the xcrun shim and looks it up once", async () => {
       const { host, resolve, xcodeGit } = setup();
-      expect(resolve()).toBe(xcodeGit);
-      expect(resolve()).toBe(xcodeGit);
+      const results = await Promise.all(Array.from({ length: 12 }, () => resolve()));
+      expect(results).toEqual(Array(12).fill(xcodeGit));
+      expect(await resolve()).toBe(xcodeGit);
       expect(host.calls).toBe(1);
     });
 
-    it("keeps each locator's answer apart in the cache", () => {
+    it("keeps each locator's answer apart in the cache", async () => {
       const { resolve, shimDirectory, xcodeGit } = setup();
-      expect(resolve()).toBe(xcodeGit);
+      expect(await resolve()).toBe(xcodeGit);
       expect(
-        resolveGitExecutable({ PATH: shimDirectory }, "darwin", {
+        await resolveGitExecutable({ PATH: shimDirectory }, "darwin", {
           macosGitShim: path.join(shimDirectory, "git"),
           locateXcodeGit: () => undefined,
         }),
       ).toBe("git");
     });
 
-    it("keeps git when PATH has another git first", () => {
+    it("keeps git when PATH has another git first", async () => {
       const { host, resolve, shimDirectory } = setup();
       const homebrew = tempDir("f5-homebrew-");
       writeExecutable(path.join(homebrew, "git"));
-      expect(resolve({ PATH: `${homebrew}:${shimDirectory}` })).toBe("git");
+      expect(await resolve({ PATH: `${homebrew}:${shimDirectory}` })).toBe("git");
       expect(host.calls).toBe(0);
     });
 
-    it("keeps git when xcrun fails or names a missing file", () => {
+    it("keeps git when xcrun fails or names a missing file", async () => {
       const failed = setup();
       failed.host.located = undefined;
-      expect(failed.resolve()).toBe("git");
+      expect(await failed.resolve()).toBe("git");
 
       const missing = setup();
       missing.host.located = path.join(tempDir("f5-xcode-"), "git");
-      expect(missing.resolve()).toBe("git");
+      expect(await missing.resolve()).toBe("git");
     });
 
-    it("looks again when the resolved git disappears", () => {
+    it("looks again when the resolved git disappears", async () => {
       const { host, resolve, xcodeGit } = setup();
-      expect(resolve()).toBe(xcodeGit);
+      expect(await resolve()).toBe(xcodeGit);
 
       rmSync(xcodeGit);
       const betaGit = path.join(tempDir("f5-xcode-beta-"), "git");
       writeExecutable(betaGit);
       host.located = betaGit;
-      expect(resolve()).toBe(betaGit);
+      expect(await resolve()).toBe(betaGit);
       expect(host.calls).toBe(2);
     });
   });
 
-  it("spawns a git.exe found on PATH directly, but leaves a git.cmd wrapper to Node", () => {
+  it("spawns a git.exe found on PATH directly, but leaves a git.cmd wrapper to Node", async () => {
     const exeDirectory = tempDir("f5-resolve-git-");
     writeExecutable(path.join(exeDirectory, "git.EXE"));
     expect(
-      resolveGitExecutable({ PATH: exeDirectory, PATHEXT: ".EXE", MSYSTEM: "MINGW64" }, "win32"),
+      await resolveGitExecutable(
+        { PATH: exeDirectory, PATHEXT: ".EXE", MSYSTEM: "MINGW64" },
+        "win32",
+      ),
     ).toBe(path.join(exeDirectory, "git.EXE"));
 
     const cmdDirectory = tempDir("f5-resolve-git-");
     writeExecutable(path.join(cmdDirectory, "git.CMD"));
-    expect(resolveGitExecutable({ PATH: cmdDirectory, PATHEXT: ".CMD;.EXE" }, "win32")).toBe("git");
+    expect(await resolveGitExecutable({ PATH: cmdDirectory, PATHEXT: ".CMD;.EXE" }, "win32")).toBe(
+      "git",
+    );
   });
 });
 
@@ -380,72 +432,100 @@ describe("npmShimExecutable", () => {
   const exists = (filePath: string) => filePath === executable;
   const everything = () => true;
 
-  it("finds the executable npm's shim runs", () => {
-    expect(npmShimExecutable(shimPath, () => NPM_OPENCODE_SHIM, exists)).toBe(executable);
+  it("finds the executable npm's shim runs", async () => {
+    expect(await npmShimExecutable(shimPath, () => NPM_OPENCODE_SHIM, exists)).toBe(executable);
     expect(
-      npmShimExecutable(shimPath.replace(".cmd", ".CMD"), () => NPM_OPENCODE_SHIM, exists),
+      await npmShimExecutable(shimPath.replace(".cmd", ".CMD"), () => NPM_OPENCODE_SHIM, exists),
     ).toBe(executable);
   });
 
-  it("keeps a shim that does more than run the executable", () => {
+  it("keeps a shim that does more than run the executable", async () => {
     const withSetting = NPM_OPENCODE_SHIM.replace(
       "SETLOCAL",
       "SETLOCAL\r\nSET OPENCODE_CONFIG=C:\\x",
     );
-    expect(npmShimExecutable(shimPath, () => withSetting, exists)).toBeUndefined();
+    expect(await npmShimExecutable(shimPath, () => withSetting, exists)).toBeUndefined();
     const nodeScript = NPM_OPENCODE_SHIM.replace(
       '"%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe"   %*',
       '"%_prog%"  "%dp0%\\node_modules\\opencode-ai\\bin\\opencode.js" %*',
     );
-    expect(npmShimExecutable(shimPath, () => nodeScript, everything)).toBeUndefined();
+    expect(await npmShimExecutable(shimPath, () => nodeScript, everything)).toBeUndefined();
   });
 
-  it("keeps a shim CMD would read differently", () => {
+  it("keeps a shim CMD would read differently", async () => {
     // CMD keeps trailing characters in an unquoted `SET` value, so these point
     // `dp0`, and with it the executable, somewhere else.
     for (const suffix of ["\u00a0", "\t", " "]) {
       const altered = NPM_OPENCODE_SHIM.replace("SET dp0=%~dp0", `SET dp0=%~dp0${suffix}`);
-      expect(npmShimExecutable(shimPath, () => altered, everything)).toBeUndefined();
+      expect(await npmShimExecutable(shimPath, () => altered, everything)).toBeUndefined();
     }
     const nonBreakingSeparator = NPM_OPENCODE_SHIM.replace(
       'opencode.exe"   %*',
       'opencode.exe"\u00a0%*',
     );
-    expect(npmShimExecutable(shimPath, () => nonBreakingSeparator, everything)).toBeUndefined();
+    expect(
+      await npmShimExecutable(shimPath, () => nonBreakingSeparator, everything),
+    ).toBeUndefined();
     const indented = NPM_OPENCODE_SHIM.replace("SETLOCAL", "  SETLOCAL");
-    expect(npmShimExecutable(shimPath, () => indented, everything)).toBeUndefined();
+    expect(await npmShimExecutable(shimPath, () => indented, everything)).toBeUndefined();
   });
 
-  it("keeps the shim when its executable is missing or it is not a .cmd", () => {
+  it("keeps the shim when its executable is missing or it is not a .cmd", async () => {
     expect(
-      npmShimExecutable(
+      await npmShimExecutable(
         shimPath,
         () => NPM_OPENCODE_SHIM,
         () => false,
       ),
     ).toBeUndefined();
-    expect(npmShimExecutable(shimPath, () => undefined, everything)).toBeUndefined();
+    expect(await npmShimExecutable(shimPath, () => undefined, everything)).toBeUndefined();
     expect(
-      npmShimExecutable(shimPath.replace(".cmd", ".bat"), () => NPM_OPENCODE_SHIM, everything),
+      await npmShimExecutable(
+        shimPath.replace(".cmd", ".bat"),
+        () => NPM_OPENCODE_SHIM,
+        everything,
+      ),
     ).toBeUndefined();
   });
 });
 
 describe("resolveInvocation", () => {
-  it("passes POSIX invocations through unchanged", () => {
-    expect(resolveInvocation("agent", ["--version"], {}, { platform: "linux" })).toEqual({
+  it("waits for asynchronous filesystem discovery before resolving a Windows launch", async () => {
+    const directory = tempDir("f5-async-command-");
+    const executable = path.join(directory, "agent.EXE");
+    try {
+      writeExecutable(executable);
+      const info = await stat(executable);
+      const { promise, resolve } = Promise.withResolvers<typeof info>();
+      vi.mocked(stat)
+        .mockClear()
+        .mockImplementationOnce(() => promise);
+      const pending = resolveInvocation(executable, [], {}, { platform: "win32" });
+      try {
+        expect(stat).toHaveBeenCalledExactlyOnceWith(executable);
+      } finally {
+        resolve(info);
+      }
+      await expect(pending).resolves.toEqual({ file: executable, args: [], kind: "native" });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("passes POSIX invocations through unchanged", async () => {
+    expect(await resolveInvocation("agent", ["--version"], {}, { platform: "linux" })).toEqual({
       file: "agent",
       args: ["--version"],
       kind: "native",
     });
   });
 
-  it("runs native Windows executables directly", () => {
+  it("runs native Windows executables directly", async () => {
     const directory = tempDir("f5-resolve-command-");
     const executable = path.join(directory, "agent.EXE");
     writeExecutable(executable);
     expect(
-      resolveInvocation(
+      await resolveInvocation(
         "agent",
         ["--version"],
         { PATH: directory, PATHEXT: ".EXE" },
@@ -454,7 +534,7 @@ describe("resolveInvocation", () => {
     ).toEqual({ file: executable, args: ["--version"], kind: "native" });
   });
 
-  it("runs JavaScript entries and standard npm cmd shims through node.exe", () => {
+  it("runs JavaScript entries and standard npm cmd shims through node.exe", async () => {
     const directory = tempDir("f5 resolve command (shim) & ");
     const node = path.join(directory, "node.exe");
     const script = path.join(directory, "node_modules", "agent", "cli.js");
@@ -476,7 +556,7 @@ describe("resolveInvocation", () => {
     );
     const env = { PATH: directory, PATHEXT: ".CMD;.EXE" };
 
-    const directAbsolute = resolveInvocation(script, ["a b"], env, {
+    const directAbsolute = await resolveInvocation(script, ["a b"], env, {
       platform: "win32",
       useCache: false,
     });
@@ -486,7 +566,7 @@ describe("resolveInvocation", () => {
     });
     expect(directAbsolute.file.toLowerCase()).toBe(node.toLowerCase());
 
-    const directFromPath = resolveInvocation("direct.js", ["a b"], env, {
+    const directFromPath = await resolveInvocation("direct.js", ["a b"], env, {
       platform: "win32",
       useCache: false,
     });
@@ -496,7 +576,7 @@ describe("resolveInvocation", () => {
     });
     expect(directFromPath.file.toLowerCase()).toBe(node.toLowerCase());
 
-    const npmShim = resolveInvocation(
+    const npmShim = await resolveInvocation(
       "agent",
       ['otel.exporter="none"', "mcp_servers={x={}}"],
       env,
@@ -509,7 +589,7 @@ describe("resolveInvocation", () => {
     expect(npmShim.file.toLowerCase()).toBe(node.toLowerCase());
   });
 
-  it("resolves relative shims against the child cwd and prefers their adjacent node.exe", () => {
+  it("resolves relative shims against the child cwd and prefers their adjacent node.exe", async () => {
     const directory = tempDir("f5 relative shim & ");
     const node = path.join(directory, "node.exe");
     const script = path.join(directory, "cli.js");
@@ -529,7 +609,7 @@ describe("resolveInvocation", () => {
     );
 
     expect(
-      resolveInvocation(
+      await resolveInvocation(
         ".\\agent",
         ["value & literal"],
         { PATH: "", PATHEXT: ".CMD" },
@@ -546,14 +626,14 @@ describe("resolveInvocation", () => {
     });
   });
 
-  it("runs the executable behind an npm shim directly", () => {
+  it("runs the executable behind an npm shim directly", async () => {
     const directory = tempDir("f5 npm exe shim & ");
     const executable = path.join(directory, "node_modules", "opencode-ai", "bin", "opencode.exe");
     writeExecutable(executable);
     writeFileSync(path.join(directory, "opencode.CMD"), NPM_OPENCODE_SHIM);
 
     expect(
-      resolveInvocation(
+      await resolveInvocation(
         "opencode",
         ["serve", "--port=4096"],
         { PATH: directory, PATHEXT: ".CMD" },
@@ -562,29 +642,29 @@ describe("resolveInvocation", () => {
     ).toEqual({ file: executable, args: ["serve", "--port=4096"], kind: "native" });
   });
 
-  it.each([".bat", ".ps1"])("rejects unsupported %s scripts", (extension) => {
+  it.each([".bat", ".ps1"])("rejects unsupported %s scripts", async (extension) => {
     const directory = tempDir("f5-resolve-command-");
     writeExecutable(path.join(directory, `agent${extension}`));
-    expect(() =>
+    await expect(
       resolveInvocation(
         "agent",
         [],
         { PATH: directory, PATHEXT: extension },
         { platform: "win32", useCache: false },
       ),
-    ).toThrow(CommandNotFoundError);
+    ).rejects.toThrow(CommandNotFoundError);
   });
 
-  it("rejects malformed command shims and missing commands with typed errors", () => {
+  it("rejects malformed command shims and missing commands with typed errors", async () => {
     const directory = tempDir("f5-resolve-command-");
     writeFileSync(path.join(directory, "agent.cmd"), "@echo off\r\necho nope %*\r\n");
     const env = { PATH: directory, PATHEXT: ".CMD" };
-    expect(() =>
+    await expect(
       resolveInvocation("agent", [], env, { platform: "win32", useCache: false }),
-    ).toThrow(CommandNotFoundError);
-    expect(() =>
+    ).rejects.toThrow(CommandNotFoundError);
+    await expect(
       resolveInvocation("missing", [], env, { platform: "win32", useCache: false }),
-    ).toThrow(CommandNotFoundError);
+    ).rejects.toThrow(CommandNotFoundError);
   });
 
   it.skipIf(process.platform !== "win32")(
@@ -616,7 +696,7 @@ describe("resolveInvocation", () => {
         'mcp_servers={demo={command="node",args=["a b"]}}',
       ];
       const environment = { ...process.env, PATH: `${directory};${process.env.PATH ?? ""}` };
-      const invocation = resolveInvocation(shim, args, environment);
+      const invocation = await resolveInvocation(shim, args, environment);
       const raw = spawnSync(invocation.file, [...invocation.args], {
         env: environment,
         encoding: "utf8",

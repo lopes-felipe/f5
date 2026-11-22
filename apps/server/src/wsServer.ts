@@ -1122,7 +1122,7 @@ export const createServer = Effect.fn(function* (
     ],
     ...(serverConfig.trustedProxies ? { trustedProxies: serverConfig.trustedProxies } : {}),
   });
-  const availableEditors = resolveAvailableEditors();
+  const availableEditors = yield* Effect.promise(() => resolveAvailableEditors());
 
   const gitManager = yield* GitManager;
   const terminalManager = yield* TerminalManager;

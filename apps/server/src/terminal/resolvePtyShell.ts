@@ -4,7 +4,7 @@ export function resolvePtyShell(input: {
   readonly shell: string;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
-}): string | null {
+}): Promise<string | null> {
   return resolveExecutable(input.shell, input.env, { cwd: input.cwd });
 }
 

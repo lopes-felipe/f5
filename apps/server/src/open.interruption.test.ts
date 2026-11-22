@@ -32,18 +32,20 @@ it.each([
 ] as const)(
   "passes the Explorer argument to a %s launcher for %s",
   async (kind, target, verbatim, arg) => {
-    vi.spyOn(commandResolution, "isCommandAvailable").mockReturnValue(true);
-    vi.spyOn(commandResolution, "resolveInvocation").mockImplementation((_command, args) => ({
+    vi.spyOn(commandResolution, "isCommandAvailable").mockResolvedValue(true);
+    vi.spyOn(commandResolution, "resolveInvocation").mockImplementation(async (_command, args) => ({
       file: "resolved-launcher",
       args: [...args],
       kind,
     }));
     const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
-    vi.mocked(spawn).mockReturnValue(child as never);
+    vi.mocked(spawn).mockImplementation(() => {
+      queueMicrotask(() => child.emit("spawn"));
+      return child as never;
+    });
     const pending = Effect.runPromise(
       launchDetached(resolveFileManagerRevealLaunch(target, "win32"), false),
     );
-    child.emit("spawn");
     await pending;
     expect(spawn).toHaveBeenCalledExactlyOnceWith(
       "resolved-launcher",
@@ -56,12 +58,18 @@ it.each([
 it("clears the handoff timer and listeners on interruption without killing the detached app", async () => {
   vi.useFakeTimers();
   const child = Object.assign(new EventEmitter(), { unref: vi.fn(), kill: vi.fn() });
-  vi.mocked(spawn).mockReturnValue(child as never);
+  const spawned = new Promise<void>((resolve) => {
+    vi.mocked(spawn).mockImplementation(() => {
+      resolve();
+      return child as never;
+    });
+  });
   const abort = new AbortController();
   const pending = Effect.runPromise(launchDetached({ command: process.execPath, args: [] }), {
     signal: abort.signal,
   });
   const rejected = expect(pending).rejects.toThrow();
+  await spawned;
   child.emit("spawn");
   expect(vi.getTimerCount()).toBe(1);
   abort.abort();
