@@ -36,10 +36,13 @@ jq -n --arg version "$image_version" --arg source "$source" --arg base "$base_ur
   '{imageVersion: ($version | tonumber), source: $source, base: $base, aptSnapshot: $snapshot}' \
   >"$work/image-info.json"
 
+# Plain HTTP, as Debian ships by default: apt verifies every package against the InRelease
+# files signed with the archive keyring in the base image, so TLS adds no integrity. HTTPS
+# failed certificate checks inside the libguestfs appliance.
 cat >"$work/sources.list" <<EOF
-deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${snapshot}/ trixie main
-deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${snapshot}/ trixie-updates main
-deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${snapshot}/ trixie-security main
+deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${snapshot}/ trixie main
+deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${snapshot}/ trixie-updates main
+deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${snapshot}/ trixie-security main
 EOF
 
 export LIBGUESTFS_BACKEND=direct
@@ -53,7 +56,8 @@ rootfs="$here/rootfs"
 virt-customize "${verbose[@]}" -a "$work/image.qcow2" --network \
   --run-command 'rm -f /etc/apt/sources.list.d/*' \
   --upload "$work/sources.list:/etc/apt/sources.list" \
-  --run-command 'apt-get update' \
+  --run-command 'date -u' \
+  --run-command 'apt-get update --error-on=any' \
   --run-command "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $(echo "$packages" | tr , ' ')" \
   --run-command 'apt-get clean && rm -rf /var/lib/apt/lists/*' \
   --mkdir /opt/f5/bin \
