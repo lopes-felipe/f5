@@ -48,6 +48,58 @@ async function loadHooks(commands: ReadonlyArray<SkillCommand> = []) {
   return handlers;
 }
 
+describe("Pi orchestration prompt section", () => {
+  it("preserves existing sections and reconciles tool discovery", async () => {
+    const bridge = await loadMcpBridge({ modern: true, toolSearchAvailable: true });
+    const hook = bridge.handlers.get("before_agent_start")!;
+    const sections: Record<string, string> = { existing: "Other extension guidance" };
+    const event = { systemPrompt: "base", systemPromptOptions: { sections } };
+    const ctx = { model: { api: "openai-completions" }, ui: { notify: assert.fail } };
+
+    assert.isUndefined(await hook(event, ctx));
+    assert.equal(event.systemPrompt, "base");
+    assert.include(bridge.getActiveTools(), "mcp__f5__preview_snapshot");
+    const guidance = sections.t3_code_orchestration!;
+    assert.include(guidance, "thread_status");
+    assert.include(guidance, "Show data trends and comparisons with html_render");
+
+    assert.isUndefined(await hook(event, ctx));
+    assert.deepEqual(sections, {
+      existing: "Other extension guidance",
+      t3_code_orchestration: guidance,
+    });
+  });
+
+  it.each([undefined, {}, { sections: null }])(
+    "appends guidance when Pi provides no section map (%j)",
+    async (systemPromptOptions) => {
+      const bridge = await loadMcpBridge();
+      const hook = bridge.handlers.get("before_agent_start")!;
+      const event = {
+        systemPrompt: "base",
+        ...(systemPromptOptions === undefined ? {} : { systemPromptOptions }),
+      };
+      const result = await hook(event, { ui: { notify: assert.fail } });
+      assert.isTrue(result?.systemPrompt.startsWith("base\n\n"));
+      assert.include(result?.systemPrompt, "thread_status");
+    },
+  );
+
+  it("appends guidance to a prompt forced by an earlier extension", async () => {
+    const bridge = await loadMcpBridge();
+    const hook = bridge.handlers.get("before_agent_start")!;
+    const sections = { existing: "Other extension guidance" };
+    const event = {
+      systemPrompt: "forced",
+      systemPromptOptions: { sections, forceSystemPrompt: "forced" },
+    };
+    const result = await hook(event, { ui: { notify: assert.fail } });
+    assert.isTrue(result?.systemPrompt.startsWith("forced\n\n"));
+    assert.include(result?.systemPrompt, "thread_status");
+    assert.deepEqual(sections, { existing: "Other extension guidance" });
+  });
+});
+
 describe("Pi MCP tool results", () => {
   it("returns mixed screenshot blocks and typed script output without repeating structured text", async () => {
     const content = [
@@ -147,7 +199,7 @@ describe("Pi MCP tool exposure", () => {
       { systemPrompt: "Pi system prompt" },
       discoveryContext,
     );
-    assert.include(withCharts.systemPrompt, chart);
+    assert.include(withCharts?.systemPrompt, chart);
     const renderOnly = await loadMcpBridge({
       modern: true,
       toolSearchAvailable: true,
@@ -158,8 +210,8 @@ describe("Pi MCP tool exposure", () => {
       { systemPrompt: "Pi system prompt" },
       discoveryContext,
     );
-    assert.include(withoutCharts.systemPrompt, "thread_status");
-    assert.notInclude(withoutCharts.systemPrompt, chart);
+    assert.include(withoutCharts?.systemPrompt, "thread_status");
+    assert.notInclude(withoutCharts?.systemPrompt, chart);
   });
 
   it("keeps orchestration direct and optional bridge tools discoverable on modern Pi", async () => {
@@ -168,7 +220,7 @@ describe("Pi MCP tool exposure", () => {
     const start = bridge.handlers.get("before_agent_start");
     assert.isDefined(start);
     const prompt = await start!({ systemPrompt: "Pi system prompt" }, discoveryContext);
-    assert.include(prompt.systemPrompt, "thread_status");
+    assert.include(prompt?.systemPrompt, "thread_status");
     assert.equal(bridge.servers.length, 0);
     assert.equal(bridge.tools.length, 4);
     assert.deepEqual(bridge.getActiveTools(), ["read", "tool_search"]);
