@@ -5,9 +5,11 @@ import { WorkspaceMediaView } from "./WorkspaceMediaView";
 import { applyWatchedPathsChanged } from "../lib/workspaceWatch";
 
 const issueAssetUrl = vi.hoisted(() =>
-  vi.fn(async () => [
-    { url: "/api/workspace-assets/security-fixture/index.html", fileRevision: "one" },
-  ]),
+  vi.fn(
+    async (): Promise<Array<{ url: string; fileRevision: string } | null>> => [
+      { url: "/api/workspace-assets/security-fixture/index.html", fileRevision: "one" },
+    ],
+  ),
 );
 
 vi.mock("../nativeApi", async (importOriginal) => ({
@@ -60,8 +62,10 @@ it("keeps the same PDF document on grant renewal and reloads after an edit", asy
   const edited = "/api/workspace-assets/edited/document.pdf";
   issueAssetUrl
     .mockResolvedValueOnce([{ url: original, fileRevision: "one" }])
+    .mockRejectedValueOnce(new Error("Disconnected"))
     .mockResolvedValueOnce([{ url: renewed, fileRevision: "one" }])
-    .mockResolvedValueOnce([{ url: edited, fileRevision: "two" }]);
+    .mockResolvedValueOnce([{ url: edited, fileRevision: "two" }])
+    .mockResolvedValueOnce([null]);
   const view = await render(
     <QueryClientProvider client={client}>
       <WorkspaceMediaView name="document.pdf" cwd={cwd} projectId={"project" as never} />
@@ -72,6 +76,7 @@ it("keeps the same PDF document on grant renewal and reloads after an edit", asy
     await vi.waitFor(() => expect(frame()?.getAttribute("src")).toBe(location.origin + original));
     const opened = frame();
     await client.refetchQueries();
+    await client.refetchQueries();
     expect(frame()).toBe(opened);
     expect(frame()?.getAttribute("src")).toBe(location.origin + original);
     applyWatchedPathsChanged(client, {
@@ -81,6 +86,17 @@ it("keeps the same PDF document on grant renewal and reloads after an edit", asy
     });
     await vi.waitFor(() => expect(frame()?.getAttribute("src")).toBe(location.origin + edited));
     expect(frame()).not.toBe(opened);
+    applyWatchedPathsChanged(client, {
+      cwd,
+      degraded: false,
+      changes: [{ relativePath: "document.pdf", kind: "file", change: "deleted", revision: 2 }],
+    });
+    await vi.waitFor(() => {
+      expect(view.container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Unable to open this file",
+      );
+      expect(frame()).toBeNull();
+    });
   } finally {
     await view.unmount();
     client.clear();

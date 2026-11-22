@@ -9,6 +9,7 @@ import {
   type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
+import { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { afterEach, describe, expect, it } from "vitest";
@@ -48,6 +49,16 @@ const unchangedRule = {
 };
 /** Past the default 24-hour wait of the content rules. */
 const idleSince = () => new Date(Date.now() - 2 * DAY_MS).toISOString();
+
+interface UsageRecoveryScenario {
+  name: string;
+  enabled?: boolean;
+  override?: boolean;
+  past?: boolean;
+  snoozed?: boolean;
+  state?: "revoked" | "cancelled";
+  protect?: boolean;
+}
 
 describe("worktree cleanup rules", () => {
   const rules = { afterDays: 7, onMerge: true, onDelete: true, unchanged: false, minIdleHours: 24 };
@@ -446,19 +457,58 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
     );
   });
 
-  it.each(["automatic resume", "snooze", "expired reset", "disabled"] as const)(
-    "checks usage-limit recovery before cleaning a shared worktree (%s)",
-    async (recovery) => {
+  it.each([
+    { name: "automatic resume", enabled: true, protect: true },
+    { name: "snooze", snoozed: true, protect: true },
+    { name: "expired snooze", past: true, snoozed: true },
+    { name: "automatic resume disabled" },
+    { name: "past reset with no ledger", enabled: true, past: true },
+    {
+      name: "delayed automatic resume",
+      enabled: true,
+      past: true,
+      state: "revoked",
+      protect: true,
+    },
+    { name: "cancelled continuation", enabled: true, past: true, state: "cancelled" },
+    {
+      name: "project enables automatic resume",
+      override: true,
+      past: true,
+      state: "revoked",
+      protect: true,
+    },
+    {
+      name: "project disables automatic resume",
+      enabled: true,
+      override: false,
+      past: true,
+      state: "revoked",
+    },
+  ] satisfies UsageRecoveryScenario[])(
+    "checks usage-limit recovery before cleaning a shared worktree ($name)",
+    async (scenario: UsageRecoveryScenario) => {
       await Effect.runPromise(
         withWorktree(
-          { ...unchangedRule, autoResumeUsageLimitedThreads: recovery === "automatic resume" },
+          {
+            ...unchangedRule,
+            autoResumeUsageLimitedThreads: scenario.enabled ?? false,
+            ...(scenario.override === undefined
+              ? {}
+              : {
+                  projectSettingsOverrides: {
+                    ["project-1" as ProjectId]: {
+                      autoResumeUsageLimitedThreads: scenario.override,
+                    },
+                  },
+                }),
+          },
           ({ worker, world, worktreePath }) =>
             Effect.gen(function* () {
               const nextHour = new Date(Date.now() + HOUR_MS).toISOString();
-              const resetsAt =
-                recovery === "expired reset"
-                  ? new Date(Date.now() - HOUR_MS).toISOString()
-                  : nextHour;
+              const resetsAt = scenario.past
+                ? new Date(Date.now() - HOUR_MS).toISOString()
+                : nextHour;
               const waitingThread = thread({
                 id: "waiting-thread",
                 projectId: "project-1",
@@ -467,10 +517,21 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
                 lastInteractionAt: idleSince(),
               });
               const providerInstanceId = ProviderInstanceId.makeUnsafe("codex");
+              const turnId = TurnId.makeUnsafe("interrupted-turn");
+              if (scenario.state) {
+                world.usageResumeLedgers.set(waitingThread.id, {
+                  limitKey: usageLimitFailureKey({ providerInstanceId, turnId })!,
+                  state: scenario.state,
+                  autoEligibleAtFailure: 1,
+                  source: "auto",
+                  autoCount: 0,
+                  itemId: null,
+                  notBefore: null,
+                });
+              }
               world.threads.push({
                 ...waitingThread,
-                snoozedUntil:
-                  recovery === "snooze" || recovery === "expired reset" ? nextHour : null,
+                snoozedUntil: scenario.snoozed ? nextHour : null,
                 session: {
                   threadId: waitingThread.id,
                   status: "error",
@@ -485,7 +546,7 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
                   updatedAt: idleSince(),
                   usageLimit: {
                     providerInstanceId,
-                    turnId: TurnId.makeUnsafe("interrupted-turn"),
+                    turnId,
                     deliveryId: null,
                     resetsAt,
                     resetSource: "provider",
@@ -495,12 +556,14 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
                 },
               });
               const dryRun = yield* worker.dryRun;
-              if (recovery === "disabled" || recovery === "expired reset") {
-                expect(dryRun.targets[0]?.action).toBe("remove");
+              if (!scenario.protect) {
+                expect(dryRun.targets.map(({ action }) => action)).toEqual(["remove", "remove"]);
               } else {
                 expect(dryRun.targets).toHaveLength(2);
                 expect(
-                  dryRun.targets.every(({ reason }) => reason.includes("usage limit to reset")),
+                  dryRun.targets.every(({ reason }) =>
+                    reason.includes("waiting to resume after a usage limit"),
+                  ),
                 ).toBe(true);
                 expect((yield* worker.runOnce).every(({ action }) => action === "skip")).toBe(true);
                 expect(yield* Effect.promise(() => exists(worktreePath))).toBe(true);

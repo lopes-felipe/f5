@@ -89,7 +89,7 @@ export function WorkspaceMediaView({
         identity: assetIdentity,
         files: [{ relativePath, grant: kind === "html" ? "html-document" : "file" }],
       });
-      if (!results[0]) throw new Error("File is unavailable");
+      if (!results[0]) return null;
       return {
         url: `${getServerHttpOrigin()}${results[0].url}`,
         fileRevision: results[0].fileRevision,
@@ -98,7 +98,7 @@ export function WorkspaceMediaView({
     staleTime: 25 * 60 * 1000,
     refetchInterval: 25 * 60 * 1000,
   });
-  if (grant.isError && !(pdf && grant.data))
+  if (grant.data === null || (grant.isError && (!pdf || !grant.data)))
     return (
       <div role="alert" className="p-4">
         Unable to open this file. <button onClick={() => void grant.refetch()}>Retry</button>

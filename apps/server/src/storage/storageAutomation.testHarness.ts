@@ -21,7 +21,10 @@ import { ServerConfig } from "../config.ts";
 import { ProfileRegistryStore } from "../profiles/ProfileRegistryStore.ts";
 import { GitCoreTestLive as GitCoreLive, WorktreePreparationsTestLive } from "../git/testLayers.ts";
 import { GitServiceLive } from "../git/Layers/GitService.ts";
-import { NextTurnQueueStore } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
+import {
+  NextTurnQueueStore,
+  type UsageResumeLedger,
+} from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
@@ -44,6 +47,7 @@ export interface AutomationWorld {
   terminals: TerminalSessionSummary[];
   sessions: Array<{ threadId: string; cwd: string; status: string }>;
   queuedThreadIds: Set<string>;
+  usageResumeLedgers: Map<string, UsageResumeLedger>;
   queueStates: Map<
     string,
     {
@@ -75,6 +79,7 @@ export const makeWorld = (): AutomationWorld => ({
   terminals: [],
   sessions: [],
   queuedThreadIds: new Set(),
+  usageResumeLedgers: new Map(),
   queueStates: new Map(),
   pendingTurnStarts: new Set(),
   readModelReads: 0,
@@ -260,6 +265,8 @@ export function automationLayer(
           worktreeBlockToken: queueState(threadId).worktreeBlockToken,
         })),
       ),
+    getUsageResumeLedger: (threadId: ThreadId) =>
+      Effect.sync(() => world.usageResumeLedgers.get(threadId) ?? null),
     listByThread: (threadId: string) =>
       Effect.sync(() => ({
         items: world.queuedThreadIds.has(threadId) ? [{}] : [],

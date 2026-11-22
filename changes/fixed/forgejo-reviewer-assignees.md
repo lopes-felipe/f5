@@ -1,1 +1,1 @@
-- The Forgejo and Gitea reviewer picker loads the repository's eligible assignees in a single request and shows each candidate once.
+- The Forgejo and Gitea reviewer picker loads the full list of eligible assignees, including people with access through an organization team. It excludes the pull request author.

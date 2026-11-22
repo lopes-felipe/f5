@@ -1,5 +1,5 @@
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
-import { canResumeAtUsageReset, USAGE_RESUME_BUFFER_MS } from "@t3tools/shared/usageLimit";
+import { canResumeAtUsageReset, usageLimitFailureKey } from "@t3tools/shared/usageLimit";
 import { readManagedWorktreesDirectories } from "../worktreesDirectory.ts";
 import { WorkspaceTransitions } from "../persistence/Services/WorkspaceTransitions.ts";
 import { sameMoveSnapshot, isMoveCopySnapshot, type MoveSnapshot } from "../git/moveSnapshot.ts";
@@ -44,7 +44,10 @@ import {
   type IgnoredFilesRemovalPolicy,
 } from "../git/worktreeIgnoredFiles.ts";
 export { blockingIgnoredEntries } from "../git/worktreeIgnoredFiles.ts";
-import { NextTurnQueueStore } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
+import {
+  NextTurnQueueStore,
+  usageResumeAllowsAuto,
+} from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../terminal/Services/Manager.ts";
@@ -568,26 +571,38 @@ const worktreeHasUsageLimitRecovery = Effect.fn("worktreeHasUsageLimitRecovery")
     ? yield* settingsService.value.getSettings.pipe(Effect.orElseSucceed(() => null))
     : null;
   const now = Date.now();
-  // A reset can be known before the dispatcher creates a queue claim.
-  // Once queued, the continuation is protected by the queue checks.
-  return waiting.some((thread) => {
+  const queue = yield* NextTurnQueueStore;
+  for (const thread of waiting) {
     const limit = thread.session?.usageLimit;
-    if (!limit?.resetsAt) return false;
-    const resetAt = Date.parse(limit.resetsAt);
-    if (resetAt > now && thread.snoozedUntil && Date.parse(thread.snoozedUntil) > now) return true;
-    return (
-      !!limit.turnId &&
-      !limit.deliveryId &&
-      (settings?.projectSettingsOverrides[thread.projectId]?.autoResumeUsageLimitedThreads ??
-        settings?.autoResumeUsageLimitedThreads ??
-        true) &&
-      resetAt + USAGE_RESUME_BUFFER_MS > now &&
-      canResumeAtUsageReset(limit.resetsAt, now)
-    );
-  });
+    if (!limit?.resetsAt) continue;
+    const future = Date.parse(limit.resetsAt) > now;
+    if (future && thread.snoozedUntil && Date.parse(thread.snoozedUntil) > now) return true;
+    const enabled =
+      settings?.projectSettingsOverrides[thread.projectId]?.autoResumeUsageLimitedThreads ??
+      settings?.autoResumeUsageLimitedThreads ??
+      true;
+    if (
+      !enabled ||
+      !limit.turnId ||
+      limit.deliveryId ||
+      !canResumeAtUsageReset(limit.resetsAt, now)
+    )
+      continue;
+    const ledger = yield* queue.getUsageResumeLedger(thread.id).pipe(Effect.result);
+    if (ledger._tag === "Failure") return true;
+    const current = ledger.success;
+    // Before the reset the dispatcher can register a new failure. After the
+    // reset it requires an existing entry for this failure to schedule a retry.
+    if (current && current.limitKey === usageLimitFailureKey(limit)) {
+      if (usageResumeAllowsAuto(current)) return true;
+    } else if (future) {
+      return true;
+    }
+  }
+  return false;
 });
 
-const USAGE_LIMIT_CLEANUP_BLOCK = "a thread is waiting for its usage limit to reset";
+const USAGE_LIMIT_CLEANUP_BLOCK = "a thread is waiting to resume after a usage limit";
 
 const ignoredRemovalPolicy = (policy: WorktreeRemovalPolicy): IgnoredFilesRemovalPolicy =>
   policy.kind === "manual"
