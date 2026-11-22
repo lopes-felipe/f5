@@ -265,7 +265,11 @@ function canonicalTarget(target: string): string | undefined {
   const tail: string[] = [];
   for (let depth = 0; depth < 256; depth++) {
     try {
-      return NodePath.join(NodeFS.realpathSync.native(existing), ...tail.toReversed());
+      const resolved = NodeFS.realpathSync.native(existing);
+      // Missing components can only be appended under a directory. Windows reports a file used
+      // as a directory as ENOENT rather than ENOTDIR, so check the type explicitly.
+      if (tail.length > 0 && !NodeFS.statSync(resolved).isDirectory()) return undefined;
+      return NodePath.join(resolved, ...tail.toReversed());
     } catch (error) {
       if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") return undefined;
       const parent = NodePath.dirname(existing);
