@@ -16,14 +16,16 @@ const advanceUntilDone = <A, E>(fiber: Fiber.Fiber<A, E>) =>
     return yield* Fiber.join(fiber);
   });
 
-const renameError = (code: string, path: string) =>
+const fileSystemError = (method: string, code: string, path: string) =>
   PlatformError.systemError({
     _tag: "Unknown",
     module: "FileSystem",
-    method: "rename",
+    method,
     pathOrDescriptor: path,
-    cause: Object.assign(new Error(`${code}, rename`), { code }),
+    cause: Object.assign(new Error(`${code}, ${method}`), { code }),
   });
+
+const renameError = (code: string, path: string) => fileSystemError("rename", code, path);
 
 it.layer(NodeServices.layer)("Windows atomic writes", (it) => {
   it.effect("waits out a scanner holding the target, then replaces it", () =>
@@ -197,6 +199,128 @@ it.layer(NodeServices.layer)("Windows atomic writes", (it) => {
 });
 
 it.layer(NodeServices.layer)("atomic writes", (it) => {
+  it.effect.each(process.platform === "win32" ? [] : [undefined, 0o600, 0o644, 0o444, 0o000])(
+    "preserves the existing mode %s or creates an owner-only file",
+    (existingMode) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "f5-atomic-" });
+        const target = path.join(directory, "settings.json");
+        if (existingMode !== undefined) {
+          yield* fs.writeFileString(target, "old");
+          yield* fs.chmod(target, existingMode);
+        }
+        yield* Effect.acquireRelease(
+          Effect.sync(() => process.umask(0o400)),
+          (previous) => Effect.sync(() => process.umask(previous)),
+        );
+
+        yield* writeFileStringAtomically({ filePath: target, contents: "saved" });
+
+        assert.strictEqual((yield* fs.stat(target)).mode & 0o777, existingMode ?? 0o600);
+        yield* fs.chmod(target, 0o600);
+        assert.strictEqual(yield* fs.readFileString(target), "saved");
+      }),
+  );
+
+  it.effect("syncs the file before renaming and the parent directory afterward", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "f5-atomic-" });
+      const target = path.join(directory, "settings.json");
+      const events: string[] = [];
+      yield* writeFileStringAtomically({ filePath: target, contents: "saved" }).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          open: (filePath, options) =>
+            fs.open(filePath, options).pipe(
+              Effect.map(
+                (file): FileSystem.File =>
+                  Object.create(file, {
+                    sync: {
+                      value: file.sync.pipe(
+                        Effect.tap(() =>
+                          Effect.sync(() =>
+                            events.push(filePath === directory ? "directory" : "file"),
+                          ),
+                        ),
+                      ),
+                    },
+                  }),
+              ),
+            ),
+          rename: (from, to) =>
+            fs.rename(from, to).pipe(Effect.tap(() => Effect.sync(() => events.push("rename")))),
+        }),
+      );
+      assert.deepStrictEqual(
+        events,
+        process.platform === "win32" ? ["file", "rename"] : ["file", "rename", "directory"],
+      );
+    }),
+  );
+
+  it.effect.each(
+    process.platform === "win32"
+      ? []
+      : [
+          { syncTarget: "file", code: "EIO", fails: true },
+          { syncTarget: "directory", code: "EIO", fails: true },
+          { syncTarget: "directory", code: "ENOTSUP", fails: false },
+        ],
+  )("handles $code syncing the $syncTarget", ({ syncTarget, code, fails }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "f5-atomic-" });
+      const target = path.join(directory, "settings.json");
+      yield* fs.writeFileString(target, "old");
+      const result = yield* writeFileStringAtomically({ filePath: target, contents: "saved" }).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          open: (filePath, options) =>
+            fs.open(filePath, options).pipe(
+              Effect.map(
+                (file): FileSystem.File =>
+                  (filePath === directory) === (syncTarget === "directory")
+                    ? Object.create(file, {
+                        sync: { value: Effect.fail(fileSystemError("sync", code, filePath)) },
+                      })
+                    : file,
+              ),
+            ),
+        }),
+        Effect.exit,
+      );
+      assert.strictEqual(Exit.isFailure(result), fails);
+      assert.strictEqual(yield* fs.readFileString(target), syncTarget === "file" ? "old" : "saved");
+      assert.deepStrictEqual(yield* fs.readDirectory(directory), ["settings.json"]);
+    }),
+  );
+
+  it.effect("keeps a successful save when temporary directory cleanup fails", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "f5-atomic-" });
+      const target = path.join(directory, "settings.json");
+      const removeAttempts: string[] = [];
+      yield* writeFileStringAtomically({ filePath: target, contents: "saved" }).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          remove: (filePath) =>
+            Effect.sync(() => removeAttempts.push(filePath)).pipe(
+              Effect.andThen(Effect.fail(fileSystemError("remove", "EACCES", filePath))),
+            ),
+        }),
+      );
+      assert.strictEqual(yield* fs.readFileString(target), "saved");
+      assert.strictEqual(removeAttempts.length, 1);
+    }),
+  );
+
   it.effect("writes long filenames without duplicating them in the temporary path", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -205,8 +329,8 @@ it.layer(NodeServices.layer)("atomic writes", (it) => {
       const target = path.join(directory, `${"attachment-".repeat(13)}.png`);
       yield* writeFileBytesAtomically({ filePath: target, contents: new Uint8Array([1, 2, 3]) });
       assert.deepEqual(Array.from(yield* fs.readFile(target)), [1, 2, 3]);
-      yield* writeFileStringAtomically({ filePath: target, contents: "replacement" });
-      assert.equal(yield* fs.readFileString(target), "replacement");
+      yield* writeFileStringAtomically({ filePath: target, contents: "" });
+      assert.equal(yield* fs.readFileString(target), "");
       assert.deepEqual(yield* fs.readDirectory(directory), [path.basename(target)]);
     }).pipe(Effect.scoped),
   );
@@ -231,6 +355,17 @@ it.layer(NodeServices.layer)("linked settings atomic writes", (it) => {
       assert.equal(yield* fs.readLink(first), "second.json");
       assert.equal(yield* fs.readLink(second), path.join("missing", "settings.json"));
       assert.equal(yield* fs.readFileString(target), "saved");
+      if (process.platform !== "win32") {
+        assert.strictEqual((yield* fs.stat(target)).mode & 0o777, 0o600);
+        yield* fs.chmod(target, 0o640);
+        yield* writeFileStringAtomically({
+          filePath: first,
+          contents: "saved again",
+          followSymlinks: true,
+        });
+        assert.strictEqual((yield* fs.stat(target)).mode & 0o777, 0o640);
+        assert.strictEqual(yield* fs.readFileString(first), "saved again");
+      }
     }),
   );
 
@@ -242,10 +377,14 @@ it.layer(NodeServices.layer)("linked settings atomic writes", (it) => {
       const target = path.join(dir, "target");
       const link = path.join(dir, "link");
       yield* fs.writeFileString(target, "keep");
+      if (process.platform !== "win32") yield* fs.chmod(target, 0o644);
       yield* fs.symlink(target, link);
       yield* writeFileStringAtomically({ filePath: link, contents: "replacement" });
       assert.equal(yield* fs.readFileString(target), "keep");
       assert.equal(yield* fs.readFileString(link), "replacement");
+      if (process.platform !== "win32") {
+        assert.strictEqual((yield* fs.stat(link)).mode & 0o777, 0o600);
+      }
     }),
   );
 
@@ -276,10 +415,19 @@ it.layer(NodeServices.layer)("linked settings atomic writes", (it) => {
             }).pipe(
               Effect.provideService(FileSystem.FileSystem, {
                 ...fs,
-                writeFileString: (file, contents, options) =>
-                  fs.writeFileString(file, contents, options).pipe(
-                    Effect.tap(() => fs.remove(link)),
-                    Effect.tap(() => fs.symlink(pivotParent ? second : secondFile, link)),
+                open: (filePath, options) =>
+                  fs.open(filePath, options).pipe(
+                    Effect.map(
+                      (file): FileSystem.File =>
+                        Object.create(file, {
+                          sync: {
+                            value: file.sync.pipe(
+                              Effect.tap(() => fs.remove(link)),
+                              Effect.tap(() => fs.symlink(pivotParent ? second : secondFile, link)),
+                            ),
+                          },
+                        }),
+                    ),
                   ),
               }),
             ),

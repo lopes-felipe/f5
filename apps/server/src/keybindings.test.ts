@@ -724,12 +724,12 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
         Effect.provide(Layer.fresh(KeybindingsLive)),
         Effect.provideService(FileSystem.FileSystem, {
           ...fs,
-          writeFileString: (path) =>
+          open: (path) =>
             Effect.fail(
               PlatformError.systemError({
                 _tag: "PermissionDenied",
                 module: "FileSystem",
-                method: "writeFileString",
+                method: "open",
                 pathOrDescriptor: path,
                 description: "Test directory is not writable",
               }),

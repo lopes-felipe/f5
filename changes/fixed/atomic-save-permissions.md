@@ -1,0 +1,1 @@
+- Settings and keybinding saves preserve existing file permissions on macOS and Linux, and new files are readable and writable only by their owner. Saves sync to disk to reduce data loss after a crash.
