@@ -1,4 +1,5 @@
 import { ingestActivityAttachment } from "../activityAttachments.ts";
+import { readCodexToolOutputImage } from "../provider/codexToolOutputImages.ts";
 
 /** Screenshots kept per tool item; extras are counted in `mcpImagesOmitted`. */
 export const MAX_TOOL_RESULT_IMAGES = 1;
@@ -34,7 +35,6 @@ export interface ToolResultImageRef {
   readonly sizeBytes: number;
 }
 
-/** Recognizes the Claude (`source.base64`) and MCP (`data` + `mimeType`) image block shapes. */
 function readInlineImage(
   record: Record<string, unknown>,
 ): { mimeType: string; data: string } | null {
@@ -65,14 +65,15 @@ function decodeImage(image: { mimeType: string; data: string }): Uint8Array | nu
 export function extractToolResultImages(value: unknown): ToolResultImageExtraction {
   const images: ExtractedToolResultImage[] = [];
   let omitted = 0;
-  const visit = (node: unknown, depth: number): unknown => {
+  const visit = (node: unknown, depth: number, codexToolContent = false): unknown => {
     if (depth > MAX_SCAN_DEPTH || node === null || typeof node !== "object") return node;
     if (Array.isArray(node)) {
-      const visited = node.map((entry) => visit(entry, depth + 1));
+      const visited = node.map((entry) => visit(entry, depth + 1, codexToolContent));
       return visited.some((entry, index) => entry !== node[index]) ? visited : node;
     }
     const record = node as Record<string, unknown>;
-    const inline = readInlineImage(record);
+    const inline =
+      (codexToolContent ? readCodexToolOutputImage(record) : undefined) ?? readInlineImage(record);
     if (inline) {
       const bytes = images.length < MAX_TOOL_RESULT_IMAGES ? decodeImage(inline) : null;
       if (bytes) images.push({ mimeType: inline.mimeType.toLowerCase(), bytes });
@@ -82,7 +83,11 @@ export function extractToolResultImages(value: unknown): ToolResultImageExtracti
     let changed = false;
     const next: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(record)) {
-      const visited = visit(entry, depth + 1);
+      const visited = visit(
+        entry,
+        depth + 1,
+        record.type === "dynamicToolCall" && key === "contentItems",
+      );
       if (visited !== entry) changed = true;
       next[key] = visited;
     }

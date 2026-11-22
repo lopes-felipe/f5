@@ -283,6 +283,7 @@ interface CodexSessionContext {
   legacyHistoryThreadIds?: Set<string>;
   lastProviderTitle?: string;
   reviewThreadIds?: Set<string>;
+  closedNativeThreadIds?: Set<string>;
   reviewOperationActive?: boolean;
   nativeReviewTurnId?: string;
   nativeGoalActive?: boolean;
@@ -740,7 +741,10 @@ export function mapCodexRuntimeMode(runtimeMode: RuntimeMode): {
  * (default 1 s, too short for cold `npx`/`uvx` servers). A hung server delays
  * only the first turn of a session, not its 30 s startup timeout.
  */
-export const CODEX_THREAD_CONFIG = { mcp_optional_startup_grace_ms: 10_000 } as const;
+export const CODEX_THREAD_CONFIG = {
+  mcp_optional_startup_grace_ms: 10_000,
+  "features.concurrent_reasoning_summaries": true,
+} as const;
 
 export function buildCodexThreadOpenRequestParams(input: {
   readonly cwd?: string;
@@ -4267,6 +4271,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (typeof reviewTurnId === "string") context.nativeReviewTurnId = reviewTurnId;
     }
     const itemType = normalizeCodexThreadItemType(item?.type ?? item?.kind);
+    const nativeThreadId = notificationProviderThreadId ?? primaryProviderThreadId;
+    const closesThread =
+      notification.method === "thread/closed" || notification.method === "thread/deleted";
+    if (closesThread && nativeThreadId) {
+      const closed = (context.closedNativeThreadIds ??= new Set());
+      closed.add(nativeThreadId);
+      if (closed.size > 128) closed.delete(closed.values().next().value!);
+    }
+    if (
+      (nativeThreadId
+        ? context.closedNativeThreadIds?.has(nativeThreadId)
+        : context.session.status === "closed") &&
+      (itemType === "command_execution" || notification.method.startsWith("item/commandExecution/"))
+    ) {
+      return;
+    }
     // The adapter may display unscoped activity, but it cannot grant access:
     // only an explicit primary-thread envelope establishes child ownership.
     const activityChildId =
@@ -4348,6 +4368,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         this.readString(this.readObject(notification.params)?.thread, "id"),
       );
       if (providerThreadId && !context.reviewThreadIds?.has(providerThreadId)) {
+        context.closedNativeThreadIds?.delete(providerThreadId);
         this.updateSession(context, {
           resumeCursor: {
             ...this.readObject(context.session.resumeCursor),
@@ -4358,7 +4379,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return;
     }
 
-    if (notification.method === "thread/deleted" || notification.method === "thread/closed") {
+    if (closesThread) {
       if (
         notificationProviderThreadId &&
         context.reviewThreadIds?.delete(notificationProviderThreadId)

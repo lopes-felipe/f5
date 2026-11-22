@@ -10363,6 +10363,74 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("uses Claude settings and result usage for a custom model's context meter", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const cwd = yield* Effect.acquireRelease(
+        Effect.sync(() => mkdtempSync(path.join(os.tmpdir(), "f5-claude-context-"))),
+        (cwd) => Effect.sync(() => rmSync(cwd, { recursive: true, force: true })),
+      );
+      mkdirSync(path.join(cwd, ".claude"));
+      writeFileSync(
+        path.join(cwd, ".claude", "settings.json"),
+        JSON.stringify({
+          autoCompactWindow: 160_000,
+          modelSettings: { "gateway-model": { autoCompactWindow: 150_000 } },
+        }),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const model = "gateway-model";
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        model,
+        cwd,
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+      const sessionId = "sdk-thread-custom-context";
+      harness.query.emit({
+        type: "stream_event",
+        session_id: sessionId,
+        uuid: "custom-stream",
+        parent_tool_use_id: null,
+        event: { type: "message_delta", delta: {}, usage: { input_tokens: 500, output_tokens: 4 } },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: sessionId,
+        uuid: "custom-result",
+        total_cost_usd: 0,
+        modelUsage: {
+          [model]: { contextWindow: 500_000 },
+          "child-model": { contextWindow: 800_000 },
+        },
+      } as unknown as SDKMessage);
+      const events = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+      );
+      const usage = events.filter((event) => event.type === "thread.token-usage.updated");
+      assert.deepEqual(
+        usage.map((event) => [event.turnId, event.payload]),
+        [200_000, 500_000].map((modelContextWindowTokens) => [
+          turn.turnId,
+          {
+            usage: { input_tokens: 500, output_tokens: 4 },
+            autoCompactThreshold: 117_000,
+            modelContextWindowTokens,
+          },
+        ]),
+      );
+    }).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect("includes refreshed Claude context-window metadata on token usage snapshots", () => {
     const harness = makeHarness();
     harness.query.setSupportedModelsResult([
