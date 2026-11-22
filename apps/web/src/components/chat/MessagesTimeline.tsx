@@ -1637,37 +1637,80 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       const reverting = dimmed && pendingRevert !== null;
       const externalsEntry = rowExternals.get(item.id);
       return (
-        // Keep `overflow-x-clip`: `hidden` computes `overflow-y: auto`, so ChangedFilesTree would
-        // take this row as its scroller and mount every row of a large tree.
-        <div
-          className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) overflow-x-clip"
-          data-timeline-root="true"
-        >
-          {pendingRevert && index === revertDimFromRowIndex ? (
-            <RevertStatusPill label={pendingRevert.label} />
-          ) : null}
+        // Give the virtual row the full width so selection in the gutters
+        // resolves to the row beneath the pointer.
+        <div className={CHAT_CONTENT_GUTTERS_CLASS_NAME}>
+          {/* Keep overflow-x-clip so ChangedFilesTree uses the timeline as its scroller. */}
           <div
-            className={cn(
-              "transition-opacity duration-150 motion-reduce:transition-none",
-              dimmed && "opacity-50",
-              reverting && "pointer-events-none select-none opacity-40",
-            )}
-            data-revert-dimmed={dimmed ? "" : undefined}
-            aria-busy={reverting || undefined}
+            className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) overflow-x-clip"
+            data-timeline-root="true"
           >
-            {externalsEntry ? (
-              <TimelineRowView
-                row={item}
-                externals={externalsEntry.externals}
-                rowVersion={externalsEntry.version}
-              />
+            {pendingRevert && index === revertDimFromRowIndex ? (
+              <RevertStatusPill label={pendingRevert.label} />
             ) : null}
+            <div
+              className={cn(
+                "transition-opacity duration-150 motion-reduce:transition-none",
+                dimmed && "opacity-50",
+                reverting && "pointer-events-none select-none opacity-40",
+              )}
+              data-revert-dimmed={dimmed ? "" : undefined}
+              aria-busy={reverting || undefined}
+            >
+              {externalsEntry ? (
+                <TimelineRowView
+                  row={item}
+                  externals={externalsEntry.externals}
+                  rowVersion={externalsEntry.version}
+                />
+              ) : null}
+            </div>
           </div>
         </div>
       );
     },
     [pendingRevert, revertDimFromRowIndex, rowExternals],
   );
+
+  const setTimelineSelectionRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    let stopSelection: (() => void) | undefined;
+    const startSelection = (event: PointerEvent) => {
+      if (event.button !== 0 || (event.pointerType !== "mouse" && event.pointerType !== "pen")) {
+        return;
+      }
+      if (
+        !(event.target instanceof Element) ||
+        event.target.closest("[data-timeline-navigation]")
+      ) {
+        return;
+      }
+
+      // Let native selection hit the timeline underneath the navigation overlays.
+      stopSelection?.();
+      node.setAttribute("data-selecting-text", "");
+      const controller = new AbortController();
+      stopSelection = () => {
+        controller.abort();
+        node.removeAttribute("data-selecting-text");
+        stopSelection = undefined;
+      };
+      const finishSelection = (next: PointerEvent) => {
+        if (next.pointerId !== event.pointerId) return;
+        // A release outside the window may only be seen on the next move.
+        if (next.type !== "pointermove" || (next.buttons & 1) === 0) stopSelection?.();
+      };
+      const options = { capture: true, signal: controller.signal };
+      window.addEventListener("pointerup", finishSelection, options);
+      window.addEventListener("pointercancel", finishSelection, options);
+      window.addEventListener("pointermove", finishSelection, options);
+    };
+    node.addEventListener("pointerdown", startSelection, true);
+    return () => {
+      node.removeEventListener("pointerdown", startSelection, true);
+      stopSelection?.();
+    };
+  }, []);
 
   // Portalled into the header: turn data never passes through header props.
   const navigationControl = navigationHost
@@ -1709,7 +1752,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   return (
     <TimelineRowContext.Provider value={timelineRowContext}>
       <RowEnteringContext value={enteringRowIds}>
-        <TooltipScrollDismissArea className="relative h-full min-h-0">
+        <TooltipScrollDismissArea
+          ref={setTimelineSelectionRef}
+          className="relative h-full min-h-0 [&[data-selecting-text]_[data-timeline-navigation]]:pointer-events-none"
+        >
           <LegendList<TimelineRow>
             ref={listRef}
             data={rows}
@@ -1764,15 +1810,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             // queries — the LegendList's overflow container has inline styles that
             // make class-based selectors fragile.
             data-slot="messages-scroll-container"
-            className={cn(
-              "h-full overflow-x-hidden overscroll-y-contain",
-              CHAT_CONTENT_GUTTERS_CLASS_NAME,
-            )}
+            className="h-full overflow-x-hidden overscroll-y-contain"
             ListHeaderComponent={
-              <>
+              <div className={CHAT_CONTENT_GUTTERS_CLASS_NAME}>
                 <div className="h-3 sm:h-4" />
                 {listHeaderContent}
-              </>
+              </div>
             }
             // The follow control overlays the timeline; only the composer needs a spacer.
             ListFooterComponent={
@@ -1889,6 +1932,7 @@ function TimelineMinimap(props: {
       <button
         type="button"
         aria-label="Previous turn"
+        data-timeline-navigation
         title="Previous turn"
         disabled={previousTurn === undefined}
         onClick={() => {
@@ -1901,6 +1945,7 @@ function TimelineMinimap(props: {
       <button
         type="button"
         aria-label="Next turn"
+        data-timeline-navigation
         title="Next turn"
         disabled={nextTurn === undefined}
         onClick={() => {
@@ -1916,6 +1961,7 @@ function TimelineMinimap(props: {
         role="slider"
         tabIndex={0}
         aria-label="Conversation minimap"
+        data-timeline-navigation
         title={
           props.hasUnloadedHistory
             ? "Loaded conversation range; scroll upward to load earlier history"
