@@ -38188,9 +38188,11 @@
     },
     {
       "createdAt": "2026-11-12T11:14:04.510Z",
+      "decidedAt": "2026-11-22T18:11:24.190Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-31313",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings",
@@ -55100,9 +55102,11 @@
     },
     {
       "createdAt": "2026-11-12T11:14:04.510Z",
+      "decidedAt": "2026-11-22T18:11:33.681Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-34644",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr-hub",
