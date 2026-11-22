@@ -224,14 +224,18 @@ it.layer(NodeServices.layer)("atomic writes", (it) => {
       }),
   );
 
-  it.effect("syncs the file before renaming and the parent directory afterward", () =>
+  it.effect.each([undefined, false])("orders sync and rename with durable=%s", (durable) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "f5-atomic-" });
       const target = path.join(directory, "settings.json");
       const events: string[] = [];
-      yield* writeFileStringAtomically({ filePath: target, contents: "saved" }).pipe(
+      yield* writeFileStringAtomically({
+        filePath: target,
+        contents: "saved",
+        ...(durable === undefined ? {} : { durable }),
+      }).pipe(
         Effect.provideService(FileSystem.FileSystem, {
           ...fs,
           open: (filePath, options) =>
@@ -257,8 +261,13 @@ it.layer(NodeServices.layer)("atomic writes", (it) => {
       );
       assert.deepStrictEqual(
         events,
-        process.platform === "win32" ? ["file", "rename"] : ["file", "rename", "directory"],
+        durable === false
+          ? ["rename"]
+          : process.platform === "win32"
+            ? ["file", "rename"]
+            : ["file", "rename", "directory"],
       );
+      assert.strictEqual(yield* fs.readFileString(target), "saved");
     }),
   );
 

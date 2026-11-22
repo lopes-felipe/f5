@@ -10,6 +10,7 @@ import {
   type TerminalRestartInput,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as atomicWrite from "../../atomicWrite.ts";
 import { BROWSER_OPEN_TOKEN_ENV, browserOpenTokenFor } from "../../browser/BrowserOpenThreadToken";
 import * as processTree from "@t3tools/shared/processTree";
 import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
@@ -947,6 +948,7 @@ describe("TerminalManager", () => {
   });
 
   it("flushes the final source bytes before closing and reopening a terminal", async () => {
+    const write = vi.spyOn(atomicWrite, "writeFileStringAtomically");
     const { manager, ptyAdapter, logsDir } = makeManager();
     try {
       await manager.open(openInput());
@@ -957,6 +959,11 @@ describe("TerminalManager", () => {
         source.emitExit({ exitCode: 0, signal: null });
       });
       await manager.close({ threadId: "thread-1" });
+      expect(write).toHaveBeenLastCalledWith({
+        filePath: historyLogPath(logsDir),
+        contents: "before\nfinal🙂",
+        durable: false,
+      });
       expect(fs.readFileSync(historyLogPath(logsDir), "utf8")).toBe("before\nfinal🙂");
       const reopened = await manager.open(openInput());
       expect(reopened.history).toBe("before\nfinal🙂");

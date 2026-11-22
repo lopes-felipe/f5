@@ -104,8 +104,10 @@ export const writeFileStringAtomically = (input: {
   readonly contents: string;
   /** Settings may follow user-owned links; asset writers keep their existing behavior. */
   readonly followSymlinks?: boolean;
-  /** Defaults to the host platform; Windows retries a rename blocked by a held target. */
+  /** Overrides the platform for rename retries only. */
   readonly platform?: NodeJS.Platform;
+  /** Sync the file and, where supported, its directory. Defaults to true. */
+  readonly durable?: boolean;
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -113,6 +115,7 @@ export const writeFileStringAtomically = (input: {
       const path = yield* Path.Path;
       const tempFileId = yield* Random.nextUUIDv4;
       const platform = input.platform ?? process.platform;
+      const durable = input.durable ?? true;
       const targetPath = input.followSymlinks
         ? yield* resolveSymlinkTarget(input.filePath)
         : input.filePath;
@@ -123,6 +126,7 @@ export const writeFileStringAtomically = (input: {
         ? path.join(yield* fs.realPath(targetDirectory), path.basename(targetPath))
         : targetPath;
       const canonicalDirectory = path.dirname(canonicalTarget);
+      // Log a cleanup failure without masking the save result.
       const tempDirectory = yield* Effect.acquireRelease(
         fs.makeTempDirectory({ directory: canonicalDirectory, prefix: ".write-" }),
         (directory) =>
@@ -146,7 +150,7 @@ export const writeFileStringAtomically = (input: {
               yield* replacedMode(fs, canonicalTarget, input.followSymlinks ?? false),
             );
           }
-          yield* file.sync;
+          if (durable) yield* file.sync;
         }),
       );
       if (input.followSymlinks) {
@@ -170,7 +174,8 @@ export const writeFileStringAtomically = (input: {
         targetPath: canonicalTarget,
         platform,
       });
-      if (process.platform !== "win32") {
+      if (durable && process.platform !== "win32") {
+        // A sync error can surface after publication because the rename may not survive a crash.
         yield* syncDirectory(fs, canonicalDirectory);
       }
     }),
