@@ -1,4 +1,5 @@
-import * as Path from "node:path";
+// Lima runs only on macOS: every path here is POSIX, whatever platform evaluates it.
+import { posix as Path } from "node:path";
 
 /**
  * Lima instance configuration for a Linux VM profile. F5 generates every instance from this

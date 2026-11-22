@@ -364,7 +364,8 @@ describe("execution environments", () => {
       expect(await fileVersion(store)).toBe(2);
       const directory = profileStateDir(store.defaultStateDir, vm);
       expect(await FS.readdir(directory)).toEqual([]);
-      expect((await FS.stat(directory)).mode & 0o777).toBe(0o700);
+      // Windows has no POSIX permission bits.
+      if (process.platform !== "win32") expect((await FS.stat(directory)).mode & 0o777).toBe(0o700);
       await store.remove(vm.id);
       expect(await fileVersion(store)).toBe(1);
     } finally {

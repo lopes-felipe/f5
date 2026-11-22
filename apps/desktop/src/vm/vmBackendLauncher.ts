@@ -1,6 +1,7 @@
 import * as ChildProcess from "node:child_process";
 import * as FS from "node:fs";
-import * as Path from "node:path";
+// Linux VM profiles run only on macOS: every path here is POSIX.
+import { posix as Path } from "node:path";
 import { parseRelease, selectArtifact } from "@t3tools/shared/cliRelease";
 import imageLock from "../../vm-guest/image.lock.json";
 import { isolatedBackendCommand } from "../backendComputerIsolation";

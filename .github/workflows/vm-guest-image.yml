@@ -38,6 +38,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils jq
           # libguestfs reads the host kernel to build its appliance.
           sudo chmod 0644 /boot/vmlinuz-*
+          # The runner's AppArmor policy stops passt; without it libguestfs uses QEMU's slirp.
+          sudo apt-get remove -y passt || sudo dpkg -r --force-depends passt || true
+          ! command -v passt
+
+      - name: Check libguestfs
+        run: LIBGUESTFS_BACKEND=direct libguestfs-test-tool >"$RUNNER_TEMP/libguestfs-test.log" 2>&1 || { tail -60 "$RUNNER_TEMP/libguestfs-test.log"; exit 1; }
 
       - name: Check guest scripts
         run: |
