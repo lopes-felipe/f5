@@ -1,8 +1,10 @@
 """Unit tests for the guest tools. Run: python3 -B -m unittest discover apps/desktop/vm-guest/tests
 
-They exercise the pure parts (boot line, archive filtering, install retention, resolver
-discovery). Mounting, sudo, nftables and systemd scopes need a real guest and are covered by
-the manual VM gate.
+They exercise the pure parts (boot line, archive filtering, install retention and digests,
+resolver discovery, the egress ruleset). Run as root on Linux, they also check the frame
+channel's pipe ownership and, with nft installed, that nftables accepts the ruleset. Mounting,
+sudo, loaded nftables and systemd scopes need a real guest and are covered by the manual VM
+gate.
 """
 
 import importlib.machinery
@@ -10,6 +12,8 @@ import importlib.util
 import io
 import json
 import os
+import pwd
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -137,6 +141,110 @@ class RetentionTest(unittest.TestCase):
             self.assertEqual(guest.retired_versions(["1.10"], "1.11"), [])
 
 
+class BackendDigestTest(unittest.TestCase):
+    """A backend is identified by version and archive digest: a rebuild keeps the version."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.saved = (guest.BACKEND_ROOT, guest.root_owned)
+        guest.BACKEND_ROOT = self.root
+        # Ownership is checked separately; these files belong to the test user.
+        guest.root_owned = lambda _path: True
+        os.makedirs(os.path.join(self.root, "1.2.3"))
+        open(os.path.join(self.root, "1.2.3", "f5"), "w").close()
+        with open(os.path.join(self.root, "1.2.3", ".installed"), "w") as handle:
+            handle.write("d" * 64 + "\n")
+
+    def tearDown(self):
+        guest.BACKEND_ROOT, guest.root_owned = self.saved
+        shutil.rmtree(self.root)
+
+    def test_reports_each_backend_with_its_digest(self):
+        self.assertEqual(guest.installed_backends(), [{"version": "1.2.3", "sha256": "d" * 64}])
+
+    def test_launches_only_the_build_with_the_expected_digest(self):
+        guest.check_backend("1.2.3", "d" * 64)
+        with self.assertRaisesRegex(guest.Refusal, "different archive"):
+            guest.check_backend("1.2.3", "e" * 64)
+        with self.assertRaisesRegex(guest.Refusal, "invalid sha256"):
+            guest.check_backend("1.2.3", "D" * 64)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and os.geteuid() == 0, "needs root on Linux")
+class ChannelPipeTest(unittest.TestCase):
+    """The launcher runs as root and the backend as an unprivileged user, so the backend's
+    close-on-exec reopen through /proc/self/fd works only on pipes that user owns."""
+
+    # Run by a process the backend would start: the inodes of every descriptor it inherited.
+    INHERITED = (
+        "import os, json\n"
+        "seen = []\n"
+        "for fd in range(256):\n"
+        "    try: seen.append(os.fstat(fd).st_ino)\n"
+        "    except OSError: pass\n"
+        "print(json.dumps(seen))\n"
+    )
+
+    def reopen_as_nobody(self, read_end):
+        """In a child dropped to `nobody` with the pipe on fd 3, as the backend gets it:
+        reopen it, close fd 3, then start a process that keeps every inheritable descriptor.
+        Returns "denied", or whether that process inherited the pipe."""
+        nobody = pwd.getpwnam("nobody")
+        result_read, result_write = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.close(result_read)
+                # Out of the way of fd 3 first: either could already be 3.
+                out = os.dup2(result_write, 40, inheritable=False)
+                source = os.dup2(read_end, 41, inheritable=False)
+                os.dup2(source, 3, inheritable=True)
+                os.setgroups([])
+                os.setgid(nobody.pw_gid)
+                os.setuid(nobody.pw_uid)
+                try:
+                    private = os.open("/proc/self/fd/3", os.O_RDONLY | os.O_NONBLOCK)
+                except PermissionError:
+                    os.write(out, b"denied")
+                    os._exit(0)
+                pipe_inode = os.fstat(private).st_ino
+                os.close(3)
+                os.close(source)
+                seen = json.loads(
+                    subprocess.run(
+                        [sys.executable, "-I", "-c", self.INHERITED],
+                        capture_output=True,
+                        text=True,
+                        close_fds=False,
+                        check=True,
+                    ).stdout
+                )
+                os.write(out, json.dumps({"inherited": pipe_inode in seen}).encode())
+            finally:
+                os._exit(0)
+        os.close(result_write)
+        os.waitpid(pid, 0)
+        with os.fdopen(result_read) as handle:
+            return handle.read()
+
+    def test_a_pipe_root_creates_cant_be_reopened_by_the_backend_user(self):
+        read_end, write_end = os.pipe()
+        try:
+            self.assertEqual(self.reopen_as_nobody(read_end), "denied")
+        finally:
+            os.close(read_end)
+            os.close(write_end)
+
+    def test_a_channel_pipe_reopens_close_on_exec_and_nothing_started_inherits_it(self):
+        nobody = pwd.getpwnam("nobody")
+        read_end, write_end = guest.channel_pipe(nobody.pw_uid, nobody.pw_gid)
+        try:
+            self.assertEqual(json.loads(self.reopen_as_nobody(read_end)), {"inherited": False})
+        finally:
+            os.close(read_end)
+            os.close(write_end)
+
+
 def discover(resolv_conf):
     """Sources f5-egress-apply and runs discover_resolvers against one resolv.conf."""
     with tempfile.NamedTemporaryFile("w", suffix=".conf", delete=False) as handle:
@@ -164,6 +272,45 @@ class ResolverDiscoveryTest(unittest.TestCase):
 
     def test_reports_nothing_before_a_resolver_exists(self):
         self.assertEqual(discover("# not yet configured\nnameserver 127.0.0.53\n"), "")
+
+
+def render(resolvers):
+    return subprocess.run(
+        ["bash", "-c", 'source "$1"; render_ruleset "$2"', "bash",
+         os.path.join(BIN, "f5-egress-apply"), resolvers],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+class EgressRulesetTest(unittest.TestCase):
+    def rules(self):
+        text = render("192.168.5.3")
+        start = text.index("chain output {")
+        return [line.strip() for line in text[start:].splitlines()[2:] if line.strip() not in ("", "}")]
+
+    def test_dns_goes_only_to_the_resolvers(self):
+        rules = self.rules()
+        allow = rules.index("ip daddr { 192.168.5.3 } meta l4proto { udp, tcp } th dport 53 accept")
+        drop = rules.index("meta l4proto { udp, tcp } th dport 53 counter drop")
+        private = next(i for i, rule in enumerate(rules) if "192.168.0.0/16" in rule)
+        # The resolver may sit in a private range; the DNS exception comes before that drop.
+        self.assertLess(allow, drop)
+        self.assertLess(drop, private)
+
+    def test_ipv6_carries_only_discovery_and_path_mtu(self):
+        rules = self.rules()
+        icmp = [rule for rule in rules if rule.startswith("icmpv6")]
+        self.assertEqual(len(icmp), 1)
+        for kind in ("echo-request", "echo-reply"):
+            self.assertNotIn(kind, icmp[0])
+        self.assertNotIn("meta l4proto ipv6-icmp accept", rules)
+        self.assertEqual(rules[-1], "meta nfproto ipv6 counter reject with icmpx type admin-prohibited")
+
+    @unittest.skipUnless(shutil.which("nft") and os.geteuid() == 0, "needs nft and root")
+    def test_nft_accepts_the_ruleset(self):
+        subprocess.run(["nft", "-c", "-f", "-"], input=render("192.168.5.3"), text=True, check=True)
 
 
 if __name__ == "__main__":

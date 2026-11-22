@@ -2,7 +2,7 @@ import * as Crypto from "node:crypto";
 import * as FS from "node:fs";
 import * as FSP from "node:fs/promises";
 import * as Path from "node:path";
-import { acquireFileLock } from "./fileLock";
+import { acquireFileLock, LockHeld, type AcquireLock } from "./fileLock";
 
 /** A guest image pinned by an F5 release (`apps/desktop/vm-guest/image.lock.json`). */
 export interface GuestImagePin {
@@ -15,8 +15,28 @@ export class GuestImageError extends Error {
   override readonly name = "GuestImageError";
 }
 
-/** Images are published only as GitHub release assets of this repository. */
-const ALLOWED_IMAGE_URL = /^https:\/\/github\.com\/lopes-felipe\/f5\/releases\/download\/[^?#]+$/;
+/**
+ * Images are published only as GitHub release assets of this repository: exactly
+ * `/releases/download/<tag>/<file>`, checked on the parsed URL. The pin must already be in
+ * normal form, so dot segments, escapes, a query or a fragment can't point elsewhere.
+ */
+const RELEASE_ASSET_PATH =
+  /^\/lopes-felipe\/f5\/releases\/download\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+function isReleaseAssetUrl(value: string): boolean {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return (
+    url.href === value &&
+    url.origin === "https://github.com" &&
+    url.username === "" &&
+    url.password === "" &&
+    url.search === "" &&
+    url.hash === "" &&
+    RELEASE_ASSET_PATH.test(url.pathname) &&
+    !url.pathname.split("/").some((segment) => segment === "." || segment === "..")
+  );
+}
 
 /** Upper bound for a compressed guest image; a pin claiming more is refused. */
 export const MAX_GUEST_IMAGE_BYTES = 4 * 1024 ** 3;
@@ -38,7 +58,7 @@ export function parseGuestImagePin(
     throw new GuestImageError("The guest image pin has an invalid size.");
   const allowed = options.allowAnyHttpsUrl
     ? URL.canParse(url) && new URL(url).protocol === "https:"
-    : ALLOWED_IMAGE_URL.test(url);
+    : isReleaseAssetUrl(url);
   if (!allowed) throw new GuestImageError("The guest image pin has a disallowed URL.");
   return { url, sha256, size };
 }
@@ -54,6 +74,8 @@ export interface EnsureGuestImageOptions {
   readonly fetch?: typeof fetch;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: GuestImageProgress) => void;
+  /** The cross-process lock; tests off macOS inject their own. */
+  readonly lock?: AcquireLock;
 }
 
 export const guestImagePath = (cacheDir: string, sha256: string) =>
@@ -68,16 +90,14 @@ async function hashFile(path: string, hash: Crypto.Hash): Promise<number> {
   return bytes;
 }
 
-/** A cached image is usable when it exists with the pinned size; anything else is removed. */
+/** A cached image is usable when it exists with the pinned size. Never changes the cache. */
 function cachedImage(finalPath: string, pin: GuestImagePin): boolean {
   try {
-    if (FS.statSync(finalPath).size === pin.size) return true;
+    return FS.statSync(finalPath).size === pin.size;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-  FS.rmSync(finalPath, { force: true });
-  return false;
 }
 
 /**
@@ -85,7 +105,8 @@ function cachedImage(finalPath: string, pin: GuestImagePin): boolean {
  *
  * Every VM profile's supervisor shares the cache, so one process at a time owns a digest's
  * download, from resume through rename, under `<digest>.qcow2.lock`; the others wait for
- * it and then find the finished file. A partial download resumes with a Range request; the
+ * it and then find the finished file. Outside the lock the cache is only read; a file of
+ * the wrong size is removed under it. A partial download resumes with a Range request; the
  * bytes already on disk are hashed again first, so a resumed file is verified end to end.
  * Only a file whose size and SHA-256 match the pin is renamed into place. The rename is
  * atomic and the cache sits in F5's own state directory, so a cached file with the pinned
@@ -96,13 +117,14 @@ export async function ensureGuestImage(options: EnsureGuestImageOptions): Promis
   const finalPath = guestImagePath(cacheDir, pin.sha256);
   if (cachedImage(finalPath, pin)) return finalPath;
   await FSP.mkdir(cacheDir, { recursive: true, mode: 0o700 });
-  const release = await acquireFileLock(
+  const release = await (options.lock ?? acquireFileLock)(
     `${finalPath}.lock`,
     options.signal ?? new AbortController().signal,
   );
   try {
     // Another supervisor may have finished it while this one waited.
     if (cachedImage(finalPath, pin)) return finalPath;
+    await FSP.rm(finalPath, { force: true });
     return await downloadLocked(options, finalPath);
   } finally {
     release();
@@ -146,6 +168,13 @@ async function downloadLocked(
       ...(offset > 0 ? { headers: { Range: `bytes=${offset}-` } } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     });
+    if (offset > 0 && response.status === 416) {
+      // The server rejects the saved range, not necessarily a full request: start over.
+      hash.destroy();
+      await response.body?.cancel().catch(() => undefined);
+      await FSP.rm(partPath, { force: true });
+      return downloadLocked(options, finalPath);
+    }
     let resumed = false;
     if (offset > 0 && response.status === 206) {
       const range = /^bytes (\d+)-\d+\/(\d+|\*)$/.exec(response.headers.get("content-range") ?? "");
@@ -188,18 +217,41 @@ async function downloadLocked(
   return finalPath;
 }
 
-/** Removes cached images other than `keepSha256`, and abandoned partial downloads of them. */
-export async function pruneGuestImages(cacheDir: string, keepSha256: string): Promise<void> {
+/**
+ * Removes cached images other than `keepSha256`, and abandoned partial downloads of them.
+ * Each digest's files go only under its lock, taken without waiting: a digest someone is
+ * downloading right now (another F5 build sharing the cache) is skipped.
+ */
+export async function pruneGuestImages(
+  cacheDir: string,
+  keepSha256: string,
+  lock: AcquireLock = acquireFileLock,
+): Promise<void> {
   let names: string[];
   try {
     names = await FSP.readdir(cacheDir);
   } catch {
     return;
   }
-  await Promise.all(
+  const digests = new Set(
     names
-      .filter((name) => /^[0-9a-f]{64}\.qcow2(\.part)?$/.test(name))
-      .filter((name) => !name.startsWith(keepSha256))
-      .map((name) => FSP.rm(Path.join(cacheDir, name), { force: true })),
+      .map((name) => /^([0-9a-f]{64})\.qcow2(\.part)?$/.exec(name)?.[1])
+      .filter((digest): digest is string => digest !== undefined && digest !== keepSha256),
   );
+  for (const digest of digests) {
+    const finalPath = guestImagePath(cacheDir, digest);
+    let release: () => void;
+    try {
+      release = await lock(`${finalPath}.lock`, new AbortController().signal, { waitMs: 0 });
+    } catch (error) {
+      if (error instanceof LockHeld) continue;
+      throw error;
+    }
+    try {
+      await FSP.rm(finalPath, { force: true });
+      await FSP.rm(`${finalPath}.part`, { force: true });
+    } finally {
+      release();
+    }
+  }
 }

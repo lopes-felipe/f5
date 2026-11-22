@@ -2,7 +2,14 @@ import * as ChildProcess from "node:child_process";
 import * as FS from "node:fs";
 import * as FSP from "node:fs/promises";
 import * as Path from "node:path";
-import { abortableDelay, acquireFileLock, LockHeld, type FileLockOptions } from "./fileLock";
+import { encodeBackendFrame } from "@t3tools/shared/backendFrames";
+import {
+  abortableDelay,
+  acquireFileLock,
+  LockHeld,
+  type AcquireLock,
+  type FileLockOptions,
+} from "./fileLock";
 import { ensureGuestImage, pruneGuestImages, type GuestImagePin } from "./guestImage";
 import {
   buildLimaInstanceConfig,
@@ -17,13 +24,18 @@ import {
  * inside the same macOS GUI-denial sandbox as host backends, so every Lima and ssh process
  * it starts inherits that sandbox.
  *
- * It prepares the VM (image, data disk, instance, boot, backend install), forwards the
- * profile's port to the guest on 127.0.0.1, and then runs `limactl shell … f5-guest launch`
- * on this process's own stdin and stdout. Those are main's private pipes: main writes the
- * boot line and frames to them, and this process never reads or writes them, so neither
- * passes through its memory or arguments. It logs to stderr only. Every other child gets
- * fresh stdio, so no Lima process (the daemonized hostagent included) holds the channel open.
- * Its exit is the backend's exit.
+ * It prepares the VM (image, data disk, instance, boot, backend install) and forwards the
+ * profile's port to the guest on 127.0.0.1. Once that forward is listening it writes one
+ * frame of its own to stdout (`VM_FORWARD_READY`), so main sends no authenticated request
+ * to the port before it belongs to this VM. Then it runs `limactl shell … f5-guest launch`
+ * on this process's stdin and stdout, main's private pipes: main writes the boot line and
+ * frames to them, and this process never reads them. It logs to stderr only. Every other
+ * child gets fresh stdio, so no Lima process (the daemonized hostagent included) holds the
+ * channel open.
+ *
+ * The VM runs only while this process does: every exit shuts it down first and confirms
+ * that with Lima, so main can count the profile against the VM cap until this process
+ * exits.
  */
 export interface VmSupervisorConfig {
   readonly profileId: string;
@@ -49,6 +61,13 @@ export class VmSupervisorRefusal extends Error {
 
 /** Exit code main already treats as "startup refused; read the diagnostic". */
 export const VM_REFUSED_EXIT_CODE = 78;
+/** `f5-guest` refused (its last stderr line says why); distinct from the backend's own 78. */
+export const GUEST_REFUSED_EXIT_CODE = 77;
+/** This process exits while Lima still reports the VM running; main keeps counting it. */
+export const VM_STOP_FAILED_EXIT_CODE = 75;
+
+/** The one frame this process writes to main itself: the profile's port now reaches the VM. */
+export const VM_FORWARD_READY = "f5-vm-forward-ready";
 
 export interface RunResult {
   readonly code: number | null;
@@ -57,7 +76,7 @@ export interface RunResult {
 }
 
 export interface VmSupervisorDeps {
-  /** Runs a command to completion. An aborted `signal` kills it. */
+  /** Runs a command to completion. An aborted `signal` kills it. Never rejects. */
   run(
     command: string,
     args: ReadonlyArray<string>,
@@ -70,6 +89,11 @@ export interface VmSupervisorDeps {
     stdio: ChildProcess.StdioOptions,
   ): ChildProcess.ChildProcess;
   ensureImage(pin: GuestImagePin, cacheDir: string, signal: AbortSignal): Promise<string>;
+  /** Tells main the port forward is listening (writes `VM_FORWARD_READY` to stdout). */
+  signalForwardReady(): void;
+  /** Children's stderr, passed through to this process's log. */
+  writeStderr(chunk: Uint8Array): void;
+  lock: AcquireLock;
   log(message: string): void;
   /** Delay between readiness polls; tests shorten it. */
   readonly pollMs?: number;
@@ -81,10 +105,18 @@ interface InstanceRecord {
 
 const GUEST_TOOL = "/opt/f5/bin/f5-guest";
 const MINUTE = 60_000;
-/** `limactl stop`'s budget. Main's stop grace for VM profiles must exceed it. */
+/** A graceful `limactl stop`. */
 export const VM_STOP_TIMEOUT_MS = MINUTE;
+/** `limactl stop --force`, when the graceful stop didn't bring the VM down. */
+export const VM_FORCE_STOP_TIMEOUT_MS = 30_000;
+const STATUS_TIMEOUT_MS = 15_000;
+/** The longest a shutdown takes: graceful stop, check, forced stop, check. */
+export const VM_SHUTDOWN_BUDGET_MS =
+  VM_STOP_TIMEOUT_MS + VM_FORCE_STOP_TIMEOUT_MS + 2 * STATUS_TIMEOUT_MS;
 /** How long a first boot may take to load its policy and mount the data disk. */
 export const GUEST_READY_WAIT_MS = 90_000;
+/** How long the ssh master may take to set up the profile's forward. */
+export const FORWARD_READY_WAIT_MS = MINUTE;
 /** Not-ready reasons a booting guest reports until its units finish; anything else refuses at once. */
 const TRANSIENT_GUEST_REASONS = new Set([
   "the egress policy is not loaded",
@@ -105,10 +137,11 @@ export class VmStopped extends Error {
 export async function acquireInstanceLock(
   path: string,
   signal: AbortSignal,
+  lock: AcquireLock = acquireFileLock,
   options: FileLockOptions = {},
 ): Promise<() => void> {
   try {
-    return await acquireFileLock(path, signal, { waitMs: INSTANCE_LOCK_WAIT_MS, ...options });
+    return await lock(path, signal, { waitMs: INSTANCE_LOCK_WAIT_MS, ...options });
   } catch (error) {
     if (error instanceof LockHeld)
       throw new VmSupervisorRefusal(
@@ -136,6 +169,23 @@ export function parseVmSupervisorConfig(raw: string | undefined): VmSupervisorCo
   )
     throw new VmSupervisorRefusal("Invalid VM supervisor configuration.");
   return config;
+}
+
+/** The instance's status in `limactl list --json` output; null when it doesn't exist. */
+function parseInstanceStatus(stdout: string): string | null {
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const entry = JSON.parse(line) as { name?: string; status?: string };
+    if (entry.name === LIMA_INSTANCE_NAME) return entry.status ?? "Unknown";
+  }
+  return null;
+}
+
+/** A process started with a piped stderr, its exit, and the last line it wrote there. */
+export interface Supervised {
+  readonly child: ChildProcess.ChildProcess;
+  readonly exit: Promise<number>;
+  lastStderrLine(): string;
 }
 
 export class VmSupervisor {
@@ -173,6 +223,19 @@ export class VmSupervisor {
     );
   }
 
+  /** Spawns with stderr piped through to the log, remembering its last line. */
+  private supervise(command: string, args: ReadonlyArray<string>, stdin: "inherit" | "ignore") {
+    const child = this.deps.spawn(command, args, [stdin, stdin, "pipe"]);
+    // Exit tracking starts at spawn, so an early exit (or a failed spawn) is never missed.
+    const exit = waitForExit(child);
+    let tail = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      this.deps.writeStderr(chunk);
+      tail = (tail + chunk.toString("utf8")).slice(-4096);
+    });
+    return { child, exit, lastStderrLine: () => lastLine(tail) } satisfies Supervised;
+  }
+
   /** Lima merges these into every instance; F5 never writes them, so their presence is foreign. */
   private refuseForeignLimaConfig(): void {
     for (const name of ["default.yaml", "override.yaml"])
@@ -184,12 +247,7 @@ export class VmSupervisor {
 
   private async instanceStatus(): Promise<string | null> {
     const result = await this.limactlOk(["list", "--json"], MINUTE, "Listing Lima instances");
-    for (const line of result.stdout.split("\n")) {
-      if (!line.trim()) continue;
-      const entry = JSON.parse(line) as { name?: string; status?: string };
-      if (entry.name === LIMA_INSTANCE_NAME) return entry.status ?? "Unknown";
-    }
-    return null;
+    return parseInstanceStatus(result.stdout);
   }
 
   private readInstanceRecord(): InstanceRecord | null {
@@ -240,8 +298,9 @@ export class VmSupervisor {
     if (status !== null && record?.imageSha256 !== config.imagePin.sha256) {
       // A new image replaces the root disk. The data disk lives outside the instance.
       this.deps.log("Replacing the guest root disk with the new image");
-      if (status === "Running")
-        await this.limactlOk(["stop", LIMA_INSTANCE_NAME], 5 * MINUTE, "Stopping the VM");
+      if (status !== "Stopped" && !(await this.stopVm()))
+        throw new VmSupervisorRefusal("The VM could not be stopped to replace its root disk.");
+      this.throwIfStopped();
       await this.limactlOk(["delete", "--force", LIMA_INSTANCE_NAME], MINUTE, "Removing the VM");
       status = null;
     }
@@ -272,7 +331,10 @@ export class VmSupervisor {
         JSON.stringify({ imageSha256: config.imagePin.sha256 } satisfies InstanceRecord) + "\n",
         { mode: 0o600 },
       );
-      await pruneGuestImages(config.imageCacheDir, config.imagePin.sha256).catch(() => undefined);
+      // Lima copied the image into the instance; other digests are no longer needed here.
+      await pruneGuestImages(config.imageCacheDir, config.imagePin.sha256, this.deps.lock).catch(
+        () => undefined,
+      );
       status = "Stopped";
     }
     if (status !== "Running") {
@@ -285,7 +347,15 @@ export class VmSupervisor {
     }
 
     const ready = await this.guestStatus();
-    if (!ready.backends.includes(config.backend.version)) await this.installBackend();
+    // Same version, different build: the archive digest decides, not the name.
+    if (
+      !ready.backends.some(
+        (installed) =>
+          installed.version === config.backend.version &&
+          installed.sha256 === config.backend.sha256,
+      )
+    )
+      await this.installBackend();
   }
 
   /**
@@ -293,7 +363,9 @@ export class VmSupervisor {
    * mounting its data disk, so those two reasons are polled for a bounded time; any other
    * failure, or output that isn't a status report, refuses at once.
    */
-  private async guestStatus(): Promise<{ backends: string[] }> {
+  private async guestStatus(): Promise<{
+    backends: Array<{ version: string; sha256: string }>;
+  }> {
     const deadline = Date.now() + GUEST_READY_WAIT_MS;
     for (;;) {
       const result = await this.guest(["status"], MINUTE);
@@ -306,7 +378,10 @@ export class VmSupervisor {
       if (result.code === 0 && status?.ready === true)
         return {
           backends: Array.isArray(status.backends)
-            ? status.backends.filter((value): value is string => typeof value === "string")
+            ? status.backends.filter(
+                (value): value is { version: string; sha256: string } =>
+                  typeof value?.version === "string" && typeof value?.sha256 === "string",
+              )
             : [],
         };
       const reason = typeof status?.reason === "string" ? status.reason : null;
@@ -339,23 +414,33 @@ export class VmSupervisor {
       );
   }
 
+  private ssh() {
+    const instanceDir = Path.join(this.config.limaHome, LIMA_INSTANCE_NAME);
+    const control = Path.join(instanceDir, "ctl");
+    // `-S` takes the socket path as its own argument, so a path with spaces stays whole.
+    const base = ["-F", Path.join(instanceDir, "ssh.config"), "-S", control];
+    return { control, base, host: `lima-${LIMA_INSTANCE_NAME}` };
+  }
+
   /**
    * The ssh ControlMaster main's forwards go through. It owns the profile's port forward
-   * from the start; ExitOnForwardFailure turns an occupied port into an error, never a
-   * different port.
+   * from the start; ExitOnForwardFailure turns an occupied port into a refusal that names
+   * the port, never a different port. Resolves once the master answers `-O check`: ssh sets
+   * up its forwards before it listens for multiplex clients, so the port is ours by then.
    */
-  startForwards(): ChildProcess.ChildProcess {
-    const instanceDir = Path.join(this.config.limaHome, LIMA_INSTANCE_NAME);
-    const port = String(this.config.port);
-    return this.deps.spawn(
+  async startForwards(): Promise<Supervised> {
+    const { control, base, host } = this.ssh();
+    const port = this.config.port;
+    // A master orphaned by a supervisor that was killed still holds the port and the socket.
+    await this.deps.run("ssh", [...base, "-O", "exit", host], 10_000);
+    FS.rmSync(control, { force: true });
+    this.throwIfStopped();
+    const forwards = this.supervise(
       "ssh",
       [
-        "-F",
-        Path.join(instanceDir, "ssh.config"),
+        ...base,
         "-o",
         "ControlMaster=yes",
-        "-o",
-        `ControlPath=${Path.join(instanceDir, "ctl")}`,
         "-o",
         "ControlPersist=no",
         "-o",
@@ -363,16 +448,44 @@ export class VmSupervisor {
         "-N",
         "-L",
         `127.0.0.1:${port}:127.0.0.1:${port}`,
-        `lima-${LIMA_INSTANCE_NAME}`,
+        host,
       ],
-      ["ignore", "ignore", "inherit"],
+      "ignore",
     );
+    let exited = false;
+    void forwards.exit.then(() => {
+      exited = true;
+    });
+    const deadline = Date.now() + FORWARD_READY_WAIT_MS;
+    try {
+      for (;;) {
+        if (exited)
+          throw new VmSupervisorRefusal(
+            `Port ${port} could not be forwarded to the VM: ${forwards.lastStderrLine() || "ssh exited"}. Another process may be using it.`,
+          );
+        const check = await this.deps.run(
+          "ssh",
+          [...base, "-O", "check", host],
+          10_000,
+          this.stopSignal,
+        );
+        this.throwIfStopped();
+        if (check.code === 0 && !exited) return forwards;
+        if (Date.now() >= deadline)
+          throw new VmSupervisorRefusal(`The forward for port ${port} did not come up in time.`);
+        await abortableDelay(this.deps.pollMs ?? 500, this.stopSignal);
+      }
+    } catch (error) {
+      forwards.child.kill("SIGTERM");
+      await forwards.exit;
+      throw error;
+    }
   }
 
   /** Main's pipes (this process's stdin and stdout) become the guest launcher's. */
-  launchBackend(): ChildProcess.ChildProcess {
+  launchBackend(): Supervised {
     const { incarnation, backend } = this.config;
-    return this.deps.spawn(
+    return this.supervise(
       this.config.limactl,
       [
         "shell",
@@ -385,24 +498,52 @@ export class VmSupervisor {
         "launch",
         incarnation,
         backend.version,
+        backend.sha256,
       ],
-      ["inherit", "inherit", "inherit"],
+      "inherit",
     );
   }
 
   /**
-   * Shuts the VM down, keeping its disks. Deliberately not tied to the stop signal: it runs
-   * because main asked to stop. Harmless when the instance is already stopped or absent.
+   * Shuts the VM down, keeping its disks, and confirms it with Lima: a graceful stop, then a
+   * forced one if the VM is still up. Resolves false when Lima still reports it running.
+   * Deliberately not tied to the stop signal: it runs because main asked to stop. Harmless
+   * when the instance is already stopped or absent.
    */
-  async stopVm(): Promise<void> {
+  async stopVm(): Promise<boolean> {
+    const limactl = this.config.limactl;
     this.deps.log("Shutting down the VM");
-    await this.deps
-      .run(this.config.limactl, ["stop", LIMA_INSTANCE_NAME], VM_STOP_TIMEOUT_MS)
-      .catch(() => undefined);
+    await this.deps.run(limactl, ["stop", LIMA_INSTANCE_NAME], VM_STOP_TIMEOUT_MS);
+    if (await this.vmDown()) return true;
+    this.deps.log("The VM is still up; forcing it off");
+    await this.deps.run(limactl, ["stop", "--force", LIMA_INSTANCE_NAME], VM_FORCE_STOP_TIMEOUT_MS);
+    if (await this.vmDown()) return true;
+    this.deps.log("Lima still reports the VM running");
+    return false;
+  }
+
+  private async vmDown(): Promise<boolean> {
+    const result = await this.deps.run(this.config.limactl, ["list", "--json"], STATUS_TIMEOUT_MS);
+    if (result.code !== 0) return false;
+    try {
+      const status = parseInstanceStatus(result.stdout);
+      return status === null || status === "Stopped";
+    } catch {
+      return false;
+    }
   }
 }
 
 const lastLine = (text: string) => text.trim().split("\n").at(-1)?.trim() ?? "";
+
+/** A guest-supplied reason, made safe to show: one line, no control characters, bounded. */
+function guestReason(line: string): string {
+  const text = line
+    .replace(/^f5-guest:\s*/, "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .trim();
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text || "no reason given";
+}
 
 /**
  * Resolves once with the child's exit code. Call it right after spawning: it also covers a
@@ -418,25 +559,31 @@ export function waitForExit(child: ChildProcess.ChildProcess): Promise<number> {
 }
 
 /**
- * Runs one incarnation. Resolves with the exit code for this process: the guest backend's,
- * 0 after a stop, or VM_REFUSED_EXIT_CODE after writing the refusal for main.
+ * Runs one incarnation. Resolves with the exit code for this process:
+ * - 0 after main's stop;
+ * - VM_REFUSED_EXIT_CODE after writing a refusal for main (the reason, and whether the VM
+ *   could not be shut down);
+ * - VM_STOP_FAILED_EXIT_CODE when Lima still reports the VM running;
+ * - otherwise the guest backend's code, for main's bounded restart.
  *
  * `stopSignal` is main asking the profile to stop. Preparation is abandoned and whatever it
  * is running is killed; a running backend's channel closes, which stops the guest scope.
- * Then the VM shuts down, keeping its disks, before this process exits, so main counts the
- * profile against the VM cap until the VM is down. A refused start shuts the VM down too:
- * nothing would own it. Only a backend crash leaves the VM running, for the restart.
+ * Every path then shuts the VM down, keeping its disks, before this process exits.
  */
 export async function runVmSupervisor(
   config: VmSupervisorConfig,
   deps: VmSupervisorDeps,
   stopSignal: AbortSignal,
 ): Promise<number> {
-  const refuse = async (message: string) => {
-    deps.log(message);
-    await FSP.writeFile(config.startupErrorPath, JSON.stringify({ message }) + "\n").catch(
-      () => undefined,
-    );
+  const refuse = async (message: string, vmStopped = true) => {
+    const full = vmStopped
+      ? message
+      : `${message} The VM could not be shut down; F5 still counts it as running.`;
+    deps.log(full);
+    await FSP.writeFile(
+      config.startupErrorPath,
+      JSON.stringify({ message: full, ...(vmStopped ? {} : { vmStillRunning: true }) }) + "\n",
+    ).catch(() => undefined);
     return VM_REFUSED_EXIT_CODE;
   };
   let release: () => void;
@@ -445,6 +592,7 @@ export async function runVmSupervisor(
     release = await acquireInstanceLock(
       Path.join(config.limaHome, "supervisor.lock"),
       stopSignal,
+      deps.lock,
       deps.pollMs !== undefined ? { pollMs: deps.pollMs } : {},
     );
   } catch (error) {
@@ -463,43 +611,57 @@ async function runLocked(
   supervisor: VmSupervisor,
   deps: VmSupervisorDeps,
   stopSignal: AbortSignal,
-  refuse: (message: string) => Promise<number>,
+  refuse: (message: string, vmStopped?: boolean) => Promise<number>,
 ): Promise<number> {
+  let forwards: Supervised;
   try {
     await supervisor.prepare();
+    forwards = await supervisor.startForwards();
   } catch (error) {
-    await supervisor.stopVm();
-    if (stopSignal.aborted) return 0;
-    return refuse(error instanceof Error ? error.message : "The VM could not start.");
+    const stopped = await supervisor.stopVm();
+    if (stopSignal.aborted) return stopped ? 0 : VM_STOP_FAILED_EXIT_CODE;
+    return refuse(error instanceof Error ? error.message : "The VM could not start.", stopped);
   }
 
-  // Exit tracking starts at spawn, so an early exit (or a failed spawn) is never missed.
-  const forwards = supervisor.startForwards();
-  const forwardsExit = waitForExit(forwards);
+  deps.signalForwardReady();
   const backend = supervisor.launchBackend();
-  const backendExit = waitForExit(backend);
   const stop = () => {
-    backend.kill("SIGTERM");
-    forwards.kill("SIGTERM");
+    backend.child.kill("SIGTERM");
+    forwards.child.kill("SIGTERM");
   };
   if (stopSignal.aborted) stop();
   else stopSignal.addEventListener("abort", stop, { once: true });
   // Losing the forward makes the backend unreachable; end the incarnation.
-  void forwardsExit.then(() => backend.kill("SIGTERM"));
-  const code = await backendExit;
-  forwards.kill("SIGTERM");
-  await forwardsExit;
+  let forwardLost = false;
+  void forwards.exit.then(() => {
+    forwardLost = true;
+    backend.child.kill("SIGTERM");
+  });
+  const code = await backend.exit;
+  forwards.child.kill("SIGTERM");
+  await forwards.exit;
   stopSignal.removeEventListener("abort", stop);
-  if (stopSignal.aborted) {
-    await supervisor.stopVm();
-    return 0;
-  }
-  if (code === VM_REFUSED_EXIT_CODE) {
-    await supervisor.stopVm();
-    return refuse("The guest refused to start the backend.");
-  }
-  deps.log(`The backend exited (${code}); the VM keeps running for the restart.`);
-  return code;
+
+  const stopped = await supervisor.stopVm();
+  if (stopSignal.aborted) return stopped ? 0 : VM_STOP_FAILED_EXIT_CODE;
+  if (code === GUEST_REFUSED_EXIT_CODE)
+    return refuse(
+      `The guest refused to start the backend: ${guestReason(backend.lastStderrLine())}.`,
+      stopped,
+    );
+  if (code === VM_REFUSED_EXIT_CODE)
+    return refuse(
+      "The F5 backend in the VM refused to start; see the profile's backend log.",
+      stopped,
+    );
+  deps.log(
+    forwardLost
+      ? "The port forward ended; the incarnation ends with it."
+      : `The backend exited (${code}).`,
+  );
+  if (!stopped) return VM_STOP_FAILED_EXIT_CODE;
+  // Codes this process gives its own meaning to never pass through from the backend.
+  return [0, VM_STOP_FAILED_EXIT_CODE, GUEST_REFUSED_EXIT_CODE].includes(code) ? 1 : code;
 }
 
 export function defaultVmSupervisorDeps(config: VmSupervisorConfig): VmSupervisorDeps {
@@ -545,6 +707,18 @@ export function defaultVmSupervisorDeps(config: VmSupervisorConfig): VmSuperviso
           ),
         ),
       }),
+    signalForwardReady: () => {
+      // Synchronous, before the backend starts, so it is the first frame main reads. This
+      // process never opens process.stdout, so fd 1 is still a blocking pipe.
+      const frame = encodeBackendFrame({ type: VM_FORWARD_READY, incarnation: config.incarnation });
+      let offset = 0;
+      while (offset < frame.byteLength)
+        offset += FS.writeSync(1, frame, offset, frame.byteLength - offset);
+    },
+    writeStderr: (chunk) => {
+      process.stderr.write(chunk);
+    },
+    lock: acquireFileLock,
     log: (message) => console.error(`[vm] ${message}`),
   };
 }

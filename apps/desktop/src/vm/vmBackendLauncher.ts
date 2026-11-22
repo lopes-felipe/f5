@@ -5,11 +5,11 @@ import { posix as Path } from "node:path";
 import { parseRelease, selectArtifact } from "@t3tools/shared/cliRelease";
 import imageLock from "../../vm-guest/image.lock.json";
 import { isolatedBackendCommand } from "../backendComputerIsolation";
-import { streamBackendChannel } from "../computer/BackendChannel";
+import { streamBackendChannel, type BackendChannel } from "../computer/BackendChannel";
 import type { ProfileBackendLauncher } from "../profileBackendLauncher";
 import { parseGuestImagePin, type GuestImagePin } from "./guestImage";
 import { guestImageCacheDir, limaHomeFor } from "./limaInstanceConfig";
-import { VM_STOP_TIMEOUT_MS, type VmSupervisorConfig } from "./vmSupervisor";
+import { VM_FORWARD_READY, VM_SHUTDOWN_BUDGET_MS, type VmSupervisorConfig } from "./vmSupervisor";
 
 /**
  * Linux VM profiles are behind a hidden flag until the preview ships: without
@@ -53,10 +53,60 @@ export class VmSlotReservations {
 }
 
 /**
- * Main's patience with a stopping VM supervisor: up to 10 s for the guest backend's scope,
- * then `limactl stop`, with margin. Killing it earlier would orphan a half-stopped VM.
+ * Main's patience with a stopping VM supervisor: ending the backend and its forward, then
+ * the whole confirmed shutdown, with margin. Killing it earlier would orphan a VM.
  */
-export const VM_STOP_GRACE_MS = 10_000 + VM_STOP_TIMEOUT_MS + 20_000;
+export const VM_STOP_GRACE_MS = 10_000 + VM_SHUTDOWN_BUDGET_MS + 20_000;
+
+/**
+ * Holds a supervisor channel's messages back until its `VM_FORWARD_READY` frame, the first
+ * thing the supervisor writes. `reachable` resolves then: until it does, the profile's port
+ * may belong to any local process, so main sends it no authenticated request. Anything else
+ * before that frame breaks the protocol and closes the channel.
+ */
+export function awaitForwardReady(
+  channel: BackendChannel,
+  incarnation: string,
+): { readonly channel: BackendChannel; readonly reachable: Promise<void> } {
+  const listeners: Array<(raw: unknown) => void> = [];
+  let ready = false;
+  let settle!: { resolve: () => void; reject: (error: Error) => void };
+  const reachable = new Promise<void>((resolve, reject) => {
+    settle = { resolve, reject };
+  });
+  reachable.catch(() => undefined);
+  channel.onMessage((raw) => {
+    if (ready) {
+      for (const listener of listeners) listener(raw);
+      return;
+    }
+    const message = raw as { type?: unknown; incarnation?: unknown } | null;
+    if (message?.type === VM_FORWARD_READY && message.incarnation === incarnation) {
+      ready = true;
+      settle.resolve();
+      return;
+    }
+    channel.disconnect();
+  });
+  channel.onDisconnect(() => {
+    if (!ready) settle.reject(new Error("The VM supervisor ended before the port was forwarded."));
+  });
+  return {
+    reachable,
+    channel: {
+      get connected() {
+        return channel.connected;
+      },
+      hostPid: undefined,
+      send: (message) => channel.send(message),
+      onMessage: (listener) => {
+        listeners.push(listener);
+      },
+      onDisconnect: (listener) => channel.onDisconnect(listener),
+      disconnect: () => channel.disconnect(),
+    },
+  };
+}
 
 export interface VmLaunchAssets {
   readonly limactl: string;
@@ -84,6 +134,7 @@ export function resolveVmLaunchAssets(input: {
   readonly lock?: unknown;
   readonly exists?: (path: string) => boolean;
   readonly readFile?: (path: string) => string;
+  readonly readDir?: (path: string) => string[];
 }): VmLaunchAssetsResolution {
   const exists = input.exists ?? FS.existsSync;
   const readFile = input.readFile ?? ((path: string) => FS.readFileSync(path, "utf8"));
@@ -100,7 +151,15 @@ export function resolveVmLaunchAssets(input: {
     return { ok: false, reason: `Lima is missing (${limactl}).` };
 
   const vmDir = Path.join(input.resourcesPath, "vm");
-  const archive = override("F5_VM_BACKEND_ARCHIVE") ?? findBundledArchive(vmDir, exists);
+  let archive: string | null | undefined = override("F5_VM_BACKEND_ARCHIVE");
+  try {
+    archive ??= findBundledArchive(vmDir, exists, input.readDir ?? FS.readdirSync);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `The bundled VM assets could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   if (!archive || !Path.isAbsolute(archive) || !exists(archive))
     return { ok: false, reason: "The linux-arm64 backend archive is missing." };
   let backend: VmLaunchAssets["backend"];
@@ -139,9 +198,13 @@ export function resolveVmLaunchAssets(input: {
   return { ok: true, assets: { limactl, backend, imagePin } };
 }
 
-function findBundledArchive(vmDir: string, exists: (path: string) => boolean): string | null {
+function findBundledArchive(
+  vmDir: string,
+  exists: (path: string) => boolean,
+  readDir: (path: string) => string[],
+): string | null {
   if (!exists(vmDir)) return null;
-  const archives = FS.readdirSync(vmDir).filter((name) =>
+  const archives = readDir(vmDir).filter((name) =>
     /^f5-[0-9A-Za-z.+-]+-linux-arm64\.tar\.gz$/.test(name),
   );
   return archives.length === 1 ? Path.join(vmDir, archives[0]!) : null;
@@ -212,11 +275,11 @@ export function vmBackendLauncher(options: {
           profileId: request.profileId,
         }) + "\n",
       );
-      return {
-        process: child,
-        channel: streamBackendChannel({ input: child.stdout!, output: child.stdin! }),
-        stdoutIsLog: false,
-      };
+      const { channel, reachable } = awaitForwardReady(
+        streamBackendChannel({ input: child.stdout!, output: child.stdin! }),
+        request.incarnation,
+      );
+      return { process: child, channel, reachable, stdoutIsLog: false };
     },
   };
 }

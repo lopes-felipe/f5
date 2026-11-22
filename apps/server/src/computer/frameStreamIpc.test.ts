@@ -6,7 +6,8 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { BackendFrameDecoder, encodeBackendFrame } from "@t3tools/shared/backendFrames";
 import { DesktopComputerHost } from "./DesktopComputerHost";
-import { frameStreamIpc, reopenCloseOnExec } from "./frameStreamIpc";
+import { frameStreamIpc } from "./frameStreamIpc";
+import { claimGuestFrameFds, reopenCloseOnExec } from "./guestFrameFds";
 
 function pair() {
   const input = new PassThrough();
@@ -49,6 +50,23 @@ describe("frameStreamIpc", () => {
     expect(callback).toHaveBeenCalledWith(expect.any(Error));
   });
 
+  it("disconnects instead of queueing without bound for a desktop that stopped reading", () => {
+    const input = new PassThrough();
+    // Nobody reads `output`, so everything written stays queued.
+    const output = new PassThrough({ highWaterMark: 1 });
+    const ipc = frameStreamIpc(input, output, 64);
+    const disconnected = vi.fn();
+    ipc.on("disconnect", disconnected);
+    const errors: Array<Error | null> = [];
+    const send = ipc.send!;
+    send({ n: 1 }, (error) => errors.push(error));
+    expect(ipc.connected).toBe(true);
+    expect(send({ padding: "x".repeat(100) }, (error) => errors.push(error))).toBe(false);
+    expect(ipc.connected).toBe(false);
+    expect(disconnected).toHaveBeenCalledOnce();
+    expect(errors.at(-1)?.message).toMatch(/stopped reading/);
+  });
+
   it("disconnects once at end of stream", async () => {
     const { input, ipc } = pair();
     const disconnected = vi.fn();
@@ -76,15 +94,22 @@ describe("reopenCloseOnExec", () => {
     );
   });
 
-  it("keeps the inherited fd where /proc isn't available", () => {
+  it("fails closed, keeping nothing, when the pipe can't be reopened", () => {
+    // EACCES: a pipe the backend's user doesn't own.
     const fs = {
       openSync: vi.fn(() => {
-        throw new Error("ENOENT");
+        throw new Error("EACCES");
       }),
       closeSync: vi.fn(),
     };
-    expect(reopenCloseOnExec(3, "read", fs as never)).toBe(3);
+    expect(() => reopenCloseOnExec(3, "read", fs as never)).toThrow(/EACCES/);
     expect(fs.closeSync).not.toHaveBeenCalled();
+  });
+
+  it("refuses to claim the channel off Linux", () => {
+    const fs = { openSync: vi.fn(), closeSync: vi.fn() };
+    expect(() => claimGuestFrameFds("darwin", fs as never)).toThrow(/needs Linux/);
+    expect(fs.openSync).not.toHaveBeenCalled();
   });
 
   it.runIf(process.platform === "linux")("reopens real pipe ends on Linux", () => {

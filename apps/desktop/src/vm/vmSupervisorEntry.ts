@@ -1,5 +1,7 @@
 // Entry for the Linux VM supervisor process main spawns (see vmBackendLauncher.ts). It must
 // never touch process.stdin or process.stdout: they are main's channel to the guest backend.
+// Its one frame to main (forward ready) goes straight to fd 1, which stays a blocking pipe
+// only while process.stdout is never opened.
 import {
   defaultVmSupervisorDeps,
   parseVmSupervisorConfig,

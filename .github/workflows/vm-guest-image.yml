@@ -1,8 +1,9 @@
 name: VM guest image
 
 # Builds the Linux VM profile guest image (apps/desktop/vm-guest). Pull requests build it
-# as a check. A manual run with `publish` attaches it to a `vm-guest-image-<source>`
-# prerelease; a release pins it by copying the printed digest into image.lock.json.
+# as a check. A manual run on main with `publish` attaches it to a
+# `vm-guest-image-<source>` prerelease; a release pins it by copying the printed digest into
+# image.lock.json.
 
 on:
   pull_request:
@@ -21,7 +22,8 @@ permissions:
 
 concurrency:
   group: vm-guest-image-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push supersedes a pull request build; a manual run is never cancelled midway.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -45,6 +47,7 @@ jobs:
       - name: Install image tools
         run: |
           sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nftables
           # With --network, QEMU needs efi-virtio.rom (ipxe-qemu) for the appliance's
           # virtio-net device, and the appliance configures it with a DHCP client that
           # supermin copies from the host; without one it has no address or resolver.
@@ -55,6 +58,10 @@ jobs:
           # The runner's AppArmor policy stops passt; without it libguestfs uses QEMU's slirp.
           sudo apt-get remove -y passt || sudo dpkg -r --force-depends passt || true
           ! command -v passt
+
+      - name: Test guest tools as root
+        # Pipe ownership for the frame channel, and nftables accepting the egress ruleset.
+        run: sudo python3 -B -m unittest discover -v apps/desktop/vm-guest/tests
 
       - name: Check libguestfs
         # No KVM on these runners: the same TCG setting build-image.sh selects.
@@ -88,11 +95,16 @@ jobs:
           compression-level: 0
 
   publish:
-    # Only a manual run publishes; only this job can write to the repository.
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    # Only a manual run on main publishes, so a pinned image always comes from reviewed
+    # code; only this job can write to the repository.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # One publish at a time, never cancelled halfway through a release upload.
+    concurrency:
+      group: vm-guest-image-publish
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:

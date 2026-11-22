@@ -12,7 +12,7 @@ import {
   VmSlotReservations,
   type VmLaunchAssets,
 } from "./vmBackendLauncher";
-import { VM_STOP_TIMEOUT_MS } from "./vmSupervisor";
+import { VM_FORWARD_READY, VM_SHUTDOWN_BUDGET_MS } from "./vmSupervisor";
 
 const archive = "/res/vm/f5-1.2.3-linux-arm64.tar.gz";
 const manifest = {
@@ -125,6 +125,44 @@ describe("resolveVmLaunchAssets", () => {
     expect(readFile).not.toHaveBeenCalled();
   });
 
+  it("resolves the bundled assets in packaged builds whatever the overrides say", () => {
+    const resolved = resolve({
+      packaged: true,
+      env: {
+        F5_EXPERIMENTAL_LINUX_VM: "1",
+        F5_VM_LIMACTL: "/evil/limactl",
+        F5_VM_BACKEND_ARCHIVE: "/evil/f5-1.2.3-linux-arm64.tar.gz",
+        F5_VM_IMAGE_URL: "https://evil.test/image.qcow2",
+        F5_VM_IMAGE_SHA256: "a".repeat(64),
+        F5_VM_IMAGE_SIZE: "5",
+      },
+      exists: (path) => !path.startsWith("/evil"),
+      readDir: (path) => {
+        expect(path).toBe("/res/vm");
+        return ["f5-1.2.3-linux-arm64.tar.gz", "f5-1.2.3-linux-arm64.json"];
+      },
+    });
+    expect(resolved).toEqual({
+      ok: true,
+      assets: {
+        limactl: "/res/native/lima/bin/limactl",
+        backend: { archive, sha256: "d".repeat(64), version: "1.2.3" },
+        imagePin: lock.image,
+      },
+    });
+  });
+
+  it("refuses, rather than throwing, when the bundled VM directory can't be read", () => {
+    expect(
+      resolve({
+        packaged: true,
+        readDir: () => {
+          throw new Error("EACCES: permission denied");
+        },
+      }),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/could not be read: EACCES/) });
+  });
+
   it("lets development builds override the image", () => {
     const resolved = resolve({
       env: {
@@ -157,12 +195,14 @@ describe("VmSlotReservations", () => {
 
   it("counts running VMs and doesn't double-count a profile that is both", () => {
     const slots = new VmSlotReservations();
-    const release = slots.reserve("a", ["running"]);
-    // `a` is now also running: one slot, not two.
-    expect(() => slots.reserve("b", ["running", "a"])).toThrow();
+    const release = slots.reserve("a", []);
+    // `a` is now opening and running: one slot, so `b` still fits and `c` doesn't.
+    expect(() => slots.reserve("b", ["a"])).not.toThrow();
+    expect(() => slots.reserve("c", ["a"])).toThrow(/Two Linux VM profiles/);
     release();
     release();
-    expect(() => slots.reserve("b", ["running"])).not.toThrow();
+    // Only `b` is left.
+    expect(() => slots.reserve("c", [])).not.toThrow();
   });
 
   it("lets a profile reopen while it holds its own slot", () => {
@@ -219,7 +259,7 @@ describe("vmBackendLauncher", () => {
     expect(launcher.readinessTimeoutMs).toBe(VM_READINESS_TIMEOUT_MS);
     // Main must not force-kill the supervisor while `limactl stop` can still be running.
     expect(launcher.stopGraceMs).toBe(VM_STOP_GRACE_MS);
-    expect(VM_STOP_GRACE_MS).toBeGreaterThan(VM_STOP_TIMEOUT_MS);
+    expect(VM_STOP_GRACE_MS).toBeGreaterThan(VM_SHUTDOWN_BUDGET_MS);
     const launch = launcher.launch(request);
     const [command, args, options] = spawn.mock.calls[0] as unknown as [
       string,
@@ -257,7 +297,36 @@ describe("vmBackendLauncher", () => {
     expect(launch.channel.hostPid).toBeUndefined();
     const received: unknown[] = [];
     launch.channel.onMessage((message) => received.push(message));
+    let reachable = false;
+    void launch.reachable!.then(() => {
+      reachable = true;
+    });
+    // The supervisor's own frame comes first and is consumed; the backend's follow.
+    stdout.write(encodeBackendFrame({ type: VM_FORWARD_READY, incarnation: request.incarnation }));
     stdout.write(encodeBackendFrame({ type: "hello" }));
     await vi.waitFor(() => expect(received).toEqual([{ type: "hello" }]));
+    expect(reachable).toBe(true);
+  });
+
+  it.each([
+    ["a backend frame", { type: "hello" }],
+    ["another incarnation's signal", { type: VM_FORWARD_READY, incarnation: "other" }],
+  ])("closes the channel, never reachable, when %s comes first", async (_name, first) => {
+    const { child, stdout } = fakeSupervisor();
+    const launch = vmBackendLauncher({
+      platform: "darwin",
+      executable: "/F5",
+      supervisorEntry: "/app/vmSupervisorEntry.js",
+      stateDir: "/Users/me/.f5/userdata",
+      assets,
+      startupErrorPath: (id) => `/errors/${id}.json`,
+      spawn: () => child,
+    }).launch(request);
+    const received: unknown[] = [];
+    launch.channel.onMessage((message) => received.push(message));
+    stdout.write(encodeBackendFrame(first));
+    await expect(launch.reachable).rejects.toThrow(/before the port was forwarded/);
+    expect(launch.channel.connected).toBe(false);
+    expect(received).toEqual([]);
   });
 });

@@ -30,6 +30,12 @@ export interface BackendLaunch {
   readonly channel: BackendChannel;
   /** False when stdout carries the channel and must not be read as log output. */
   readonly stdoutIsLog: boolean;
+  /**
+   * Resolves once the profile's port reaches this backend. Until then main sends the port
+   * no authenticated request: another local process could be listening on it. Absent when
+   * the backend binds the port itself.
+   */
+  readonly reachable?: Promise<void>;
 }
 
 /** Starts one backend incarnation for a profile in its execution environment. */
