@@ -3684,12 +3684,8 @@ export const OrchestrationGetLatestSequenceResult = Schema.Struct({
 });
 export type OrchestrationGetLatestSequenceResult = typeof OrchestrationGetLatestSequenceResult.Type;
 
-export const OrchestrationRpcSchemas = {
+const orchestrationRpcSchemas = {
   searchThread: { input: ThreadSearchInput, output: ThreadSearchResult },
-  getLatestSequence: {
-    input: OrchestrationGetLatestSequenceInput,
-    output: OrchestrationGetLatestSequenceResult,
-  },
   getSnapshot: {
     input: OrchestrationGetSnapshotInput,
     output: OrchestrationGetSnapshotResult,
@@ -3823,3 +3819,18 @@ export const OrchestrationRpcSchemas = {
     output: Schema.Void,
   },
 } as const;
+
+// Refer to the replay schema by name rather than expanding its event union
+// into the already large declaration for the table.
+export const OrchestrationRpcSchemas: typeof orchestrationRpcSchemas & {
+  readonly getLatestSequence: {
+    readonly input: typeof OrchestrationGetLatestSequenceInput;
+    readonly output: typeof OrchestrationGetLatestSequenceResult;
+  };
+} = {
+  ...orchestrationRpcSchemas,
+  getLatestSequence: {
+    input: OrchestrationGetLatestSequenceInput,
+    output: OrchestrationGetLatestSequenceResult,
+  },
+};
