@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useDeferredValue, useEffect, useMemo, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { PrChangeStat } from "./PrChangeStat";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { ChevronRightIcon } from "lucide-react";
@@ -11,6 +12,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/relativeTime";
+import { prefetchCachedPrHubDetail } from "../../lib/prHubReactQuery";
 import { cn } from "../../lib/utils";
 import { useStore } from "../../store";
 import { selectThreadById, useThread } from "../../threadSelectors";
@@ -36,6 +38,8 @@ import type { PrQueueGroup } from "./usePrQueue";
 
 /** Longer tables render through LegendList to stay responsive. */
 const VIRTUALIZE_THRESHOLD = 60;
+const FIRST_PAINT_ITEMS = 24;
+const DETAIL_INTENT_MS = 150;
 
 export const PR_TONE_DOT: Record<PrTone, string> = {
   success: "bg-success",
@@ -158,6 +162,13 @@ const PrQueueRow = memo(function PrQueueRow({
   onAction,
   onOpenThread,
 }: RowProps) {
+  const client = useQueryClient();
+  const intent = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const cancelIntent = () => {
+    clearTimeout(intent.current);
+    intent.current = undefined;
+  };
+  useEffect(() => cancelIntent, [pr.key]);
   const runningThreadId = useRunningPrThread(links);
   const action = prRowPrimaryAction(pr, { runningThreadId });
   const reference = `${pr.repository.nameWithOwner}#${pr.number}`;
@@ -171,6 +182,14 @@ const PrQueueRow = memo(function PrQueueRow({
       data-pr-key={pr.key}
       data-open={isOpen || undefined}
       data-unread={unread || undefined}
+      onPointerEnter={(event) => {
+        if (event.pointerType === "touch" || intent.current !== undefined) return;
+        const timer = setTimeout(() => {
+          void prefetchCachedPrHubDetail(client, pr.key, () => intent.current === timer);
+        }, DETAIL_INTENT_MS);
+        intent.current = timer;
+      }}
+      onPointerLeave={cancelIntent}
       // Shift-click extends the selection; it must not select the text in between.
       onMouseDown={(event) => {
         if (event.shiftKey) event.preventDefault();
@@ -433,6 +452,10 @@ export function PrQueueTable({
   const items = itemsOf(groups);
   const virtualize = items.length > VIRTUALIZE_THRESHOLD;
   const cursorIndex = cursorKey ? items.findIndex((item) => item.id === cursorKey) : -1;
+  const hasRows = groups.some((group) => !group.collapsed && group.rows.length > 0);
+  const showAllItems = useDeferredValue(hasRows, false);
+  const visibleItems =
+    !hasRows || showAllItems ? items : items.slice(0, Math.max(FIRST_PAINT_ITEMS, cursorIndex + 1));
   const listRef = useRef<LegendListRef | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -442,7 +465,7 @@ export function PrQueueTable({
       rootRef.current
         ?.querySelector(`[data-pr-key="${CSS.escape(cursorKey)}"]`)
         ?.scrollIntoView({ block: "nearest" });
-  }, [cursorIndex, cursorKey, virtualize]);
+  }, [cursorIndex, cursorKey, showAllItems, virtualize]);
 
   const renderItem = (item: Item) => {
     switch (item.type) {
@@ -552,7 +575,7 @@ export function PrQueueTable({
             style={{ height: "100%" }}
           />
         ) : (
-          items.map((item) => <div key={item.id}>{renderItem(item)}</div>)
+          visibleItems.map((item) => <div key={item.id}>{renderItem(item)}</div>)
         )}
       </div>
     </div>

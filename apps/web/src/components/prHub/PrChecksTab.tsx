@@ -160,15 +160,17 @@ function CheckRow({
   pr,
   check,
   logOpenByDefault,
+  canReadLogs,
 }: {
   pr: TrackedPullRequest;
   check: PrHubCheckRun;
   logOpenByDefault: boolean;
+  canReadLogs: boolean;
 }) {
   const [logOpen, setLogOpen] = useState(logOpenByDefault);
   const failed = check.status === "failure" || check.status === "cancelled";
   const duration = prCheckDuration(check);
-  const showsLog = failed && check.logAvailable;
+  const showsLog = canReadLogs && failed && check.logAvailable;
   return (
     <li className="flex min-w-0 flex-col border-b border-border last:border-b-0">
       <div className="flex min-w-0 items-center gap-2 px-3 py-2 text-sm">
@@ -224,10 +226,12 @@ function CheckGroup({
   pr,
   group,
   onlyGroup,
+  canReadLogs,
 }: {
   pr: TrackedPullRequest;
   group: PrCheckGroup<PrHubCheckRun>;
   onlyGroup: boolean;
+  canReadLogs: boolean;
 }) {
   const [open, setOpen] = useState(onlyGroup || !FOLDED_BY_DEFAULT.has(group.id));
   const headingId = `pr-checks-${group.id}`;
@@ -281,6 +285,7 @@ function CheckGroup({
                     pr={pr}
                     check={check}
                     logOpenByDefault={openLogs.has(check.id)}
+                    canReadLogs={canReadLogs}
                   />
                 ))}
               </ul>
@@ -296,7 +301,7 @@ function CheckGroup({
  * log of each failed job cut down to the part around its error.
  */
 export function PrChecksTab({ pr, onRerun, onFixCi, isStartingFix = false }: PrChecksTabProps) {
-  const options = prHubChecksQueryOptions(pr.key);
+  const options = prHubChecksQueryOptions(pr.key, pr.headRefOid);
   const query = useQuery(options);
   const client = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
@@ -356,10 +361,14 @@ export function PrChecksTab({ pr, onRerun, onFixCi, isStartingFix = false }: PrC
   const { checks, truncated, headOid } = query.data;
   const groups = groupPrChecks(checks);
   const failed = groups.find((group) => group.id === "failed")?.checks ?? [];
-  const actionable = pr.state === "open" && pr.ignoredAt === null && !pr.repositoryArchived;
+  const actionable =
+    query.isFetched && pr.state === "open" && pr.ignoredAt === null && !pr.repositoryArchived;
   // Only GitHub Actions jobs belong to a workflow run that can be started again.
   const canRerun =
-    !!onRerun && prCanRerunChecks(pr) && failed.some((check) => check.workflowRunId !== null);
+    query.isFetched &&
+    !!onRerun &&
+    prCanRerunChecks(pr) &&
+    failed.some((check) => check.workflowRunId !== null);
   const canFix = !!onFixCi && actionable && failed.length > 0 && pr.roles.includes("author");
   // The list can be a commit behind the row for a moment after a push.
   const outdated = headOid !== null && pr.headRefOid !== null && headOid !== pr.headRefOid;
@@ -406,7 +415,13 @@ export function PrChecksTab({ pr, onRerun, onFixCi, isStartingFix = false }: PrC
         </p>
       ) : null}
       {groups.map((group) => (
-        <CheckGroup key={group.id} pr={pr} group={group} onlyGroup={groups.length === 1} />
+        <CheckGroup
+          key={group.id}
+          pr={pr}
+          group={group}
+          onlyGroup={groups.length === 1}
+          canReadLogs={query.isFetched}
+        />
       ))}
     </div>
   );

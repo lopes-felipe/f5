@@ -16,7 +16,11 @@ import { prComparisonsEqual } from "@t3tools/shared/prReview";
 import { PrHubJobCoordinator } from "../Services/PrHubJobCoordinator.ts";
 
 import { PrHubReviewOperations } from "../Services/PrHubReviewOperations.ts";
-import { readPrDetailCache, type CachedPrDetailRead } from "../detailCache.ts";
+import {
+  PR_DETAIL_CACHE_TTL_MS,
+  readPrDetailCache,
+  type CachedPrDetailRead,
+} from "../detailCache.ts";
 import { fetchGitHubPrFiles } from "../githubPrFiles.ts";
 import {
   readGitHubFileStats,
@@ -51,7 +55,7 @@ import {
   parseGitHubPullRequestUrl,
   sourceControlPullRequestKeysEqual,
 } from "@t3tools/shared/sourceControl";
-import { Effect, Exit, Layer, Option, PubSub, Ref, Schema, Stream } from "effect";
+import { Cache, Effect, Exit, Layer, Option, PubSub, Ref, Schema, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
@@ -442,6 +446,11 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
           }),
       });
 
+    const refusedReviewers = yield* Cache.make({
+      capacity: 512,
+      timeToLive: "10 minutes",
+      lookup: (_key: string) => Effect.void,
+    });
     const getDetail: PrHubServiceShape["getDetail"] = (input) =>
       trackedPrByKey(input.key).pipe(
         Effect.flatMap((pr) =>
@@ -460,10 +469,18 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
               cache: detailCache,
               key: cacheKey,
               mode: input.mode ?? "if_stale",
-              fetch: read(GITHUB_PR_DETAIL_REQUESTED_REVIEWERS).pipe(
-                Effect.flatMap((response) =>
-                  isRefusedRequestedReviewersOnly(response) ? read(0) : Effect.succeed(response),
-                ),
+              fetch: Effect.gen(function* () {
+                const credential = yield* Effect.serviceOption(GitHubCredentialScope);
+                const refusalKey = Option.isSome(credential)
+                  ? JSON.stringify([credential.value.generation, pr.key])
+                  : undefined;
+                if (refusalKey && (yield* Cache.has(refusedReviewers, refusalKey)))
+                  return yield* read(0);
+                const response = yield* read(GITHUB_PR_DETAIL_REQUESTED_REVIEWERS);
+                if (!isRefusedRequestedReviewersOnly(response)) return response;
+                if (refusalKey) yield* Cache.set(refusedReviewers, refusalKey, undefined);
+                return yield* read(0);
+              }).pipe(
                 Effect.flatMap((response) =>
                   decodeDetailResponse(pr, "prHub.getDetail.decode", () => {
                     const decoded = decodeGitHubPrDetail(response, pr);
@@ -1109,7 +1126,21 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       markReady: (input) => withPrAccount(operations.markReady(input), input, true, "update"),
       reRequestReview: (input) =>
         withPrAccount(operations.reRequestReview(input), input, true, "update"),
-      getDetail: (input) => withPrAccount(operations.getDetail(input), input, false),
+      getDetail: (input) =>
+        input.cacheOnly
+          ? Effect.gen(function* () {
+              const snapshot = yield* getSnapshot;
+              const generation = snapshot.account?.generation;
+              const pr = yield* trackedPrByKey(input.key);
+              const cached =
+                generation && generation === input.accountGeneration
+                  ? detailCache.get(generation + ":" + pr.key)
+                  : undefined;
+              if (cached && Date.now() - cached.storedAt < PR_DETAIL_CACHE_TTL_MS)
+                return cached.value;
+              return yield* prHubActionError("No fresh cached pull request detail.");
+            })
+          : withPrAccount(operations.getDetail(input), input, false),
       getTimeline: (input) => withPrAccount(operations.getTimeline(input), input, false),
       prepareComment: (input) => withPrAccount(operations.prepareComment(input), input, true),
       submitComment: (input) => withPrAccount(operations.submitComment(input), input, true),

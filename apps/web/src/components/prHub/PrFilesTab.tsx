@@ -37,10 +37,11 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
   );
   const [expandedOverrides, setExpandedOverrides] = useState<Record<string, boolean>>({});
   const query = useInfiniteQuery({
-    ...prHubFilesQueryOptions(pr.key, comparisonMode),
+    ...prHubFilesQueryOptions(pr.key, comparisonMode, pr.headRefOid),
     enabled: active,
   });
   const pages = query.data?.pages ?? [];
+  const liveComparison = query.isFetched ? pages[0]?.comparison : undefined;
   const files = useMemo(() => orderPrFilePages(query.data?.pages ?? []), [query.data]);
   const selectionScope = JSON.stringify([
     pr.key,
@@ -188,29 +189,30 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
       ) : null}
       {pr.provider === "github" &&
       !pr.repositoryArchived &&
-      pages[0]?.comparison &&
+      liveComparison &&
       comparisonMode === "current_pr" ? (
         <PrReviewDraftEditor
           prKey={pr.key}
           prUrl={pr.url}
-          comparison={pages[0].comparison}
+          comparison={liveComparison}
           files={files}
           selectedAnchor={selectedAnchor?.scope === selectionScope ? selectedAnchor : null}
         />
       ) : null}
-      {!pr.repositoryArchived && pages[0]?.comparison?.mode === "current_pr" ? (
+      {!pr.repositoryArchived && liveComparison?.mode === "current_pr" ? (
         <p className="text-xs text-muted-foreground">
           Click a diff line number to draft an inline comment.
         </p>
       ) : null}
       {pr.provider !== "github" &&
       pr.forgeCapabilities?.review.inlineComment &&
+      liveComparison &&
       selectedAnchor?.scope === selectionScope ? (
         <ForgeComposer
           key={selectedAnchor.nonce}
           pr={pr}
           anchor={{
-            baseOid: pages[0]?.comparison?.baseOid,
+            baseOid: liveComparison.baseOid,
             path: selectedAnchor.path,
             line: selectedAnchor.line,
             side: selectedAnchor.side === "LEFT" ? "old" : "new",
@@ -247,8 +249,8 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
                     {file.changeType}
                   </Badge>
                 </button>
-                {pages[0]?.comparison ? (
-                  <PrViewedFile pr={pr} path={file.path} comparison={pages[0].comparison} />
+                {liveComparison ? (
+                  <PrViewedFile pr={pr} path={file.path} comparison={liveComparison} />
                 ) : null}
                 <CopyPathButton path={file.path} />
               </div>
@@ -257,7 +259,7 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
                   <LazyPrFileDiff
                     file={file}
                     onComment={
-                      pages[0]?.comparison?.mode === "current_pr" &&
+                      liveComparison?.mode === "current_pr" &&
                       (pr.provider === "github" || pr.forgeCapabilities?.review.inlineComment)
                         ? (anchor) =>
                             setSelectedAnchor({
@@ -280,7 +282,7 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
         <Button
           size="sm"
           variant="outline"
-          disabled={query.isFetchingNextPage}
+          disabled={query.isFetching}
           onClick={() => void query.fetchNextPage()}
         >
           {query.isFetchingNextPage ? "Loading…" : "Load more files"}

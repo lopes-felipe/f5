@@ -2471,7 +2471,21 @@ it.effect("loads GitHub detail surfaces and retains cached data on transient fai
     const tracked = snapshot.pullRequests[0];
     assert.ok(tracked);
 
+    const cacheOnly = {
+      key: tracked.key,
+      accountGeneration: snapshot.account?.generation,
+      cacheOnly: true,
+    };
+    const previousCalls = calls.graphql.length;
+    assert.equal((yield* Effect.exit(service.getDetail(cacheOnly)))._tag, "Failure");
+    assert.equal(calls.graphql.length, previousCalls);
     const detail = yield* service.getDetail({ key: tracked.key });
+    assert.deepStrictEqual(yield* service.getDetail(cacheOnly), detail);
+    assert.equal(
+      (yield* Effect.exit(service.getDetail({ ...cacheOnly, accountGeneration: "other" })))._tag,
+      "Failure",
+    );
+    assert.equal(calls.graphql.length, previousCalls + 1);
     const timeline = yield* service.getTimeline({ key: tracked.key });
     const files = yield* service.getFiles({ key: tracked.key });
     assert.equal(detail.detail.title, "Fresh detail");
@@ -2517,19 +2531,25 @@ it.effect("loads GitHub detail when GitHub refuses a requested reviewer", () => 
 
     const detail = yield* service.getDetail({ key: tracked.key });
     assert.equal(detail.detail.title, "Fresh detail");
+    const next = yield* service.getDetail({ key: tracked.key, mode: "force" });
+    assert.equal(next.detail.title, "Next detail");
     const reads = calls.graphql.filter((request) => request.query.includes("F5PrDetail("));
     assert.deepStrictEqual(
       reads.map(
         (request) => (request.variables as { requestedReviewers?: number }).requestedReviewers,
       ),
-      [50, 0],
+      [50, 0, 0],
     );
   }).pipe(
     Effect.provide(
       makeLayer({
         calls,
         searchResponses: [searchResponse("author", [pr])],
-        prDetailResponses: [refused, prDetailResponse({ title: "Fresh detail" })],
+        prDetailResponses: [
+          refused,
+          prDetailResponse({ title: "Fresh detail" }),
+          prDetailResponse({ title: "Next detail" }),
+        ],
       }),
     ),
   );
