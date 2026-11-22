@@ -3,6 +3,7 @@ import type { ProfileExecutionEnvironment, ProfileRecord } from "@t3tools/contra
 import { profileExecutionEnvironment } from "@t3tools/shared/profileExecution";
 import { isolatedBackendCommand } from "./backendComputerIsolation";
 import { childProcessBackendChannel, type BackendChannel } from "./computer/BackendChannel";
+import { BACKEND_READINESS_TIMEOUT_MS } from "./profileRuntime";
 
 export interface BackendLaunchRequest {
   /** Server entry script on the host. */
@@ -11,6 +12,12 @@ export interface BackendLaunchRequest {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly incarnation: string;
+  readonly profileId: string;
+  /** The profile's host state directory. */
+  readonly profileStateDir: string;
+  /** The loopback port main reserved; the backend must answer on host 127.0.0.1 here. */
+  readonly port: number;
+  readonly authToken: string;
 }
 
 export interface BackendLaunch {
@@ -21,11 +28,15 @@ export interface BackendLaunch {
   readonly process: ChildProcess.ChildProcess;
   /** Main's private channel to this incarnation. */
   readonly channel: BackendChannel;
+  /** False when stdout carries the channel and must not be read as log output. */
+  readonly stdoutIsLog: boolean;
 }
 
 /** Starts one backend incarnation for a profile in its execution environment. */
 export interface ProfileBackendLauncher {
   readonly environment: ProfileExecutionEnvironment;
+  /** How long a new incarnation may take to answer readiness before recovery is offered. */
+  readonly readinessTimeoutMs: number;
   launch(request: BackendLaunchRequest): BackendLaunch;
 }
 
@@ -47,6 +58,7 @@ export function hostBackendLauncher(options: {
   const spawn = options.spawn ?? ChildProcess.spawn;
   return {
     environment: "host",
+    readinessTimeoutMs: BACKEND_READINESS_TIMEOUT_MS,
     launch: (request) => {
       const isolated = isolatedBackendCommand(
         options.platform,
@@ -66,7 +78,7 @@ export function hostBackendLauncher(options: {
         },
         stdio: ["ignore", "pipe", "pipe", "ipc"],
       });
-      return { process: child, channel: childProcessBackendChannel(child) };
+      return { process: child, channel: childProcessBackendChannel(child), stdoutIsLog: true };
     },
   };
 }

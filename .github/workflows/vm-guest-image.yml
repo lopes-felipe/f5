@@ -1,0 +1,72 @@
+name: VM guest image
+
+# Builds the Linux VM profile guest image (apps/desktop/vm-guest). Pull requests build it
+# as a check. A manual run with `publish` attaches it to a `vm-guest-image-<source>`
+# prerelease; a release pins it by copying the printed digest into image.lock.json.
+
+on:
+  pull_request:
+    paths:
+      - "apps/desktop/vm-guest/**"
+      - ".github/workflows/vm-guest-image.yml"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Attach the image to a vm-guest-image prerelease
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-guest-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils jq
+          # libguestfs reads the host kernel to build its appliance.
+          sudo chmod 0644 /boot/vmlinuz-*
+
+      - name: Check guest scripts
+        run: |
+          python3 -m py_compile apps/desktop/vm-guest/rootfs/opt/f5/bin/f5-guest
+          bash -n apps/desktop/vm-guest/rootfs/opt/f5/bin/f5-egress-apply
+          bash -n apps/desktop/vm-guest/build-image.sh
+
+      - name: Build image
+        run: apps/desktop/vm-guest/build-image.sh "$RUNNER_TEMP/vm-guest"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vm-guest-image
+          path: ${{ runner.temp }}/vm-guest/
+          retention-days: 14
+          compression-level: 0
+
+      - name: Publish prerelease
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          meta=$(ls "$RUNNER_TEMP"/vm-guest/*.json)
+          source=$(jq -r .source "$meta")
+          tag="vm-guest-image-$source"
+          gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
+            --title "VM guest image $source" \
+            --notes "Linux VM profile guest image built from $GITHUB_SHA. Pin it in apps/desktop/vm-guest/image.lock.json." \
+            "$RUNNER_TEMP"/vm-guest/*
+          jq --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$(jq -r .file "$meta")" \
+            '{image: {url: $url, sha256, size, imageVersion, source}}' "$meta" | tee -a "$GITHUB_STEP_SUMMARY"

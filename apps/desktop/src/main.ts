@@ -48,7 +48,11 @@ import {
   hostBackendLauncher,
   requireProfileBackendLauncher,
   resolveProfileBackendLauncher,
+  type BackendLaunch,
+  type ProfileBackendLauncher,
 } from "./profileBackendLauncher";
+import { MAX_RUNNING_VMS, resolveVmLaunchAssets, vmBackendLauncher } from "./vm/vmBackendLauncher";
+import { isLinuxVmProfile } from "@t3tools/shared/profileExecution";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
@@ -393,9 +397,35 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
   startupFailure: null,
 });
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
-/** Only host profiles can start in this build; Linux VM profiles are refused, never rerouted. */
-const backendLaunchers = {
+const lastStartupErrorPath = (profileId: string) =>
+  Path.join(profilesRootDir(STATE_DIR), `last-startup-error-${profileId}.json`);
+/**
+ * Host profiles always have a launcher. Linux VM profiles get one only behind the hidden
+ * experiment flag, on Apple silicon, with Lima, the backend archive and a pinned image;
+ * otherwise they are refused, never rerouted to the host.
+ */
+const vmLaunchAssets = resolveVmLaunchAssets({
+  env: process.env,
+  platform: process.platform,
+  arch: process.arch,
+  resourcesPath: process.resourcesPath ?? "",
+});
+if (!vmLaunchAssets.ok && process.env.F5_EXPERIMENTAL_LINUX_VM === "1")
+  console.warn(`[desktop] Linux VM profiles unavailable: ${vmLaunchAssets.reason}`);
+const backendLaunchers: Partial<Record<"host" | "linux-vm", ProfileBackendLauncher>> = {
   host: hostBackendLauncher({ platform: process.platform, executable: process.execPath }),
+  ...(vmLaunchAssets.ok
+    ? {
+        "linux-vm": vmBackendLauncher({
+          platform: process.platform,
+          executable: process.execPath,
+          supervisorEntry: Path.join(__dirname, "vmSupervisorEntry.js"),
+          stateDir: STATE_DIR,
+          assets: vmLaunchAssets.assets,
+          startupErrorPath: lastStartupErrorPath,
+        }),
+      }
+    : {}),
 };
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
 const profileByWebContentsId = new Map<number, string>();
@@ -2283,7 +2313,11 @@ function initializeDesktopLogging(): void {
   }
 }
 
-function captureBackendOutput(child: ChildProcess.ChildProcess, runtime: BackendRuntime): void {
+function captureBackendOutput(
+  child: ChildProcess.ChildProcess,
+  runtime: BackendRuntime,
+  stdoutIsLog: boolean,
+): void {
   const tail = runtime.outputTail;
   const writeChunk = (stream: "stdout" | "stderr") => (chunk: unknown) => {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
@@ -2291,7 +2325,8 @@ function captureBackendOutput(child: ChildProcess.ChildProcess, runtime: Backend
     backendLogSink?.write(Buffer.concat([Buffer.from(`[${runtime.profile.slug}] `), buffer]));
     if (!app.isPackaged) process[stream].write(buffer);
   };
-  child.stdout?.on("data", writeChunk("stdout"));
+  // A guest backend's stdout is its frame channel, never log output.
+  if (stdoutIsLog) child.stdout?.on("data", writeChunk("stdout"));
   child.stderr?.on("data", writeChunk("stderr"));
 }
 
@@ -3310,13 +3345,24 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
   const backendIncarnation = Crypto.randomUUID();
   runtime.outputTail = new BackendOutputTail();
   runtime.startupReady = false;
-  const launch = resolved.launcher.launch({
-    entry: backendEntry,
-    nodeArgs: app.isPackaged ? compileCachePreloadArgs(__dirname) : [],
-    cwd: resolveBackendCwd(),
-    env: backendEnv(runtime),
-    incarnation: backendIncarnation,
-  });
+  let launch: BackendLaunch;
+  try {
+    launch = resolved.launcher.launch({
+      entry: backendEntry,
+      nodeArgs: app.isPackaged ? compileCachePreloadArgs(__dirname) : [],
+      cwd: resolveBackendCwd(),
+      env: backendEnv(runtime),
+      incarnation: backendIncarnation,
+      profileId: runtime.profile.id,
+      profileStateDir: profileStateDir(STATE_DIR, runtime.profile),
+      port: runtime.backendPort,
+      authToken: runtime.backendAuthToken,
+    });
+  } catch (error) {
+    runtime.stopped = true;
+    showStartupRecovery(runtime, error instanceof Error ? error.message : String(error));
+    return;
+  }
   const child = launch.process;
   runtime.backendProcess = child;
   computerSystem?.channel.registerChannel(runtime.profile.id, backendIncarnation, launch.channel);
@@ -3343,6 +3389,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       runtime.recoveryWindow?.close();
       runtime.recoveryWindow = null;
     },
+    startupTimeoutMs: resolved.launcher.readinessTimeoutMs,
     onStartupTimeout: () =>
       showStartupRecovery(runtime, "The server started but did not become ready in time."),
     onSustainedHealth: () => {
@@ -3372,7 +3419,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     "START",
     `pid=${child.pid ?? "unknown"} port=${runtime.backendPort} cwd=${resolveBackendCwd()}`,
   );
-  captureBackendOutput(child, runtime);
+  captureBackendOutput(child, runtime, launch.stdoutIsLog);
 
   child.on("error", (error) => {
     if (runtime.backendProcess === child) {
@@ -3398,10 +3445,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       let message = "Profile startup failed. Check its registry, lock, and configured port.";
       try {
         message = JSON.parse(
-          FS.readFileSync(
-            Path.join(profilesRootDir(STATE_DIR), `last-startup-error-${runtime.profile.id}.json`),
-            "utf8",
-          ),
+          FS.readFileSync(lastStartupErrorPath(runtime.profile.id), "utf8"),
         ).message;
       } catch {
         /* Startup may have failed before the diagnostic could be written. */
@@ -3543,6 +3587,13 @@ async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
       );
       if (otherBackends.length >= MAX_ACTIVE_PROFILE_BACKENDS)
         throw new Error("Six profiles are already running. Stop one before opening another.");
+      if (
+        isLinuxVmProfile(runtime.profile) &&
+        otherBackends.filter((entry) => isLinuxVmProfile(entry.profile)).length >= MAX_RUNNING_VMS
+      )
+        throw new Error(
+          "Two Linux VM profiles are already running. Stop one before opening another.",
+        );
       await ensureProfileConnection(
         runtime,
         () =>
@@ -3567,6 +3618,7 @@ async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
       waitForProfileBackend(
         () => !isQuitting && !runtime.stopped && isProfileBackendRunning(runtime),
         () => checkBackendReady(runtime),
+        requireProfileBackendLauncher(runtime.profile, backendLaunchers).readinessTimeoutMs,
       ),
   });
 }

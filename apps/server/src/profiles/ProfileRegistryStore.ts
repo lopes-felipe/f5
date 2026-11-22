@@ -65,6 +65,12 @@ export async function assertProfileDirectory(
   return directory;
 }
 export const LINUX_VM_CREATE_UNAVAILABLE = "Linux VM profiles are not available in this build.";
+/** Hidden until the preview ships; desktop main reads the same flag for its VM launcher. */
+export const linuxVmProfilesEnabled = (
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+) => env.F5_EXPERIMENTAL_LINUX_VM === "1" && platform === "darwin" && arch === "arm64";
 export const isProfilePortBindable = (port: number, host = "127.0.0.1") =>
   new Promise<boolean>((resolve) => {
     const server = Net.createServer();
@@ -81,6 +87,7 @@ export class ProfileRegistryStore {
   constructor(
     readonly defaultStateDir: string,
     readonly portBase = 3773,
+    readonly linuxVmEnabled = linuxVmProfilesEnabled(),
   ) {
     this.root = profilesRootDir(defaultStateDir);
     this.path = profileRegistryPath(defaultStateDir);
@@ -291,8 +298,9 @@ export class ProfileRegistryStore {
     };
   }
   async create(input: ProfileCreateInput): Promise<ProfileRecord> {
-    // The VM runtime, and the provisioning lifecycle a VM record needs, aren't in this build.
-    if (input.executionEnvironment === "linux-vm") throw new Error(LINUX_VM_CREATE_UNAVAILABLE);
+    const linuxVm = input.executionEnvironment === "linux-vm";
+    // Outside the hidden experiment, the VM runtime this record needs isn't available.
+    if (linuxVm && !this.linuxVmEnabled) throw new Error(LINUX_VM_CREATE_UNAVAILABLE);
     return this.locked(async () => {
       let registry = await this.required();
       let stem = input.name
@@ -317,10 +325,23 @@ export class ProfileRegistryStore {
         isDefault: false,
         status: "provisioning",
         createdAt: new Date().toISOString(),
+        ...(linuxVm ? { executionEnvironment: "linux-vm" } : {}),
       });
       const directory = await assertProfileDirectory(this.defaultStateDir, record);
       registry = { ...registry, profiles: [...registry.profiles, record] };
       await this.write(registry);
+      if (linuxVm) {
+        // Provider homes, settings and SQLite live on the guest's data disk. The host
+        // directory holds only main-owned VM metadata, which desktop writes on first start.
+        await FS.mkdir(directory, { recursive: true, mode: 0o700 });
+        await FS.chmod(directory, 0o700);
+        const ready = { ...record, status: "ready" as const };
+        await this.write({
+          ...registry,
+          profiles: registry.profiles.map((p) => (p.id === record.id ? ready : p)),
+        });
+        return ready;
+      }
       const homes = profileProviderHomesDir(directory);
       for (const name of ["codex", "claude"])
         await FS.mkdir(Path.join(homes, name), { recursive: true, mode: 0o700 });

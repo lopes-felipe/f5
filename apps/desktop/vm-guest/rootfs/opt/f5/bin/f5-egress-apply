@@ -1,0 +1,27 @@
+#!/bin/bash
+# Internet-only egress for the guest: drop new outbound connections to the host gateway,
+# private, CGNAT and link-local ranges. DNS is allowed only to the discovered resolvers.
+set -euo pipefail
+resolvers=$( (resolvectl dns 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true
+  awk '/^nameserver/ {print $2}' /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true) |
+  grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | grep -vE '^127\.' | sort -u | paste -sd, -)
+if [ -z "$resolvers" ]; then
+  echo "f5-egress-apply: no resolver found" >&2
+  exit 1
+fi
+nft -f - <<EOF
+table inet f5_egress
+delete table inet f5_egress
+table inet f5_egress {
+  chain output {
+    type filter hook output priority 0; policy accept;
+    ct state established,related accept
+    oifname "lo" accept
+    meta l4proto ipv6-icmp accept
+    ip daddr { $resolvers } meta l4proto { udp, tcp } th dport 53 accept
+    ct state new ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } counter drop
+    ct state new ip6 daddr { fc00::/7, fe80::/10 } counter drop
+  }
+}
+EOF
+echo "f5 egress policy loaded (resolvers: $resolvers)"

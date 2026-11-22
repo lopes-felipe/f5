@@ -31,6 +31,10 @@ describe("profile backend launchers", () => {
       cwd: "/cwd",
       env: { KEEP: "1" },
       incarnation: "inc",
+      profileId: "0123456789abcdef0123456789abcdef",
+      profileStateDir: "/state",
+      port: 4000,
+      authToken: "token",
     });
     expect(spawn).toHaveBeenCalledWith(
       "/usr/bin/sandbox-exec",
@@ -48,6 +52,7 @@ describe("profile backend launchers", () => {
     );
     expect(launch.process).toBe(child);
     expect(launch.channel.hostPid).toBe(7);
+    expect(launch.stdoutIsLog).toBe(true);
   });
 
   it("never resolves a Linux VM profile to the host launcher", () => {
@@ -62,7 +67,11 @@ describe("profile backend launchers", () => {
     expect(
       resolveProfileBackendLauncher({ executionEnvironment: "linux-vm" }, { "linux-vm": host }).ok,
     ).toBe(false);
-    const vm: ProfileBackendLauncher = { environment: "linux-vm", launch: vi.fn() };
+    const vm: ProfileBackendLauncher = {
+      environment: "linux-vm",
+      readinessTimeoutMs: 1,
+      launch: vi.fn(),
+    };
     expect(
       resolveProfileBackendLauncher({ executionEnvironment: "linux-vm" }, { "linux-vm": vm }).ok,
     ).toBe(true);
