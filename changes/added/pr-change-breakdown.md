@@ -1,0 +1,1 @@
+- Pull request change totals show a breakdown of code, tests, mocks, generated files, and documentation on hover or keyboard focus.

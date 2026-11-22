@@ -3,6 +3,13 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const APPEARANCE_SETTINGS_DESCRIPTORS = [
   {
+    ...SETTINGS_ITEM_ROUTES["appearance.math"],
+    label: "Render LaTeX math in chat",
+    description: "Render inline and display equations with copyable TeX source.",
+    keywords: ["latex", "math", "equations", "katex", "tex"],
+    targetSelector: '[aria-label="Render LaTeX math in chat"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["appearance.theme"],
     label: "Theme preference",
     description: "Use the system, light, or dark appearance.",

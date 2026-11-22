@@ -6271,6 +6271,9 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         return yield* prHub.getFiles(body);
       }
+      case PR_HUB_WS_METHODS.getChangeBreakdown: {
+        return yield* prHub.getChangeBreakdown(stripRequestTag(request.body));
+      }
 
       case PR_HUB_WS_METHODS.updateComment: {
         const body = stripRequestTag(request.body);

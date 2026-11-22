@@ -18,6 +18,14 @@ import {
 } from "./serverSettings";
 
 describe("serverSettings helpers", () => {
+  it("keeps automatic shell-created GitLab linking opt-in", () => {
+    expect(DEFAULT_SERVER_SETTINGS.autoLinkShellCreatedMergeRequests).toBe(false);
+    expect(
+      applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+        autoLinkShellCreatedMergeRequests: true,
+      }).autoLinkShellCreatedMergeRequests,
+    ).toBe(true);
+  });
   it("drops an override key this server does not know from a patch and keeps one it stored", () => {
     const projectId = ProjectId.make("project-a");
     const current = Schema.decodeUnknownSync(ServerSettings)({

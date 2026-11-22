@@ -1,4 +1,5 @@
 import { PrViewedFile } from "./PrViewedFile";
+import { PrChangeStat } from "./PrChangeStat";
 import { describePrDiffError } from "./prDiffError";
 import { forgeProviderLabel } from "./forgePresentation";
 import { OpenLinkAnchor } from "../OpenLinkAnchor";
@@ -106,8 +107,7 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
         {comparisonMode === "current_pr" ? (
           <>
             {files.length} of {pr.changedFiles} changed files loaded ·{" "}
-            <span className="text-diff-addition">+{pr.additions}</span> /{" "}
-            <span className="text-diff-deletion">−{pr.deletions}</span>
+            <PrChangeStat pr={pr} eager />
           </>
         ) : (
           <>

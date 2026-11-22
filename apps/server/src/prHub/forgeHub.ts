@@ -1,4 +1,5 @@
 import { Effect, Option, PubSub, Schema, Semaphore, Stream } from "effect";
+import { readChangeBreakdown } from "./changeBreakdown";
 import { SqlClient } from "effect/unstable/sql";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -685,6 +686,13 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
       track,
       getDetail,
       getFiles,
+      getChangeBreakdown: (input) =>
+        readChangeBreakdown((cursor) =>
+          getFiles({
+            key: input.key,
+            ...(cursor ? { cursor } : {}),
+          }),
+        ),
       getTimeline,
       getReviewThreads: (input) =>
         readThreads(input).pipe(

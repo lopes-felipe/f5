@@ -7,6 +7,16 @@ export function ApprovalPresentation({ approval }: { approval: PendingApproval }
       {presentation?.title ? <p className="font-medium">{presentation.title}</p> : null}
       {presentation?.description ? <p>{presentation.description}</p> : null}
       {presentation?.decisionReason ? <p>Reason: {presentation.decisionReason}</p> : null}
+      {presentation?.fullAccessOverride ? (
+        <details>
+          <summary className="cursor-pointer">Why am I being asked this?</summary>
+          <p>
+            {presentation.fullAccessOverride === "ask_rule"
+              ? "Full access skips approvals, but an ask rule in Claude's own settings matches this action. Remove or narrow that rule to stop these prompts."
+              : "Full access skips approvals, but Claude still enforces some provider safety checks. F5 cannot turn these off. Check the request before approving it."}
+          </p>
+        </details>
+      ) : null}
       {presentation?.blockedPath ? (
         <p>
           Path: <code>{presentation.blockedPath}</code>

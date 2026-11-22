@@ -1211,6 +1211,7 @@ export function createWsNativeApi(): NativeApi {
       saveReviewDraft: (input) => requestPrHub(PR_HUB_WS_METHODS.saveReviewDraft, input),
       getUnresolvedThreads: (input) => requestPrHub(PR_HUB_WS_METHODS.getUnresolvedThreads, input),
       getFiles: (input) => requestPrHub(PR_HUB_WS_METHODS.getFiles, input),
+      getChangeBreakdown: (input) => requestPrHub(PR_HUB_WS_METHODS.getChangeBreakdown, input),
       updateComment: (input) => requestPrHub(PR_HUB_WS_METHODS.updateComment, input),
       setReaction: (input) => requestPrHub(PR_HUB_WS_METHODS.setReaction, input),
       changeReviewers: (input) => requestPrHub(PR_HUB_WS_METHODS.changeReviewers, input),

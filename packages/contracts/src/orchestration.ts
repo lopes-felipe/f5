@@ -227,6 +227,7 @@ export const ProviderApprovalPresentation = Schema.Struct({
   description: Schema.optional(Schema.String),
   displayName: Schema.optional(Schema.String),
   decisionReason: Schema.optional(Schema.String),
+  fullAccessOverride: Schema.optional(Schema.Literals(["ask_rule", "provider_check"])),
   blockedPath: Schema.optional(Schema.String),
   agentId: Schema.optional(Schema.String),
   defaultToNo: Schema.optional(Schema.Boolean),

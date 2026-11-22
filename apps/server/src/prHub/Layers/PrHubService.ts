@@ -18,6 +18,7 @@ import { PrHubJobCoordinator } from "../Services/PrHubJobCoordinator.ts";
 import { PrHubReviewOperations } from "../Services/PrHubReviewOperations.ts";
 import { readPrDetailCache, type CachedPrDetailRead } from "../detailCache.ts";
 import { fetchGitHubPrFiles } from "../githubPrFiles.ts";
+import { readChangeBreakdown } from "../changeBreakdown.ts";
 import { readViewerReviewedHead } from "../viewerReviewedHead.ts";
 
 import { GitHubCredentialScope } from "../../git/githubApi.ts";
@@ -826,6 +827,13 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       getDetail,
       getTimeline,
       getFiles,
+      getChangeBreakdown: (input) =>
+        readChangeBreakdown((cursor) =>
+          getFiles({
+            key: input.key,
+            ...(cursor ? { cursor } : {}),
+          }),
+        ),
       getUnresolvedThreads,
       replyReviewThread,
       getReplyOperation,
@@ -1091,6 +1099,8 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
           ? withPrAccount(operations.saveReviewDraft(input), input, false)
           : withLocalAccount(operations.saveReviewDraft(input), input.accountGeneration),
       getFiles: (input) => withPrAccount(operations.getFiles(input), input, false),
+      getChangeBreakdown: (input) =>
+        withPrAccount(operations.getChangeBreakdown(input), input, false),
       getUnresolvedThreads: (input) =>
         withPrAccount(operations.getUnresolvedThreads(input), input, false),
       updateComment: (input) => withPrAccount(operations.updateComment(input), input),

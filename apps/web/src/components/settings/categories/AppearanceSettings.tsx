@@ -219,6 +219,23 @@ export function AppearanceSettings() {
 
   return (
     <>
+      <section className="space-y-2 rounded-lg border p-4">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            aria-label="Render LaTeX math in chat"
+            type="checkbox"
+            checked={settings.mathRenderingEnabled}
+            onChange={(event) => {
+              void updateSettings({ mathRenderingEnabled: event.target.checked });
+            }}
+          />
+          Render LaTeX math in chat
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Render inline and display equations. Use the TeX button beside a formula to copy its
+          source.
+        </p>
+      </section>
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Theme</h2>

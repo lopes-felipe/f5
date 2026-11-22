@@ -249,6 +249,7 @@ export const RPC_METHOD_POLICY = {
   "prHub.getChecks": READ,
   "prHub.getDetail": READ,
   "prHub.getFiles": READ,
+  "prHub.getChangeBreakdown": READ,
   "prHub.getOperation": READ,
   "prHub.getOverview": READ,
   "prHub.getReplyDraft": READ,

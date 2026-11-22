@@ -6,6 +6,21 @@ import {
 } from "./claudeApprovalPresentation.ts";
 
 describe("Claude approval presentation", () => {
+  it("explains bypass overrides and strips terminal formatting", () => {
+    expect(
+      claudeApprovalPresentation(
+        { decisionReason: "\u001b[31mSafety check\u001b[0m" },
+        { permissionMode: "bypassPermissions" },
+      ),
+    ).toEqual({ decisionReason: "Safety check", fullAccessOverride: "provider_check" });
+    const matchedAskRule = { source: "userSettings" as const, toolName: "Bash", ruleContent: "*" };
+    expect(
+      claudeApprovalPresentation({ matchedAskRule }, { permissionMode: "bypassPermissions" }),
+    ).toEqual({ fullAccessOverride: "ask_rule" });
+    expect(
+      claudeApprovalPresentation({ matchedAskRule }, { permissionMode: "plan" }),
+    ).toBeUndefined();
+  });
   it.each([
     "Dangerous rm command. Use a safer path.",
     "Dangerous rmdir command.",
