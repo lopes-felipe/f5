@@ -15,6 +15,7 @@ const KEYBINDING_GROUPS = [
       "navigation",
       "sidebar",
       "rightPanel",
+      "agents",
       "commandPalette",
       "palette",
       "projectContentSearch",

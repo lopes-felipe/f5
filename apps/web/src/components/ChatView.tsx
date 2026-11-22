@@ -4377,6 +4377,26 @@ export default memo(function ChatView({
     };
   }, [terminalCloseRepeatGuard]);
 
+  const getShortcutContext = useCallback(
+    (event: globalThis.KeyboardEvent) => {
+      const composerForm = composerFormRef.current;
+      const composerFocus = Boolean(
+        composerForm &&
+        ((event.target instanceof Node && composerForm.contains(event.target)) ||
+          composerForm.contains(document.activeElement)),
+      );
+      return {
+        terminalFocus: isTerminalFocused(),
+        terminalOpen: Boolean(terminalState.terminalOpen),
+        dialogFocus: isEventInDialogKeybindingContext(event),
+        composerFocus,
+        newThreadComposer: composerFocus && !isServerThread,
+        modelPickerOpen: isModelPickerOpen,
+      };
+    },
+    [composerFormRef, isModelPickerOpen, isServerThread, terminalState.terminalOpen],
+  );
+
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
       const owner =
@@ -4392,24 +4412,10 @@ export default memo(function ChatView({
       }
       if (isDiffSearchEditingKey(event)) return;
       if (!activeThreadId || event.defaultPrevented || isKeyboardEventComposing(event)) return;
-      const eventTarget = event.target instanceof Node ? event.target : null;
-      const dialogFocus = isEventInDialogKeybindingContext(event);
-      const composerForm = composerFormRef.current;
-      const activeElement = document.activeElement;
-      const composerFocused = Boolean(
-        composerForm &&
-        ((eventTarget && composerForm.contains(eventTarget)) ||
-          (activeElement instanceof Node && composerForm.contains(activeElement))),
-      );
-
+      const context = getShortcutContext(event);
+      const { dialogFocus, composerFocus: composerFocused } = context;
       const command = resolveShortcutCommand(event, keybindings, {
-        context: {
-          terminalFocus: isTerminalFocused(),
-          terminalOpen: Boolean(terminalState.terminalOpen),
-          dialogFocus,
-          composerFocus: composerFocused,
-          newThreadComposer: composerFocused && !isServerThread,
-        },
+        context,
       });
       if (
         command === "chat.find" &&
@@ -4514,12 +4520,6 @@ export default memo(function ChatView({
           event.preventDefault();
           state.closeSurface(activeThreadId, panel.activeSurfaceId);
         }
-        return;
-      }
-      if (command === "agents.toggle") {
-        event.preventDefault();
-        event.stopPropagation();
-        if (!event.repeat) onToggleAgents();
         return;
       }
       if (command === "composer.effortUp" || command === "composer.effortDown") {
@@ -4679,7 +4679,7 @@ export default memo(function ChatView({
     isComposerApprovalState,
     blockingUserInputs.length,
     keybindings,
-    onToggleAgents,
+    getShortcutContext,
     onStashPrompt,
     threadActionController,
     gitCwd,
@@ -4697,7 +4697,6 @@ export default memo(function ChatView({
     openThreadFind,
     showScrollToBottom,
     settings.sendShortcut,
-    terminalState.terminalOpen,
     wsInteractionBlocked,
   ]);
 
@@ -4710,12 +4709,7 @@ export default memo(function ChatView({
       if (owner ? owner !== threadId : embedded) return;
       if (!activeThreadId || event.defaultPrevented) return;
       if (wsInteractionBlocked) return;
-      const shortcutContext = {
-        terminalFocus: isTerminalFocused(),
-        terminalOpen: Boolean(terminalState.terminalOpen),
-        dialogFocus: isEventInDialogKeybindingContext(event),
-        modelPickerOpen: isModelPickerOpen,
-      };
+      const shortcutContext = getShortcutContext(event);
 
       const command = resolveShortcutCommand(event, keybindings, {
         context: shortcutContext,
@@ -4765,6 +4759,15 @@ export default memo(function ChatView({
         return;
       }
 
+      if (command === "agents.toggle") {
+        // An embedded chat has no right-panel host for its own surfaces.
+        if (embedded || isKeyboardEventComposing(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) onToggleAgents();
+        return;
+      }
+
       if (command === "modelPicker.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -4797,11 +4800,12 @@ export default memo(function ChatView({
     closeTerminal,
     createNewTerminal,
     isPendingTurnDispatchBlocked,
-    isModelPickerOpen,
+    getShortcutContext,
     setTerminalOpen,
     runProjectScript,
     splitTerminal,
     keybindings,
+    onToggleAgents,
     onToggleDiff,
     toggleTerminalVisibility,
     wsInteractionBlocked,

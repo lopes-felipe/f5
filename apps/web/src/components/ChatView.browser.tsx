@@ -325,6 +325,20 @@ function createModKeybinding(
   };
 }
 
+function dispatchAgentsShortcut(target: HTMLElement) {
+  const useMetaForMod = isMacPlatform(navigator.platform);
+  target.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "B",
+      metaKey: useMetaForMod,
+      ctrlKey: !useMetaForMod,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
 function createUserMessage(options: {
   id: MessageId;
   text: string;
@@ -8409,30 +8423,104 @@ describe("ChatView timeline (full app)", () => {
     try {
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
-      const useMetaForMod = isMacPlatform(navigator.platform);
-      const pressShortcut = () =>
-        composerEditor.dispatchEvent(
-          new KeyboardEvent("keydown", {
-            key: "B",
-            metaKey: useMetaForMod,
-            ctrlKey: !useMetaForMod,
-            shiftKey: true,
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
       const panel = () =>
         selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_ID);
 
-      pressShortcut();
+      dispatchAgentsShortcut(composerEditor);
       await vi.waitFor(() => {
         expect(panel()).toMatchObject({ isOpen: true, activeSurfaceId: "agents" });
       });
 
-      pressShortcut();
+      dispatchAgentsShortcut(composerEditor);
       await vi.waitFor(() => {
         expect(panel().surfaces.some((surface) => surface.id === "agents")).toBe(false);
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("records the Agents shortcut in the Add action dialog", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-record-agents-shortcut" as MessageId,
+      targetText: "record shortcut test",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        projects: snapshot.projects.map((project) => ({
+          ...project,
+          scripts: [
+            { id: "test", name: "Test", command: "ls", icon: "test", runOnWorktreeCreate: false },
+          ],
+        })),
+      },
+      configureFixture: (fixture) => {
+        fixture.serverConfig = {
+          ...fixture.serverConfig,
+          keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+        };
+      },
+    });
+
+    try {
+      await page.getByRole("button", { name: "Script actions" }).click();
+      await page.getByRole("menuitem", { name: "Add action" }).click();
+      const recorder = await waitForElement(
+        () => document.querySelector<HTMLInputElement>("#script-keybinding"),
+        "The shortcut recorder should be visible.",
+      );
+      recorder.focus();
+      dispatchAgentsShortcut(recorder);
+      await expect.element(page.getByLabelText("Keybinding")).toHaveValue("mod+shift+b");
+      await expect.element(page.getByText(/conflicts with Toggle Agents panel/)).toBeVisible();
+      expect(useRightPanelStore.getState().byThreadId[THREAD_ID]?.activeSurfaceId).not.toBe(
+        "agents",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("gives a saved model-picker binding priority over the Agents shortcut", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-model-picker-agents-shortcut" as MessageId,
+        targetText: "model picker shortcut test",
+      }),
+      configureFixture: (fixture) => {
+        fixture.serverConfig = {
+          ...fixture.serverConfig,
+          keybindings: [
+            ...DEFAULT_RESOLVED_KEYBINDINGS,
+            createModKeybinding("modelPicker.toggle", "b", {
+              shiftKey: true,
+              whenAst: { type: "identifier", name: "modelPickerOpen" },
+            }),
+          ],
+        };
+      },
+    });
+
+    try {
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLElement>("[data-chat-provider-model-picker]"),
+        "The model picker should be visible.",
+      );
+      await page.elementLocator(trigger).click();
+      const search = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('input[placeholder="Search models..."]'),
+        "The open model picker should show its search field.",
+      );
+      // The search input owns its keystrokes. Dispatch from the trigger to exercise
+      // the thread's bubbling shortcut handler while the picker is open.
+      dispatchAgentsShortcut(trigger);
+      await vi.waitFor(() => expect(search.isConnected).toBe(false));
+      expect(useRightPanelStore.getState().byThreadId[THREAD_ID]?.activeSurfaceId).not.toBe(
+        "agents",
+      );
     } finally {
       await mounted.cleanup();
     }
