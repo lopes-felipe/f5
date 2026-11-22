@@ -11,6 +11,7 @@ import { F5_THREAD_REFERENCE_MIME, writeThreadReferenceDrag } from "../lib/threa
 import { promptLinkScheme } from "./promptLinks/copyPromptLink";
 import { waitForTimelineLayout } from "../test/timeline";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
 import { serverBootstrapFixture as baseServerBootstrapFixture } from "../test/serverBootstrap";
 // Production CSS is part of the behavior under test because row height depends on it.
@@ -8386,6 +8387,53 @@ describe("ChatView timeline (full app)", () => {
       });
     } finally {
       useCommandPaletteStore.getState().setOpen(false);
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens and closes the Agents panel with the default shortcut", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-agents-shortcut" as MessageId,
+        targetText: "agents shortcut test",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+        };
+      },
+    });
+
+    try {
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      const useMetaForMod = isMacPlatform(navigator.platform);
+      const pressShortcut = () =>
+        composerEditor.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "B",
+            metaKey: useMetaForMod,
+            ctrlKey: !useMetaForMod,
+            shiftKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      const panel = () =>
+        selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_ID);
+
+      pressShortcut();
+      await vi.waitFor(() => {
+        expect(panel()).toMatchObject({ isOpen: true, activeSurfaceId: "agents" });
+      });
+
+      pressShortcut();
+      await vi.waitFor(() => {
+        expect(panel().surfaces.some((surface) => surface.id === "agents")).toBe(false);
+      });
+    } finally {
       await mounted.cleanup();
     }
   });

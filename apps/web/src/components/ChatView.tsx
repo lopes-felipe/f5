@@ -3087,6 +3087,10 @@ export default memo(function ChatView({
     () => shortcutLabelForCommand(keybindings, "diff.toggle"),
     [keybindings],
   );
+  const agentsPanelShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "agents.toggle"),
+    [keybindings],
+  );
   const terminalToggleShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "terminal.toggle"),
     [keybindings],
@@ -4512,6 +4516,12 @@ export default memo(function ChatView({
         }
         return;
       }
+      if (command === "agents.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) onToggleAgents();
+        return;
+      }
       if (command === "composer.effortUp" || command === "composer.effortDown") {
         event.preventDefault();
         if (
@@ -4669,6 +4679,7 @@ export default memo(function ChatView({
     isComposerApprovalState,
     blockingUserInputs.length,
     keybindings,
+    onToggleAgents,
     onStashPrompt,
     threadActionController,
     gitCwd,
@@ -8446,6 +8457,7 @@ export default memo(function ChatView({
               liveAgentCount={liveAgentCount}
               terminalToggleShortcutLabel={terminalToggleShortcutLabel}
               diffToggleShortcutLabel={diffPanelShortcutLabel}
+              agentsToggleShortcutLabel={agentsPanelShortcutLabel}
               gitCwd={gitCwd}
               threadActionItems={headerThreadActionItems}
               onThreadAction={handleHeaderThreadAction}

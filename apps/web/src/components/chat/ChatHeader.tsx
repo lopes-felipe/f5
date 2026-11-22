@@ -116,6 +116,7 @@ interface ChatHeaderProps {
   liveAgentCount: number;
   terminalToggleShortcutLabel: string | null;
   diffToggleShortcutLabel: string | null;
+  agentsToggleShortcutLabel: string | null;
   gitCwd: string | null;
   diffState: RightPanelSurfaceHeaderState;
   threadActionItems: ReadonlyArray<ThreadActionMenuItem>;
@@ -191,6 +192,7 @@ export const ChatHeader = memo(function ChatHeader({
   liveAgentCount,
   terminalToggleShortcutLabel,
   diffToggleShortcutLabel,
+  agentsToggleShortcutLabel,
   gitCwd,
   diffState,
   threadActionItems,
@@ -264,7 +266,7 @@ export const ChatHeader = memo(function ChatHeader({
       ariaLabel: agentsWorkingLabel
         ? `Toggle Agents panel, ${agentsWorkingLabel}`
         : "Toggle Agents panel",
-      shortcutLabel: null,
+      shortcutLabel: agentsToggleShortcutLabel,
       state: agentsState,
       disabled: false,
       disabledReason: "",

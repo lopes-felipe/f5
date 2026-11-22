@@ -132,6 +132,7 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+n", command: "terminal.new", when: "terminalFocus" },
   { key: "mod+w", command: "terminal.close", when: "terminalFocus" },
   { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" },
+  { key: "mod+shift+b", command: "agents.toggle", when: "!terminalFocus" },
   { key: "mod+n", command: "chat.new", when: "!terminalFocus" },
   { key: "mod+shift+n", command: "workflow.new", when: "!terminalFocus" },
   { key: "mod+enter", command: "chat.scrollToBottom", when: "!dialogFocus" },
