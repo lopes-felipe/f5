@@ -45,9 +45,11 @@ jobs:
       - name: Install image tools
         run: |
           sudo apt-get update
-          # ipxe-qemu provides efi-virtio.rom, which QEMU needs for the appliance's
-          # virtio-net device when virt-customize runs with --network.
-          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils jq ipxe-qemu
+          # With --network, QEMU needs efi-virtio.rom (ipxe-qemu) for the appliance's
+          # virtio-net device, and the appliance configures it with a DHCP client that
+          # supermin copies from the host; without one it has no address or resolver.
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils jq \
+            ipxe-qemu isc-dhcp-client dhcpcd-base
           # libguestfs reads the host kernel to build its appliance.
           sudo chmod 0644 /boot/vmlinuz-*
           # The runner's AppArmor policy stops passt; without it libguestfs uses QEMU's slirp.
@@ -69,7 +71,13 @@ jobs:
         run: |
           F5_IMAGE_BUILD_VERBOSE=1 apps/desktop/vm-guest/build-image.sh "$RUNNER_TEMP/vm-guest" \
             >"$RUNNER_TEMP/build-image.log" 2>&1 ||
-            { tail -200 "$RUNNER_TEMP/build-image.log"; exit 1; }
+            {
+              echo "--- appliance network setup"
+              grep -nE 'dhc|resolv|nameserver|iface|eth0' "$RUNNER_TEMP/build-image.log" | tail -40
+              echo "--- end of log"
+              tail -200 "$RUNNER_TEMP/build-image.log"
+              exit 1
+            }
           tail -20 "$RUNNER_TEMP/build-image.log"
 
       - uses: actions/upload-artifact@v4
