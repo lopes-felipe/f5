@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 
 import { installPreviewPermissionPolicy } from "./previewPermissions";
+import { previewLocationPromptOptions } from "./locationPrompt";
 
 it("requires reassessing the loopback permission check when upgrading Electron", () => {
   // A granted check can itself authorize some APIs without a later permission request.
@@ -138,6 +139,7 @@ function geolocationPolicy(
     userTab,
     agentTab,
     stopDriving: () => (driving = false),
+    startDriving: () => (driving = true),
     check: (origin: string, contents: { id: number } | null = userTab) =>
       session.setPermissionCheckHandler.mock.calls[0]![0](contents, "geolocation", origin),
     request: (url: string, contents: { id: number } | null = userTab) =>
@@ -195,6 +197,7 @@ it("shares a pending prompt and rechecks eligibility when it resolves", async ()
   preview.stopDriving();
   allowLocation();
   expect(await Promise.all([first, second])).toEqual([false, false]);
+  preview.startDriving();
   expect(preview.check("http://localhost:5173")).toBe(false);
 });
 
@@ -207,4 +210,14 @@ it("denies a failed geolocation prompt and lets the next request retry", async (
   expect(await preview.request("http://localhost:5173/")).toBe(false);
   expect(await preview.request("http://localhost:5173/")).toBe(true);
   expect(confirm).toHaveBeenCalledTimes(2);
+});
+
+it("bounds the displayed origin and defaults the location dialog to Block", () => {
+  const signal = new AbortController().signal;
+  const origin = "http://" + "a".repeat(300) + ".localhost";
+  const options = previewLocationPromptOptions(origin, signal);
+  expect(options.message).toBe(origin.slice(0, 300) + "… wants to know your location");
+  expect(options.buttons?.[options.defaultId!]).toBe("Block");
+  expect(options.buttons?.[options.cancelId!]).toBe("Block");
+  expect(options.signal).toBe(signal);
 });

@@ -127,7 +127,8 @@ export function installPreviewPermissionPolicy<Contents>(
         .catch(() => undefined)
         .then((decision) => {
           activeGeolocationPrompt = undefined;
-          if (decision !== undefined) geolocationDecisions.set(origin, decision);
+          if (decision === undefined || !isUserDriven(webContents)) return undefined;
+          geolocationDecisions.set(origin, decision);
           return decision;
         });
       activeGeolocationPrompt = { session, origin, result: prompt };

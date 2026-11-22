@@ -2,8 +2,9 @@ import { createContext, runInContext } from "node:vm";
 import { EventEmitter } from "node:events";
 import type { WebContents } from "electron";
 import { expect, it, vi } from "vitest";
-import { clickPreviewGuest, preservePreviewHostFocus } from "./guestFocus";
+import { clickPreviewGuest, hasPendingPreviewInput, preservePreviewHostFocus } from "./guestFocus";
 import { PreviewAutomationControl } from "./automationControl";
+import { PreviewPicker } from "./PreviewPicker";
 
 function deferred() {
   let resolve!: () => void;
@@ -260,12 +261,12 @@ it.each(["timeout", "takeover"])(
     try {
       const f = fixture();
       const pending = deferred();
-      const pressed = deferred();
+      const releaseStarted = deferred();
       const control = new PreviewAutomationControl();
       const sendCommand = vi.fn(async (_method: string, params: { type: string }) => {
-        if (params.type === "mousePressed") {
+        if (params.type === "mouseReleased") {
           f.focusGuest(7);
-          pressed.resolve();
+          releaseStarted.resolve();
           await pending.promise;
         }
       });
@@ -278,19 +279,25 @@ it.each(["timeout", "takeover"])(
       const rejected = expect(result).rejects.toThrow(
         reason === "timeout" ? "timed out" : "user took control",
       );
-      await pressed.promise;
+      await releaseStarted.promise;
       if (reason === "timeout") await vi.advanceTimersByTimeAsync(5001);
       else control.cancel("tab");
       await rejected;
+      expect(control.isActive("tab")).toBe(false);
+      await expect(new PreviewPicker().pick(guest, hasPendingPreviewInput(guest))).rejects.toThrow(
+        "current browser automation action",
+      );
       expect(f.context.__f5PreviewFocus).toBeUndefined();
       await expect(
         control.run("tab", (checkpoint) => clickPreviewGuest(guest, 10, 20, checkpoint)),
       ).rejects.toThrow("still pending");
       pending.resolve();
       await vi.advanceTimersByTimeAsync(0);
+      expect(hasPendingPreviewInput(guest)).toBe(false);
       expect(sendCommand.mock.calls.map(([, params]) => params.type)).toEqual([
         "mouseMoved",
         "mousePressed",
+        "mouseReleased",
       ]);
     } finally {
       vi.useRealTimers();

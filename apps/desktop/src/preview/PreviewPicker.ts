@@ -10,7 +10,7 @@ type DocumentEndEvent = (typeof documentEndEvents)[number];
 
 type PickerGuest = Pick<
   Electron.WebContents,
-  "executeJavaScriptInIsolatedWorld" | "getURL" | "isLoadingMainFrame"
+  "executeJavaScriptInIsolatedWorld" | "getURL" | "isLoadingMainFrame" | "isCrashed"
 > & {
   once(event: DocumentEndEvent, listener: () => void): unknown;
   off(event: DocumentEndEvent, listener: () => void): unknown;
@@ -39,6 +39,9 @@ export class PreviewPicker {
   async pick(guest: PickerGuest, automationActive: boolean): Promise<unknown> {
     if (automationActive) {
       throw new Error("Wait for the current browser automation action to finish before picking.");
+    }
+    if (guest.isCrashed()) {
+      throw new Error("Reload the preview before picking an element.");
     }
     // Electron can defer script execution until navigation finishes.
     if (!guest.getURL() || guest.isLoadingMainFrame()) {

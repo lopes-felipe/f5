@@ -2,7 +2,11 @@ import { EventEmitter } from "node:events";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import { PreviewPicker } from "./PreviewPicker";
-import { PREVIEW_PICK_INPUT_LAYER_ATTRIBUTE, PREVIEW_PICK_WORLD_ID } from "./pickScript";
+import {
+  PREVIEW_PICK_INPUT_LAYER_ATTRIBUTE,
+  PREVIEW_PICK_TIMEOUT_MS,
+  PREVIEW_PICK_WORLD_ID,
+} from "./pickScript";
 
 interface FakeElement {
   nodeType: number;
@@ -95,10 +99,13 @@ function startPick(contentType: string) {
     location: { href: "file:///doc.pdf" },
     Node: { ELEMENT_NODE: 1 },
     CSS: { escape: (value: string) => value },
+    setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms).unref(),
+    clearTimeout,
   };
   const guest = Object.assign(new EventEmitter(), {
     getURL: vi.fn(() => context.location.href),
     isLoadingMainFrame: vi.fn(() => false),
+    isCrashed: vi.fn(() => false),
     executeJavaScriptInIsolatedWorld: vi.fn(
       async (worldId: number, scripts: Electron.WebSource[]) => {
         expect(worldId).toBe(PREVIEW_PICK_WORLD_ID);
@@ -263,7 +270,22 @@ describe("PreviewPicker", () => {
     await expect(pick.run(true)).rejects.toThrow("current browser automation action");
     pick.guest.isLoadingMainFrame.mockReturnValue(true);
     await expect(pick.run()).rejects.toThrow("finish loading");
+    pick.guest.isCrashed.mockReturnValue(true);
+    await expect(pick.run()).rejects.toThrow("Reload the preview");
     expect(pick.guest.executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
     expect(() => pick.picker.assertAutomationAllowed(pick.guest)).not.toThrow();
+  });
+
+  it("releases an idle pick and its automation guard after a minute", async () => {
+    vi.useFakeTimers();
+    try {
+      const pick = startPick("application/pdf");
+      await vi.advanceTimersByTimeAsync(PREVIEW_PICK_TIMEOUT_MS);
+      await expect(pick.result).resolves.toBeNull();
+      expect(pick.inputLayers()).toHaveLength(0);
+      expect(() => pick.picker.assertAutomationAllowed(pick.guest)).not.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

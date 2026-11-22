@@ -1,5 +1,6 @@
 export const PREVIEW_PICK_INPUT_LAYER_ATTRIBUTE = "data-f5-preview-pick-input";
 export const PREVIEW_PICK_WORLD_ID = 1008;
+export const PREVIEW_PICK_TIMEOUT_MS = 60_000;
 
 export function buildCancelPreviewPickScript(pickIds: readonly number[]): string {
   return `(() => {
@@ -64,6 +65,7 @@ export function buildPreviewPickScript(pickId: number): string {
     };
 
     const cleanup = () => {
+      clearTimeout(timeout);
       window.__f5PreviewPicker = undefined;
       window.removeEventListener("mousemove", onMove, true);
       window.removeEventListener("click", onClick, true);
@@ -152,6 +154,7 @@ export function buildPreviewPickScript(pickId: number): string {
     }
 
     window.__f5PreviewPicker = { id: ${pickId}, cancel: () => finish(null) };
+    const timeout = setTimeout(() => finish(null), ${PREVIEW_PICK_TIMEOUT_MS});
     window.addEventListener("mousemove", onMove, true);
     window.addEventListener("click", onClick, true);
     window.addEventListener("keydown", onKeyDown, true);

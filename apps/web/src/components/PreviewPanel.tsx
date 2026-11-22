@@ -649,6 +649,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const [localServersLoading, setLocalServersLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const activePickRef = useRef<{ tabId: string } | null>(null);
   const [viewportBounds, setViewportBounds] = useState<PreviewViewportDimensions>({
     width: 1280,
     height: 720,
@@ -1623,21 +1624,37 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
     onClose();
   }, [activeSession, api, desktopPreview, onClose, stopPreviewRecording, threadId]);
 
+  const pickTabId = activeSession?.tabId;
+  useEffect(() => {
+    setPicking(false);
+    return () => {
+      if (!desktopPreview || !pickTabId || activePickRef.current?.tabId !== pickTabId) return;
+      activePickRef.current = null;
+      void desktopPreview.cancelPickElement(pickTabId).catch(() => undefined);
+    };
+  }, [desktopPreview, pickTabId, threadId, visible]);
+
   const pickElement = useCallback(async () => {
-    if (!activeSession || !desktopPreview) return;
+    if (!activeSession || !desktopPreview || !visible) return;
+    const pick = { tabId: activeSession.tabId };
+    activePickRef.current = pick;
     setPicking(true);
     setError(null);
     try {
       const annotation = await desktopPreview.pickElement(activeSession.tabId);
-      if (annotation) {
+      if (annotation && activePickRef.current === pick) {
         await appendAnnotationToComposer(threadId, annotation);
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (activePickRef.current === pick)
+        setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setPicking(false);
+      if (activePickRef.current === pick) {
+        activePickRef.current = null;
+        setPicking(false);
+      }
     }
-  }, [activeSession, desktopPreview, threadId]);
+  }, [activeSession, desktopPreview, threadId, visible]);
 
   if (!desktopPreview) {
     return <PreviewUnavailable onClose={onClose} />;
