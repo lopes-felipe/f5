@@ -18,6 +18,7 @@ import {
   wsPushFrameBytes,
   wsPushQueueDepth,
 } from "../observability/Metrics.ts";
+import { WEB_SOCKET_MAX_PAYLOAD_BYTES } from "./webSocketTransport.ts";
 
 type PushTarget =
   | { readonly kind: "all" }
@@ -39,7 +40,8 @@ const DEFAULT_MAX_CLIENT_OUTSTANDING_FRAMES = 2_000;
 const DEFAULT_MAX_CLIENT_BUFFERED_BYTES = 4 * 1024 * 1024;
 const SLOW_CLIENT_CLOSE_CODE = 1013;
 const SLOW_CLIENT_CLOSE_REASON = "Client fell behind; reconnecting to resynchronize.";
-const OVERSIZED_FRAME_DRAIN_TIMEOUT_MS = 10_000;
+// The transport may only report progress once a large write finishes.
+const OVERSIZED_FRAME_DRAIN_TIMEOUT_MS = 30_000;
 
 export interface WebSocketSendController {
   readonly send: (client: WebSocket, message: string) => Effect.Effect<boolean>;
@@ -66,6 +68,7 @@ export function makeWebSocketSendController(input: {
   interface ClientSendState {
     inFlightBytes: number;
     pendingBytes: number;
+    pendingOversizedBytes: number;
     readonly pending: PendingFrame[];
     oversizedDrainTimer: ReturnType<typeof setTimeout> | null;
     onClose: () => void;
@@ -77,7 +80,7 @@ export function makeWebSocketSendController(input: {
     if (state.oversizedDrainTimer) clearTimeout(state.oversizedDrainTimer);
     state.oversizedDrainTimer = null;
     state.pending.length = 0;
-    state.inFlightBytes = state.pendingBytes = 0;
+    state.inFlightBytes = state.pendingBytes = state.pendingOversizedBytes = 0;
     client.off("close", state.onClose);
     sendStateByClient.delete(client);
   };
@@ -88,6 +91,7 @@ export function makeWebSocketSendController(input: {
     const created: ClientSendState = {
       inFlightBytes: 0,
       pendingBytes: 0,
+      pendingOversizedBytes: 0,
       pending: [],
       oversizedDrainTimer: null,
       onClose: () => {
@@ -130,12 +134,23 @@ export function makeWebSocketSendController(input: {
 
   const startFrame = (client: WebSocket, state: ClientSendState, frame: PendingFrame): boolean => {
     state.inFlightBytes = frame.logicalBytes;
-    if (frame.logicalBytes > maxClientBufferedBytes) {
-      state.oversizedDrainTimer = setTimeout(() => {
+    let bufferedBytes = 0;
+    const checkDrain = () => {
+      const remaining = client.bufferedAmount;
+      if (remaining < bufferedBytes) {
+        bufferedBytes = remaining;
+        armDrainTimer();
+      } else {
         state.oversizedDrainTimer = null;
         Effect.runFork(closeSlowClient(client));
-      }, OVERSIZED_FRAME_DRAIN_TIMEOUT_MS);
+      }
+    };
+    const armDrainTimer = () => {
+      state.oversizedDrainTimer = setTimeout(checkDrain, OVERSIZED_FRAME_DRAIN_TIMEOUT_MS);
       state.oversizedDrainTimer.unref();
+    };
+    if (frame.logicalBytes > maxClientBufferedBytes) {
+      armDrainTimer();
     }
     try {
       client.send(frame.message, (error) => {
@@ -151,11 +166,13 @@ export function makeWebSocketSendController(input: {
         }
         const next = state.pending.shift();
         if (!next) return;
-        state.pendingBytes = Math.max(0, state.pendingBytes - next.logicalBytes);
+        state.pendingBytes -= next.logicalBytes;
+        if (next.logicalBytes > maxClientBufferedBytes) state.pendingOversizedBytes = 0;
         if (!startFrame(client, state, next)) {
           Effect.runFork(closeSlowClient(client));
         }
       });
+      bufferedBytes = client.bufferedAmount;
       return true;
     } catch {
       if (state.oversizedDrainTimer) {
@@ -183,14 +200,17 @@ export function makeWebSocketSendController(input: {
         return false;
       }
       if (logicalOutstanding > 0) {
-        // A single startup snapshot may exceed the normal backlog budget. Do
-        // not count that one frame against the normal queue behind it, but do
-        // serialize every send so callbacks cannot overwrite byte accounting.
-        const budgetedOutstanding = oversizedFrameInFlight
-          ? state.pendingBytes
-          : logicalOutstanding;
+        // Config and thread snapshots can both exceed the ordinary queue budget.
+        // Reserve one bounded slot behind the active write, preserving frame order.
+        const oversized = logicalBytes > maxClientBufferedBytes;
+        const ordinaryOutstanding =
+          state.pendingBytes -
+          state.pendingOversizedBytes +
+          (oversizedFrameInFlight ? 0 : state.inFlightBytes);
         if (
-          budgetedOutstanding + logicalBytes > maxClientBufferedBytes ||
+          (oversized
+            ? state.pendingOversizedBytes > 0 || logicalBytes > WEB_SOCKET_MAX_PAYLOAD_BYTES
+            : ordinaryOutstanding + logicalBytes > maxClientBufferedBytes) ||
           state.pending.length + 1 >= maxClientOutstandingFrames
         ) {
           yield* closeSlowClient(client);
@@ -198,6 +218,7 @@ export function makeWebSocketSendController(input: {
         }
         state.pending.push({ message, logicalBytes });
         state.pendingBytes += logicalBytes;
+        if (oversized) state.pendingOversizedBytes = logicalBytes;
         return true;
       }
 

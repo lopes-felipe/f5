@@ -168,8 +168,12 @@ const RPC_BUSY_BACKOFF_MS = [250, 500];
 const RUNTIME_PROBE_INTERVAL_MS = 1_000;
 const CONNECTION_TIMEOUT_MS = 10_000;
 const RECONNECT_DELAYS_MS = [500, 3_000, 4_000, 8_000, 16_000];
+const SESSION_LOSS_RETRY_DELAY_MS = 250;
+const RECONNECT_BACKOFF_RESET_MS = 30_000;
 const FOREGROUND_PROBE_COALESCE_MS = 10_000;
 const FOREGROUND_PROBE_TIMEOUT_MS = 3_000;
+const LONG_BACKGROUND_MS = 10_000;
+const LONG_RESUME_PROBE_TIMEOUT_MS = 1_500;
 const INITIAL_CONNECTION_ERROR_MESSAGE = "Unable to connect to the F5 server WebSocket.";
 const WS_CONNECTION_CLOSED_MESSAGE = "WebSocket connection closed.";
 const WS_CONNECTION_TIMED_OUT_MESSAGE = "WebSocket connection timed out.";
@@ -291,13 +295,14 @@ export class WsTransport {
   private readonly latestPushByChannel = new Map<string, WsPush>();
   private runtime: RuntimeReadinessState | null = null;
   private runtimeProbeTimer: ReturnType<typeof setTimeout> | null = null;
-  private runtimeProbeInFlight = false;
+  private runtimeProbeGeneration: number | null = null;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private authConnectInFlight = false;
   private authController: AbortController | null = null;
   private authGeneration = 0;
   private connectionTimer: ReturnType<typeof setTimeout> | null = null;
+  private hiddenAtMs = document.visibilityState === "hidden" ? Date.now() : null;
   private cancelAuthAttempt() {
     this.authGeneration++;
     this.authController?.abort();
@@ -325,9 +330,8 @@ export class WsTransport {
   private readonly handleWindowFocus = () => this.handleForegroundSignal();
   private readonly handleWindowOnline = () => this.handleForegroundSignal();
   private readonly handleVisibilityChange = () => {
-    if (document.visibilityState === "visible") {
-      this.handleForegroundSignal();
-    }
+    if (document.visibilityState === "hidden") this.hiddenAtMs ??= Date.now();
+    else this.handleForegroundSignal();
   };
 
   private unregisterResourceReader: (() => void) | undefined;
@@ -827,6 +831,7 @@ export class WsTransport {
     );
     url.searchParams.set(F5_PROTOCOL_QUERY, String(F5_PROTOCOL_VERSION));
     const ws = new WebSocket(url.toString());
+    let openedAtMs: number | null = null;
     const generation = ++this.socketGeneration;
     this.ws = ws;
     this.authoritativeSocketGeneration = generation;
@@ -851,7 +856,7 @@ export class WsTransport {
       }
 
       this.clearConnectionTimer();
-      this.reconnectAttempt = 0;
+      openedAtMs = Date.now();
       this.lastForegroundProbe = null;
       // A new socket has fresh server admission and unknown runtime readiness.
       this.scheduler.resetAdmission();
@@ -888,7 +893,10 @@ export class WsTransport {
       }
 
       noteWsConnectionClosed();
-      this.scheduleReconnect();
+      if (openedAtMs !== null && Date.now() - openedAtMs >= RECONNECT_BACKOFF_RESET_MS) {
+        this.reconnectAttempt = 0;
+      }
+      this.scheduleReconnect(openedAtMs !== null);
     });
 
     ws.addEventListener("error", (event) => {
@@ -912,25 +920,33 @@ export class WsTransport {
 
   private handleForegroundSignal(): void {
     if (this.disposed || getProtocolState().upgradeRequired) return;
+    const now = Date.now();
+    const longResume =
+      document.visibilityState === "visible" &&
+      this.hiddenAtMs !== null &&
+      now - this.hiddenAtMs >= LONG_BACKGROUND_MS;
+    if (document.visibilityState === "visible") this.hiddenAtMs = null;
 
     const ws = this.ws;
     if (ws?.readyState !== WebSocket.OPEN) {
-      if (ws?.readyState !== WebSocket.CONNECTING) {
+      if (!this.authConnectInFlight && ws?.readyState !== WebSocket.CONNECTING) {
         this.reconnect();
       }
       return;
     }
 
     const generation = this.authoritativeSocketGeneration;
-    const now = Date.now();
     // A sent RPC still awaiting its answer already proves the socket is active.
     // Queued requests do not: they may be waiting precisely because the socket
     // stopped answering. Neither do timed-out or aborted ones holding a slot
     // through their orphan grace.
-    for (const request of this.requests.values())
-      if (request.state === "sent" && !request.settled) return;
+    if (!longResume) {
+      for (const request of this.requests.values())
+        if (request.state === "sent" && !request.settled) return;
+    }
     if (this.foregroundProbeGeneration === generation) return;
     if (
+      !longResume &&
       this.lastForegroundProbe?.generation === generation &&
       now - this.lastForegroundProbe.startedAtMs < FOREGROUND_PROBE_COALESCE_MS
     ) {
@@ -943,9 +959,16 @@ export class WsTransport {
     void this.request(
       WS_METHODS.serverProbe,
       {},
-      { timeoutMs: FOREGROUND_PROBE_TIMEOUT_MS, trackLatency: false, retry: false },
+      {
+        timeoutMs: longResume ? LONG_RESUME_PROBE_TIMEOUT_MS : FOREGROUND_PROBE_TIMEOUT_MS,
+        trackLatency: false,
+        retry: false,
+      },
     )
-      .then((result) => this.applyRuntimeReadiness(probeRuntime(result), undefined))
+      .then((result) => {
+        if (this.isAuthoritativeSocket(generation, ws))
+          this.applyRuntimeReadiness(probeRuntime(result), undefined);
+      })
       .catch((error: unknown) => {
         if (!this.isAuthoritativeSocket(generation, ws)) return;
         // Any server answer, including `RpcBusy`, proves the socket is alive.
@@ -983,6 +1006,7 @@ export class WsTransport {
     this.scheduler.reset();
     this.runtime = null;
     this.clearRuntimeProbe();
+    this.runtimeProbeGeneration = null;
     for (const request of requests) {
       this.clearTimer(request);
       this.settle(
@@ -1043,14 +1067,18 @@ export class WsTransport {
 
   /** While requests wait for the runtime, probe at most once per second in case a push is lost. */
   private scheduleRuntimeProbe(): void {
-    if (this.runtimeProbeTimer !== null || this.runtimeProbeInFlight || !this.runtimeHolding())
+    if (
+      this.runtimeProbeTimer !== null ||
+      this.runtimeProbeGeneration !== null ||
+      !this.runtimeHolding()
+    )
       return;
     if (!this.scheduler.queuedEntries().some((request) => request.requiresRuntime)) return;
     const generation = this.authoritativeSocketGeneration;
     this.runtimeProbeTimer = setTimeout(() => {
       this.runtimeProbeTimer = null;
       if (generation !== this.authoritativeSocketGeneration || !this.runtimeHolding()) return;
-      this.runtimeProbeInFlight = true;
+      this.runtimeProbeGeneration = generation;
       void this.request(
         WS_METHODS.serverProbe,
         {},
@@ -1062,8 +1090,10 @@ export class WsTransport {
         })
         .catch(() => undefined)
         .finally(() => {
-          this.runtimeProbeInFlight = false;
-          this.scheduleRuntimeProbe();
+          if (this.runtimeProbeGeneration === generation) {
+            this.runtimeProbeGeneration = null;
+            this.scheduleRuntimeProbe();
+          }
         });
     }, RUNTIME_PROBE_INTERVAL_MS);
   }
@@ -1266,15 +1296,17 @@ export class WsTransport {
     this.scheduleRuntimeProbe();
   }
 
-  private scheduleReconnect() {
+  private scheduleReconnect(lostOpenSocket = false) {
     if (this.disposed || this.reconnectTimer !== null) {
       return;
     }
 
-    const baseDelay =
-      RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)] ??
-      RECONNECT_DELAYS_MS[0]!;
-    const delay = jitterReconnectDelay(baseDelay);
+    const delay =
+      lostOpenSocket && this.reconnectAttempt === 0
+        ? Math.round(SESSION_LOSS_RETRY_DELAY_MS * (0.5 + Math.random() / 2))
+        : jitterReconnectDelay(
+            RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)]!,
+          );
 
     this.reconnectAttempt += 1;
     this.reconnectTimer = setTimeout(() => {

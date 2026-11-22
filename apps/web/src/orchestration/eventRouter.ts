@@ -12,6 +12,7 @@ export interface EventRouterScheduler {
 export interface RouterSnapshot {
   readonly sequence: number;
   readonly provisional: boolean;
+  readonly replay?: readonly OrchestrationEvent[];
   readonly merge: () => void;
   readonly finish: () => Promise<void>;
 }
@@ -214,6 +215,11 @@ export function createOrchestrationEventRouter(deps: OrchestrationEventRouterDep
     if (generation !== snapshotGeneration)
       throw new Error("Snapshot recovery was invalidated; refetch required.");
     snapshot.merge();
+    if (snapshot.replay?.length) {
+      pendingEvents = [...snapshot.replay];
+      flushPending();
+      if (generation !== snapshotGeneration) return;
+    }
     latestSequence = Math.max(latestSequence, snapshot.sequence);
     committedSequence = Math.max(committedSequence, snapshot.sequence);
     flushWaiters();

@@ -3666,15 +3666,30 @@ export const OrchestrationStartImplementationInput = Schema.Struct({
 export type OrchestrationStartImplementationInput =
   typeof OrchestrationStartImplementationInput.Type;
 
+export const OrchestrationGetLatestSequenceInput = Schema.Struct({
+  resume: Schema.optional(
+    Schema.Struct({
+      afterSequence: NonNegativeInt,
+      backendIncarnation: Schema.String,
+    }),
+  ),
+});
+export type OrchestrationGetLatestSequenceInput = typeof OrchestrationGetLatestSequenceInput.Type;
+
 export const OrchestrationGetLatestSequenceResult = Schema.Struct({
   latestSequence: NonNegativeInt,
   backendIncarnation: Schema.String,
+  /** Present when the entire requested range can be replayed, including an empty range. */
+  events: Schema.optional(Schema.Array(OrchestrationEvent)),
 });
 export type OrchestrationGetLatestSequenceResult = typeof OrchestrationGetLatestSequenceResult.Type;
 
 export const OrchestrationRpcSchemas = {
   searchThread: { input: ThreadSearchInput, output: ThreadSearchResult },
-  getLatestSequence: { input: Schema.Struct({}), output: OrchestrationGetLatestSequenceResult },
+  getLatestSequence: {
+    input: OrchestrationGetLatestSequenceInput,
+    output: OrchestrationGetLatestSequenceResult,
+  },
   getSnapshot: {
     input: OrchestrationGetSnapshotInput,
     output: OrchestrationGetSnapshotResult,
