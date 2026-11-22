@@ -116,6 +116,12 @@ it("prepares and resumes an isolated workspace for a plain project folder", asyn
         ).toEqual({ recreated: true });
         expect(run(apiCheckout, "branch", "--show-current")).toBe("feature");
         const webCheckout = path.join(worktree, "web");
+        run(webCheckout, "switch", "-c", "web-feature");
+        yield* assertWorktreeReady(git, {
+          projectCwd: project,
+          worktreePath: worktree,
+          branch: "feature",
+        });
         yield* Effect.promise(() => writeFile(path.join(webCheckout, "app.txt"), "dirty"));
         const refused = yield* git
           .removeWorktree({ cwd: project, path: worktree })
@@ -297,10 +303,13 @@ it("keeps the contents and branch created by a primary checkout hook", async () 
 it("checks out a nested repository on the thread branch and preserves dirty nested work", async () => {
   const project = await mkdtemp(path.join(tmpdir(), "f5-worktree-project-"));
   const repo = path.join(project, "service");
+  const second = path.join(project, "web");
   try {
-    await init(project, ".gitignore", "/service/\n");
-    await mkdir(repo);
-    await init(repo, "app.txt", "committed\n");
+    await init(project, ".gitignore", "/service/\n/web/\n");
+    for (const directory of [repo, second]) {
+      await mkdir(directory);
+      await init(directory, "app.txt", "committed\n");
+    }
     await Effect.runPromise(
       Effect.gen(function* () {
         const git = yield* GitCore;
@@ -312,20 +321,25 @@ it("checks out a nested repository on the thread branch and preserves dirty nest
         });
         yield* prepareNestedRepositoryWorktrees(git, {
           worktreeRoot: worktree.path,
-          repositories: [{ path: repo, relativePath: "service" }],
+          repositories: [
+            { path: repo, relativePath: "service" },
+            { path: second, relativePath: "web" },
+          ],
           branch: "feature",
           baseBranch: "main",
         });
         const checkout = path.join(worktree.path, "service");
         expect(run(checkout, "branch", "--show-current")).toBe("feature");
         expect(run(repo, "branch", "--show-current")).toBe("main");
-        yield* Effect.promise(() => writeFile(path.join(checkout, "app.txt"), "local edit\n"));
+        const dirty = path.join(worktree.path, "web");
+        yield* Effect.promise(() => writeFile(path.join(dirty, "app.txt"), "local edit\n"));
         const rejected = yield* git
           .removeWorktree({ cwd: project, path: worktree.path })
           .pipe(Effect.result);
         expect(rejected._tag).toBe("Failure");
-        expect(run(checkout, "status", "--short")).toContain("M app.txt");
-        yield* Effect.promise(() => writeFile(path.join(checkout, "app.txt"), "committed\n"));
+        expect(run(checkout, "branch", "--show-current")).toBe("feature");
+        expect(run(dirty, "status", "--short")).toContain("M app.txt");
+        yield* Effect.promise(() => writeFile(path.join(dirty, "app.txt"), "committed\n"));
         yield* git.removeWorktree({ cwd: project, path: worktree.path });
         expect(run(repo, "worktree", "list", "--porcelain")).not.toContain("refs/heads/feature");
         expect(run(repo, "show-ref", "--verify", "refs/heads/feature")).toContain(

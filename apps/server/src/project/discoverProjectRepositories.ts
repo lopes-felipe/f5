@@ -1,6 +1,6 @@
 import type { ProjectId, ProjectRepository } from "@t3tools/contracts";
 import { hasSafeRelativePathShape } from "@t3tools/shared/checkedInProjectFile";
-import { Effect, FileSystem, Option } from "effect";
+import { Data, Effect, FileSystem, Option } from "effect";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
@@ -90,6 +90,11 @@ export const discoverProjectRepositories = Effect.fn("discoverProjectRepositorie
 
 type RepositoryProject = { readonly id: ProjectId; readonly workspaceRoot: string };
 
+class ProjectRepositoryConfigError extends Data.TaggedError("ProjectRepositoryConfigError")<{
+  readonly message: string;
+  readonly cause: unknown;
+}> {}
+
 const readRepositoryConfig = (project: RepositoryProject) => {
   const service = makeCheckedInProjectFileService(
     makeWorkspaceAssetAuthorizer({
@@ -98,7 +103,11 @@ const readRepositoryConfig = (project: RepositoryProject) => {
   );
   return Effect.tryPromise({
     try: () => service.load(project.id),
-    catch: (cause) => new Error("Could not load project repository configuration.", { cause }),
+    catch: (cause) =>
+      new ProjectRepositoryConfigError({
+        message: "Could not load project repository configuration.",
+        cause,
+      }),
   });
 };
 
@@ -270,19 +279,25 @@ export const listWorkspaceRepositories = Effect.fn("listWorkspaceRepositories")(
 
 /** Cache read-side discovery only. Rewind and Git mutations validate fresh scopes. */
 export function makeWorkspaceRepositoryReadCache() {
+  let generation = 0;
   const entries = new Map<
     string,
     { expiresAt: number; repositories: ReadonlyArray<ProjectRepository> }
   >();
   return {
-    clear: () => entries.clear(),
+    clear: () => {
+      generation++;
+      entries.clear();
+    },
     list: (...args: Parameters<typeof listWorkspaceRepositories>) =>
       Effect.gen(function* () {
         const [project, workspace] = args;
         const key = JSON.stringify([project.id, project.workspaceRoot, workspace]);
         const cached = entries.get(key);
         if (cached && cached.expiresAt > Date.now()) return cached.repositories;
+        const readGeneration = generation;
         const repositories = yield* listWorkspaceRepositories(...args);
+        if (readGeneration !== generation) return repositories;
         entries.delete(key);
         entries.set(key, { expiresAt: Date.now() + 5_000, repositories });
         if (entries.size > 64) entries.delete(entries.keys().next().value!);
