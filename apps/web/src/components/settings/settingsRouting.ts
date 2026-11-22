@@ -233,6 +233,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "appearance.theme": {
     category: "appearance",
   },
+  "appearance.math": {
+    category: "appearance",
+  },
   "appearance.palette": {
     category: "appearance",
   },
@@ -439,6 +442,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "git.auto-pull": {
     category: "git",
     scope: "both",
+  },
+  "git.shell-merge-requests": {
+    category: "git",
   },
   "git.text-model": {
     category: "git",

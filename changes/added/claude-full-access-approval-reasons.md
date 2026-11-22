@@ -1,0 +1,1 @@
+- Claude approvals explain whether an ask rule or a provider safety check prompted for approval in Full access.

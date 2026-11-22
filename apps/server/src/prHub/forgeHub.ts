@@ -685,6 +685,16 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
       track,
       getDetail,
       getFiles,
+      getChangeBreakdown: (input) =>
+        Effect.gen(function* () {
+          yield* refFor(input.key, input.accountGeneration);
+          if (!state.has(input.key))
+            return yield* error("Track this pull request before reading its statistics.");
+          // These adapters expose capped patches without authoritative per-file
+          // totals/completeness. Never load/save the Files tab as a stats read.
+          // Keep the breakdown unavailable until a verified stats API exists.
+          return null;
+        }),
       getTimeline,
       getReviewThreads: (input) =>
         readThreads(input).pipe(

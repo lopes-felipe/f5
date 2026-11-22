@@ -37,7 +37,7 @@ const MAX_PRESENTATION_TEXT_CHARS = 2_000;
 
 function text(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
+  const trimmed = stripVTControlCharacters(value).trim();
   if (!trimmed) return undefined;
   return trimmed.length > MAX_PRESENTATION_TEXT_CHARS
     ? `${trimmed.slice(0, MAX_PRESENTATION_TEXT_CHARS - 1)}…`
@@ -62,8 +62,12 @@ export function claudeApprovalPresentation(
     | "agentID"
     | "defaultToNo"
     | "suppressAlwaysAllowRule"
+    | "matchedAskRule"
   >,
-  context: { readonly sessionGrantAvailable?: boolean } = {},
+  context: {
+    readonly sessionGrantAvailable?: boolean;
+    readonly permissionMode?: string | undefined;
+  } = {},
 ): ProviderApprovalPresentation | undefined {
   const suppressAlwaysAllowRule =
     options.suppressAlwaysAllowRule === true || context.sessionGrantAvailable === false;
@@ -73,7 +77,20 @@ export function claudeApprovalPresentation(
   const decisionReason = text(options.decisionReason);
   const blockedPath = text(options.blockedPath);
   const agentId = text(options.agentID);
+  const askRuleSource =
+    context.permissionMode === "bypassPermissions"
+      ? text(options.matchedAskRule?.source)
+      : undefined;
   const presentation: ProviderApprovalPresentation = {
+    ...(askRuleSource ? { askRuleSource } : {}),
+    ...(context.permissionMode === "bypassPermissions"
+      ? {
+          fullAccessOverride:
+            options.matchedAskRule === undefined
+              ? ("provider_check" as const)
+              : ("ask_rule" as const),
+        }
+      : {}),
     ...(title ? { title } : {}),
     ...(description ? { description } : {}),
     ...(displayName ? { displayName } : {}),

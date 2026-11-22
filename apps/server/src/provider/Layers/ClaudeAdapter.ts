@@ -8350,6 +8350,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const requestType = classifyRequestType(toolName);
               const detail = summarizeToolRequest(toolName, toolInput);
               const presentation = claudeApprovalPresentation(callbackOptions, {
+                permissionMode:
+                  typeof context.configuredBase?.permissionMode === "string"
+                    ? context.configuredBase.permissionMode
+                    : context.basePermissionMode,
                 // A session accept saves the CLI's suggestions, or F5's preview grant. Workflow
                 // stages return above without a card, and "mutate" implies an agent browser.
                 sessionGrantAvailable:

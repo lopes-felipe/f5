@@ -837,6 +837,7 @@ const WebSocketRequestBody = Schema.Union([
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getDetail, PrHubDetailInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getTimeline, PrHubTimelineInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getFiles, PrHubFilesInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getChangeBreakdown, PrHubDetailInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getReviewDraft, PrHubDetailInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getReviewThreads, PrHubThreadsInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getReplyOperation, PrHubThreadsInput),

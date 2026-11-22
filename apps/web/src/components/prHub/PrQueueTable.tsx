@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef } from "react";
+import { PrChangeStat } from "./PrChangeStat";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { ChevronRightIcon } from "lucide-react";
 import type {
@@ -240,8 +241,7 @@ const PrQueueRow = memo(function PrQueueRow({
       <Cell cell={prRowReview(pr)} className={COLUMN.review} />
       <Cell cell={prRowChecks(pr)} className={COLUMN.checks} />
       <span className={cn("gap-1.5 text-xs tabular-nums", COLUMN.size)}>
-        <span className="text-success-foreground">+{pr.additions}</span>
-        <span className="text-destructive-foreground">−{pr.deletions}</span>
+        <PrChangeStat pr={pr} />
       </span>
       <span
         className={cn("text-xs text-muted-foreground tabular-nums", COLUMN.updated)}

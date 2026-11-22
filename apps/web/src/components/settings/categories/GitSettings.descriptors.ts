@@ -3,6 +3,13 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const GIT_SETTINGS_DESCRIPTORS = [
   {
+    ...SETTINGS_ITEM_ROUTES["git.shell-merge-requests"],
+    label: "Link shell-created GitLab merge requests",
+    description: "Opt in to linking merge requests created by agents with glab.",
+    keywords: ["gitlab", "glab", "merge request", "automatic", "link"],
+    targetSelector: '[aria-label="Link shell-created GitLab merge requests"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["git.merge-agent-credits"],
     label: "Remove agent credits when merging",
     description:

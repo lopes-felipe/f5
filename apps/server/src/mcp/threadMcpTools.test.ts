@@ -151,11 +151,11 @@ it("guides agents to chart data, follow the theme and leave the page unannounced
   assert.isTrue(render.alwaysLoad);
   assert.include(
     render.description,
-    "When an answer shows a trend or comparison in data, prefer showing it as a chart with this tool, unless the user asked for text only or for an exportable image.",
+    "Show data trends and comparisons with html_render unless text only or an exportable image was requested.",
   );
-  assert.include(render.description, "Do not announce or restate the page.");
-  assert.include(render.description, "up to 20000px");
-  for (const token of THEME_TOKEN_NAMES) assert.include(render.description, `--${token}`);
+  assert.include(render.description, "Do not restate the page.");
+  assert.include(render.description, "height cap 20000px");
+  for (const token of THEME_TOKEN_NAMES) assert.include(render.description, "--" + token);
   for (const variable of ["--chart-1", "--chart-6", "--radius", "--font-sans", "--font-mono"])
     assert.include(render.description, variable);
   assert.deepStrictEqual(preview.annotations, {

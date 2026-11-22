@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./changedFileKind": {
+      "types": "./src/changedFileKind.ts",
+      "import": "./src/changedFileKind.ts"
+    },
     "./composerModelMentions": {
       "types": "./src/composerModelMentions.ts",
       "import": "./src/composerModelMentions.ts"

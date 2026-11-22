@@ -138,6 +138,7 @@ function makePrHubStub(snapshot: PrHubSnapshot): PrHubServiceShape {
         refreshedAt: new Date().toISOString(),
       }),
     getFiles: () => Effect.die("getFiles must not be called"),
+    getChangeBreakdown: () => Effect.die("getChangeBreakdown must not be called"),
     prepareComment: () => Effect.die("unused"),
     submitComment: () => Effect.die("unused"),
     getCommentOperation: () => Effect.die("unused"),

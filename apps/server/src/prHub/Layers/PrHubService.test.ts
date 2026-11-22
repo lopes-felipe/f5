@@ -783,6 +783,54 @@ it.effect("coalesces overlapping forced refreshes into one GitHub fetch", () => 
   );
 });
 
+for (const credentialsAvailable of [false, true]) {
+  it.effect("refuses unavailable statistics safely, credentials=" + credentialsAvailable, () => {
+    let denyCredentials = false;
+    let statsReads = 0;
+    const calls = makeCalls();
+    return Effect.gen(function* () {
+      const service = yield* PrHubService;
+      const snapshot = yield* service.refreshNow({ mode: "force" });
+      const key = snapshot.pullRequests[0]!.key;
+      denyCredentials = !credentialsAvailable;
+      const result = yield* service.getChangeBreakdown({ key }).pipe(Effect.result);
+      if (credentialsAvailable) {
+        assert.equal(result._tag, "Success");
+        if (result._tag === "Success") assert.equal(result.success, null);
+        assert.equal(statsReads, 1);
+      } else {
+        assert.equal(result._tag, "Failure");
+        assert.equal(statsReads, 0);
+      }
+      assert.deepEqual(yield* service.getSnapshot, snapshot);
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          calls,
+          searchResponses: [
+            searchResponse("review_requested", [makePrNode({ id: "PR_stats", number: 127 })]),
+          ],
+          credentialFailure: () =>
+            denyCredentials ? ghError("authentication unavailable") : undefined,
+          apiRequest: () => {
+            statsReads++;
+            return Effect.succeed({
+              status: 200,
+              body: { data: { repository: null } },
+              graphqlErrors: [],
+              links: {},
+              etag: null,
+              lastModified: null,
+              rateLimit: {},
+              rateLimitResource: "graphql",
+            });
+          },
+        }),
+      ),
+    );
+  });
+}
+
 it.effect("marks partial GraphQL responses degraded without hiding previously tracked PRs", () => {
   const calls = makeCalls();
   const pr = makePrNode({ id: "PR_partial", number: 10 });

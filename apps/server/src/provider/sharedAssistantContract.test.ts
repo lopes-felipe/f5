@@ -329,12 +329,11 @@ describe("sharedAssistantContract", () => {
     expect(text).toContain("track progress with the task-tracking tools available");
     expect(text).toContain("TaskCreate/TaskUpdate/TaskList, or TodoWrite");
     expect(text).not.toContain("exactly one task in_progress");
-    expect(text).toContain('subagent_type: "Explore"');
-    expect(text).toContain("smart colleague who just walked into the room");
+    expect(text).not.toContain('subagent_type: "Explore"');
+    expect(text).toContain("Use sub-agents only when the task requires them");
+    expect(text).toContain("wait for results before reporting them");
     expect(text).toContain("Never delegate understanding");
-    expect(text).toContain("Do not peek at a forked agent's transcript");
-    expect(text).toContain("Do not race or fabricate sub-agent results");
-    expect(text).toContain("verification-focused sub-agent");
+    expect(text).toContain("never fabricate results");
     // Plan instructions travel as SDK planModeInstructions, not in the append,
     // so the append is identical for plan and default sessions.
     expect(text).not.toContain("# Plan Mode (Conversational)");
@@ -536,7 +535,7 @@ describe("sharedAssistantContract", () => {
   it("exposes stable version metadata", () => {
     expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v7");
     expect(CODEX_SUPPLEMENT_VERSION).toBe("v4");
-    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v13");
+    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v14");
     expect(buildInstructionProfile({ provider: "codex" })).toEqual({
       contractVersion: "v7",
       providerSupplementVersion: "v4",
@@ -544,7 +543,7 @@ describe("sharedAssistantContract", () => {
     });
     expect(buildInstructionProfile({ provider: "claudeAgent" })).toEqual({
       contractVersion: "v7",
-      providerSupplementVersion: "v13",
+      providerSupplementVersion: "v14",
       strategy: "claude.append_system_prompt",
     });
   });
