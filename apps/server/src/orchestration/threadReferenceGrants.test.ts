@@ -202,16 +202,23 @@ describe("buildThreadReferenceContext", () => {
     expect(block.match(/<\/f5-thread-references>/g)).toHaveLength(1);
   });
 
-  it("is empty without references and stays within its cap", () => {
+  it("is empty without references", () => {
     expect(buildThreadReferenceContext([], readModel())).toBe("");
+  });
+
+  it("keeps every read call within the cap when escaped titles exceed the budget", () => {
     const threads = Array.from({ length: 10 }, (_, index) =>
-      thread(`t${index}`, "p", { title: "x".repeat(2_000) }),
+      thread(`t${index}`, "p", { title: "&".repeat(500) }),
     );
     const block = buildThreadReferenceContext(
       threads.map((entry) => entry.id),
       readModel({ threads }),
     );
     expect(block.length).toBeLessThanOrEqual(THREAD_REFERENCE_CONTEXT_MAX_CHARS);
+    expect(block).toContain("(title: &amp;");
+    for (const entry of threads) {
+      expect(block).toContain(`- thread_read(${JSON.stringify({ threadId: entry.id })})`);
+    }
     expect(block.endsWith("</f5-thread-references>")).toBe(true);
   });
 });

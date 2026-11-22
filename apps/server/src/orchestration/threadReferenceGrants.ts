@@ -75,21 +75,34 @@ export function buildThreadReferenceContext(
 ): string {
   if (refs.length === 0) return "";
   const head = `${CONTEXT_OPEN}\n${CONTEXT_INSTRUCTIONS}\n`;
-  let lines = "";
+  let remaining = THREAD_REFERENCE_CONTEXT_MAX_CHARS - head.length - CONTEXT_CLOSE.length;
+  const entries: Array<{ line: string; title?: string }> = [];
   for (const threadId of refs) {
     const thread = readModel.threads.find((entry) => entry.id === threadId);
-    const line =
-      thread && thread.deletedAt === null
-        ? `- thread_read(${escapeRuntimeContextLine(JSON.stringify({ threadId: thread.id }))}) (title: ${escapeRuntimeContextLine(thread.title.replace(/\s+/g, " ").trim())})\n`
-        : `- threadId: ${escapeRuntimeContextLine(threadId)} (unavailable)\n`;
-    if (
-      head.length + lines.length + line.length + CONTEXT_CLOSE.length >
-      THREAD_REFERENCE_CONTEXT_MAX_CHARS
-    )
-      break;
-    lines += line;
+    const available = thread && thread.deletedAt === null ? thread : undefined;
+    const line = available
+      ? `- thread_read(${escapeRuntimeContextLine(JSON.stringify({ threadId: available.id }))})`
+      : `- threadId: ${escapeRuntimeContextLine(threadId)} (unavailable)`;
+    const length = line.length + 1;
+    if (length > remaining) break;
+    remaining -= length;
+    entries.push({ line, ...(available ? { title: available.title } : {}) });
   }
-  if (lines.length === 0) return "";
+  if (entries.length === 0) return "";
+
+  // Reserve space for every read call before spending the remaining budget on titles.
+  let lines = "";
+  for (const { line, title } of entries) {
+    lines += line;
+    if (title !== undefined) {
+      const suffix = ` (title: ${escapeRuntimeContextLine(title.replace(/\s+/g, " ").trim())})`;
+      if (suffix.length <= remaining) {
+        lines += suffix;
+        remaining -= suffix.length;
+      }
+    }
+    lines += "\n";
+  }
   return `${head}${lines}${CONTEXT_CLOSE}`;
 }
 
