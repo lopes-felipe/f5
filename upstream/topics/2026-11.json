@@ -18215,11 +18215,21 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:06:00.381Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:5534",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:9626"
+        ],
+        "f5Refs": [
+          "8bda64b5c12c7e993e2a304e662d169b80e25efd"
+        ]
+      },
       "id": "pr-28010",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "claude",
