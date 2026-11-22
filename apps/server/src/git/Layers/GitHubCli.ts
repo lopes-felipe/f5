@@ -10,7 +10,13 @@ import { enforceGitHubRequestPolicy } from "../githubRequestPolicy.ts";
 import { isCapturedPrTarget } from "../githubPrTarget.ts";
 import { githubRequestScheduler } from "../githubRequestScheduler.ts";
 import { makeGitHubHttpTransport } from "../githubHttpTransport.ts";
-import { makeGitHubApi, GitHubCredentialScope, githubCredentialEnvironment } from "../githubApi.ts";
+import {
+  cleanGitHubEnvironment,
+  githubCredentialEnvironment,
+  GitHubCredentialScope,
+  isGitHubCloudHost,
+  makeGitHubApi,
+} from "../githubApi.ts";
 import { Effect, Layer, Option } from "effect";
 import { makeGitHubHttpOperations } from "../githubHttpOperations.ts";
 import { managedGitProcessEnvironment } from "../gitProcessEnvironment.ts";
@@ -204,17 +210,16 @@ export const makeGitHubCli = (
               })
             : null;
           if (saved || isolated) return saved ?? "";
-          const names =
-            host === "github.com"
-              ? ["GH_TOKEN", "GITHUB_TOKEN"]
-              : ["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
-          const ambient = names
-            .map(
-              (name) =>
-                Object.entries(process.env).find(([key]) => key.toUpperCase() === name)?.[1],
-            )
-            .find((value) => value?.trim());
-          if (ambient) return ambient.trim();
+          const readEnv = (name: string) =>
+            Object.entries(process.env)
+              .find(([key]) => key.toUpperCase() === name)?.[1]
+              ?.trim();
+          const ambient = isGitHubCloudHost(host)
+            ? readEnv("GH_TOKEN") || readEnv("GITHUB_TOKEN")
+            : readEnv("GH_HOST")?.toLowerCase() === host
+              ? readEnv("GH_ENTERPRISE_TOKEN") || readEnv("GITHUB_ENTERPRISE_TOKEN")
+              : undefined;
+          if (ambient) return ambient;
           // The profile projection answers disconnected hosts with a placeholder, and gh exits
           // non-zero ("no oauth token") for hosts it does not know. Both mean "not connected";
           // anything else (timeout, missing gh, unavailable credentials) keeps its real cause.
@@ -223,6 +228,8 @@ export const makeGitHubCli = (
           const projected = yield* execute({
             cwd,
             args: ["auth", "token", "--hostname", host],
+            // Read the stored login. Inherited enterprise tokens can override it on other hosts.
+            env: { ...cleanGitHubEnvironment(), GH_PROMPT_DISABLED: "1" },
             maxStdoutBytes: 65536,
           }).pipe(
             Effect.map((result) => result.stdout.trim()),

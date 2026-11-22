@@ -262,6 +262,49 @@ it.effect(
     }),
 );
 
+it.effect.each(["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] as const)(
+  "uses %s only for GH_HOST and keeps the stored CLI login available on other hosts",
+  (name) =>
+    Effect.gen(function* () {
+      vi.stubEnv(name, "ambient-token");
+      vi.stubEnv("GH_HOST", " GHE.Corp.Example ");
+      vi.stubEnv("GH_CONFIG_DIR", "/host-gh");
+      vi.stubEnv("GH_DEBUG", "api");
+      mockedRunProcess.mockResolvedValue({
+        stdout: "stored-token\n",
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
+      const fetcher = vi.fn<(...args: Parameters<typeof fetch>) => Promise<Response>>(async () =>
+        Response.json({ id: 123, login: "alice" }),
+      );
+      vi.stubGlobal("fetch", fetcher);
+      const gh = yield* GitHubCli;
+
+      yield* gh.getCredentialContext({ cwd: "/repo", host: "git.other.example" });
+      yield* gh.getCredentialContext({ cwd: "/repo", host: "ghe.corp.example" });
+      vi.stubEnv("GH_HOST", undefined);
+      yield* gh.getCredentialContext({ cwd: "/repo", host: "git.unconfigured.example" });
+
+      expect(mockedRunProcess.mock.calls.map(([, args]) => args)).toEqual([
+        ["auth", "token", "--hostname", "git.other.example"],
+        ["auth", "token", "--hostname", "git.unconfigured.example"],
+      ]);
+      for (const [, , options] of mockedRunProcess.mock.calls) {
+        expect(options.env?.GH_CONFIG_DIR).toBe("/host-gh");
+        expect(options.env?.GH_PROMPT_DISABLED).toBe("1");
+        expect(options.env?.GH_DEBUG).toBeUndefined();
+        expect(options.env?.GH_ENTERPRISE_TOKEN).toBeUndefined();
+        expect(options.env?.GITHUB_ENTERPRISE_TOKEN).toBeUndefined();
+      }
+      expect(
+        fetcher.mock.calls.map(([, options]) => new Headers(options?.headers).get("authorization")),
+      ).toEqual(["Bearer stored-token", "Bearer ambient-token", "Bearer stored-token"]);
+    }).pipe(Effect.provide(GitHubCliLive)),
+);
+
 it.effect.each(["gh", "http"] as const)(
   "sends captured requests through the %s transport the setting names",
   (githubTransport) =>
