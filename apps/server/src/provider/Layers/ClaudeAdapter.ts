@@ -1552,6 +1552,10 @@ function getClaudeSessionModel(context: ClaudeSessionContext): string | undefine
   );
 }
 
+function claudeContextWindowKey(model: string): string {
+  return normalizeModelSlug(model, "claudeAgent") ?? model;
+}
+
 function getConfiguredClaudeContextWindow(
   config: Record<string, unknown>,
 ): ClaudeContextWindow | undefined {
@@ -2905,7 +2909,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           sessions.get(context.session.threadId) !== context ||
           reportedTokens === undefined ||
           requestedModel !== getClaudeSessionModel(context) ||
-          context.resultContextWindows.has(requestedModel) ||
+          context.resultContextWindows.has(claudeContextWindowKey(requestedModel)) ||
           reportedTokens === context.modelContextWindowTokens
         ) {
           return;
@@ -2930,7 +2934,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               homeDirectory: NodeOS.homedir(),
               platform: process.platform,
               environment: context.processEnvironment,
-              model,
+              model: model === undefined ? undefined : claudeContextWindowKey(model),
               launchSettings: context.queryOptions.settings,
             })
           : undefined;
@@ -5718,16 +5722,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const selectedModel = getClaudeSessionModel(context);
         if (selectedModel) {
-          const model = selectedModel.replace(/\[1m\]$/i, "");
-          const normalizedModel = normalizeModelSlug(model, "claudeAgent") ?? model;
+          const normalizedModel = claudeContextWindowKey(selectedModel);
           if (!getModelOptions("claudeAgent").some((option) => option.slug === normalizedModel)) {
-            const entry = Object.entries(message.modelUsage ?? {}).find(([id]) => {
-              const baseId = id.replace(/\[1m\]$/i, "");
-              return (normalizeModelSlug(baseId, "claudeAgent") ?? baseId) === normalizedModel;
-            });
+            const entry = Object.entries(message.modelUsage ?? {}).find(
+              ([id]) => claudeContextWindowKey(id) === normalizedModel,
+            );
             const window = entry?.[1]?.contextWindow;
             if (typeof window === "number" && Number.isSafeInteger(window) && window > 0) {
-              context.resultContextWindows.set(selectedModel, window);
+              context.resultContextWindows.set(normalizedModel, window);
               if (context.resultContextWindows.size > 128)
                 context.resultContextWindows.delete(
                   context.resultContextWindows.keys().next().value!,
@@ -6125,7 +6127,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const configuredModel = getClaudeSessionModel(context);
               if (configuredModel !== undefined && configuredModel !== previousModel) {
                 context.modelContextWindowTokens =
-                  context.resultContextWindows.get(configuredModel) ??
+                  context.resultContextWindows.get(claudeContextWindowKey(configuredModel)) ??
                   estimateModelContextWindowTokens(configuredModel, "claudeAgent");
                 yield* refreshAutoCompactWindow(context, configuredModel);
               }
@@ -9704,7 +9706,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             );
             context.modelContextWindowTokens =
               runtimeModelSelection.contextWindowTokens ??
-              context.resultContextWindows.get(runtimeModelSelection.baseModel) ??
+              context.resultContextWindows.get(
+                claudeContextWindowKey(runtimeModelSelection.baseModel),
+              ) ??
               estimateModelContextWindowTokens(runtimeModelSelection.baseModel, "claudeAgent");
             if (
               shouldSetModel &&

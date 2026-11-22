@@ -4285,6 +4285,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly turnId?: TurnId;
     readonly nativeThreadId?: string;
+    readonly excludeTurnId?: TurnId | null;
     readonly status: Exclude<
       OrchestrationCommandExecutionStatus,
       "running" | "completed" | "declined"
@@ -4296,8 +4297,8 @@ const make = Effect.gen(function* () {
       (commandExecution) =>
         commandExecution.threadId === input.threadId &&
         (input.turnId === undefined || commandExecution.turnId === input.turnId) &&
+        commandExecution.turnId !== input.excludeTurnId &&
         (input.nativeThreadId === undefined ||
-          commandExecution.nativeThreadId === undefined ||
           commandExecution.nativeThreadId === input.nativeThreadId) &&
         commandExecution.completedAt === null,
     );
@@ -5421,14 +5422,19 @@ const make = Effect.gen(function* () {
         if (event.provider === "codex") {
           const detail = asRecord(event.payload.detail);
           const nativeThreadId = asString(detail?.threadId) ?? asString(detail?.thread_id);
-          yield* finalizeOpenCommandExecutions({
-            event,
-            threadId: thread.id,
-            ...(nativeThreadId ? { nativeThreadId } : {}),
-            status: "interrupted",
-            updatedAt: now,
-            commandTag: "command-execution-thread-closed-finalize",
-          });
+          if (nativeThreadId) {
+            yield* finalizeOpenCommandExecutions({
+              event,
+              threadId: thread.id,
+              nativeThreadId,
+              excludeTurnId:
+                activeTurnId ??
+                (thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : null),
+              status: "interrupted",
+              updatedAt: now,
+              commandTag: "command-execution-thread-closed-finalize",
+            });
+          }
         }
         yield* orchestrationEngine.dispatch({
           type: "thread.session.set",

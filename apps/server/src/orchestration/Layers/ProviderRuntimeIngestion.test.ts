@@ -2,6 +2,8 @@ import { backgroundWorkSessionIdentity } from "../../provider/backgroundWorkIden
 import { withProviderThreadAccess } from "../../provider/providerThreadAccess.ts";
 import { makeOrphanedSessionExitedEvent } from "../../provider/orphanedTurnRecovery.ts";
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
+import { CodexAppServerManager } from "../../codexAppServerManager.ts";
+import { makeCodexAdapter } from "../../provider/Layers/CodexAdapter.ts";
 import { withFixtureWorkspaceWrites } from "../testUtils/workspaceWrites.ts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { ServerSettingsService } from "../../serverSettings";
@@ -8200,36 +8202,49 @@ describe("ProviderRuntimeIngestion", () => {
       eventId: asEventId("evt-close-turn-completed"),
       payload: { state: "completed" },
     });
-    for (const nativeThreadId of ["closing", "unrelated"]) {
-      harness.emit({
-        ...base,
-        type: "item.started",
-        eventId: asEventId("evt-command-" + nativeThreadId),
-        itemId: asItemId(nativeThreadId),
-        payload: {
-          itemType: "command_execution",
-          title: "Run command",
-          data: { threadId: nativeThreadId, item: { command: "sleep 60" } },
-        },
-      });
-    }
-    harness.emit({
-      type: "thread.state.changed",
-      eventId: asEventId("evt-native-thread-closed"),
-      provider: "codex",
-      createdAt: now,
-      threadId,
-      payload: { state: "closed", detail: { threadId: "closing" } },
-    });
+    await runtime!.runPromise(
+      Effect.gen(function* () {
+        const manager = new CodexAppServerManager();
+        const adapter = yield* makeCodexAdapter({ manager });
+        for (const itemId of ["closing", "unrelated", "unscoped"]) {
+          manager.emit("event", {
+            ...base,
+            kind: "notification",
+            method: "item/started",
+            id: asEventId("evt-command-" + itemId),
+            itemId: asItemId(itemId),
+            payload: {
+              ...(itemId !== "unscoped" ? { threadId: itemId } : {}),
+              turnId,
+              item: { id: itemId, type: "commandExecution", command: "sleep 60" },
+            },
+          });
+        }
+        manager.emit("event", {
+          ...base,
+          kind: "notification",
+          method: "thread/closed",
+          id: asEventId("evt-native-thread-closed"),
+          payload: { threadId: "closing" },
+        });
+        yield* adapter.streamEvents.pipe(
+          Stream.take(4),
+          Stream.runForEach((event) => Effect.sync(() => harness.emit(event))),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
     await harness.drain();
     const result = await Effect.runPromise(
       harness.threadCommandExecutionQuery.getThreadCommandExecutions({ threadId }),
     );
-    expect(result.executions).toHaveLength(2);
+    expect(result.executions).toHaveLength(3);
     expect(result.executions.find((item) => item.providerItemId === "closing")?.status).toBe(
       "interrupted",
     );
     expect(result.executions.find((item) => item.providerItemId === "unrelated")?.status).toBe(
+      "running",
+    );
+    expect(result.executions.find((item) => item.providerItemId === "unscoped")?.status).toBe(
       "running",
     );
     const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(

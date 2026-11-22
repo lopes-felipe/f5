@@ -10046,7 +10046,9 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect("emits thread token usage snapshots from Claude message usage events", () => {
-    const harness = makeHarness();
+    const harness = makeHarness({
+      processEnvironment: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "180000" },
+    });
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
@@ -10062,6 +10064,10 @@ describe("ClaudeAdapterLive", () => {
         providerOptions: { claudeAgent: { autoCompactWindow: 150_000 } },
       });
       assert.equal(session.threadId, THREAD_ID);
+      assert.deepInclude(harness.getLastCreateQueryInput()?.options.settings, {
+        autoCompactWindow: 150_000,
+        env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "150000" },
+      });
 
       const turn = yield* adapter.sendTurn({
         threadId: session.threadId,
@@ -10375,7 +10381,10 @@ describe("ClaudeAdapterLive", () => {
         path.join(cwd, ".claude", "settings.json"),
         JSON.stringify({
           autoCompactWindow: 160_000,
-          modelSettings: { "gateway-model": { autoCompactWindow: 150_000 } },
+          modelSettings: {
+            "gateway-model": { autoCompactWindow: 150_000 },
+            "other-gateway": { autoCompactWindow: 180_000 },
+          },
         }),
       );
       const adapter = yield* ClaudeAdapter;
@@ -10393,6 +10402,13 @@ describe("ClaudeAdapterLive", () => {
         attachments: [],
       });
       const sessionId = "sdk-thread-custom-context";
+      harness.query.emit({
+        type: "system",
+        subtype: "init",
+        session_id: sessionId,
+        uuid: "custom-init",
+        model: model + "[1m]",
+      } as unknown as SDKMessage);
       harness.query.emit({
         type: "stream_event",
         session_id: sessionId,
@@ -10428,6 +10444,66 @@ describe("ClaudeAdapterLive", () => {
           },
         ]),
       );
+
+      const nextTurn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        model: "other-gateway",
+        input: "switch models",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "stream_event",
+        session_id: sessionId,
+        uuid: "other-stream",
+        parent_tool_use_id: null,
+        event: { type: "message_delta", delta: {}, usage: { input_tokens: 600, output_tokens: 5 } },
+      } as unknown as SDKMessage);
+      const nextUsage = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "thread.token-usage.updated"),
+        Stream.runHead,
+      );
+      assert.deepEqual(Option.getOrUndefined(nextUsage)?.payload, {
+        usage: { input_tokens: 600, output_tokens: 5 },
+        autoCompactThreshold: 147_000,
+        modelContextWindowTokens: 200_000,
+      });
+      assert.equal(Option.getOrUndefined(nextUsage)?.turnId, nextTurn.turnId);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: sessionId,
+        uuid: "other-result",
+        total_cost_usd: 0,
+        modelUsage: {},
+      } as unknown as SDKMessage);
+      yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runDrain,
+      );
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        model,
+        input: "switch back",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "stream_event",
+        session_id: sessionId,
+        uuid: "return-stream",
+        parent_tool_use_id: null,
+        event: { type: "message_delta", delta: {}, usage: { input_tokens: 700, output_tokens: 6 } },
+      } as unknown as SDKMessage);
+      const returnedUsage = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "thread.token-usage.updated"),
+        Stream.runHead,
+      );
+      assert.deepEqual(Option.getOrUndefined(returnedUsage)?.payload, {
+        usage: { input_tokens: 700, output_tokens: 6 },
+        autoCompactThreshold: 117_000,
+        modelContextWindowTokens: 500_000,
+      });
     }).pipe(Effect.provide(harness.layer));
   });
 
