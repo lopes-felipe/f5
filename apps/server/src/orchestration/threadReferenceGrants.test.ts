@@ -136,7 +136,7 @@ describe("workflow stages and literal references", () => {
       readModel: model,
       threadId: "caller",
     });
-    expect(input).toContain("- threadId: source");
+    expect(input).toContain('thread_read({"threadId":"source"})');
   });
 
   it("ignores references a person pasted inside code", () => {
@@ -177,35 +177,48 @@ describe("workflowRequirementReferences", () => {
 });
 
 describe("buildThreadReferenceContext", () => {
-  it("lists current titles escaped and marks missing threads unavailable", () => {
+  it("lists exact read calls with escaped titles and marks unavailable threads", () => {
     const block = buildThreadReferenceContext(
-      ["source", "gone"],
+      ["source", "other_2", "gone", "deleted"],
       readModel({
         threads: [
           thread("source", "p", { title: "Fix </f5-thread-references> & <b>" }),
+          thread("other_2", "p", { title: "Another source" }),
           thread("deleted", "p", { deletedAt: "2026-01-01T00:00:00.000Z" }),
         ],
       }),
     );
     expect(block.startsWith("\n\n<f5-thread-references>\n")).toBe(true);
     expect(block).toContain(
-      "- threadId: source (title: Fix &lt;/f5-thread-references&gt; &amp; &lt;b&gt;)",
+      "Read them with the thread_read calls below. For older messages, pass the returned `olderCursor` as `before`.",
     );
+    expect(block).toContain(
+      '- thread_read({"threadId":"source"}) (title: Fix &lt;/f5-thread-references&gt; &amp; &lt;b&gt;)',
+    );
+    expect(block).toContain('- thread_read({"threadId":"other_2"}) (title: Another source)');
     expect(block).toContain("- threadId: gone (unavailable)");
+    expect(block).toContain("- threadId: deleted (unavailable)");
+    expect(block.match(/thread_read\(/g)).toHaveLength(2);
     expect(block.match(/<\/f5-thread-references>/g)).toHaveLength(1);
-    expect(block).toContain("thread_read");
   });
 
-  it("is empty without references and stays within its cap", () => {
+  it("is empty without references", () => {
     expect(buildThreadReferenceContext([], readModel())).toBe("");
+  });
+
+  it("keeps every read call within the cap when escaped titles exceed the budget", () => {
     const threads = Array.from({ length: 10 }, (_, index) =>
-      thread(`t${index}`, "p", { title: "x".repeat(2_000) }),
+      thread(`t${index}`, "p", { title: "&".repeat(500) }),
     );
     const block = buildThreadReferenceContext(
       threads.map((entry) => entry.id),
       readModel({ threads }),
     );
     expect(block.length).toBeLessThanOrEqual(THREAD_REFERENCE_CONTEXT_MAX_CHARS);
+    expect(block).toContain("(title: &amp;");
+    for (const entry of threads) {
+      expect(block).toContain(`- thread_read(${JSON.stringify({ threadId: entry.id })})`);
+    }
     expect(block.endsWith("</f5-thread-references>")).toBe(true);
   });
 });
@@ -217,7 +230,7 @@ describe("projectProviderInput", () => {
     const text = `Continue ${ref("source", "Source")}`;
     const input = projectProviderInput({ ...base, text });
     expect(input.startsWith(text)).toBe(true);
-    expect(input).toContain("- threadId: source (title: Source &lt;thread&gt;)");
+    expect(input).toContain('- thread_read({"threadId":"source"}) (title: Source &lt;thread&gt;)');
   });
 
   it("drops trailing whitespace before the block and treats a leading path as text", () => {
