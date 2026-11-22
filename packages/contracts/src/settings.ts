@@ -4,7 +4,13 @@ import { Effect } from "effect";
 import * as Combiner from "effect/Combiner";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { IsoDateTime, ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas";
+import {
+  IsoDateTime,
+  PositiveInt,
+  ProjectId,
+  TrimmedNonEmptyString,
+  TrimmedString,
+} from "./baseSchemas";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   ProviderOptionSelections,
@@ -536,6 +542,11 @@ export const TextGeneratorConfig = Schema.Struct({
 export type TextGeneratorConfig = typeof TextGeneratorConfig.Type;
 const TextGeneratorId = ProviderInstanceId.check(Schema.isPattern(/^textgen_/));
 
+// The current and previous 90-day comparison windows, with slack for timezone boundaries.
+export const DEFAULT_USAGE_HISTORY_RETENTION_DAYS = 182;
+export const UsageHistoryRetention = Schema.Union([PositiveInt, Schema.Literal("unlimited")]);
+export type UsageHistoryRetention = typeof UsageHistoryRetention.Type;
+
 export const ServerSettings = Schema.Struct({
   keepAwakeWhileAgentsWork: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   textGenerators: Schema.Record(TextGeneratorId, TextGeneratorConfig).pipe(
@@ -547,6 +558,9 @@ export const ServerSettings = Schema.Struct({
   autoSettleKeepPullRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
   usageModelAliases: UsageModelAliases.pipe(Schema.withDecodingDefault(() => ({}))),
+  usageHistoryRetentionDays: UsageHistoryRetention.pipe(
+    Schema.withDecodingDefault(() => DEFAULT_USAGE_HISTORY_RETENTION_DAYS),
+  ),
   usageMonthlyBudget: Schema.NullOr(UsageMonthlyBudget).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -793,6 +807,7 @@ export const ServerSettingsPatch = Schema.Struct({
   usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
   /** Replaces every mapping. */
   usageModelAliases: Schema.optionalKey(UsageModelAliases),
+  usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetention),
   usageMonthlyBudget: Schema.optionalKey(Schema.NullOr(UsageMonthlyBudget)),
   usageBackgroundSampling: Schema.optionalKey(Schema.Boolean),
   autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),

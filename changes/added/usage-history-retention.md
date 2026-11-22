@@ -1,0 +1,1 @@
+- Set usageHistoryRetentionDays in settings.json to keep imported Muse usage history for a custom number of days or indefinitely. The 182-day default preserves both periods in the 90-day comparison.

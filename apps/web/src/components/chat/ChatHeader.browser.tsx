@@ -220,6 +220,28 @@ describe("ChatHeader", () => {
     }
   });
 
+  it("shows the working-tree change breakdown on the Diff button", async () => {
+    const screen = await renderHeader({
+      workingTree: {
+        files: [
+          { path: "src/main.ts", insertions: 3, deletions: 1 },
+          { path: "src/main.test.ts", insertions: 5, deletions: 0 },
+          { path: "README.md", insertions: 2, deletions: 1 },
+        ],
+        insertions: 10,
+        deletions: 2,
+      },
+    });
+    try {
+      await page.getByRole("button", { name: "Toggle diff panel" }).hover();
+      await expect.element(page.getByText("tests", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("docs", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("+10", { exact: true })).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("shows the live agent count and toggles the Agents panel", async () => {
     const onToggleAgents = vi.fn();
     const screen = await renderHeader({ liveAgentCount: 3, onToggleAgents });

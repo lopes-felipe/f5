@@ -29,6 +29,7 @@ import { makeHtmlPreviewBroker } from "./htmlRender/HtmlPreviewBroker.ts";
 import { makeHtmlRenderRuntime } from "./htmlRender/HtmlRenderRuntime.ts";
 import { ThreadMcpBroker } from "./mcp/threadMcpTools.ts";
 import { makeThreadToolHandler } from "./mcp/threadToolRuntime.ts";
+import { makePullRequestMcpHandler } from "./mcp/pullRequestMcpRuntime";
 import { makeThreadImagePublisher } from "./mcp/publishThreadImage.ts";
 import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlanRepositoryLive } from "./persistence/Layers/ProjectionThreadProposedPlans.ts";
@@ -3163,6 +3164,12 @@ export const createServer = Effect.fn(function* (
               watches: pullRequestWatches,
               settlement: threadSettlement,
               links: prHubExtensions.value,
+              pullRequests: makePullRequestMcpHandler({
+                federation: threadMcpFederation.value,
+                extensions: prHubExtensions.value,
+                git: gitManager,
+                engine: orchestrationEngine,
+              }),
               html,
               publishImage,
             }),

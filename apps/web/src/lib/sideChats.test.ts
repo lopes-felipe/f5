@@ -7,8 +7,6 @@ const fixture = vi.hoisted(() => ({
   fork: vi.fn(),
   list: vi.fn(),
   open: vi.fn(),
-  send: vi.fn(async () => "started"),
-  draft: vi.fn(),
 }));
 vi.mock("../store", () => ({ useStore: { getState: () => ({ threads: fixture.threads }) } }));
 vi.mock("../nativeApi", () => ({
@@ -17,10 +15,6 @@ vi.mock("../nativeApi", () => ({
 vi.mock("../rightPanelStore", () => ({
   useRightPanelStore: { getState: () => ({ openSideChat: fixture.open }) },
 }));
-vi.mock("../composerDraftStore", () => ({
-  useComposerDraftStore: { getState: () => ({ setPrompt: fixture.draft }) },
-}));
-vi.mock("./sendThreadReply", () => ({ sendThreadReply: fixture.send }));
 const parent = ThreadId.makeUnsafe("parent");
 beforeEach(() => {
   vi.clearAllMocks();
@@ -30,8 +24,8 @@ beforeEach(() => {
     return { ...input, state: "completed" };
   });
 });
-it("forks once, opens the tab and sends the question to the child", async () => {
-  const first = openNewSideChat(parent, "What does this function do?");
+it("shares the fork and opens the tab once", async () => {
+  const first = openNewSideChat(parent);
   expect(openNewSideChat(parent)).toBe(first);
   const child = await first;
   expect(fixture.fork).toHaveBeenCalledOnce();
@@ -39,18 +33,11 @@ it("forks once, opens the tab and sends the question to the child", async () => 
     expect.objectContaining({ threadId: parent, sideChat: true, generation: 7 }),
   );
   expect(fixture.open).toHaveBeenCalledWith(parent, child, "Side chat");
-  expect(fixture.send).toHaveBeenCalledWith(
-    expect.objectContaining({
-      thread: expect.objectContaining({ id: child }),
-      text: "What does this function do?",
-    }),
-  );
 });
-it("reports refused forks without opening a tab or sending text", async () => {
+it("reports refused forks without opening a tab", async () => {
   fixture.fork.mockResolvedValueOnce({ state: "failed", error: "unsupported" });
-  await expect(openNewSideChat(parent, "question")).rejects.toThrow("unsupported");
+  await expect(openNewSideChat(parent)).rejects.toThrow("unsupported");
   expect(fixture.open).not.toHaveBeenCalled();
-  expect(fixture.send).not.toHaveBeenCalled();
 });
 it("refuses nested side chats", async () => {
   fixture.threads[0]!.sideChatOf = "another";

@@ -1066,6 +1066,11 @@ export default memo(function ChatView({
   const pendingTurnDispatchRef = useRef<PendingTurnDispatch | null>(null);
   pendingTurnDispatchRef.current = pendingTurnDispatch;
   const sendInFlightRef = useRef(false);
+  const sideChatRetryRef = useRef<{
+    parentId: ThreadId;
+    childId: ThreadId;
+    draftKey: string;
+  } | null>(null);
 
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
   const endScrollGenerationRef = useRef(0);
@@ -5405,31 +5410,9 @@ export default memo(function ChatView({
     e?: { preventDefault: () => void },
     intent: SendIntent = "auto",
     onAdmittedCallback?: () => void,
-  ) => {
+  ): Promise<void> => {
     e?.preventDefault();
     const sideChatCommand = /^\/(?:side|btw)(?:\s+([\s\S]*))?$/i.exec(promptRef.current.trim());
-    if (
-      sideChatCommand &&
-      composerImages.length === 0 &&
-      composerFilePaths.length === 0 &&
-      composerTerminalContexts.length === 0
-    ) {
-      const original = promptRef.current;
-      try {
-        await openNewSideChat(threadId, sideChatCommand[1] ?? "");
-        if (promptRef.current === original) {
-          promptRef.current = "";
-          setPrompt("");
-        }
-      } catch (cause) {
-        toastManager.add({
-          type: "error",
-          title: "Side chat could not open",
-          description: cause instanceof Error ? cause.message : String(cause),
-        });
-      }
-      return;
-    }
     if (
       promptRef.current.trim().toLowerCase() === "/clear" &&
       composerImages.length === 0 &&
@@ -5486,11 +5469,10 @@ export default memo(function ChatView({
     if (
       !api ||
       !activeThread ||
-      hasPendingTurnDispatch ||
       isConnecting ||
       sendInFlightRef.current ||
       // The server rejects sends while a revert is open; keep the draft instead.
-      isRevertingCheckpoint
+      (!sideChatCommand && (hasPendingTurnDispatch || isRevertingCheckpoint))
     ) {
       return;
     }
@@ -5502,11 +5484,11 @@ export default memo(function ChatView({
       });
       return;
     }
-    if (activePendingProgress) {
+    if (!sideChatCommand && activePendingProgress) {
       onAdvanceActivePendingUserInput();
       return;
     }
-    if (noProviderAvailable) return;
+    if (!sideChatCommand && noProviderAvailable) return;
     if (
       /^\/aside(?:\s|$)/u.test(promptRef.current.trim()) &&
       activeThread.session?.provider === "codex" &&
@@ -5617,11 +5599,17 @@ export default memo(function ChatView({
       return;
     }
     const promptForSend = promptRef.current;
-    const replyToForSend =
-      useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null;
-    const composerImagesSnapshot = [...composerImages];
-    const composerFilePathsSnapshotBeforePreflight = [...composerFilePaths];
-    const composerTerminalContextsSnapshotBeforePreflight = [...composerTerminalContexts];
+    const pendingSideQuestion = sideChatCommand ? activePendingProgress?.activeQuestion : undefined;
+    const replyToForSend = pendingSideQuestion
+      ? null
+      : (useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null);
+    const composerImagesSnapshot = pendingSideQuestion ? [] : [...composerImages];
+    const composerFilePathsSnapshotBeforePreflight = pendingSideQuestion
+      ? []
+      : [...composerFilePaths];
+    const composerTerminalContextsSnapshotBeforePreflight = pendingSideQuestion
+      ? []
+      : [...composerTerminalContexts];
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -5633,7 +5621,7 @@ export default memo(function ChatView({
       filePathCount: composerFilePathsSnapshotBeforePreflight.length,
       terminalContexts: composerTerminalContextsSnapshotBeforePreflight,
     });
-    if (!freshArm && showPlanFollowUpPrompt && activeProposedPlan) {
+    if (!sideChatCommand && !freshArm && showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
@@ -5688,13 +5676,20 @@ export default memo(function ChatView({
       setThreadError(activeThread.id, error instanceof Error ? error.message : String(error));
       return;
     }
-    const attachmentIssue = composerAttachmentStatus(composerImages, selectedProvider).error;
+    const attachmentIssue = composerAttachmentStatus(
+      composerImagesSnapshot,
+      selectedProvider,
+    ).error;
     if (attachmentIssue) {
       setThreadError(activeThread.id, attachmentIssue);
       return;
     }
     sendInFlightRef.current = true;
-    const mentionsForSend = [...composerMentionsRef.current];
+    const mentionsForSend = [
+      ...(pendingSideQuestion
+        ? (activePendingProgress?.activeDraft?.mentions ?? [])
+        : composerMentionsRef.current),
+    ];
     const mentionedPaths = collectComposerMentionPaths(promptForSend, mentionsForSend);
     if (mentionedPaths.length > 0) {
       try {
@@ -5717,7 +5712,7 @@ export default memo(function ChatView({
     }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
-    if (isServerThread && !isFirstMessage && activeThread.branch && gitCwd) {
+    if (!sideChatCommand && isServerThread && !isFirstMessage && activeThread.branch && gitCwd) {
       let proceed = false;
       try {
         proceed = await guardBranchDrift({
@@ -5747,7 +5742,7 @@ export default memo(function ChatView({
     // stale cached value silently skipped worktree creation and caused the
     // agent to run in the project root (main branch).
     const baseBranchForWorktree =
-      isFirstMessage && envMode === "worktree"
+      !sideChatCommand && isFirstMessage && envMode === "worktree"
         ? plainWorktreeDraft
           ? plainWorktreeBase.trim() || "HEAD"
           : activeThread.branch
@@ -5755,7 +5750,7 @@ export default memo(function ChatView({
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
-    const shouldCreateWorktree = isFirstMessage && envMode === "worktree";
+    const shouldCreateWorktree = !sideChatCommand && isFirstMessage && envMode === "worktree";
     if (shouldCreateWorktree && !baseBranchForWorktree) {
       setStoreThreadError(
         threadIdForSend,
@@ -5810,7 +5805,7 @@ export default memo(function ChatView({
     // Rewrite provider-specific runtime skill syntax before any send-time
     // context helpers append extra text ahead of the user's leading token.
     const messageTextWithContexts = appendTerminalContextsToPrompt(
-      rewrittenPromptForSend,
+      sideChatCommand ? (sideChatCommand[1] ?? "") : rewrittenPromptForSend,
       composerTerminalContextsSnapshot,
       sendLimits.maxInputChars -
         appendAttachedFilesToPrompt("", composerFilePathsSnapshot).length -
@@ -5840,17 +5835,19 @@ export default memo(function ChatView({
         : composerFilePathsSnapshot[0]
           ? basenameOfPath(composerFilePathsSnapshot[0])
           : trimmed;
-    const turnAttachmentsPromise = Promise.all(
-      composerImagesSnapshot.map(async (image) => {
-        const uploadId = await ensureComposerUpload(threadIdForSend, image);
-        const saved = await api.attachments.getUploads({
-          threadId: threadIdForSend,
-          uploadIds: [uploadId],
-        });
-        if (!saved[0]) throw new Error(`${image.name} expired. Remove it and re-attach the file.`);
-        return { type: "upload" as const, uploadId };
-      }),
-    );
+    const prepareAttachments = (ownerId: ThreadId) =>
+      Promise.all(
+        composerImagesSnapshot.map(async (image) => {
+          const uploadId = await ensureComposerUpload(ownerId, image);
+          const saved = await api.attachments.getUploads({
+            threadId: ownerId,
+            uploadIds: [uploadId],
+          });
+          if (!saved[0])
+            throw new Error(`${image.name} expired. Remove it and re-attach the file.`);
+          return { type: "upload" as const, uploadId };
+        }),
+      );
     const optimisticAttachments = composerImagesSnapshot.map((image) => ({
       type: image.type,
       id: image.id,
@@ -5873,35 +5870,104 @@ export default memo(function ChatView({
         description: toastCopy.description,
       });
     }
-    const currentImages = composerImagesRef.current;
-    const currentFilePaths = composerFilePathsRef.current;
-    const currentTerminalContexts = composerTerminalContextsRef.current;
-    const composerStillMatchesCapturedDraft =
+    const composerStillMatchesCapturedDraft = () =>
       (useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null) ===
         replyToForSend &&
       promptRef.current === promptForSend &&
       composerMentionsEqual(composerMentionsRef.current, mentionsForSend) &&
-      currentImages.length === composerImagesSnapshot.length &&
-      currentImages.every((image, index) => image.id === composerImagesSnapshot[index]?.id) &&
-      currentFilePaths.length === composerFilePathsSnapshotBeforePreflight.length &&
-      currentFilePaths.every(
+      composerImagesRef.current.length === composerImagesSnapshot.length &&
+      composerImagesRef.current.every(
+        (image, index) => image.id === composerImagesSnapshot[index]?.id,
+      ) &&
+      composerFilePathsRef.current.length === composerFilePathsSnapshotBeforePreflight.length &&
+      composerFilePathsRef.current.every(
         (filePath, index) => filePath === composerFilePathsSnapshotBeforePreflight[index],
       ) &&
-      currentTerminalContexts.length === composerTerminalContextsSnapshotBeforePreflight.length &&
-      currentTerminalContexts.every(
+      composerTerminalContextsRef.current.length ===
+        composerTerminalContextsSnapshotBeforePreflight.length &&
+      composerTerminalContextsRef.current.every(
         (context, index) =>
           context.id === composerTerminalContextsSnapshotBeforePreflight[index]?.id,
       );
-    if (isLocalDraftThread) {
-      setDraftThreadContext(threadIdForSend, { promoting: true });
-    }
-    if (composerStillMatchesCapturedDraft) {
+    const clearCapturedDraft = () => {
+      if (!composerStillMatchesCapturedDraft()) return;
       promptRef.current = "";
       clearComposerDraftContent(threadIdForSend);
       setComposerHighlightedItemId(null);
       setComposerCursor(0);
       setComposerTrigger(null);
+    };
+    if (sideChatCommand) {
+      try {
+        const draftKey = JSON.stringify([
+          promptForSend,
+          outgoingMessageText,
+          composerImagesSnapshot.map(({ id }) => id),
+        ]);
+        const retry = sideChatRetryRef.current;
+        const retryChild =
+          retry?.parentId === threadIdForSend &&
+          retry.draftKey === draftKey &&
+          selectThreadRightPanelState(
+            useRightPanelStore.getState().byThreadId,
+            threadIdForSend,
+          ).surfaces.some((surface) => surface.id === `side:${retry.childId}`)
+            ? useStore
+                .getState()
+                .threads.find(
+                  (thread) =>
+                    thread.id === retry.childId &&
+                    thread.sideChatOf === threadIdForSend &&
+                    thread.messages.length === 0 &&
+                    !thread.latestTurn,
+                )
+            : undefined;
+        sideChatRetryRef.current = null;
+        if (retry?.parentId === threadIdForSend && retry.draftKey === draftKey && !retryChild) {
+          throw new Error(
+            "The previous side chat is no longer empty or available. Check it before sending again.",
+          );
+        }
+        const childId = retryChild?.id ?? (await openNewSideChat(threadIdForSend));
+        sideChatRetryRef.current = { parentId: threadIdForSend, childId, draftKey };
+        if (
+          sideChatCommand[1]?.trim() ||
+          messageTextForSend ||
+          replyToForSend ||
+          composerImagesSnapshot.length
+        ) {
+          const child = useStore.getState().threads.find((thread) => thread.id === childId);
+          if (!child) throw new Error("The side chat is no longer available.");
+          await sendThreadReply({
+            thread: child,
+            text: outgoingMessageText,
+            attachments: await prepareAttachments(childId),
+          });
+        }
+        sideChatRetryRef.current = null;
+        if (pendingSideQuestion) {
+          if (promptRef.current === promptForSend)
+            onChangeActivePendingUserInputCustomAnswer(pendingSideQuestion.id, "", 0, 0, false, []);
+        } else {
+          clearCapturedDraft();
+        }
+        onAdmittedCallback?.();
+      } catch (cause) {
+        toastManager.add({
+          type: "error",
+          title: "Side chat could not start",
+          description: cause instanceof Error ? cause.message : String(cause),
+        });
+      } finally {
+        sendInFlightRef.current = false;
+      }
+      return;
     }
+    const turnAttachmentsPromise = prepareAttachments(threadIdForSend);
+    if (isLocalDraftThread) {
+      setDraftThreadContext(threadIdForSend, { promoting: true });
+    }
+    clearCapturedDraft();
 
     if (fanOutModels.length > 1 && isLocalDraftThread) {
       try {
@@ -6262,6 +6328,10 @@ export default memo(function ChatView({
     if (activePendingIsResponding || !activePendingUserInput || !activePendingProgress) {
       return;
     }
+    if (/^\/(?:side|btw)(?:\s|$)/i.test(promptRef.current.trim())) {
+      void onSend();
+      return;
+    }
     if (activePendingProgress.isLastQuestion) {
       if (activePendingResolvedAnswers) {
         void onRespondToUserInput(activePendingUserInput.requestId, activePendingResolvedAnswers);
@@ -6276,6 +6346,7 @@ export default memo(function ChatView({
     activePendingResolvedAnswers,
     activePendingUserInput,
     onRespondToUserInput,
+    onSend,
     setActivePendingUserInputQuestionIndex,
   ]);
 
@@ -8423,6 +8494,7 @@ export default memo(function ChatView({
           <AppTitlebar className={isElectron ? undefined : "sm:px-4"}>
             <ChatHeaderWithPanelState
               panelThreadId={threadId}
+              workingTree={repositoryStatus.data?.workingTree}
               navigationHostRef={setNavigationHost}
               isServerThread={isServerThread}
               activeThreadId={activeThread.id}
@@ -9080,3 +9152,4 @@ export default memo(function ChatView({
 });
 import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
 import { openNewSideChat } from "../lib/sideChats";
+import { sendThreadReply } from "../lib/sendThreadReply";

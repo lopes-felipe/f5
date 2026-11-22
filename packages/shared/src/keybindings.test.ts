@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_KEYBINDINGS,
   DEFAULT_RESOLVED_KEYBINDINGS,
+  compileResolvedKeybindingsConfig,
+  mergeWithDefaultKeybindings,
+  shortcutEquals,
   evaluateWhenNode,
   matchesKeybindingTarget,
   parseKeybindingShortcut,
@@ -11,6 +14,19 @@ import {
 } from "./keybindings";
 
 describe("shared keybinding helpers", () => {
+  it("unassigns just the chosen default shortcut", () => {
+    const command = "workspace.focusNext";
+    const custom = compileResolvedKeybindingsConfig([{ command, key: "f6", when: "false" }]);
+    const bindings = mergeWithDefaultKeybindings(custom).filter((rule) => rule.command === command);
+    expect(bindings).toHaveLength(2);
+    expect(
+      bindings.find((rule) => shortcutEquals(rule.shortcut, parseKeybindingShortcut("f6")!)),
+    ).toEqual(custom[0]);
+    expect(
+      bindings.find((rule) => shortcutEquals(rule.shortcut, parseKeybindingShortcut("mod+f6")!))
+        ?.whenAst,
+    ).toBeUndefined();
+  });
   it("limits send-and-new to an existing thread's composer", () => {
     const binding = DEFAULT_RESOLVED_KEYBINDINGS.find(
       (entry) => entry.command === "chat.sendAndNew",

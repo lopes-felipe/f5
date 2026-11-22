@@ -16,6 +16,7 @@ function ToolbarToggle({
   label,
   ariaLabel,
   shortcutLabel,
+  tooltipDetails,
   pressed,
   onPressedChange,
   disabled = false,
@@ -29,6 +30,7 @@ function ToolbarToggle({
   label: string;
   ariaLabel?: string | undefined;
   shortcutLabel?: string | null | undefined;
+  tooltipDetails?: React.ReactNode;
   pressed: boolean;
   onPressedChange: (pressed: boolean) => void;
   disabled?: boolean | undefined;
@@ -84,9 +86,12 @@ function ToolbarToggle({
           </Toggle>
         }
       />
-      <TooltipPopup side="bottom" className="flex items-center gap-2">
-        {tooltip}
-        {shortcutLabel && !disabled ? <Kbd>{shortcutLabel}</Kbd> : null}
+      <TooltipPopup side="bottom">
+        <div className="flex items-center gap-2">
+          {tooltip}
+          {shortcutLabel && !disabled ? <Kbd>{shortcutLabel}</Kbd> : null}
+        </div>
+        {!disabled && tooltipDetails ? <div className="mt-1.5">{tooltipDetails}</div> : null}
       </TooltipPopup>
     </Tooltip>
   );

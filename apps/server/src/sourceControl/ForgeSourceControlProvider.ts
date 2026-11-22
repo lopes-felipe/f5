@@ -65,6 +65,14 @@ export interface ForgeWorkflowRun {
   readonly completed: boolean;
 }
 export interface ForgeProvider extends SourceControlProvider {
+  readonly openChangeRequest?: (input: {
+    readonly ref: SourceControlPullRequestRef;
+    readonly head: string;
+    readonly base?: string | undefined;
+    readonly title: string;
+    readonly body: string;
+    readonly draft: boolean;
+  }) => Effect.Effect<ForgeDetail, SourceControlProviderError>;
   readonly completions?: (
     ref: SourceControlPullRequestRef,
     input: { readonly sigil: "@" | "#" | "!"; readonly query: string },
@@ -76,6 +84,7 @@ export interface ForgeProvider extends SourceControlProvider {
   readonly listPullRequests: (
     ref: SourceControlPullRequestRef,
     limit?: number,
+    options?: { readonly state: "open" | "closed" | "merged" | "all" },
   ) => Effect.Effect<ReadonlyArray<ForgeDetail>, SourceControlProviderError>;
   readonly getDetail: (
     ref: SourceControlPullRequestRef,
@@ -97,7 +106,13 @@ export interface ForgeProvider extends SourceControlProvider {
     input: ForgeCommentInput,
   ) => Effect.Effect<unknown, SourceControlProviderError>;
   readonly submitReview: (
-    input: ForgeCommentInput & { readonly verdict: "comment" | "approve" | "request-changes" },
+    input: ForgeCommentInput & {
+      readonly verdict: "comment" | "approve" | "request-changes";
+      readonly comments?: Extract<
+        import("@t3tools/contracts").ForgeMutationPayload,
+        { kind: "review" }
+      >["comments"];
+    },
   ) => Effect.Effect<unknown, SourceControlProviderError>;
   readonly performAction: (input: {
     readonly ref: SourceControlPullRequestRef;
@@ -1104,19 +1119,136 @@ export function makeForgeSourceControlProvider(options: {
     input: { cwd: string; url: string },
     fn: (ref: SourceControlPullRequestRef) => Effect.Effect<unknown, SourceControlProviderError>,
   ) => refFrom(input.url, input.cwd).pipe(Effect.flatMap(fn), Effect.asVoid);
+  const createChangeRequest = (input: {
+    readonly ref?: SourceControlPullRequestRef;
+    readonly cwd?: string;
+    readonly base: string;
+    readonly head: string;
+    readonly title: string;
+    readonly body: string;
+    readonly draft?: boolean;
+  }) =>
+    request(
+      input.ref,
+      input.cwd,
+      kind === "gitlab" ? "/merge_requests" : kind === "forgejo" ? "/pulls" : "/pullrequests",
+      "POST",
+      kind === "gitlab"
+        ? {
+            source_branch: input.head,
+            target_branch: input.base,
+            title:
+              input.draft && !/^(?:Draft:|\[Draft\]|\(Draft\))/iu.test(input.title)
+                ? "Draft: " + input.title
+                : input.title,
+            description: input.body,
+          }
+        : kind === "bitbucket"
+          ? {
+              title: input.title,
+              description: input.body,
+              source: { branch: { name: input.head } },
+              destination: { branch: { name: input.base } },
+            }
+          : kind === "forgejo"
+            ? { title: input.title, body: input.body, head: input.head, base: input.base }
+            : {
+                title: input.title,
+                description: input.body,
+                sourceRefName: "refs/heads/" + input.head,
+                targetRefName: "refs/heads/" + input.base,
+                ...(input.draft ? { isDraft: true } : {}),
+              },
+    );
+  const repositoryDefaultBranch = (value: unknown) =>
+    text(
+      object(value).default_branch ??
+        object(object(value).mainbranch).name ??
+        object(value).defaultBranch,
+    ).replace(/^refs\/heads\//, "") || null;
   return {
     kind,
-    listPullRequests: (ref, limit = 100) =>
+    openChangeRequest: (input) =>
+      Effect.gen(function* () {
+        const { ref, head } = input;
+        if (input.draft && (kind === "bitbucket" || kind === "forgejo"))
+          return yield* unsupported("open a draft pull request");
+        const query =
+          kind === "gitlab"
+            ? "/merge_requests?state=opened&source_branch=" + enc(head)
+            : kind === "azure-devops"
+              ? "/pullrequests?searchCriteria.status=active&searchCriteria.sourceRefName=" +
+                enc("refs/heads/" + head)
+              : kind === "bitbucket"
+                ? "/pullrequests?state=OPEN&q=" + enc("source.branch.name=" + JSON.stringify(head))
+                : "/pulls?state=open";
+        const existing = (yield* pagedRows(ref, query))
+          .map((item) => summary(item, ref))
+          .filter((item) => item.headRefName === head && item.isCrossRepository !== true);
+        if (existing.length > 1)
+          return yield* error(
+            "create",
+            "More than one open pull request uses this branch.",
+            "generic",
+          );
+        if (existing[0]) return existing[0];
+        const base = input.base ?? repositoryDefaultBranch(yield* request(ref, undefined, ""));
+        if (!base || base === head)
+          return yield* error(
+            "create",
+            "Select a base branch different from the pushed branch.",
+            "generic",
+          );
+        const created = yield* createChangeRequest({
+          ref,
+          base,
+          head,
+          title: input.title,
+          body: input.body,
+          draft: input.draft,
+        });
+        const result = summary(object(created), ref);
+        if (!Number.isSafeInteger(result.number) || result.number < 1)
+          return yield* error(
+            "create",
+            "The forge returned an invalid pull request reference.",
+            "invalid_response",
+          );
+        return result;
+      }),
+    listPullRequests: (ref, limit = 100, options) =>
       request(
         ref,
         undefined,
         kind === "gitlab"
-          ? `/merge_requests?state=opened&per_page=${Math.min(limit, 100)}`
+          ? "/merge_requests?state=" +
+              (options?.state === "open" || !options ? "opened" : options.state) +
+              "&per_page=" +
+              Math.min(limit, 100)
           : kind === "forgejo"
-            ? `/pulls?state=open&limit=${Math.min(limit, 100)}`
+            ? "/pulls?state=" +
+              (options?.state === "merged" ? "closed" : (options?.state ?? "open")) +
+              "&limit=" +
+              Math.min(limit, 100)
             : kind === "bitbucket"
-              ? `/pullrequests?state=OPEN&pagelen=${Math.min(limit, 100)}`
-              : `/pullrequests?searchCriteria.status=active&$top=${Math.min(limit, 100)}`,
+              ? "/pullrequests?" +
+                {
+                  open: "state=OPEN",
+                  merged: "state=MERGED",
+                  closed: "state=DECLINED&state=SUPERSEDED",
+                  all: "state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED",
+                }[options?.state ?? "open"] +
+                "&pagelen=" +
+                Math.min(limit, 100)
+              : "/pullrequests?searchCriteria.status=" +
+                {
+                  open: "active",
+                  merged: "completed",
+                  closed: "abandoned",
+                  all: "all",
+                }[options?.state ?? "open"] +
+                "&$top=" +
+                Math.min(limit, 100),
       ).pipe(Effect.map((value) => rows(value).map((value) => summary(value, ref)))),
     forgeCapabilities: caps,
     capability,
@@ -1399,16 +1531,7 @@ export function makeForgeSourceControlProvider(options: {
               : `/pullrequests?q=${enc(input.qualifiers.join(" "))}`,
           ),
     getDefaultBranch: (input) =>
-      request(undefined, input.cwd, "").pipe(
-        Effect.map(
-          (v) =>
-            text(
-              object(v).default_branch ??
-                object(object(v).mainbranch).name ??
-                object(v).defaultBranch,
-            ).replace(/^refs\/heads\//, "") || null,
-        ),
-      ),
+      request(undefined, input.cwd, "").pipe(Effect.map(repositoryDefaultBranch)),
     getRepositoryCloneUrls: (input) =>
       request(undefined, input.cwd, "", "GET", undefined, false, input.repository).pipe(
         Effect.map((value) => {
@@ -1437,34 +1560,13 @@ export function makeForgeSourceControlProvider(options: {
         catch: () => error("create", "Unable to read pull request body.", "generic"),
       }).pipe(
         Effect.flatMap((body) =>
-          request(
-            undefined,
-            input.cwd,
-            kind === "gitlab" ? "/merge_requests" : kind === "forgejo" ? "/pulls" : "/pullrequests",
-            "POST",
-            kind === "gitlab"
-              ? {
-                  source_branch: input.headSelector,
-                  target_branch: input.baseBranch,
-                  title: input.title,
-                  description: body,
-                }
-              : kind === "bitbucket"
-                ? {
-                    title: input.title,
-                    description: body,
-                    source: { branch: { name: input.headSelector } },
-                    destination: { branch: { name: input.baseBranch } },
-                  }
-                : kind === "forgejo"
-                  ? { title: input.title, body, head: input.headSelector, base: input.baseBranch }
-                  : {
-                      title: input.title,
-                      description: body,
-                      sourceRefName: `refs/heads/${input.headSelector}`,
-                      targetRefName: `refs/heads/${input.baseBranch}`,
-                    },
-          ),
+          createChangeRequest({
+            cwd: input.cwd,
+            base: input.baseBranch,
+            head: input.headSelector,
+            title: input.title,
+            body,
+          }),
         ),
         Effect.asVoid,
       ),

@@ -92,7 +92,7 @@ it.layer(SqliteClient.layerMemory())("Muse cached native accounting", (it) => {
             {
               enabled: true,
               usageHistory: {
-                refresh: Effect.void,
+                refresh: () => Effect.void,
                 getSnapshot: Effect.sync(() => ({
                   source: home,
                   records: status === "idle" ? [] : records,
@@ -231,9 +231,10 @@ it.layer(SqliteClient.layerMemory())("Muse history merging", (it) => {
         const instance = {
           enabled: true,
           usageHistory: {
-            refresh: Effect.sync(() => {
-              refreshes++;
-            }),
+            refresh: () =>
+              Effect.sync(() => {
+                refreshes++;
+              }),
             getSnapshot: Effect.succeed({
               source: "/native/muse",
               records: [record],

@@ -915,6 +915,26 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect("defaults history retention and persists an unlimited setting", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsService;
+      assert.equal(yield* settings.getUsageHistoryRetention!, 182);
+      yield* settings.updateSettings({ usageHistoryRetentionDays: "unlimited" });
+      assert.equal(yield* settings.getUsageHistoryRetention!, "unlimited");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("does not prune history while the settings file is malformed", () =>
+    Effect.gen(function* () {
+      const { settingsPath } = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      assert.ok(settingsPath);
+      yield* fs.writeFileString(settingsPath, '{"usageHistoryRetentionDays":0}');
+      const settings = yield* ServerSettingsService;
+      assert.isNull(yield* settings.getUsageHistoryRetention!);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("writes only non-default server settings to disk", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsService;

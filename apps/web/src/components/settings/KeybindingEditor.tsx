@@ -156,7 +156,8 @@ export function KeybindingEditor() {
   }, [keybindingConflicts]);
   const [searchQuery, setSearchQuery] = useState("");
   const [editingTarget, setEditingTarget] = useState<KeybindingRule | null>(null);
-  const [editingDefaultRow, setEditingDefaultRow] = useState(false);
+  const [editingDefaultKey, setEditingDefaultKey] = useState<string | null>(null);
+  const editingDefaultRow = editingDefaultKey !== null;
   const [draftRule, setDraftRule] = useState<DraftRule | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isMutating, setIsMutating] = useState(false);
@@ -207,14 +208,14 @@ export function KeybindingEditor() {
 
   const beginAdd = () => {
     setEditingTarget(null);
-    setEditingDefaultRow(false);
+    setEditingDefaultKey(null);
     setDraftRule(EMPTY_DRAFT);
     setSubmitError(null);
   };
 
   const beginEdit = (row: KeybindingRow) => {
     setEditingTarget(row.target);
-    setEditingDefaultRow(row.target === null);
+    setEditingDefaultKey(row.target === null ? row.key : null);
     setDraftRule({
       command: row.command,
       key: row.key,
@@ -226,9 +227,13 @@ export function KeybindingEditor() {
     setSubmitError(null);
   };
 
-  const submitDraft = async () => {
+  const submitDraft = async (unassign = false) => {
     if (!draftRule) return;
-    const validation = validateDraftRule(draftRule);
+    const validation = validateDraftRule(
+      unassign && editingDefaultKey
+        ? { ...draftRule, key: editingDefaultKey, when: "false" }
+        : draftRule,
+    );
     if ("error" in validation) {
       setSubmitError(validation.error);
       return;
@@ -244,7 +249,7 @@ export function KeybindingEditor() {
       applyKeybindingMutationResult(queryClient, result);
       setDraftRule(null);
       setEditingTarget(null);
-      setEditingDefaultRow(false);
+      setEditingDefaultKey(null);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Failed to save keybinding.");
     } finally {
@@ -266,7 +271,7 @@ export function KeybindingEditor() {
       ) {
         setDraftRule(null);
         setEditingTarget(null);
-        setEditingDefaultRow(false);
+        setEditingDefaultKey(null);
       }
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Failed to remove keybinding.");
@@ -286,7 +291,7 @@ export function KeybindingEditor() {
       applyKeybindingMutationResult(queryClient, result);
       setDraftRule(null);
       setEditingTarget(null);
-      setEditingDefaultRow(false);
+      setEditingDefaultKey(null);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Failed to reset keybindings.");
     } finally {
@@ -390,6 +395,17 @@ export function KeybindingEditor() {
           </div>
           {submitError ? <p className="text-xs text-destructive">{submitError}</p> : null}
           <div className="flex justify-end gap-2">
+            {editingDefaultRow ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => void submitDraft(true)}
+                disabled={isMutating}
+              >
+                Unassign
+              </Button>
+            ) : null}
             <Button
               type="button"
               size="xs"
@@ -397,14 +413,19 @@ export function KeybindingEditor() {
               onClick={() => {
                 setDraftRule(null);
                 setEditingTarget(null);
-                setEditingDefaultRow(false);
+                setEditingDefaultKey(null);
                 setSubmitError(null);
               }}
               disabled={isMutating}
             >
               Cancel
             </Button>
-            <Button type="button" size="xs" onClick={submitDraft} disabled={isMutating}>
+            <Button
+              type="button"
+              size="xs"
+              onClick={() => void submitDraft()}
+              disabled={isMutating}
+            >
               {editingTarget || editingDefaultRow ? "Save" : "Add keybinding"}
             </Button>
           </div>
@@ -458,9 +479,11 @@ export function KeybindingEditor() {
                   </div>
                   <div className="flex items-center">
                     <code className="rounded-sm border border-border bg-card px-1.5 py-0.5 text-xs text-foreground">
-                      {!isElectron && row.source === "default" && /^isElectron\b/.test(row.when)
-                        ? "Unbound on web"
-                        : formatShortcutLabel(row.binding.shortcut)}
+                      {row.when === "false"
+                        ? "Unassigned"
+                        : !isElectron && row.source === "default" && /^isElectron\b/.test(row.when)
+                          ? "Unbound on web"
+                          : formatShortcutLabel(row.binding.shortcut)}
                     </code>
                   </div>
                   <p

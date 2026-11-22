@@ -4,6 +4,7 @@ import type { TrackedPullRequest } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
+import { ChangeBreakdownGrid } from "./ChangeBreakdownGrid";
 
 export function PrChangeStat({
   pr,
@@ -65,20 +66,11 @@ export function PrChangeStat({
       </TooltipTrigger>
       <TooltipPopup>
         {breakdown ? (
-          <div className="grid grid-cols-3 gap-x-3 gap-y-1">
-            {Object.entries(breakdown)
-              .filter(([, value]) => value.additions || value.deletions)
-              .map(([kind, value]) => (
-                <div key={kind} className="contents">
-                  <span className="capitalize">{kind}</span>
-                  <span className="text-success-foreground">+{value.additions}</span>
-                  <span className="text-destructive-foreground">−{value.deletions}</span>
-                </div>
-              ))}
-            <span>Total</span>
-            <span>+{pr.additions}</span>
-            <span>−{pr.deletions}</span>
-          </div>
+          <ChangeBreakdownGrid
+            breakdown={breakdown}
+            additions={pr.additions}
+            deletions={pr.deletions}
+          />
         ) : query.isFetching ? (
           "Loading breakdown…"
         ) : (

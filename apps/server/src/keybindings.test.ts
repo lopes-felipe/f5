@@ -437,6 +437,25 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
+  it.effect("keeps an individual unassignment across startup default cleanup", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig;
+      const unassigned = { key: "f6", command: "workspace.focusNext", when: "false" } as const;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, [unassigned]);
+      const keybindings = yield* Keybindings;
+      yield* keybindings.syncDefaultKeybindingsOnStartup;
+      assert.deepEqual(yield* readKeybindingsConfig(keybindingsConfigPath), [unassigned]);
+      const state = yield* keybindings.loadConfigState;
+      const bindings = state.keybindings.filter(({ command }) => command === "workspace.focusNext");
+      assert.strictEqual(bindings.length, 2);
+      assert.deepEqual(bindings.find(({ shortcut }) => !shortcut.modKey)?.whenAst, {
+        type: "identifier",
+        name: "false",
+      });
+      assert.isUndefined(bindings.find(({ shortcut }) => shortcut.modKey)?.whenAst);
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
   it.effect("does not persist defaults when a custom shortcut conflicts with a default", () =>
     Effect.gen(function* () {
       const { keybindingsConfigPath } = yield* ServerConfig;
