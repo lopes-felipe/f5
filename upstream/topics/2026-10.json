@@ -44653,11 +44653,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:20.968Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/codexAppServerManager.ts:5183",
+          "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:5800"
+        ],
+        "f5Refs": [
+          "2bf3550a6a2560959d09ce69fad543460605823e"
+        ]
+      },
       "id": "pr-23388",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -63832,11 +63842,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:20.968Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-26331",
-      "status": "port",
+      "reason": "F5’s account usage view reads limits through direct account probes.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",

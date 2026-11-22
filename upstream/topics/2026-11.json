@@ -5158,11 +5158,22 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:20.968Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:6859",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:6210",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:6315"
+        ],
+        "f5Refs": [
+          "2bf3550a6a2560959d09ce69fad543460605823e"
+        ]
+      },
       "id": "pr-23561",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -12756,14 +12767,16 @@
     },
     {
       "createdAt": "2026-11-18T11:12:10.405Z",
-      "decidedAt": "2026-11-20T11:44:39.946Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:20.968Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-26652",
+      "reason": "F5 has no ACP client terminal launcher.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-38173"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -35952,14 +35965,16 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:20.968Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-30781",
+      "reason": "F5 already exposes Ultracode on Sonnet 5.5 and Haiku 5.5, uses live CLI capabilities for turns, and downloads a manifest for model lifecycle classification only.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-30511"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
