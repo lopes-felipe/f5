@@ -87919,9 +87919,11 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T18:07:11.873Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39921",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "mcp",
@@ -88473,9 +88475,11 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T18:07:16.893Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-40023",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "forges",
