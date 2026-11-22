@@ -186,7 +186,11 @@ export async function captureAntigravitySession(input: {
   const workspace = await mkdtemp(path.join(tmpdir(), "f5-agy-capture-repo-"));
   const env = {
     ...antigravityLaunchEnvironment({
-      base: process.env,
+      // The probe key reaches the agent only as GEMINI_API_KEY through the auth config, as in
+      // production; its own variable must not leak to shells or MCP children.
+      base: Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => name !== "F5_PROBE_GEMINI_API_KEY"),
+      ),
       home: prepared.home,
       harness: prepared.executable.harnessPath,
       browserCommand: prepared.browser,
@@ -441,12 +445,18 @@ async function runScripted(
     await prompt(
       "Run the shell command `printenv GEMINI_API_KEY | wc -c` and reply only with the number it prints.",
     ).catch(() => undefined);
+    // Only this session's response text: reasoning chunks can mention other numbers.
     const reply = agent.notifications
       .slice(start)
-      .map((notification) => record(record(notification.update)?.content)?.text)
+      .filter((notification) => notification.sessionId === sessionId)
+      .map((notification) => record(notification.update))
+      .filter((update) => update?.sessionUpdate === "agent_message_chunk")
+      .map((update) => record(update?.content)?.text)
       .filter((text): text is string => typeof text === "string")
-      .join("");
-    const count = Number.parseInt(reply.match(/\d+/)?.[0] ?? "", 10);
+      .join("")
+      .trim();
+    // An unambiguous reply is one number and nothing else; anything else records unknown.
+    const count = /^\d+$/.test(reply) ? Number.parseInt(reply, 10) : Number.NaN;
     raw.checks = { ...raw.checks, apiKeyVisibleToShell: Number.isFinite(count) ? count > 1 : null };
 
     // A stdio MCP child records whether the key reached its environment, never the value.
@@ -481,7 +491,9 @@ async function runScripted(
   // Cold resume in a new process.
   agent.step = "resume";
   const model = modelOption(session?.configOptions);
-  agent.close();
+  // Wait for the original process to exit, so this records a cold resume, not two processes
+  // sharing the session.
+  await agent.shutdown();
   const resumed = await connect().catch(() => undefined);
   if (resumed) {
     const response = await resumed.agent

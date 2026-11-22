@@ -257,7 +257,10 @@ describe("Antigravity account ownership", () => {
       const b = Path.join(root, "b");
       const token = Path.join(antigravityProfileDirectory(a, instanceId), "antigravity-acp");
       await FS.mkdir(token, { recursive: true });
-      await FS.writeFile(Path.join(token, "acp_token.json"), '{"token":"synthetic"}');
+      await FS.writeFile(
+        Path.join(token, "acp_token.json"),
+        '{"client_id":"synthetic","refresh_token":"synthetic"}',
+      );
       expect((await make(a).status(instanceId)).status).toBe("authenticated");
       expect((await make(b).status(instanceId)).status).toBe("unauthenticated");
     } finally {
@@ -385,6 +388,12 @@ describe("Antigravity key sign-out", () => {
     const result = await run({ storedAtExit: "key-one-0123456789" });
     expect(result.guardHeldDuringWrite).toBe(true);
     expect(result.writes).toHaveLength(1);
+    // The write clears the key, not merely writes something back.
+    expect(result.writes[0]).toMatchObject({
+      providerInstances: {
+        "agy-key": { config: { apiKey: "", apiKeyRedacted: false } },
+      },
+    });
     expect(result.events.filter((event) => event.type === "exited")).toEqual([
       { handle: expect.any(String), instanceId: "agy-key", type: "exited", data: "0" },
     ]);

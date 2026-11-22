@@ -51,9 +51,79 @@ describe("Antigravity user configuration copies on Windows", () => {
     try {
       await fs.writeFile(source, "v1");
       await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      // The copy really existed before the removal is tested.
+      expect(await fs.readFile(target, "utf8")).toBe("v1");
       await fs.rm(source);
       await linkAntigravityUserConfigFiles(home, userHome, "win32");
-      await expect(fs.stat(target)).rejects.toThrow();
+      await expect(fs.stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("copies the source bytes exactly and still owns the copy on the next launch", async () => {
+    const { base, userHome, home, source } = await setup();
+    const target = NodePath.join(home, "AGENTS.md");
+    try {
+      // Not valid UTF-8: a string round trip would change these bytes.
+      const bytes = Buffer.from([0x68, 0x69, 0xff, 0xfe, 0x0a]);
+      await fs.writeFile(source, bytes);
+      await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      expect((await fs.readFile(target)).equals(bytes)).toBe(true);
+      await fs.writeFile(source, "v2");
+      await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      expect(await fs.readFile(target, "utf8")).toBe("v2");
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("still owns its copy when the marker update after a replacement was lost", async () => {
+    const { base, userHome, home, source } = await setup();
+    const target = NodePath.join(home, "AGENTS.md");
+    try {
+      await fs.writeFile(source, "v1");
+      await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      // The state a failed final marker write leaves: v2 published, both hashes pending.
+      const { createHash } = await import("node:crypto");
+      const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+      await fs.writeFile(target, "v2");
+      await fs.writeFile(`${target}.f5-copy`, `${hash("v1")}\n${hash("v2")}`);
+      await fs.writeFile(source, "v3");
+      await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      expect(await fs.readFile(target, "utf8")).toBe("v3");
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.skipIf(process.platform === "win32")("Antigravity user configuration links", () => {
+  it("removes or replaces only the link F5 made", async () => {
+    const base = await fs.mkdtemp(NodePath.join(os.tmpdir(), "f5-agy-link-"));
+    const userHome = NodePath.join(base, "user");
+    const home = NodePath.join(base, "profile");
+    const source = NodePath.join(userHome, ".gemini", "AGENTS.md");
+    const target = NodePath.join(home, "AGENTS.md");
+    const team = NodePath.join(base, "team-AGENTS.md");
+    try {
+      await fs.mkdir(NodePath.dirname(source), { recursive: true });
+      await fs.mkdir(home, { recursive: true });
+      await fs.writeFile(team, "team");
+      // A link the user made to a team file survives a missing and a present source.
+      await fs.symlink(team, target);
+      await linkAntigravityUserConfigFiles(home, userHome, "darwin");
+      expect(await fs.readlink(target)).toBe(team);
+      await fs.writeFile(source, "user");
+      await linkAntigravityUserConfigFiles(home, userHome, "darwin");
+      expect(await fs.readlink(target)).toBe(team);
+      // F5's own link is created, then removed once the source is gone.
+      await fs.rm(target);
+      await linkAntigravityUserConfigFiles(home, userHome, "darwin");
+      expect(await fs.readlink(target)).toBe(source);
+      await fs.rm(source);
+      await linkAntigravityUserConfigFiles(home, userHome, "darwin");
+      await expect(fs.lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await fs.rm(base, { recursive: true, force: true });
     }

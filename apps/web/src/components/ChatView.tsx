@@ -8164,6 +8164,11 @@ export default memo(function ChatView({
           failure={activeAuthFailure}
           providerLabel={PROVIDER_DISPLAY_NAMES[activeThread.session.provider]}
           driver={activeThread.session.provider}
+          authType={
+            serverConfigQuery.data?.providers?.find(
+              (provider) => provider.instanceId === activeAuthFailure.providerInstanceId,
+            )?.auth.type
+          }
           error={activeThread.error}
           onDismiss={dismissActiveThreadError}
         />

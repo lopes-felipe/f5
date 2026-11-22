@@ -21,6 +21,11 @@ async function layout() {
   return { base, userHome, profileDirectory, cwd, outside };
 }
 
+/** Directory links as junctions on Windows, which need no symlink privilege. */
+const linkDirectory = (target: string, link: string) =>
+  fs.symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+const onWindows = process.platform === "win32";
+
 async function skill(directory: string, name: string, description = `${name} skill`) {
   await fs.mkdir(directory, { recursive: true });
   await fs.writeFile(
@@ -72,7 +77,7 @@ describe("Antigravity skill discovery", () => {
   it("ignores configured paths outside the home, profile and project", async () => {
     const { userHome, profileDirectory, cwd, outside } = await layout();
     await skill(NodePath.join(outside, "escape"), "escape");
-    await fs.symlink(outside, NodePath.join(cwd, "linked"));
+    await linkDirectory(outside, NodePath.join(cwd, "linked"));
     await fs.mkdir(NodePath.join(cwd, ".agents"), { recursive: true });
     await fs.writeFile(
       NodePath.join(cwd, ".agents", "skills.json"),
@@ -81,25 +86,32 @@ describe("Antigravity skill discovery", () => {
     expect(await discoverAntigravitySkills({ cwd, userHome, profileDirectory })).toEqual([]);
   });
 
-  it("rechecks containment for symlinked skill folders and SKILL.md files", async () => {
-    const { userHome, profileDirectory, cwd, outside } = await layout();
-    await skill(NodePath.join(outside, "escape"), "escape");
-    await skill(NodePath.join(cwd, "shared", "inside"), "inside");
-    // A configured entry inside the project whose children link out of every root.
-    await fs.symlink(NodePath.join(outside, "escape"), NodePath.join(cwd, "shared", "linked-dir"));
-    await fs.mkdir(NodePath.join(cwd, "shared", "linked-file"), { recursive: true });
-    await fs.symlink(
-      NodePath.join(outside, "escape", "SKILL.md"),
-      NodePath.join(cwd, "shared", "linked-file", "SKILL.md"),
-    );
-    await fs.mkdir(NodePath.join(cwd, ".agents"), { recursive: true });
-    await fs.writeFile(
-      NodePath.join(cwd, ".agents", "skills.json"),
-      JSON.stringify({ entries: [{ path: "shared" }] }),
-    );
-    const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
-    expect(skills.map((entry) => entry.name)).toEqual(["inside"]);
-  });
+  // A file link needs the symlink privilege on Windows, and a junction can't point at a file.
+  it.skipIf(onWindows)(
+    "rechecks containment for symlinked skill folders and SKILL.md files",
+    async () => {
+      const { userHome, profileDirectory, cwd, outside } = await layout();
+      await skill(NodePath.join(outside, "escape"), "escape");
+      await skill(NodePath.join(cwd, "shared", "inside"), "inside");
+      // A configured entry inside the project whose children link out of every root.
+      await fs.symlink(
+        NodePath.join(outside, "escape"),
+        NodePath.join(cwd, "shared", "linked-dir"),
+      );
+      await fs.mkdir(NodePath.join(cwd, "shared", "linked-file"), { recursive: true });
+      await fs.symlink(
+        NodePath.join(outside, "escape", "SKILL.md"),
+        NodePath.join(cwd, "shared", "linked-file", "SKILL.md"),
+      );
+      await fs.mkdir(NodePath.join(cwd, ".agents"), { recursive: true });
+      await fs.writeFile(
+        NodePath.join(cwd, ".agents", "skills.json"),
+        JSON.stringify({ entries: [{ path: "shared" }] }),
+      );
+      const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
+      expect(skills.map((entry) => entry.name)).toEqual(["inside"]);
+    },
+  );
 
   it("skips one oversized or unterminated skill instead of dropping the whole scan", async () => {
     const { userHome, profileDirectory, cwd } = await layout();
@@ -148,12 +160,52 @@ describe("Antigravity skill discovery", () => {
     const { userHome, profileDirectory, cwd, outside } = await layout();
     await skill(NodePath.join(outside, "plugins", "evil", "skills", "leak"), "leak");
     await fs.mkdir(NodePath.join(profileDirectory, "config"), { recursive: true });
-    await fs.symlink(
+    await linkDirectory(
       NodePath.join(outside, "plugins"),
       NodePath.join(profileDirectory, "config", "plugins"),
     );
     const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
     expect(skills).toEqual([]);
+  });
+
+  it("stops at a closing delimiter with long padding even when the body is over the limit", async () => {
+    const { userHome, profileDirectory, cwd } = await layout();
+    const directory = NodePath.join(cwd, ".agents", "skills", "padded");
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(
+      NodePath.join(directory, "SKILL.md"),
+      `---\nname: padded\ndescription: ok\n---${" ".repeat(40)}\t\r\n${"x".repeat(1_100_000)}`,
+    );
+    const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
+    expect(skills.map((entry) => entry.name)).toEqual(["padded"]);
+  });
+
+  it("reads SKILL.md even when an ineligible SKILL.MD sits next to it", async () => {
+    const { userHome, profileDirectory, cwd } = await layout();
+    const directory = NodePath.join(cwd, ".agents", "skills", "cased");
+    await skill(directory, "cased");
+    await fs.writeFile(NodePath.join(directory, "SKILL.MD"), "---\nname: wrong\n---\n");
+    // On a case-insensitive filesystem the second write keeps the `SKILL.md` name and replaces
+    // its contents, so only one file exists to read.
+    const caseSensitive = (await fs.readdir(directory)).length === 2;
+    const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
+    expect(skills.map((entry) => entry.name)).toEqual([caseSensitive ? "cased" : "wrong"]);
+  });
+
+  it("charges configured paths to the scan budget before touching the filesystem", async () => {
+    const { userHome, profileDirectory, cwd } = await layout();
+    await skill(NodePath.join(cwd, "shared", "late"), "late");
+    await fs.mkdir(NodePath.join(cwd, ".agents"), { recursive: true });
+    const missing = Array.from({ length: 10_001 }, (_, index) => ({ path: `missing-${index}` }));
+    await fs.writeFile(
+      NodePath.join(cwd, ".agents", "skills.json"),
+      JSON.stringify({ inherits: missing, entries: [{ path: "shared" }] }),
+    );
+    const started = performance.now();
+    const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
+    // The budget ran out on the inherited paths, so the entry after them is never reached.
+    expect(skills).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(10_000);
   });
 
   it("decodes skills.json entries and filters and rejects malformed files", () => {

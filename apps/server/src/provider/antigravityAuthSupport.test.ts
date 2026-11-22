@@ -92,12 +92,19 @@ describe("Antigravity launch environment", () => {
 });
 
 describe("Antigravity readiness", () => {
-  it("is ready for the Google account method when the token file is non-empty", async () => {
+  it("is ready for the Google account method only with a readable token", async () => {
     const directory = await profile();
     const auth = { authMethod: "oauth-personal" as const, apiKey: "" };
     expect((await antigravityReadiness({ profileDirectory: directory, auth })).action).toBe(
       "Sign in",
     );
+    await fs.mkdir(path.join(directory, "antigravity-acp"), { recursive: true });
+    await fs.writeFile(path.join(directory, "antigravity-acp", "acp_token.json"), "{not json");
+    expect((await antigravityReadiness({ profileDirectory: directory, auth })).action).toBe(
+      "Sign in",
+    );
+    await writeToken(directory, { client_id: "c" });
+    expect((await antigravityReadiness({ profileDirectory: directory, auth })).ready).toBe(false);
     await writeToken(directory, { client_id: "c", refresh_token: "r" });
     expect((await antigravityReadiness({ profileDirectory: directory, auth })).ready).toBe(true);
   });
@@ -202,23 +209,78 @@ describe("Antigravity account revision", () => {
     // Status reads still fall back to an unready state.
     expect((await readAntigravityAuthState(directory)).verified).toBe(false);
   });
-  it("reports a failed write to the caller without an unhandled rejection", async () => {
+  // A read-only profile folder fails the publication step after a successful read. Windows
+  // ignores the mode bits, and root ignores them everywhere.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "reports a failed publication to the caller without an unhandled rejection",
+    async () => {
+      const directory = await profile();
+      await advanceAntigravityRevision(directory, () => ({ verified: true }));
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        await fs.chmod(directory, 0o500);
+        await expect(advanceAntigravityRevision(directory)).rejects.toThrow(/EACCES|EPERM/);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(unhandled).toEqual([]);
+        // The published state is untouched.
+        expect(await readAntigravityAuthState(directory)).toMatchObject({
+          revision: 1,
+          verified: true,
+        });
+        // The queue recovers for the next writer.
+        await fs.chmod(directory, 0o700);
+        expect((await advanceAntigravityRevision(directory)).revision).toBe(2);
+      } finally {
+        await fs.chmod(directory, 0o700).catch(() => undefined);
+        process.off("unhandledRejection", onUnhandled);
+      }
+    },
+  );
+  it("refuses to update a state whose revision is missing or not an integer", async () => {
     const directory = await profile();
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown) => unhandled.push(reason);
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      // A directory where the state file should be makes the rename fail.
-      await fs.mkdir(path.join(directory, "f5-auth-state.json", "blocker"), { recursive: true });
-      await expect(advanceAntigravityRevision(directory)).rejects.toThrow();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(unhandled).toEqual([]);
-      // The queue recovers for the next writer.
-      await fs.rm(path.join(directory, "f5-auth-state.json"), { recursive: true });
-      expect((await advanceAntigravityRevision(directory)).revision).toBe(1);
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
+    const file = path.join(directory, "f5-auth-state.json");
+    for (const text of [
+      JSON.stringify({ version: 1, revision: "8", verified: true }),
+      JSON.stringify({ version: 1, verified: true }),
+      JSON.stringify({ version: 1, revision: 2.5 }),
+    ]) {
+      await fs.writeFile(file, text);
+      await expect(advanceAntigravityRevision(directory)).rejects.toThrow(/could not be read/);
+      expect(await fs.readFile(file, "utf8")).toBe(text);
     }
+  });
+  it("tracks the OAuth account without project_id, and adopts an older identity once", async () => {
+    const directory = await profile();
+    const oauth = { authMethod: "oauth-personal", apiKey: "" } as const;
+    // An identity from before this format: adopted on the next reconciliation, no new revision.
+    await updateAntigravityAuthState(directory, (state) => ({
+      ...state,
+      revision: 3,
+      method: "oauth-personal",
+      accountFingerprint: "legacy-hash",
+    }));
+    await writeToken(directory, { client_id: "c", refresh_token: "account-a" });
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(3);
+    // Antigravity writing project_id after the first session is not a new account.
+    await writeToken(directory, { client_id: "c", refresh_token: "account-a", project_id: "p" });
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(3);
+    // A real account change still advances.
+    await writeToken(directory, { client_id: "c", refresh_token: "account-b" });
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(4);
+  });
+  it("prefers the id_token subject, so a rotated refresh token keeps the account", async () => {
+    const directory = await profile();
+    const oauth = { authMethod: "oauth-personal", apiKey: "" } as const;
+    const idToken = (sub: string) =>
+      `h.${Buffer.from(JSON.stringify({ sub })).toString("base64url")}.s`;
+    await writeToken(directory, { client_id: "c", refresh_token: "r1", id_token: idToken("u1") });
+    await reconcileAntigravityAuthState(directory, oauth);
+    await writeToken(directory, { client_id: "c", refresh_token: "r2", id_token: idToken("u1") });
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(0);
+    await writeToken(directory, { client_id: "c", refresh_token: "r3", id_token: idToken("u2") });
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(1);
   });
   it("keeps the last account while the token is unreadable, so a new account still advances", async () => {
     const directory = await profile();

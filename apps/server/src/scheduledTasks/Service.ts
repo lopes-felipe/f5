@@ -43,7 +43,7 @@ import {
   SCHEDULE_PRESETS,
   oneShotCron,
 } from "@t3tools/shared/cronSchedule";
-import { runtimeModeCapabilities } from "@t3tools/shared/runtimeMode";
+import { savedRuntimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
 import { Cause, Clock, Deferred, Duration, Effect, Semaphore, Stream } from "effect";
 import type { AgentBridgeHostShape } from "../agentBridge/AgentBridgeHost.ts";
 import { isProviderUsable } from "../agentBridge/threadTools.ts";
@@ -255,9 +255,12 @@ export const makeScheduledTaskService = (deps: {
             return yield* scheduleError("invalid_schedule", "Select an available provider.");
           if (
             !isKnownProviderKind(provider.driver) ||
-            !runtimeModeCapabilities(provider.driver, provider.availableRuntimeModes).has(
+            // The schedule's saved mode: Antigravity Auto runs and its adapter falls back.
+            savedRuntimeModeUnsupportedReason(
+              provider.driver,
               config.runtimeMode,
-            )
+              provider.availableRuntimeModes,
+            ) !== undefined
           )
             return yield* scheduleError(
               "forbidden",

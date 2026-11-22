@@ -35,6 +35,7 @@ import {
   antigravityAdvertisedModes,
   antigravityThinkingLevels,
   applyAntigravityTextGenerationSelection,
+  antigravityLaunchedVersion,
   makeAntigravityAcpRuntime,
   antigravityProfileDirectory,
   type AntigravityThinkingLevels,
@@ -311,10 +312,15 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             observation.accountRevision !== entry.revision
           )
             return false;
-          hydratable = false;
+          // The saved catalog stays eligible until real replacement choices arrive.
+          if (observation.modelChoices.length > 0) hydratable = false;
           const changed = observe(entry, observation);
+          // The same completeness rule as discovery: every advertised model's levels read.
+          const partial = entry.choices.some((choice) => !entry.thinking.has(choice.value));
+          const partialChanged = partial !== entry.partial;
+          entry.partial = partial;
           if (changed) await persistCatalogIdentity(entry);
-          return changed;
+          return changed || partialChanged;
         }).pipe(Effect.flatMap((changed) => (changed ? refreshSnapshot : Effect.void)));
 
       /**
@@ -429,23 +435,23 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const startDiscoveryIfRequested = Effect.gen(function* () {
         if (!enabled) return;
         const state = yield* Effect.promise(() => readAntigravityAuthState(profileDirectory));
-        if (state.discoveryRequested) {
-          discoveryRequested = true;
+        const persisted = state.discoveryRequested === true;
+        if (!(discoveryRequested || persisted) || discoveryInFlight) return;
+        const readiness = yield* Effect.promise(() =>
+          antigravityReadiness({ profileDirectory, auth, keyUnavailable }),
+        );
+        if (!readiness.ready) return;
+        if (Date.now() - lastDiscoveryFailureAt < DISCOVERY_FAILURE_BACKOFF_MS) return;
+        // The saved request is cleared only now that discovery really starts: an instance
+        // rebuilt before this point still finds it.
+        discoveryRequested = false;
+        if (persisted)
           yield* Effect.promise(() =>
             updateAntigravityAuthState(
               profileDirectory,
               ({ discoveryRequested: _, ...rest }) => rest,
             ).catch(() => undefined),
           );
-        }
-        if (!discoveryRequested || discoveryInFlight) return;
-        const readiness = yield* Effect.promise(() =>
-          antigravityReadiness({ profileDirectory, auth, keyUnavailable }),
-        );
-        if (!readiness.ready) return;
-        if (Date.now() - lastDiscoveryFailureAt < DISCOVERY_FAILURE_BACKOFF_MS) return;
-        discoveryRequested = false;
-        hydratable = false;
         discoveryInFlight = true;
         // Forked in the instance scope: replacing or disabling the instance interrupts it.
         yield* discover.pipe(
@@ -500,7 +506,13 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             accountRevision,
             observeCatalog,
             staleAccount,
-            nativeReaders: Effect.promise(nativeReadersCertified),
+            // The version the session's runtime was spawned from, not whatever is active now.
+            nativeReaders: (runtime) => {
+              const launched = antigravityLaunchedVersion(runtime);
+              return launched === undefined
+                ? Effect.promise(nativeReadersCertified)
+                : Effect.succeed(antigravityPrivateFormatGate(launched).enabled);
+            },
             ...(auth.authMethod === "gemini-api-key" && auth.apiKey
               ? { credentials: [auth.apiKey] }
               : {}),
@@ -724,6 +736,8 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
               const thinking = antigravityThinkingFromModel(model);
               if (thinking) entry.thinking.set(model.slug, thinking);
             }
+            // A cached model without levels can't be told apart from an unread one: partial.
+            entry.partial = entry.choices.some((choice) => !entry.thinking.has(choice.value));
           }),
       };
     }),

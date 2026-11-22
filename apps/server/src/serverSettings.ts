@@ -4,6 +4,7 @@ import { beginAccountChange } from "./profiles/ProviderAccountGuard.ts";
 import {
   antigravityAuthConfigFromRaw,
   publishAntigravityAuthIdentity,
+  retireAntigravityAuthIdentity,
 } from "./provider/antigravityAuthSupport.ts";
 import { validateWorktreeLocation, unusedWorktreeLocation } from "./worktreeLocationValidation.ts";
 import { assertAccountEnvironmentOverrides } from "./providerProcessEnv";
@@ -150,6 +151,24 @@ export function antigravityAccountTransitions(
     const after = auth(next.providerInstances[id as keyof ServerSettings["providerInstances"]]);
     return before !== undefined && after !== undefined && before !== after;
   });
+}
+
+/** Antigravity instances a save removes (or turns into another driver) and creates. */
+export function antigravityInstanceLifecycle(
+  current: ServerSettings,
+  next: ServerSettings,
+): { readonly removed: ReadonlyArray<string>; readonly created: ReadonlyArray<string> } {
+  const isAntigravity = (settings: ServerSettings, id: string) =>
+    settings.providerInstances[id as keyof ServerSettings["providerInstances"]]?.driver ===
+    "antigravity";
+  const ids = new Set([
+    ...Object.keys(current.providerInstances),
+    ...Object.keys(next.providerInstances),
+  ]);
+  return {
+    removed: [...ids].filter((id) => isAntigravity(current, id) && !isAntigravity(next, id)),
+    created: [...ids].filter((id) => !isAntigravity(current, id) && isAntigravity(next, id)),
+  };
 }
 
 export function redactServerSettingsForClient(settings: ServerSettings): ServerSettings {
@@ -922,12 +941,13 @@ const makeServerSettings = Effect.gen(function* () {
     updateSettingsWith: (patchOrBuild, options) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
-          // A builder reads the current (materialized) settings inside the write lock.
+          // One snapshot, read inside the write lock, is both what a builder sees and what the
+          // patch is merged into: a builder's whole-map patch can't land on a newer base it
+          // never checked.
+          const current = yield* reloadSettingsForWrite;
           const built =
             typeof patchOrBuild === "function"
-              ? patchOrBuild(
-                  yield* materializeProviderEnvironmentSecrets(yield* reloadSettingsForWrite),
-                )
+              ? patchOrBuild(yield* materializeProviderEnvironmentSecrets(current))
               : patchOrBuild;
           if (!built) return undefined;
           const heldAccountChanges = new Set(options?.heldAccountChanges ?? []);
@@ -977,7 +997,6 @@ const makeServerSettings = Effect.gen(function* () {
                 }),
             });
           }
-          const current = yield* reloadSettingsForWrite;
           const providerIds = new Set([
             ...Object.keys(current.providerInstances),
             ...Object.keys(patch.providerInstances ?? {}),
@@ -1087,13 +1106,15 @@ const makeServerSettings = Effect.gen(function* () {
                 }),
             ),
           );
-          // A sign-in method or key change is an account transition: it waits for in-flight
-          // admissions like a login would, and refuses while one is starting work. Both sides
-          // are compared materialized: the cache holds references, `patched` holds values.
-          const accountChanges = antigravityAccountTransitions(
-            yield* materializeProviderEnvironmentSecrets(current),
-            patched,
-          );
+          // A sign-in method or key change is an account transition. It does not wait: while
+          // the instance is running work (a turn, a title or commit message) or another account
+          // job, the whole save is refused with a message to save again. Both sides are compared
+          // materialized: the cache holds references, `patched` holds values.
+          const currentMaterialized = yield* materializeProviderEnvironmentSecrets(current);
+          const accountChanges = antigravityAccountTransitions(currentMaterialized, patched);
+          // Removing or creating an instance moves its fence too, so a recreated ID is judged
+          // by its own settings, not an identity published for the instance it replaced.
+          const lifecycleChanges = antigravityInstanceLifecycle(currentMaterialized, patched);
           const fences: Array<() => void> = [];
           return yield* Effect.acquireUseRelease(
             Effect.try({
@@ -1122,12 +1143,25 @@ const makeServerSettings = Effect.gen(function* () {
                       ),
                     ),
                   );
+                for (const id of lifecycleChanges.removed)
+                  fences.push(retireAntigravityAuthIdentity(serverConfig.stateDir, id));
+                for (const id of lifecycleChanges.created)
+                  fences.push(
+                    publishAntigravityAuthIdentity(
+                      serverConfig.stateDir,
+                      id,
+                      antigravityAuthConfigFromRaw(
+                        patched.providerInstances[id as keyof ServerSettings["providerInstances"]]
+                          ?.config,
+                      ),
+                    ),
+                  );
                 return releases;
               },
               catch: (cause) =>
                 new ServerSettingsError({
                   settingsPath: serverConfig.settingsPath ?? "<memory>",
-                  detail: `Antigravity sign-in settings cannot change right now: ${cause instanceof Error ? cause.message : String(cause)}`,
+                  detail: `Antigravity sign-in settings can't change while this instance is running work or another account job. Nothing was saved; save again when it finishes. (${cause instanceof Error ? cause.message : String(cause)})`,
                   cause,
                 }),
             }),

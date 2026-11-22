@@ -7,7 +7,7 @@ import {
   type RuntimeMode,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { runtimeModeCapabilities } from "@t3tools/shared/runtimeMode";
+import { savedRuntimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
 import { Effect } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { AgentBridgeHostShape } from "../agentBridge/AgentBridgeHost.ts";
@@ -69,9 +69,12 @@ export const resolveBoundExecution = (input: {
     !provider ||
     !isProviderUsable(provider) ||
     !isKnownProviderKind(provider.driver) ||
-    !runtimeModeCapabilities(provider.driver, provider.availableRuntimeModes).has(
+    // The thread's saved mode: Antigravity Auto resumes and its adapter falls back if needed.
+    savedRuntimeModeUnsupportedReason(
+      provider.driver,
       thread.runtimeMode,
-    ) ||
+      provider.availableRuntimeModes,
+    ) !== undefined ||
     (provider.models.length > 0 && !provider.models.some((m) => m.slug === modelSelection.model))
   )
     return ineligible("provider_unavailable");

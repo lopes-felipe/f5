@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   runtimeModeCapabilities,
   runtimeModeUnsupportedReason,
+  savedRuntimeModeUnsupportedReason,
   supportedRuntimeModeAtOrBelow,
 } from "./runtimeMode";
 
@@ -20,6 +21,17 @@ describe("snapshot runtime modes", () => {
       "approval-required",
       "full-access",
     ]);
+  });
+});
+
+describe("savedRuntimeModeUnsupportedReason", () => {
+  it("lets saved Antigravity Auto resume without the snapshot, and nothing else", () => {
+    // An update or a pending discovery: the snapshot doesn't offer Auto right now.
+    expect(savedRuntimeModeUnsupportedReason("antigravity", "auto", [])).toBeUndefined();
+    expect(runtimeModeUnsupportedReason("antigravity", "auto", [])).toBeDefined();
+    // Other providers and modes keep the strict rule.
+    expect(savedRuntimeModeUnsupportedReason("cursor", "auto")).toBeDefined();
+    expect(savedRuntimeModeUnsupportedReason("grok", "auto-accept-edits")).toBeDefined();
   });
 });
 

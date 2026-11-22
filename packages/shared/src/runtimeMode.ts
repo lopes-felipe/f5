@@ -68,6 +68,22 @@ export function runtimeModeUnsupportedReason(
   return `${runtimeMode} is not available for ${provider}.`;
 }
 
+/**
+ * For a saved selection (recovering a thread, a scheduled run): like
+ * `runtimeModeUnsupportedReason`, except that Antigravity Auto may resume even when the current
+ * snapshot doesn't offer it (an update or a pending discovery). Its adapter checks the live
+ * session and falls back to Supervised, with a warning, when native Auto is missing. New
+ * selections keep the strict check.
+ */
+export function savedRuntimeModeUnsupportedReason(
+  provider: ProviderKind,
+  runtimeMode: RuntimeMode,
+  available?: ReadonlyArray<RuntimeMode> | null,
+): string | undefined {
+  if (provider === "antigravity" && runtimeMode === "auto") return undefined;
+  return runtimeModeUnsupportedReason(provider, runtimeMode, available);
+}
+
 /** Runtime modes from least to most autonomous. */
 const RUNTIME_MODES_BY_AUTONOMY: ReadonlyArray<RuntimeMode> = [
   "approval-required",

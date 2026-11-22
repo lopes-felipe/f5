@@ -420,6 +420,15 @@ export const ServerCheckProviderUpdatesInput = Schema.Struct({
   instanceId: Schema.optional(ProviderInstanceId),
 });
 export type ServerCheckProviderUpdatesInput = typeof ServerCheckProviderUpdatesInput.Type;
+export const ServerRefreshProvidersInput = Schema.Struct({
+  instanceId: Schema.optional(ProviderInstanceId),
+  /**
+   * The user asked for a full refresh from Settings: drivers with an expensive catalog discovery
+   * (Antigravity) run it. Health checks, session restarts and update checks leave it unset.
+   */
+  discoverModels: Schema.optional(Schema.Boolean),
+});
+export type ServerRefreshProvidersInput = typeof ServerRefreshProvidersInput.Type;
 export const ServerRunProviderUpdateInput = Schema.Struct({ instanceId: ProviderInstanceId });
 export type ServerRunProviderUpdateInput = typeof ServerRunProviderUpdateInput.Type;
 export const ServerRunProviderUpdateResult = Schema.Struct({

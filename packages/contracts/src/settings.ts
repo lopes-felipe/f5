@@ -236,6 +236,16 @@ export const AntigravitySettings = Schema.Struct({
 });
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
+/**
+ * The legacy `providers.antigravity` block never carries a key. Only explicit instances keep one,
+ * in the secret store; a key written into the legacy block by hand is dropped on decode, so it is
+ * never stored in plaintext, sent to clients or left behind by sign-out. Editing the default
+ * instance in Settings moves it into `providerInstances`, where the key can be entered.
+ */
+export const LegacyAntigravitySettings = AntigravitySettings.mapFields(
+  ({ apiKey: _apiKey, apiKeyRedacted: _apiKeyRedacted, ...fields }) => fields,
+);
+
 /** Pi is instantiated only through an explicit provider-instance entry. */
 export const PiSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
@@ -702,7 +712,7 @@ export const ServerSettings = Schema.Struct({
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     grok: GrokSettings.pipe(Schema.withDecodingDefault(() => ({}))),
-    antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
+    antigravity: LegacyAntigravitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
     muse: MuseSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values

@@ -92,6 +92,8 @@ function skillPathSortKey(entry: string) {
 
 /** A frontmatter delimiter is a line of exactly `---` (trailing spaces and `\r` allowed). */
 const isDelimiterLine = (line: string) => /^---[ \t]*\r?$/.test(line);
+/** `SKILL.md` in any case for the stem, with a lowercase `.md` extension. */
+const isSkillFileName = (name: string) => name.toLowerCase() === "skill.md" && name.endsWith(".md");
 
 function parseFrontmatter(contents: string, fileName: string) {
   const lines = contents.split("\n");
@@ -218,9 +220,11 @@ export async function discoverAntigravitySkills(input: {
       const chunks: Buffer[] = [];
       let total = 0;
       let delimiters = 0;
-      // The current line's first bytes, enough to recognise `---` plus trailing spaces.
-      let line = "";
-      let lineTooLong = false;
+      // A streaming match of `isDelimiterLine` (`---`, then spaces or tabs, then an optional CR)
+      // that keeps no line text, so any amount of trailing padding is recognised.
+      let dashes = 0;
+      let delimiterSoFar = true;
+      let sawCarriageReturn = false;
       for (;;) {
         const buffer = Buffer.alloc(SKILL_READ_CHUNK_BYTES);
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, total);
@@ -230,13 +234,19 @@ export async function discoverAntigravitySkills(input: {
         for (let index = 0; index < chunk.length; index++) {
           const byte = chunk[index]!;
           if (byte !== 0x0a) {
-            if (line.length < 16) line += String.fromCharCode(byte);
-            else lineTooLong = true;
+            if (!delimiterSoFar) continue;
+            if (sawCarriageReturn) delimiterSoFar = false;
+            else if (dashes < 3) {
+              if (byte === 0x2d) dashes++;
+              else delimiterSoFar = false;
+            } else if (byte === 0x0d) sawCarriageReturn = true;
+            else if (byte !== 0x20 && byte !== 0x09) delimiterSoFar = false;
             continue;
           }
-          if (!lineTooLong && isDelimiterLine(line)) delimiters++;
-          line = "";
-          lineTooLong = false;
+          if (delimiterSoFar && dashes === 3) delimiters++;
+          dashes = 0;
+          delimiterSoFar = true;
+          sawCarriageReturn = false;
           if (delimiters === 2) {
             end = index + 1;
             break;
@@ -259,7 +269,7 @@ export async function discoverAntigravitySkills(input: {
 
   const addSkillFile = async (skillPath: string, scope: string) => {
     const fileName = NodePath.basename(skillPath);
-    if (fileName.toLowerCase() !== "skill.md" || !fileName.endsWith(".md")) return;
+    if (!isSkillFileName(fileName)) return;
     const info = await statOrUndefined(skillPath);
     if (!info?.isFile()) return;
     const contents = await readFrontmatter(skillPath);
@@ -309,7 +319,9 @@ export async function discoverAntigravitySkills(input: {
     const entries = await listDirectory(directory);
     if (!entries) return;
     const sorted = entries.toSorted();
-    const skillFile = sorted.find((entry) => entry.toLowerCase() === "skill.md");
+    // The same rule as reading, with the canonical name first: on a case-sensitive filesystem
+    // an ineligible `SKILL.MD` must not hide `SKILL.md`.
+    const skillFile = sorted.find((entry) => entry === "SKILL.md") ?? sorted.find(isSkillFileName);
     if (skillFile !== undefined) {
       // A configured directory that is itself a skill is filtered by its own name, like an
       // entry that names its SKILL.md directly.
@@ -345,7 +357,15 @@ export async function discoverAntigravitySkills(input: {
     const parsed = parseAntigravitySkillsConfig(raw);
     if (!parsed) return;
     const nextVisited = new Set(visited).add(resolved);
+    // Each configured path costs one entry before any filesystem call, so a small file listing
+    // thousands of paths can't do unbounded work; siblings stop once the budget is spent.
+    const charge = () => {
+      if (budget.entries === 0) return false;
+      budget.entries--;
+      return true;
+    };
     for (const inherited of parsed.inherits) {
+      if (!charge()) return;
       const inheritedPath = resolveConfigPath(inherited.path, baseDir);
       await scanConfig(
         inheritedPath,
@@ -357,6 +377,7 @@ export async function discoverAntigravitySkills(input: {
       );
     }
     for (const entry of parsed.entries) {
+      if (!charge()) return;
       const directory = resolveConfigPath(entry.path, baseDir);
       if (!(await allowed(directory))) continue;
       await scanDirectory(directory, scope, true, narrowFilter(filter, entry), true);

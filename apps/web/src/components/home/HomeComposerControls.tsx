@@ -211,9 +211,21 @@ export default function HomeComposerControls(props: {
   const runtimeModeUnsupported = !runtimeCapabilities.has(runtimeMode);
   useEffect(() => {
     if (providersLoading || runtimeCapabilities.has(runtimeMode)) return;
+    // Only for the selection on screen, after its reseed: the seed effect above can clear and
+    // reseed the draft in this same commit, and this render's mode is then the old project's.
+    if (homeComposerDraft.seededFor() !== selectionKey) return;
+    const storedMode = useComposerDraftStore.getState().draftsByThreadId[draftId]?.runtimeMode;
+    if (storedMode !== composerDraft.runtimeMode) return;
     const narrower = supportedRuntimeModeAtOrBelow(runtimeCapabilities, runtimeMode);
     if (narrower) useComposerDraftStore.getState().setRuntimeMode(draftId, narrower);
-  }, [draftId, providersLoading, runtimeCapabilities, runtimeMode]);
+  }, [
+    composerDraft.runtimeMode,
+    draftId,
+    providersLoading,
+    runtimeCapabilities,
+    runtimeMode,
+    selectionKey,
+  ]);
 
   useImperativeHandle(
     props.handleRef,

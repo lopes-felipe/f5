@@ -100,8 +100,9 @@ export interface ProviderInstance {
   readonly invalidateAccountStatus?: Effect.Effect<void>;
   readonly invalidateModelCatalog?: Effect.Effect<void>;
   /**
-   * Explicit user refresh only ("Refresh provider status"): run an expensive catalog discovery
-   * on the next status check. Never called by startup or periodic refreshes.
+   * Explicit user refresh only (Settings → Providers → Refresh, which sends `discoverModels`):
+   * run an expensive catalog discovery on the next status check. Never called by startup,
+   * periodic refreshes, health banners or session restarts.
    */
   readonly requestModelDiscovery?: Effect.Effect<void>;
   readonly updateModelCatalog?: (models: ReadonlyArray<ServerProviderModel>) => Effect.Effect<void>;

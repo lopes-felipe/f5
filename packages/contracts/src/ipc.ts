@@ -226,6 +226,7 @@ import type {
   ServerKeybindingMutationResult,
   ServerProviderUpdatedPayload,
   ServerCheckProviderUpdatesInput,
+  ServerRefreshProvidersInput,
   ServerRunProviderUpdateInput,
   ServerRunProviderUpdateResult,
   ServerRemoveKeybindingInput,
@@ -1264,7 +1265,7 @@ export interface NativeApi {
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
     migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;
     refreshProviders: (
-      input?: ServerCheckProviderUpdatesInput,
+      input?: ServerRefreshProvidersInput,
     ) => Promise<ServerProviderUpdatedPayload>;
     checkProviderUpdates: (
       input?: ServerCheckProviderUpdatesInput,

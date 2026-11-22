@@ -272,6 +272,14 @@ function canonicalTarget(target: string): string | undefined {
       return NodePath.join(resolved, ...tail.toReversed());
     } catch (error) {
       if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") return undefined;
+      // A dangling link also reports ENOENT, and a write through it lands wherever it points.
+      // Only a component with no directory entry at all counts as missing.
+      try {
+        NodeFS.lstatSync(existing);
+        return undefined;
+      } catch (lstatError) {
+        if ((lstatError as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") return undefined;
+      }
       const parent = NodePath.dirname(existing);
       if (parent === existing) return undefined;
       tail.push(NodePath.basename(existing));
@@ -291,9 +299,12 @@ function canonicalWorkspaceRoot(root: string): string | undefined {
 
 const isParentTraversal = (relative: string) =>
   relative === ".." || relative.startsWith(`..${NodePath.sep}`);
-/** Git metadata such as hooks runs code later; edits there are always asked. */
+/**
+ * Git metadata such as hooks runs code later; edits there are always asked, in the workspace's
+ * own repository and in any nested one.
+ */
 const isGitMetadata = (relative: string) =>
-  relative.split(NodePath.sep)[0]?.toLowerCase() === ".git";
+  relative.split(NodePath.sep).some((segment) => segment.toLowerCase() === ".git");
 
 /**
  * Auto-accept edits approves a request only when it is a recognised edit with no command

@@ -35,10 +35,11 @@ const hasErrorCode = (error: unknown, codes: readonly string[]) =>
 const USER_CONFIG_FILES = [["AGENTS.md"], ["GEMINI.md"], ["config", "skills.json"]] as const;
 
 /**
- * Share `~/.gemini/AGENTS.md`, `GEMINI.md` and `config/skills.json` into the profile with the
- * same never-overwrite rules as skill folders: an existing regular file in the profile is user
- * content and stays. Windows copies (file symlinks need elevation) and refreshes a copy F5 made
- * when the source changes.
+ * Share `~/.gemini/AGENTS.md`, `GEMINI.md` and `config/skills.json` into the profile, so an
+ * instance reads the same user instructions Antigravity would read outside F5. Nothing F5 did
+ * not create is touched: a regular file in the profile is user content and stays, and a link is
+ * removed or replaced only when it points at the managed source. Windows copies (file symlinks
+ * need elevation) and refreshes or removes only a copy whose bytes match one F5 published.
  */
 export async function linkAntigravityUserConfigFiles(
   home: string,
@@ -58,18 +59,26 @@ export async function linkAntigravityUserConfigFiles(
         if (hasErrorCode(error, ["ENOENT"])) return undefined;
         throw error;
       });
-      // The marker holds the hash of the copy F5 last published. A target edited since then no
-      // longer matches it and is left alone, never refreshed or removed.
-      const publishedHash = await fs.readFile(marker, "utf8").then(
-        (text) => text.trim(),
-        () => undefined,
+      // The marker lists the hashes of copies F5 published, one per line. A target edited since
+      // matches none of them and is left alone, never refreshed or removed.
+      const publishedHashes = await fs.readFile(marker, "utf8").then(
+        (text) =>
+          new Set(
+            text
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean),
+          ),
+        () => new Set<string>(),
       );
-      const ownsCopy =
-        publishedHash !== undefined &&
-        existing?.isFile() === true &&
-        sha256(await fs.readFile(target)) === publishedHash;
+      const targetHash =
+        existing?.isFile() === true ? sha256(await fs.readFile(target)) : undefined;
+      const ownsCopy = targetHash !== undefined && publishedHashes.has(targetHash);
+      const managedLink =
+        existing?.isSymbolicLink() === true &&
+        path.resolve(path.dirname(target), await fs.readlink(target)) === source;
       if (!sourceStat?.isFile()) {
-        if (existing?.isSymbolicLink()) await fs.unlink(target);
+        if (managedLink) await fs.unlink(target);
         else if (existing && ownsCopy) {
           await fs.rm(target, { force: true });
           await fs.rm(marker, { force: true });
@@ -80,18 +89,17 @@ export async function linkAntigravityUserConfigFiles(
       if (platform === "win32") {
         if (existing && !ownsCopy) continue;
         const contents = await fs.readFile(source);
-        const current = existing ? await fs.readFile(target).catch(() => undefined) : undefined;
-        if (current?.equals(contents)) continue;
-        await publishProfileFile(target, contents.toString("utf8"));
-        await fs.writeFile(marker, sha256(contents));
+        const nextHash = sha256(contents);
+        if (targetHash === nextHash) continue;
+        // Both the old and the new copy count as F5's while the file is replaced, so a failed
+        // marker write after the swap can't make F5's own copy look user-edited.
+        await fs.writeFile(marker, [targetHash, nextHash].filter(Boolean).join("\n"));
+        await publishProfileFile(target, contents);
+        await fs.writeFile(marker, nextHash);
         continue;
       }
-      if (existing?.isSymbolicLink()) {
-        if (path.resolve(path.dirname(target), await fs.readlink(target)) === source) continue;
-        await fs.unlink(target);
-      } else if (existing) {
-        continue;
-      }
+      // Already linked, or a file or link the user made (one pointing elsewhere): left as it is.
+      if (existing) continue;
       await fs.symlink(source, target, "file").catch((error: unknown) => {
         if (!hasErrorCode(error, ["EEXIST"])) throw error;
       });
@@ -109,7 +117,7 @@ export async function linkAntigravityUserConfigFiles(
 
 const sha256 = (contents: Buffer) => createHash("sha256").update(contents).digest("hex");
 
-async function publishProfileFile(file: string, contents: string): Promise<void> {
+async function publishProfileFile(file: string, contents: string | Buffer): Promise<void> {
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
     const handle = await fs.open(temporary, "wx", 0o600);
@@ -400,7 +408,7 @@ export const makeAntigravityAcpRuntime = (input: {
       ),
     );
     const runtime = yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(context));
-    return {
+    const shaped: AcpSessionRuntimeShape = {
       ...runtime,
       start: () =>
         Effect.raceFirst(
@@ -418,7 +426,18 @@ export const makeAntigravityAcpRuntime = (input: {
         ),
       setSessionModel: (model) => runtime.setModel(model).pipe(Effect.as({})),
     };
+    antigravityLaunchedVersions.set(shaped, prepared.executable.version ?? null);
+    return shaped;
   });
+
+/**
+ * The Antigravity version each runtime was spawned from. Checks that depend on the version (the
+ * private-format gate) read it here instead of resolving the installation again, which could
+ * name an update that became active after the launch.
+ */
+const antigravityLaunchedVersions = new WeakMap<object, string | null>();
+export const antigravityLaunchedVersion = (runtime: object): string | null | undefined =>
+  antigravityLaunchedVersions.get(runtime);
 
 // ── Models and thinking levels (R2) ─────────────────────────────────────────
 
@@ -657,11 +676,17 @@ export const applyAntigravitySessionMode = <E>(input: {
     ? writeAntigravitySessionMode(input)
     : writeAntigravitySessionMode({ ...input, mapError: (cause) => cause }).pipe(
         Effect.catch(() =>
-          Effect.sync(() =>
-            input.onAutoFallback?.(
-              "Antigravity did not accept native Auto, so this session runs as Supervised and asks before acting.",
+          // The fallback is recorded only once the session is really in `default`: a failed
+          // switch stops the turn and leaves Auto to be tried again next time.
+          writeAntigravitySessionMode({ ...input, target: "default" }).pipe(
+            Effect.tap(() =>
+              Effect.sync(() =>
+                input.onAutoFallback?.(
+                  "Antigravity did not accept native Auto, so this session runs as Supervised and asks before acting.",
+                ),
+              ),
             ),
-          ).pipe(Effect.andThen(writeAntigravitySessionMode({ ...input, target: "default" }))),
+          ),
         ),
       );
 
@@ -709,6 +734,20 @@ const writeAntigravitySessionMode = <E>(input: {
       yield* input.runtime
         .setConfigOption(advertised.configId ?? "mode", input.target)
         .pipe(Effect.mapError(input.mapError));
+    // A write the agent accepts but does not apply must not pass for a switch: a turn meant for
+    // Plan would otherwise run under the access mode's rules.
+    const effective = antigravityAdvertisedModes(
+      yield* input.runtime.getModeState,
+      yield* input.runtime.getConfigOptions,
+    ).current;
+    if (effective !== undefined && effective !== input.target)
+      return yield* Effect.fail(
+        input.mapError(
+          new AntigravityModeUnavailableError(
+            `Antigravity accepted the switch to '${input.target}' but stayed in '${effective}'. Start a new session to continue.`,
+          ),
+        ),
+      );
     return input.target;
   });
 
@@ -723,13 +762,17 @@ export type AntigravityApprovalDecision =
 export function antigravityApprovalDecision(input: {
   readonly runtimeMode: RuntimeMode;
   readonly sessionMode: string | undefined;
+  /** The active turn asked for Plan, whatever the native mode reports. */
+  readonly planRequested?: boolean;
   readonly computerRequest: boolean;
   readonly toolCall: Parameters<typeof antigravityEditTargetsInWorkspace>[0];
   readonly workspaceRoot: string;
 }): AntigravityApprovalDecision {
   if (input.computerRequest) return { kind: "ask", applyThreadGrants: false };
-  // Plan always asks; thread grants never apply there, even under Full access.
-  if (input.sessionMode === "plan") return { kind: "ask", applyThreadGrants: false };
+  // Plan always asks; thread grants never apply there, even under Full access. The turn's own
+  // request counts as well as the native mode, so a lagging mode can't widen a Plan turn.
+  if (input.sessionMode === "plan" || input.planRequested === true)
+    return { kind: "ask", applyThreadGrants: false };
   switch (input.runtimeMode) {
     case "full-access":
       return { kind: "allow" };
@@ -795,26 +838,13 @@ export const applyAntigravityTextGenerationSelection = (input: {
     const originalLevel = antigravityThinkingOption(before)?.currentValue || undefined;
     const explicit = input.model !== ANTIGRAVITY_DEFAULT_MODEL;
     const model = explicit ? input.model : antigravityTextGenerationModel(before);
-    const state = makeAntigravitySelectionState();
-    const selected = yield* applyAntigravityModelSelection({
-      runtime: input.runtime,
-      requestedModel: model,
-      requestedThinking: explicit ? input.thinking : undefined,
-      ...(input.customModels ? { customModels: input.customModels } : {}),
-      state,
-      mapError: (cause) => cause,
-    });
-    if (!explicit) {
-      const options = yield* input.runtime.getConfigOptions;
-      const lowest = lowestAntigravityThinkingLevel(
-        antigravityThinkingLevels(options)?.levels ?? [],
-      );
-      const thought = antigravityThinkingOption(options);
-      if (lowest && thought && thought.currentValue !== lowest)
-        yield* input.runtime.setConfigOption(thought.id, lowest);
-    }
+    // Defined before the first write and driven by what the session reports now, so a setup
+    // that switched the model and then failed on the level restores too.
     const restore = Effect.gen(function* () {
-      if (originalModel && selected.model !== originalModel)
+      const currentModel = findModelConfigOption(
+        yield* input.runtime.getConfigOptions,
+      )?.currentValue;
+      if (originalModel && currentModel !== originalModel)
         yield* input.runtime.setModel(originalModel);
       const thought = antigravityThinkingOption(yield* input.runtime.getConfigOptions);
       if (
@@ -830,5 +860,26 @@ export const applyAntigravityTextGenerationSelection = (input: {
         Effect.logWarning("Antigravity text generation could not restore the model selection."),
       ),
     );
+    yield* Effect.gen(function* () {
+      yield* applyAntigravityModelSelection({
+        runtime: input.runtime,
+        requestedModel: model,
+        requestedThinking: explicit ? input.thinking : undefined,
+        ...(input.customModels ? { customModels: input.customModels } : {}),
+        state: makeAntigravitySelectionState(),
+        mapError: (cause) => cause,
+      });
+      if (!explicit) {
+        const options = yield* input.runtime.getConfigOptions;
+        const lowest = lowestAntigravityThinkingLevel(
+          antigravityThinkingLevels(options)?.levels ?? [],
+        );
+        const thought = antigravityThinkingOption(options);
+        if (lowest && thought && thought.currentValue !== lowest)
+          yield* input.runtime.setConfigOption(thought.id, lowest);
+      }
+      // A failed or interrupted setup restores right here, while the runtime is still open; the
+      // caller runs the returned restore once the prompt completes.
+    }).pipe(Effect.onExit((exit) => (exit._tag === "Success" ? Effect.void : restore)));
     return restore;
   });

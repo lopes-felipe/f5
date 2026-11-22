@@ -30,6 +30,8 @@ import {
 } from "effect";
 import { ServerConfig } from "./config.ts";
 import { SecretStoreError, ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
+import { acquireAccountAdmission, beginAccountChange } from "./profiles/ProviderAccountGuard.ts";
+import { isAntigravityAuthCurrent } from "./provider/antigravityAuthSupport.ts";
 import {
   ServerSettingsLiveWithSecretStore,
   ServerSettingsLive,
@@ -48,6 +50,93 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  const agyInstance = (authMethod: "oauth-personal" | "gemini-api-key", enabled = true) => ({
+    driver: ProviderDriverKind.make("antigravity"),
+    config: { enabled, authMethod },
+  });
+  const agyId = ProviderInstanceId.make("agy_fence");
+  const authMethodOf = (settings: ServerSettings) =>
+    (settings.providerInstances[agyId]?.config as { authMethod?: string } | undefined)?.authMethod;
+
+  it.effect("refuses a sign-in method change while the instance runs work, then saves", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("oauth-personal") },
+      });
+      const release = acquireAccountAdmission(config.stateDir, agyId);
+      const refused = yield* Effect.exit(
+        service.updateSettings({
+          providerInstances: { [agyId]: agyInstance("gemini-api-key") },
+          enableAssistantStreaming: false,
+        }),
+      );
+      release();
+      assert.isTrue(Exit.isFailure(refused));
+      if (Exit.isFailure(refused))
+        assert.include(String(Cause.squash(refused.cause)), "save again");
+      // Nothing from the refused save landed, unrelated fields included.
+      const unchanged = yield* service.getSettings;
+      assert.equal(authMethodOf(unchanged), "oauth-personal");
+      assert.notEqual(unchanged.enableAssistantStreaming, false);
+      // A save that keeps the method needs no guard, and the change succeeds once work ends.
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("oauth-personal", false) },
+      });
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("gemini-api-key") },
+      });
+      assert.equal(authMethodOf(yield* service.getSettings), "gemini-api-key");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("lets an account job that holds the guard save its own change", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("oauth-personal") },
+      });
+      const release = beginAccountChange(config.stateDir, agyId);
+      const saved = yield* service.updateSettingsWith!(
+        (current) => ({
+          providerInstances: {
+            ...current.providerInstances,
+            [agyId]: agyInstance("gemini-api-key"),
+          },
+        }),
+        { heldAccountChanges: [agyId] },
+      ).pipe(Effect.ensuring(Effect.sync(release)));
+      assert.equal(saved ? authMethodOf(saved) : undefined, "gemini-api-key");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("moves the sign-in fence when an instance is removed and recreated", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const oauth = { authMethod: "oauth-personal", apiKey: "" } as const;
+      const key = { authMethod: "gemini-api-key", apiKey: "" } as const;
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("oauth-personal") },
+      });
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("gemini-api-key") },
+      });
+      assert.isFalse(isAntigravityAuthCurrent(config.stateDir, agyId, oauth));
+      // Removed: adapters still built for it refuse work.
+      yield* service.updateSettings({ providerInstances: {} });
+      assert.isFalse(isAntigravityAuthCurrent(config.stateDir, agyId, key));
+      // Recreated with other settings: the new adapter is current without a restart.
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("oauth-personal") },
+      });
+      assert.isTrue(isAntigravityAuthCurrent(config.stateDir, agyId, oauth));
+      assert.isFalse(isAntigravityAuthCurrent(config.stateDir, agyId, key));
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("preserves legacy sparse off/foreground settings through saves and reloads", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsService;

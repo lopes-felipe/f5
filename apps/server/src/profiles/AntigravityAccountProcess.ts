@@ -1,8 +1,9 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as AcpErrors from "effect-acp/errors";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import type { PtyProcess, PtyExitEvent } from "../terminal/Services/PTY.ts";
 import { AntigravityInstallation } from "../provider/AntigravityInstallation.ts";
@@ -18,6 +19,7 @@ import {
   antigravityKeyFingerprint,
   reconcileAntigravityAuthState,
   redactAntigravityKey,
+  updateAntigravityAuthState,
   type AntigravityAuthConfig,
 } from "../provider/antigravityAuthSupport.ts";
 
@@ -143,21 +145,38 @@ export function createAntigravityAccountProcess(input: {
     );
   const keyConnect = async () => {
     if (!auth.apiKey) throw new Error("Enter a Gemini API key in Settings first.");
-    await accountRequest("authenticate", { methodId: "gemini-api-key" });
-    await advanceAntigravityRevision(profileDirectory, () => ({
+    const keyFingerprint = antigravityKeyFingerprint(auth.apiKey);
+    await accountRequest("authenticate", { methodId: "gemini-api-key" }).catch(async (error) => {
+      // Antigravity itself rejected this key: it must not stay verified from an earlier Connect.
+      if (Schema.is(AcpErrors.AcpRequestError)(error))
+        await updateAntigravityAuthState(profileDirectory, (state) =>
+          state.keyFingerprint === keyFingerprint ? { ...state, verified: false } : state,
+        ).catch(() => undefined);
+      throw error;
+    });
+    // Reconnecting the same key keeps the revision, so threads keep their native sessions
+    // (the auth-failure reconnect-and-resend flow relies on this). A new key or method advances.
+    await updateAntigravityAuthState(profileDirectory, (state) => ({
+      ...state,
       method: "gemini-api-key",
-      keyFingerprint: antigravityKeyFingerprint(auth.apiKey),
+      keyFingerprint,
       verified: true,
       // A successful connect is one of the two explicit model-discovery triggers.
       discoveryRequested: true,
+      revision:
+        state.method === "gemini-api-key" && state.keyFingerprint === keyFingerprint
+          ? state.revision
+          : state.revision + 1,
     }));
     emit("Antigravity accepted the Gemini API key.\n");
   };
   const oauthConnect = async () => {
     await codeLogin();
-    // Record the new account fingerprint first; the revision advances either way.
+    // Reconciliation advances the revision when the method or the signed-in account changed;
+    // signing in again to the same account keeps it.
     await reconcileAntigravityAuthState(profileDirectory, ANTIGRAVITY_PERSONAL_AUTH);
-    await advanceAntigravityRevision(profileDirectory, () => ({
+    await updateAntigravityAuthState(profileDirectory, (state) => ({
+      ...state,
       method: "oauth-personal",
       verified: true,
       discoveryRequested: true,

@@ -169,6 +169,28 @@ describe("Antigravity model and thinking selection", () => {
     expect(session.current()).toEqual({ model: "neon", level: "high" });
   });
 
+  it("restores the model when text-generation setup fails after switching it", async () => {
+    const session = fakeSession("neon");
+    // The model switch succeeds, then the level write fails.
+    const failingLevel = {
+      ...session.runtime,
+      setConfigOption: (id: string, value: string | boolean) =>
+        id === "thought_level" && value === "minimal"
+          ? Effect.fail(new AcpErrors.AcpRequestError({ code: -32603, errorMessage: "rejected" }))
+          : session.runtime.setConfigOption(id, value),
+    };
+    await expect(
+      run(
+        applyAntigravityTextGenerationSelection({
+          runtime: failingLevel,
+          model: "antigravity-default",
+          thinking: undefined,
+        }),
+      ),
+    ).rejects.toThrow();
+    expect(session.current().model).toBe("neon");
+  });
+
   it("keeps an explicit model's requested, suffixed or default level for text generation", async () => {
     const selectFor = (session: ReturnType<typeof fakeSession>, model: string) =>
       run(
@@ -317,6 +339,37 @@ describe("Antigravity session modes", () => {
     );
   });
 
+  it("fails when the agent accepts a switch but keeps the previous mode", async () => {
+    const session = modeRuntime({ modeState: modes("default", "default", "plan") });
+    const ignoring = { ...session.runtime, setNativeMode: () => Effect.void };
+    await expect(applyMode(ignoring, "plan")).rejects.toThrow(
+      "accepted the switch to 'plan' but stayed in 'default'",
+    );
+  });
+
+  it("records no Auto fallback when the switch to default also fails", async () => {
+    // Coming from Plan, both the Auto write and the fallback write to default really run.
+    const session = modeRuntime({ modeState: modes("plan", "plan", "default", "auto") });
+    const warnings: string[] = [];
+    await expect(
+      run(
+        applyAntigravitySessionMode({
+          runtime: {
+            ...session.runtime,
+            setNativeMode: () =>
+              Effect.fail(
+                new AcpErrors.AcpRequestError({ code: -32603, errorMessage: "rejected" }),
+              ),
+          },
+          target: "auto",
+          mapError: (cause) => cause,
+          onAutoFallback: (warning) => warnings.push(warning),
+        }),
+      ),
+    ).rejects.toThrow();
+    expect(warnings).toEqual([]);
+  });
+
   it("falls back to default with one warning when native Auto is rejected", async () => {
     const session = modeRuntime({ modeState: modes("default", "default", "auto") });
     const rejecting = {
@@ -349,7 +402,12 @@ describe("Antigravity approval policy", () => {
     outside = NodePath.join(base, "outside");
     await fs.mkdir(NodePath.join(root, "src"), { recursive: true });
     await fs.mkdir(outside, { recursive: true });
-    await fs.symlink(outside, NodePath.join(root, "escape"));
+    // A junction needs no symlink privilege on Windows and behaves the same for directories.
+    await fs.symlink(
+      outside,
+      NodePath.join(root, "escape"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
   });
   afterAll(async () => {
     await fs.rm(NodePath.dirname(root), { recursive: true, force: true });
@@ -369,11 +427,12 @@ describe("Antigravity approval policy", () => {
   const decide = (
     runtimeMode: Parameters<typeof antigravityApprovalDecision>[0]["runtimeMode"],
     toolCall: Parameters<typeof antigravityApprovalDecision>[0]["toolCall"],
-    extra: { sessionMode?: string; computerRequest?: boolean } = {},
+    extra: { sessionMode?: string; computerRequest?: boolean; planRequested?: boolean } = {},
   ) =>
     antigravityApprovalDecision({
       runtimeMode,
       sessionMode: extra.sessionMode ?? "default",
+      planRequested: extra.planRequested ?? false,
       computerRequest: extra.computerRequest ?? false,
       toolCall,
       workspaceRoot: root,
@@ -441,6 +500,10 @@ describe("Antigravity approval policy", () => {
       kind: "ask",
       applyThreadGrants: false,
     });
+    // A Plan turn whose native mode still reports `default` keeps Plan's rules.
+    expect(decide("full-access", command, { sessionMode: "default", planRequested: true })).toEqual(
+      { kind: "ask", applyThreadGrants: false },
+    );
   });
 
   it("requires every edit target to be inside the canonical workspace", () => {
@@ -493,6 +556,26 @@ describe("Antigravity approval policy", () => {
     ).toBe(false);
   });
 
+  // File links need the symlink privilege on Windows; junctions can't point at files.
+  it.skipIf(process.platform === "win32")(
+    "asks for a dangling link even when it points at a missing file outside",
+    async () => {
+      const link = NodePath.join(root, "dangling.md");
+      await fs.symlink(NodePath.join(outside, "not-yet.md"), link);
+      try {
+        const write = (path: string) =>
+          antigravityEditTargetsInWorkspace(
+            { kind: "edit", title: "write_to_file", locations: [{ path }] },
+            root,
+          );
+        expect(write(link)).toBe(false);
+        expect(write(NodePath.join(root, "dangling.md", "child.md"))).toBe(false);
+      } finally {
+        await fs.rm(link, { force: true });
+      }
+    },
+  );
+
   it("asks for Git metadata and accepts names that only start with two dots", () => {
     const write = (path: string) =>
       antigravityEditTargetsInWorkspace(
@@ -500,6 +583,8 @@ describe("Antigravity approval policy", () => {
         root,
       );
     expect(write(NodePath.join(root, ".git", "hooks", "pre-commit"))).toBe(false);
+    expect(write(NodePath.join(root, "vendor", "lib", ".GIT", "hooks", "pre-commit"))).toBe(false);
+    expect(write(NodePath.join(root, "vendor", "lib", "gitignore-notes.md"))).toBe(true);
     expect(write(NodePath.join(root, "..notes.md"))).toBe(true);
     expect(write(NodePath.join(root, "new-dir", "new-file.ts"))).toBe(true);
   });

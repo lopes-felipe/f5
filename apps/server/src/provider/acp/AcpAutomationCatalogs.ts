@@ -161,15 +161,18 @@ export const prepareAcpAutomationCatalogs = (input: {
     const scrubber = new AcpCredentialScrubber();
     const launchCredentials = (input.credentials ?? []).filter((value) => value.length >= 8);
     for (const credential of launchCredentials) scrubber.register(credential);
-    // Exact-value replacement in every decoded string value, so JSON escaping (quotes,
-    // backslashes) cannot hide an echoed key. Object keys, and so routing fields, are untouched.
+    // Exact-value replacement in every decoded string, so JSON escaping (quotes, backslashes)
+    // cannot hide an echoed key. Property names are scrubbed too: an agent can echo the key as a
+    // name in unstructured data. Schema field names never contain a credential, so they and the
+    // routing fields are left as they are.
+    const scrubString = (value: string): string => {
+      let scrubbed = value;
+      for (const credential of launchCredentials)
+        scrubbed = scrubbed.replaceAll(credential, "[redacted]");
+      return scrubbed;
+    };
     const scrubValue = (value: unknown): unknown => {
-      if (typeof value === "string") {
-        let scrubbed = value;
-        for (const credential of launchCredentials)
-          scrubbed = scrubbed.replaceAll(credential, "[redacted]");
-        return scrubbed;
-      }
+      if (typeof value === "string") return scrubString(value);
       if (Array.isArray(value)) {
         let changed = false;
         const next = value.map((entry) => {
@@ -184,8 +187,9 @@ export const prepareAcpAutomationCatalogs = (input: {
         const next: Record<string, unknown> = {};
         for (const [key, entry] of Object.entries(value)) {
           const scrubbed = scrubValue(entry);
-          changed ||= scrubbed !== entry;
-          next[key] = scrubbed;
+          const scrubbedKey = scrubString(key);
+          changed ||= scrubbed !== entry || scrubbedKey !== key;
+          next[scrubbedKey] = scrubbed;
         }
         return changed ? next : value;
       }
@@ -325,7 +329,11 @@ export const prepareAcpAutomationCatalogs = (input: {
           (event.type === "item.started" ||
             event.type === "item.updated" ||
             event.type === "item.completed") &&
-          automationEventSanitizer.isComputerItem(event.threadId, event.itemId ?? event.eventId)
+          // Items are registered under their provider IDs, before any credential was scrubbed.
+          automationEventSanitizer.isComputerItem(
+            unscrubbed.threadId,
+            unscrubbed.itemId ?? unscrubbed.eventId,
+          )
         ) {
           return {
             ...event,

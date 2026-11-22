@@ -141,7 +141,10 @@ it("checks the custom instance's account instead of the default instance", async
   try {
     const account = join(antigravityProfileDirectory(root, "custom-account"), "antigravity-acp");
     await mkdir(account, { recursive: true });
-    await writeFile(join(account, "acp_token.json"), '{"token":"synthetic"}');
+    await writeFile(
+      join(account, "acp_token.json"),
+      '{"client_id":"synthetic","refresh_token":"synthetic"}',
+    );
     const settings = Schema.decodeSync(AntigravitySettings)({ enabled: true });
     const custom = await Effect.runPromise(
       checkAntigravityProviderStatus(settings, root, "custom-account"),

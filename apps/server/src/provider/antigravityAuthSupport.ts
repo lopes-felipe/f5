@@ -11,7 +11,6 @@ import {
   type AntigravityAuthMethod,
   type AntigravitySettings,
 } from "@t3tools/contracts";
-import { antigravityOAuthAccountFingerprint } from "../usage/antigravityQuota.ts";
 
 export interface AntigravityAuthConfig {
   readonly authMethod: AntigravityAuthMethod;
@@ -159,6 +158,21 @@ export function publishAntigravityAuthIdentity(
   };
 }
 
+/**
+ * An instance removed from settings: adapters still built for it refuse new work. Creating the
+ * ID again publishes its new identity over this one. The returned function undoes it.
+ */
+export function retireAntigravityAuthIdentity(stateDir: string, instanceId: string): () => void {
+  const key = identityKey(stateDir, instanceId);
+  const previous = publishedIdentities.get(key);
+  publishedIdentities.set(key, RETIRED_IDENTITY);
+  return () => {
+    if (previous === undefined) publishedIdentities.delete(key);
+    else publishedIdentities.set(key, previous);
+  };
+}
+const RETIRED_IDENTITY = "\0retired";
+
 /** False once settings published a different method or key than this adapter was built with. */
 export function isAntigravityAuthCurrent(
   stateDir: string,
@@ -230,21 +244,29 @@ class AntigravityAuthStateUnreadableError extends Error {
 }
 
 function decodeState(text: string): AntigravityAuthState {
-  return decodeStateOrUndefined(text) ?? EMPTY_STATE;
+  return decodeStateOrUndefined(text, { strict: false }) ?? EMPTY_STATE;
 }
 
-function decodeStateOrUndefined(text: string): AntigravityAuthState | undefined {
+const isRevision = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * `strict` (reads for a write) refuses a state whose revision is missing or not a non-negative
+ * integer, so a damaged file can't restart the revision at zero.
+ */
+function decodeStateOrUndefined(
+  text: string,
+  options: { readonly strict: boolean },
+): AntigravityAuthState | undefined {
   try {
     const value: unknown = JSON.parse(text);
-    if (value === null || typeof value !== "object") return undefined;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
     const fields = value as Record<string, unknown>;
+    if (options.strict && !isRevision(fields.revision)) return undefined;
     const method = ANTIGRAVITY_AUTH_METHODS.find((entry) => entry.value === fields.method)?.value;
     return {
       version: 1,
-      revision:
-        typeof fields.revision === "number" && Number.isSafeInteger(fields.revision)
-          ? Math.max(0, fields.revision)
-          : 0,
+      revision: isRevision(fields.revision) ? fields.revision : 0,
       ...(method ? { method } : {}),
       ...(typeof fields.keyFingerprint === "string"
         ? { keyFingerprint: fields.keyFingerprint }
@@ -286,7 +308,7 @@ async function readAntigravityAuthStateForUpdate(
     if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return EMPTY_STATE;
     throw new AntigravityAuthStateUnreadableError(error);
   }
-  const state = decodeStateOrUndefined(text);
+  const state = decodeStateOrUndefined(text, { strict: true });
   if (!state) throw new AntigravityAuthStateUnreadableError(undefined);
   return state;
 }
@@ -344,11 +366,48 @@ export function advanceAntigravityRevision(
   });
 }
 
+/** Account identities in the state file carry this prefix; older ones are adopted, not compared. */
+const ACCOUNT_IDENTITY_PREFIX = "v2:";
+
+function idTokenSubject(idToken: string | undefined): string | undefined {
+  const payload = idToken?.split(".")[1];
+  if (!payload) return undefined;
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    const sub = (claims as Record<string, unknown> | null)?.sub;
+    return typeof sub === "string" && sub ? sub : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The OAuth account for revision tracking. Unlike the usage identity it leaves out
+ * `project_id`, which Antigravity can write after the first session, and prefers a stable
+ * subject (`id_token` `sub`, then `email`) over the refresh token when the file has one.
+ */
+export function antigravityOAuthAccountIdentity(tokenText: string): string | undefined {
+  try {
+    const value: unknown = JSON.parse(tokenText);
+    if (value === null || typeof value !== "object") return undefined;
+    const fields = value as Record<string, unknown>;
+    const text = (entry: unknown) =>
+      typeof entry === "string" && entry.trim() ? entry.trim() : undefined;
+    const clientId = text(fields.client_id);
+    const refreshToken = text(fields.refresh_token);
+    if (!clientId || !refreshToken) return undefined;
+    const subject = idTokenSubject(text(fields.id_token)) ?? text(fields.email) ?? refreshToken;
+    return (
+      ACCOUNT_IDENTITY_PREFIX + createHash("sha256").update(`${clientId}\0${subject}`).digest("hex")
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 async function readOAuthAccountFingerprint(profileDirectory: string) {
   try {
-    return antigravityOAuthAccountFingerprint(
-      await fs.readFile(tokenPath(profileDirectory), "utf8"),
-    );
+    return antigravityOAuthAccountIdentity(await fs.readFile(tokenPath(profileDirectory), "utf8"));
   } catch {
     return undefined;
   }
@@ -380,10 +439,11 @@ export function reconcileAntigravityAuthState(
       const methodChanged = state.method !== auth.authMethod;
       const keyChanged =
         auth.authMethod === "gemini-api-key" && state.keyFingerprint !== keyFingerprint;
+      // An identity recorded before the current format is adopted once, without a new revision.
       const accountChanged =
         oauth &&
         accountFingerprint !== undefined &&
-        state.accountFingerprint !== undefined &&
+        state.accountFingerprint?.startsWith(ACCOUNT_IDENTITY_PREFIX) === true &&
         state.accountFingerprint !== accountFingerprint;
       const { keyFingerprint: _key, accountFingerprint: _account, ...rest } = state;
       // A momentarily unreadable token keeps the last known account, so a different account
@@ -403,10 +463,12 @@ export function reconcileAntigravityAuthState(
   );
 }
 
+/** A token file only counts when it holds a readable OAuth credential, not merely bytes. */
 export async function hasAntigravityOAuthToken(profileDirectory: string): Promise<boolean> {
   try {
     const stat = await fs.lstat(tokenPath(profileDirectory));
-    return stat.isFile() && stat.size > 0;
+    if (!stat.isFile() || stat.size === 0 || stat.size > 1024 * 1024) return false;
+    return (await readOAuthAccountFingerprint(profileDirectory)) !== undefined;
   } catch {
     return false;
   }

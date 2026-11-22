@@ -55,6 +55,8 @@ interface Job {
   process: PtyProcess;
   done: Promise<void>;
   timeout: ReturnType<typeof setTimeout>;
+  /** The process has exited; teardown waits on `done` without killing it. */
+  exited?: boolean;
 }
 export class ProviderAccountService {
   private readonly jobs = new Map<string, Job>();
@@ -347,14 +349,20 @@ export class ProviderAccountService {
         },
         method === "install" ? 45 * 60_000 : 600000,
       );
-      this.jobs.set(handle, { instanceId, process: child, done, timeout, owner });
+      const job: Job = { instanceId, process: child, done, timeout, owner };
+      this.jobs.set(handle, job);
+      // Tracked until `done`, which a key sign-out settles only after its settings write, so
+      // disposal still waits for that write and the guard it holds.
+      void done.then(() => {
+        if (this.jobs.get(handle) === job) this.jobs.delete(handle);
+      });
       const unsubscribe = child.onData((data) =>
         this.emit({ handle, instanceId, type: "output", data }, owner),
       );
       child.onExit((event) => {
         clearTimeout(timeout);
         unsubscribe();
-        this.jobs.delete(handle);
+        job.exited = true;
         lease.release();
         const signedOutKey =
           logout && antigravityAuth?.authMethod === "gemini-api-key" && event.exitCode === 0
@@ -419,13 +427,18 @@ export class ProviderAccountService {
   }
   input(handle: string, data: string, owner: object = this): void {
     const job = this.jobs.get(handle);
-    if (!job || job.owner !== owner) throw new Error("Unknown or expired account terminal.");
+    if (!job || job.owner !== owner || job.exited)
+      throw new Error("Unknown or expired account terminal.");
     job.process.write(data);
   }
   async cancel(handle: string, owner: object = this): Promise<void> {
     const job = this.jobs.get(handle);
     if (!job) return;
     if (job.owner !== owner) throw new Error("Account terminal belongs to another connection.");
+    if (job.exited) {
+      await job.done;
+      return;
+    }
     job.process.kill();
     const force = setTimeout(() => job.process.kill("SIGKILL"), 3000);
     try {

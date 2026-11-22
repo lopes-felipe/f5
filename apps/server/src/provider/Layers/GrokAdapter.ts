@@ -205,7 +205,7 @@ export interface AntigravityAdapterHooks {
    * Whether the runtime version is certified for the private turn-outcome and child-work
    * formats. When false the session runs standard ACP only. Absent means certified.
    */
-  readonly nativeReaders?: Effect.Effect<boolean>;
+  readonly nativeReaders?: (runtime: object) => Effect.Effect<boolean>;
 }
 
 interface PendingApproval {
@@ -253,6 +253,10 @@ interface GrokSessionContext {
    * Supervised. Later turns do not retry it, so its one warning is not repeated.
    */
   antigravityAutoUnavailable: boolean;
+  /** Antigravity: the latest turn asked for Plan; its requests keep Plan's rules. */
+  antigravityPlanRequested: boolean;
+  /** Antigravity: a mode warning not yet published, kept until a turn starts. */
+  antigravityPendingWarning: string | undefined;
   /** Antigravity: private-format readers are certified for the runtime this session launched. */
   readonly antigravityNativeReaders: boolean;
   /** Antigravity: the account revision this session started under. */
@@ -1083,6 +1087,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       ? antigravityApprovalDecision({
                           runtimeMode: input.runtimeMode,
                           sessionMode: nativeMode ?? live?.antigravityMode,
+                          planRequested: live?.antigravityPlanRequested === true,
                           computerRequest: Boolean(computerRequest),
                           toolCall: params.toolCall,
                           workspaceRoot: cwd,
@@ -1256,7 +1261,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // Certified once, for the runtime this session just launched.
           const antigravityNativeReaders =
             PROVIDER === "antigravity" && options?.antigravity?.nativeReaders
-              ? yield* options.antigravity.nativeReaders
+              ? yield* options.antigravity.nativeReaders(acp)
               : true;
           if (PROVIDER === "antigravity") {
             const mapStartError = antigravityErrorMapper(input.threadId, "startSession");
@@ -1382,6 +1387,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             nativeChildrenPolling: false,
             antigravityMode: antigravityStartMode,
             antigravityAutoUnavailable,
+            antigravityPlanRequested: false,
+            antigravityPendingWarning: undefined,
             antigravityNativeReaders,
             antigravityAccountRevision: PROVIDER === "antigravity" ? accountRevision : undefined,
             antigravitySelection,
@@ -1726,6 +1733,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               if (PROVIDER === "antigravity" && steeringTurnId === undefined) {
                 // Steers stay inside the running turn: no mode, model or level writes.
                 const mapTurnError = antigravityErrorMapper(input.threadId, "sendTurn");
+                // Set before the mode write, so a request that arrives while the native mode
+                // lags behind is still held to Plan's rules.
+                ctx.antigravityPlanRequested = input.interactionMode === "plan";
                 const advertised = antigravityAdvertisedModes(
                   yield* ctx.acp.getModeState,
                   yield* ctx.acp.getConfigOptions,
@@ -1743,9 +1753,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   mapError: mapTurnError,
                   onAutoFallback: (warning) => {
                     ctx.antigravityAutoUnavailable = true;
-                    antigravityModeWarning = warning;
+                    // Kept on the session until a turn publishes it: a turn that fails later
+                    // (an attachment, an empty prompt) must not swallow the only warning.
+                    ctx.antigravityPendingWarning = warning;
                   },
                 });
+                antigravityModeWarning = ctx.antigravityPendingWarning;
               }
               const currentModelId =
                 PROVIDER === "antigravity"
@@ -1769,6 +1782,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                             // the turn fails later (an attachment, an empty prompt).
                             ctx.currentModelId = selection.model;
                           }),
+                        ),
+                        // A selection can switch the model and then fail on the level: read back
+                        // the native model so a later turn without a selection reports the
+                        // model it really runs on.
+                        Effect.tapError(() =>
+                          ctx.acp.getConfigOptions.pipe(
+                            Effect.map((options) => {
+                              const active = findModelConfigOption(options)?.currentValue;
+                              if (typeof active === "string" && active) ctx.currentModelId = active;
+                            }),
+                          ),
                         ),
                         Effect.tap(() =>
                           observeAntigravityCatalog(
@@ -1916,6 +1940,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   turnId,
                   payload: displayModel ? { model: displayModel } : {},
                 });
+                if (antigravityModeWarning !== undefined) ctx.antigravityPendingWarning = undefined;
                 for (const message of [antigravityModeWarning, antigravityTurnWarning])
                   if (message)
                     yield* offerRuntimeEvent({

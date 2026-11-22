@@ -622,8 +622,11 @@ export const ProviderRegistryLive = Layer.effect(
         // rebuild its catalog from a probe restores it instead of losing it.
         const knownProviders = yield* Ref.get(providersRef);
         for (const [instanceId, instance] of newlyAdded) {
+          // Same driver only: an ID reused for another driver must not inherit its models.
           const known = knownProviders.find(
-            (provider) => snapshotInstanceKey(provider) === instanceId,
+            (provider) =>
+              snapshotInstanceKey(provider) === instanceId &&
+              provider.driver === instance.driverKind,
           );
           if (known && instance.hydrateModelCatalog)
             yield* instance.hydrateModelCatalog(known.models);

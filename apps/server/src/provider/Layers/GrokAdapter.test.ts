@@ -1,7 +1,7 @@
 import { writeAcpWrapper } from "../../testUtils/cli.ts";
 import * as os from "node:os";
 import * as path from "node:path";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createModelSelection } from "@t3tools/shared/model";
 import { fileURLToPath } from "node:url";
 
@@ -503,7 +503,11 @@ const antigravityProfileAdapter = (input: {
   readonly staleAccount?: () => string | undefined;
 }) =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-profile-")));
+    // Removed when the test's scope closes, also after a failed setup or assertion.
+    const dir = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-profile-"))),
+      (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+    );
     const requestLogPath = path.join(dir, "requests.ndjson");
     const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
       env: {
