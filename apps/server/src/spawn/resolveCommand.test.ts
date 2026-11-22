@@ -345,7 +345,8 @@ describe("resolveGitExecutable", () => {
 
     it("runs the git behind the xcrun shim and looks it up once", async () => {
       const { host, resolve, xcodeGit } = setup();
-      expect(await resolve()).toBe(xcodeGit);
+      const results = await Promise.all(Array.from({ length: 12 }, () => resolve()));
+      expect(results).toEqual(Array(12).fill(xcodeGit));
       expect(await resolve()).toBe(xcodeGit);
       expect(host.calls).toBe(1);
     });

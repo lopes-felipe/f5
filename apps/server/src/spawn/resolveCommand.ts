@@ -221,6 +221,7 @@ function resolveQualifiedCandidate(
 
 export function clearCommandResolutionCache(): void {
   resolutionCache = new Map();
+  pendingXcodeGitLookups = new Map();
   pathDirectoryListings.clear();
 }
 
@@ -412,6 +413,7 @@ async function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv): Promise<string |
 
 const MACOS_GIT_SHIM = "/usr/bin/git";
 const XCODE_GIT_CACHE_TTL_MS = 30_000;
+let pendingXcodeGitLookups = new Map<string, Promise<string>>();
 
 // An injected locator may answer differently for the same PATH, so its entries
 // are kept apart from every other locator's.
@@ -446,6 +448,7 @@ async function resolveMacosGit(
   const locateXcodeGit = options.locateXcodeGit ?? locateXcodeGitWithXcrun;
   const shim = options.macosGitShim ?? MACOS_GIT_SHIM;
   const cache = resolutionCache;
+  const pendingLookups = pendingXcodeGitLookups;
   const cacheKey = [
     resolutionCacheKey("git", "darwin", env, undefined),
     "xcode-git",
@@ -453,26 +456,33 @@ async function resolveMacosGit(
     shim,
     String(xcodeGitLocatorId(locateXcodeGit)),
   ].join("\0");
-  const cached = cache.get(cacheKey);
-  // An Xcode update or removal deletes the binary; look again instead of failing the spawn.
-  if (
-    cached &&
-    cached.expiresAt > Date.now() &&
-    (cached.value === "git" || (await isExecutableFile(cached.value, "darwin")))
-  ) {
-    return cached.value;
-  }
-  const located =
-    (await resolveExecutable("git", env, { platform: "darwin" })) === shim
-      ? await locateXcodeGit(env)
-      : undefined;
-  const resolved =
-    located !== undefined && (await isExecutableFile(located, "darwin")) ? located : "git";
-  cache.set(cacheKey, {
-    value: resolved,
-    expiresAt: Date.now() + XCODE_GIT_CACHE_TTL_MS,
-  });
-  return resolved;
+  const pending = pendingLookups.get(cacheKey);
+  if (pending) return pending;
+
+  const lookup = (async () => {
+    const cached = cache.get(cacheKey);
+    // An Xcode update or removal deletes the binary; look again instead of failing the spawn.
+    if (
+      cached &&
+      cached.expiresAt > Date.now() &&
+      (cached.value === "git" || (await isExecutableFile(cached.value, "darwin")))
+    ) {
+      return cached.value;
+    }
+    const located =
+      (await resolveExecutable("git", env, { platform: "darwin" })) === shim
+        ? await locateXcodeGit(env)
+        : undefined;
+    const resolved =
+      located !== undefined && (await isExecutableFile(located, "darwin")) ? located : "git";
+    cache.set(cacheKey, {
+      value: resolved,
+      expiresAt: Date.now() + XCODE_GIT_CACHE_TTL_MS,
+    });
+    return resolved;
+  })().finally(() => pendingLookups.delete(cacheKey));
+  pendingLookups.set(cacheKey, lookup);
+  return lookup;
 }
 
 /**

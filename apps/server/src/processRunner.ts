@@ -41,6 +41,17 @@ export interface ProcessRunResult {
   stderrTruncated?: boolean | undefined;
 }
 
+const abortedBeforeSpawn = (): ProcessRunResult => ({
+  stdout: "",
+  stderr: "",
+  code: null,
+  signal: null,
+  timedOut: false,
+  aborted: true,
+  stdoutTruncated: false,
+  stderrTruncated: false,
+});
+
 function commandLabel(command: string, args: readonly string[]): string {
   return [command, ...args].join(" ");
 }
@@ -198,6 +209,7 @@ export async function runProcess(
   args: readonly string[],
   options: ProcessRunOptions,
 ): Promise<ProcessRunResult> {
+  if (options.signal?.aborted) return abortedBeforeSpawn();
   const timeoutMs = options.timeoutMs === undefined ? 60_000 : options.timeoutMs;
   const maxBufferBytes = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
   const maxStdoutBytes = options.maxStdoutBytes ?? maxBufferBytes;
@@ -207,19 +219,26 @@ export async function runProcess(
     ? managedGitProcessEnvironment(options.env)
     : options.env;
   await ensureWindowsPathHydrated(environment);
+  if (options.signal?.aborted) return abortedBeforeSpawn();
   const executable =
     process.platform === "win32"
       ? await resolveExecutable(command, environment, { cwd: options.cwd })
       : null;
+  if (options.signal?.aborted) return abortedBeforeSpawn();
   const profileLauncher = executable ? resolveProfileGithubLauncher(executable, environment) : null;
   const invocation = profileLauncher
     ? { file: profileLauncher.runtime, args: [profileLauncher.script, ...args] }
-    : await resolveInvocation(command, args, environment, { cwd: options.cwd });
+    : await resolveInvocation(command, args, environment, { cwd: options.cwd }).catch((error) => {
+        if (options.signal?.aborted) return null;
+        throw error;
+      });
+  if (!invocation) return abortedBeforeSpawn();
   const spawnEnvironment = profileLauncher
     ? { ...environment, ELECTRON_RUN_AS_NODE: "1" }
     : environment;
 
   const consoleFreeGit = runsGitWithoutConsole(process.platform, invocation.file, invocation.args);
+  if (options.signal?.aborted) return abortedBeforeSpawn();
   return new Promise<ProcessRunResult>((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams;
     try {

@@ -173,7 +173,7 @@ export async function resolveClaudeCliInvocation(
   if (sdkOptions.executable === "node") {
     const node =
       platform === "win32"
-        ? await resolveExecutable("node", environment, { platform, cwd: options.cwd })
+        ? await resolveExecutable("node", environment, { platform })
         : javascriptRuntimeExecutable();
     if (!node) {
       throw new CommandNotFoundError(
