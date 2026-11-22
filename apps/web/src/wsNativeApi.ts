@@ -278,6 +278,11 @@ export function onPrHubAdvisoriesUpdated(
   };
 }
 
+export function resetWsNativeApiForTests(): void {
+  instance?.transport.dispose();
+  instance = null;
+}
+
 export function createWsNativeApi(): NativeApi {
   if (instance) return instance.api;
 

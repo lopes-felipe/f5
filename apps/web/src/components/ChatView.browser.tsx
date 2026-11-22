@@ -13,6 +13,8 @@ import { waitForTimelineLayout } from "../test/timeline";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
+import { resetNativeApiForTests } from "../nativeApi";
+import { resetWsConnectionStateForTests } from "../wsConnectionState";
 import { serverBootstrapFixture as baseServerBootstrapFixture } from "../test/serverBootstrap";
 // Production CSS is part of the behavior under test because row height depends on it.
 import "../index.css";
@@ -2618,6 +2620,8 @@ describe("ChatView timeline (full app)", () => {
   });
 
   afterEach(() => {
+    resetNativeApiForTests();
+    resetWsConnectionStateForTests();
     useRightPanelStore.setState({ byThreadId: {} });
     document.body.innerHTML = "";
   });
