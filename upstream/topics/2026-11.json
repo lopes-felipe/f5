@@ -89050,12 +89050,14 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T18:05:01.410Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-40132",
       "relatedTopics": [
         "pr-39464"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "security",
