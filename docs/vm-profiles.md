@@ -1,8 +1,8 @@
 # Linux VM profiles
 
-> Contributors: the opt-in Linux VM execution environment for profiles on Apple Silicon. Status, invariants that already hold, and the feasibility gate that must pass before the VM runtime is built.
+> Contributors: the opt-in Linux VM execution environment for profiles on Apple Silicon. Status, invariants that already hold, the runtime behind its hidden flag, and the feasibility gate it passed.
 
-**Contents:** [Status](#status) · [Invariants](#invariants) · [Phase 0 feasibility gate](#phase-0-feasibility-gate) · [Remaining delivery](#remaining-delivery)
+**Contents:** [Status](#status) · [Invariants](#invariants) · [Runtime](#runtime) · [Phase 0 feasibility gate](#phase-0-feasibility-gate) · [Remaining delivery](#remaining-delivery)
 
 A Linux VM profile runs its backend, providers, terminals, Git and local MCP processes inside a Lima VZ guest (Apple Virtualization.framework), instead of on the host. Host profiles are unchanged.
 
@@ -12,12 +12,12 @@ A Linux VM profile runs its backend, providers, terminals, Git and local MCP pro
 | ---------------------------------------------------- | --------------------------------------------------------------------------- |
 | Phase 0 feasibility gate                             | **Passed** 2026-11-22, with two caveats ([result](#gate-result-2026-11-22)) |
 | Profile model, lazy registry v2, fail-closed refusal | Done                                                                        |
-| Backend channel and launcher abstraction             | Done (host implementation only)                                             |
-| Guest image pipeline, VM launcher, lifecycle         | Not started; unblocked                                                      |
+| Backend channel and launcher abstraction             | Done                                                                        |
+| Guest image pipeline, VM launcher, lifecycle         | Done behind a hidden flag; no image pinned yet ([runtime](#runtime))        |
 | Exports, clones, network, forwards, login            | Not started; unblocked                                                      |
-| UI, certification run, opt-in preview                | Not started                                                                 |
+| UI, packaging and signing, certification, preview    | Not started                                                                 |
 
-This build can't create or start a Linux VM profile. `ProfileRegistryStore.create` refuses `executionEnvironment: "linux-vm"`, because the provisioning lifecycle a VM record needs doesn't exist yet. A VM record can still show up, for example after rolling back from a VM-capable build, so everything below handles one.
+Without the hidden flag, this build can't create or start a Linux VM profile. `ProfileRegistryStore.create` refuses `executionEnvironment: "linux-vm"`, and desktop has no VM launcher. A VM record can still show up, for example after rolling back from a VM-capable build, so everything below handles one.
 
 ## Invariants
 
@@ -28,6 +28,57 @@ These already hold and must keep holding as the runtime lands.
 - **No host state for the guest.** A VM profile's host directory holds only main-owned VM metadata. Provider homes, settings and SQLite live on the guest's data disk. Cross-profile host readers (checkout ownership, managed worktree roots, repository-sharing warnings) skip VM profiles instead of looking for host state that isn't there.
 - **An unforgeable channel.** `ComputerHostChannel` depends on `BackendChannel`, not on `ChildProcess`. Main creates every channel and registers it with the profile and incarnation it launched. Host backends use inherited IPC. Guest backends will use length-prefixed JSON frames (`@t3tools/shared/backendFrames`) over the stdio of the `limactl shell` process main spawns. There is no listener, malformed frames close the channel, and end of stream disconnects it. The decoder copies each byte once, however a frame is split. Main queues at most two maximum-size frames for a guest that stops reading, then disconnects it.
 - **No host-process integrations for guests.** A channel without `hostPid` is refused Chrome leases, validation, restore, process registration and adoption, and Sky's foreground lease, whatever capabilities it advertises. Its browser-open requests always show the prompt; a guest's `preapproved` flag is ignored. F5-mediated computer tools stay available.
+
+## Runtime
+
+Behind `F5_EXPERIMENTAL_LINUX_VM=1`, on Apple silicon, desktop registers a VM launcher (`apps/desktop/src/vm/`) and the server lets a host profile create a `linux-vm` record. A VM record gets only an empty, `0700` host directory: its provider homes, settings and SQLite live on the guest's data disk.
+
+**Assets.** The launcher needs three things, and without any one of them VM profiles stay refused:
+
+| Asset                   | Packaged location (not bundled yet)                  | Development override                                         |
+| ----------------------- | ---------------------------------------------------- | ------------------------------------------------------------ |
+| Lima 2.3.0 `limactl`    | `Resources/native/lima/bin/limactl`                  | `F5_VM_LIMACTL`                                              |
+| linux-arm64 CLI archive | `Resources/vm/f5-<version>-linux-arm64.tar.gz`       | `F5_VM_BACKEND_ARCHIVE`, with its `.json` manifest beside it |
+| Guest image pin         | `apps/desktop/vm-guest/image.lock.json` (now `null`) | `F5_VM_IMAGE_URL`, `F5_VM_IMAGE_SHA256`, `F5_VM_IMAGE_SIZE`  |
+
+The archive is what `bun run dist:cli:archive` builds on a linux-arm64 machine. A pin accepts only release assets of this repository; the development override accepts any HTTPS URL.
+
+**Guest image.** `apps/desktop/vm-guest/build-image.sh` customizes the digest-pinned Debian 13 genericcloud arm64 image offline with `virt-customize`. Packages come from a pinned `snapshot.debian.org` timestamp, and nothing runs apt at runtime. It adds:
+
+- the root-owned guest tool `/opt/f5/bin/f5-guest`
+- the egress policy (`f5-egress-apply` and its unit)
+- user `f5` (uid 1500, no sudo, home on the data disk)
+- `/opt/f5/policy.sha256`, which every guest command checks
+
+The `vm-guest-image` workflow builds it on pull requests that touch `vm-guest/`. A manual run with `publish` attaches it to a `vm-guest-image-<commit>` prerelease and prints the lock entry to copy into `image.lock.json`.
+
+**Start sequence.** Main spawns the VM supervisor (`vmSupervisorEntry.js`) as the profile's backend process, inside the same `sandbox-exec` GUI-denial profile as host backends. Its environment holds only `PATH`, `HOME`, `TMPDIR`, `LANG` and the supervisor configuration, which contains no secrets. The supervisor then:
+
+1. Refuses a foreign `_config/default.yaml` or `override.yaml` in LIMA_HOME, which Lima would merge into the instance.
+2. Downloads the pinned image into the installation-wide cache `<state>/vm/images/`. The download resumes, and the whole file is verified by SHA-256.
+3. Replaces the instance (the root disk) if the image digest changed, keeping the data disk.
+4. Creates the sparse data disk (40 GiB, raw), then the instance from `buildLimaInstanceConfig`.
+5. Boots the VM and checks `f5-guest status`: data disk mounted at `/var/lib/f5`, policy hashes, the `f5_egress` table loaded, `f5` without sudo.
+6. Installs the backend when the guest lacks its version: `limactl copy` into the guest, then `f5-guest install`. That hashes and extracts a single root-owned copy of the archive, keeping the current and previous versions.
+7. Starts an ssh ControlMaster that owns the `127.0.0.1:<port>` forward. `ExitOnForwardFailure` turns an occupied port into an error.
+8. Runs `limactl shell … sudo f5-guest launch <incarnation> <version>` on its own stdin and stdout.
+
+First start may take up to 15 minutes before recovery is offered; host profiles keep 3.
+
+**Channel.** The supervisor's stdin and stdout are main's pipes, and it never reads them. Main writes one boot line, `{port, authToken, profileId}`, followed by frames. `f5-guest launch` reads exactly that line and starts the backend as `f5` in a transient systemd scope. The auth token reaches it through systemd-run's environment, never a command line.
+
+The backend reads frames on fd 3 and writes them on fd 4, and its stdout is redirected to stderr. `F5_DESKTOP_COMPUTER_HOST=frames` selects `frameStreamIpc`. The backend says hello with the host profile id from the boot line; main checks it against the profile and incarnation it launched. Every Lima child except the final `limactl shell` gets fresh stdio. Otherwise the daemonized hostagent would inherit the channel and hold it open.
+
+**Lifecycle.** At most two VM profiles run at once, within the six-backend cap. Stop sends SIGTERM to the supervisor. It kills `limactl shell`, so the guest launcher sees EOF and stops the scope, then it runs `limactl stop`. Main waits 5 s before killing the supervisor. A VM still running after that is reused on the next start. A crash restarts the incarnation, and the VM keeps running. Losing the port forward also ends the incarnation. A refusal writes `last-startup-error-<id>.json` and exits 78, so the recovery window shows the reason.
+
+**Paths.** LIMA_HOME is `<state>/vm/<first 16 hex of the profile id>`, not `<profile-state>/vm/lima`. Under a typical home directory, the profile path leaves no room for ssh's ControlMaster socket within macOS's 104-byte limit. A state directory that is still too long is refused. Main-owned metadata (`lima.yaml`, `instance.json`) stays in `<profile-state>/vm/`.
+
+**Known gaps** before the preview:
+
+- Removing a VM profile moves its host directory to `.trash`, but leaves its LIMA_HOME and data disk. Stopping the VM and moving LIMA_HOME belong to the removal flow in step 5.
+- Quitting F5 doesn't stop running VMs.
+- Lima's admin user keeps Lima's passwordless sudo. Only main holds its ssh key, and `f5` can't reach it.
+- Nothing has run end to end yet. That needs a published image, a linux-arm64 archive and a real boot, which goes in Terminal per the [gate's two-phase rule](#gate-result-2026-11-22).
 
 ## Phase 0 feasibility gate
 
@@ -72,8 +123,9 @@ Findings that change the remaining steps:
 
 The gate has passed, so these steps are unblocked:
 
-- **Guest image and VM lifecycle.** CI builds a digest-pinned Debian 13 arm64 image with Git, bubblewrap, socat, ripgrep, nftables, the root-owned launcher `/opt/f5/bin/f5-guest-launch`, users `f5` (no sudo) and admin, and the organization policy files. It downloads on first use. A persistent data disk at `/var/lib/f5` survives root-image replacement. `LIMA_HOME=<profile-state>/vm/lima`, and instance config comes only from F5's typed builder. The backend is installed from the bundled linux-arm64 CLI archive whenever its version differs. A `VmBackendLauncher` registers a `streamBackendChannel` with the computer channel.
+- **End-to-end run.** Publish the first image, pin it, then boot a VM profile with a linux-arm64 archive, outside F5 first and then inside it, as in the gate.
+- **Packaging and signing.** Bundle Lima and the linux-arm64 archive into the macOS build, re-sign `limactl` with Developer ID, hardened runtime and the virtualization entitlement, record the pins in `docs/dependency-pins.md` and the steps in `docs/release.md`, and recheck the gate's signing caveat.
 - **Sharing and network.** Folders are exported only through the picker and only as separate clones, never a host repo's `.git`. Guest egress is internet-only. Main owns every port forward on `127.0.0.1`. The installation-wide login lease is held through the channel. VM-profile backends can't mutate installation state.
-- **Resources and UI.** At most 2 running VMs within the 6-backend cap. Visible provisioning states. "Linux VM (preview)" appears only on darwin-arm64, macOS 13+, in builds with guest assets.
+- **UI.** Visible provisioning states (downloading, provisioning, booting, installing, ready, failed), a removal flow that stops the VM and trashes its LIMA_HOME, and stopping VMs on quit. "Linux VM (preview)" appears only on darwin-arm64, macOS 13+, in builds with guest assets.
 
 The paid benchmark is a separate follow-up plan that depends on certification.
