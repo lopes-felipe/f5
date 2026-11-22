@@ -102,6 +102,7 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
             props.hitStripWidth > 0 ? "pointer-events-auto" : "pointer-events-none",
           )}
           data-testid={`${testId}-strip`}
+          data-timeline-navigation
           onBlur={() => setActiveIndex(null)}
           onClick={(event) => {
             if (timelineTurnRailEventTargetsPreview(event.target)) return;
@@ -196,6 +197,7 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
                 right ? "right-8" : "left-8",
               )}
               data-turn-rail-preview
+              data-timeline-navigation
               onMouseMove={(event) => event.stopPropagation()}
               style={{
                 top: `${activeTopPercent}%`,

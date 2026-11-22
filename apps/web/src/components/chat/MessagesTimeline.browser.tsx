@@ -472,6 +472,92 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("keeps a text drag in its message across the turn rail and minimap", async () => {
+    await page.viewport(600, 896);
+    const host = document.createElement("div");
+    document.body.append(host);
+    let listRef: LegendListRef | null = null;
+    await render(
+      <TimelineHarness
+        initialEntries={makeOverflowEntries(40)}
+        initialHeight={360}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(next) => {
+          listRef = next;
+        }}
+      />,
+      { container: host },
+    );
+    const container = await waitForScrollContainer(host);
+    await scrollTimelineToOffset(listRef, container, 0);
+    const rail = host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail-strip"]')!;
+    const minimap = host.querySelector<HTMLElement>('[aria-label="Conversation minimap"]')!;
+    const railBounds = rail.getBoundingClientRect();
+    const minimapBounds = minimap.getBoundingClientRect();
+    const railX = railBounds.x + railBounds.width / 2;
+    const minimapX = minimapBounds.x + minimapBounds.width / 2;
+    const message = host.querySelector<HTMLElement>('[data-message-id="overflow-assistant-1"]')!;
+    const firstLine = document.createRange();
+    firstLine.selectNodeContents(message.querySelector("p")!);
+    const lineBounds = firstLine.getClientRects()[0]!;
+    const y = lineBounds.y + lineBounds.height / 2;
+    const startX = lineBounds.x + 8;
+
+    // CDP uses coordinates in the outer page, where Vitest may scale the test iframe.
+    const frame = window.frameElement?.getBoundingClientRect();
+    const mouse = (
+      type: "mousePressed" | "mouseMoved" | "mouseReleased",
+      x: number,
+      y: number,
+      buttons: number,
+    ) =>
+      cdp().send("Input.dispatchMouseEvent", {
+        type,
+        x: frame ? x * (frame.width / window.innerWidth) + frame.left : x,
+        y: frame ? y * (frame.height / window.innerHeight) + frame.top : y,
+        button: type === "mouseMoved" && buttons === 0 ? "none" : "left",
+        buttons,
+        ...(type === "mouseMoved" ? {} : { clickCount: 1 }),
+        force: buttons > 0 ? 0.5 : 0,
+      });
+
+    expect(document.elementFromPoint(railX, y)).toBe(rail);
+    expect(document.elementFromPoint(minimapX, y)).toBe(minimap);
+    await mouse("mouseMoved", startX, y, 0);
+    await mouse("mousePressed", startX, y, 1);
+    try {
+      await mouse("mouseMoved", startX + 120, y, 1);
+      const selection = window.getSelection()!;
+      const initialLength = selection.toString().length;
+      expect(initialLength).toBeGreaterThan(0);
+      for (const x of [railX, minimapX]) {
+        await mouse("mouseMoved", x, y, 1);
+        expect(container.contains(document.elementFromPoint(x, y))).toBe(true);
+        expect(host.querySelector("[data-turn-rail-preview]")).toBeNull();
+        expect(selection.toString().length).toBeGreaterThan(initialLength);
+        expect(message.contains(selection.anchorNode)).toBe(true);
+        expect(message.contains(selection.focusNode)).toBe(true);
+      }
+    } finally {
+      await mouse("mouseReleased", minimapX, y, 0);
+    }
+    expect(document.elementFromPoint(railX, y)).toBe(rail);
+    expect(document.elementFromPoint(minimapX, y)).toBe(minimap);
+    await mouse("mouseMoved", railX, y, 0);
+    await vi.waitFor(() => expect(host.querySelector("[data-turn-rail-preview]")).not.toBeNull());
+
+    // A drag originating on the minimap keeps scrubbing even outside the track.
+    await mouse("mousePressed", minimapX, minimapBounds.top + 1, 1);
+    try {
+      await mouse("mouseMoved", startX, minimapBounds.bottom - 1, 1);
+      await vi.waitFor(() => {
+        expect(container.scrollTop).toBeGreaterThan(container.scrollHeight / 2);
+      });
+    } finally {
+      await mouse("mouseReleased", startX, minimapBounds.bottom - 1, 0);
+    }
+  });
+
   it("tracks the active turn-rail tick while scrolling", async () => {
     await page.viewport(1200, 896);
     const host = document.createElement("div");
