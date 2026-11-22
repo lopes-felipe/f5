@@ -7,6 +7,28 @@ import { mergeProviderUsageWindows } from "./providerUsageWindows.ts";
 
 const HOSTS = ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"];
 
+const oauthFingerprint = (
+  clientId: string,
+  refreshToken: string,
+  project: string | null | undefined,
+) =>
+  createHash("sha256")
+    .update([clientId, refreshToken, project ?? ""].join("\0"))
+    .digest("hex");
+
+/** Identity of the OAuth account in an `acp_token.json`, or undefined when it holds none. */
+export function antigravityOAuthAccountFingerprint(tokenText: string): string | undefined {
+  try {
+    const token = asRecord(JSON.parse(tokenText));
+    const clientId = asTrimmedString(token?.client_id);
+    const refreshToken = asTrimmedString(token?.refresh_token);
+    if (!clientId || !refreshToken) return undefined;
+    return oauthFingerprint(clientId, refreshToken, asTrimmedString(token?.project_id));
+  } catch {
+    return undefined;
+  }
+}
+
 /** Uses only this ACP account's credentials; refreshed access tokens stay in memory. */
 export function makeAntigravityQuotaReader(input: {
   profileDirectory: string;
@@ -40,9 +62,7 @@ export function makeAntigravityQuotaReader(input: {
       cached = undefined;
       return null;
     }
-    const fingerprint = createHash("sha256")
-      .update([clientId, refreshToken, project ?? ""].join("\0"))
-      .digest("hex");
+    const fingerprint = oauthFingerprint(clientId, refreshToken, project);
     const json = async (url: string, init: RequestInit, maximumMs = 6_000) => {
       const timeoutMs = Math.min(maximumMs, remainingMs());
       if (timeoutMs <= 0) throw new Error("Antigravity quota deadline reached.");

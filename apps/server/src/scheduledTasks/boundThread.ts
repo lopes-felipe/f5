@@ -69,7 +69,9 @@ export const resolveBoundExecution = (input: {
     !provider ||
     !isProviderUsable(provider) ||
     !isKnownProviderKind(provider.driver) ||
-    !runtimeModeCapabilities(provider.driver).has(thread.runtimeMode) ||
+    !runtimeModeCapabilities(provider.driver, provider.availableRuntimeModes).has(
+      thread.runtimeMode,
+    ) ||
     (provider.models.length > 0 && !provider.models.some((m) => m.slug === modelSelection.model))
   )
     return ineligible("provider_unavailable");

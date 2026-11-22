@@ -1,11 +1,13 @@
 import { accountLoginOutput } from "./accountLoginOutput";
 import { ChevronDownIcon, CopyIcon, ExternalLinkIcon, RotateCwIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { ProfileSummary, ProviderInstanceId } from "@t3tools/contracts";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
 import { readNativeApi } from "../../nativeApi";
+import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { refreshProfiles } from "../../profileState";
 import { onProviderAccountEvent } from "../../wsNativeApi";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
@@ -63,6 +65,13 @@ export function ProviderAccountPanel({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   const api = readNativeApi()?.profiles;
+  // API-key instances verify the key instead of signing in through a browser.
+  const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const authType = serverConfigQuery.data?.providers.find(
+    (provider) => provider.instanceId === instanceId,
+  )?.auth.type;
+  const signInLabel =
+    driver === "antigravity" && authType === "gemini-api-key" ? "Connect" : "Sign in";
 
   useEffect(
     () =>
@@ -179,7 +188,7 @@ export function ProviderAccountPanel({
         ) : null}
         {showSignIn ? (
           <Button size="xs" disabled={pending || isRunning} onClick={() => void startLogin()}>
-            Sign in
+            {signInLabel}
           </Button>
         ) : null}
         {showSignIn && driver === "codex" ? (

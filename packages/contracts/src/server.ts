@@ -8,7 +8,7 @@ import {
 } from "./keybindings";
 import { EditorId } from "./editor";
 import { ModelCapabilities } from "./model";
-import { ProviderKind, ProviderStartOptions } from "./orchestration";
+import { ProviderKind, ProviderStartOptions, RuntimeMode } from "./orchestration";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance";
 import { ServerSettings } from "./settings";
 
@@ -210,6 +210,11 @@ export const ServerProvider = Schema.Struct({
   badgeLabel: Schema.optional(TrimmedNonEmptyString),
   continuation: Schema.optional(ServerProviderContinuation),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
+  /**
+   * Runtime modes this instance supports, when it narrows or widens the per-driver default
+   * (for example native Auto, offered only once a session advertised it). Enforced server-side.
+   */
+  availableRuntimeModes: Schema.optional(Schema.Array(RuntimeMode)),
   enabled: Schema.Boolean,
   installed: Schema.Boolean,
   version: Schema.NullOr(TrimmedNonEmptyString),
@@ -229,6 +234,20 @@ export const ServerProvider = Schema.Struct({
       lastSuccessAt: Schema.optional(IsoDateTime),
       firstPartialAt: Schema.optional(IsoDateTime),
     }),
+  ),
+  /**
+   * Provider health lines shown on the instance card (runtime source, catalog freshness,
+   * redacted failure classes). Values never carry credentials or raw error text.
+   */
+  healthDetails: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        label: TrimmedNonEmptyString,
+        value: TrimmedNonEmptyString,
+        /** When the value was observed, shown in the viewer's local time. */
+        at: Schema.optional(IsoDateTime),
+      }),
+    ),
   ),
   models: Schema.Array(ServerProviderModel),
   updateRequiredModels: Schema.optional(

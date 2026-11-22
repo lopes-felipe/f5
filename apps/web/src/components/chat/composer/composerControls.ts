@@ -99,6 +99,8 @@ export interface ComposerModeControls {
   showInteractionModeToggle: boolean;
   toggleInteractionMode: () => void;
   runtimeMode: ComposerRuntimeMode;
+  /** The selected instance's runtime modes, when its snapshot narrows the driver default. */
+  availableRuntimeModes?: ReadonlyArray<ComposerRuntimeMode> | undefined;
   handleRuntimeModeChange: (mode: ComposerRuntimeMode) => void;
   activePlan: ActivePlanState | null;
   activeProposedPlan: LatestProposedPlanState | null;

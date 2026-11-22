@@ -1,6 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 
 import type { ProviderDriverKind, ProviderInstanceEnvironment } from "@t3tools/contracts";
+import { providerInstanceSecretField } from "@t3tools/shared/serverSettings";
 
 // A process-local key keeps sensitive values useful for change detection while
 // ensuring fingerprints persisted to SQLite or the provider-status cache
@@ -33,15 +34,16 @@ export function fingerprintableProviderConfig(
   config: unknown,
   key?: Uint8Array,
 ): unknown {
-  if (driver !== "opencode" || !config || typeof config !== "object" || Array.isArray(config)) {
+  const secret = providerInstanceSecretField(driver);
+  if (!secret || !config || typeof config !== "object" || Array.isArray(config)) {
     return config;
   }
   const record = config as Record<string, unknown>;
-  const serverPassword = record.serverPassword;
+  const value = record[secret.field];
   return {
     ...record,
-    ...(typeof serverPassword === "string" && serverPassword.length > 0
-      ? { serverPassword: sensitiveValueFingerprint(serverPassword, key) }
+    ...(typeof value === "string" && value.length > 0
+      ? { [secret.field]: sensitiveValueFingerprint(value, key) }
       : {}),
   };
 }

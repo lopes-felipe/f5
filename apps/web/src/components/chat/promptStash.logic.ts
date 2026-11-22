@@ -77,7 +77,10 @@ export function resolvePromptStashSelection(input: {
   }
 
   const requestedRuntimeMode = input.stash.draft.runtimeMode;
-  const supportedRuntimeModes = runtimeModeCapabilities(provider);
+  const supportedRuntimeModes = runtimeModeCapabilities(
+    provider,
+    resolvedProvider.availableRuntimeModes,
+  );
   const runtimeMode =
     (requestedRuntimeMode && supportedRuntimeModes.has(requestedRuntimeMode)
       ? requestedRuntimeMode

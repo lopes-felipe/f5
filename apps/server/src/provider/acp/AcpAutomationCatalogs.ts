@@ -153,10 +153,25 @@ export const prepareAcpAutomationCatalogs = (input: {
   computerCapableLineage?: boolean;
   /** Certification/test seam; production drivers never supply overrides. */
   verification?: { preview?: boolean; computer?: boolean };
+  /** Launch credentials (an Antigravity Gemini API key) scrubbed from logs, errors and events. */
+  credentials?: ReadonlyArray<string>;
 }) =>
   Effect.gen(function* () {
     const configs: PreviewMcpSessionConfig[] = [];
     const scrubber = new AcpCredentialScrubber();
+    const launchCredentials = (input.credentials ?? []).filter((value) => value.length >= 8);
+    for (const credential of launchCredentials) scrubber.register(credential);
+    // Exact-value replacement on the serialized event; a key echoed in tool output or an error
+    // never reaches the client.
+    const scrubLaunchCredentials = (event: ProviderRuntimeEvent): ProviderRuntimeEvent => {
+      if (launchCredentials.length === 0) return event;
+      const text = JSON.stringify(event);
+      if (!launchCredentials.some((credential) => text.includes(credential))) return event;
+      let scrubbed = text;
+      for (const credential of launchCredentials)
+        scrubbed = scrubbed.replaceAll(credential, "[redacted]");
+      return JSON.parse(scrubbed) as ProviderRuntimeEvent;
+    };
     const serverName = `f5_computer_${randomBytes(4).toString("hex")}`;
     let computerCapable = input.computerCapableLineage === true;
     let disposed = false;
@@ -282,7 +297,8 @@ export const prepareAcpAutomationCatalogs = (input: {
       classify,
       redactForLog,
       scrubDiagnostic: (value: string) => scrubber.scrub(value),
-      sanitizeEvent(event: ProviderRuntimeEvent): ProviderRuntimeEvent {
+      sanitizeEvent(unscrubbed: ProviderRuntimeEvent): ProviderRuntimeEvent {
+        const event = scrubLaunchCredentials(unscrubbed);
         if (!computerCapable) return event;
         if (
           (event.type === "item.started" ||

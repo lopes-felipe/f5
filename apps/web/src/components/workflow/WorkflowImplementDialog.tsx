@@ -1,4 +1,4 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
 import { getWorkflowModelCapabilities } from "../../providerModels";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -10,7 +10,10 @@ import type {
 } from "@t3tools/contracts";
 import { RUNTIME_MODE_VALUES } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
-import { runtimeModeCapabilities } from "@t3tools/shared/runtimeMode";
+import {
+  runtimeModeCapabilities,
+  supportedRuntimeModeOrNarrowest,
+} from "@t3tools/shared/runtimeMode";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDownIcon } from "lucide-react";
 
@@ -203,11 +206,19 @@ export function WorkflowImplementDialog(props: {
   );
   const projectCwd = project?.cwd ?? null;
 
+  // The workflow runs on the provider's default instance, so its snapshot decides per-instance
+  // modes such as native Antigravity Auto.
+  const availableRuntimeModes = serverConfigQuery.data?.providers.find(
+    (entry) => entry.instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make(provider)),
+  )?.availableRuntimeModes;
+  const capabilities = useMemo(
+    () => runtimeModeCapabilities(provider, availableRuntimeModes),
+    [provider, availableRuntimeModes],
+  );
   useEffect(() => {
-    if (!runtimeModeCapabilities(provider).has(runtimeMode)) {
-      setRuntimeMode("full-access");
-    }
-  }, [provider, runtimeMode]);
+    if (!capabilities.has(runtimeMode))
+      setRuntimeMode(supportedRuntimeModeOrNarrowest(capabilities, runtimeMode));
+  }, [capabilities, runtimeMode]);
 
   useEffect(() => {
     if (props.open && !wasOpenRef.current) {
@@ -408,11 +419,7 @@ export function WorkflowImplementDialog(props: {
                 onChange={(event) => setRuntimeMode(event.currentTarget.value as RuntimeMode)}
               >
                 {RUNTIME_MODE_VALUES.map((mode) => (
-                  <option
-                    key={mode}
-                    value={mode}
-                    disabled={!runtimeModeCapabilities(provider).has(mode)}
-                  >
+                  <option key={mode} value={mode} disabled={!capabilities.has(mode)}>
                     {RUNTIME_MODE_PRESENTATION[mode].label}
                   </option>
                 ))}

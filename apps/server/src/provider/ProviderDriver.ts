@@ -99,6 +99,11 @@ export interface ProviderInstance {
   >;
   readonly invalidateAccountStatus?: Effect.Effect<void>;
   readonly invalidateModelCatalog?: Effect.Effect<void>;
+  /**
+   * Explicit user refresh only ("Refresh provider status"): run an expensive catalog discovery
+   * on the next status check. Never called by startup or periodic refreshes.
+   */
+  readonly requestModelDiscovery?: Effect.Effect<void>;
   readonly updateModelCatalog?: (models: ReadonlyArray<ServerProviderModel>) => Effect.Effect<void>;
   /**
    * Read-only hooks/plugins/connectors/agents inventory for this instance.

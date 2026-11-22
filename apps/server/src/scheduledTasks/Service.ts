@@ -255,7 +255,9 @@ export const makeScheduledTaskService = (deps: {
             return yield* scheduleError("invalid_schedule", "Select an available provider.");
           if (
             !isKnownProviderKind(provider.driver) ||
-            !runtimeModeCapabilities(provider.driver).has(config.runtimeMode)
+            !runtimeModeCapabilities(provider.driver, provider.availableRuntimeModes).has(
+              config.runtimeMode,
+            )
           )
             return yield* scheduleError(
               "forbidden",

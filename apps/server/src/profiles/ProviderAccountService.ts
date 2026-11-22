@@ -1,11 +1,22 @@
 import { beginAccountChange } from "./ProviderAccountGuard.ts";
 import { createAntigravityAccountProcess } from "./AntigravityAccountProcess.ts";
-import { hasAntigravityAccount } from "../provider/Layers/AntigravityProvider.ts";
+import {
+  antigravityAuthConfig,
+  antigravityReadiness,
+  isAntigravityAuthMethodExposed,
+} from "../provider/antigravityAuthSupport.ts";
+import { antigravityProfileDirectory } from "../provider/acp/AntigravityAcpSupport.ts";
+import {
+  isProviderSecretUnavailable,
+  PROVIDER_SECRET_UNAVAILABLE,
+} from "../serverSettingsSecrets.ts";
+import { PROVIDER_INSTANCE_SECRET_FIELDS } from "@t3tools/shared/serverSettings";
 import { parseClaudeAuthStatusFromOutput } from "../provider/Layers/ProviderHealth";
 import * as Path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Effect, Schema } from "effect";
 import {
+  AntigravitySettings,
   ClaudeSettings,
   CodexSettings,
   type ProviderInstanceId,
@@ -114,14 +125,25 @@ export class ProviderAccountService {
   }
   async status(instanceId: ProviderInstanceId) {
     const settings = await Effect.runPromise(this.settings.getSettings);
-    if (deriveProviderInstanceConfigMap(settings)[instanceId]?.driver === "antigravity") {
-      const authenticated = await hasAntigravityAccount(this.config.stateDir, instanceId);
+    const antigravityInstance = deriveProviderInstanceConfigMap(settings)[instanceId];
+    if (antigravityInstance?.driver === "antigravity") {
+      const config = Schema.decodeUnknownSync(AntigravitySettings)(
+        antigravityInstance.config ?? {},
+      );
+      const readiness = await antigravityReadiness({
+        profileDirectory: antigravityProfileDirectory(this.config.stateDir, instanceId),
+        auth: antigravityAuthConfig(config),
+        keyUnavailable: isProviderSecretUnavailable(
+          PROVIDER_INSTANCE_SECRET_FIELDS.antigravity,
+          config,
+        ),
+      });
       await this.refresh(instanceId);
       return {
-        status: authenticated ? "authenticated" : "unauthenticated",
-        detail: authenticated
-          ? "Signed in to this profile’s Antigravity account."
-          : "Install Antigravity and sign in using Settings.",
+        status: readiness.ready ? "authenticated" : "unauthenticated",
+        detail: readiness.ready
+          ? `Connected with ${readiness.authLabel} for this profile’s Antigravity instance.`
+          : (readiness.message ?? "Install Antigravity and sign in using Settings."),
       };
     }
     const resolved = await this.resolve(instanceId);
@@ -167,6 +189,28 @@ export class ProviderAccountService {
       }),
     );
   }
+  /** Sign-out for the key method deletes the stored key (an explicit clear). */
+  private async clearAntigravityKey(instanceId: ProviderInstanceId): Promise<void> {
+    const settings = await Effect.runPromise(this.settings.getSettings);
+    const instance = settings.providerInstances[instanceId];
+    if (
+      instance?.driver !== "antigravity" ||
+      !instance.config ||
+      typeof instance.config !== "object"
+    )
+      return;
+    await Effect.runPromise(
+      this.settings.updateSettings({
+        providerInstances: {
+          ...settings.providerInstances,
+          [instanceId]: {
+            ...instance,
+            config: { ...instance.config, apiKey: "", apiKeyRedacted: false },
+          },
+        },
+      }),
+    );
+  }
   async start(
     instanceId: ProviderInstanceId,
     logout = false,
@@ -181,6 +225,23 @@ export class ProviderAccountService {
     if (method === "install" && (!antigravity || logout))
       throw new Error("Installation is supported only for Antigravity setup.");
     const resolved = antigravity ? undefined : await this.resolve(instanceId);
+    const antigravityConfig = antigravity
+      ? Schema.decodeUnknownSync(AntigravitySettings)(instance.config ?? {})
+      : undefined;
+    const antigravityAuth = antigravityConfig
+      ? antigravityAuthConfig(antigravityConfig)
+      : undefined;
+    if (antigravityConfig && antigravityAuth && method !== "install" && !logout) {
+      if (!isAntigravityAuthMethodExposed(antigravityAuth.authMethod))
+        throw new Error("This Antigravity sign-in method is not available in F5 yet.");
+      if (
+        antigravityAuth.authMethod === "gemini-api-key" &&
+        isProviderSecretUnavailable(PROVIDER_INSTANCE_SECRET_FIELDS.antigravity, antigravityConfig)
+      )
+        throw new Error(PROVIDER_SECRET_UNAVAILABLE);
+      if (antigravityAuth.authMethod === "gemini-api-key" && !antigravityAuth.apiKey)
+        throw new Error("Enter a Gemini API key in the Antigravity provider settings first.");
+    }
     if (this.disconnectedOwners.has(owner)) throw new Error("Account connection closed.");
     const createProcess = this.terminals.createAccountProcess;
     if (!antigravity && !createProcess)
@@ -215,7 +276,15 @@ export class ProviderAccountService {
         ? createAntigravityAccountProcess({
             stateDir: this.config.stateDir,
             instanceId,
-            action: method === "install" ? "install" : logout ? "logout" : "login",
+            action:
+              method === "install"
+                ? { type: "install" }
+                : logout
+                  ? { type: "disconnect" }
+                  : antigravityAuth!.authMethod === "gemini-api-key"
+                    ? { type: "key-connect" }
+                    : { type: "oauth-connect" },
+            auth: antigravityAuth!,
             environment: buildAccountExecutionEnvironment({
               purpose: "account",
               profile: this.config.profile,
@@ -266,10 +335,23 @@ export class ProviderAccountService {
         releaseAccountChange();
         lease.release();
         finish();
-        this.emit({ handle, instanceId, type: "exited", data: String(event.exitCode) }, owner);
+        const clearsKey =
+          logout && antigravityAuth?.authMethod === "gemini-api-key" && event.exitCode === 0;
+        const exited = () =>
+          this.emit({ handle, instanceId, type: "exited", data: String(event.exitCode) }, owner);
+        // The disconnect already cleared `verified`, so the key cannot launch anything while
+        // it is being deleted; success is reported only once it is gone.
+        if (!clearsKey) exited();
         void (async () => {
           if (logout && !antigravity && event.exitCode === 0)
             await this.clearConfiguredCredentials(instanceId);
+          if (clearsKey) {
+            try {
+              await this.clearAntigravityKey(instanceId);
+            } finally {
+              exited();
+            }
+          }
           await this.refresh(instanceId);
         })().catch(() =>
           this.emit(

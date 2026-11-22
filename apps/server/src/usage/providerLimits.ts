@@ -431,17 +431,34 @@ export function makeProviderLimits(input: {
   serverUrl?: string;
   apiEndpoint?: string;
   antigravityProfileDirectory?: string;
+  /** Gemini API key instances have no subscription quota: usage is billed per token. */
+  antigravityBilledPerToken?: boolean;
+  /** False when the runtime version is not certified for the private token format. */
+  antigravityNativeReaders?: () => Promise<boolean>;
 }) {
-  const readNativeAntigravity = input.antigravityProfileDirectory
-    ? makeAntigravityQuotaReader({
-        profileDirectory: input.antigravityProfileDirectory,
-        normalize: (response, requestedAt) =>
-          normalizeProviderLimits("antigravity", response, requestedAt),
-      })
-    : undefined;
+  const readNativeAntigravity =
+    input.antigravityProfileDirectory && !input.antigravityBilledPerToken
+      ? makeAntigravityQuotaReader({
+          profileDirectory: input.antigravityProfileDirectory,
+          normalize: (response, requestedAt) =>
+            normalizeProviderLimits("antigravity", response, requestedAt),
+        })
+      : undefined;
   const read = Effect.tryPromise({
     try: async (signal): Promise<ReadonlyArray<AccountUsageSection>> => {
       const env = input.environment;
+      if (input.provider === "antigravity" && input.antigravityBilledPerToken) {
+        const fetchedAt = new Date().toISOString();
+        return [
+          {
+            kind: "provider-limits",
+            outcome: "available",
+            errorCode: null,
+            lastAttemptAt: fetchedAt,
+            snapshot: { fetchedAt, data: { windows: [], plan: "Billed per token" } },
+          },
+        ];
+      }
       const home = env.HOME || env.USERPROFILE || os.homedir();
       let value: unknown;
       let partial = false;
@@ -635,10 +652,10 @@ export function makeProviderLimits(input: {
           ];
         value = await fetchJson("https://opencode.ai/zen/go/v1/usage", token, signal);
       } else if (readNativeAntigravity && !env.F5_CLIPROXY_HUB_URL && !env.F5_CLIPROXY_USAGE_URL) {
-        const result = await readNativeAntigravity(
-          signal,
-          performance.now() + ANTIGRAVITY_READ_BUDGET_MS,
-        );
+        const certified = (await input.antigravityNativeReaders?.()) ?? true;
+        const result = certified
+          ? await readNativeAntigravity(signal, performance.now() + ANTIGRAVITY_READ_BUDGET_MS)
+          : undefined;
         if (!result)
           return [
             {

@@ -33,6 +33,7 @@ import {
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
 } from "../../provider/acp/GrokAcpSupport.ts";
+import type { AcpSessionRuntimeShape } from "../../provider/acp/AcpSessionRuntime.ts";
 
 const GROK_TIMEOUT_MS = 180_000;
 const DEFAULT_GROK_MODEL_SELECTION = createModelSelection(
@@ -82,6 +83,11 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     normalizeModel: (model: string) => string;
     defaultModelSelection: ModelSelection;
     useAccountDefaultModel?: boolean;
+    /** Replaces the generic model write, for runtimes with their own selection rules. */
+    applyModelSelection?: (
+      runtime: AcpSessionRuntimeShape,
+      modelSelection: ModelSelection,
+    ) => Effect.Effect<void, EffectAcpErrors.AcpError | Error>;
   },
 ) {
   const resolveSelection = (selection: ModelSelection | undefined, model?: string) =>
@@ -143,25 +149,41 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
 
       const promptResult = yield* Effect.gen(function* () {
         const started = yield* runtime.start();
-        yield* applyGrokAcpModelSelection({
-          runtime,
-          ...(options ? { defaultModelId: options.defaultModelSelection.model } : {}),
-          // Custom runtimes (custom ACP, Antigravity) write the model config option.
-          currentModelId: currentGrokModelIdFromSessionSetup(
-            started.sessionSetupResult,
-            options ? "config-option" : "model-state",
-          ),
-          requestedModelId:
-            options?.useAccountDefaultModel && resolvedModel === options.defaultModelSelection.model
-              ? undefined
-              : resolvedModel,
-          mapError: (cause) =>
-            mapGrokAcpError(
-              operation,
-              "Failed to set Grok ACP base model for text generation.",
-              cause,
+        if (options?.applyModelSelection) {
+          yield* options
+            .applyModelSelection(runtime, modelSelection)
+            .pipe(
+              Effect.mapError((cause) =>
+                cause instanceof Error && !("_tag" in cause)
+                  ? new TextGenerationError({ operation, detail: cause.message })
+                  : mapGrokAcpError(
+                      operation,
+                      "Failed to set the model for text generation.",
+                      cause as EffectAcpErrors.AcpError,
+                    ),
+              ),
+            );
+        } else
+          yield* applyGrokAcpModelSelection({
+            runtime,
+            ...(options ? { defaultModelId: options.defaultModelSelection.model } : {}),
+            // Custom runtimes (custom ACP, Antigravity) write the model config option.
+            currentModelId: currentGrokModelIdFromSessionSetup(
+              started.sessionSetupResult,
+              options ? "config-option" : "model-state",
             ),
-        });
+            requestedModelId:
+              options?.useAccountDefaultModel &&
+              resolvedModel === options.defaultModelSelection.model
+                ? undefined
+                : resolvedModel,
+            mapError: (cause) =>
+              mapGrokAcpError(
+                operation,
+                "Failed to set Grok ACP base model for text generation.",
+                cause,
+              ),
+          });
 
         return yield* runtime.prompt({
           prompt: [{ type: "text", text: prompt }],

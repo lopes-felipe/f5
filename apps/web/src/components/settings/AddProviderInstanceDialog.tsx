@@ -15,7 +15,7 @@ import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { AccentColorPicker } from "./AccentColorPicker";
 import { Button } from "../ui/button";
-import { ACPRegistryIcon, Gemini, GithubCopilotIcon, PiAgentIcon } from "../Icons";
+import { ACPRegistryIcon, GithubCopilotIcon, PiAgentIcon } from "../Icons";
 import {
   Dialog,
   DialogDescription,
@@ -59,12 +59,6 @@ const COMING_SOON_DRIVER_OPTIONS: readonly DriverOption[] = [
     value: ProviderDriverKind.make("githubCopilot"),
     label: "Github Copilot",
     icon: GithubCopilotIcon,
-    fields: [],
-  },
-  {
-    value: ProviderDriverKind.make("gemini"),
-    label: "Gemini",
-    icon: Gemini,
     fields: [],
   },
   {
@@ -316,8 +310,15 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                       )}
                     >
                       <IconComponent className="size-5 shrink-0" aria-hidden />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-                        {option.label}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-foreground">
+                          {option.label}
+                        </span>
+                        {option.subtitle ? (
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {option.subtitle}
+                          </span>
+                        ) : null}
                       </span>
                       {option.badgeLabel ? (
                         <Badge variant="warning" size="sm">

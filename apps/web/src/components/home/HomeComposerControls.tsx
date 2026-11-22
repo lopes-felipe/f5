@@ -342,6 +342,7 @@ export default function HomeComposerControls(props: {
       <RuntimeModePicker
         disabled={props.disabled}
         provider={dispatch.selectedProvider}
+        availableRuntimeModes={dispatch.selectedProviderSnapshot?.availableRuntimeModes}
         value={runtimeMode}
         onValueChange={onRuntimeModeChange}
       />

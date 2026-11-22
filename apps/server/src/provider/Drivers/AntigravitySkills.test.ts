@@ -1,0 +1,118 @@
+import * as fs from "node:fs/promises";
+import os from "node:os";
+import * as NodePath from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { discoverAntigravitySkills, parseAntigravitySkillsConfig } from "./AntigravitySkills.ts";
+
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+});
+
+async function layout() {
+  const base = await fs.realpath(await fs.mkdtemp(NodePath.join(os.tmpdir(), "f5-agy-skills-")));
+  roots.push(base);
+  const userHome = NodePath.join(base, "home");
+  const profileDirectory = NodePath.join(base, "profile");
+  const cwd = NodePath.join(base, "project");
+  const outside = NodePath.join(base, "outside");
+  for (const directory of [userHome, profileDirectory, cwd, outside])
+    await fs.mkdir(directory, { recursive: true });
+  return { base, userHome, profileDirectory, cwd, outside };
+}
+
+async function skill(directory: string, name: string, description = `${name} skill`) {
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(
+    NodePath.join(directory, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${description}\n---\n\nBody that is never read.\n`,
+  );
+}
+
+describe("Antigravity skill discovery", () => {
+  it("reads user, project, configured and plugin skills with native precedence", async () => {
+    const { userHome, profileDirectory, cwd } = await layout();
+    await skill(NodePath.join(userHome, ".gemini", "config", "skills", "review"), "review", "user");
+    await skill(NodePath.join(cwd, ".gemini", "skills", "review"), "review", "project");
+    await skill(NodePath.join(cwd, ".agents", "skills", "lint"), "lint");
+    await skill(NodePath.join(cwd, "shared", "keep"), "keep");
+    await skill(NodePath.join(cwd, "shared", "drop"), "drop");
+    await fs.writeFile(
+      NodePath.join(cwd, ".agents", "skills.json"),
+      JSON.stringify({ entries: [{ path: "shared", exclude: ["drop"] }] }),
+    );
+    await skill(
+      NodePath.join(profileDirectory, "config", "plugins", "on", "skills", "plug"),
+      "plug",
+    );
+    await skill(
+      NodePath.join(profileDirectory, "config", "plugins", "off", "skills", "hidden"),
+      "hidden",
+    );
+    await fs.writeFile(
+      NodePath.join(profileDirectory, "config", "config.json"),
+      JSON.stringify({ plugins: { off: { enabled: false } } }),
+    );
+
+    const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
+    expect(skills.map(({ name, scope, description }) => ({ name, scope, description }))).toEqual([
+      { name: "keep", scope: "project", description: "keep skill" },
+      { name: "lint", scope: "project", description: "lint skill" },
+      { name: "plug", scope: "user", description: "plug skill" },
+      { name: "review", scope: "user", description: "user" },
+    ]);
+  });
+
+  it("omits project roots for instance-level discovery", async () => {
+    const { userHome, profileDirectory, cwd } = await layout();
+    await skill(NodePath.join(cwd, ".agents", "skills", "lint"), "lint");
+    expect(await discoverAntigravitySkills({ userHome, profileDirectory })).toEqual([]);
+  });
+
+  it("ignores configured paths outside the home, profile and project", async () => {
+    const { userHome, profileDirectory, cwd, outside } = await layout();
+    await skill(NodePath.join(outside, "escape"), "escape");
+    await fs.symlink(outside, NodePath.join(cwd, "linked"));
+    await fs.mkdir(NodePath.join(cwd, ".agents"), { recursive: true });
+    await fs.writeFile(
+      NodePath.join(cwd, ".agents", "skills.json"),
+      JSON.stringify({ entries: [{ path: outside }, { path: "linked" }] }),
+    );
+    expect(await discoverAntigravitySkills({ cwd, userHome, profileDirectory })).toEqual([]);
+  });
+
+  it("rechecks containment for symlinked skill folders and SKILL.md files", async () => {
+    const { userHome, profileDirectory, cwd, outside } = await layout();
+    await skill(NodePath.join(outside, "escape"), "escape");
+    await skill(NodePath.join(cwd, "shared", "inside"), "inside");
+    // A configured entry inside the project whose children link out of every root.
+    await fs.symlink(NodePath.join(outside, "escape"), NodePath.join(cwd, "shared", "linked-dir"));
+    await fs.mkdir(NodePath.join(cwd, "shared", "linked-file"), { recursive: true });
+    await fs.symlink(
+      NodePath.join(outside, "escape", "SKILL.md"),
+      NodePath.join(cwd, "shared", "linked-file", "SKILL.md"),
+    );
+    await fs.mkdir(NodePath.join(cwd, ".agents"), { recursive: true });
+    await fs.writeFile(
+      NodePath.join(cwd, ".agents", "skills.json"),
+      JSON.stringify({ entries: [{ path: "shared" }] }),
+    );
+    const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
+    expect(skills.map((entry) => entry.name)).toEqual(["inside"]);
+  });
+
+  it("decodes skills.json entries and filters and rejects malformed files", () => {
+    expect(
+      parseAntigravitySkillsConfig(
+        JSON.stringify({
+          inherits: [{ path: "../base.json", include_only: ["a"] }, { path: 3 }],
+          entries: [{ path: "skills", exclude: ["b"], include_only: "bad" }],
+        }),
+      ),
+    ).toEqual({
+      inherits: [{ path: "../base.json", include_only: ["a"] }],
+      entries: [{ path: "skills", exclude: ["b"] }],
+    });
+    expect(parseAntigravitySkillsConfig("{not json")).toBeUndefined();
+  });
+});

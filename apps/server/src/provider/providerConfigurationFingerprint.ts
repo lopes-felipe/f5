@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Effect, Option } from "effect";
 import { ServerSecretStore, SecretStoreError } from "../auth/Services/ServerSecretStore.ts";
 import type { ProviderInstanceConfig } from "@t3tools/contracts";
+import { providerInstanceSecretField } from "@t3tools/shared/serverSettings";
 import {
   fingerprintableProviderConfig,
   fingerprintableProviderEnvironment,
@@ -46,14 +47,14 @@ export const executionProviderFingerprintFor = (entry: ProviderInstanceConfig) =
       const key = yield* store.value.getOrCreateRandom("usage-resume-fingerprint-key", 32);
       return executionProviderFingerprint(entry, key);
     }
+    const secret = providerInstanceSecretField(entry.driver);
+    const secretValue =
+      secret && entry.config && typeof entry.config === "object"
+        ? (entry.config as Record<string, unknown>)[secret.field]
+        : undefined;
     const hasSensitiveValues =
       entry.environment?.some((variable) => variable.sensitive) ||
-      (entry.driver === "opencode" &&
-        entry.config &&
-        typeof entry.config === "object" &&
-        "serverPassword" in entry.config &&
-        typeof entry.config.serverPassword === "string" &&
-        entry.config.serverPassword.length > 0);
+      (typeof secretValue === "string" && secretValue.length > 0);
     if (hasSensitiveValues)
       return yield* Effect.fail(
         new SecretStoreError({

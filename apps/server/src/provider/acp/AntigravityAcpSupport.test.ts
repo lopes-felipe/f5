@@ -210,7 +210,8 @@ describe("Antigravity isolation and native requests", () => {
     expect(env.GOOGLE_GENAI_USE_VERTEXAI).toBeUndefined();
     expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
     expect(env.PYTHONPATH).toBe("/python");
-    expect(env.GOOGLE_APPLICATION_CREDENTIALS).toBe("/tools/credentials.json");
+    // Project and ADC selectors would let the harness pick another account's project.
+    expect(env.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
     expect(env.CLOUDSDK_CONFIG).toBe("/cloud");
   });
   it("only exposes Google's OAuth URL with a loopback callback", () => {

@@ -1,6 +1,6 @@
 import { type ProviderKind } from "@t3tools/contracts";
 import { normalizeSearchQuery, scoreQueryMatch } from "@t3tools/shared/searchRanking";
-import { PROVIDER_LABEL_BY_PROVIDER } from "./providerIconUtils";
+import { PROVIDER_LABEL_BY_PROVIDER, PROVIDER_SEARCH_KEYWORDS } from "./providerIconUtils";
 
 type ModelPickerSearchableModel = {
   providerKind: ProviderKind;
@@ -28,6 +28,7 @@ export function buildModelPickerSearchText(model: ModelPickerSearchableModel): s
       model.subProvider,
       model.providerKind,
       PROVIDER_LABEL_BY_PROVIDER[model.providerKind],
+      ...(PROVIDER_SEARCH_KEYWORDS[model.providerKind] ?? []),
     ]
       .filter((value): value is string => typeof value === "string" && value.length > 0)
       .join(" "),
@@ -42,6 +43,9 @@ function getModelPickerSearchFields(model: ModelPickerSearchableModel): string[]
     ...(model.subProvider ? [normalizeSearchQuery(model.subProvider)] : []),
     normalizeSearchQuery(model.providerKind),
     normalizeSearchQuery(PROVIDER_LABEL_BY_PROVIDER[model.providerKind]),
+    ...(PROVIDER_SEARCH_KEYWORDS[model.providerKind] ?? []).map((keyword) =>
+      normalizeSearchQuery(keyword),
+    ),
     buildModelPickerSearchText(model),
   ];
 }

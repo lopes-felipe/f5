@@ -64,6 +64,12 @@ export type AcpParsedSessionEvent =
       readonly modeId: string;
     }
   | {
+      /** Context-window sample (`usage_update`); not a billable fact. */
+      readonly _tag: "UsageUpdated";
+      readonly used: number;
+      readonly size: number;
+    }
+  | {
       readonly _tag: "AssistantItemStarted";
       readonly itemId: string;
     }
@@ -237,22 +243,23 @@ function extractCommandFromTitle(title: string | undefined): string | undefined 
   return match?.[1]?.trim() || undefined;
 }
 
-function extractToolCallCommand(rawInput: unknown, title: string | undefined): string | undefined {
-  if (isRecord(rawInput)) {
-    const directCommand = normalizeCommandValue(rawInput.command);
-    if (directCommand) {
-      return directCommand;
-    }
-    const executable = typeof rawInput.executable === "string" ? rawInput.executable.trim() : "";
-    const args = normalizeCommandValue(rawInput.args);
-    if (executable && args) {
-      return `${executable} ${args}`;
-    }
-    if (executable) {
-      return executable;
-    }
+/** The command a tool call's raw input carries, by the fields every ACP adapter recognises. */
+export function toolCallRawInputCommand(rawInput: unknown): string | undefined {
+  if (!isRecord(rawInput)) return undefined;
+  const directCommand = normalizeCommandValue(rawInput.command);
+  if (directCommand) {
+    return directCommand;
   }
-  return extractCommandFromTitle(title);
+  const executable = typeof rawInput.executable === "string" ? rawInput.executable.trim() : "";
+  const args = normalizeCommandValue(rawInput.args);
+  if (executable && args) {
+    return `${executable} ${args}`;
+  }
+  return executable || undefined;
+}
+
+function extractToolCallCommand(rawInput: unknown, title: string | undefined): string | undefined {
+  return toolCallRawInputCommand(rawInput) ?? extractCommandFromTitle(title);
 }
 
 // Some ACP agents (observed with Grok's CLI) resend the ENTIRE accumulated tool-call
@@ -745,6 +752,21 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           rawPayload: boundToolCallRawPayload(params, upd, toolCall),
         });
       }
+      break;
+    }
+    case "usage_update": {
+      // Decoded tolerantly: finite nonnegative usage and a positive window, else ignored.
+      const used: unknown = (upd as { used?: unknown }).used;
+      const size: unknown = (upd as { size?: unknown }).size;
+      if (
+        typeof used === "number" &&
+        typeof size === "number" &&
+        Number.isFinite(used) &&
+        Number.isFinite(size) &&
+        used >= 0 &&
+        size > 0
+      )
+        events.push({ _tag: "UsageUpdated", used: Math.round(used), size: Math.round(size) });
       break;
     }
     case "available_commands_update": {

@@ -8380,6 +8380,7 @@ export default memo(function ChatView({
     showInteractionModeToggle,
     toggleInteractionMode,
     runtimeMode,
+    availableRuntimeModes: selectedProviderSnapshot?.availableRuntimeModes,
     handleRuntimeModeChange,
     activePlan,
     activeProposedPlan,

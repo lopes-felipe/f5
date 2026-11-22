@@ -60,6 +60,54 @@ it.effect("stores and preserves text generator keys outside settings", () =>
     assert.deepEqual((yield* settings.getSettings).textGenerators, {});
   }).pipe(Effect.provide(Layer.fresh(layer))),
 );
+it.effect("stores the Antigravity Gemini API key by reference and clears it on request", () =>
+  Effect.gen(function* () {
+    const settings = yield* ServerSettingsService;
+    const config = yield* ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    yield* settings.start;
+    const id = ProviderInstanceId.make("antigravity_key");
+    const driver = ProviderDriverKind.make("antigravity");
+    const key = "AIzaSyFixtureKey0000000000000";
+    const configOf = (value: unknown) => value as Record<string, unknown> | undefined;
+    yield* settings.updateSettings({
+      providerInstances: {
+        [id]: { driver, config: { authMethod: "gemini-api-key", apiKey: key } },
+      },
+    });
+    const raw = yield* fs.readFileString(config.settingsPath!);
+    assert.notInclude(raw, key);
+    assert.include(raw, "apiKeyRedacted");
+    const current = yield* settings.getSettings;
+    assert.equal(configOf(current.providerInstances[id]?.config)?.apiKey, key);
+    const client = redactServerSettingsForClient(current).providerInstances[id]!;
+    assert.deepEqual(client.config, {
+      authMethod: "gemini-api-key",
+      apiKey: "",
+      apiKeyRedacted: true,
+    });
+
+    // Saving the client's redacted copy keeps the key.
+    yield* settings.updateSettings({
+      providerInstances: { [id]: { ...client, displayName: "Gemini key" } },
+    });
+    assert.equal(
+      configOf((yield* settings.getSettings).providerInstances[id]?.config)?.apiKey,
+      key,
+    );
+
+    // "Remove stored key" sends a blank value without its reference.
+    yield* settings.updateSettings({
+      providerInstances: {
+        [id]: { ...client, config: { ...configOf(client.config), apiKeyRedacted: false } },
+      },
+    });
+    const cleared = configOf((yield* settings.getSettings).providerInstances[id]?.config);
+    assert.equal(cleared?.apiKey, "");
+    assert.notEqual(cleared?.apiKeyRedacted, true);
+    yield* settings.updateSettings({ providerInstances: {} });
+  }).pipe(Effect.provide(Layer.fresh(layer))),
+);
 it.layer(layer)("OpenCode password persistence", (it) => {
   it.effect("migrates legacy global and instance passwords before startup is ready", () =>
     Effect.gen(function* () {

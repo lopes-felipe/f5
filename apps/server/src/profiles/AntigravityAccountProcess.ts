@@ -10,7 +10,16 @@ import {
   makeAntigravityAcpRuntime,
   prepareAntigravityProfile,
   antigravityEnvironment,
+  antigravityProfileDirectory,
 } from "../provider/acp/AntigravityAcpSupport.ts";
+import {
+  ANTIGRAVITY_PERSONAL_AUTH,
+  advanceAntigravityRevision,
+  antigravityKeyFingerprint,
+  reconcileAntigravityAuthState,
+  redactAntigravityKey,
+  type AntigravityAuthConfig,
+} from "../provider/antigravityAuthSupport.ts";
 
 // A healthy agent shows the Google link within seconds. Its bundled Python has no IPv4
 // fallback race, so a host with broken IPv6 waits about two minutes per Google request.
@@ -18,26 +27,42 @@ const NO_RESPONSE_HINT_MS = 30_000;
 const NO_RESPONSE_MESSAGE =
   "Antigravity has not reached Google after 30 seconds. Check this machine's network connection. Broken IPv6 is a common cause.";
 
+/** One account job. Existing RPC requests map onto these in `ProviderAccountService`. */
+export type AntigravityAccountAction =
+  | { readonly type: "install" }
+  | { readonly type: "oauth-connect" }
+  | { readonly type: "key-connect" }
+  | { readonly type: "disconnect" };
+
 /** Fits the existing owner-scoped account job and lease lifecycle without creating a shell. */
 export function createAntigravityAccountProcess(input: {
   stateDir: string;
   instanceId: string;
-  action: "install" | "login" | "logout";
+  action: AntigravityAccountAction;
   environment: NodeJS.ProcessEnv;
+  auth?: AntigravityAuthConfig;
 }): PtyProcess {
+  const auth = input.auth ?? ANTIGRAVITY_PERSONAL_AUTH;
+  const profileDirectory = antigravityProfileDirectory(input.stateDir, input.instanceId);
+  const action = input.action.type;
   const controller = new AbortController();
   const dataListeners = new Set<(data: string) => void>();
   const exitListeners = new Set<(event: PtyExitEvent) => void>();
   let exited: PtyExitEvent | undefined;
   const emit = (data: string) => {
-    for (const listener of dataListeners) listener(data);
+    const safe = redactAntigravityKey(data, auth.apiKey);
+    for (const listener of dataListeners) listener(safe);
   };
   let authorizationUrlShown = false;
   let noResponseHint: ReturnType<typeof setTimeout> | undefined;
   let login: ChildProcessWithoutNullStreams | undefined;
   let inputBuffer = "";
   const codeLogin = async () => {
-    const prepared = await prepareAntigravityProfile({ ...input, accountSetup: true });
+    const prepared = await prepareAntigravityProfile({
+      ...input,
+      auth: ANTIGRAVITY_PERSONAL_AUTH,
+      accountSetup: true,
+    });
     const temporary = await fs.mkdtemp(path.join(prepared.home, ".login-"));
     try {
       await new Promise<void>((resolve, reject) => {
@@ -85,13 +110,78 @@ export function createAntigravityAccountProcess(input: {
     }
   };
   // AccountService registers its handlers in the same turn before this starts.
+  /** A disposable ACP process: initialize, then one account request. Never starts a session. */
+  const accountRequest = (method: "authenticate" | "logout", params: unknown) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const temporary = yield* Effect.acquireRelease(
+          Effect.promise(() => fs.mkdtemp(path.join(profileDirectory, ".account-"))),
+          (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
+        );
+        const runtime = yield* makeAntigravityAcpRuntime({
+          ...input,
+          auth,
+          childProcessSpawner: spawner,
+          cwd: temporary,
+          accountSetup: true,
+          onAuthorizationUrl: (url) => {
+            authorizationUrlShown = true;
+            emit(`Open this URL to sign in:\n${url}\n`);
+          },
+        });
+        yield* runtime.request("initialize", {
+          protocolVersion: 1,
+          clientCapabilities: {},
+          clientInfo: { name: "f5-account", version: "1" },
+        });
+        yield* runtime.request(method, params);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      { signal: controller.signal },
+    );
+  const keyConnect = async () => {
+    if (!auth.apiKey) throw new Error("Enter a Gemini API key in Settings first.");
+    await accountRequest("authenticate", { methodId: "gemini-api-key" });
+    await advanceAntigravityRevision(profileDirectory, () => ({
+      method: "gemini-api-key",
+      keyFingerprint: antigravityKeyFingerprint(auth.apiKey),
+      verified: true,
+      // A successful connect is one of the two explicit model-discovery triggers.
+      discoveryRequested: true,
+    }));
+    emit("Antigravity accepted the Gemini API key.\n");
+  };
+  const oauthConnect = async () => {
+    await codeLogin();
+    // Record the new account fingerprint first; the revision advances either way.
+    await reconcileAntigravityAuthState(profileDirectory, ANTIGRAVITY_PERSONAL_AUTH);
+    await advanceAntigravityRevision(profileDirectory, () => ({
+      method: "oauth-personal",
+      verified: true,
+      discoveryRequested: true,
+    }));
+  };
+  const disconnect = async () => {
+    if (auth.authMethod === "oauth-personal") {
+      await accountRequest("logout", {});
+      await fs.rm(path.join(profileDirectory, "antigravity-acp", "acp_token.json"), {
+        force: true,
+      });
+    }
+    // The stored key itself is cleared by the account service through settings.
+    await advanceAntigravityRevision(profileDirectory, (state) => {
+      const { keyFingerprint: _key, accountFingerprint: _account, ...rest } = state;
+      return { ...rest, verified: false };
+    });
+  };
+  // AccountService registers its handlers in the same turn before this starts.
   queueMicrotask(() => {
-    if (input.action === "login")
+    if (action === "oauth-connect")
       noResponseHint = setTimeout(() => {
         if (!authorizationUrlShown && !exited) emit(`${NO_RESPONSE_MESSAGE}\n`);
       }, NO_RESPONSE_HINT_MS);
     const operation =
-      input.action === "install"
+      action === "install"
         ? (async () => {
             const installation = new AntigravityInstallation(input.stateDir);
             const previous = await installation.resolve().catch(() => undefined);
@@ -102,46 +192,32 @@ export function createAntigravityAccountProcess(input: {
                 : "Antigravity " + result.version + (previous ? " updated.\n" : " installed.\n"),
             );
           })()
-        : input.action === "login"
-          ? codeLogin()
-          : Effect.runPromise(
-              Effect.gen(function* () {
-                const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-                const runtime = yield* makeAntigravityAcpRuntime({
-                  ...input,
-                  childProcessSpawner: spawner,
-                  cwd: input.stateDir,
-                  accountSetup: true,
-                  onAuthorizationUrl: (url) => {
-                    authorizationUrlShown = true;
-                    emit(`Open this URL to sign in:\n${url}\n`);
-                  },
-                });
-                yield* runtime.request("initialize", {
-                  protocolVersion: 1,
-                  clientCapabilities: {},
-                  clientInfo: { name: "f5-account", version: "1" },
-                });
-                yield* runtime.request(
-                  input.action === "logout" ? "logout" : "authenticate",
-                  input.action === "logout" ? {} : { methodId: "oauth-personal" },
-                );
-              }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-              { signal: controller.signal },
-            );
+        : action === "oauth-connect"
+          ? oauthConnect()
+          : action === "key-connect"
+            ? keyConnect()
+            : disconnect();
     void operation
       .then(
         () => {
           exited = { exitCode: 0, signal: null };
         },
-        (error) => {
+        async (error) => {
+          // A sign-in or sign-out may have changed credentials before failing.
+          if (action === "oauth-connect" || action === "disconnect")
+            await advanceAntigravityRevision(profileDirectory, (state) => ({
+              ...state,
+              verified: false,
+            })).catch(() => undefined);
           // Transport causes can contain credentials. Only actionable, fixed errors reach the UI.
           emit(
             controller.signal.aborted
               ? "Account setup cancelled.\n"
-              : input.action === "install"
+              : action === "install"
                 ? `Installation failed: ${error instanceof Error ? error.message : "download failed"}\n`
-                : "Antigravity account setup failed. Retry sign-in, or check that the installed release can start.\n",
+                : action === "key-connect"
+                  ? "Antigravity did not accept this Gemini API key. Check the key and retry Connect.\n"
+                  : "Antigravity account setup failed. Retry sign-in, or check that the installed release can start.\n",
           );
           exited = { exitCode: 1, signal: null };
         },
@@ -154,7 +230,7 @@ export function createAntigravityAccountProcess(input: {
   return {
     pid: 0,
     write(data) {
-      if (!login || input.action !== "login")
+      if (!login || action !== "oauth-connect")
         throw new Error("Wait for the Antigravity sign-in prompt.");
       // Terminals may send one character at a time. Send only the submitted code.
       inputBuffer = (inputBuffer + data).slice(-4096);

@@ -417,6 +417,58 @@ describe("serverSettings helpers", () => {
       binaryPath: "opencode",
     });
   });
+
+  it("keeps a redacted Antigravity API key on unrelated edits and clears it on request", () => {
+    const antigravityId = ProviderInstanceId.make("antigravity_key");
+    const driver = ProviderDriverKind.make("antigravity");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [antigravityId]: {
+          driver,
+          enabled: true,
+          config: { authMethod: "gemini-api-key", apiKey: "", apiKeyRedacted: true },
+        },
+      },
+    };
+    const patch = (config: Record<string, unknown>) =>
+      applyServerSettingsPatch(current, {
+        providerInstances: { [antigravityId]: { driver, enabled: false, config } },
+      }).providerInstances[antigravityId]?.config;
+
+    expect(patch({ authMethod: "gemini-api-key", apiKey: "", apiKeyRedacted: true })).toEqual({
+      authMethod: "gemini-api-key",
+      apiKey: "",
+      apiKeyRedacted: true,
+    });
+    expect(patch({ authMethod: "gemini-api-key", apiKey: "", apiKeyRedacted: false })).toEqual({
+      authMethod: "gemini-api-key",
+      apiKey: "",
+      apiKeyRedacted: false,
+    });
+    expect(patch({ authMethod: "gemini-api-key", apiKey: "new-key" })).toEqual({
+      authMethod: "gemini-api-key",
+      apiKey: "new-key",
+    });
+    // Omitting the key on a retained instance preserves it.
+    expect(patch({ authMethod: "gemini-api-key" })).toEqual({
+      authMethod: "gemini-api-key",
+      apiKey: "",
+      apiKeyRedacted: true,
+    });
+    // A different driver under the same ID never inherits the key.
+    expect(
+      applyServerSettingsPatch(current, {
+        providerInstances: {
+          [antigravityId]: {
+            driver: ProviderDriverKind.make("opencode"),
+            enabled: true,
+            config: { serverPassword: "" },
+          },
+        },
+      }).providerInstances[antigravityId]?.config,
+    ).toEqual({ serverPassword: "" });
+  });
 });
 
 describe("project provider policy", () => {

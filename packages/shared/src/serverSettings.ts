@@ -125,6 +125,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * Provider-instance config fields that hold a secret. The settings file keeps only a reference
+ * (`redactedField: true`); the value lives in the server secret store under
+ * `<secretPrefix><base64url instance id>`.
+ */
+export const PROVIDER_INSTANCE_SECRET_FIELDS = {
+  // OpenCode keeps its historical semantics: omitting the password clears it.
+  opencode: {
+    field: "serverPassword",
+    redactedField: "serverPasswordRedacted",
+    secretPrefix: "provider-password-",
+    preserveWhenOmitted: false,
+  },
+  // Omitting the key on a retained instance keeps it; only `apiKeyRedacted: false` clears it.
+  antigravity: {
+    field: "apiKey",
+    redactedField: "apiKeyRedacted",
+    secretPrefix: "provider-api-key-",
+    preserveWhenOmitted: true,
+  },
+} as const;
+export type ProviderInstanceSecretField =
+  (typeof PROVIDER_INSTANCE_SECRET_FIELDS)[keyof typeof PROVIDER_INSTANCE_SECRET_FIELDS];
+
+export function providerInstanceSecretField(
+  driver: string | undefined,
+): ProviderInstanceSecretField | undefined {
+  return driver !== undefined && Object.hasOwn(PROVIDER_INSTANCE_SECRET_FIELDS, driver)
+    ? PROVIDER_INSTANCE_SECRET_FIELDS[driver as keyof typeof PROVIDER_INSTANCE_SECRET_FIELDS]
+    : undefined;
+}
+
 function preserveRedactedProviderSecrets(
   current: ServerSettings,
   next: ServerSettings,
@@ -154,21 +186,25 @@ function preserveRedactedProviderSecrets(
   let providerInstances = preserved.providerInstances;
   for (const [instanceId, patchInstance] of Object.entries(patch.providerInstances)) {
     const providerInstanceId = instanceId as keyof ServerSettings["providerInstances"];
-    if (patchInstance.driver !== "opencode" || !isRecord(patchInstance.config)) {
+    const secret = providerInstanceSecretField(patchInstance.driver);
+    if (!secret || !isRecord(patchInstance.config)) {
       continue;
     }
-    if (patchInstance.config.serverPassword !== "") {
+    const patchValue = patchInstance.config[secret.field];
+    // A blank value (the redacted form the client read back) keeps the stored secret, as does an
+    // omitted field where the driver preserves on omission. A new value rotates it;
+    // `redacted: false` clears it.
+    const keeps = patchValue === "" || (patchValue === undefined && secret.preserveWhenOmitted);
+    if (!keeps || patchInstance.config[secret.redactedField] === false) {
       continue;
     }
     const currentInstance = current.providerInstances[providerInstanceId];
-    if (!isRecord(currentInstance?.config)) {
+    if (currentInstance?.driver !== patchInstance.driver || !isRecord(currentInstance.config)) {
       continue;
     }
-    const currentServerPassword = currentInstance.config.serverPassword;
-    if (
-      typeof currentServerPassword !== "string" ||
-      (currentServerPassword.length === 0 && currentInstance.config.serverPasswordRedacted !== true)
-    ) {
+    const currentValue = currentInstance.config[secret.field];
+    const currentRedacted = currentInstance.config[secret.redactedField] === true;
+    if (typeof currentValue !== "string" || (currentValue.length === 0 && !currentRedacted)) {
       continue;
     }
     const nextInstance = providerInstances[providerInstanceId];
@@ -181,10 +217,8 @@ function preserveRedactedProviderSecrets(
         ...nextInstance,
         config: {
           ...nextInstance.config,
-          serverPassword: currentServerPassword,
-          ...(currentInstance.config.serverPasswordRedacted === true
-            ? { serverPasswordRedacted: true }
-            : {}),
+          [secret.field]: currentValue,
+          ...(currentRedacted ? { [secret.redactedField]: true } : {}),
         },
       },
     };

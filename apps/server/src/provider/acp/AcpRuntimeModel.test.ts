@@ -358,6 +358,26 @@ describe("AcpRuntimeModel", () => {
     ]);
   });
 
+  it("projects usage_update as a context sample and ignores malformed frames", () => {
+    const parse = (update: Record<string, unknown>) =>
+      parseSessionUpdateEvent({
+        sessionId: "session-1",
+        update: { sessionUpdate: "usage_update", ...update },
+      } as unknown as EffectAcpSchema.SessionNotification).events;
+
+    expect(parse({ used: 51_234.4, size: 1_048_576 })).toEqual([
+      { _tag: "UsageUpdated", used: 51_234, size: 1_048_576 },
+    ]);
+    for (const malformed of [
+      { used: -1, size: 100 },
+      { used: 1, size: 0 },
+      { used: "1", size: 100 },
+      { used: 1, size: Number.POSITIVE_INFINITY },
+      { size: 100 },
+    ])
+      expect(parse(malformed), JSON.stringify(malformed)).toEqual([]);
+  });
+
   it("projects typed ACP plan and content updates", () => {
     const planResult = parseSessionUpdateEvent({
       sessionId: "session-1",

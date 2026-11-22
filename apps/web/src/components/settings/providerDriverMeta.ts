@@ -1,4 +1,8 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import {
+  ANTIGRAVITY_AUTH_METHODS,
+  ANTIGRAVITY_EXPOSED_AUTH_METHODS,
+  ProviderDriverKind,
+} from "@t3tools/contracts";
 import {
   ACPRegistryIcon,
   Gemini,
@@ -24,9 +28,20 @@ export interface DriverFieldDef {
   readonly label: string;
   readonly placeholder?: string;
   readonly description?: string;
-  readonly type?: "text" | "password";
+  readonly type?: "text" | "password" | "select";
   readonly format?: "json-array" | "json-record";
   readonly required?: boolean;
+  /** `select` choices. */
+  readonly options?: ReadonlyArray<{ readonly value: string; readonly label: string }>;
+  /** Value shown when the config omits the key (the schema default). */
+  readonly defaultValue?: string;
+  /** Shown only when another field has this value (its default counts). */
+  readonly visibleWhen?: { readonly key: string; readonly equals: string };
+  /**
+   * `password` fields stored as a server secret: the config carries only this presence flag.
+   * Leaving the field blank keeps the stored secret; clearing it deletes the secret.
+   */
+  readonly redactedKey?: string;
 }
 
 /**
@@ -39,6 +54,10 @@ export interface DriverOption {
   readonly label: string;
   readonly icon: Icon;
   readonly fields: readonly DriverFieldDef[];
+  /** Secondary line in the add-instance picker. */
+  readonly subtitle?: string;
+  /** Extra picker search terms, e.g. the model family a harness serves. */
+  readonly keywords?: readonly string[];
   /**
    * Optional short label rendered as a `variant="warning"` badge next to
    * the instance title. Used to flag drivers that still ship under an
@@ -100,7 +119,36 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
       },
     ],
   },
-  { value: ProviderDriverKind.make("antigravity"), label: "Antigravity", icon: Gemini, fields: [] },
+  {
+    value: ProviderDriverKind.make("antigravity"),
+    label: "Antigravity",
+    subtitle: "Google Gemini models",
+    keywords: ["gemini", "google", "neon"],
+    icon: Gemini,
+    fields: [
+      {
+        key: "authMethod",
+        label: "Sign-in method",
+        type: "select",
+        defaultValue: "oauth-personal",
+        options: ANTIGRAVITY_AUTH_METHODS.filter((method) =>
+          (ANTIGRAVITY_EXPOSED_AUTH_METHODS as ReadonlyArray<string>).includes(method.value),
+        ),
+        description:
+          "Google accounts use your subscription. API keys are billed per token by Google.",
+      },
+      {
+        key: "apiKey",
+        label: "Gemini API key",
+        type: "password",
+        redactedKey: "apiKeyRedacted",
+        visibleWhen: { key: "authMethod", equals: "gemini-api-key" },
+        placeholder: "Paste a Gemini API key",
+        description:
+          "Stored separately on the server, never in settings files. Connect in the account panel to verify it. Commands the agent runs can read the key from their environment.",
+      },
+    ],
+  },
   {
     value: ProviderDriverKind.make("codex"),
     label: "Codex",

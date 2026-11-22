@@ -6908,6 +6908,11 @@ export const createServer = Effect.fn(function* (
 
       case WS_METHODS.serverRefreshProviders: {
         const { instanceId } = stripRequestTag(request.body);
+        // This is the user's explicit refresh: drivers with an expensive catalog discovery
+        // (Antigravity) run it now, never on startup or periodic refreshes.
+        for (const instance of yield* providerInstanceRegistry.listInstances)
+          if (instanceId === undefined || instance.instanceId === instanceId)
+            yield* instance.requestModelDiscovery ?? Effect.void;
         if (instanceId) yield* providerRegistry.refreshInstance(instanceId);
         else yield* providerRegistry.refresh();
         const providers = yield* providerAdvisoryProjection.getProviders;

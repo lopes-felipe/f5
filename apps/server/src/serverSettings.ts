@@ -1,5 +1,10 @@
 import { AGENT_BRIDGE_ACTIVATION_VERSION } from "@t3tools/contracts";
 import { validateManagedHome } from "./profiles/providerIsolation";
+import { beginAccountChange } from "./profiles/ProviderAccountGuard.ts";
+import {
+  antigravityAuthConfigFromRaw,
+  publishAntigravityAuthIdentity,
+} from "./provider/antigravityAuthSupport.ts";
 import { validateWorktreeLocation, unusedWorktreeLocation } from "./worktreeLocationValidation.ts";
 import { assertAccountEnvironmentOverrides } from "./providerProcessEnv";
 import { normalizeRepositorySearchRoots } from "./storage/storageDiscovery.ts";
@@ -57,6 +62,7 @@ import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
   applyServerSettingsPatch,
+  providerInstanceSecretField,
   resolveTextGenerationProvider,
 } from "@t3tools/shared/serverSettings";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
@@ -104,21 +110,46 @@ function redactProviderEnvironmentVariable(
 }
 
 function redactProviderInstanceConfig(instance: ProviderInstanceConfig): ProviderInstanceConfig {
+  const secret = providerInstanceSecretField(instance.driver);
   if (
-    instance.driver !== "opencode" ||
+    !secret ||
     instance.config === null ||
     typeof instance.config !== "object" ||
-    !("serverPassword" in instance.config)
+    !(secret.field in instance.config)
   ) {
     return instance;
   }
+  const config = instance.config as Record<string, unknown>;
   return {
     ...instance,
     config: {
-      ...instance.config,
-      serverPassword: "",
+      ...config,
+      [secret.field]: "",
+      // OpenCode's client contract predates the presence flag; keep its shape unchanged.
+      ...(secret.field === "serverPassword"
+        ? {}
+        : {
+            [secret.redactedField]: Boolean(config[secret.field] || config[secret.redactedField]),
+          }),
     },
   };
+}
+
+/** Antigravity instances whose sign-in method or key differs between two settings versions. */
+export function antigravityAccountTransitions(
+  current: ServerSettings,
+  next: ServerSettings,
+): ReadonlyArray<string> {
+  const auth = (instance: ProviderInstanceConfig | undefined) => {
+    if (instance?.driver !== "antigravity") return undefined;
+    const config = (instance.config ?? {}) as Record<string, unknown>;
+    return JSON.stringify([config.authMethod ?? "oauth-personal", config.apiKey ?? ""]);
+  };
+  return Object.keys(current.providerInstances).filter((id) => {
+    const before = auth(current.providerInstances[id as keyof ServerSettings["providerInstances"]]);
+    const after = auth(next.providerInstances[id as keyof ServerSettings["providerInstances"]]);
+    return before !== undefined && after !== undefined && before !== after;
+  });
 }
 
 export function redactServerSettingsForClient(settings: ServerSettings): ServerSettings {
@@ -1032,7 +1063,60 @@ const makeServerSettings = Effect.gen(function* () {
                 }),
             ),
           );
-          return yield* publishSettings(next, prepared.changes);
+          // A sign-in method or key change is an account transition: it waits for in-flight
+          // admissions like a login would, and refuses while one is starting work. Both sides
+          // are compared materialized: the cache holds references, `patched` holds values.
+          const accountChanges = antigravityAccountTransitions(
+            yield* materializeProviderEnvironmentSecrets(current),
+            patched,
+          );
+          const fences: Array<() => void> = [];
+          return yield* Effect.acquireUseRelease(
+            Effect.try({
+              try: () => {
+                const releases: Array<() => void> = [];
+                try {
+                  for (const id of accountChanges)
+                    releases.push(beginAccountChange(serverConfig.stateDir, id));
+                } catch (cause) {
+                  for (const release of releases) release();
+                  throw cause;
+                }
+                // The instances built from the old settings refuse new work from here on,
+                // until the registry replaces them.
+                for (const id of accountChanges)
+                  fences.push(
+                    publishAntigravityAuthIdentity(
+                      serverConfig.stateDir,
+                      id,
+                      antigravityAuthConfigFromRaw(
+                        patched.providerInstances[id as keyof ServerSettings["providerInstances"]]
+                          ?.config,
+                      ),
+                    ),
+                  );
+                return releases;
+              },
+              catch: (cause) =>
+                new ServerSettingsError({
+                  settingsPath: serverConfig.settingsPath ?? "<memory>",
+                  detail: `Antigravity sign-in settings cannot change right now: ${cause instanceof Error ? cause.message : String(cause)}`,
+                  cause,
+                }),
+            }),
+            () =>
+              publishSettings(next, prepared.changes).pipe(
+                Effect.onError(() =>
+                  Effect.sync(() => {
+                    for (const restore of fences.toReversed()) restore();
+                  }),
+                ),
+              ),
+            (releases) =>
+              Effect.sync(() => {
+                for (const release of releases) release();
+              }),
+          );
         }),
       ),
     get streamChanges() {
