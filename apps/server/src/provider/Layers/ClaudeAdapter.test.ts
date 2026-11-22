@@ -7926,8 +7926,14 @@ describe("ClaudeAdapterLive", () => {
           );
           if (scenario === "unrelated")
             assert.equal(completed.value.payload.errorMessage, "disk is full");
-          if (scenario === "login")
+          if (scenario === "login") {
             assert.match(completed.value.payload.errorMessage ?? "", /\/login/);
+            const runtimeError = events.find((event) => event.type === "runtime.error");
+            assert.equal(
+              runtimeError?.type === "runtime.error" ? runtimeError.payload.class : undefined,
+              "auth_error",
+            );
+          }
           if (scenario === "blocked") {
             const warning = events.find((event) => event.type === "runtime.warning");
             assert.deepEqual(
@@ -8003,6 +8009,11 @@ describe("ClaudeAdapterLive", () => {
         completed?.type === "turn.completed" ? (completed.payload.errorMessage ?? "") : "";
       assert.match(errorMessage, /organization does not allow this model/);
       assert.notMatch(errorMessage, /\/login/);
+      const runtimeError = events.find((event) => event.type === "runtime.error");
+      assert.notEqual(
+        runtimeError?.type === "runtime.error" ? runtimeError.payload.class : undefined,
+        "auth_error",
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

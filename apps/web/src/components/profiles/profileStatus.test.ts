@@ -122,6 +122,25 @@ describe("profile warnings", () => {
     expect(warnings[0]!.detail).toContain("C:\\gone");
     expect(warnings[1]!.detail).toContain("Work, Personal");
   });
+
+  it("groups several unavailable project folders into one warning", () => {
+    const warnings = profileWarnings(
+      makeProfile({
+        invalidDirectories: [
+          { directory: "/gone/a", reason: "Missing." },
+          { directory: "/gone/b", reason: "Missing." },
+          { directory: "/gone/c", reason: "Not a directory." },
+        ],
+      }),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.title).toBe("3 project folders are unavailable");
+    expect(warnings[0]!.items).toEqual([
+      "/gone/a — Missing.",
+      "/gone/b — Missing.",
+      "/gone/c — Not a directory.",
+    ]);
+  });
 });
 
 describe("port validation", () => {

@@ -109,6 +109,22 @@ describe("identity", () => {
     await expect.element(page.getByText("Project folder is unavailable")).toBeVisible();
     await expect.element(page.getByText("Shared Git checkout")).toBeVisible();
   });
+
+  it("collapses many unavailable project folders into one warning", async () => {
+    await mount({
+      ...work,
+      invalidDirectories: [
+        { directory: "/gone/one", reason: "Missing." },
+        { directory: "/gone/two", reason: "Missing." },
+      ],
+    });
+    await expect.element(page.getByText("2 project folders are unavailable")).toBeVisible();
+    expect(page.getByText("Project folder is unavailable").elements()).toHaveLength(0);
+    expect(page.getByText("/gone/one — Missing.").elements()).toHaveLength(0);
+    await page.getByRole("button", { name: "Show folders" }).click();
+    await expect.element(page.getByText("/gone/one — Missing.")).toBeVisible();
+    await expect.element(page.getByText("/gone/two — Missing.")).toBeVisible();
+  });
 });
 
 describe("renaming", () => {

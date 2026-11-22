@@ -374,6 +374,8 @@ import type {
   NextTurnQueueRetryInput,
   NextTurnQueueSetPausedInput,
   NextTurnQueueScheduleUsageLimitResumeInput,
+  NextTurnQueueResendAuthFailedTurnInput,
+  NextTurnQueueResendAuthFailedTurnResult,
   NextTurnQueueCancelUsageLimitResumeInput,
   NextTurnQueueRefreshUsageLimitResumeInput,
   NextTurnQueueSnapshot,
@@ -1363,6 +1365,9 @@ export interface NativeApi {
     scheduleUsageLimitResume: (
       input: NextTurnQueueScheduleUsageLimitResumeInput,
     ) => Promise<NextTurnQueueSnapshot>;
+    resendAuthFailedTurn: (
+      input: NextTurnQueueResendAuthFailedTurnInput,
+    ) => Promise<NextTurnQueueResendAuthFailedTurnResult>;
     cancelUsageLimitResume: (input: NextTurnQueueCancelUsageLimitResumeInput) => Promise<{
       readonly kind: "cancelled" | "already_sending";
       readonly snapshot: NextTurnQueueSnapshot;

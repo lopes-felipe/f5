@@ -290,6 +290,7 @@ export interface ThreadSession {
   lastErrorId?: string | null;
   lastErrorOccurredAt?: string | null;
   usageLimit?: import("@t3tools/contracts").OrchestrationUsageLimit | null;
+  authFailure?: import("@t3tools/contracts").OrchestrationAuthFailure | null;
   tokenUsageSource?: "provider" | "estimated";
   /** Capabilities of the bound session generation (Release 2). */
   capabilities?: import("@t3tools/contracts").ProviderSessionCapabilities | null;

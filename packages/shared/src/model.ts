@@ -930,6 +930,13 @@ export function normalizeClaudeModelOptions(
     capabilities.supportsThinkingToggle && modelOptions?.thinking === false ? false : undefined;
   const fastMode =
     capabilities.supportsFastMode && modelOptions?.fastMode === true ? true : undefined;
+  const ultracode =
+    modelOptions?.ultracode === true &&
+    (
+      reported?.optionDescriptors ??
+      createClaudeModelCapabilities(model).optionDescriptors ??
+      []
+    ).some((descriptor) => descriptor.id === "ultracode");
   const contextWindow = capabilities.supportsContextWindow
     ? normalizeClaudeContextWindow(modelOptions?.contextWindow)
     : undefined;
@@ -937,6 +944,7 @@ export function normalizeClaudeModelOptions(
     ...(thinking === false ? { thinking: false } : {}),
     ...(effort ? { effort } : {}),
     ...(fastMode ? { fastMode: true } : {}),
+    ...(ultracode ? { ultracode: true } : {}),
     ...(contextWindow ? { contextWindow } : {}),
   };
   return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;

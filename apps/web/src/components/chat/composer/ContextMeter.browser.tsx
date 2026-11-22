@@ -63,7 +63,7 @@ describe("ContextMeter", () => {
     }
   });
 
-  it("shows token counts and only marks a valid auto-compaction point", async () => {
+  it("shows only the ring, reveals the percentage on hover, and marks a valid auto-compaction point", async () => {
     const screen = await render(
       <ContextMeter
         tokenUsage={usage({
@@ -74,11 +74,14 @@ describe("ContextMeter", () => {
       />,
     );
     try {
-      expect(document.querySelector('[data-slot="context-token-count"]')?.textContent).toBe(
-        "38K / 200K",
-      );
+      const meter = document.querySelector('[data-slot="context-meter"]');
+      expect(meter?.textContent).not.toContain("38K");
+      const percent = document.querySelector<HTMLElement>('[data-slot="context-percent"]');
+      expect(percent?.textContent).toBe("19");
+      expect(getComputedStyle(percent!).opacity).toBe("0");
       expect(document.querySelector('[data-slot="context-auto-compact-mark"]')).not.toBeNull();
       await page.getByRole("button", { name: /Context window occupancy/ }).hover();
+      await vi.waitFor(() => expect(getComputedStyle(percent!).opacity).toBe("1"));
       await vi.waitFor(() =>
         expect(document.body.textContent).toContain("Auto-compacts around 117,000 tokens"),
       );

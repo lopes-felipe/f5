@@ -21,10 +21,12 @@ export async function invalidExecutionDirectories(stateDir: string) {
     : new (await import("node:sqlite")).DatabaseSync(file, { readOnly: true });
   let directories: string[];
   try {
+    // Only live project roots. A thread's missing worktree is routine after
+    // cleanup and is reported by that thread's own banner, not per profile.
     directories = (
       database
         .prepare(
-          "SELECT workspace_root AS directory FROM projection_projects WHERE deleted_at IS NULL UNION SELECT worktree_path AS directory FROM projection_threads WHERE deleted_at IS NULL AND worktree_path IS NOT NULL",
+          "SELECT DISTINCT workspace_root AS directory FROM projection_projects WHERE deleted_at IS NULL AND archived = 0 AND workspace_root <> ''",
         )
         .all() as { directory: string }[]
     ).map((row) => row.directory);

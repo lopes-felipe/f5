@@ -58,6 +58,27 @@ const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
 export const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
 
+type SessionSetInput = Extract<OrchestrationCommand, { type: "thread.session.set" }>["session"];
+
+/**
+ * An expired-login failure outlives the session updates that follow it (the
+ * failed turn completing, status refreshes) and ends when a different turn
+ * starts, the error clears, or the session moves to another provider account.
+ */
+export function carryAuthFailure(
+  next: SessionSetInput,
+  previous: OrchestrationReadModel["threads"][number]["session"] | null | undefined,
+): SessionSetInput["authFailure"] {
+  if (next.authFailure !== undefined) return next.authFailure;
+  const failure = previous?.authFailure;
+  if (!failure) return null;
+  if (next.lastError === null) return null;
+  if (next.activeTurnId && next.activeTurnId !== failure.turnId) return null;
+  if ((next.providerInstanceId ?? failure.providerInstanceId) !== failure.providerInstanceId)
+    return null;
+  return failure;
+}
+
 /** The scratch project is server-owned: its folder, actions, memories and skills stay fixed. */
 function scratchProjectRefusal(commandType: string, what: string) {
   return new OrchestrationCommandInvariantError({
@@ -2143,6 +2164,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
                       command.session.activeTurnId === previous.session?.usageLimit?.turnId)
                   ? (previous.session?.usageLimit ?? null)
                   : null,
+            authFailure: carryAuthFailure(command.session, previous.session),
           },
           ...(command.settledTurnId !== undefined ? { settledTurnId: command.settledTurnId } : {}),
           ...(command.usageFact !== undefined ? { usageFact: command.usageFact } : {}),

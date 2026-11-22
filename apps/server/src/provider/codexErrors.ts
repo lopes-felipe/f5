@@ -179,6 +179,35 @@ export function resolveCodexCompletionErrorInfo(input: {
   return typeof status === "number" ? input.errorInfo : previous.errorInfo;
 }
 
+const CODEX_AUTH_FAILURE_PATTERN =
+  /\b401\b.*unauthorized|\bunauthorized\b.*\b401\b|refresh token (?:has )?(?:expired|was revoked|is invalid)|access token could not be refreshed|token_expired|refresh_token_(?:expired|reused|invalidated)|(?:sign|log) ?in again|not logged in|please (?:re-?)?authenticate/i;
+
+/**
+ * True when a Codex failure means the ChatGPT or API-key login must be renewed.
+ * Typed `unauthorized` (or an HTTP 401) wins; otherwise the CLI's wording decides.
+ */
+export function isCodexAuthFailure(input: {
+  readonly message?: string | null | undefined;
+  readonly errorInfo?: unknown;
+}): boolean {
+  const info = input.errorInfo;
+  if (info === "unauthorized") return true;
+  if (info !== null && typeof info === "object") {
+    if ("unauthorized" in info) return true;
+    for (const value of Object.values(info as Record<string, unknown>)) {
+      if (
+        value !== null &&
+        typeof value === "object" &&
+        (value as { httpStatusCode?: unknown }).httpStatusCode === 401
+      )
+        return true;
+    }
+  }
+  const message = input.message ?? "";
+  if (/usage limit|rate limit|credits/i.test(message)) return false;
+  return CODEX_AUTH_FAILURE_PATTERN.test(message);
+}
+
 export function detectCodexUsageLimit(input: {
   message: string;
   errorInfo?: unknown;

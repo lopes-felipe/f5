@@ -669,9 +669,22 @@ export const OrchestrationUsageLimit = Schema.Struct({
 });
 export type OrchestrationUsageLimit = typeof OrchestrationUsageLimit.Type;
 
+/**
+ * A turn failed because the provider account's login expired or was rejected.
+ * It stays on the session until a new turn starts, so the thread can offer a
+ * one-click sign-in and resend the turn that never reached the provider.
+ */
+export const OrchestrationAuthFailure = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  turnId: Schema.NullOr(TurnId),
+  occurredAt: IsoDateTime,
+});
+export type OrchestrationAuthFailure = typeof OrchestrationAuthFailure.Type;
+
 export const OrchestrationSession = Schema.Struct({
   extensionStatuses: Schema.optional(ProviderExtensionStatuses),
   usageLimit: Schema.optional(Schema.NullOr(OrchestrationUsageLimit)),
+  authFailure: Schema.optional(Schema.NullOr(OrchestrationAuthFailure)),
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
   providerName: Schema.NullOr(TrimmedNonEmptyString),

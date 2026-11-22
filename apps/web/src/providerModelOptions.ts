@@ -98,16 +98,19 @@ export function normalizeProviderModelOptions(
       ? claudeCandidate.effort
       : undefined;
   const claudeFastMode = claudeCandidate?.fastMode === true;
+  const claudeUltracode = claudeCandidate?.ultracode === true;
   const claudeContextWindow = readTrimmedString(claudeCandidate?.contextWindow);
   const claude =
     claudeThinking === false ||
     claudeEffort !== undefined ||
     claudeFastMode ||
+    claudeUltracode ||
     claudeContextWindow !== undefined
       ? {
           ...(claudeThinking === false ? { thinking: false } : {}),
           ...(claudeEffort ? { effort: claudeEffort } : {}),
           ...(claudeFastMode ? { fastMode: true } : {}),
+          ...(claudeUltracode ? { ultracode: true } : {}),
           ...(claudeContextWindow ? { contextWindow: claudeContextWindow } : {}),
         }
       : undefined;
@@ -194,6 +197,9 @@ export function providerSelectionsToModelOptions(
           ...(stringValue("effort") ? { effort: stringValue("effort") } : {}),
           ...(booleanValue("thinking") !== undefined ? { thinking: booleanValue("thinking") } : {}),
           ...(booleanValue("fastMode") !== undefined ? { fastMode: booleanValue("fastMode") } : {}),
+          ...(booleanValue("ultracode") !== undefined
+            ? { ultracode: booleanValue("ultracode") }
+            : {}),
           ...(stringValue("contextWindow") ? { contextWindow: stringValue("contextWindow") } : {}),
         },
       });
@@ -265,6 +271,7 @@ export function providerModelOptionsToSelections(
       pushString("effort", claudeOptions.effort);
       pushBoolean("thinking", claudeOptions.thinking);
       pushBoolean("fastMode", claudeOptions.fastMode);
+      pushBoolean("ultracode", claudeOptions.ultracode);
       pushString("contextWindow", claudeOptions.contextWindow);
       break;
     }

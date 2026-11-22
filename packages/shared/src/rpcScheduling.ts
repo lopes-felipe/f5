@@ -176,6 +176,7 @@ export const RPC_METHOD_POLICY = {
   "nextTurnQueue.retry": MUTATION_RT,
   "nextTurnQueue.retryDelivery": MUTATION_RT,
   "nextTurnQueue.scheduleUsageLimitResume": MUTATION_RT,
+  "nextTurnQueue.resendAuthFailedTurn": MUTATION_RT,
   "nextTurnQueue.setPaused": MUTATION_RT,
   "nextTurnQueue.steer": ANSWER_RT,
   "nextTurnQueue.submit": MUTATION_RT,

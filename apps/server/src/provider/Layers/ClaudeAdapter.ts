@@ -109,7 +109,7 @@ import {
 } from "../claudeMandatoryPolicy.ts";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
-import type { RuntimeUsageLimit } from "@t3tools/contracts";
+import type { RuntimeErrorClass, RuntimeUsageLimit } from "@t3tools/contracts";
 import {
   claudeBlockedAssistantLimit,
   claudeGatewayUsageLimit,
@@ -1070,6 +1070,16 @@ const CLAUDE_MISSING_SESSION_PATTERNS = [
   "no such session",
   "could not find session",
 ] as const;
+
+const CLAUDE_AUTH_FAILURE_PATTERN =
+  /authentication_failed|failed to authenticate|oauth (?:session|token) (?:has )?expired|could not be refreshed|invalid api key|invalid x-api-key|\bunauthorized\b|run \/login|please (?:run )?\/?login|not logged in/i;
+
+/** True when a Claude failure means the account must sign in again (not billing or limits). */
+export function isClaudeAuthFailureText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  if (/billing|account.on.hold|usage.?limit|rate.?limit/i.test(text)) return false;
+  return CLAUDE_AUTH_FAILURE_PATTERN.test(text);
+}
 
 export function isClaudeMissingConversationError(
   text: string,
@@ -3793,7 +3803,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const emitRuntimeError = (
       context: ClaudeSessionContext,
       message: string,
-      options?: { detail?: unknown; usageLimit?: RuntimeUsageLimit },
+      options?: {
+        detail?: unknown;
+        usageLimit?: RuntimeUsageLimit;
+        errorClass?: RuntimeErrorClass;
+      },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const turnState = context.turnState;
@@ -3808,7 +3822,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(turnState ? { turnId: asCanonicalTurnId(turnState.turnId) } : {}),
           payload: {
             message,
-            class: "provider_error",
+            class: options?.errorClass ?? "provider_error",
             ...(options?.detail !== undefined ? { detail: options.detail } : {}),
             ...(options?.usageLimit ? { usageLimit: options.usageLimit } : {}),
           },
@@ -5780,11 +5794,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             yield* invalidateClaudeResumeState(context, "resume-session-not-found");
             resumeRejected = true;
           }
-          yield* emitRuntimeError(
-            context,
-            errorMessage ?? "Claude turn failed.",
-            usageLimit ? { usageLimit } : undefined,
-          );
+          // A 403 is a permission refusal that signing in again cannot fix.
+          const authFailure =
+            !usageLimit &&
+            !permissionDenied &&
+            (context.turnState.authenticationFailureMessage !== undefined ||
+              isClaudeAuthFailureText(originalError) ||
+              isClaudeAuthFailureText(errorMessage));
+          yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.", {
+            ...(usageLimit ? { usageLimit } : {}),
+            ...(authFailure ? { errorClass: "auth_error" as const } : {}),
+          });
         }
 
         if (status === "completed" && !context.turnState.interruptRequested) {

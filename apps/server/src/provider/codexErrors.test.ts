@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectCodexUsageLimit,
   formatCodexUnsupportedModelError,
+  isCodexAuthFailure,
   isUnsupportedCodexModelError,
   resolveCodexCompletionErrorInfo,
 } from "./codexErrors.ts";
@@ -131,4 +132,29 @@ it("treats retry exhaustion on HTTP 429 as a usage limit, but not other statuses
   expect(
     detectCodexUsageLimit({ ...exhausted(429), errorInfo: { httpConnectionFailed: {} } }),
   ).toBeNull();
+});
+
+describe("Codex auth failures", () => {
+  it.each([
+    { errorInfo: "unauthorized" },
+    { errorInfo: { unauthorized: {} } },
+    { errorInfo: { responseStreamConnectionFailed: { httpStatusCode: 401 } } },
+    { message: "unexpected status 401 Unauthorized: token expired" },
+    {
+      message:
+        "Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.",
+    },
+    { message: "refresh_token_reused" },
+  ])("recognizes %j", (input) => {
+    expect(isCodexAuthFailure(input)).toBe(true);
+  });
+
+  it.each([
+    { errorInfo: "usageLimitExceeded", message: "You've hit your usage limit." },
+    { errorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } },
+    { message: "stream disconnected before completion" },
+    { message: "You've hit your usage limit. Sign in again after the reset." },
+  ])("ignores %j", (input) => {
+    expect(isCodexAuthFailure(input)).toBe(false);
+  });
 });

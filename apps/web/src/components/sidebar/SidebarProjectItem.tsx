@@ -1,5 +1,4 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
-import { ProjectPinButton } from "../ProjectPinButton";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import {
   type CollisionDetection,
@@ -11,7 +10,7 @@ import {
 import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronRightIcon, EllipsisIcon, SquarePenIcon, WorkflowIcon } from "lucide-react";
+import { ChevronRightIcon, EllipsisIcon, PinIcon, SquarePenIcon, WorkflowIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { DraftThreadState } from "../../composerDraftStore";
@@ -460,17 +459,12 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
       {(dragHandleProps) => (
         <Collapsible className="group/collapsible" open={project.expanded}>
           <div className="group/project-header relative">
-            {!isScratchProject(project) ? (
-              <div className="absolute top-1 right-24 z-10">
-                <ProjectPinButton project={project} />
-              </div>
-            ) : null}
             <SidebarMenuButton
               className={cn(
                 "h-8 gap-2 rounded-lg px-2 text-left text-ui font-medium text-foreground hover:bg-accent/60 hover:text-foreground group-hover/project-header:bg-accent/60",
                 isScratchProject(project)
                   ? "group-has-[[data-sidebar=menu-action]]/menu-item:pe-14"
-                  : "group-has-[[data-sidebar=menu-action]]/menu-item:pe-28",
+                  : "group-has-[[data-sidebar=menu-action]]/menu-item:pe-24",
               )}
               aria-expanded={project.expanded}
               {...dragHandleProps.attributes}
@@ -534,6 +528,13 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
               ) : (
                 <span className="flex-1 truncate">{project.name}</span>
               )}
+              {project.pinned && !isScratchProject(project) ? (
+                <PinIcon
+                  aria-label="Pinned"
+                  data-slot="project-pinned-indicator"
+                  className="size-3 shrink-0 fill-current text-faint-foreground"
+                />
+              ) : null}
               {activeCount > 0 ? (
                 <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-info/15 px-1 text-2xs font-medium text-info-foreground tabular-nums">
                   {activeCount}
