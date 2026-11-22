@@ -17572,9 +17572,11 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
+      "decidedAt": "2026-11-22T18:13:07.132Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27925",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr-hub",
