@@ -20907,9 +20907,11 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
+      "decidedAt": "2026-11-22T18:11:49.752Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28459",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "composer",
@@ -22774,9 +22776,11 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
+      "decidedAt": "2026-11-22T18:11:58.608Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28732",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr-hub",
